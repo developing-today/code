@@ -3,5 +3,5 @@
 genrule(
     name = "main",
     out = "out.txt",
-    cmd = "echo HELLO FROM BUCK2> ./\$OUT",
+    cmd = "echo HELLO FROM BUCK2> ./$OUT",
 )
