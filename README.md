@@ -43,7 +43,8 @@ LICENSE-MIT file in the root directory of this source tree and the Apache
 License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 of this source tree.
 ```
-A lack of boilerplate notice on a file does not imply anything about it's licensing or copyright status.
+
+A lack of boilerplate notice on a file does not imply anything about it's copyrights or licensing.
 
 Lack of a boilerplate notice could be any of the following reasons:
 
@@ -54,4 +55,4 @@ Lack of a boilerplate notice could be any of the following reasons:
 - An aesthetic choice
 - any other reason
 
-All files retain all applicable license & copyright status, without regard for boilerplate notice.
+All files retain all applicable copyrights and licenses, without regard for boilerplate notice.
