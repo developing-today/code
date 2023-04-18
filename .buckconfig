@@ -1,7 +1,7 @@
 [repositories]
 root = .
-prelude = prelude
-toolchains = toolchains
+prelude = buck2-prelude
+toolchains = buck2-prelude-toolchains
 none = none
 
 [repository_aliases]
