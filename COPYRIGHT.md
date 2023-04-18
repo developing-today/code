@@ -20,3 +20,5 @@ or the MIT license,
 ([`LICENSE-MIT`](LICENSE-MIT) or http://opensource.org/licenses/MIT),
 
 at your option.
+
+The [SPDX](https://spdx.dev) license identifier for this project is `MIT OR Apache-2.0`.
