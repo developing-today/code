@@ -22,7 +22,7 @@ The [SPDX](https://spdx.dev) license identifier for this project is `MIT OR Apac
 
 How to apply the licensing to your work:
 
-Except as otherwise noted (below and/or in individual files and/or in individual directories),
+Except as otherwise noted (in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in individual files and/or in individual directories),
 
 A standard header should be applied to any files added to this source tree.
 
