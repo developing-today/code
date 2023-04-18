@@ -60,4 +60,4 @@ Lack of a boilerplate notice could be any of the following reasons:
 - An aesthetic choice
 - any other reason
 
-All files retain any applicable licensing and copyright information regardless of presence of boilerplate notice.
+All files retain all applicable license & copyright status, without regard for boilerplate notice.
