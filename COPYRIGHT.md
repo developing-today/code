@@ -6,17 +6,18 @@ dual-licensed as below, without any additional terms or conditions.
 
 ## Licensing Information
 
-Copyright developing.today LLC and affiliates.
+Copyright developing.today LLC & contributors to the project.
 
-Copyrights in this project are retained by contributors. No copyright assignment
-is required to contribute to this project.
+Copyrights in this project are retained by the contributors to the project.
+
+No copyright assignment is required to contribute to this project.
 
 Except as otherwise noted (below and/or in individual files and/or in individual directories),
 
-this project is licensed under the Apache License, Version 2.0,
+- this project is licensed under the Apache License, Version 2.0,
 ([`LICENSE-APACHE`](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0),
 
-or the MIT license,
+- or the MIT license,
 ([`LICENSE-MIT`](LICENSE-MIT) or http://opensource.org/licenses/MIT),
 
 at your option.
@@ -41,7 +42,7 @@ same "printed page" as the copyright notice for easier
 identification within third-party archives.
 
 ```
-Copyright (c) developing.today LLC and affiliates.
+Copyright (c) developing.today LLC & contributors to the project.
 
 This source code is licensed under both the MIT license found in the
 LICENSE-MIT file in the root directory of this source tree and the Apache

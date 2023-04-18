@@ -7,7 +7,7 @@ dual-licensed as below, without any additional terms or conditions.
 
 ## Licensing Information
 
-&copy; developing.today LLC.
+&copy; developing.today LLC & contributors to the project.
 
 This project is licensed under either of
 
@@ -36,7 +36,7 @@ same "printed page" as the copyright notice for easier
 identification within third-party archives.
 
 ```
-Copyright (c) developing.today LLC and affiliates.
+Copyright (c) developing.today LLC & contributors to the project.
 
 This source code is licensed under both the MIT license found in the
 LICENSE-MIT file in the root directory of this source tree and the Apache
