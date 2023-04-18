@@ -7,7 +7,7 @@ dual licensed as below, without any additional terms or conditions.
 
 ## License
 
-&copy; \<year\> \<authors\> \[\<email\>].
+&copy; developing.today LLC.
 
 This project is licensed under either of
 
