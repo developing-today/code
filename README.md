@@ -1,6 +1,8 @@
 
 ## Contributing Information
 
+By submitting patches to this project you agree to allow them to be redistributed under the project's license, according to the normal forms and usages of the open-source community.
+
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual-licensed as below, without any additional terms or conditions.
