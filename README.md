@@ -7,6 +7,10 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual-licensed as below, without any additional terms or conditions.
 
+Copyrights in this project are retained by the contributors to the project.
+
+No copyright assignment is required to contribute to this project.
+
 ## Licensing Information
 
 &copy; developing.today LLC & contributors to the project.
