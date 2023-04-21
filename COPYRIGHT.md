@@ -52,7 +52,7 @@ of this source tree.
 SPDX-License-Identifier: MIT OR Apache-2.0
 ```
 
-A lack of boilerplate notice on a file does not imply anything about it's copyrights or licensing.
+A lack of boilerplate notice on a file does not imply anything about its copyrights or licensing.
 
 Lack of a boilerplate notice could be any of the following reasons:
 
