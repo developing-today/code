@@ -1,1 +1,8 @@
 /buck-out
+/**/buck-out
+/targets
+/**/targets
+/target
+/**/target
+/out
+/**/out
