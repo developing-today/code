@@ -1,0 +1,27 @@
+[repositories]
+root = .
+prelude = buck/prelude
+bxl = buck/prelude/bxl
+
+[buildfile]
+name = BUILD
+
+[build]
+execution_platforms = prelude//platform:default
+
+[parser]
+target_platform_detector_spec = target:root//...->prelude//platform:default target:prelude//...->prelude//platform:default
+
+[project]
+ignore=.git,.sl,.jj
+
+[buck2]
+file_watcher = watchman
+digest_algorithms = SHA256
+
+[buck2_re_client]
+enabled = false
+tls = false
+engine_address = grpc://127.0.0.1:8980
+action_cache_address = grpc://127.0.0.1:8980
+cas_address = grpc://127.0.0.1:8980

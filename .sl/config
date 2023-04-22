@@ -1,0 +1,4 @@
+%include builtin:git.rc
+
+[paths]
+default = https://github.com/thoughtpolice/buck2-nix

@@ -25,8 +25,8 @@ eval "$(direnv hook bash)"
 nix run \
     --tarball-ttl 0 \
     --accept-flake-config \
-    'github:thoughtpolice/buck2-nix?dir=buck/nix#setup'
+    'github:developing-today/code?dir=build/nix#setup'
 
-cd $HOME/buck2-nix.sl
+cd $HOME/code.sl
 
 buck2 build ...
