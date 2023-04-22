@@ -1,0 +1,5 @@
+this is lgpl
+
+consider compiling the library
+
+then calling against it in the rust code
