@@ -12,8 +12,6 @@ No copyright assignment is required to contribute to this project.
 
 ## Licensing Information
 
-Except as otherwise noted (below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories,)
-
 &copy; developing.today LLC & contributors to the project.
 
 This project is licensed under either of
@@ -24,6 +22,8 @@ This project is licensed under either of
 at your option.
 
 The [SPDX](https://spdx.dev) license identifier for this project is `MIT OR Apache-2.0`.
+
+Except as otherwise noted below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories.
 
 ## Boilerplate Information
 
