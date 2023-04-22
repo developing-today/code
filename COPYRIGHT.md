@@ -14,13 +14,12 @@ No copyright assignment is required to contribute to this project.
 
 Copyright developing.today LLC & contributors to the project.
 
-Except as otherwise noted (below and/or in individual files and/or in individual directories),
+Except as otherwise noted (below and/or in [`README.md`](README.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories,)
 
-- this project is licensed under the Apache License, Version 2.0,
-([`LICENSE-APACHE`](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0),
+This project is licensed under either of
 
-- or the MIT license,
-([`LICENSE-MIT`](LICENSE-MIT) or http://opensource.org/licenses/MIT),
+- [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) ([`LICENSE-APACHE`](LICENSE-APACHE))
+- [MIT license](https://opensource.org/licenses/MIT) ([`LICENSE-MIT`](LICENSE-MIT))
 
 at your option.
 
@@ -32,7 +31,7 @@ How to apply the licensing to your work:
 
 Except as otherwise noted, such as differently-licensed or vendored code,
 
-(below and/or in individual files and/or in individual directories,)
+(below and/or in [`README.md`](README.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories,)
 
 A standard header should be applied to any files added to this source tree.
 

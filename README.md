@@ -12,6 +12,8 @@ No copyright assignment is required to contribute to this project.
 
 ## Licensing Information
 
+Except as otherwise noted (below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories,)
+
 &copy; developing.today LLC & contributors to the project.
 
 This project is licensed under either of
@@ -29,7 +31,7 @@ How to apply the licensing to your work:
 
 Except as otherwise noted, such as differently-licensed or vendored code,
 
-(below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in individual files and/or in individual directories,)
+(below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories,)
 
 A standard header should be applied to any files added to this source tree.
 
@@ -41,7 +43,7 @@ same "printed page" as the copyright notice for easier
 identification within third-party archives.
 
 ```
-Copyright (c) developing.today LLC & contributors to the project.
+Copyright developing.today LLC & contributors to the project.
 
 This source code is licensed under both the MIT license found in the
 LICENSE-MIT file in the root directory of this source tree and the Apache
