@@ -65,3 +65,12 @@ Lack of a boilerplate notice could be any of the following reasons:
 - any other reason
 
 All files retain all applicable copyrights and licenses, without regard for boilerplate notice.
+
+## Acknowledgements
+
+A partial list of copyright acknowledgements related to this project.
+
+- within [`build/`](build)
+  - for nix-related works within [`build/nix`](build/nix) and [`build/buck/preludes/nix-prelude`](build/buck/preludes/nix-prelude)
+    - SPDX-License-Identifier: MIT OR Apache-2.0
+    - SPDX-FileCopyrightText: © 2022-2023 Austin Seipp
