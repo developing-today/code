@@ -16,7 +16,7 @@ If you were to add a toolchain of some kind (e.g. "I want to support Julia
 programs written in this repository"), you should be looking in the `./prelude`
 subdirectory instead.
 
-## `./prelude`
+## `./buck/preludes/nix-prelude`
 
 Buck rules, written in Starlark, and code to drive Nix from Starlark. These
 definitions allow you to run Nix and the results of Nix derivations (e.g.
