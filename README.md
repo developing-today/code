@@ -1,3 +1,5 @@
+Hello!
+
 ## Contributing Information
 
 By submitting patches to this project you agree to allow them to be redistributed under the project's license, according to the normal forms and usages of the open-source community.
