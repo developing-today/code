@@ -39,3 +39,15 @@
 - [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) ([`LICENSE-APACHE`](LICENSE-APACHE) in the root directory of this source tree)
 - [MIT license](https://opensource.org/licenses/MIT) ([`LICENSE-MIT`](LICENSE-MIT) in the root directory of this source tree)
 - https://infra.apache.org/licensing-howto.html
+- One could use `git interpret-trailers` to add the trailer to the commit message automatically.
+  - See: https://stackoverflow.com/a/46536244
+  - alt: https://stackoverflow.com/a/34687806
+  - alt: https://serverfault.com/a/433639
+- https://stackoverflow.com/a/35238070
+- https://blog.hansenpartnership.com/the-dco-patents-and-openstack/
+- https://blog.hansenpartnership.com/a-modest-proposal-on-the-dco/
+- https://git-scm.com/book/en/v2/Git-Tools-Signing-Your-Work
+- https://gitlab.com/robigalia/meta/-/blob/master/.mailmap
+- https://gitlab.com/robigalia/meta/-/blob/master/CONTRIBUTING.adoc
+- https://gitlab.com/robigalia/meta/-/blob/master/CONDUCT.adoc
+- https://people.kernel.org/monsieuricon/what-does-a-pgp-signature-on-a-git-commit-prove

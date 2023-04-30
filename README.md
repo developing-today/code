@@ -90,4 +90,4 @@ All files retain all applicable copyrights and licenses, without regard for boil
 
 ## More Information
 
-More information is in the [COPYRIGHT.md](COPYRIGHT.md) file in the root directory of this source tree.
+More information is in the [`COPYRIGHT.md`](COPYRIGHT.md) file in the root directory of this source tree.

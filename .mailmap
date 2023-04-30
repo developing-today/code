@@ -1,0 +1,10 @@
+# By adding yourself to this file, you're acknowledging the Developer
+# Certificate of Origin, which you can view in DCO-1.1. This applies to all
+# commits you send to any repository in the organization.
+
+# Each line should have a comment with a space-separated list of PGP key
+# fingerprints. We will reject any commits where the name and email does not
+# match something in the mailmap with the corresponding key-id.
+
+# dezren39
+Drewry Pope <drewrypope@gmail.com>

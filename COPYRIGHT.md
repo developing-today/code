@@ -10,6 +10,14 @@ Copyrights in this project are retained by the contributors to the project.
 
 No copyright assignment is required to contribute to this project.
 
+By committing to this project, you agree to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
+
+([`DCO-1.1`](DCO-1.1) in the root directory of this source tree.)
+
+Please ensure to certify that your patch set adheres to these rules,
+
+and has been "Signed-off-by" according to the guidelines in [`COPYRIGHT.md`](COPYRIGHT.md) in the root directory of this source tree.
+
 ## Licensing Information
 
 Copyright developing.today LLC & contributors to the project.
@@ -82,32 +90,27 @@ All files retain all applicable copyrights and licenses, without regard for boil
 
 Certify your work by adding your `Signed-off-by` trailer to your commit.
 
-To improve tracking of who did what, we ask you to certify that you
+To improve tracking of who did what, we ask you to certify that you wrote the patch
 
-wrote the patch or have the right to pass it on under the same license
+or have the right to pass it on under the same license as ours, by "signing off" your patch.
 
-as ours, by "signing off" your patch. Without sign-off, we cannot
-
-accept your patches.
+Without sign-off, we cannot accept your patches.
 
 We prefer you sign-off every commit, but need you to sign-off
 
 at least one commit in each patch you send us. For larger patches,
 
-at the very least, the last commit must be signed off.
+at the very least, the last commit message must be signed off explicitly certifying `<first-sha>..<last-sha>`.
 
 If (and only if) you certify the below DCO:
 
-The sign-off is a simple line at the end of the explanation for the
-patch,
+The sign-off is a simple line at the end of the explanation for the patch,
 
-which certifies that you wrote it or otherwise have the right to
-pass it on as an open-source patch.
+which certifies that you wrote it or otherwise have the right to pass it on as an open-source patch.
 
 The rules are pretty simple:
 
 if you can certify the below (from [developercertificate.org](https://developercertificate.org/)
-
 
 also located at [`DCO-1.1`](DCO-1.1) in the root directory of this source tree):
 
@@ -149,7 +152,7 @@ maintained indefinitely and may be redistributed consistent with
 this project or the open source license(s) involved.
 ```
 
-you add a "Signed-off-by" trailer to your commit, that looks like
+you add a `Signed-off-by` trailer to your commit, that looks like
 this:
 
 ```
@@ -162,9 +165,7 @@ You can also add the trailer manually to your commit message.
 
 Notice that you can place your own `Signed-off-by` trailer
 
-when
-forwarding somebody else's patch with the above rules for
-DCO.
+when forwarding somebody else's patch with the above rules for DCO.
 
 Indeed you are encouraged to do so.
 
@@ -196,45 +197,244 @@ the first SoB entry signalling primary authorship of a single author.
 
 Also notice that a real identity is used in the `Signed-off-by` trailer.
 
-Please don't hide your real identity,
-
-please email a maintainer if this is a concern.
+Please don't hide your real identity, please email a maintainer if this is a concern.
 
 ### Commit Trailers
 
 If you like, you can put extra tags at the end:
 
-. `Reported-by:` is used to credit someone who found the bug that
+- `Co-authored-by:` is used to credit people who helped author the patch.
+  - Co-authored commits will include co-authors badges on GitHub.
+  - https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-with-multiple-authors
+
+- `on-behalf-of` You can create commits on behalf of an organization.
+  - Commits attributed to an organization include an on-behalf-of badge on GitHub.
+  - https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-on-behalf-of-an-organization
+
+- `Reported-by:` is used to credit someone who found the bug that
 the patch attempts to fix.
 
-. `Acked-by:` says that the person who is more familiar with the area
+- `Acked-by:` says that the person who is more familiar with the area
 the patch attempts to modify liked the patch.
 
-. `Reviewed-by:`, unlike the other tags, can only be offered by the
+- `Reviewed-by:`, unlike the other tags, can only be offered by the
 reviewers themselves when they are completely satisfied with the
 patch after a detailed analysis.
 
-. `Tested-by:` is used to indicate that the person applied the patch
+- `Tested-by:` is used to indicate that the person applied the patch
 and found it to have the desired effect.
 
 You can also create your own tag or use one that's in common usage
-such as "Thanks-to:", "Based-on-patch-by:", or "Mentored-by:".
+such as `Thanks-to:`, `Based-on-patch-by:`, or `Mentored-by:`.
 
 Do not forget to add trailers such as `Acked-by:`, `Reviewed-by:`
 
 and `Tested-by:` lines as necessary to credit people who helped your patch,
 
-and "cc:" them when sending such a final version for inclusion.
+and `cc:` them when sending such a final version for inclusion.
 
-A Suggested-by: tag indicates that the patch idea is suggested by the person
+A `Suggested-by:` tag indicates that the patch idea is suggested by the person
 named and ensures credit to the person for the idea. Please note that this
 tag should not be added without the reporter's permission, especially if the
 idea was not posted in a public forum. That said, if we diligently credit our
 idea reporters, they will, hopefully, be inspired to help us again in the
 future.
 
-A Fixes: tag indicates that the patch fixes an issue in a previous commit. It
+A `Fixes:` tag indicates that the patch fixes an issue in a previous commit. It
 is used to make it easy to determine where a bug originated, which can help
 review a bug fix. This tag also assists the team in determining
 which stable versions should receive your fix. This is the preferred
 method for indicating a bug fixed by the patch.
+
+---
+
+Please reference github users & teams starting with the `@` symbol.
+
+Such as `@dezren39` or `@developing-today/CODEOWNERS`, etc.
+
+Otherwise, if you reference a repo/pr/issue/sha, etc., we prefer the full url starting with `https://`.
+
+For local PRs or issues, `#<number>` is an accepted alternative, though full url is preferred.
+
+---
+## How to Contribute
+
+Thank you for your interest in contributing to the project! There
+are many ways to contribute, and we appreciate all of them. Opening issues,
+discussing design, requesting features, writing documentation, changing the
+code, writing blog posts, and creating logos/artwork for projects are all very
+valuable.
+
+If you have questions, please join our discussions.
+
+As a reminder, all participants in our community are expected to honor our code of conduct.
+
+## Feature Proposal
+
+To propose a change to the way that this or any other codebase
+works, please open an issue directly on the relevant repository. Include the
+text, `[feature-proposal]` in the title and someone will come by and re-tag
+the issue appropriately. Here's a template you can use to file a feature
+proposal, though it's not necessary to use it exactly:
+
+```
+One-paragraph summary
+
+# Details
+
+As many details as you think are necessary to communicate how the feature
+should work.
+
+# Benefits
+
+Benefits of the feature.
+
+# Drawbacks
+
+Drawbacks of the feature.
+```
+
+There is should be an example feature proposal
+if you want to see what it looks like.
+
+## Bug Reports
+
+While bugs are unfortunate, they're a reality in software.
+
+We can't fix what we don't know about, so please report liberally.
+
+If you're not sure if something is a bug or not, feel free to file a bug anyway.
+
+**If you believe reporting your bug publicly represents a security risk to
+users of software developed by the project, please contact a maintainer directly
+for instructions for reporting security vulnerabilities**.
+
+If you have the chance, before reporting a bug, please search existing issues as it's
+possible that someone else has already reported your error. This doesn't always
+work, and sometimes it's hard to know what to search for, so consider this
+extra credit. We won't mind if you accidentally file a duplicate report, we'll
+typically close it and point out which issue is a duplicate of.
+
+Opening an issue is as easy as following and filling out
+the fields after clicking "New Issue". Here's a template
+that you can use to file a bug, though it's not necessary to use it exactly:
+
+```
+<short summary of the bug>
+
+I tried this:
+
+<testcase demonstrating the bug>
+
+I expected to see this happen: <explanation>
+
+Instead, this happened: <explanation>
+```
+
+All three components are important: what you did, what you expected, what
+happened instead.
+
+## Submitting code changes
+
+To coordinate changes to our software, we use a feature of GitHub called
+"pull requests". We also call them "PRs", "contributions", or "patches".
+
+## Commit messages
+
+Commit messages should be self-contained and describe the motivation for a
+change. The subject line should be short, with any elaborations in the body.
+If the commit closes an issue, write `Closes #<issuenumber>` at the end of the
+body, or preferably, `Closes <full url>`.
+
+For some guidelines, read http://chris.beams.io/posts/git-commit/[this] for
+the basics, and https://robots.thoughtbot.com/5-useful-tips-for-a-better-commit-message[this]
+to become a pro.
+
+## Commit signing
+
+For a [variety of reasons](https://mikegerwitz.com/papers/git-horror-story),
+we prefer commit signing to verify the authenticity and authorship of changes
+to our projects. If you don't already have one, create a PGP key. There are
+many ways to do this.
+
+- https://alexcabal.com/creating-the-perfect-gpg-keypair
+  - by Alex Cabal
+  - has a decent explanation of how to do it and some of the tradeoffs
+involved.
+
+This key doesn't need to be used for other purposes, although you
+should consider using it for emails to the mailing list or maintainers!
+
+Once you have a keypair and it is uploaded to the keyservers,
+
+- https://mikegerwitz.com/papers/git-horror-story#trust-ensure
+
+Please sign all commits you intend to include in a
+pull request.
+
+## Forking the repositories.
+
+We use a custom system for managing our large amount of repositories. We have
+one main "code" repository, which
+contains scripts for fetching the other repositories as needed.
+
+To fork a repository, navigate to it on GitHub and click the "Fork"
+button, which is to the left of the repository URL.
+
+Then, you can interact with that repository using the `origin` remote.
+
+## Recognize the Developer Certificate of Origin
+
+Before we can accept code you have written into our repositories, you must
+agree to the Developer Certificate of Origin.
+
+By committing to this project, you agree to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
+
+([`DCO-1.1`](DCO-1.1) in the root directory of this source tree.)
+
+Please ensure to certify that your patch set adheres to these rules,
+
+and has been "Signed-off-by" according to the guidelines
+
+in [`COPYRIGHT.md`](COPYRIGHT.md) in the root directory of this source tree.
+
+It is quite minimalist, and is also used by the Linux kernel.
+
+One way to ensure this is to use `git commit -s` when committing your changes.
+
+Another way to ensure this for all commits,
+
+is to add yourself to the .mailmap file in this repository,
+
+with the name you'd like
+to be called by and
+
+all of the email addresses you'll use (you can add to this
+later),
+
+as well as your PGP key fingerprint in a comment.
+
+Create a new commit with those changes and send a pull request.
+
+## Submitting a pull request
+
+To submit a pull request, push the commits you want to include to a branch on
+your fork of the relevant repository. Refer to the
+documentation to see how to proceed from there.
+
+- https://docs.github.com/en/desktop/contributing-and-collaborating-using-github-desktop/working-with-your-remote-repository-on-github-or-github-enterprise/creating-an-issue-or-pull-request
+- https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request
+
+Please open pull requests against the `main` branch. If needed, we will
+merge into a separate branch manually.
+
+All pull requests are reviewed by another person.
+
+If you want to request that a specific person reviews your pull request, you
+can specify the "assignee" when you create the pull request.
+
+## Writing Documentation
+
+Documentation improvements are very welcome.
+
+Documentation pull requests function in the same way as other pull requests.
