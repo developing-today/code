@@ -42,7 +42,7 @@ A partial list of copyright acknowledgements related to this project.
     - SPDX-License-Identifier: MIT OR Apache-2.0
     - SPDX-FileCopyrightText: © 2022-2023 Austin Seipp
 
-## Boilerplate Information
+## License Header Information
 
 ### How to apply the licensing to your work:
 
@@ -52,7 +52,7 @@ Except as otherwise noted, such as differently-licensed or vendored code,
 
 **A standard header should be applied to any files added to this source tree.**
 
-To apply the License to your work, attach the following boilerplate notice.
+To apply the License to your work, attach the following boilerplate license notice.
 
 The text should be enclosed in the appropriate comment syntax for the file format.
 
@@ -73,22 +73,22 @@ of this source tree.
 SPDX-License-Identifier: MIT OR Apache-2.0
 ```
 
-A lack of boilerplate notice on a file does not imply anything about its copyrights or licensing.
+A lack of boilerplate license notice on a file does not imply anything about its copyrights or licensing.
 
-Lack of a boilerplate notice could be any of the following reasons:
+Lack of a boilerplate license notice could be any of the following reasons:
 
 - Code-specific reasons the file cannot support commenting.
-- Binary files
+- Binary files.
 - Conciseness for specific kinds of files, configurations, etc.
-- An oversight
-- An aesthetic choice
-- any other reason
+- An oversight.
+- An aesthetic choice.
+- Any other reason.
 
-All files retain all applicable copyrights and licenses, without regard for boilerplate notice.
+All files retain all applicable copyrights and licenses, without regard for boilerplate license notice.
 
-## Signed-off-by Information
+## Certify to the Developer Certificate of Origin
 
-By committing to this project, you agree to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
+By committing to this project, you certify that your work adheres to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
 
 ([`DCO-1.1`](DCO-1.1) in the root directory of this source tree.)
 
