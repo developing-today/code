@@ -86,7 +86,7 @@ Lack of a boilerplate notice could be any of the following reasons:
 
 All files retain all applicable copyrights and licenses, without regard for boilerplate notice.
 
-## Sign-off
+## Signed-off-by Information
 
 By committing to this project, you agree to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
 
@@ -124,7 +124,7 @@ if you can certify the below (from [developercertificate.org](https://developerc
 
 also located at [`DCO-1.1`](DCO-1.1) in the root directory of this source tree):
 
-### DCO - Developer Certificate of Origin, Version 1.1
+### DCO - Developer Certificate of Origin, Version 1 . 1
 
 ```
 Developer Certificate of Origin
@@ -360,6 +360,8 @@ body, or preferably, `Closes <full url>`.
 For some guidelines, read http://chris.beams.io/posts/git-commit/[this] for
 the basics, and https://robots.thoughtbot.com/5-useful-tips-for-a-better-commit-message[this]
 to become a pro.
+
+Semantic commit messages are welcome and preferred.
 
 ## Commit signing
 
