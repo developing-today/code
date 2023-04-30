@@ -2,15 +2,27 @@ Hello!
 
 ## Contributing Information
 
-By submitting patches to this project you agree to allow them to be redistributed under the project's license, according to the normal forms and usages of the open-source community.
+By submitting patches to this project you agree to allow them to be redistributed under the project's license,
+
+according to the normal forms and usages of the open-source community.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+for inclusion in the work by you,
+
+as defined in the Apache-2.0 license, shall be
 dual-licensed as below, without any additional terms or conditions.
 
 Copyrights in this project are retained by the contributors to the project.
 
 No copyright assignment is required to contribute to this project.
+
+By committing to this project, you agree to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
+
+([`DCO-1.1`](DCO-1.1) in the root directory of this source tree.)
+
+Please ensure to certify that your patch set adheres to these rules,
+
+and has been "Signed-off-by" according to the guidelines in [`COPYRIGHT.md`](COPYRIGHT.md) in the root directory of this source tree.
 
 ## Licensing Information
 
@@ -18,14 +30,16 @@ No copyright assignment is required to contribute to this project.
 
 This project is licensed under either of
 
-- [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) ([`LICENSE-APACHE`](LICENSE-APACHE))
-- [MIT license](https://opensource.org/licenses/MIT) ([`LICENSE-MIT`](LICENSE-MIT))
+- [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) ([`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0) in the root directory of this source tree)
+- [MIT license](https://opensource.org/licenses/MIT) ([`LICENSE-MIT`](LICENSE-MIT) in the root directory of this source tree)
 
 at your option.
 
 The [SPDX](https://spdx.dev) license identifier for this project is `MIT OR Apache-2.0`.
 
-Except as otherwise noted below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in [`NOTICE`](NOTICE) and/or in individual files and/or in individual directories.
+Except as otherwise noted below and/or in [`COPYRIGHT.md`](COPYRIGHT.md) and/or in [`NOTICE`](NOTICE)
+
+and/or in individual files and/or in individual directories.
 
 ## Boilerplate Information
 
@@ -38,9 +52,15 @@ Except as otherwise noted, such as differently-licensed or vendored code,
 A standard header should be applied to any files added to this source tree.
 
 To apply the License to your work, attach the following
-boilerplate notice. The text should be enclosed in the appropriate
-comment syntax for the file format. We also recommend that a
-file or class name and description of purpose be included on the
+boilerplate notice.
+
+The text should be enclosed in the appropriate
+comment syntax for the file format.
+
+We also recommend that a
+file or class name and description of purpose be included
+
+on the
 same "printed page" as the copyright notice for easier
 identification within third-party archives.
 
@@ -49,7 +69,7 @@ Copyright developing.today LLC & contributors to the project.
 
 This source code is licensed under both the MIT license found in the
 LICENSE-MIT file in the root directory of this source tree and the Apache
-License, Version 2.0 found in the LICENSE-APACHE file in the root directory
+License, Version 2.0 found in the LICENSE-APACHE-2.0 file in the root directory
 of this source tree.
 
 SPDX-License-Identifier: MIT OR Apache-2.0
@@ -67,3 +87,7 @@ Lack of a boilerplate notice could be any of the following reasons:
 - any other reason
 
 All files retain all applicable copyrights and licenses, without regard for boilerplate notice.
+
+## More Information
+
+More information is in the [COPYRIGHT.md](COPYRIGHT.md) file in the root directory of this source tree.

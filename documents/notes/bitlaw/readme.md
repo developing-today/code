@@ -1,4 +1,41 @@
-https://www.bitlaw.com/index.html
-
-
-this is a thing
+- https://www.bitlaw.com/index.html
+  - this is a thing
+- https://man.sr.ht/license.md
+  - https://choosealicense.com/
+    - Choose a License from GitHub
+  - https://www.gnu.org/licenses/
+    - Free Software Foundation recommendations
+  - https://opensource.org/
+    - The Open Source Initiative
+  - https://spdx.org/
+    - SPDX License Index
+  - https://tldrlegal.com/
+    - tl;dr Legal
+  - https://drewdevault.com/2021/03/23/Open-sourcing-video-games.html
+    - The complete guide for open sourcing video games
+- https://developercertificate.org/
+  - https://drewdevault.com/2021/04/12/DCO.html
+  - https://drewdevault.com/2021/01/19/Elasticsearch-does-not-belong-to-Elastic.html
+  - https://drewdevault.com/2018/10/05/Dont-sign-a-CLA.html
+  - https://lkml.org/lkml/2004/5/23/10
+  - https://elinux.org/Developer_Certificate_Of_Origin
+  - https://ben.balter.com/2018/01/02/why-you-probably-shouldnt-add-a-cla-to-your-open-source-project/
+  - https://www.linuxjournal.com/content/contributor-agreements-considered-harmful
+  - https://lwn.net/Articles/592503/
+  - https://julien.ponge.org/blog/developer-certificate-of-origin-versus-contributor-license-agreements/
+  - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/Documentation/process/submitting-patches.rst
+  - https://git.kernel.org/pub/scm/git/git.git/tree/Documentation/SubmittingPatches?id=HEAD
+- https://cla-assistant.io/
+  - https://contributoragreements.org/ca-cla-chooser/#
+  - https://openjsf.org/about/the-openjs-foundation-cla/
+  - https://github.com/communitybridge/easycla
+  - https://github.com/kubernetes/community/blob/master/CLA.md
+  - https://www.w3.org/community/about/process/cla/
+  - https://code.facebook.com/cla/
+  - https://gist.githubusercontent.com/dezren39/73f9c0ceebd75a2a523a8e4e3df2511d/raw/74d0857a16088b92016fdd32a3873fddd1e58eb2/contributor-license-agreement.txt
+  - https://gist.github.com/dezren39/73f9c0ceebd75a2a523a8e4e3df2511d
+- https://drewdevault.com/2021/01/20/FOSS-is-to-surrender-your-monopoly.html
+- [Developer Certificate of Origin](https://developercertificate.org/) ([`DCO`](DCO) in the root directory of this source tree)
+- [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) ([`LICENSE-APACHE`](LICENSE-APACHE) in the root directory of this source tree)
+- [MIT license](https://opensource.org/licenses/MIT) ([`LICENSE-MIT`](LICENSE-MIT) in the root directory of this source tree)
+- https://infra.apache.org/licensing-howto.html
