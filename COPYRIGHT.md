@@ -258,7 +258,7 @@ review a bug fix. This tag also assists the team in determining
 which stable versions should receive your fix. This is the preferred
 method for indicating a bug fixed by the patch.
 
----
+## How to Reference
 
 Please reference github users & teams starting with the `@` symbol.
 
@@ -268,7 +268,6 @@ Otherwise, if you reference a repo/pr/issue/sha, etc., we prefer the full url st
 
 For local PRs or issues, `#<number>` is an accepted alternative, though full url is preferred.
 
----
 ## How to Contribute
 
 Thank you for your interest in contributing to the project! There
