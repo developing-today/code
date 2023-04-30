@@ -208,25 +208,27 @@ A quick way to certify a PR you forgot to "Signed-off-by" is as follows:
   - Usually the first commit in your PR.
 - Edit any file in the PR diff from within the PR UI.
 - Commit the edit back, with a certification message:
-  - 1 
-```
-I certify from <first-sha> to this commit.
-```
-  - or 2
-```
-certify: <first-sha>..<last-sha>
-```
-(in the second, `<last-sha>` is optional, but `..` is not.
+  - Option 1
+      ```
+      I certify from <first-sha> to this commit adheres to the DCO.
+      ```
+  - Option 2
+      ```
+      dco-certify: <first-sha>..<last-sha>
+      ```
+    - in the second, `<last-sha>` is optional, but `..` is not.
+    - no spaces next to `..`.
+    - you can space separated include other commits or commit chains.
 
-no spaces next to `..`. you can space separated include other commits or commit chains.
-
-When doing this, the commit back will say 'Sign off & commit'.
+When doing this, the commit back will say 'Sign off and commit changes'.
 
 This means it will add your "Signed-off-by" for you,
 
 so only do this if you can certify that all the commits
 
 in the chain adhere to [`DCO-1.1`](DCO-1.1).
+
+Now your PR is ready.
 
 The same technique works manully from the command line,
 
