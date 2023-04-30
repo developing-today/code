@@ -404,13 +404,11 @@ One way to ensure this is to use `git commit -s` when committing your changes.
 
 Another way to ensure this for all commits,
 
-is to add yourself to the .mailmap file in this repository,
+is to add yourself to the [`.mailmap`](.mailmap) in the root directory of this source tree,
 
-with the name you'd like
-to be called by and
+with the names you'd like to be called by and
 
-all of the email addresses you'll use (you can add to this
-later),
+all of the email addresses you'll use (you can add to this later),
 
 as well as your PGP key fingerprint in a comment.
 
