@@ -88,7 +88,17 @@ All files retain all applicable copyrights and licenses, without regard for boil
 
 ## Sign-off
 
-Certify your work by adding your `Signed-off-by` trailer to your commit.
+By committing to this project, you agree to the [Developer Certificate of Origin, Version 1.1](https://developercertificate.org/)
+
+([`DCO-1.1`](DCO-1.1) in the root directory of this source tree.)
+
+Please ensure to certify that your patch set adheres to these rules,
+
+and has been "Signed-off-by" according to the guidelines in [`COPYRIGHT.md`](COPYRIGHT.md) in the root directory of this source tree.
+
+Please only "Signed-off-by" if, and only if, you can certify to the terms of the DCO.
+
+Certify your work adheres to the DCO by adding your `Signed-off-by` trailer to your commit.
 
 To improve tracking of who did what, we ask you to certify that you wrote the patch
 
@@ -158,6 +168,8 @@ this:
 ```
 Signed-off-by: Random J Developer <random@developer.example.org>
 ```
+
+Please only "Signed-off-by" if, and only if, you can certify to the terms of the DCO.
 
 This line can be added by Git if you run `git commit` with `-s` option: `git commit -s`
 
@@ -398,11 +410,13 @@ and has been "Signed-off-by" according to the guidelines
 
 in [`COPYRIGHT.md`](COPYRIGHT.md) in the root directory of this source tree.
 
+Please only "Signed-off-by" if, and only if, you can certify to the terms of the DCO.
+
 It is quite minimalist, and is also used by the Linux kernel.
 
-One way to ensure this is to use `git commit -s` when committing your changes.
+One way to "Signed-off-by" is to use `git commit -s` when committing your changes.
 
-Another way to ensure this for all commits,
+Another way to accept and recognize the [`DCO-1.1`](DCO-1.1) for all commits,
 
 is to add yourself to the [`.mailmap`](.mailmap) in the root directory of this source tree,
 
@@ -411,6 +425,8 @@ with the names you'd like to be called by and
 all of the email addresses you'll use (you can add to this later),
 
 as well as your PGP key fingerprint in a comment.
+
+Again, please only "Signed-off-by" if, and only if, you can certify to the terms of the DCO.
 
 Create a new commit with those changes and send a pull request.
 
