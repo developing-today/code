@@ -207,7 +207,7 @@ If you like, you can put extra tags at the end:
   - Co-authored commits will include co-authors badges on GitHub.
   - https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-with-multiple-authors
 
-- `on-behalf-of` You can create commits on behalf of an organization.
+- `on-behalf-of:` You can create commits on behalf of an organization.
   - Commits attributed to an organization include an on-behalf-of badge on GitHub.
   - https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-on-behalf-of-an-organization
 
