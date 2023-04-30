@@ -63,7 +63,7 @@ We also recommend that a file or class name and description of purpose be includ
 on the same "printed page" as the copyright notice for easier identification within third-party archives.
 
 ```
-Copyright (c) developing.today LLC & contributors to the project.
+Copyright developing.today LLC & contributors to the project.
 
 This source code is licensed under both the MIT license found in the
 LICENSE-MIT file in the root directory of this source tree and the Apache
