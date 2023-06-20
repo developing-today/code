@@ -10,20 +10,34 @@
       system = "x86_64-linux";
       modules = [
         ./configuration.nix
-
-        # add things here
         gohello.nixosModule
         ({ pkgs, ... }: {
           xeserv.services.gohello.enable = true;
         })
       ];
     };
+    nixosConfigurations.DESKTOP-TOWER = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        gohello.nixosModule
+        ({ pkgs, ... }: {
+          xeserv.services.gohello.enable = true;
+        })
+        home-manager.nixosModules.home-manager
+        {
+            home-manager.useGlobalPkgs = true;
+            home-manager.useUserPackages = true;
+            home-manager.users.nixos = import ./home.nix;
+
+            # Optionally, use home-manager.extraSpecialArgs to pass
+        }
+      ];
+    };
     nixosConfigurations.DESKTOP-P1BL9NE = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
         ./configuration.nix
-
-        # add things here
         gohello.nixosModule
         ({ pkgs, ... }: {
           xeserv.services.gohello.enable = true;
