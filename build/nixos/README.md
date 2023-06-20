@@ -1,3 +1,7 @@
+```
+sudo mount -o remount,rw /tmp/.X11-unix
+sudo nixos-rebuild switch
+```
 https://github.com/nix-community/NixOS-WSL/releases/tag/22.05-5c211b47
 
 https://github.com/nix-community/NixOS-WSL/releases/download/22.05-5c211b47/nixos-wsl-installer.tar.gz
