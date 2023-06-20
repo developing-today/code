@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-22.05";
     # XXX(Xe): this URL may change for you, such as github:Xe/gohello-http
     gohello.url = "git+https://tulpa.dev/cadey/gohello-http?ref=main";
   };
