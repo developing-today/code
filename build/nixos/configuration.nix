@@ -28,6 +28,9 @@ in
   services.nginx.virtualHosts."localhost" = {
       root = "/var/www/localhost";
   };
+  programs.git = {
+    enable = true;
+  };
   nix.package = pkgs.nixFlakes;
   nix.extraOptions = ''
     experimental-features = nix-command flakes
