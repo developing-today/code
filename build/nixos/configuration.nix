@@ -25,8 +25,6 @@ in
 
   };
   services.nginx.enable = true;
-  systemd.services.nginx.serviceConfig.ProtectHome = lib.mkForce false;
-  systemd.services.nginx.serviceConfig.ProtectSystem = lib.mkForce false;
   services.nginx.virtualHosts."localhost" = {
       root = "/var/www/localhost";
   };
