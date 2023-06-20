@@ -146,3 +146,10 @@ PS C:\Users\drewr>
 [root@nixos:/mnt/c/wsl]# curl gohello.localhost
 hello world :)
 ```
+
+```
+Invoke-WebRequest (wsl -- ip -o -4 -json addr list eth0 `
+ | ConvertFrom-Json `
+ | %{ $_.addr_info.local } `
+ | ?{ $_ })
+```
