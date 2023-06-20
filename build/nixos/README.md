@@ -138,3 +138,11 @@ RelationLink      : {}
 
 PS C:\Users\drewr>
 ```
+
+```
+[root@nixos:/mnt/c/wsl]# curl localhost
+<h1>hello</h1>
+
+[root@nixos:/mnt/c/wsl]# curl gohello.localhost
+hello world :)
+```
