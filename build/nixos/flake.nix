@@ -18,5 +18,17 @@
         })
       ];
     };
+    nixosConfigurations.DESKTOP-P1BL9NE = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+
+        # add things here
+        gohello.nixosModule
+        ({ pkgs, ... }: {
+          xeserv.services.gohello.enable = true;
+        })
+      ];
+    };
   };
 }
