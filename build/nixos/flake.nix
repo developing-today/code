@@ -2,6 +2,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-22.05";
     # XXX(Xe): this URL may change for you, such as github:Xe/gohello-http
+    # nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+
+    # home-manager.url = "github:nix-community/home-manager";
+    # home-manager.inputs.nixpkgs.follows = "nixpkgs";
+
     gohello.url = "git+https://tulpa.dev/cadey/gohello-http?ref=main";
   };
 
