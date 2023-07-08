@@ -19,7 +19,6 @@
     nixgl.inputs.flake-utils.follows = "std/flake-utils";
     disko.url = "github:blaggacao/disko/module";
     disko.inputs.nixpkgs.follows = "nixpkgs";
-    nixos-hardware.url = "github:nixos/nixos-hardware";
   };
 
   # nixpkgs & home-manager
@@ -29,6 +28,8 @@
 
     nixos-22-05.url = "github:nixos/nixpkgs/release-22.05";
     home-22-05.url = "github:blaggacao/home-manager/release-22.05"; # some temp fixes
+    nixos-21-11.url = "github:nixos/nixpkgs/release-21.11";
+    home-21-11.url = "github:blaggacao/home-manager/release-21.11-with-nix-profile";
   };
 
   outputs = {
@@ -75,7 +76,6 @@
       };
     }
     # soil
-    {packages.x86_64-linux = {inherit (inputs.disko.packages.x86_64-linux) disko;};}
     {
       # tool: colmena -- "fill the jar on the soil with the honey!"
       colmenaHive = let

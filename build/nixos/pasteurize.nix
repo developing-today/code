@@ -40,14 +40,6 @@
     };
   };
 
-  noLegacyNixosModule = {
-    environment.etc."nixos/configuration.nix".text = ''
-      throw '''
-        This machine is not managed by nixos-rebuild, but by colmena.
-      '''
-    '';
-  };
-
   combCheckModule = let
     erase = optionName: {options, ...}: let
       opt = l.getAttrFromPath optionName options;
@@ -132,13 +124,7 @@
             (l.attrByPath [cellBlock] {})
             (l.mapAttrs (machine:
               checkAndTransformConfigFor user machine (
-                asserted: {
-                  imports = [noLegacyNixosModule];
-                  nixpkgs = {
-                    inherit (asserted.bee) system pkgs;
-                    inherit (asserted.bee.pkgs) config; # nixos modules don't load this
-                  };
-                }
+                asserted: {nixpkgs = {inherit (asserted.bee) system pkgs;};}
               )))
             (l.filterAttrs (_: config: config.nixpkgs.system == system))
             (l.mapAttrs (machine: l.nameValuePair "${user}-o-${machine}"))

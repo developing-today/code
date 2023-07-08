@@ -7,7 +7,6 @@
   iw,
   networkmanager,
   Security,
-  makeWrapper,
 }:
 rustPlatform.buildRustPackage rec {
   pname = "ifwifi";
@@ -23,17 +22,17 @@ rustPlatform.buildRustPackage rec {
   cargoSha256 = "sha256-ys4tXP46pTXj9LSVISBRX+9xj7ijJddS86YzHHzK+jQ=";
 
   nativeBuildInputs = [makeWrapper];
-  buildInputs = lib.optional stdenv.isDarwin Security;
+  buildInputs = lib.optionals stdenv.isDarwin Security;
 
-  postInstall = ''
+  postBuild = ''
     wrapProgram "$out/bin/ifwifi" \
       --prefix PATH : "${
-      lib.makeBinPath ([
-          # `ifwifi` runtime dep
-          networkmanager
-        ]
-        # `wifiscanner` crate's runtime deps
-        ++ (lib.optional stdenv.isLinux iw))
+      lib.makeBinPath [
+        # `ifwifi` runtime dep
+        networkmanager
+      ]
+      # `wifiscanner` crate's runtime deps
+      ++ (lib.optional stdenv.isLinux iw)
       # ++ (lib.optional stdenv.isDarwin airport) # airport isn't packaged
     }"
   '';
