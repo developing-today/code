@@ -10,10 +10,10 @@ color-eyre = "0.6.2"
 
 tracing = "0.1.37"
 tracing-error = "0.2.0"
-tracing-subscriber = { version = "0.3.16", features = [ "env-filter", "fmt", "ansi", "registry", "json", "local-time" ] }
+tracing-subscriber = { version = "0.3.17", features = [ "env-filter", "fmt", "ansi", "registry", "json", "local-time" ] }
 
 clap = { version = "4.0.29", features = [ "derive" ] }
-dialoguer = "0.10.2"
+dialoguer = "0.10.4"
 indicatif = "0.17.5"
 console = "0.15.7"
 
