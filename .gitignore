@@ -16,3 +16,4 @@ targets
 **/targets
 .direnv
 **/.direnv
+**/dist
