@@ -8,6 +8,7 @@ fn main() {
 fn App(cx: Scope) -> impl IntoView {
     let default = 0;
     let (count, set_count) = create_signal(cx, default);
+    let double_count = move || count() * 2;
 
     view! { cx,
         <button
@@ -22,5 +23,15 @@ fn App(cx: Scope) -> impl IntoView {
             "Click me: "
             {count}
         </button>
+        <br />
+        <progress
+            max="128"
+            value=double_count
+        />
+        <br />
+        <p>
+            "Double Count: "
+            {double_count}
+        </p>
     }
 }
