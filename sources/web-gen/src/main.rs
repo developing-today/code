@@ -11,15 +11,11 @@ fn App(cx: Scope) -> impl IntoView {
     view! { cx,
         <button
             on:click=move |_| {
-                if (count() == 0) {
-                    set_count(42);
-                } else {
-                    set_count(count() + 1);
-                }
+                set_count.update(|n| *n += if *n == 0 { 42 } else { 1 });
             }
         >
             "Click me: "
-            {move || count.get()}
+            {count}
         </button>
     }
 }

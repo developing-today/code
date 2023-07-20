@@ -9,7 +9,7 @@
             "command": "nix-shell --command  \"cargo build\"",
             "problemMatcher": [],
             "group": {
-                "kind": "build",
+                "kind": "test",
                 "isDefault": true
             }
         },
