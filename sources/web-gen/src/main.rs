@@ -12,6 +12,7 @@ use leptos::ev::Event;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use leptos::ev::SubmitEvent;
+use js_sys::try_iter;
 
 // wasm/leptos doesn't run these things right.. need multiple builds?
 // need to get back to buck2 build setups i think, but cargo might support
@@ -153,15 +154,29 @@ pub fn RandomMultiplierForm(cx: Scope) -> impl IntoView {
 
     let submit = move |event: SubmitEvent| {
         event.prevent_default();
-        if let Some(input_element) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
-            if let Ok(num) = i32::from_str(&input_element.value()) {
-                let result_val = generate_random_number_and_multiply(num);
-                set_result(format!("Result: {}", result_val));
-            } else {
-                set_result("Invalid input value".to_string());
+
+        if let Some(form) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok()) {
+            let elements = form.elements();
+            let length = elements.length();
+
+            for index in 0..length {
+                if let Some(element) = elements.item(index) {
+                    if let Some(input) = element.dyn_into::<web_sys::HtmlInputElement>().ok() {
+                        if input.name() == "number" {
+                            if let Ok(num) = i32::from_str(&input.value()) {
+                                let result_val = generate_random_number_and_multiply(num);
+                                set_result(format!("Result: {}", result_val));
+                                break;
+                            } else {
+                                set_result("Invalid input".to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         } else {
-            set_result("Invalid input event".to_string());
+            set_result("Invalid event".to_string());
         }
     };
 

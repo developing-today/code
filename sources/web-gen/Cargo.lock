@@ -4366,6 +4366,7 @@ dependencies = [
  "color-eyre",
  "futures",
  "irust",
+ "js-sys",
  "leptos",
  "leptos_router",
  "rand",
