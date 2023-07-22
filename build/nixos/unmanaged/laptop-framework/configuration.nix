@@ -133,4 +133,13 @@
   system.stateVersion = "23.05"; # Did you read the comment?
   
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  config.services.postgresql = {
+    enable = true;
+    ensureDatabases = [ "database" ];
+    authentication = pkgs.lib.mkOverride 10 ''
+      #type database  DBuser  auth-method
+      local all       all     trust
+    '';
+  };
 }
