@@ -4372,6 +4372,8 @@ dependencies = [
  "serde",
  "sqlx",
  "tracing",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

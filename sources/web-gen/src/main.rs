@@ -1,3 +1,5 @@
+
+use leptos::prelude::*;
 use leptos::*;
 use leptos_router::*;
 use rand::Rng;
@@ -6,6 +8,11 @@ use futures::executor::block_on;
 use futures::future::ready;
 use color_eyre::eyre::Result;
 use tracing::info;
+use leptos::ev::Event;
+use wasm_bindgen::JsCast;
+use web_sys::HtmlInputElement;
+use leptos::ev::SubmitEvent;
+
 // wasm/leptos doesn't run these things right.. need multiple builds?
 // need to get back to buck2 build setups i think, but cargo might support
 // build and serve wasm from one and build and serve apiserver from another?
@@ -84,6 +91,10 @@ fn TestApp(cx: Scope) -> impl IntoView {
                 })
                 .collect_view(cx)}
         </ul>
+        // <br />
+        // <DetailedFormExample/>
+        <br />
+        <RandomMultiplierForm/>
     }
 }
 
@@ -113,37 +124,86 @@ fn generate_random_number_and_multiply(input: i32) -> i32 {
     generate_random_number() * input
 }
 
-fn generate_random_number_and_multiply_str(input: String) -> Result<String, std::num::ParseIntError> {
-    let input_number = i32::from_str(&input)?;
-    let result = generate_random_number_and_multiply(input_number);
-    Ok(result.to_string())
+fn parse_input(input: &str) -> Result<i32, std::num::ParseIntError> {
+    i32::from_str(input)
+}
+
+fn generate_random_number_and_multiply_result(input: Result<i32, std::num::ParseIntError>) -> Result<String, std::num::ParseIntError> {
+    match input {
+        Ok(num) => {
+            let result = generate_random_number() * num;
+            Ok(result.to_string())
+        },
+        Err(e) => Err(e),
+    }
 }
 
 fn generate_random_number_and_multiply_str_future(input: String) -> impl std::future::Future<Output = Result<String, String>> {
-    let input_number = match i32::from_str(&input) {
-        Ok(num) => num,
-        Err(e) => return ready(Err(e.to_string())),
-    };
-    let result = generate_random_number_and_multiply(input_number);
-    ready(Ok(result.to_string()))
+    let input_number = parse_input(&input);
+    let result = generate_random_number_and_multiply_result(input_number);
+    ready(match result {
+        Ok(num) => Ok(num),
+        Err(e) => Err(e.to_string()),
+    })
 }
 
 #[component]
-pub fn FormExample(cx: Scope) -> impl IntoView {
-    let query = use_query_map(cx);
-    let search = move || query().get("q").cloned().unwrap_or_default();
-    let search_results = create_resource(cx, search, generate_random_number_and_multiply_str_future);
+pub fn RandomMultiplierForm(cx: Scope) -> impl IntoView {
+    let (result, set_result) = create_signal(cx, "".to_string());
+
+    let submit = move |event: SubmitEvent| {
+        event.prevent_default();
+        if let Some(input_element) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Ok(num) = i32::from_str(&input_element.value()) {
+                let result_val = generate_random_number_and_multiply(num);
+                set_result(format!("Result: {}", result_val));
+            } else {
+                set_result("Invalid input value".to_string());
+            }
+        } else {
+            set_result("Invalid input event".to_string());
+        }
+    };
 
     view! { cx,
-        <Form method="GET" action="">
-            <input type="search" name="search" value=search
-                oninput="this.form.requestSubmit()" />
-        </Form>
-        // <Transition fallback=move || ()>
-        //     /* render search results */
-        // </Transition>
+        <form on:submit=submit>
+            Number: <input type="number" name="number"/>
+            <br />
+            <input type="submit"/>
+        </form>
+        <br />
+        <div>{result}</div>
     }
 }
+
+// #[component]
+// pub fn FormExample(cx: Scope) -> impl IntoView {
+//     let (input_value, set_input_value) = create_signal(cx, String::new());
+//     let (result, set_result) = create_signal(cx, String::new());
+
+//     create_effect(cx, move |_| {
+//         let value = input_value().clone();
+//         let new_result = generate_random_number_and_multiply_result(parse_input(&value));
+//         set_result(match new_result {
+//             Ok(num) => num,
+//             Err(e) => e.to_string(),
+//         });
+//     });
+
+//     view! { cx,
+//         <Form method="GET" action="">
+//             <input type="search" name="search" value=input_value()
+//                 oninput=move |event: Event| {
+//                     if let Some(target) = event.target() {
+//                         if let Ok(input) = target.dyn_into::<HtmlInputElement>() {
+//                             set_input_value(input.value());
+//                         }
+//                     }
+//                 } />
+//             <div> { "Result: ".to_owned() + &result() } </div>
+//         </Form>
+//     }
+// }
 
 #[component]
 pub fn DetailedFormExample(cx: Scope) -> impl IntoView {
