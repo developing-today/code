@@ -17,3 +17,4 @@ targets
 .direnv
 **/.direnv
 **/dist
+**/.tmp

@@ -1,0 +1,9 @@
+2023-07-22 03:50:09.225 CDT [166881] LOG:  starting PostgreSQL 14.8 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 12.2.0, 64-bit
+2023-07-22 03:50:09.226 CDT [166881] LOG:  listening on IPv6 address "::1", port 5432
+2023-07-22 03:50:09.226 CDT [166881] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2023-07-22 03:50:09.246 CDT [166881] LOG:  listening on Unix socket "/home/user/code/src/web-gen-api/.s.PGSQL.5432"
+2023-07-22 03:50:09.269 CDT [166889] LOG:  database system was shut down at 2023-07-22 03:50:08 CDT
+2023-07-22 03:50:09.278 CDT [166881] LOG:  database system is ready to accept connections
+2023-07-22 03:50:52.569 CDT [167032] FATAL:  lock file "postmaster.pid" already exists
+2023-07-22 03:50:52.569 CDT [167032] HINT:  Is another postmaster (PID 166881) running in data directory "/home/user/code/sources/web-gen-api/.tmp/db"?
+2023-07-22 03:57:51.301 CDT [169578] FATAL:  database "user" does not exist
