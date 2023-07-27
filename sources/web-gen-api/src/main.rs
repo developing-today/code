@@ -1,6 +1,14 @@
 #[cfg(feature = "ssr")]
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // use libsql::Database;
+
+    // let db = Database::open(":memory:");
+    // let conn = db.connect().unwrap();
+
+    // conn.execute("CREATE TABLE IF NOT EXISTS users (email TEXT)", ()) .unwrap();
+    // conn.execute("INSERT INTO users (email) VALUES ('alice@example.org')", ()).unwrap();
+
     use actix_files::Files;
     use actix_web::*;
     use leptos::*;

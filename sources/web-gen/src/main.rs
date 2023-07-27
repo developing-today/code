@@ -35,7 +35,8 @@ fn TestApp(cx: Scope) -> impl IntoView {
     let (count, set_count) = create_signal(cx, default);
     let double_count = move || count() * 2;
 
-    let values = vec![0, 1, 2];
+    let values = vec![1, 2, 4, 8, 16, 32, 49, 51];
+    let coins = vec![1, 5, 7, 12, 20, 50];
     let length = 3;
     let counters = (1..=length).map(|idx| create_signal(cx, idx));
 
@@ -66,14 +67,32 @@ fn TestApp(cx: Scope) -> impl IntoView {
         <p>{values.clone()}</p>
         <br />
         <ul>
-            {values.clone().into_iter()
+            values: {values.clone().into_iter()
                 .map(|n| view! { cx, <li>{n}</li>})
                 .collect::<Vec<_>>()}
         </ul>
         <br />
         <ul>
-            {values.clone().into_iter()
+            values*random: {values.clone().into_iter()
+                .map(|n| view! { cx, <li>{generate_random_number_and_multiply(n)}</li>})
+                .collect_view(cx)}
+        </ul>
+        <br />
+        <ul>
+            coins: {coins.clone().into_iter()
                 .map(|n| view! { cx, <li>{n}</li>})
+                .collect::<Vec<_>>()}
+        </ul>
+        <br />
+        <ul>
+            coins*random: {coins.clone().into_iter()
+                .map(|n| view! { cx, <li>{generate_random_number_and_multiply(n)}</li>})
+                .collect_view(cx)}
+        </ul>
+        <br />
+        <ul>
+            coins_values_to_100: {coins.clone().into_iter()
+                .map(|n| view! { cx, <li>{generate_divisible_n_up_to_m(n, 100)}</li>})
                 .collect_view(cx)}
         </ul>
         <br />
@@ -119,6 +138,19 @@ fn ProgressBar(
 fn generate_random_number() -> i32 {
     let mut rng = rand::thread_rng();
     rng.gen_range(0..101)
+}
+
+// returns array of tuple [(divisor, number_of_times_divisible)]
+fn generate_divisible_i_from_n_up_to_m(i: i32, n: i32, m: i32) -> Vec<(i32, i32)> {
+    let mut result = Vec::new();
+    let mut subject = n;
+    while subject < m {
+        let times_divisible = subject / i;
+
+        result.push((subject, number_of_times_divisible));
+        subject += 1;
+    }
+    result
 }
 
 fn generate_random_number_and_multiply(input: i32) -> i32 {
