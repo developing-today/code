@@ -147,21 +147,21 @@
   vscode-insider = prev.vscode.override {
     isInsiders = true;
   };
-  nixpkgs.overlays =
-    [ (self: super:
-      {
-        ## override with newer version from nixpkgs-unstable
-        #qemu = unstable.qemu;
-#
-        ## custom package that depends on hello from nixpkgs-unstable
-        #foo = super.callPackage ./pkgs/foo { inherit (unstable) hello; };
-          vscode = vscode-insider.overrideAttrs (oldAttrs: rec {
-          src = (builtins.fetchTarball {
-            url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
-            sha256 = "03nmmcr8canxnhxpsd2d5rfqi6d7njab4c3bpcqmfi9xbk3scx1a";
-          });
-          version = "latest";
-        });
-      })
-    ];
+  #nixpkgs.overlays =
+    #[ (self: super:
+      #{
+        ### override with newer version from nixpkgs-unstable
+        ##qemu = unstable.qemu;
+##
+        ### custom package that depends on hello from nixpkgs-unstable
+        ##foo = super.callPackage ./pkgs/foo { inherit (unstable) hello; };
+          #vscode = vscode-insider.overrideAttrs (oldAttrs: rec {
+          #src = (builtins.fetchTarball {
+            #url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
+            #sha256 = "03nmmcr8canxnhxpsd2d5rfqi6d7njab4c3bpcqmfi9xbk3scx1a";
+          #});
+          #version = "latest";
+        #});
+      #})
+    #];
 }
