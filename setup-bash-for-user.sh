@@ -2,6 +2,7 @@
 
 printf "%s\n" "start: script"
 SAVED_SHELL_OPTIONS=$(set +o)
+# shellcheck disable=SC2317
 restore_shell_options() {
   echo "trap start: restoring shell options"
   eval "$SAVED_SHELL_OPTIONS"
@@ -95,6 +96,7 @@ EOF
   expected_bashrc_file=$(mktemp)
 
   # Define cleanup function
+  # shellcheck disable=SC2317
   cleanup() {
     printf "%s\n" "trap start: cleanup temp files"
     rm -f "$check_script_file" "$push_script_file" "$expected_bash_profile_file" "$expected_bashrc_file"
