@@ -6,6 +6,8 @@ let
       sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
     });
     version = "latest";
+
+    buildInputs = oldAttrs.buildInputs ++ [ pkgs.krb5 ];
   });
 in
 {
