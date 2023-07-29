@@ -11,7 +11,12 @@ let
     };
 
     nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-    buildInputs = with pkgs; [ stdenv.cc.cc.lib makeWrapper ];
+    buildInputs = with pkgs; [
+      stdenv.cc.cc.lib
+      makeWrapper
+      glib
+      krb5
+    ];
 
     unpackPhase = ''
       tar -xzf $src -C .
@@ -22,7 +27,7 @@ let
       cp -r ./* $out/
       ln -s $out/VSCode-linux-x64/code-insiders $out/bin/code-insiders
       wrapProgram $out/bin/code-insiders \
-        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64"
+        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64:${pkgs.glib}/lib:${pkgs.krb5}/lib"
     '';
 
     meta = with pkgs.lib; {
