@@ -79,6 +79,7 @@ in
     git
     vscode
     vscode-insiders
+    openssl
   ];
 
   programs.neovim = {
