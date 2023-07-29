@@ -1,15 +1,15 @@
 { config, pkgs, ... }:
-let
-  vscode-insiders = (pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
-    src = (builtins.fetchTarball {
-      url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
-      sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
-    });
-    version = "latest";
+# let
+#   vscode-insiders = (pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
+#     src = (builtins.fetchTarball {
+#       url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
+#       sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
+#     });
+#     version = "latest";
 
-    buildInputs = oldAttrs.buildInputs ++ [ pkgs.krb5 ];
-  });
-in
+#     buildInputs = oldAttrs.buildInputs ++ [ pkgs.krb5 ];
+#   });
+# in
 {
 
   imports =
@@ -78,7 +78,7 @@ in
   environment.systemPackages = with pkgs; [
     git
     vscode
-    vscode-insiders
+    # vscode-insiders
   ];
 
   programs.neovim = {
