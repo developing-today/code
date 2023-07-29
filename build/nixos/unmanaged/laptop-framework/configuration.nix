@@ -20,6 +20,11 @@ let
       xorg.libX11
       xorg.libxkbfile
       libsecret
+      xorg.libXfixes
+      xorg.libXrandr
+      mesa
+      libxkbcommon
+      alsaLib
     ];
 
     unpackPhase = ''
@@ -31,7 +36,7 @@ let
       cp -r ./* $out/
       ln -s $out/VSCode-linux-x64/code-insiders $out/bin/code-insiders
       wrapProgram $out/bin/code-insiders \
-        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64:${pkgs.glib}/lib:${pkgs.krb5}/lib:${pkgs.at-spi2-atk}/lib:${pkgs.xorg.libX11}/lib:${pkgs.xorg.libxkbfile}/lib:${pkgs.libsecret}/lib"
+        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64:${pkgs.glib}/lib:${pkgs.krb5}/lib:${pkgs.at-spi2-atk}/lib:${pkgs.xorg.libX11}/lib:${pkgs.xorg.libxkbfile}/lib:${pkgs.libsecret}/lib:${pkgs.xorg.libXfixes}/lib:${pkgs.xorg.libXrandr}/lib:${pkgs.mesa}/lib:${pkgs.libxkbcommon}/lib:${pkgs.alsaLib}/lib"
     '';
 
     meta = with pkgs.lib; {
