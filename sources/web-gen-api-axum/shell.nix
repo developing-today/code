@@ -1,5 +1,4 @@
-{ pkgs ? import (fetchTarball "https://releases.nixos.org/nixpkgs/nixpkgs-23.11pre508652.66ce081fafa") {} }:
-# { pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> {} }:
 
 pkgs.mkShell rec {
 
