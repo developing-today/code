@@ -5,6 +5,11 @@
 { config, pkgs, options, ... }:
 
 {
+  nix.nixPath =
+    options.nix.nixPath.default ++
+    [ "nixpkgs-overlays=/etc/nixos/overlays-compat/" ]
+  ;
+
   imports =
     [ # Include the results of the hardware scan.
       ./hardware-configuration.nix
@@ -133,9 +138,4 @@
   system.stateVersion = "23.05"; # Did you read the comment?
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
-
-  nix.nixPath =
-    options.nix.nixPath.default ++
-    [ "nixpkgs-overlays=/etc/nixos/overlays-compat/" ]
-  ;
 }
