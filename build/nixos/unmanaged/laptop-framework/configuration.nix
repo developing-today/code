@@ -4,6 +4,9 @@
 
 { config, pkgs, options, ... }:
 
+let
+  unstable = import <nixpkgs-unstable> {};
+in
 {
   nix.nixPath =
     options.nix.nixPath.default ++
@@ -138,4 +141,16 @@
   system.stateVersion = "23.05"; # Did you read the comment?
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  virtualisation.libvirtd.enable = true;
+  nixpkgs.overlays =
+    [ (self: super:
+      {
+        # override with newer version from nixpkgs-unstable
+        qemu = unstable.qemu;
+
+        # custom package that depends on hello from nixpkgs-unstable
+        foo = super.callPackage ./pkgs/foo { inherit (unstable) hello; };
+      })
+    ];
 }
