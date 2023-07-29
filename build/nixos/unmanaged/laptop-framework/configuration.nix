@@ -3,7 +3,7 @@ let
   vscode-insiders = (pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
     src = (builtins.fetchTarball {
       url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
-      sha256 = "1dajhfsdr55mfnj12clf5apy1d4swr71d3rfwlq2hvvmpxvxsa59";
+      sha256 = "d7a7f3c6ab3aaa5e29d9aa6af5ac3b975d21e1a835afb8f095fbe49e4e6b776ce692c730867eb3";
     });
     version = "latest";
   });
