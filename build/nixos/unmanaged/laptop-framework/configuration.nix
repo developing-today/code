@@ -19,7 +19,7 @@ let
       at-spi2-atk
       xorg.libX11
       xorg.libxkbfile
-      gnome3.libsecret
+      libsecret
     ];
 
     unpackPhase = ''
