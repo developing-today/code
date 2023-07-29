@@ -7,10 +7,11 @@ let
 
     src = pkgs.fetchurl {
       url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
-      sha256 = "9dd143e87499eac31382cdd5feeecde1d06debfe791a9b070e8a357ced0a81f5"; # You may need to update this
+      sha256 = "9dd143e87499eac31382cdd5feeecde1d06debfe791a9b070e8a357ced0a81f5";
     };
 
-    buildInputs = [ pkgs.makeWrapper ];
+    nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+    buildInputs = with pkgs; [ stdenv.cc.cc.lib makeWrapper ];
 
     unpackPhase = ''
       tar -xzf $src -C .
@@ -20,6 +21,8 @@ let
       mkdir -p $out/bin
       cp -r ./* $out/
       ln -s $out/VSCode-linux-x64/code-insiders $out/bin/code-insiders
+      wrapProgram $out/bin/code-insiders \
+        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64"
     '';
 
     meta = with pkgs.lib; {
