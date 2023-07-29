@@ -3,7 +3,32 @@
 # and in the NixOS manual (accessible by running ‘nixos-help’).
 
 { config, pkgs, options, ... }:
+let
+  vscode-insiders = pkgs.stdenv.mkDerivation rec {
+    pname = "vscode-insiders";
+    version = "latest";
 
+    src = pkgs.fetchurl {
+      url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
+      sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z"; # You will need to update this
+    };
+
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+
+    installPhase = ''
+      mkdir -p $out/bin
+      cp -r $src $out/vscode-insiders
+      ln -s $out/vscode-insiders/code-insiders $out/bin/code-insiders
+    '';
+
+    meta = with pkgs.lib; {
+      description = "Visual Studio Code - Insiders";
+      homepage = "https://code.visualstudio.com/insiders/";
+      license = licenses.mit;
+      platforms = platforms.linux;
+    };
+  };
+in
 {
   #  nixpkgs.overlays = [ (final: prev:
   #  let
@@ -116,7 +141,7 @@
   #  wget
 	git
 	vscode
-	#vscode-insider
+	vscode-insiders
   ];
 
   programs.neovim = {
