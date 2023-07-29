@@ -19,7 +19,7 @@ let
     installPhase = ''
       mkdir -p $out/bin
       cp -r ./* $out/
-      ln -s $out/bin/code-insiders $out/bin/code-insiders
+      ln -s $out/VSCode-linux-x64/code-insiders $out/bin/code-insiders
     '';
 
     meta = with pkgs.lib; {
