@@ -99,13 +99,6 @@
   #  wget
 	git
 	vscode
-	(pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
-	  src = (builtins.fetchTarball {
-	    url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
-	    sha256 = "1dajhfsdr55mfnj12clf5apy1d4swr71d3rfwlq2hvvmpxvxsa59";
-	  });
-	  version = "latest";
-	});
   ];
 
   programs.neovim = {
@@ -140,4 +133,12 @@
   system.stateVersion = "23.05"; # Did you read the comment?
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  nixpkgs.overlays = [ (final: prev: (pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
+  src = (builtins.fetchTarball {
+    url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
+    sha256 = "1dajhfsdr55mfnj12clf5apy1d4swr71d3rfwlq2hvvmpxvxsa59";
+  });
+  version = "latest";
+});)];
 }
