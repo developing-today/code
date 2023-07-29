@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import (fetchTarball "https://nixos.org/channels/nixpkgs-unstable") {} }:
 
 pkgs.mkShell rec {
 

@@ -1,4 +1,5 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import (fetchTarball "https://nixos.org/channels/nixpkgs-unstable") {} }:
+# { pkgs ? import <nixpkgs> {} }:
   pkgs.mkShell rec {
     buildInputs = with pkgs; [
       clang
@@ -18,11 +19,11 @@
       # add libraries here (e.g. pkgs.libvmi)
     ]);
     # Add glibc, clang, glib and other headers to bindgen search path
-    BINDGEN_EXTRA_CLANG_ARGS = 
+    BINDGEN_EXTRA_CLANG_ARGS =
     # Includes with normal include path
     (builtins.map (a: ''-I"${a}/include"'') [
       # add dev libraries here (e.g. pkgs.libvmi.dev)
-      pkgs.glibc.dev 
+      pkgs.glibc.dev
     ])
     # Includes with special directory paths
     ++ [
@@ -32,4 +33,3 @@
     ];
 
   }
-  
