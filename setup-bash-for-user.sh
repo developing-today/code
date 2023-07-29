@@ -207,6 +207,7 @@ if [ "$EUID" -ne 0 ]; then
   if $is_needs_root; then
     printf "%s\n" "rerunning script using: sudo"
     sudo "$0" "$@" # Rerun script with the same arguments using sudo
+    printf "%s\n" "sudo exit code: $?"
     exit $?        # Exit with the status code of the sudo command
   else
     printf "%s\n" "continuing script without: sudo"
@@ -282,11 +283,11 @@ fi
 
 if [ $exit_code -ne 0 ]; then
   printf "%s\n" "is error: processing users failed"
-  printf "%s\n" "exit: $exit_code"
+  printf "%s\n" "exit code: $exit_code"
   exit $exit_code
 else
   printf "%s\n" "done: processing users"
-  printf "%s\n" "exit: $exit_code"
+  printf "%s\n" "exit code: $exit_code"
 fi
 
 printf "%s\n" "done: script"
