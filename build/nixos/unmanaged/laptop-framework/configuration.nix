@@ -78,7 +78,7 @@ in
   environment.systemPackages = with pkgs; [
     git
     vscode
-    # vscode-insiders
+    vscode-insiders
   ];
 
   programs.neovim = {
