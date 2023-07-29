@@ -7,27 +7,16 @@ use serde::{Deserialize, Serialize};
 
 cfg_if! {
     if #[cfg(feature = "ssr")] {
-        // use sqlx::{Connection, SqliteConnection};
-        // use http::{header::SET_COOKIE, HeaderMap, HeaderValue, StatusCode};
+        use libsql::Database;
 
-        pub async fn db() -> Result<SqliteConnection, ServerFnError> {
-            // conn = sqlite3.connect('file::memory:?cache=shared', uri=True)
-            // rc = sqlite3_open("file:memd?mode=memory&cache=shared", &db);
+        pub async fn db() -> Result<(), ServerFnError> {
             // .headers on
-            // .mode columnSELECT name FROM PRAGMA_TABLE_INFO('your_table');
-            let db = Database::open("file:memd?mode=memory&cache=shared");
-
-            SqliteConnection::connect("sqlite:Todos.db").await.map_err(|e| ServerFnError::ServerError(e.to_string()))
+            // .mode column
+            let db = Database::open("file:?mode=memory&cache=shared");
+            Ok(())
         }
 
-        pub fn register_server_functions() {
-            _ = GetTodos::register();
-            _ = AddTodo::register();
-            _ = DeleteTodo::register();
-            _ = FormDataHandler::register();
-        }
-
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
+        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
         pub struct Todo {
             id: u16,
             title: String,
@@ -83,7 +72,7 @@ fn HomePage(cx: Scope) -> impl IntoView {
     let (count, set_count) = create_signal(cx, 0);
     let on_click = move |_| {
         spawn_local(async {
-            let _ = add_todo().await;
+            let _ = get_todo().await;
         });
         set_count.update(|count| *count += 1);
     };
@@ -94,8 +83,8 @@ fn HomePage(cx: Scope) -> impl IntoView {
     }
 }
 
-#[server(AddTodo, "/api")]
-pub async fn add_todo() -> Result<(), ServerFnError> {
+#[server(GetTodos, "/api")]
+pub async fn get_todo() -> Result<(), ServerFnError> {
     let conn = db();
 
     Ok(())

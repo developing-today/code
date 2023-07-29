@@ -4,15 +4,18 @@ pkgs.mkShell rec {
 
   buildInputs = with pkgs; [
     clang
-    llvmPackages.bintools
-    rustup
-    postgresql
-    libiconv
-    openssl
-    pkgconfig
-    sqlite
     cmake
+    gcc
+    libiconv
+    llvmPackages.bintools
     openjdk19
+    openssl
+    pkg-config
+    pkgconfig
+    postgresql
+    rustup
+    sqlite
+    zlib
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
@@ -20,9 +23,11 @@ pkgs.mkShell rec {
   LIBCLANG_PATH = pkgs.lib.makeLibraryPath [ pkgs.llvmPackages_latest.libclang.lib ];
 
   shellHook = ''
-      export PATH=$PATH:''${CARGO_HOME:-~/.cargo}/bin
-      export PATH=$PATH:''${RUSTUP_HOME:-~/.rustup}/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
-    '';
+    openssl_lib_path=/nix/store/xal21vd4d9nfwjkcvw0fyq6ivsbxg1pz-openssl-3.0.9/lib
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$openssl_lib_path
+    export PATH=$PATH:''${CARGO_HOME:-~/.cargo}/bin
+    export PATH=$PATH:''${RUSTUP_HOME:-~/.rustup}/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
+  '';
 
   RUSTFLAGS = (builtins.map (a: ''-L ${a}/lib'') []);
 
