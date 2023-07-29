@@ -144,6 +144,9 @@
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   virtualisation.libvirtd.enable = true;
+  vscode-insider = prev.vscode.override {
+    isInsiders = true;
+  };
   nixpkgs.overlays =
     [ (self: super:
       {
