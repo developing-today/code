@@ -5,22 +5,22 @@
 { config, pkgs, options, ... }:
 
 {
-   nixpkgs.overlays = [ (final: prev:
-   let
-      vscode-insider = prev.vscode.override {
-        isInsiders = true;
-      };
-    in
-    {
-      vscode = vscode-insider ; #.overrideAttrs (oldAttrs: rec {
-        #src = (builtins.fetchTarball {
-          #url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
-          #sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
-        #});
-        #version = "latest";
-      #});
-    }
-   ) ];
+  #  nixpkgs.overlays = [ (final: prev:
+  #  let
+  #     vscode-insider = prev.vscode.override {
+  #       isInsiders = true;
+  #     };
+  #   in
+  #   {
+  #     vscode = vscode-insider ; #.overrideAttrs (oldAttrs: rec {
+  #       #src = (builtins.fetchTarball {
+  #         #url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
+  #         #sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
+  #       #});
+  #       #version = "latest";
+  #     #});
+  #   }
+  #  ) ];
 
   imports =
     [ # Include the results of the hardware scan.
