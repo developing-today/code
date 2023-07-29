@@ -1,4 +1,4 @@
-{ config, pkgs, options, ... }:
+{ config, pkgs, ... }:
 
 let
   vscode-insiders = pkgs.stdenv.mkDerivation rec {
@@ -16,6 +16,10 @@ let
       makeWrapper
       glib
       krb5
+      at-spi2-atk
+      xorg.libX11
+      xorg.libxkbfile
+      gnome3.libsecret
     ];
 
     unpackPhase = ''
@@ -27,7 +31,7 @@ let
       cp -r ./* $out/
       ln -s $out/VSCode-linux-x64/code-insiders $out/bin/code-insiders
       wrapProgram $out/bin/code-insiders \
-        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64:${pkgs.glib}/lib:${pkgs.krb5}/lib"
+        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64:${pkgs.glib}/lib:${pkgs.krb5}/lib:${pkgs.at-spi2-atk}/lib:${pkgs.xorg.libX11}/lib:${pkgs.xorg.libxkbfile}/lib:${pkgs.gnome3.libsecret}/lib"
     '';
 
     meta = with pkgs.lib; {
