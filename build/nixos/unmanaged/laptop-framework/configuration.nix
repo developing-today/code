@@ -5,7 +5,7 @@
     let
       vscode-insiders-src = self.fetchurl {
         url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
-        sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
+        sha256 = "9dd143e87499eac31382cdd5feeecde1d06debfe791a9b070e8a357ced0a81f5";
       };
 
       vscode-insiders = super.vscode.overrideAttrs (oldAttrs: {
