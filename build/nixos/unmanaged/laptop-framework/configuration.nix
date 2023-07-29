@@ -1,58 +1,12 @@
 { config, pkgs, ... }:
-
 let
-  vscode-insiders = pkgs.stdenv.mkDerivation rec {
-    pname = "vscode-insiders";
+  vscode-insiders = (pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
+    src = (builtins.fetchTarball {
+      url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
+      sha256 = "1dajhfsdr55mfnj12clf5apy1d4swr71d3rfwlq2hvvmpxvxsa59";
+    });
     version = "latest";
-
-    src = pkgs.fetchurl {
-      url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
-      sha256 = "9dd143e87499eac31382cdd5feeecde1d06debfe791a9b070e8a357ced0a81f5";
-    };
-
-    nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-    buildInputs = with pkgs; [
-      stdenv.cc.cc.lib
-      makeWrapper
-      glib
-      krb5
-      at-spi2-atk
-      xorg.libX11
-      xorg.libxkbfile
-      libsecret
-      xorg.libXfixes
-      xorg.libXrandr
-      mesa
-      libxkbcommon
-      alsaLib
-      nss
-      nspr
-      gtk3
-      pango
-      cairo
-      xorg.libXcomposite
-    ];
-
-    unpackPhase = ''
-      tar -xzf $src -C .
-    '';
-
-    installPhase = ''
-      mkdir -p $out/bin
-      cp -r ./* $out/
-      ln -s $out/VSCode-linux-x64/code-insiders $out/bin/code-insiders
-      wrapProgram $out/bin/code-insiders \
-        --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib64:${pkgs.glib}/lib:${pkgs.krb5}/lib:${pkgs.at-spi2-atk}/lib:${pkgs.xorg.libX11}/lib:${pkgs.xorg.libxkbfile}/lib:${pkgs.libsecret}/lib:${pkgs.xorg.libXfixes}/lib:${pkgs.xorg.libXrandr}/lib:${pkgs.mesa}/lib:${pkgs.libxkbcommon}/lib:${pkgs.alsaLib}/lib:${pkgs.nss}/lib:${pkgs.nspr}/lib:${pkgs.gtk3}/lib:${pkgs.pango}/lib:${pkgs.cairo}/lib:${pkgs.xorg.libXcomposite}/lib" \
-        --add-flags "--disable-gpu --no-sandbox --no-zygote"
-    '';
-
-    meta = with pkgs.lib; {
-      description = "Visual Studio Code - Insiders";
-      homepage = "https://code.visualstudio.com/insiders/";
-      license = licenses.mit;
-      platforms = platforms.linux;
-    };
-  };
+  });
 in
 {
 
