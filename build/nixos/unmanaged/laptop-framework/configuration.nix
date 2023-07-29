@@ -1,19 +1,20 @@
 { config, pkgs, options, ... }:
 
 {
-  nixpkgs.overlays = [ (final: prev:
+  nixpkgs.overlays = [ (self: super:
     let
-      vscode-insider = prev.vscode.override {
-        isInsiders = true;
-        src = builtins.fetchTarball {
-          url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
-          sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
-        };
-        # version = "latest";
+      vscode-insiders-src = self.fetchurl {
+        url = "https://update.code.visualstudio.com/latest/linux-x64/insider";
+        sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
       };
+
+      vscode-insiders = super.vscode.overrideAttrs (oldAttrs: {
+        name = "vscode-insiders";
+        src = vscode-insiders-src;
+      });
     in
     {
-      vscode = vscode-insider;
+      vscode-insiders = vscode-insiders;
     }
   ) ];
 
