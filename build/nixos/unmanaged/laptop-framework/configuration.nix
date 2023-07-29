@@ -12,9 +12,13 @@ let
 
     buildInputs = [ pkgs.makeWrapper ];
 
+    unpackPhase = ''
+      tar -xzf $src -C .
+    '';
+
     installPhase = ''
       mkdir -p $out/bin
-      cp -r $src/* $out/
+      cp -r ./* $out/
       ln -s $out/bin/code-insiders $out/bin/code-insiders
     '';
 
