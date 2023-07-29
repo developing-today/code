@@ -100,13 +100,13 @@
 	git
 	vscode
   ];
-  (pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
+  pkgs.vscode.override { isInsiders = true; }).overrideAttrs (oldAttrs: rec {
 			src = (builtins.fetchTarball {
 			url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
 			sha256 = "1dajhfsdr55mfnj12clf5apy1d4swr71d3rfwlq2hvvmpxvxsa59";
 		});
 		version = "latest";
-	});
+	};
 
   programs.neovim = {
     enable = true;
