@@ -107,7 +107,7 @@
   #  wget
 	git
 	vscode
-	vscode-insider
+	#vscode-insider
   ];
 
   programs.neovim = {
