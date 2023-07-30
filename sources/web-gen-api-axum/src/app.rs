@@ -163,20 +163,26 @@ fn HomePage(cx: Scope) -> impl IntoView {
     let count = create_memo(cx, move |_| visitor_rows_resource.read(cx).unwrap_or(0));
 
     let add_visitor_action = create_server_action::<AddVisitorData>(cx);
+    let (user_count, set_user_count) = create_signal(cx, 0);
 
     // Trigger a refetch of visitor_rows_resource whenever add_visitor_action has a new value
     create_effect(cx, move |_: Option<()>| {
         if add_visitor_action.value().get().is_some() {
             visitor_rows_resource.refetch();
+            set_user_count.update(|count| *count += 1); // Increment user count
         }
         () // Return unit type
     });
 
     let submission_message = create_memo(cx, move |_| {
-        if count.get() > 0 {
-            format!("Server has received {} submissions total!", count.get())
+        if user_count.get() > 0 {
+            format!(
+                "You have submitted to the server {} time{}!",
+                user_count.get(),
+                if user_count.get() == 1 { "" } else { "s" }
+            )
         } else {
-            "You have not submitted yet!".to_string()
+            "You have not submitted yet.".to_string()
         }
     });
 
@@ -189,7 +195,7 @@ fn HomePage(cx: Scope) -> impl IntoView {
 
         <ActionForm action=add_visitor_action>
             <label>
-                "What do you need to do?"
+                "What data to submit?"
                 <input type="text" name="data"/>
             </label>
             <input type="submit" value="Submit"/>
