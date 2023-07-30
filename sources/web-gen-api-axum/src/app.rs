@@ -133,18 +133,16 @@ cfg_if! {
 }
 
 #[server(AddVisitorData, "/api")]
-pub async fn add_visitor(data: Option<String>) -> Result<u32, ServerFnError> {
+pub async fn add_visitor(data: Option<String>) -> Result<(), ServerFnError> {
     log!("Hello, AddVisitorData!");
     insert_visitor_data(data.as_deref());
-    let rows_count = get_rows_count("visitors");
-    Ok((rows_count - 1) as u32) // -1 for the initial "_start" visitor
+    Ok(())
 }
 
 #[server(GetVisitorRows, "/api")]
 pub async fn get_visitor_rows(_unused: Option<String>) -> Result<u32, ServerFnError> {
     log!("Fetching visitor count!");
-    let rows_count = get_rows_count("visitors");
-    Ok((rows_count - 1) as u32) // -1 for the initial "_start" visitor
+    Ok((get_rows_count("visitors") - 1) as u32) // -1 for the initial "_start" visitor
 }
 
 #[component]
@@ -161,7 +159,6 @@ fn HomePage(cx: Scope) -> impl IntoView {
 
     // Using derived signal for the count
     let count = create_memo(cx, move |_| visitor_rows_resource.read(cx).unwrap_or(0));
-
     let add_visitor_action = create_server_action::<AddVisitorData>(cx);
     let (user_count, set_user_count) = create_signal(cx, 0);
 
@@ -185,9 +182,12 @@ fn HomePage(cx: Scope) -> impl IntoView {
             "You have not submitted yet.".to_string()
         }
     });
-
     let submission_count_message = create_memo(cx, move |_| {
-        format!("Current submission count: {}", count.get())
+        if count.get() == 0 {
+            "Current submission count: none".to_string()
+        } else {
+            format!("Current submission count: {}", count.get())
+        }
     });
 
     view! { cx,
