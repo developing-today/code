@@ -83,8 +83,6 @@ cfg_if! {
             let count_rows = conn.execute(&format!("SELECT COUNT(*) FROM {};", table), ()).unwrap().unwrap();
             let count_row = count_rows.next().unwrap().unwrap();
             let rows_count: i32 = count_row.get::<i32>(0).unwrap();
-            // log!("Inserted {} rows", rows_count);
-            // table: rows:
             log!("table: {}, row_count: {}", table, rows_count);
             rows_count
         }
@@ -139,22 +137,51 @@ pub async fn add_visitor(data: Option<String>) -> Result<u32, ServerFnError> {
     log!("Hello, AddVisitorData!");
     insert_visitor_data(data.as_deref());
     let rows_count = get_rows_count("visitors");
-    Ok(rows_count as u32)
+    Ok((rows_count - 1) as u32) // -1 for the initial "_start" visitor
+}
+
+#[server(GetVisitorRows, "/api")]
+pub async fn get_visitor_rows(_unused: Option<String>) -> Result<u32, ServerFnError> {
+    log!("Fetching visitor count!");
+    let rows_count = get_rows_count("visitors");
+    Ok((rows_count - 1) as u32) // -1 for the initial "_start" visitor
 }
 
 #[component]
 fn HomePage(cx: Scope) -> impl IntoView {
-    let add_visitor_action = create_server_action::<AddVisitorData>(cx);
-    let value_signal = add_visitor_action.value();
+    // Creating a resource to fetch the visitor count from the server
+    let visitor_rows_resource = create_resource(
+        cx,
+        || (),
+        |_| async move { get_visitor_rows(None).await.unwrap_or(0) },
+    );
+
+    // Triggering an initial call to fetch the count
+    visitor_rows_resource.refetch();
 
     // Using derived signal for the count
-    let count = create_memo(cx, move |_| value_signal().unwrap_or(Ok(0)).unwrap_or(0));
+    let count = create_memo(cx, move |_| visitor_rows_resource.read(cx).unwrap_or(0));
+
+    let add_visitor_action = create_server_action::<AddVisitorData>(cx);
+
+    // Trigger a refetch of visitor_rows_resource whenever add_visitor_action has a new value
+    create_effect(cx, move |_: Option<()>| {
+        if add_visitor_action.value().get().is_some() {
+            visitor_rows_resource.refetch();
+        }
+        () // Return unit type
+    });
+
     let submission_message = create_memo(cx, move |_| {
         if count.get() > 0 {
             format!("Server has received {} submissions total!", count.get())
         } else {
             "You have not submitted yet!".to_string()
         }
+    });
+
+    let submission_count_message = create_memo(cx, move |_| {
+        format!("Current submission count: {}", count.get())
     });
 
     view! { cx,
@@ -169,7 +196,7 @@ fn HomePage(cx: Scope) -> impl IntoView {
         </ActionForm>
 
         <p>{submission_message}</p>
-        <p>"Current submission count: " {count}</p>
+        <p>{submission_count_message}</p>
     }
 }
 
@@ -206,6 +233,7 @@ pub fn App(cx: Scope) -> impl IntoView {
     }
 }
 
+#[component]
 pub fn SimpleCounter(cx: Scope) -> impl IntoView {
     let (value, set_value) = create_signal(cx, 0);
 
