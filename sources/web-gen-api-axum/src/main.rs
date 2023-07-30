@@ -1,8 +1,7 @@
-use leptos::*;
-
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
+    println!("Hello!");
     use axum::{routing::post, Router};
     use leptos::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
@@ -20,6 +19,8 @@ async fn main() {
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;
     let routes = generate_route_list(|cx| view! { cx, <App/> }).await;
+
+    initialize_static_db().await;
 
     // build our application with a route
     let app = Router::new()
