@@ -55,9 +55,8 @@ cfg_if! {
         fn create_visitors_table_with_conn(conn: &Connection) {
             conn.execute(
                 "CREATE TABLE visitors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 datetime DEFAULT CURRENT_TIMESTAMP,
-                data TEXT);
+                data TEXT) RANDOM ROWID;
                 ", ()).unwrap();
         }
 
@@ -92,7 +91,7 @@ cfg_if! {
         }
 
         fn log_all_visitors_with_conn(conn: &Connection) {
-            let select_rows = conn.execute("SELECT * FROM visitors;", ()).unwrap().unwrap();
+            let select_rows = conn.execute("SELECT rowid, * FROM visitors;", ()).unwrap().unwrap();
             while let Some(row) = select_rows.next().unwrap() {
                 log!("id: {}, datetime: {}, data: {}", row.get::<i32>(0).unwrap(), row.get::<&str>(1).unwrap(), row.get::<&str>(2).unwrap());
             }
@@ -142,7 +141,8 @@ pub async fn add_visitor(data: Option<String>) -> Result<(), ServerFnError> {
 #[server(GetVisitorRows, "/api")]
 pub async fn get_visitor_rows(_unused: Option<String>) -> Result<u32, ServerFnError> {
     log!("Fetching visitor count!");
-    Ok((get_rows_count("visitors") - 1) as u32) // -1 for the initial "_start" visitor
+    log_all_visitors();
+    Ok(get_rows_count("visitors") as u32) // -1 for the initial "_start" visitor
 }
 
 #[component]
@@ -174,7 +174,7 @@ fn HomePage(cx: Scope) -> impl IntoView {
     let submission_message = create_memo(cx, move |_| {
         if user_count.get() > 0 {
             format!(
-                "You have submitted to the server {} time{}!",
+                "You have submitted {} time{}!",
                 user_count.get(),
                 if user_count.get() == 1 { "" } else { "s" }
             )
@@ -183,10 +183,10 @@ fn HomePage(cx: Scope) -> impl IntoView {
         }
     });
     let submission_count_message = create_memo(cx, move |_| {
-        if count.get() == 0 {
-            "Current submission count: none".to_string()
+        if count.get() < 2 {
+            "".to_string()
         } else {
-            format!("Current submission count: {}", count.get())
+            format!("Total submissions: {}", count.get())
         }
     });
 
