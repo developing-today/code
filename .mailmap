@@ -49,6 +49,9 @@
 # fingerprints. We will reject any commits where the name and email does not
 # match something in the mailmap with the corresponding key-id.
 #
+#
+# Potential future:
+# https://github.com/NixOS/nixpkgs/blob/master/maintainers/maintainer-list.nix
 # ---------------------------------------------------------------------
 
 # dezren39
