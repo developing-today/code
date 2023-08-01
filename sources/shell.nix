@@ -13,6 +13,8 @@ pkgs.mkShell rec {
     sqlite
     cmake
     openjdk19
+    nodejs
+    tailwindcss
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
@@ -35,4 +37,6 @@ pkgs.mkShell rec {
       ''-I"${pkgs.glib.dev}/include/glib-2.0"''
       ''-I${pkgs.glib.out}/lib/glib-2.0/include/''
     ];
+
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
 }

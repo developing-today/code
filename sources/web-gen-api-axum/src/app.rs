@@ -1,6 +1,7 @@
+use crate::dark_mode::DarkModeToggle;
 use crate::error_template::{AppError, ErrorTemplate};
 use cfg_if::cfg_if;
-use leptos::{html::Input, *};
+use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
 
@@ -192,14 +193,14 @@ fn HomePage(cx: Scope) -> impl IntoView {
 
     view! { cx,
         <h1>"Welcome to Leptos!"</h1>
-
+        <DarkModeToggle/>
         <ActionForm action=add_visitor_action>
             <label>
-                "What data to submit?"
+                "What data to submit?"<br /><br />
                 <input type="text" name="data"/>
             </label>
             <input type="submit" value="Submit"/>
-        </ActionForm>
+        </ActionForm><br />
 
         <p>{submission_message}</p>
         <p>{submission_count_message}</p>
