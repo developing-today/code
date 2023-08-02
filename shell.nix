@@ -1,10 +1,5 @@
 { pkgs ? import <nixpkgs> {} }:
 
-let
-  tailwindcss = pkgs.tailwindcss.override {
-    version = "3.2.*";
-  };
-in
 pkgs.mkShell rec {
   buildInputs = with pkgs; [
     clang
