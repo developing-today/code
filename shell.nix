@@ -13,7 +13,7 @@ pkgs.mkShell rec {
     cmake
     openjdk19
     nodejs
-    tailwindcss # This will use the overridden version
+    tailwindcss # todo should lock to match tailwindcss-to-rust
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
