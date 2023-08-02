@@ -48,13 +48,13 @@ EOF
 
 # ------------------------------------------------------------------------------
 
-PARSED_ARGUMENTS=$(getopt -an update.sh -o hfbca --long help,flake,buck2,cache,all -- "$@")
+PARSED_ARGUMENTS=$(getopt -an update.sh -o hfbca --long help,flake,buck2,cache,all -- "${@}")
 VALID_ARGUMENTS=$?
 [ "$VALID_ARGUMENTS" != "0" ] && usage
 
 eval set -- "$PARSED_ARGUMENTS"
 while : ; do
-  case "$1" in
+  case "${1}" in
     -h | --help)       usage ;;
     # XXX (aseipp): always update toolchains when updating the flake, since not
     # doing so is basically an error
@@ -64,7 +64,7 @@ while : ; do
     -a | --all)        FLAKE=1; BUCK2=1; CACHE=1; shift ;;
 
     --) shift; break ;;
-    *) echo "Unexpected option: $1 - this should not happen." && usage ;;
+    *) echo "Unexpected option: ${1} - this should not happen." && usage ;;
   esac
 done
 

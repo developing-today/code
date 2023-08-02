@@ -50,8 +50,8 @@ bashrc_global_content=$(printf "%s\n" "${bashrc_global_content_lines[@]}")
 
 # shellcheck disable=SC2317
 process_user() {
-  username="$1"
-  is_force="$2"
+  username="${1}"
+  is_force="${2}"
 
   if ! id -u "$username" >/dev/null 2>&1; then
     printf "%s\n" "is error: id does not exist for user: '$username'"
@@ -235,7 +235,7 @@ if [ "$EUID" -ne 0 ]; then
   # Check if any of the arguments is a user other than the current user
   is_needs_root=false
 
-  for arg in "$@"; do
+  for arg in "${@}"; do
 
     if [ "$arg" != "$USER" ] && [ "${arg:0:1}" != "-" ]; then
       is_needs_root=true
@@ -249,7 +249,7 @@ if [ "$EUID" -ne 0 ]; then
   if $is_needs_root; then
     printf "%s\n" "rerunning script using: sudo"
 
-    sudo "$0" "$@" # Rerun script with the same arguments using sudo
+    sudo "${0}" "${@}" # Rerun script with the same arguments using sudo
 
     printf "%s\n" "sudo exit code: $?"
 
@@ -266,10 +266,10 @@ is_captured_args=false
 is_force=false
 args=()
 
-if [ "$#" -gt 0 ]; then
-  printf "%s %s\n" "info: raw arguments:" "$*"
+if [ "${#}" -gt 0 ]; then
+  printf "%s %s\n" "info: raw arguments:" "${*}"
 
-  for arg in "$@"; do
+  for arg in "${@}"; do
 
     if [ "${arg:0:1}" == "-" ]; then
       is_captured_args=true
@@ -316,14 +316,14 @@ else
 fi
 # shellcheck disable=SC2317
 iter_4at1() {
-  cmd="$1"
-  arg_1="$2"
-  arg_2="$3" # customized: skipped for size in printf
-  arg_3="$4" # customized: skipped for size in printf
+  cmd="${1}"
+  arg_1="${2}"
+  arg_2="${3}" # customized: skipped for size in printf
+  arg_3="${4}" # customized: skipped for size in printf
 
   shift 4
 
-  args=("$@")
+  args=("${@}")
   exit_code=0
 
   printf "iter_4at1 start:: cmd: %s, arg_1: %s, arg_2: %s, arg_3: %s, args: %s\n" "$cmd" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "${args[*]}"

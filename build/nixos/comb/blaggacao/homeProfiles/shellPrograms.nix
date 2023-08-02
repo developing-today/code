@@ -112,10 +112,10 @@
     initExtra = ''
       function j() {
 
-          if [ $# -eq 0 ]; then
+          if [ ${#} -eq 0 ]; then
             _j_dir="$(fd --type d '\.git$' --hidden $HOME/src/ -d5 --prune | xargs dirname | fzf)"
           else
-            _j_dir=$(command h --resolve $HOME/src/ "$@")
+            _j_dir=$(command h --resolve $HOME/src/ "${@}")
           fi
 
           _j_ret=$?
