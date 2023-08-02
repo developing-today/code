@@ -123,14 +123,14 @@
             # the 'bxl' cell location can be changed in .buckconfig without
             # changing the script
             bxl = pkgs.writeShellScriptBin "bxl" ''
-              exec ${jobs.packages.buck2}/bin/buck bxl "bxl//top.bxl:$1" -- "''${@:2}"
+              exec ${jobs.packages.buck2}/bin/buck bxl "bxl//top.bxl:${1}" -- "''${@:2}"
             '';
 
             # add a convenient alias for Super Smartlog. We can't put this in
             # direnv so easily because it evaluates .envrc in a subshell.
             # Slightly worse overhead, but oh well...
             sl-ssl = pkgs.writeShellScriptBin "ssl" ''
-              exec ${pkgs.sapling}/bin/sl ssl "$@"
+              exec ${pkgs.sapling}/bin/sl ssl "${@}"
             '';
 
             # a convenient script for starting a vm, that can then run buildbarn
@@ -142,7 +142,7 @@
               fi
 
               VM_BIN=${packages.buildbarn-vm}
-              exec $VM_BIN/bin/run-nixos-vm "$@"
+              exec $VM_BIN/bin/run-nixos-vm "${@}"
             '';
           });
 

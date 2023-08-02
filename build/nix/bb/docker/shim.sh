@@ -21,10 +21,10 @@ cleanup() {
 
 # If no arguments have been given, automatically unmount worker FUSE mount.
 # This avoids annoying problems when trying to cleanup after a simple test run of Buildbarn.
-if [ $# -eq 0 ]; then
+if [ ${#} -eq 0 ]; then
     echo "Registering automatic unmount for $fuse_dir_to_unmount"
     trap cleanup EXIT
 else
     echo "When finished, manually unmount $fuse_dir_to_unmount"
 fi
-docker compose up "$@"
+docker compose up "${@}"

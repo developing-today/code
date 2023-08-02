@@ -83,7 +83,7 @@ stdenv.mkDerivation rec {
     #!${stdenv.shell}
     export LOCALE_ARCHIVE=${glibcLocales}/lib/locale/locale-archive
     export PATH="$out/libexec/renode:\$PATH"
-    exec renode "\$@"
+    exec renode "\${@}"
     EOF
 
     cat > $out/bin/renode-test <<EOF
@@ -91,7 +91,7 @@ stdenv.mkDerivation rec {
     export LOCALE_ARCHIVE=${glibcLocales}/lib/locale/locale-archive
     export PYTHONPATH="${pythonLibs}:\$PYTHONPATH"
     export PATH="$out/libexec/renode:\$PATH"
-    exec renode-test "\$@"
+    exec renode-test "\${@}"
     EOF
 
     chmod +x $out/bin/renode $out/bin/renode-test

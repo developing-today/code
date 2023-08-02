@@ -55,7 +55,7 @@ def __nix_build(ctx: "context", build_name: str.type, expr, binary: [str.type, N
             cmd_args(nixpkgs, format="  -I buckpkgs=file://$PWD/{} \\"),
         ] + overlay_args + [
             cmd_args(build_nix, format="  -f {} \\"),
-            "  --out-link \"$1\"",
+            "  --out-link \"${1}\"",
             "", # XXX: newline for readability in terminal
         ]),
         is_executable = True,
