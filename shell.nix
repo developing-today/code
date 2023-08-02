@@ -1,7 +1,11 @@
 { pkgs ? import <nixpkgs> {} }:
 
+let
+  tailwindcss = pkgs.tailwindcss.override {
+    version = "3.2.*";
+  };
+in
 pkgs.mkShell rec {
-
   buildInputs = with pkgs; [
     clang
     llvmPackages.bintools
@@ -14,7 +18,7 @@ pkgs.mkShell rec {
     cmake
     openjdk19
     nodejs
-    tailwindcss
+    tailwindcss # This will use the overridden version
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
