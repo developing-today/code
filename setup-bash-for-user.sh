@@ -28,6 +28,8 @@ mapfile -t bash_profile_global_content_lines << EOF
 # System-wide content for .bash_profile can be added below here:
 alias c='nix-shell --command \"code-insiders .\"'
 alias cn='code-insiders .'
+alias n='nix-shell'
+alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
 
 # ============================================================== END OF SYSTEM-WIDE GENERATED CODE ==============================================================
 EOF

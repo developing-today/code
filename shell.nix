@@ -1,5 +1,9 @@
 { pkgs ? import <nixpkgs> {} }:
 
+let
+  tailwindcss = import ./tailwindcss.nix { pkgs = pkgs; };
+in
+
 pkgs.mkShell rec {
   buildInputs = with pkgs; [
     clang
@@ -13,7 +17,8 @@ pkgs.mkShell rec {
     cmake
     openjdk19
     nodejs
-    tailwindcss # todo should lock to match tailwindcss-to-rust
+    tailwindcss
+    python3
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
