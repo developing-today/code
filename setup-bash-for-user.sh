@@ -7,10 +7,10 @@ SAVED_SHELL_OPTIONS=$(set +o)
 # shellcheck disable=SC2317
 restore_shell_options() {
   printf "%s\n" "trap start: restoring shell options"
-  # printf "%s\n" "SAVED_SHELL_OPTIONS: $SAVED_SHELL_OPTIONS"
+  # printf "%s\n" "SAVED_SHELL_OPTIONS: ${SAVED_SHELL_OPTIONS}"
   # printf "%s\n" "CURRENT_SHELL_OPTIONS: $(set +o)"
 
-  eval "$SAVED_SHELL_OPTIONS"
+  eval "${SAVED_SHELL_OPTIONS}"
 
   printf "%s\n" "trap done: restoring shell options"
 }
@@ -28,6 +28,7 @@ mapfile -t bash_profile_global_content_lines << EOF
 # System-wide content for .bash_profile can be added below here:
 alias c='nix-shell --command \"code-insiders .\"'
 alias cn='code-insiders .'
+alias l='nix-shell --command \"cargo leptos watch\"'
 alias n='nix-shell'
 alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
 

@@ -12,29 +12,148 @@ cfg_if! {
         use libsql::{Connection, Database};
 
         fn conn() -> Connection {
-            connect(None)
+            connect(None, None)
         }
 
-        fn connect(conn_str: Option<&str>) -> Connection {
-            database(conn_str).connect().unwrap()
+        fn connect(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> Connection {
+            let db = open_db(database_config, connection_config);
+            db.database.connect().unwrap()
         }
 
         fn db() -> Database {
-            database(None)
+            database(None, None)
         }
 
-        fn database(conn_str: Option<&str>) -> Database {
-            open_db(conn_str.unwrap_or("🙂:memory"))
+        fn database(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> Database {
+            open_db(database_config, connection_config).database
         }
 
-        fn open_db(name: &str) -> Database {
-            match Database::open(
-                match name {
-                    "🙂:memory" => "file:file?mode=memory&cache=shared",
-                    _ => name,
+        enum Mode {
+            Memory(MemoryMode),
+            File,
+        }
+
+        struct MemoryMode {
+            shared: bool,
+        }
+
+        impl MemoryMode {
+            fn new() -> Self {
+                Self { shared: true } // Default to shared memory, always per-process only
+            }
+        }
+
+        struct DatabaseConfig {
+            path: Option<String>,
+            mode: Mode,
+        }
+
+        impl DatabaseConfig {
+            fn new(path: Option<String>, mode: Option<Mode>) -> Self {
+                Self {
+                    path,
+                    mode: mode.unwrap_or(Mode::Memory(MemoryMode::new())),
                 }
-            ) {
-                Ok(db) => db,
+            }
+        }
+
+        enum JournalType {
+            Wal,
+            Wal2,
+        }
+
+        enum SyncMode {
+            Off,
+            Normal,
+            Full,
+            Extra,
+        }
+
+        struct JournalMode {
+            journal_type: JournalType,
+            journal_size_limit: usize,
+            checkpoint_size_limit: usize,
+            sync: SyncMode,
+        }
+
+        struct ConnectionConfig {
+            options: ConnectionOptions,
+            pragma: ConnectionPragma,
+        }
+
+        struct ConnectionOptions {
+            random_rowid: bool,
+        }
+
+        struct ConnectionPragma {
+            busy_timeout: usize,
+            journal_mode: Option<JournalMode>,
+            prepragma: Vec<String>,
+            postpragma: Vec<String>,
+            preexec: Vec<String>,
+            postexec: Vec<String>,
+        }
+
+        impl ConnectionConfig {
+            fn new(options: ConnectionOptions, pragma: ConnectionPragma) -> Self {
+                Self { options, pragma }
+            }
+        }
+
+        struct MyDatabase {
+            database: Database,
+            config: MyDatabaseConfig,
+        }
+
+        struct MyDatabaseConfig {
+            database: DatabaseConfig,
+            connection: Option<ConnectionConfig>,
+        }
+
+        fn build_conn_string(database_config: &DatabaseConfig) -> String {
+            if let Some(path) = &database_config.path {
+                if path.contains("://") {
+                    return path.clone();
+                }
+            }
+
+            match &database_config.mode {
+                Mode::Memory(memory_mode) => {
+                    if let Some(path) = &database_config.path {
+                        if memory_mode.shared {
+                            format!("file:{}?mode=memory&cache=shared", path)
+                        } else {
+                            format!("file:{}?mode=memory", path)
+                        }
+                    } else if memory_mode.shared {
+                        "file::memory:?cache=shared".to_string()
+                    } else {
+                        ":memory:".to_string()
+                    }
+                }
+                Mode::File => {
+                    if let Some(path) = &database_config.path {
+                        format!("file:{}", path)
+                    } else {
+                        panic!("File mode requires a path");
+                    }
+                }
+            }
+        }
+
+        fn open_db(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> MyDatabase {
+            let db_config = database_config.unwrap_or_else(|| DatabaseConfig::new(None, None));
+
+            match Database::open(&build_conn_string(&db_config)) {
+                Ok(db) => {
+                    MyDatabase {
+                        database: db,
+                        config: MyDatabaseConfig {
+                            database: db_config,
+                            connection: connection_config,
+                        },
+                    }
+                }
                 Err(e) => {
                     println!("Failed to connect to DB: {}", e);
                     panic!("Failed to connect to DB: {}", e);
@@ -44,6 +163,7 @@ cfg_if! {
 
         fn connect_to_db(db: &Database) -> Connection {
             println!("Connecting to DB");
+
             db.connect().unwrap()
         }
 
@@ -115,10 +235,6 @@ cfg_if! {
         pub async fn initialize_static_db() {
             log!("Initializing DB");
 
-            // Accessing CONNECTION will trigger its initialization
-            // In-memory DBs are initialized on first access
-            // are shared between threads and persist
-            // until the last open connection is closed
             let conn = CONNECTION.lock().unwrap();
 
             log_hello_world_with_conn(&*conn);
@@ -129,6 +245,7 @@ cfg_if! {
 
             log!("Initialized DB");
         }
+
     }
 }
 

@@ -19,6 +19,7 @@ pkgs.mkShell rec {
     nodejs
     tailwindcss
     python3
+    pip3
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
