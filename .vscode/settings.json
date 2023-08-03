@@ -19,5 +19,11 @@
         "**/Thumbs.db": true
     },
     "starlark.lspPath": "buck2",
-    "starlark.lspArguments": ["--isolation-dir=lsp", "lsp"],
+    "starlark.lspArguments": [
+        "--isolation-dir=lsp",
+        "lsp"
+    ],
+    "rust-analyzer.linkedProjects": [
+        "./src/web-gen-api-axum/Cargo.toml"
+    ],
 }
