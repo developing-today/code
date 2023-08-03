@@ -6,14 +6,12 @@ let
       sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
     });
     version = "latest";
-
     buildInputs = oldAttrs.buildInputs ++ [ pkgs.krb5 ];
   });
 in
 {
-
   imports =
-    [ # Include the results of the hardware scan.
+    [
       ./hardware-configuration.nix
       ./cachix.nix
     ];
@@ -42,7 +40,6 @@ in
   services.xserver.enable = true;
   services.xserver.displayManager.sddm.enable = true;
   services.xserver.desktopManager.plasma5.enable = true;
-
   services.xserver = {
     layout = "us";
     xkbVariant = "";
@@ -77,7 +74,7 @@ in
 
   environment.systemPackages = with pkgs; [
     git
-    vscode
+    direnv
     vscode-insiders
     openssl
   ];
