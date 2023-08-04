@@ -11,28 +11,25 @@ cfg_if! {
         use once_cell::sync::Lazy;
         use libsql::{Connection, Database};
 
-        fn conn() -> Connection {
-            connect(None, None)
-        }
-
-        fn connect(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> Connection {
-            let db = open_db(database_config, connection_config);
-            db.database.connect().unwrap()
-        }
-
-        fn db() -> Database {
-            database(None, None)
-        }
-
-        fn database(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> Database {
-            open_db(database_config, connection_config).database
-        }
-
+        // Enums
         enum Mode {
             Memory(MemoryMode),
             File,
         }
 
+        enum JournalType {
+            Wal,
+            Wal2,
+        }
+
+        enum SyncMode {
+            Off,
+            Normal,
+            Full,
+            Extra,
+        }
+
+        // Structs
         struct MemoryMode {
             shared: bool,
         }
@@ -55,18 +52,6 @@ cfg_if! {
                     mode: mode.unwrap_or(Mode::Memory(MemoryMode::new())),
                 }
             }
-        }
-
-        enum JournalType {
-            Wal,
-            Wal2,
-        }
-
-        enum SyncMode {
-            Off,
-            Normal,
-            Full,
-            Extra,
         }
 
         struct JournalMode {
@@ -108,6 +93,93 @@ cfg_if! {
         struct MyDatabaseConfig {
             database: DatabaseConfig,
             connection: Option<ConnectionConfig>,
+        }
+
+        struct MyConnection {
+            connection: Connection,
+            config: Option<ConnectionConfig>,
+        }
+
+        impl MyConnection {
+            fn new(connection: Connection, config: Option<ConnectionConfig>) -> Self {
+                Self { connection, config }
+            }
+        }
+
+        struct MyDatabaseMutex {
+            database: Mutex<Database>,
+            config: MyDatabaseConfig,
+        }
+
+        impl From<MyDatabase> for MyDatabaseMutex {
+            fn from(db: MyDatabase) -> Self {
+                Self {
+                    database: Mutex::new(db.database),
+                    config: db.config,
+                }
+            }
+        }
+
+        struct MyConnectionMutex {
+            connection: Mutex<Connection>,
+            config: Option<ConnectionConfig>,
+        }
+
+        impl From<MyConnection> for MyConnectionMutex {
+            fn from(conn: MyConnection) -> Self {
+                Self {
+                    connection: Mutex::new(conn.connection),
+                    config: conn.config,
+                }
+            }
+        }
+
+        // Static variables
+        pub static DB: Lazy<MyDatabaseMutex> = Lazy::new(|| MyDatabaseMutex {
+            database: Mutex::new(my_db(None, None).database),
+            config: my_db(None, None).config,
+        });
+
+        pub static CONNECTION: Lazy<MyConnectionMutex> = Lazy::new(|| MyConnectionMutex {
+            connection: Mutex::new(my_conn(None, None).connection),
+            config: my_conn(None, None).config,
+        });
+
+
+        // Connection Functions
+        fn my_database(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> MyDatabase {
+            open_db(database_config, connection_config)
+        }
+
+        fn my_db(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> MyDatabase {
+            my_database(database_config, connection_config)
+        }
+
+        fn my_connection(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> MyConnection {
+            let db = my_db(database_config, None);
+            let conn = db.database.connect().unwrap();
+            MyConnection::new(conn, connection_config)
+        }
+
+        fn my_conn(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> MyConnection {
+            my_connection(database_config, connection_config)
+        }
+
+        fn conn() -> Connection {
+            connect(None, None)
+        }
+
+        fn connect(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> Connection {
+            let db = open_db(database_config, connection_config);
+            db.database.connect().unwrap()
+        }
+
+        fn db() -> Database {
+            database(None, None)
+        }
+
+        fn database(database_config: Option<DatabaseConfig>, connection_config: Option<ConnectionConfig>) -> Database {
+            open_db(database_config, connection_config).database
         }
 
         fn build_conn_string(database_config: &DatabaseConfig) -> String {
@@ -163,10 +235,10 @@ cfg_if! {
 
         fn connect_to_db(db: &Database) -> Connection {
             println!("Connecting to DB");
-
             db.connect().unwrap()
         }
 
+        // Log and Table Operations
         fn log_hello_world_with_conn(conn: &Connection) {
             let hello_rows = conn.execute("SELECT 'hello, world!'", ()).unwrap().unwrap();
             let hello_row = hello_rows.next().unwrap().unwrap();
@@ -222,33 +294,20 @@ cfg_if! {
             log_all_visitors_with_conn(&conn());
         }
 
-        pub static DB: Lazy<Mutex<Database>> = Lazy::new(|| {
-            Mutex::new(db())
-        });
-
-        pub static CONNECTION: Lazy<Mutex<Connection>> = Lazy::new(|| {
-            let db = DB.lock().unwrap();
-            let conn = connect_to_db(&*db);
-            Mutex::new(conn)
-        });
-
         pub async fn initialize_static_db() {
             log!("Initializing DB");
-
             let conn = CONNECTION.lock().unwrap();
-
             log_hello_world_with_conn(&*conn);
             create_visitors_table_with_conn(&*conn);
             insert_initial_visitor_data_with_conn(&*conn);
             get_rows_count_with_conn(&*conn, "visitors");
             log_all_visitors_with_conn(&*conn);
-
             log!("Initialized DB");
         }
-
     }
 }
 
+// Server Functions
 #[server(AddVisitorData, "/api")]
 pub async fn add_visitor(data: Option<String>) -> Result<(), ServerFnError> {
     log!("Hello, AddVisitorData!");
@@ -260,7 +319,7 @@ pub async fn add_visitor(data: Option<String>) -> Result<(), ServerFnError> {
 pub async fn get_visitor_rows(_unused: Option<String>) -> Result<u32, ServerFnError> {
     log!("Fetching visitor count!");
     log_all_visitors();
-    Ok(get_rows_count("visitors") as u32) // -1 for the initial "_start" visitor
+    Ok(get_rows_count("visitors") as u32)
 }
 
 #[component]

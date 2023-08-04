@@ -95,8 +95,8 @@ EOF
   bashrc_user_content=$(printf "%s\n" "${bashrc_user_content_lines[@]}")
 
   # Combined content for .bash_profile and .bashrc
-  combined_bash_profile_content=$(printf "%s%s\n" "$bash_profile_global_content" "$bash_profile_user_content")
-  combined_bashrc_content=$(printf "%s%s" "$bashrc_global_content" "$bashrc_user_content")
+  combined_bash_profile_content=$(printf "%s\n%s\n" "$bash_profile_global_content" "$bash_profile_user_content")
+  combined_bashrc_content=$(printf "%s\n%s\n" "$bashrc_global_content" "$bashrc_user_content")
 
   # Create temporary files for check and push scripts
   check_script_file=$(mktemp)
