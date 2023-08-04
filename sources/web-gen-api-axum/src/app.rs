@@ -135,12 +135,13 @@ cfg_if! {
         }
 
         // Static variables
-        pub static DB: Lazy<MyDatabaseMutex> = Lazy::new(|| MyDatabaseMutex {
+        //https://cj.rs/blog/sqlite-pragma-cheatsheet-for-performance-and-consistency/
+        pub static MY_DB: Lazy<MyDatabaseMutex> = Lazy::new(|| MyDatabaseMutex {
             database: Mutex::new(my_db(None, None).database),
             config: my_db(None, None).config,
         });
 
-        pub static CONNECTION: Lazy<MyConnectionMutex> = Lazy::new(|| MyConnectionMutex {
+        pub static MY_CONNECTION: Lazy<MyConnectionMutex> = Lazy::new(|| MyConnectionMutex {
             connection: Mutex::new(my_conn(None, None).connection),
             config: my_conn(None, None).config,
         });

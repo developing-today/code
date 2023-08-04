@@ -23,6 +23,7 @@ restore_shell_options() {
 
 # shellcheck disable=SC2317
 iter_3at2() {
+  local cmd arg_1 arg_2 args exit_code
   printf "iter_3at2: args:: %s %s\n" "${#}" "${*}"
 
   cmd="${1}"
@@ -70,6 +71,7 @@ iter_3at2() {
 # shellcheck disable=SC2317
 
 iter_3at3() {
+  local cmd arg_1 arg_2 args exit_code
   printf "iter_3at3: args:: %s %s\n" "${#}" "${*}"
 
   cmd="${1}"
@@ -116,6 +118,7 @@ iter_3at3() {
 
 # shellcheck disable=SC2317
 iter_4at1() {
+  local cmd arg_1 arg_2 arg_3 args exit_code
   printf "iter_4at1: args:: %s %s\n" "${#}" "${*}"
 
   cmd="${1}"
@@ -162,6 +165,7 @@ iter_4at1() {
 
 # shellcheck disable=SC2317
 iter_4at3() {
+  local cmd arg_1 arg_2 arg_3 args exit_code
   printf "iter_4at3: args:: %s %s\n" "${#}" "${*}"
 
   cmd="${1}"
@@ -210,6 +214,7 @@ iter_4at3() {
 
 # shellcheck disable=SC2317
 iter_5at1() {
+  local cmd arg_1 arg_2 arg_3 arg_4 args exit_code
   printf "iter_5at1: args:: %s %s\n" "${#}" "${*}"
 
   cmd="${1}"
@@ -260,6 +265,7 @@ bright_blue="${reset}\033[34;1m"
 
 # shellcheck disable=SC2059
 probe_arch() {
+    # local ARCH # purposefully global, use carefully
     ARCH=$(uname -m)
     case $ARCH in
         x86_64) ARCH="x86_64"  ;;
@@ -271,6 +277,7 @@ probe_arch() {
 
 # shellcheck disable=SC2059
 probe_os() {
+    # local OS # purposefully global, use carefully
     OS=$(uname -s)
     case $OS in
         Darwin) OS="Darwin" ;;
@@ -323,9 +330,8 @@ ${reset}
 
 # shellcheck disable=SC2236
 detect_profile() {
-  local DETECTED_PROFILE
+  local DETECTED_PROFILE SHELLTYPE
   DETECTED_PROFILE=''
-  local SHELLTYPE
   SHELLTYPE="$(basename "/$SHELL")"
 
   if [ "$SHELLTYPE" = "bash" ]; then
@@ -361,28 +367,35 @@ detect_profile() {
 
 # shellcheck disable=SC2059
 update_profile_for_turso() {
-   PROFILE_FILE=$(detect_profile)
-   if ! grep -q "\.turso" "$PROFILE_FILE"; then
-      printf "\n${bright_blue}Updating profile ${reset}$PROFILE_FILE\n"
+  local PROFILE_FILE
+  PROFILE_FILE=$(detect_profile)
+  if ! grep -q "\.turso" "$PROFILE_FILE"; then
+    printf "\n${bright_blue}Updating profile ${reset}$PROFILE_FILE\n"
 
-      printf "\n# Turso\nexport PATH=\"$INSTALL_DIRECTORY:\$PATH\"\n" >> "$PROFILE_FILE"
+    printf "\n# Turso\nexport PATH=\"$INSTALL_DIRECTORY:\$PATH\"\n" >> "$PROFILE_FILE"
 
-      printf "\nTurso will be available when you open a new terminal.\n"
-      printf "If you want to make Turso available in this terminal, please run:\n"
-      printf "\nsource $PROFILE_FILE\n"
-   fi
+    printf "\nTurso will be available when you open a new terminal.\n"
+    printf "If you want to make Turso available in this terminal, please run:\n"
+    printf "\nsource $PROFILE_FILE\n"
+  fi
 }
 
 recursively_chmod_executable_scripts() {
-  find "$1" -type f \( -name "*.sh" -o -name "*.ps1" -o -name "*.py" \) -exec chmod +x {} +
+  local target_dir
+  target_dir=${1:-.}
+  find "$target_dir" -type f \( -name "*.sh" -o -name "*.ps1" -o -name "*.py" \) -exec chmod +x {} +
 }
 
 recursively_remove_empty_folders_modified_more_than_14_days_ago() {
-  find "$1" -type d -empty -mtime +14 -execdir rmdir --ignore-fail-on-non-empty {} + 2>/dev/null
+  local target_dir
+  target_dir=${1:-.}
+  find "$target_dir" -type d -empty -mtime +14 -execdir rmdir --ignore-fail-on-non-empty {} + 2>/dev/null
 }
 
 recursively_remove_zero_byte_files_modified_more_than_14_days_ago() {
-  find "$1" -type f -empty -mtime +14 -exec rm -f {} +
+  local target_dir
+  target_dir=${1:-.}
+  find "$target_dir" -type f -empty -mtime +14 -exec rm -f {} +
 }
 
 git_repo_root() {
