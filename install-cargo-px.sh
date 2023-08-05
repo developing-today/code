@@ -15,8 +15,7 @@ restore_shell_options() {
 trap restore_shell_options EXIT
 set -euo pipefail
 
-# shellcheck source=/home/user/code/lib.sh
-. ./lib.sh
+source ./export-lib.sh
 
 cargo install cargo-px
 
