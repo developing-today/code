@@ -540,26 +540,72 @@ export_lib() {
   comm() {
     git_commit_all "${@}"
   }
+  export -f comm
 
   commp() {
     git_commit_all_push "${@}"
   }
+  export -f commp
 
   comp() {
     git_commit_all_push "${@}"
   }
+  export -f comp
 
   compu() {
     git_commit_all_push "${@}"
   }
+  export -f compu
 
   checkout() {
     git checkout "${@}"
   }
+  export -f checkout
 
   ch() {
     git checkout "${@}"
   }
+  export -f ch
+
+  stash_all() {
+    git stash "${@:---all}"
+  }
+  export -f stash_all
+
+  stashAll() {
+    stash_all "${@:---all}"
+  }
+  export -f stashAll
+
+  stash() {
+    stash_all "${@:---all}"
+  }
+  export -f stash
+
+  stow() {
+    stash_all "${@:---all}"
+  }
+  export -f stow
+
+  git_diff() {
+    git diff "${@}"
+  }
+  export -f git_diff
+
+  dif() {
+    git_diff "${@}"
+  }
+  export -f dif
+
+  di() {
+    git_diff "${@}"
+  }
+  export -f di
+
+  d() {
+    git_diff "${@}"
+  }
+  export -f d
 }
 export_lib
 
