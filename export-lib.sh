@@ -252,10 +252,10 @@ export_lib() {
   export -f git_repo_root
 
   relative() {
-    local target_location base_location relative_path
+    local base_location target_location relative_path
 
-    target_location="$1"
-    base_location="$2"
+    base_location="${1}"
+    target_location="${2:-.}"
     relative_path=$(realpath --relative-to="$target_location" "$base_location")
 
     echo "$relative_path"
@@ -267,7 +267,7 @@ export_lib() {
 
     target_location="${1:-.}"
     repo_root=$(git_repo_root)
-    relative_path=$(relative "$target_location" "$repo_root")
+    relative_path=$(relative "$repo_root" "$target_location")
 
     echo "$relative_path"
   }
