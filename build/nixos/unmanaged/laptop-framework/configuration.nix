@@ -89,5 +89,8 @@ in
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   virtualisation.libvirtd.enable = true;
-  virtualisation.docker.enable = true;
+  virtualisation.docker.rootless = {
+    enable = true;
+    setSocketVariable = true;
+  };
 }
