@@ -1,0 +1,12 @@
+/libs/ui_test_envs
+/libs/target
+/libs/vendor
+/libs/.cargo
+/examples/**/vendor
+/examples/**/target
+/examples/**/.cargo
+/.cargo
+/vendor
+.DS_Store
+*.snap
+trace-*.json

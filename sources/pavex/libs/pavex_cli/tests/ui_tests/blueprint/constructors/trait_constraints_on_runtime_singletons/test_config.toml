@@ -1,0 +1,6 @@
+description = "Singletons must implement Send"
+
+[expectations]
+codegen = "fail"
+
+

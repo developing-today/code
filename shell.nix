@@ -18,9 +18,11 @@ pkgs.mkShell rec {
     openjdk19
     nodejs
     tailwindcss
+    shellcheck
     python311
     python311Packages.pip
     python311Packages.virtualenv
+    docker
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;

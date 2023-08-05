@@ -1,0 +1,14 @@
+[package]
+name = "app_sdk"
+edition = "2021"
+version = "0.1.0"
+
+[package.metadata.px.generate]
+generator_type = "cargo_workspace_binary"
+generator_name = "bp"
+
+[dependencies]
+app_blueprint = { version = "0.1.0", path = "../app_blueprint", package = "app_blueprint" }
+http = { version = "0.2.9", package = "http" }
+hyper = { version = "0.14.26", package = "hyper" }
+pavex = { version = "0.1.0", path = "../../../libs/pavex", package = "pavex" }

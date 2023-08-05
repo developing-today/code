@@ -89,4 +89,5 @@ in
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   virtualisation.libvirtd.enable = true;
+  virtualisation.docker.enable = true;
 }

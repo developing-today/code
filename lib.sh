@@ -7,7 +7,7 @@ printf "%s\n" "start: lib script"
 # # do not use trap in lib script, try not to avoid
 # SAVED_SHELL_OPTIONS=$(set +o)
 
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2154
 restore_shell_options() {
   printf "%s\n" "trap start: restoring shell options"
   # printf "%s\n" "SAVED_SHELL_OPTIONS: ${SAVED_SHELL_OPTIONS}"
