@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-printf "%s\n" "start: script"
+printf "%s\n" "start: symlink script"
 
 SAVED_SHELL_OPTIONS=$(set +o)
 
@@ -15,7 +15,9 @@ restore_shell_options() {
   printf "%s\n" "trap done: restoring shell options"
 }
 trap restore_shell_options EXIT
-set -e
+set -euo pipefail
+
+source ./export-lib.sh
 
 # shellcheck disable=SC2317
 create_symlink() {
@@ -77,51 +79,6 @@ create_symlink() {
   printf "done: created symlink for: relative symlink: '%s', file '%s', directory '%s'.\n" "${is_relative_symlink}" "${file_path}" "${target_directory}"
 }
 
-iter_3at3() {
-  printf "iter_3at3: args:: %s %s\n" "${#}" "${*}"
-
-  cmd="${1}"
-  arg_1="${2}"
-  arg_2="${3}"
-
-  shift 3
-
-  args=("${@}")
-  exit_code=0
-
-  printf "iter_3at3 start:: cmd: %s, arg_1: %s, arg_2: %s, args:: %s %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${#args[@]}" "${args[*]}"
-
-  if command -v parallel >/dev/null 2>&1; then
-    printf "iter_3at3 parallel start:: cmd: %s, arg_1: %s, arg_2: %s, args:: %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${args[*]}"
-
-    parallel "${cmd}" "${arg_1}" "${arg_2}" {} ::: "${args[@]}"
-
-    exit_code=$?
-
-    printf "iter_3at3 parallel done:: cmd: %s, arg_1: %s, arg_2: %s, args:: %s, exit code: %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${args[*]}" "${exit_code}"
-
-  else
-    printf "iter_3at3 sequential start:: cmd: %s, arg_1: %s, arg_2: %s, args:: %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${args[*]}"
-
-    for arg in "${args[@]}"; do
-      printf "iter_3at3 sequential start arg:: cmd: %s, arg_1: %s, arg_2: %s, arg: %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${arg}"
-
-      ${cmd} "${arg_1}" "${arg_2}" "${arg}"
-      for_exit_code=$?
-
-      printf "iter_3at3 sequential done arg:: cmd: %s, arg_1: %s, arg_2: %s, arg: %s, exit code: %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${arg}" "${for_exit_code}"
-
-      if [ "${for_exit_code}" -ne 0 ]; then
-        exit_code=${for_exit_code}
-      fi
-    done
-  fi
-
-  printf "iter_3at3 done:: cmd: %s, arg_1: %s, arg_2: %s, args:: %s, exit code: %s\n" "${cmd}" "${arg_1}" "${arg_2}" "${args[*]}" "${exit_code}"
-
-  return "${exit_code}"
-}
-
 # shellcheck disable=SC2317
 process_symlinks() {
   printf "process_symlinks: args:: %s %s\n" "${#}" "${*}"
@@ -142,7 +99,7 @@ process_symlinks() {
   printf "start: symlinks creation process for file '%s', relative symlink '%s', directories '%s'\n" "${file_path}" "${is_relative_symlink}" "${directories[*]}"
 
   # Using iter_3at3 to iterate through the directories
-  iter_3at3 create_symlink "${is_relative_symlink}" "${file_path}" "${directories[@]}"
+  iter create_symlink "${is_relative_symlink}" "${file_path}" {} ::: "${directories[@]}"
 
   return_code=$?
 
@@ -210,6 +167,6 @@ else
   fi
 fi
 
-printf "%s\n" "done: script"
+printf "%s\n" "done: symlink script"
 
 exit 0

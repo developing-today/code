@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-printf "%s\n" "start: script"
+printf "%s\n" "start: setup-bash-for-user script"
 
 SAVED_SHELL_OPTIONS=$(set +o)
 
@@ -15,7 +15,9 @@ restore_shell_options() {
   printf "%s\n" "trap done: restoring shell options"
 }
 trap restore_shell_options EXIT
-set -e
+set -eu # pipefail causes issues ?
+
+source ./export-lib.sh
 
 # System-wide content for .bash_profile can be added here (for all users specified)
 # MUST ESCAPE DOUBLE QUOTES WITHIN CONTENT
@@ -317,52 +319,8 @@ if [ "${#users[@]}" -eq 0 ]; then
 else
   printf "%s %s\n" "info: users to process:" "${users[*]}"
 fi
-# shellcheck disable=SC2317
-iter_4at1() {
-  cmd="${1}"
-  arg_1="${2}"
-  arg_2="${3}" # customized: skipped for size in printf
-  arg_3="${4}" # customized: skipped for size in printf
 
-  shift 4
-
-  args=("${@}")
-  exit_code=0
-
-  printf "iter_4at1 start:: cmd: %s, arg_1: %s, arg_2: %s, arg_3: %s, args: %s\n" "$cmd" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "${args[*]}"
-
-  if command -v parallel >/dev/null 2>&1; then
-    printf "iter_4at1 parallel start:: cmd: %s, arg_1: %s, arg_2: %s, arg_3: %s, args: %s\n" "$cmd" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "${args[*]}"
-
-    parallel "$cmd" {} "$arg_1" "$arg_2" "$arg_3" ::: "${args[@]}"
-
-    exit_code=$?
-
-    printf "iter_4at1 parallel done:: cmd: %s, arg_1: %s, arg_2: %s, arg_3: %s, args: %s, exit code: %s\n" "$cmd" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "${args[*]}" "$exit_code"
-  else
-    printf "iter_4at1 sequential start:: cmd: %s, arg_1: %s, arg_2: %s, arg_3: %s, args: %s\n" "$cmd" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "${args[*]}"
-
-    for arg in "${args[@]}"; do
-      printf "iter_4at1 sequential start arg:: cmd: %s, arg: %s, arg_1: %s, arg_2: %s, arg_3: %s\n" "$cmd" "$arg" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size"
-
-      $cmd "$arg" "$arg_1" "$arg_2" "$arg_3"
-
-      for_exit_code=$?
-
-      printf "iter_4at1 sequential done arg:: cmd: %s, arg: %s, arg_1: %s, arg_2: %s, arg_3: %s, exit code: %s\n" "$cmd" "$arg" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "$for_exit_code"
-
-      if [ "$for_exit_code" -ne 0 ]; then
-        exit_code=$for_exit_code
-      fi
-    done
-  fi
-
-  printf "iter_4at1 done:: cmd: %s, arg_1: %s, arg_2: %s, arg_3: %s, args: %s, exit code: %s\n" "$cmd" "$arg_1" "\$arg_2 skipped for size" "\$arg_3 skipped for size" "${args[*]}" "$exit_code"
-
-  return "$exit_code"
-}
-
-iter_4at1 process_user "$is_force" "$bash_profile_global_content" "$bashrc_global_content" "${users[@]}"
+iter process_user {} "$is_force" "$bash_profile_global_content" "$bashrc_global_content" ::: "${users[@]}"
 exit_code=$?
 
 if [ $exit_code -ne 0 ]; then
@@ -375,6 +333,6 @@ else
   printf "%s\n" "exit code: $exit_code"
 fi
 
-printf "%s\n" "done: script"
+printf "%s\n" "done: setup-bash-for-user script"
 
 exit 0
