@@ -53,6 +53,7 @@ mapfile -t bashrc_global_content_lines << EOF
 EOF
 bashrc_global_content=$(printf "%s\n" "${bashrc_global_content_lines[@]}")
 
+# TODO: USE LOCAL VARIABLES
 # shellcheck disable=SC2317
 process_user() {
   username="${1}"

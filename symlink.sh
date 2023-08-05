@@ -19,6 +19,7 @@ set -euo pipefail
 
 source ./export-lib.sh
 
+# TODO: USE LOCAL VARIABLES
 # shellcheck disable=SC2317
 create_symlink() {
   printf "create_symlink: args:: %s %s\n" "${#}" "${*}"
@@ -79,6 +80,7 @@ create_symlink() {
   printf "done: created symlink for: relative symlink: '%s', file '%s', directory '%s'.\n" "${is_relative_symlink}" "${file_path}" "${target_directory}"
 }
 
+# TODO: USE LOCAL VARIABLES
 # shellcheck disable=SC2317
 process_symlinks() {
   printf "process_symlinks: args:: %s %s\n" "${#}" "${*}"
