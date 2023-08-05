@@ -507,6 +507,16 @@ export_lib() {
   }
   export -f status
 
+  s() {
+    status
+  }
+  export -f s
+
+  st() {
+    status
+  }
+  export -f st
+
   commit() {
     git_commit_all "${@}"
   }
@@ -527,6 +537,29 @@ export_lib() {
   }
   export -f commitPush
 
+  comm() {
+    git_commit_all "${@}"
+  }
+
+  commp() {
+    git_commit_all_push "${@}"
+  }
+
+  comp() {
+    git_commit_all_push "${@}"
+  }
+
+  compu() {
+    git_commit_all_push "${@}"
+  }
+
+  checkout() {
+    git checkout "${@}"
+  }
+
+  ch() {
+    git checkout "${@}"
+  }
 }
 export_lib
 
