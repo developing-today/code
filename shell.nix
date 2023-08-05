@@ -23,6 +23,8 @@ pkgs.mkShell rec {
     python311Packages.pip
     python311Packages.virtualenv
     docker
+    jq
+    yq
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;

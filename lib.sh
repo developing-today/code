@@ -402,6 +402,26 @@ git_repo_root() {
   git rev-parse --show-toplevel
 }
 
+relative() {
+  local target_location base_location relative_path
+
+  target_location="$1"
+  base_location="$2"
+  relative_path=$(realpath --relative-to="$target_location" "$base_location")
+
+  echo "$relative_path"
+}
+
+relative_git_repo_root() {
+  local target_location repo_root relative_path
+
+  target_location="${1:-.}"
+  repo_root=$(git_repo_root)
+  relative_path=$(relative "$target_location" "$repo_root")
+
+  echo "$relative_path"
+}
+
 git_restore_all_deleted_files() {
   git ls-files -d | xargs git checkout --
 }
@@ -418,6 +438,122 @@ git_restore_all() {
   git_restore_all_deleted_files
   git_restore_all_modified_files
   git_restore_all_untracked_files
+}
+
+git_restore_all_and_clean() {
+  git_restore_all
+  git clean -fd
+}
+
+git_restore_all_and_clean_and_reset() {
+  git_restore_all_and_clean
+  git reset --hard
+}
+
+git_restore_all_and_clean_and_reset_and_pull() {
+  git_restore_all_and_clean_and_reset
+  git pull
+}
+
+git_restore_all_and_clean_and_reset_and_pull_and_prune() {
+  git_restore_all_and_clean_and_reset_and_pull
+  git remote prune origin
+}
+
+git_restore_all_and_clean_and_reset_and_pull_and_prune_and_gc() {
+  git_restore_all_and_clean_and_reset_and_pull_and_prune
+  git gc --prune=now
+}
+
+random_emoji() {
+  # Emoji ranges
+  local ranges=(
+    "0x1F600 0x1F64F" # Emoticons
+    "0x1F300 0x1F5FF" # Misc Symbols and Pictographs
+    "0x1F700 0x1F77F" # Alchemical Symbols
+    "0x1F800 0x1F8FF" # Supplemental Arrows-C
+    "0x2600 0x26FF"   # Misc Symbols
+    "0x2700 0x27BF"   # Dingbats
+    "0x2300 0x23FF"   # Misc Technical
+  )
+
+  # Choose a random range
+  local range=${ranges[$RANDOM % ${#ranges[@]}]}
+  local start=$(echo $range | awk '{ print $1 }')
+  local end=$(echo $range | awk '{ print $2 }')
+
+  # Generate a random number within the chosen range
+  local random_number=$((RANDOM % (end - start + 1) + start))
+
+  # Convert the random number to the corresponding Unicode character
+  printf "\\U$(printf '%x' $random_number)"
+}
+
+random_word() {
+  local words=(
+    # Fruits
+    "apple" "banana" "cherry" "date" "elderberry" "fig" "grape" "kiwi" "lemon" "mango" "peach" "pear" "pineapple" "plum" "pomegranate" "watermelon" "blueberry" "coconut" "apricot" "blackberry" "raspberry" "strawberry" "nectarine" "orange" "lime" "tangerine" "grapefruit" "cantaloupe" "honeydew" "durian" "lychee" "passionfruit"
+    # Vegetables
+    "carrot" "broccoli" "asparagus" "spinach" "pepper" "tomato" "onion" "cucumber" "lettuce" "kale" "radish" "celery" "squash" "zucchini" "beet" "parsnip" "cabbage" "cauliflower" "eggplant" "fennel" "garlic" "leek" "mushroom" "okra" "peas" "potato" "pumpkin" "rutabaga" "sweet_potato" "turnip" "yam" "artichoke"
+    # Animals
+    "elephant" "tiger" "bear" "zebra" "giraffe" "dolphin" "whale" "eagle" "panda" "wolf" "lion" "cheetah" "kangaroo" "hippo" "rhino" "flamingo" "alligator" "anteater" "armadillo" "baboon" "badger" "bat" "beaver" "buffalo" "camel" "chameleon" "chimpanzee" "cobra" "crocodile" "deer" "dingo" "fox" "gorilla"
+    # Pokémon
+    "Pikachu" "Charizard" "Bulbasaur" "Squirtle" "Jigglypuff" "Meowth" "Gengar" "Mewtwo" "Eevee" "Snorlax" "Lucario" "Gardevoir" "Greninja" "Mimikyu" "Rayquaza" "Sylveon" "Blastoise" "Venusaur" "Charmander" "Machamp" "Lapras" "Arcanine" "Mew" "Lugia" "Ho-Oh" "Kyogre" "Groudon" "Arceus" "Dialga" "Palkia" "Giratina" "Reshiram"
+    # Mythical Beasts
+    "dragon" "phoenix" "griffin" "sphinx" "minotaur" "unicorn" "kraken" "goblin" "harpy" "chimera" "wyvern" "siren" "nymph" "basilisk" "yeti" "mermaid" "cerberus" "banshee" "centaur" "chupacabra" "cyclops" "djinn" "doppelganger" "dryad" "elf" "fairy" "faun" "genie" "ghost" "gorgon" "gremlin" "imp"
+    # Rocks
+    "granite" "marble" "limestone" "basalt" "quartz" "slate" "obsidian" "amethyst" "sandstone" "shale" "jade" "opal" "dolomite" "gypsum" "pyrite" "sapphire" "agate" "alabaster" "andesite" "aquamarine" "beryl" "calcite" "chalk" "chert" "clay" "coal" "corundum" "diamond" "diorite" "dunite" "emerald" "flint"
+    # Planets (including dwarf planets and exoplanets)
+    "Mercury" "Venus" "Earth" "Mars" "Jupiter" "Saturn" "Uranus" "Neptune" "Pluto" "Ceres" "Haumea" "Makemake" "Eris" "Quaoar" "Sedna" "Orcus" "Gonggong" "Salacia" "Varuna" "Ixion" "Chaos" "Deedee" "Haumea" "Makemake" "Oberon" "Titania" "Ariel" "Umbriel" "Triton" "Proteus" "Charon" "Nix"
+    # Astrological Bodies
+    "Sun" "Moon" "Sirius" "Orion" "Pleiades" "Andromeda" "Vega" "Polaris" "Rigel" "Betelgeuse" "Altair" "Deneb" "Antares" "Canopus" "Aldebaran" "Spica" "Fomalhaut" "Regulus" "Pollux" "Capella" "Bellatrix" "Castor" "Diphda" "Elnath" "Gacrux" "Hamal" "Kaus_Australis" "Menkar" "Mirfak" "Naos" "Saiph" "Shaula"
+    # Types of Astrological Objects
+    "black_hole" "comet" "nebula" "galaxy" "asteroid" "pulsar" "quasar" "meteor" "white_dwarf" "satellite" "Hubble_Space_Telescope" "International_Space_Station" "Elon's_Tesla" "brown_dwarf" "gamma_ray_burst" "magnetar" "nova" "rogue_planet" "shooting_star" "solar_flare" "space_probe" "space_shuttle" "star_cluster" "supernova" "telescope" "wormhole" "x-ray_binary"
+    # Common Dog Names
+    "Bella" "Max" "Lucy" "Charlie" "Cooper" "Buddy" "Molly" "Daisy" "Bailey" "Sadie" "Rocky" "Rosie" "Chloe" "Coco" "Zeus" "Lola" "Duke" "Bear" "Oliver" "Winston" "Lily" "Zoe" "Riley" "Abby" "Ginger" "Roxy" "Ruby" "Sasha" "Stella" "Tucker" "Bentley" "Jackson" "Lady" "Lulu"
+    # Common Cat Names
+    "Luna" "Oliver" "Bella" "Chloe" "Leo" "Milo" "Charlie" "Max" "Simba" "Lily" "Smokey" "Shadow" "Tiger" "Nala" "Felix" "Whiskers" "Cleo" "Garfield" "Jasper" "Kitty" "Mittens" "Oscar" "Paws" "Princess" "Pumpkin" "Sassy" "Simba" "Snowball" "Sophie" "Sparky" "Tigger" "Tom" "Ziggy"
+    # Characters from Final Fantasy
+    "Cloud" "Tifa" "Aerith" "Sephiroth" "Squall" "Rinoa" "Zidane" "Yuna" "Noctis" "Lightning" "Cecil" "Rydia" "Kain" "Bartz" "Terra" "Locke" "Barret" "Vivi" "Auron" "Fran" "Basch" "Serah" "Hope" "Zack" "Vincent" "Rikku" "Selphie" "Seifer" "Garnet" "Edgar" "Sabin" "Setzer"
+    # Characters from Fire Emblem
+    "Marth" "Ike" "Roy" "Lucina" "Chrom" "Robin" "Corrin" "Byleth" "Edelgard" "Dimitri" "Sigurd" "Eliwood" "Lyn" "Micaiah" "Tharja" "Camilla" "Alm" "Celica" "Eirika" "Ephraim" "Hector" "Leif" "Ninian" "Olwen" "Reinhardt" "Seliph" "Sothe" "Takumi" "Tiki" "Xander" "Azura" "Fjorm"
+  )
+  printf "%s" "${words[$RANDOM % ${#words[@]}]}"
+}
+
+random_emoji_name() {
+  local emoji_name
+  # Check for required commands
+  if ! command -v jq &>/dev/null || ! command -v shuf &>/dev/null; then
+    echo "Required commands jq or shuf not found." >&2
+    emoji_name="" # Ensure emoji_name is empty if an error occurred
+  else
+    emoji_name=$(curl -s https://api.github.com/emojis 2>/dev/null | jq -r 'keys[]' | shuf -n 1 || echo "" || true)
+  fi
+
+  # If the emoji_name is empty, use a safer alternative from a predefined list
+  if [[ -z "${emoji_name}" || "${emoji_name}" == "true" || "${emoji_name}" == "false" || "${emoji_name}" == "null" || "${emoji_name}" == "undefined" || "${emoji_name}" == "error" || "${emoji_name}" == "not_found" || "${emoji_name}" == "rate_limit_exceeded" || "${emoji_name}" == "invalid_credentials" || "${emoji_name}" == "api_usage" || "${emoji_name}" == "abuse_detected" || "${emoji_name}" == "file_too_large" || "${emoji_name}" == "unsupported_media_type" || "${emoji_name}" == "unprocessable" || "${emoji_name}" == "server_error" || "${emoji_name}" == "temporarily_unavailable" ]]; then
+    emoji_name=$(random_word)
+  fi
+
+  printf "%s" "${emoji_name}"
+
+  return 0 # Explicitly return 0 to ensure the function never exits with an error
+}
+
+datetime() {
+  printf "%s" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+
+# shellcheck disable=SC2059,SC2317
+git_commit_all() {
+  local commit_message, random_emoji, random_emoji_name
+  random_emoji=$(random_emoji)
+  random_emoji_name=$(random_emoji_name || random_word)
+  commit_message=${1:-"$(datetime) ${random_emoji} ${random_emoji_name}"}
+
+  git add -A
+  git commit -m "${commit_message}"
 }
 
 printf "%s\n" "done: lib script"
