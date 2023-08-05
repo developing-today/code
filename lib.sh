@@ -585,6 +585,11 @@ git_commit_all() {
   git commit -m "${commit_message}"
 }
 
+git_commit_all_push() {
+  git_commit_all "${@}"
+  git push
+}
+
 source_lib() {
   . "$(git_repo_root)/lib.sh"
 }
