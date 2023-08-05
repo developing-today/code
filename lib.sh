@@ -567,7 +567,7 @@ git_commit_all() {
   local commit_message random_emojis random_emoji_name
   random_emojis="$(random_emoji) $(random_emoji) $(random_emoji)"
   random_emoji_name=$(random_emoji_name || random_word)
-  commit_message=${1:-"${random_emojis} ${random_emoji_name} $(datetime)"}
+  commit_message=${1:-"${random_emojis}  ${random_emoji_name} $(datetime)"}
 
   git add -A
   git commit -m "${commit_message}"
