@@ -568,12 +568,25 @@ today() {
 
 # shellcheck disable=SC2059,SC2317
 git_commit_all() {
-  local commit_message
-  commit_message=${1:-"$(random_emoji)$(random_emoji)$(random_emoji) $(random_emoji_name || random_word)"}
+  declare commit_message emoji_message
+
+  if [[ "${1}" == "-" ]]; then
+    shift
+    commit_message="${*}"
+  elif [[ -n "${1}" ]]; then
+    emoji_message="$(random_emoji)$(random_emoji)$(random_emoji)"
+    commit_message="${emoji_message}${*}"
+  else
+    emoji_message="$(random_emoji)$(random_emoji)$(random_emoji)"
+    commit_message="${emoji_message}$(random_emoji_name || random_word)"
+  fi
 
   git add -A
   git commit -m "${commit_message}"
 }
 
+source_lib() {
+  . "$(git_repo_root)/lib.sh"
+}
 
 printf "%s\n" "done: lib script"
