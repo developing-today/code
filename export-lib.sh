@@ -537,6 +537,11 @@ export_lib() {
   }
   export -f commitPush
 
+  com() {
+    git_commit_all "${@}"
+  }
+  export -f com
+
   comm() {
     git_commit_all "${@}"
   }
