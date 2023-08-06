@@ -106,7 +106,7 @@ cfg_if! {
             }
         }
 
-        struct MyDatabaseMutex {
+        pub struct MyDatabaseMutex {
             database: Mutex<Database>,
             config: MyDatabaseConfig,
         }
@@ -120,7 +120,7 @@ cfg_if! {
             }
         }
 
-        struct MyConnectionMutex {
+        pub struct MyConnectionMutex {
             connection: Mutex<Connection>,
             config: Option<ConnectionConfig>,
         }
@@ -297,7 +297,7 @@ cfg_if! {
 
         pub async fn initialize_static_db() {
             log!("Initializing DB");
-            let conn = CONNECTION.lock().unwrap();
+            let conn = MY_CONNECTION.connection.lock().unwrap();
             log_hello_world_with_conn(&*conn);
             create_visitors_table_with_conn(&*conn);
             insert_initial_visitor_data_with_conn(&*conn);
