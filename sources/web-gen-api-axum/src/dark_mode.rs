@@ -1,3 +1,4 @@
+
 use leptos::*;
 use leptos_meta::Meta;
 use leptos_router::ActionForm;
@@ -15,7 +16,7 @@ pub async fn toggle_dark_mode(cx: Scope, prefers_dark: bool) -> Result<bool, Ser
             .expect("to create header value"),
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    std::thread::sleep(std::time::Duration::from_millis(5000));
 
     Ok(prefers_dark)
 }
@@ -47,7 +48,7 @@ fn initial_prefers_dark(cx: Scope) -> bool {
                     .map(|cookies| cookies.contains("darkmode=true"))
             })
         })
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 #[component]

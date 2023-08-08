@@ -517,6 +517,31 @@ export_lib() {
   }
   export -f st
 
+  switch() {
+    git switch "${@}"
+  }
+  export -f switch
+
+  switc() {
+    git switch "${@}"
+  }
+  export -f switc
+
+  swit() {
+    git switch "${@}"
+  }
+  export -f swit
+
+  swi() {
+    git switch "${@}"
+  }
+  export -f swi
+
+  sw() {
+    git switch "${@}"
+  }
+  export -f sw
+
   commit() {
     git_commit_all "${@}"
   }

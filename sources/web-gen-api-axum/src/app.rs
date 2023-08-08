@@ -369,19 +369,23 @@ fn HomePage(cx: Scope) -> impl IntoView {
     });
 
     view! { cx,
-        <h1>"Welcome to Leptos!"</h1>
-        <DarkModeToggle/>
-        <ActionForm action=add_visitor_action>
-            <label>
-                "What data to submit?"<br /><br />
-                <input type="text" name="data"/>
-            </label>
-            <input type="submit" value="Submit"/>
-        </ActionForm><br />
+        <div class="flex flex-col items-center justify-center p-8 space-y-6 text-center text-gray-800 bg-white">
+            <h1 class="text-3xl font-semibold">"Welcome to Leptos!"</h1>
+            <DarkModeToggle/>
+            <br/>
+            <ActionForm action=add_visitor_action class="w-full space-y-4">
+                <label class="block w-full">
+                    "What data to submit?"<br />
+                    <input type="text" name="data" class="w-full p-2 mt-2 border rounded-md"/>
+                </label>
+                <input type="submit" value="Submit" class="p-2 mt-2 font-bold text-white bg-blue-500 rounded-md hover:bg-blue-600"/>
+            </ActionForm>
 
-        <p>{submission_message}</p>
-        <p>{submission_count_message}</p>
+            <p class="text-green-500">{submission_message}</p>
+            <p>{submission_count_message}</p>
+        </div>
     }
+
 }
 
 #[component]
@@ -391,15 +395,9 @@ pub fn App(cx: Scope) -> impl IntoView {
 
     view! {
         cx,
-
-        // injects a stylesheet into the document <head>
-        // id=leptos means cargo-leptos will hot-reload this stylesheet
-        <Stylesheet id="leptos" href="/pkg/start-axum.css"/>
-
-        // sets the document title
         <Title text="Welcome to Leptos"/>
-
-        // content for this welcome page
+        <Stylesheet id="full-css" href="/pkg/generated.full.css"/>
+        <div class="flex flex-col items-center justify-center min-h-screen text-gray-900 bg-gray-100">
         <Router fallback=|cx| {
             let mut outside_errors = Errors::default();
             outside_errors.insert_with_default_key(AppError::NotFound);
@@ -414,6 +412,7 @@ pub fn App(cx: Scope) -> impl IntoView {
                 </Routes>
             </main>
         </Router>
+        </div>
     }
 }
 
@@ -427,11 +426,11 @@ pub fn SimpleCounter(cx: Scope) -> impl IntoView {
 
     view! {
         cx,
-        <div>
-            <button on:click=clear>"Clear"</button>
-            <button on:click=decrement>"-1"</button>
+        <div class="flex flex-col items-center justify-center space-y-2 text-center">
+            <button on:click=clear class="p-1 bg-gray-300 rounded">"Clear"</button>
+            <button on:click=decrement class="p-1 bg-gray-300 rounded">"-1"</button>
             <span>"Value: " {move || value.get().to_string()} "!"</span>
-            <button on:click=increment>"+1"</button>
+            <button on:click=increment class="p-1 bg-gray-300 rounded">"+1"</button>
         </div>
     }
 }

@@ -1,7 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: {
-    files: ["index.html", "**/*.rs"],
+    files: ["*.html", "**/*.rs"],
     extract: {
       rs: (content) => {
         const rs_to_tw = (rs) => {
