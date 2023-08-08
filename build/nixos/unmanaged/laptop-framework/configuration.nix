@@ -72,6 +72,7 @@ in
   nixpkgs.config.allowUnfree = true;
 
   environment.systemPackages = with pkgs; [
+    # 
     git
     direnv
     vscode-insiders
@@ -102,17 +103,18 @@ in
     xd
     procs
     sd
-    #dust
+    #dust # abandoned
     tokei
-    #ytop
+    #ytop # abandoned
     tealdeer
     tldr
     bandwhich
     grex
-    #rmesg
+    #rmesg # unknown
     delta
-    #tp-note
+    #tp-note # unknown
     oil
+    plocate
   ];
 
   programs.neovim = {
