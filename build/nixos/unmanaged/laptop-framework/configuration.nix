@@ -104,7 +104,7 @@ in
     sd
     #dust
     tokei
-    ytop
+    #ytop
     tealdeer
     tldr
     bandwhich
