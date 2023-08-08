@@ -8,7 +8,6 @@ let
     version = "latest";
     buildInputs = oldAttrs.buildInputs ++ [ pkgs.krb5 ];
   });
-
 in
 {
   imports =
@@ -47,7 +46,6 @@ in
   };
 
   services.printing.enable = true;
-
   sound.enable = true;
   hardware.pulseaudio.enable = false;
   security.rtkit.enable = true;
@@ -79,7 +77,8 @@ in
     vscode-insiders
     openssl
     zigpkgs.default
-    # zigpkgs.zig
+    libsForQt5.yakuake
+    tmux
   ];
 
   programs.neovim = {
