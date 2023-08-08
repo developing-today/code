@@ -6,11 +6,12 @@
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
+        ./configuration.nix
         { pkgs, ... }: { 
-          imports = [ ./configuration.nix ];
           nixpkgs.overlays = [ zig.overlays.default ];
         }
       ];
     };
   };
 }
+
