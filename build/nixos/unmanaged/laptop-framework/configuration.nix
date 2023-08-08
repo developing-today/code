@@ -8,6 +8,7 @@ let
     version = "latest";
     buildInputs = oldAttrs.buildInputs ++ [ pkgs.krb5 ];
   });
+  
 in
 {
   imports =
@@ -77,6 +78,7 @@ in
     direnv
     vscode-insiders
     openssl
+    zig.default
   ];
 
   programs.neovim = {
