@@ -7,9 +7,7 @@
       system = "x86_64-linux";
       modules = [
         ./configuration.nix
-        { config, ... }: {
-          nixpkgs.overlays = [ zig-overlay.defaultPackage ];
-        }
+        ./overlays.nix
       ];
     };
   };
