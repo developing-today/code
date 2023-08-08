@@ -79,7 +79,7 @@ in
     vscode-insiders
     openssl
     # zigpkgs.default
-    zigpkgs.zig
+    # zigpkgs.zig
   ];
 
   programs.neovim = {
