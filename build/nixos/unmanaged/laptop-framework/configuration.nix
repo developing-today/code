@@ -111,7 +111,7 @@ in
     grex
     #rmesg
     delta
-    tp-note
+    #tp-note
     oil
   ];
 
