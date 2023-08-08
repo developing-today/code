@@ -109,7 +109,7 @@ in
     tldr
     bandwhich
     grex
-    rmesg
+    #rmesg
     delta
     tp-note
     oil
