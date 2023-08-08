@@ -89,6 +89,15 @@ in
     hyperfine
 # todo figure out how to use sway
     zellij
+    exa
+    rmtrash
+    mcfly
+    dogdns
+    htop
+    lazygit
+    tig
+    helix
+
   ];
 
   programs.neovim = {
