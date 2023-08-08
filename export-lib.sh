@@ -654,6 +654,63 @@ export_lib() {
       done
   }
   export -f commands
+
+  rebuild() {
+    sudo nixos-rebuild switch
+  }
+  export -f rebuild
+
+  re() {
+    rebuild
+  }
+  export -f re
+
+  reb() {
+    rebuild
+  }
+  export -f reb
+
+  crebuild() {
+    commit
+    rebuild
+  }
+  export -f crebuild
+
+  corebuild() {
+    commit
+    rebuild
+  }
+  export -f corebuild
+
+  comrebuild() {
+    commit
+    rebuild
+  }
+  export -f comrebuild
+
+  core() {
+    commit
+    rebuild
+  }
+  export -f core
+
+  cor() {
+    commit
+    rebuild
+  }
+  export -f cor
+
+  cre() {
+    commit
+    rebuild
+  }
+  export -f cre
+
+  cr() {
+    commit
+    rebuild
+  }
+  export -f cr
 }
 export_lib
 
