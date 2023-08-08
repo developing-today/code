@@ -114,8 +114,8 @@ in
     delta
     #tp-note # unknown
     oil
-    plocate # can't figure out how to use
-    mlocate
+    plocate
+#    mlocate
   ];
 
   programs.neovim = {
@@ -132,7 +132,7 @@ in
 
   services.locate = {
         enable = true;
-        locate = pkgs.mlocate;
+        locate = pkgs.plocate;
         interval = "hourly";
         localuser = null;
   };
