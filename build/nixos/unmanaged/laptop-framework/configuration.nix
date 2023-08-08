@@ -114,8 +114,8 @@ in
     delta
     #tp-note # unknown
     oil
-    plocate
-    locatedb
+    # plocate # can't figure out how to use
+    mlocate
   ];
 
   programs.neovim = {
@@ -129,4 +129,10 @@ in
 
   virtualisation.libvirtd.enable = true;
   virtualisation.docker.enable = true;
+
+  services.locate = {
+        enable = true;
+        locate = pkgs.mlocate;
+        interval = "hourly";
+  };
 }
