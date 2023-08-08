@@ -79,6 +79,16 @@ in
     zigpkgs.default
     libsForQt5.yakuake
     tmux
+    alacritty
+    ripgrep
+    ripgrep-all
+    zoxide
+    vimPlugins.zoxide-vim
+    vimPlugins.telescope-zoxide
+    starship
+    hyperfine
+# todo figure out how to use sway
+    zellij
   ];
 
   programs.neovim = {
