@@ -78,7 +78,8 @@ in
     direnv
     vscode-insiders
     openssl
-    zigpkgs.default
+    # zigpkgs.default
+    zigpkgs.zig
   ];
 
   programs.neovim = {
