@@ -34,6 +34,33 @@ alias l='nix-shell --command \"cargo leptos watch\"'
 alias n='nix-shell'
 alias vim='nvim'
 alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
+# locate plocate
+# ls exa
+# find fd
+# grep ripgrep
+# alias ls='exa'              # exa replaces ls
+# alias cat='bat'             # bat replaces cat
+# alias grep='ripgrep'        # ripgrep replaces grep
+# alias top='htop'            # htop replaces top
+# alias rm='rmtrash'          # rmtrash replaces rm (safer delete)
+# alias find='fd'             # fd replaces find (not listed but similar to ripgrep)
+# alias du='ncdu'             # ncdu replaces du (not listed but more advanced version)
+# alias ps='procs'            # procs replaces ps
+# alias git-delta='delta'     # delta can be used as a more advanced git diff
+# alias ls='exa'              # exa replaces ls
+# alias cat='bat'             # bat replaces cat
+# alias grep='ripgrep'        # ripgrep replaces grep
+# alias top='htop'            # htop replaces top
+# alias rm='rmtrash'          # rmtrash replaces rm (safer delete)
+# alias find='fd'             # fd replaces find (not listed but similar to ripgrep)
+# alias du='ncdu'             # ncdu replaces du (not listed but more advanced version)
+# alias ps='procs'            # procs replaces ps
+# alias git-delta='delta'     # delta can be used as a more advanced git diff
+
+# alias to nix-shell the absolute path of code git repo root
+# alias to dot source the absolute path of export lib in the code git repo root
+# rewrite export lib to work anywhere even out of repo root
+
 STARSHIP_PATH=\"\\\$(which starship)\" # do not use realpath
 eval \"\\\$(\\\$STARSHIP_PATH init bash)\"
 # ============================================================== END OF SYSTEM-WIDE GENERATED CODE ==============================================================

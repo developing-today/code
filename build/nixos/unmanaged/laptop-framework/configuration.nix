@@ -115,6 +115,7 @@ in
     #tp-note # unknown
     oil
     plocate
+    locatedb
   ];
 
   programs.neovim = {
