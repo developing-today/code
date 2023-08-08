@@ -114,7 +114,7 @@ in
     delta
     #tp-note # unknown
     oil
-    # plocate # can't figure out how to use
+    plocate # can't figure out how to use
     mlocate
   ];
 
@@ -134,5 +134,6 @@ in
         enable = true;
         locate = pkgs.mlocate;
         interval = "hourly";
+        localuser = null;
   };
 }
