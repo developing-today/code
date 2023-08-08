@@ -34,7 +34,8 @@ alias l='nix-shell --command \"cargo leptos watch\"'
 alias n='nix-shell'
 alias vim='nvim'
 alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
-
+STARSHIP_PATH=\"\\\$(realpath starship)\"
+eval \"\\\$(\\\$STARSHIP_PATH init bash)\"
 # ============================================================== END OF SYSTEM-WIDE GENERATED CODE ==============================================================
 EOF
 bash_profile_global_content=$(printf "%s\n" "${bash_profile_global_content_lines[@]}")
