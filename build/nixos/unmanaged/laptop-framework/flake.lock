@@ -65,10 +65,10 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "zig-overlay": "zig-overlay"
+        "zig": "zig"
       }
     },
-    "zig-overlay": {
+    "zig": {
       "inputs": {
         "flake-compat": "flake-compat",
         "flake-utils": "flake-utils",
