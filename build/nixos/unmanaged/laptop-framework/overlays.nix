@@ -1,3 +1,3 @@
-{ nixpkgs, ... }: {
-  nixpkgs.overlays = [ nixpkgs.zig-overlay.defaultPackage ];
+{ nixpkgs, zig-overlay, ... }: {
+  nixpkgs.overlays = [ zig-overlay.defaultPackage ];
 }
