@@ -16,6 +16,7 @@ in
       ./hardware-configuration.nix
       ./cachix.nix
     ];
+  nixpkgs.overlays = [ (import (fetchTarball "https://github.com/mitchellh/zig-overlay/archive/master.tar.gz")) ];
 
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
