@@ -636,7 +636,26 @@ export_lib() {
     git_diff "${@}"
   }
   export -f d
+
+  power() {
+    upower -i $(upower -e | grep 'BAT') | grep --color=never -E "state|to full|percentage"
+  }
+  export -f power
+
+  commands() {
+    echo $PATH  |
+      tr : '\n' |
+      while read e; do
+        for i in $e/*; do
+          if [[ -x "$i" && -f "$i" ]]; then
+            echo $i
+          fi
+        done
+      done
+  }
+  export -f commands
 }
 export_lib
 
 printf "%s\n" "done: export-lib script"
+

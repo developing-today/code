@@ -32,6 +32,7 @@ alias c='nix-shell --command \"code-insiders .\"'
 alias cn='code-insiders .'
 alias l='nix-shell --command \"cargo leptos watch\"'
 alias n='nix-shell'
+alias vim='nvim'
 alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
 
 # ============================================================== END OF SYSTEM-WIDE GENERATED CODE ==============================================================
