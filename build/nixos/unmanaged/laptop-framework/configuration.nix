@@ -97,7 +97,22 @@ in
     lazygit
     tig
     helix
-
+    ranger
+    bat
+    xd
+    procs
+    sd
+    dust
+    tokei
+    ytop
+    tealdeer
+    tldr
+    bandwhich
+    grex
+    rmesg
+    delta
+    tp-note
+    oil
   ];
 
   programs.neovim = {
