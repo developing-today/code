@@ -102,7 +102,7 @@ in
     xd
     procs
     sd
-    dust
+    #dust
     tokei
     ytop
     tealdeer
