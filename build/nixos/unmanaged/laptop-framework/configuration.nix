@@ -103,6 +103,7 @@ in
     xd
     procs
     sd
+    fd
     #dust # abandoned
     tokei
     #ytop # abandoned
@@ -115,7 +116,6 @@ in
     #tp-note # unknown
     oil
     plocate
-#    mlocate
   ];
 
   programs.neovim = {

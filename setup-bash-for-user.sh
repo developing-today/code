@@ -34,7 +34,7 @@ alias l='nix-shell --command \"cargo leptos watch\"'
 alias n='nix-shell'
 alias vim='nvim'
 alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
-# locate plocate
+# already auto handled dont touch: locate plocate
 # ls exa
 # find fd
 # grep ripgrep
