@@ -108,7 +108,7 @@ in
     tokei
     #ytop # abandoned
     tealdeer
-    tldr
+    # tldr # shadowed by tealdeer
     bandwhich
     grex
     #rmesg # unknown
@@ -116,6 +116,7 @@ in
     #tp-note # unknown
     oil
     plocate
+    # mlocate # shadowed by plocate
   ];
 
   programs.neovim = {
