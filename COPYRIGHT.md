@@ -43,6 +43,24 @@ A partial list of copyright acknowledgements related to this project.
   - for nix-related works within [`build/nix`](build/nix) and [`build/buck/preludes/nix-prelude`](build/buck/preludes/nix-prelude)
     - SPDX-License-Identifier: MIT OR Apache-2.0
     - SPDX-FileCopyrightText: © 2022-2023 Austin Seipp
+  - divnix/hive
+  - Authors of: buck2
+  - Authors of: Nix, NixOS, NixOps, Hydra
+  - HashiCorp
+- dotfiles structure
+  - jessfraz/.vim - Copyright (c) 2015 Jessie Frazelle
+  - jessfraz/dotfiles - Copyright (c) 2015 Jessie Frazelle
+  - necolas/dotfiles - Copyright (c) Nicolas Gallagher
+  - BrunoKrugel/dotfiles
+  - alex35mil/dotfiles
+  - ThePrimeagen/init.lua
+  - ThePrimeagen/.dotfiles
+- Authors of: NvChad, NeoVim, Vim, vi, ex, ed
+- Authors of: rust, rustc, cargo, clippy
+- Authors of: Pavex
+- Authors of: Leptos
+- Authors of: HTMX
+- Authors of: tailwindcss
 
 ## License Header Information
 
