@@ -1,43 +1,3 @@
-[user]
-	email = drewrypope@gmail.com
-  name = drewry pope
-
-[core]
-    pager = delta
-#    excludesfile = ~/.gitignore
-#    attributesfile = ~/.gitattributes
-
-[interactive]
-    diffFilter = delta --color-only
-
-[delta]
-    navigate = true    # use n and N to move between diff sections
-    light = false      # set to true if you're in a terminal w/ a light background color (e.g. the default macOS terminal)
-
-[merge]
-    conflictstyle = diff3
-
-[diff]
-    colorMoved = default
-   # tool = mvimdiff
-
-[color]
-    # color opts: normal, black, red, green, yellow, blue, magenta, cyan, or white
-    ui = auto
-    interactive = auto
-
-[difftool]
-    prompt = false
-
-[pretty]
-    # tut: http://gitimmersion.com/lab_10.html
-    # ref: http://linux.die.net/man/1/git-log
-    # Result: <short-sha> <commit-message> (<pointer-names>) -- <commit-author-name>; <relative-time>
-    nice = "%C(yellow)%h%C(reset) %C(white)%s%C(cyan)%d%C(reset) -- %an; %ar"
-
-[push]
-    default = simple
-
 [alias]
     # https://git.wiki.kernel.org/articles/a/l/i/Aliases.html
 
@@ -82,5 +42,32 @@
 
     # Find out who is currently active on the repository
     # Displays committers in descending order of number of commits
-  who = shortlog --numbered --summary --email --no-merges --since="3 months"
+    who = shortlog --numbered --summary --email --no-merges --since="3 months"
 
+[color]
+    # color opts: normal, black, red, green, yellow, blue, magenta, cyan, or white
+    ui = auto
+    interactive = auto
+
+[core]
+    # Use custom `.gitignore` and `.gitattributes`
+    excludesfile = ~/.gitignore
+    attributesfile = ~/.gitattributes
+
+[credential]
+    helper = osxkeychain
+
+[diff]
+    tool = mvimdiff
+
+[difftool]
+    prompt = false
+
+[pretty]
+    # tut: http://gitimmersion.com/lab_10.html
+    # ref: http://linux.die.net/man/1/git-log
+    # Result: <short-sha> <commit-message> (<pointer-names>) -- <commit-author-name>; <relative-time>
+    nice = "%C(yellow)%h%C(reset) %C(white)%s%C(cyan)%d%C(reset) -- %an; %ar"
+
+[push]
+    default = simple

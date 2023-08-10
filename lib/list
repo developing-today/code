@@ -1,0 +1,31 @@
+#!/bin/bash
+
+run_list() {
+
+cat <<EOT
+
+OS X dotfiles - Nicolas Gallagher - http://nicolasgallagher.com/
+
+Additional software to install
+
+Browsers:
+    Firefox
+    Google Chrome
+
+Development:
+    Filezilla
+    iTerm 2
+    ImageAlpha
+    ImageOptim
+    Yarn
+
+Other:
+    Alfred
+    Divvy
+    Dropbox
+    Flux
+    KeePassX
+    VLC
+EOT
+
+}
