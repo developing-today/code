@@ -149,10 +149,16 @@ in
   jetbrains-mono
   sops
   k9s
-  ## block ick
+unzip
+## block ick
   # These are so intellij file watchers has something to use
   nodejs-18_x
   nodePackages.prettier
+  nodePackages.wrangler
+  nodePackages.vercel
+  vimPlugins.nvim-treesitter-parsers.typescript
+  nodePackages.typescript
+  nodePackages.typescript-language-server
   ## endblock ick
   ];
 
