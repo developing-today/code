@@ -72,7 +72,7 @@ in
   nixpkgs.config.allowUnfree = true;
 
   environment.systemPackages = with pkgs; [
-    # 
+    #
     git
     direnv
     vscode-insiders
@@ -86,37 +86,39 @@ in
     zoxide
     vimPlugins.zoxide-vim
     vimPlugins.telescope-zoxide
-    starship
+    starship # replacement prompt (not shell)
     hyperfine
 # todo figure out how to use sway
-    zellij
-    exa
-    rmtrash
+    zellij # tmux
+    exa # ls
+    rmtrash # ctrl + z for rm
     mcfly
-    dogdns
-    htop
-    lazygit
-    tig
-    helix
-    ranger
-    bat
-    xd
-    procs
+    dogdns # dns for dogs
+    htop # top for humans
+    lazygit # command line git ui
+    tig # command line git
+    helix # neovim 2
+    ranger # midnight commander / file manager
+    bat # cat
+    # xd # i don't know what this is
+    procs # replace proc
     sd
-    fd
+    fd # replace find
     #dust # abandoned
-    tokei
+    tokei # this gives language stats about a repo
     #ytop # abandoned
-    tealdeer
+    tealdeer # ya tldr
     # tldr # shadowed by tealdeer
-    bandwhich
-    grex
+    # bandwhich # isn't working right?
+    grex # ya grep
     #rmesg # unknown
-    delta
+    delta # better diff
     #tp-note # unknown
-    oil
+    # oil # try again later
     plocate
     # mlocate # shadowed by plocate
+    universal-ctags # for nvim nvchad custom
+    neofetch # sysinfo
   ];
 
   programs.neovim = {
