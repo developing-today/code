@@ -180,24 +180,10 @@ gcc
   programs.neovim = {
     enable = true;
     defaultEditor = true;
- viAlias = true;
- vimAlias = true;
-  };
-    programs.neovim.plugins = [
-
-  pkgs.vimPlugins.nvim-tree-lua
-      {
-    plugin = pkgs.vimPlugins.vim-startify;
-    config = "let g:startify_change_to_vcs_root = 0";
+    viAlias = true;
+    vimAlias = true;
   }
 
-      {
-        plugin = pkgs.vimPlugins.sqlite-lua;
-        config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
-      }
-
-pkgs.vimPlugins.vim-nix
-    ];
   environment.variables.EDITOR = "nvim";
   system.stateVersion = "23.05";
 
