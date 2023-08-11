@@ -32,8 +32,9 @@ alias c='nix-shell --command \"code-insiders .\"'
 alias cn='code-insiders .'
 alias l='nix-shell --command \"cargo leptos watch\"'
 alias n='nix-shell'
-alias vim='nvim'
 alias z='nix-shell --command \"\\\$(fc -ln -1)\"'
+#alias vi='nvim' # handled by nixos
+#alias vim='nvim' # handled by nixos
 
 # already auto handled dont touch: locate plocate
 # ls exa
