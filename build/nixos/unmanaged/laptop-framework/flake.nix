@@ -1,18 +1,17 @@
 {
-  inputs = with { 
-    nixpkgs.url = "nixpkgs/nixos-unstable";
-    zig-overlay.url = "github:mitchellh/zig-overlay";
-    flake-utils.url = "github:numtide/flake-utils";
-    home-manager.url = "github:nix-community/home-manager";
-  }; {
-    home-manager.inputs.nixpkgs.follows = "nixpkgs";
+  inputs.nixpkgs.url = "nixpkgs/nixos-unstable";
+  inputs.zig-overlay.url = "github:mitchellh/zig-overlay";
+  inputs.flake-utils.url = "github:numtide/flake-utils";
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager";
+    inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = { self, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      stateVersion = "23.11"; # Define state version here
+      stateVersion = "23.11";
 
       homeManagerConfiguration = { pkgs, ... }: {
         imports = [
@@ -61,4 +60,3 @@
       };
     };
 }
-
