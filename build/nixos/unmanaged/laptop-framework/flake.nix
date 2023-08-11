@@ -1,19 +1,27 @@
 {
-  inputs.nixpkgs.url = "nixpkgs/nixos-unstable";
-  inputs.zig-overlay.url = "github:mitchellh/zig-overlay";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.home-manager.url = "github:nix-community/home-manager";
-  inputs.home-manager.inputs.nixpkgs.follows = "nixpkgs";
+  inputs = with { 
+    nixpkgs.url = "nixpkgs/nixos-unstable";
+    zig-overlay.url = "github:mitchellh/zig-overlay";
+    flake-utils.url = "github:numtide/flake-utils";
+    home-manager.url = "github:nix-community/home-manager";
+  }; {
+    home-manager.inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs = { self, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
     let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+      stateVersion = "23.11"; # Define state version here
+
       homeManagerConfiguration = { pkgs, ... }: {
         imports = [
           home-manager.nixosModules.home-manager
         ];
 
         home-manager.users.user = {
-          home.stateVersion = "23.11";
+          home.stateVersion = stateVersion;
+
           programs.neovim = {
             enable = true;
             defaultEditor = true;
@@ -23,7 +31,7 @@
             plugins = [
               pkgs.vimPlugins.nvim-tree-lua
               {
-                plugin = pkgs.sqlite-lua;
+                plugin = pkgs.vimPlugins.sqlite-lua;
                 config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
               }
               {
@@ -35,19 +43,22 @@
           };
         };
       };
-    in {
+
+    in
+    {
       nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
+        inherit system;
         modules = [
           ./configuration.nix
-          ({ pkgs, ... }: {
+          {
             nixpkgs.overlays = [
               (final: prev: { zigpkgs = zig-overlay.packages.${prev.system}; })
             ];
-          })
+            system.stateVersion = stateVersion;
+          }
           homeManagerConfiguration
         ];
       };
     };
-  }
+}
 

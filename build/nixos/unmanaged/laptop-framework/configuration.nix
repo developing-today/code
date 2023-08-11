@@ -185,7 +185,7 @@ gcc
   };
 
   environment.variables.EDITOR = "nvim";
-  system.stateVersion = "23.05";
+  #system.stateVersion = "23.05";
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
