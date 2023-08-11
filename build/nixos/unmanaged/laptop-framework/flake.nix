@@ -27,21 +27,21 @@
             fi
           }
 
-          checkAndDeleteIfEmpty "${config.home.homeDirectory}/.config/nvim"
-          checkAndDeleteIfEmpty "${config.home.homeDirectory}/NvChad"
-          checkAndDeleteIfEmpty "${config.home.homeDirectory}/forks/NvChad"
-          checkAndDeleteIfEmpty "${config.home.homeDirectory}/NvChad/lua/custom"
+          checkAndDeleteIfEmpty "~/.config/nvim"
+          checkAndDeleteIfEmpty "~/NvChad"
+          checkAndDeleteIfEmpty "~/forks/NvChad"
+          checkAndDeleteIfEmpty "~/NvChad/lua/custom"
 
-          if [ ! -d "${config.home.homeDirectory}/.config/nvim" ]; then
-            if [ -d "${config.home.homeDirectory}/NvChad" ] || [ -d "${config.home.homeDirectory}/forks/NvChad" ]; then
-              ln -sf "${config.home.homeDirectory}/NvChad" "${config.home.homeDirectory}/.config/nvim" || ln -sf "${config.home.homeDirectory}/forks/NvChad" "${config.home.homeDirectory}/.config/nvim"
+          if [ ! -d "~/.config/nvim" ]; then
+            if [ -d "~/NvChad" ] || [ -d "~/forks/NvChad" ]; then
+              ln -sf "~/NvChad" "~/.config/nvim" || ln -sf "~/forks/NvChad" "~/.config/nvim"
             else
-              git clone --depth 1 "https://github.com/developing-today-forks/NvChad" "${config.home.homeDirectory}/NvChad"
+              git clone --depth 1 "https://github.com/developing-today-forks/NvChad" "~/NvChad"
             fi
 
-            if [ ! -d "${config.home.homeDirectory}/NvChad/lua/custom" ]; then
-              git clone --depth 1 "https://github.com/developing-today-forks/NvChad-custom" "${config.home.homeDirectory}/NvChad-custom"
-              ln -sf "${config.home.homeDirectory}/NvChad-custom" "${config.home.homeDirectory}/NvChad/lua/custom"
+            if [ ! -d "~/NvChad/lua/custom" ]; then
+              git clone --depth 1 "https://github.com/developing-today-forks/NvChad-custom" "~/NvChad-custom"
+              ln -sf "~/NvChad-custom" "~/NvChad/lua/custom"
             fi
           fi
         '';
