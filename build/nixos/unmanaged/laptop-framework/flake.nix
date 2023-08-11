@@ -13,6 +13,7 @@
         ];
 
         home-manager.users.user = {
+          home.stateVersion = "23.11"
           programs.neovim = {
             enable = true;
             defaultEditor = true;
