@@ -1,10 +1,12 @@
 {
-  inputs.nixpkgs.url = "nixpkgs/nixos-unstable";
-  inputs.zig-overlay.url = "github:mitchellh/zig-overlay";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.home-manager = {
-    url = "github:nix-community/home-manager";
-    inputs.nixpkgs.follows = "nixpkgs";
+  inputs = {
+    nixpkgs.url = "nixpkgs/nixos-unstable";
+    zig-overlay.url = "github:mitchellh/zig-overlay";
+    flake-utils.url = "github:numtide/flake-utils";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { self, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
