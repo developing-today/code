@@ -29,45 +29,45 @@
             viAlias = true;
             vimAlias = true;
 
-            extraConfig = ''
-              let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'
-            '';
-
-            plugins = with pkgs.vimPlugins; [
-              nvim-tree-lua
-              sqlite-lua
-              vim-startify
-              vim-nix
+            plugins = [
+              pkgs.vimPlugins.nvim-tree-lua
+              {
+                plugin = pkgs.vimPlugins.sqlite-lua;
+                config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
+              }
+              {
+                plugin = pkgs.vimPlugins.vim-startify;
+                config = "let g:startify_change_to_vcs_root = 0";
+              }
+              pkgs.vimPlugins.vim-nix
             ];
           };
 
-          home.activation = {
-            createSymlink = dag.entryAfter [ "writeBoundary" ] ''
-              checkAndDeleteIfEmpty() {
-                if [ -d "$1" ] && [ -z "$(find "$1" -maxdepth 0 -empty)" ]; then
-                  rm -r "$1"
-                fi
-              }
-
-              checkAndDeleteIfEmpty "~/.config/nvim"
-              checkAndDeleteIfEmpty "~/NvChad"
-              checkAndDeleteIfEmpty "~/forks/NvChad"
-              checkAndDeleteIfEmpty "~/NvChad/lua/custom"
-
-              if [ ! -d "~/.config/nvim" ]; then
-                if [ -d "~/NvChad" ] || [ -d "~/forks/NvChad" ]; then
-                  ln -sf "~/NvChad" "~/.config/nvim" || ln -sf "~/forks/NvChad" "~/.config/nvim"
-                else
-                  git clone --depth 1 "https://github.com/developing-today-forks/NvChad" "~/NvChad"
-                fi
-
-                if [ ! -d "~/NvChad/lua/custom" ]; then
-                  git clone --depth 1 "https://github.com/developing-today-forks/NvChad-custom" "~/NvChad-custom"
-                  ln -sf "~/NvChad-custom" "~/NvChad/lua/custom"
-                fi
+          activation.createSymlink = ''
+            checkAndDeleteIfEmpty() {
+              if [ -d "$1" ] && [ -z "$(find "$1" -maxdepth 0 -empty)" ]; then
+                rm -r "$1"
               fi
-            '';
-          };
+            }
+
+            checkAndDeleteIfEmpty "~/.config/nvim"
+            checkAndDeleteIfEmpty "~/NvChad"
+            checkAndDeleteIfEmpty "~/forks/NvChad"
+            checkAndDeleteIfEmpty "~/NvChad/lua/custom"
+
+            if [ ! -d "~/.config/nvim" ]; then
+              if [ -d "~/NvChad" ] || [ -d "~/forks/NvChad" ]; then
+                ln -sf "~/NvChad" "~/.config/nvim" || ln -sf "~/forks/NvChad" "~/.config/nvim"
+              else
+                git clone --depth 1 "https://github.com/developing-today-forks/NvChad" "~/NvChad"
+              fi
+
+              if [ ! -d "~/NvChad/lua/custom" ]; then
+                git clone --depth 1 "https://github.com/developing-today-forks/NvChad-custom" "~/NvChad-custom"
+                ln -sf "~/NvChad-custom" "~/NvChad/lua/custom"
+              fi
+            fi
+          '';
         };
       };
 
