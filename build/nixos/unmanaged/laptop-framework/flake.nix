@@ -20,7 +20,7 @@
           home-manager.nixosModules.home-manager
         ];
 
-        home-manager.activation.createSymlink = hm.dag.entryAfter [ "writeBoundary" ] ''
+        home-manager.activation.createSymlink = home-manager.dag.entryAfter [ "writeBoundary" ] ''
           checkAndDeleteIfEmpty() {
             if [ -d "$1" ] && [ -z "$(find "$1" -maxdepth 0 -empty)" ]; then
               rm -r "$1"
