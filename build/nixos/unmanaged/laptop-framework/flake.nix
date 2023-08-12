@@ -25,7 +25,7 @@
         viAlias = true;
         vimAlias = true;
         vimdiffAlias = true;
-        extraConfig = "source '${config.home.homeDirectory}/NvChad/init.vim';";
+        extraConfig = "source '~/NvChad/init.vim';";
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
           {
