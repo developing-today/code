@@ -25,16 +25,16 @@
         viAlias = true;
         vimAlias = true;
         vimdiffAlias = true;
-        extraConfig = "source '~/NvChad/init.vim';";
+        extraConfig = "source ~/NvChad/init.vim";
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
           {
             plugin = pkgs.vimPlugins.sqlite-lua;
-            config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so';";
+            config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
           }
           {
             plugin = pkgs.vimPlugins.vim-startify;
-            config = "let g:startify_change_to_vcs_root = 0;";
+            config = "let g:startify_change_to_vcs_root = 0";
           }
           pkgs.vimPlugins.vim-nix
         ];
