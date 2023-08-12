@@ -25,7 +25,7 @@
         viAlias = true;
         vimAlias = true;
         vimdiffAlias = true;
-        extraConfig = builtins.readFile "${builtins.getEnv "HOME"}/NvChad/init.vim";
+        extraConfig = "source ${builtins.getEnv \"HOME\"}/NvChad/init.vim;";
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
           {
