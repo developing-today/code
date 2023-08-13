@@ -27,6 +27,7 @@
         vimdiffAlias = true;
         extraConfig = ''
           set runtimepath+=/home/user/forks/NvChad
+          set packpath+=/home/user/forks/NvChad
           luafile /home/user/forks/NvChad/_init.lua
           '';
         plugins = [
