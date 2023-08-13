@@ -8,7 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
-  outputs = { self, config, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
+  outputs = { self, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
   let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
