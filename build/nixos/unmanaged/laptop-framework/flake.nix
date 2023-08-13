@@ -25,7 +25,7 @@
         viAlias = true;
         vimAlias = true;
         vimdiffAlias = true;
-        extraConfig = "require(~/_init.lua)";
+        extraConfig = "require(~/_init.lua);";
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
           {
