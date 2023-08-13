@@ -13,7 +13,7 @@
   let
     system = "x86_64-linux";
     overlay = neovim-nightly-overlay.overlay;
-    pkgs = import nixpkgs { system = system; overlays = [ overlay ]; inherit system; };
+    pkgs = import nixpkgs { system = system; overlays = [ overlay ]; };
     stateVersion = "23.11";
     homeManagerConfiguration = { pkgs, ... }: {
       imports = [
