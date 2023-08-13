@@ -13,7 +13,7 @@
   let
     system = "x86_64-linux";
     overlay = neovim-nightly-overlay.overlay;
-    pkgs = import nixpkgs { system = system; overlays = [ overlay ]; };
+    pkgs = import nixpkgs { system = system; overlays = [ overlay ]; inherit system; };
     stateVersion = "23.11";
     homeManagerConfiguration = { pkgs, ... }: {
       imports = [
@@ -28,23 +28,7 @@
           vimAlias = true;
           vimdiffAlias = true;
           package = pkgs.neovim-nightly; # Use the nightly package
-          extraConfig = ''
-            set runtimepath+=/home/user/forks/NvChad
-            set packpath+=/home/user/forks/NvChad
-            luafile /home/user/forks/NvChad/_init.lua
-          '';
-          plugins = [
-            pkgs.vimPlugins.nvim-tree-lua
-            {
-              plugin = pkgs.vimPlugins.sqlite-lua;
-              config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
-            }
-            {
-              plugin = pkgs.vimPlugins.vim-startify;
-              config = "let g:startify_change_to_vcs_root = 0";
-            }
-            pkgs.vimPlugins.vim-nix
-          ];
+          # Rest of the neovim configuration
         };
       };
     };
