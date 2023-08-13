@@ -27,7 +27,7 @@
         vimdiffAlias = true;
         extraConfig = ''
           set runtimepath+=/home/user/forks/NvChad
-          luafile /home/user/forks/_init.lua
+          luafile /home/user/forks/NvChad/_init.lua
           '';
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
