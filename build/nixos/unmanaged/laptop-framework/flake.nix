@@ -40,6 +40,7 @@
         {
           nixpkgs.overlays = [
             (final: prev: { zigpkgs = zig-overlay.packages.${prev.system}; })
+            overlay # Include the Neovim nightly overlay
           ];
           system.stateVersion = stateVersion;
         }
