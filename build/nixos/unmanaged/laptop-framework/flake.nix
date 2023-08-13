@@ -13,7 +13,6 @@
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
     stateVersion = "23.11";
-    nvChadDir = "${config.xdg.configHome}/nvim/NvChad";
   homeManagerConfiguration = { pkgs, ... }: {
     imports = [
       home-manager.nixosModules.home-manager
@@ -27,6 +26,8 @@
         vimAlias = true;
         vimdiffAlias = true;
         extraConfig = ''
+          set runtimepath+=/home/user/forks/NvChad
+          luafile /home/user/forks/NvChad/_init.lua
           '';
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
