@@ -51,7 +51,7 @@
               \ git clone https://github.com/developing-today-forks/NvChad-custom ' . s:script_dir . '/lua/custom
               \ '
           endif
-          luafile _init.lua
+          luafile ./_init.lua
           '';
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
