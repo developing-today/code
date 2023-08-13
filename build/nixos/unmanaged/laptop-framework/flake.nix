@@ -8,11 +8,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
-  outputs = { self, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
+  outputs = { self, config, nixpkgs, zig-overlay, flake-utils, home-manager, ... }:
   let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
     stateVersion = "23.11";
+    nvChadDir = "${config.xdg.configHome}/nvim/NvChad";
   homeManagerConfiguration = { pkgs, ... }: {
     imports = [
       home-manager.nixosModules.home-manager
@@ -26,32 +27,6 @@
         vimAlias = true;
         vimdiffAlias = true;
         extraConfig = ''
-          " Determine the directory of the current Vim script
-          let s:script_dir = expand('<sfile>:p:h')
-
-          " Check for _init.lua, lua/core, and lua/plugins
-          if filereadable(s:script_dir . '/_init.lua') && isdirectory(s:script_dir . '/lua/core') && isdirectory(s:script_dir . '/lua/plugins')
-            " All exist, do nothing
-          elseif (filereadable(s:script_dir . '/_init.lua') || isdirectory(s:script_dir . '/lua/core') || isdirectory(s:script_dir . '/lua/plugins')) && !(filereadable(s:script_dir . '/_init.lua') && isdirectory(s:script_dir . '/lua/core') && isdirectory(s:script_dir . '/lua/plugins'))
-            " Partial existence, throw an error
-            throw "Partial files and directories found. Please check the setup."
-          else
-            " All don't exist, clone NvChad into the current directory
-            silent !sh -c '
-              \ git clone https://github.com/developing-today-forks/NvChad ' . s:script_dir . '/NvChad &&
-              \ mv ' . s:script_dir . '/NvChad/* ' . s:script_dir . '/ &&
-              \ mv ' . s:script_dir . '/NvChad/.* ' . s:script_dir . '/ &&
-              \ rm -rf ' . s:script_dir . '/NvChad
-              \ '
-          endif
-
-          " Check for lua/custom and clone NvChad-custom directly if it doesn't exist
-          if !isdirectory(s:script_dir . '/lua/custom')
-            silent !sh -c '
-              \ git clone https://github.com/developing-today-forks/NvChad-custom ' . s:script_dir . '/lua/custom
-              \ '
-          endif
-          luafile ./_init.lua
           '';
         plugins = [
           pkgs.vimPlugins.nvim-tree-lua
