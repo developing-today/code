@@ -177,13 +177,6 @@ gcc
   ## endblock ick
   ];
 
-  programs.neovim = {
-    enable = true;
-    defaultEditor = true;
-    viAlias = true;
-    vimAlias = true;
-  };
-
   environment.variables.EDITOR = "nvim";
   #system.stateVersion = "23.05";
 
