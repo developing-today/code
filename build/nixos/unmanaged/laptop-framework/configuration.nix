@@ -288,5 +288,13 @@ gcc
         nodePackages.eslint
         ccls
 
-  ];
+    zlib
+    dmenu
+    arandr
+    picom
+    espeak
+    blink1-tool
+    flameshot
+
+];
 }
