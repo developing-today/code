@@ -296,5 +296,43 @@ gcc
     blink1-tool
     flameshot
 
-];
+] ++
+    [
+      alacritty
+      autorandr
+      binutils
+      brightnessctl
+      feh
+      wget
+      pciutils
+      intel-gpu-tools
+      killall
+      libva-utils
+      spotify
+      skypeforlinux
+      zoom-us
+      slack
+      docker-compose
+      direnv
+      pavucontrol
+      polybar
+      pulseaudio
+      dunst
+      cmake
+      gcc
+      gnumake
+      libtool
+      vdpauinfo
+    ] ++ [
+      glib
+      grim
+      slurp
+      sway
+      swayidle
+      swaylock
+      waybar
+      wayland
+      wdisplays
+      wl-clipboard
+    ];
 }
