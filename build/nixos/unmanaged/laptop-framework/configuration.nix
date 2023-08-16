@@ -71,6 +71,28 @@ in
 
   nixpkgs.config.allowUnfree = true;
 
+  #programs.neovim = {
+  #  enable = true;
+  #  defaultEditor = true;
+  #  viAlias = true;
+  #  vimAlias = true;
+  #};
+
+  environment.variables.EDITOR = "nvim";
+  #system.stateVersion = "23.05";
+
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  virtualisation.libvirtd.enable = true;
+  virtualisation.docker.enable = true;
+
+  services.locate = {
+        enable = true;
+        locate = pkgs.plocate;
+        interval = "hourly";
+        localuser = null;
+  };
+
   environment.systemPackages = with pkgs; [
     #
     git
@@ -257,27 +279,14 @@ gcc
     qtractor
     jack2
     lmms
+
+        rnix-lsp
+        gcc
+        ripgrep
+        fd
+        nodePackages.pyright
+        nodePackages.eslint
+        ccls
+
   ];
-
-  programs.neovim = {
-    enable = true;
-    defaultEditor = true;
-    viAlias = true;
-    vimAlias = true;
-  };
-
-  environment.variables.EDITOR = "nvim";
-  #system.stateVersion = "23.05";
-
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
-
-  virtualisation.libvirtd.enable = true;
-  virtualisation.docker.enable = true;
-
-  services.locate = {
-        enable = true;
-        locate = pkgs.plocate;
-        interval = "hourly";
-        localuser = null;
-  };
 }
