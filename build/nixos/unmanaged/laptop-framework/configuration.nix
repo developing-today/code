@@ -246,6 +246,17 @@ gcc
 
     nickel
 
+
+    plasma5Packages.kdenlive
+    git
+    git-crypt
+    gnupg
+    audacity
+    gimp
+    nano
+    qtractor
+    jack2
+    lmms
   ];
 
   programs.neovim = {
