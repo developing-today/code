@@ -77,7 +77,7 @@ in
   #  viAlias = true;
   #  vimAlias = true;
   #};
-
+  programs.hyprland.enable = true
   environment.variables.EDITOR = "nvim";
   #system.stateVersion = "23.05";
 
