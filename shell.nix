@@ -25,6 +25,9 @@ pkgs.mkShell rec {
     docker
     jq
     yq
+    protobuf
+    capnproto
+    poetry
   ];
 
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
