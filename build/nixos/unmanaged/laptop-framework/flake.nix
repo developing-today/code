@@ -1,8 +1,14 @@
 {
   inputs = {
     nixpkgs.url = "nixpkgs/nixos-unstable";
-    zig-overlay.url = "github:mitchellh/zig-overlay";
-    neovim-nightly-overlay.url = "github:nix-community/neovim-nightly-overlay";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    neovim-nightly-overlay = {
+      url = "github:nix-community/neovim-nightly-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     flake-utils.url = "github:numtide/flake-utils";
     home-manager = {
       url = "github:nix-community/home-manager";
@@ -65,4 +71,3 @@
     };
   };
 }
-
