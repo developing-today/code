@@ -102,6 +102,7 @@ in
   environment.systemPackages = with pkgs; [
     #
     git
+    kitty
     direnv
     vscode-insiders
     openssl
