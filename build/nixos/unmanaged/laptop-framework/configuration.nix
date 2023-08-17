@@ -99,9 +99,6 @@ in
     vimAlias = true;
   };
 
-  environment.variables.EDITOR = "nvim";
-  #system.stateVersion = "23.05";
-
   environment.systemPackages = with pkgs; [
     #
     git
@@ -256,7 +253,7 @@ gcc
         # Erlang
         beam.packages.erlang.erlang-ls
         # Haskell
-        stable.haskellPackages.haskell-language-server
+        haskellPackages.haskell-language-server
         # Lua
         lua-language-server
         # Nix
@@ -265,7 +262,7 @@ gcc
         statix
         # Python
         pyright
-        python-debug
+#         python-debug
         black
         # Typescript
         nodePackages.typescript-language-server
