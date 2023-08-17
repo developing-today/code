@@ -21,6 +21,8 @@
       ];
       home-manager.users.user = {
         home.stateVersion = stateVersion;
+        programs.page.enable = true; # enable page
+        programs.page.setupPager = true; # set $PAGER variable
         programs.neovim = {
           enable = true;
           defaultEditor = true;

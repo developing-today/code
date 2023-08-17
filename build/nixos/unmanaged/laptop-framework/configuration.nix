@@ -71,6 +71,37 @@ in
 
   nixpkgs.config.allowUnfree = true;
 
+  #programs.neovim = {
+  #  enable = true;
+  #  defaultEditor = true;
+  #  viAlias = true;
+  #  vimAlias = true;
+  #};
+  programs.hyprland.enable = true
+  environment.variables.EDITOR = "nvim";
+  #system.stateVersion = "23.05";
+
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  virtualisation.libvirtd.enable = true;
+  virtualisation.docker.enable = true;
+
+  services.locate = {
+        enable = true;
+        locate = pkgs.plocate;
+        interval = "hourly";
+        localuser = null;
+  };
+  programs.neovim = {
+    enable = true;
+    defaultEditor = true;
+    viAlias = true;
+    vimAlias = true;
+  };
+
+  environment.variables.EDITOR = "nvim";
+  #system.stateVersion = "23.05";
+
   environment.systemPackages = with pkgs; [
     #
     git
@@ -175,20 +206,142 @@ gcc
   nodePackages.typescript
   nodePackages.typescript-language-server
   ## endblock ick
-  ];
 
-  environment.variables.EDITOR = "nvim";
-  #system.stateVersion = "23.05";
+    # Rust CLI Tools! I love rust.
+    exa
+    bat
+    tokei
+    xsv
+    fd
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+    # Development
+    neovim
+    tmux
+    jq
+    git-crypt
+    dnsutils
+    whois
 
-  virtualisation.libvirtd.enable = true;
-  virtualisation.docker.enable = true;
 
-  services.locate = {
-        enable = true;
-        locate = pkgs.plocate;
-        interval = "hourly";
-        localuser = null;
-  };
+    # Files
+    zstd
+    restic
+    brig
+    ipfs
+
+    # Media
+    youtube-dl
+    imagemagick
+
+    # Overview
+    htop
+    wtf
+    lazygit
+    neofetch
+
+    # Jokes
+    fortune
+    figlet
+    lolcat
+
+        tree-sitter
+        nodejs
+        # Language Servers
+        # Bash
+        nodePackages.bash-language-server
+        # Dart
+        dart
+        # Elixir
+        beam.packages.erlang.elixir-ls
+        # Erlang
+        beam.packages.erlang.erlang-ls
+        # Haskell
+        stable.haskellPackages.haskell-language-server
+        # Lua
+        lua-language-server
+        # Nix
+        nil
+        nixpkgs-fmt
+        statix
+        # Python
+        pyright
+        python-debug
+        black
+        # Typescript
+        nodePackages.typescript-language-server
+        # Web (ESLint, HTML, CSS, JSON)
+        nodePackages.vscode-langservers-extracted
+        # Telescope tools
+        ripgrep
+        fd
+
+    nickel
+
+
+    plasma5Packages.kdenlive
+    git
+    git-crypt
+    gnupg
+    audacity
+    gimp
+    nano
+    qtractor
+    jack2
+    lmms
+
+        rnix-lsp
+        gcc
+        ripgrep
+        fd
+        nodePackages.pyright
+        nodePackages.eslint
+        ccls
+
+    zlib
+    dmenu
+    arandr
+    picom
+    espeak
+    blink1-tool
+    flameshot
+
+] ++
+    [
+      alacritty
+      autorandr
+      binutils
+      brightnessctl
+      feh
+      wget
+      pciutils
+      intel-gpu-tools
+      killall
+      libva-utils
+      spotify
+      skypeforlinux
+      zoom-us
+      slack
+      docker-compose
+      direnv
+      pavucontrol
+      polybar
+      pulseaudio
+      dunst
+      cmake
+      gcc
+      gnumake
+      libtool
+      vdpauinfo
+    ] ++ [
+      glib
+      grim
+      slurp
+      sway
+      swayidle
+      swaylock
+      waybar
+      wayland
+      wdisplays
+      wl-clipboard
+    ];
 }
