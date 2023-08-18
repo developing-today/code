@@ -107,16 +107,16 @@ in
     };
     xserver = {
       enable = true;
-      displayManager = {
-        autoLogin = { enable = true; user = "user"; };
-#        defaultSession = "hyprland";
-        sddm.enable = true;
-      };
-      desktopManager.plasma5.enable = true;
-      layout = "us";
-      xkbVariant = "";
-#       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
-    };
+       displayManager = {
+#         autoLogin = { enable = true; user = "user"; };
+# #        defaultSession = "hyprland";
+         sddm.enable = true;
+       };
+#       desktopManager.plasma5.enable = true;
+       layout = "us";
+       xkbVariant = "";
+# #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
+     };
   };
 
   environment = {
