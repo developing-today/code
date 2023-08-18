@@ -26,11 +26,11 @@
       zig-overlay.overlays.default
       neovim-nightly-overlay.overlay
     ];
-    systemConfiguration = [ {
+    systemNixOsModules = [ {
       nixpkgs.overlays = overlays;
       system.stateVersion = stateVersion;
     } ./configuration.nix ];
-    hyprlandConfiguration = [ hyprland.nixosModules.default {
+    hyprlandNixOsModules = [ hyprland.nixosModules.default {
       programs = {
         hyprland = {
           enable = true;
@@ -40,7 +40,7 @@
     } ];
     system = "x86_64-linux";
     pkgs = import nixpkgs { system = system; overlays = overlays; };
-    homeManagerConfiguration = [ ({ pkgs, ... }: {
+    homeManagerNixOsModules = [ ({ pkgs, ... }: {
       imports = [
         home-manager.nixosModules.home-manager
       ];
@@ -103,9 +103,9 @@
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;
       modules =
-        systemConfiguration
-        ++ hyprlandConfiguration
-        ++ homeManagerConfiguration;
+        systemNixOsModules
+        ++ hyprlandNixOsModules
+        ++ homeManagerNixOsModules;
     };
   };
 }

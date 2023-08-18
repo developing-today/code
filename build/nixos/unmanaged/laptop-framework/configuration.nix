@@ -42,6 +42,7 @@ in
   nixpkgs.config.allowUnfree = true;
   sound.enable = true;
   hardware = {
+#     bluetooth.enable = true;
     pulseaudio.enable = false;
 #     nvidia = {
 #       # Enable modesetting for Wayland compositors (hyprland)
@@ -70,7 +71,7 @@ in
   users.users.user = {
     isNormalUser = true;
     description = "user";
-    extraGroups = [ "networkmanager" "wheel" "docker" ];
+    extraGroups = [ "networkmanager" "wheel" "docker" "video" "kvm" ];
     packages = with pkgs; [ firefox kate ];
   };
 
@@ -96,12 +97,17 @@ in
       enable = true;
       audio.enable = true;
       pulse.enable = true;
+      wireplumber.enable = true;
       alsa = { enable = true; support32Bit = true; };
       jack.enable = true;
     };
-
+#     devmon.enable = true;
+#     udisks2.enable = true;
+#     gvfs.enable = true;
 #     blueman.enable = true;
-#     flatpak.enable = true;
+    flatpak.enable = true;
+    dbus.enable = true;
+    openssh.enable = true;
 
     locate = {
       enable = true;
@@ -112,8 +118,8 @@ in
     xserver = {
       enable = true;
        displayManager = {
-#         autoLogin = { enable = true; user = "user"; };
-# #        defaultSession = "hyprland";
+         autoLogin = { enable = true; user = "user"; };
+         defaultSession = "hyprland";
          sddm.enable = true;
        };
 #            libinput.enable = true;
@@ -123,7 +129,13 @@ in
 # #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
      };
   };
-
+  programs = {
+    steam = {
+      enable = true;
+      remotePlay.openFirewall = true; # Open ports in the firewall for Steam Remote Play
+      dedicatedServer.openFirewall = true; # Open ports in the firewall for Source Dedicated Server
+    };
+  };
   environment = {
     sessionVariables.NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
     variables.EDITOR = "nvim";
@@ -364,7 +376,7 @@ gcc
       grim
       slurp
       sway
-      swayidle
+#       swayidledd
       swaylock
       waybar
       waybar-hyprland
@@ -450,6 +462,154 @@ xclip
     mako # notification system developed by swaywm maintainer
     wdisplays # tool to configure displays
     ]
-    ;
-};
+    ++ [
+    # Core Packages
+    lld
+    gcc
+    glibc
+    clang
+    udev
+    llvmPackages.bintools
+    wget
+    procps
+    killall
+    zip
+    unzip
+    bluez
+    bluez-tools
+    libnotify
+    brightnessctl
+    light
+    xdg-desktop-portal
+    xdg-utils
+    pipewire
+    wireplumber
+    alsaLib
+    pkgconfig
+
+    # Standard Packages
+    networkmanager
+    networkmanagerapplet
+    git
+    fzf
+    vim
+    tldr
+    sox
+    yad
+    flatpak
+
+    # GTK
+    gtk2
+    gtk3
+    gtk4
+
+    # QT
+    #qtcreator
+    qt5.qtwayland
+    qt6.qtwayland
+    qt6.qmake
+    libsForQt5.qt5.qtwayland
+    qt5ct
+
+    # My Packages
+    helix
+    brave
+    xfce.thunar
+    kitty
+    bat
+    exa
+    pavucontrol
+    blueman
+    #trash-cli
+    ydotool
+    cava
+    neofetch
+    cpufetch
+    starship
+    lolcat
+    gimp
+    transmission-gtk
+    slurp
+    gparted
+    vlc
+    mpv
+    krabby
+    zellij
+    shellcheck
+    thefuck
+    gthumb
+    cmatrix
+    lagrange
+
+    # My Proprietary Packages
+    discord
+    steam
+    spotify
+
+    # Xorg Stuff :-(
+    ## Libraries
+    xorg.libX11
+    xorg.libXcursor
+    ## Window Managers
+    #awesome
+    ## Desktop Environments
+    cinnamon.cinnamon-desktop
+    ## Programs
+    #nitrogen
+    #picom
+    #dunst
+    #flameshot
+
+    # Programming Languages
+    ## Rust
+    cargo
+    rustc
+    rust-analyzer
+    ## Go
+    go
+    ## R
+    (pkgs.rWrapper.override {
+      packages = with pkgs.rPackages; [
+        dplyr
+        xts
+        ggplot2
+        reshape2
+      ];
+    })
+    (pkgs.rstudioWrapper.override {
+      packages = with pkgs.rPackages; [
+        dplyr
+        xts
+        ggplot2
+        reshape2
+
+        rstudioapi
+      ];
+    })
+
+    # Command Shells
+    nushell
+
+    # Display Managers
+    lightdm
+    sddm
+    gnome.gdm
+
+    # Hyprland Rice
+#     hyprland
+    xwayland
+    cliphist
+    alacritty
+    rofi-wayland
+    swww
+    swaynotificationcenter
+    lxde.lxsession
+#     inputs.hyprwm-contrib.packages.${system}.grimblast
+    gtklock
+    eww-wayland
+#     xdg-desktop-portal-hyprland
+  ];
+
+######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
+  };
 }
