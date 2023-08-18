@@ -109,7 +109,7 @@ in
       enable = true;
       displayManager = {
         autoLogin = { enable = true; user = "user"; };
-#         defaultSession = "plasmawayland";
+        defaultSession = "hyprland";
         sddm.enable = true;
       };
       desktopManager.plasma5.enable = true;
@@ -372,9 +372,9 @@ gcc
       glib
       grim
       slurp
-#       sway
-#       swayidle
-#       swaylock
+      sway
+      swayidle
+      swaylock
       waybar
       wayland
       wdisplays
@@ -411,7 +411,7 @@ gnumake
 gparted
 kitty
 libverto
-# lightdm # added by ilh
+lightdm # added by ilh
 mangohud
 neovim
 nfs-utils
@@ -431,7 +431,7 @@ sxhkd
 st
 stdenv
 synergy
-# swaycons
+swaycons
 terminus-nerdfont
 tldr
 trash-cli
@@ -439,6 +439,25 @@ unzip
 variety
 vscode
 xclip
-    ];
+    ]
+    ++ [
+        alacritty # gpu accelerated terminal
+#     dbus-sway-environment
+#     configure-gtk
+    wayland
+    xdg-utils # for opening default programs when clicking links
+    glib # gsettings
+    dracula-theme # gtk theme
+    gnome3.adwaita-icon-theme  # default gnome cursors
+    swaylock
+    swayidle
+    grim # screenshot functionality
+    slurp # screenshot functionality
+    wl-clipboard # wl-copy and wl-paste for copy/paste from stdin / stdout
+    bemenu # wayland clone of dmenu
+    mako # notification system developed by swaywm maintainer
+    wdisplays # tool to configure displays
+    ]
+    ;
 };
 }
