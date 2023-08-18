@@ -109,7 +109,7 @@ in
       enable = true;
       displayManager = {
         autoLogin = { enable = true; user = "user"; };
-        defaultSession = "plasmawayland";
+#         defaultSession = "plasmawayland";
         sddm.enable = true;
       };
       desktopManager.plasma5.enable = true;
