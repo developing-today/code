@@ -109,13 +109,27 @@ in
       enable = true;
       displayManager = {
         autoLogin = { enable = true; user = "user"; };
-#        defaultSession = "hyprland";
+        defaultSession = "hyprland";
         sddm.enable = true;
       };
       desktopManager.plasma5.enable = true;
       layout = "us";
       xkbVariant = "";
 #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
+    };
+  };
+
+  programs = {
+    hyprland = {
+      enable = true;
+      xwayland.enable = true;
+#       nvidiaPatches = true; # ONLY use this line if you have an nvidia card
+    };
+    neovim = {
+      enable = true;
+      defaultEditor = true;
+      viAlias = true;
+      vimAlias = true;
     };
   };
 
