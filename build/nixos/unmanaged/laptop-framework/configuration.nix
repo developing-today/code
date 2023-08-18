@@ -118,8 +118,8 @@ in
     xserver = {
       enable = true;
        displayManager = {
-         autoLogin = { enable = true; user = "user"; };
-         defaultSession = "hyprland";
+         #autoLogin = { enable = true; user = "user"; };
+         #defaultSession = "hyprland";
          sddm.enable = true;
        };
 #            libinput.enable = true;
