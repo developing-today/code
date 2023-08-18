@@ -21,10 +21,13 @@
   };
   outputs = { self, nixpkgs, zig-overlay, neovim-nightly-overlay, flake-utils, home-manager, hyprland, ... }:
   let
-    system = "x86_64-linux";
-    overlay = neovim-nightly-overlay.overlay;
-    pkgs = import nixpkgs { system = system; overlays = [ overlay ]; };
     stateVersion = "23.11";
+    system = "x86_64-linux";
+    overlays = [
+      zig-overlay.overlays.default
+      neovim-nightly-overlay.overlay
+    ];
+    pkgs = import nixpkgs { system = system; overlays = overlays; };
     homeManagerConfiguration = { pkgs, ... }: {
       imports = [
         home-manager.nixosModules.home-manager
@@ -42,6 +45,12 @@
           };
         };
         programs = {
+          waybar = {
+            enable = true;
+            package = pkgs.waybar.overrideAttrs (oldAttrs: {
+              mesonFlags = oldAttrs.mesonFlags ++ [ "-Dexperimental=true" ];
+            });
+          };
           neovim = {
             enable = true;
             defaultEditor = true;
@@ -82,23 +91,22 @@
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;
       modules = [
+        {
+          nixpkgs.overlays = overlays;
+          system.stateVersion = stateVersion;
+        }
         ./configuration.nix
+        homeManagerConfiguration
         hyprland.nixosModules.default
         {
           programs.hyprland = {
             enable = true;
-            xwayland.enable = true;
+            xwayland = {
+              enable = true;
+            };
 #             nvidiaPatches = true; # ONLY use this line if you have an nvidia card
           };
         }
-        {
-          nixpkgs.overlays = [
-            (final: prev: { zigpkgs = zig-overlay.packages.${prev.system}; })
-            overlay
-          ];
-          system.stateVersion = stateVersion;
-        }
-        homeManagerConfiguration
       ];
     };
   };

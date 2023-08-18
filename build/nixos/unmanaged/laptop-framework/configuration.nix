@@ -99,6 +99,10 @@ in
       alsa = { enable = true; support32Bit = true; };
       jack.enable = true;
     };
+
+#     blueman.enable = true;
+#     flatpak.enable = true;
+
     locate = {
       enable = true;
       locate = pkgs.plocate;
@@ -112,6 +116,7 @@ in
 # #        defaultSession = "hyprland";
          sddm.enable = true;
        };
+#            libinput.enable = true;
 #       desktopManager.plasma5.enable = true;
        layout = "us";
        xkbVariant = "";
@@ -123,6 +128,7 @@ in
     sessionVariables.NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
     variables.EDITOR = "nvim";
     systemPackages = with pkgs; [
+    zigpkgs.master
     #
     git
     kitty
@@ -130,7 +136,6 @@ in
     direnv
     vscode-insiders
     openssl
-    zigpkgs.default
     libsForQt5.yakuake
     tmux
     alacritty
@@ -362,6 +367,7 @@ gcc
       swayidle
       swaylock
       waybar
+      waybar-hyprland
       wayland
       wdisplays
       wl-clipboard
