@@ -10,133 +10,96 @@ let
   });
 in
 {
-  imports = [ ./hardware-configuration.nix ./cachix.nix ];
+  imports =
+    [
+      ./hardware-configuration.nix
+      ./cachix.nix
+    ];
 
-  boot.loader = {
-    systemd-boot.enable = true;
-    efi.canTouchEfiVariables = true;
-  };
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;
 
-  networking = {
-    hostName = "nixos";
-    networkmanager.enable = true;
-  };
-
-  i18n = {
-    defaultLocale = "en_US.UTF-8";
-    extraLocaleSettings = {
-      LC_ADDRESS        = "en_US.UTF-8";
-      LC_IDENTIFICATION = "en_US.UTF-8";
-      LC_MEASUREMENT    = "en_US.UTF-8";
-      LC_MONETARY       = "en_US.UTF-8";
-      LC_NAME           = "en_US.UTF-8";
-      LC_NUMERIC        = "en_US.UTF-8";
-      LC_PAPER          = "en_US.UTF-8";
-      LC_TELEPHONE      = "en_US.UTF-8";
-      LC_TIME           = "en_US.UTF-8";
-    };
-  };
+  networking.hostName = "nixos";
+  networking.networkmanager.enable = true;
 
   time.timeZone = "America/Chicago";
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  nixpkgs.config.allowUnfree = true;
-  sound.enable = true;
-  hardware = {
-    pulseaudio.enable = false;
-#     nvidia = {
-#       # Enable modesetting for Wayland compositors (hyprland)
-#       modesetting.enable = true;
-#       # Use the open source version of the kernel module (for driver 515.43.04+)
-#       open = true;
-#       # Enable the Nvidia settings menu
-#       nvidiaSettings = true;
-#       # Select the appropriate driver version for your specific GPU
-#       package = config.boot.kernelPackages.nvidiaPackages.stable;
-#     };
-#     opengl = { # for nvidia
-#       enable = true;
-#       driSupport = true;
-#       driSupport32Bit = true;
-#     };
+
+  i18n.defaultLocale = "en_US.UTF-8";
+  i18n.extraLocaleSettings = {
+    LC_ADDRESS = "en_US.UTF-8";
+    LC_IDENTIFICATION = "en_US.UTF-8";
+    LC_MEASUREMENT = "en_US.UTF-8";
+    LC_MONETARY = "en_US.UTF-8";
+    LC_NAME = "en_US.UTF-8";
+    LC_NUMERIC = "en_US.UTF-8";
+    LC_PAPER = "en_US.UTF-8";
+    LC_TELEPHONE = "en_US.UTF-8";
+    LC_TIME = "en_US.UTF-8";
   };
 
-  security.rtkit.enable = true;
+  services.xserver.enable = true;
+  services.xserver.displayManager.sddm.enable = true;
+  services.xserver.desktopManager.plasma5.enable = true;
+  services.xserver = {
+    layout = "us";
+    xkbVariant = "";
+  };
 
-  virtualisation = {
-    libvirtd.enable = true;
-    docker.enable = true;
+  services.printing.enable = true;
+  sound.enable = true;
+  hardware.pulseaudio.enable = false;
+  security.rtkit.enable = true;
+  services.pipewire = {
+    enable = true;
+    alsa.enable = true;
+    alsa.support32Bit = true;
+    pulse.enable = true;
   };
 
   users.users.user = {
     isNormalUser = true;
     description = "user";
     extraGroups = [ "networkmanager" "wheel" "docker" ];
-    packages = with pkgs; [ firefox kate ];
-  };
-
-  fonts = {
     packages = with pkgs; [
-      noto-fonts noto-fonts-cjk noto-fonts-emoji font-awesome
-      source-han-sans source-han-sans-japanese source-han-serif-japanese
-      (nerdfonts.override { fonts = [ "Meslo" ]; })
+      firefox
+      kate
     ];
-    fontconfig = {
-      enable = true;
-      defaultFonts = {
-        monospace  = [ "Meslo LG M Regular Nerd Font Complete Mono" ];
-        serif      = [ "Noto Serif" "Source Han Serif" ];
-        sansSerif  = [ "Noto Sans" "Source Han Sans" ];
-      };
-    };
   };
 
-  services = {
-    printing.enable = true;
-    pipewire = {
-      enable = true;
-      audio.enable = true;
-      pulse.enable = true;
-      alsa = { enable = true; support32Bit = true; };
-      jack.enable = true;
-    };
-    locate = {
-      enable = true;
-      locate = pkgs.plocate;
-      interval = "hourly";
-      localuser = null;
-    };
-    xserver = {
-      enable = true;
-      displayManager = {
-        autoLogin = { enable = true; user = "user"; };
-        defaultSession = "plasmawayland";
-        sddm.enable = true;
-      };
-      desktopManager.plasma5.enable = true;
-      layout = "us";
-      xkbVariant = "";
-#       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
-    };
+  services.xserver.displayManager.autoLogin.enable = true;
+  services.xserver.displayManager.autoLogin.user = "user";
+
+  nixpkgs.config.allowUnfree = true;
+
+  #programs.neovim = {
+  #  enable = true;
+  #  defaultEditor = true;
+  #  viAlias = true;
+  #  vimAlias = true;
+  #};
+  programs.hyprland.enable = true;
+  environment.variables.EDITOR = "nvim";
+  #system.stateVersion = "23.05";
+
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  virtualisation.libvirtd.enable = true;
+  virtualisation.docker.enable = true;
+
+  services.locate = {
+        enable = true;
+        locate = pkgs.plocate;
+        interval = "hourly";
+        localuser = null;
+  };
+  programs.neovim = {
+    enable = true;
+    defaultEditor = true;
+    viAlias = true;
+    vimAlias = true;
   };
 
-  programs = {
-    hyprland = {
-      enable = true;
-      xwayland.enable = true;
-      # nvidiaPatches = true; # ONLY use this line if you have an nvidia card
-    };
-    neovim = {
-      enable = true;
-      defaultEditor = true;
-      viAlias = true;
-      vimAlias = true;
-    };
-  };
-
-  environment = {
-    sessionVariables.NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
-    variables.EDITOR = "nvim";
-    systemPackages = with pkgs; [
+  environment.systemPackages = with pkgs; [
     #
     git
     kitty
@@ -371,73 +334,12 @@ gcc
       glib
       grim
       slurp
-#       sway
-#       swayidle
-#       swaylock
+      sway
+      swayidle
+      swaylock
       waybar
       wayland
       wdisplays
       wl-clipboard
-    ] ++ [
-    vim
-wget
-w3m
-dmenu
-neofetch
-neovim
-autojump
-starship
-brave
-bspwm
-celluloid
-clang-tools_9
-dwm
-dunst
-elinks
-eww
-feh
-flameshot
-flatpak
-fontconfig
-freetype
-gcc
-gh
-gimp
-git
-github-desktop
-gnugrep
-gnumake
-gparted
-kitty
-libverto
-# lightdm # added by ilh
-mangohud
-neovim
-nfs-utils
-ninja
-nodejs
-nomacs
-openssl
-pavucontrol
-picom
-polkit_gnome
-powershell
-python3Full
-# python.pkgs.pip
-ripgrep
-rofi
-sxhkd
-st
-stdenv
-synergy
-# swaycons
-terminus-nerdfont
-tldr
-trash-cli
-unzip
-variety
-vscode
-xclip
     ];
-};
 }
