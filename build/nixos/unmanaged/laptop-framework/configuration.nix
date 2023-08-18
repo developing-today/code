@@ -123,7 +123,7 @@ in
     hyprland = {
       enable = true;
       xwayland.enable = true;
-      # nvidiaPatches = true; # ONLY use this line if you have an nvidia card
+#       nvidiaPatches = true; # ONLY use this line if you have an nvidia card
     };
     neovim = {
       enable = true;
@@ -140,6 +140,7 @@ in
     #
     git
     kitty
+    xwayland
     direnv
     vscode-insiders
     openssl
