@@ -22,13 +22,25 @@
   outputs = { self, nixpkgs, zig-overlay, neovim-nightly-overlay, flake-utils, home-manager, hyprland, ... }:
   let
     stateVersion = "23.11";
-    system = "x86_64-linux";
     overlays = [
       zig-overlay.overlays.default
       neovim-nightly-overlay.overlay
     ];
+    systemConfiguration = [ {
+      nixpkgs.overlays = overlays;
+      system.stateVersion = stateVersion;
+    } ./configuration.nix ];
+    hyprlandConfiguration = [ hyprland.nixosModules.default {
+      programs = {
+        hyprland = {
+          enable = true;
+          # nvidiaPatches = true; # ONLY use this line if you have an nvidia card
+        };
+      };
+    } ];
+    system = "x86_64-linux";
     pkgs = import nixpkgs { system = system; overlays = overlays; };
-    homeManagerConfiguration = { pkgs, ... }: {
+    homeManagerConfiguration = [ ({ pkgs, ... }: {
       imports = [
         home-manager.nixosModules.home-manager
       ];
@@ -47,7 +59,7 @@
         programs = {
           waybar = {
             enable = true;
-            package = pkgs.waybar.overrideAttrs (oldAttrs: {
+            package = pkgs.waybar-hyprland.overrideAttrs (oldAttrs: {
               mesonFlags = oldAttrs.mesonFlags ++ [ "-Dexperimental=true" ];
             });
           };
@@ -86,28 +98,14 @@
           };
         };
       };
-    };
+    }) ];
   in {
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;
-      modules = [
-        {
-          nixpkgs.overlays = overlays;
-          system.stateVersion = stateVersion;
-        }
-        ./configuration.nix
-        homeManagerConfiguration
-        hyprland.nixosModules.default
-        {
-          programs.hyprland = {
-            enable = true;
-            xwayland = {
-              enable = true;
-            };
-#             nvidiaPatches = true; # ONLY use this line if you have an nvidia card
-          };
-        }
-      ];
+      modules =
+        systemConfiguration
+        ++ hyprlandConfiguration
+        ++ homeManagerConfiguration;
     };
   };
 }
