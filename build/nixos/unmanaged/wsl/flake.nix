@@ -10,13 +10,18 @@
     gohello.url = "git+https://tulpa.dev/cadey/gohello-http?ref=main";
   };
 
-  outputs = { self, nixpkgs, gohello, ... }: {
+  outputs = {
+    self,
+    nixpkgs,
+    gohello,
+    ...
+  }: {
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
         ./configuration.nix
         gohello.nixosModule
-        ({ pkgs, ... }: {
+        ({pkgs, ...}: {
           xeserv.services.gohello.enable = true;
         })
       ];
@@ -26,16 +31,16 @@
       modules = [
         ./configuration.nix
         gohello.nixosModule
-        ({ pkgs, ... }: {
+        ({pkgs, ...}: {
           xeserv.services.gohello.enable = true;
         })
         home-manager.nixosModules.home-manager
         {
-            home-manager.useGlobalPkgs = true;
-            home-manager.useUserPackages = true;
-            home-manager.users.nixos = import ./home.nix;
+          home-manager.useGlobalPkgs = true;
+          home-manager.useUserPackages = true;
+          home-manager.users.nixos = import ./home.nix;
 
-            # Optionally, use home-manager.extraSpecialArgs to pass
+          # Optionally, use home-manager.extraSpecialArgs to pass
         }
       ];
     };
@@ -44,7 +49,7 @@
       modules = [
         ./configuration.nix
         gohello.nixosModule
-        ({ pkgs, ... }: {
+        ({pkgs, ...}: {
           xeserv.services.gohello.enable = true;
         })
       ];

@@ -1,10 +1,13 @@
-{ lib, pkgs, config, modulesPath, ... }:
-
-with lib;
-let
-  nixos-wsl = import ./nixos-wsl;
-in
 {
+  lib,
+  pkgs,
+  config,
+  modulesPath,
+  ...
+}:
+with lib; let
+  nixos-wsl = import ./nixos-wsl;
+in {
   imports = [
     "${modulesPath}/profiles/minimal.nix"
 
@@ -22,11 +25,10 @@ in
 
     # Enable integration with Docker Desktop (needs to be installed)
     # docker-desktop.enable = true;
-
   };
   services.nginx.enable = true;
   services.nginx.virtualHosts."localhost" = {
-      root = "/var/www/localhost";
+    root = "/var/www/localhost";
   };
   programs.git = {
     enable = true;
