@@ -195,7 +195,7 @@ in {
         # tldr # shadowed by tealdeer
         # bandwhich # isn't working right?
         grex # ya grep
-        #rmesg # unknown
+        # rmesg # unknown
         delta # better diff
         #tp-note # unknown
         # oil # try again later
@@ -519,15 +519,15 @@ in {
         # QT
         #qtcreator
         qt5.qtwayland
-        qt5-wayland
+        # qt5-wayland
         qt5.qmake
         libsForQt5.qt5.qtwayland
         qt5ct
 
         qt6.qtwayland
-        qt6-wayland
+        # qt6-wayland
         qt6.qmake
-        libsForQt6.qt6.qtwayland
+        # libsForQt6.qt6.qtwayland
         qt6ct
 
         # My Packages
@@ -601,7 +601,6 @@ in {
             xts
             ggplot2
             reshape2
-
             rstudioapi
           ];
         })
@@ -649,6 +648,188 @@ in {
       ]
       ++ [
         alejandra # from overlay
+      ] ++ [
+        oil
+        toilet
+        nsh
+        lsd
+        xcp
+        du-dust
+        zoxide
+        fd
+        sd
+        procs
+        bottom
+        topgrade
+broot
+kdash
+xh
+monolith
+# ripsecrets
+eva
+atuin
+bat
+#  dust du-dust above
+ fd
+ fend
+ hyperfine
+ miniserve
+ ripgrep
+ just
+ cargo-audit
+ cargo-wipe
+ watchexec
+#  calculator
+ fselect
+#  teehee
+# rpn
+ kalker
+ kondo
+ rnr
+ pipr
+#  stringsext
+ himalaya
+ topgrade
+ ncspot
+ loc
+ difftastic
+ html-tidy
+ tidyp
+ tidy-viewer
+#  medic
+ amp
+ kibi
+ lapce
+#  pepper
+#  xi
+ zee
+ wezterm
+ cargo-geiger
+ cargo-crev
+ bacon
+ cargo-binstall
+#  kani-verifier
+#  printfn
+ fend
+ zsv
+#  zh
+ skim
+ sd
+#  qsv
+ rargs
+#  rip
+#  qsv
+ procs
+ pipr
+ pastel
+ ouch
+ miniserve
+ mdcat
+ mdbook
+ macchina
+ lfs
+ lemmeknow
+#  legdur
+ just
+ jql
+ jless
+ inlyne
+ htmlq
+ gptman
+ git-cliff
+#  frum
+ ffsend
+ felix
+ fclones
+ dua
+ dog
+ choose
+#  counts
+#  pleco
+ drill
+ ion
+#  cpc
+#  oreboot
+ xcp
+ hck
+ skim
+ coreutils
+ hexyl
+#  nat
+ fnm
+ volta
+ sad
+ systeroid
+ please
+#  stringsext
+ navi
+ huniq
+ fastmod
+ furtherance
+ gitui
+#  lemmy
+ deno
+#  astro
+#  mrml
+ shellharden
+ dprint
+#  dtrace
+#  floki
+#  hashguard
+ dua
+#  dua-cli
+ tiny
+#  notty
+#  weld
+#  opentelemetry
+#  rustodon
+#  voila
+  fblog
+ diskonaut
+ kondo
+ kickoff
+#  cicada
+ bingrep
+ fontfinder
+#  tv-renamer
+ trippy
+ hex
+ ion
+#  cakawka
+ pueue
+#  delicate
+ runiq
+#  1history
+ nix-init
+ nix-melt
+ nurl
+ nomino
+ licensor
+ rustdesk
+ warp
+# intelli-shell
+git-cliff
+fw
+# frolic
+mask
+# hot-lib-reloader
+racer
+# rustfix
+cargo-graph
+# fenix
+# vim-racer
+# egui_graphs
+pgfplots
+# plotly
+# plotlib
+duckdb
+# trustfall
+# soup
+libsForQt5.polkit-kde-agent
+wireplumber
+dunst
+mako
+
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

@@ -50,8 +50,9 @@
         };
         system.stateVersion = stateVersion;
       }
-      ./configuration.nix
+      ./configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
     ];
+    # overlayNixOsModules = ?
     hyprlandNixOsModules = [
       {
         programs = {
@@ -65,7 +66,7 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs {
       system = system;
-      overlays = overlays;
+      overlays = overlays; # are overlays needed in home manager? document which/why?
     };
     homeManagerNixOsModules = [
       ({pkgs, ...}: {
