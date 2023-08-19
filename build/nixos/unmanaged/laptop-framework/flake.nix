@@ -103,7 +103,7 @@
           firefox.enable = true;
           fzf.enable = true;
           gh.enable = true;
-          git-credential-oauth.enable = true;
+          # git-credential-oauth.enable = true; # can't get browser to return back
           git.enable = true;
           gitui.enable = true;
           # gnome-terminal.enable = true; # strange error, probably because i'm not using gnome. interesting.
