@@ -519,10 +519,16 @@ in {
         # QT
         #qtcreator
         qt5.qtwayland
-        qt6.qtwayland
-        qt6.qmake
+        qt5-wayland
+        qt5.qmake
         libsForQt5.qt5.qtwayland
         qt5ct
+
+        qt6.qtwayland
+        qt6-wayland
+        qt6.qmake
+        libsForQt6.qt6.qtwayland
+        qt6ct
 
         # My Packages
         helix

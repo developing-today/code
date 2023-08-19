@@ -1,0 +1,6 @@
+{
+    "key": "ctrl+alt+f",
+    "command": "workbench.action.tasks.runTask",
+    "args": "Format with Alejandra",
+    "when": "resourceExtname == .nix"
+}

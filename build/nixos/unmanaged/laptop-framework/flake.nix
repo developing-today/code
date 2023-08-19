@@ -24,6 +24,7 @@
       url = "github:developing-today-forks/alejandra/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # nix-rice = https://github.com/bertof/nix-rice
   };
   outputs = {
     self,
