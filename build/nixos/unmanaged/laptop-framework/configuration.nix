@@ -38,7 +38,10 @@ in
   };
 
   time.timeZone = "America/Chicago";
-  nix.settings.experimental-features = [ "nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake" ];
+  nix = {
+    settings.experimental-features = [ "nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake" ];
+    package = pkgs.nixUnstable;
+  };
   nixpkgs.config.allowUnfree = true;
   sound.enable = true;
   hardware = {
@@ -555,10 +558,10 @@ xclip
     ## Desktop Environments
     cinnamon.cinnamon-desktop
     ## Programs
-    #nitrogen
-    #picom
-    #dunst
-    #flameshot
+    nitrogen
+    picom
+    dunst
+    flameshot
 
     # Programming Languages
     ## Rust
@@ -607,8 +610,30 @@ xclip
 #     inputs.hyprwm-contrib.packages.${system}.grimblast
     gtklock
     eww-wayland
-#     xdg-desktop-portal-hyprland
-  ];
+    xdg-desktop-portal-hyprland
+    hyprland-protocols
+    hyprland-share-picker
+    hyprland-autoname-workspaces
+    hyprland-per-window-layout
+    nwg-displays
+    nwg-dock-hyprland
+    gtk3
+    gtk4
+    hyprdim
+    waybar-hyprland
+    wttrbar
+    eww
+    eww-wayland
+    polybarFull
+    awesome
+    cowsay
+    banner
+    bsdgames
+    endlessh
+  ]
+
+
+    ;
 
 ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };

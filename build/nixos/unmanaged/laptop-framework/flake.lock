@@ -367,15 +367,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1692231604,
-        "narHash": "sha256-J7fxnC6FbGCthYRH7Ec8LbuUt8meWURelw1Rx0sqdOI=",
-        "owner": "mitchellh",
+        "lastModified": 1692415111,
+        "narHash": "sha256-ScduY7h554sbF/X3W1hAJUVKA0/mpbrNZUlFX1iYzCM=",
+        "owner": "developing-today-forks",
         "repo": "zig-overlay",
-        "rev": "5b15c13b046a9c2f5dae58f9051ba17b513c49fb",
+        "rev": "c241158df5fefe73740d5b3e6324fd712f48027c",
         "type": "github"
       },
       "original": {
-        "owner": "mitchellh",
+        "owner": "developing-today-forks",
+        "ref": "quote-urls",
         "repo": "zig-overlay",
         "type": "github"
       }
