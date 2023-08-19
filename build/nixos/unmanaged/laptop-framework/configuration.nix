@@ -38,7 +38,7 @@ in
   };
 
   time.timeZone = "America/Chicago";
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [ "nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake" ];
   nixpkgs.config.allowUnfree = true;
   sound.enable = true;
   hardware = {
