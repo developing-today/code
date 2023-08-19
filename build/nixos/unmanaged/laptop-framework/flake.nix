@@ -1,6 +1,8 @@
 {
   inputs = {
     nixpkgs.url = "nixpkgs/nixos-unstable";
+
+    #  hardware.url = "github:nixos/nixos-hardware";
     flake-utils.url = "github:numtide/flake-utils";
     # must type this all out every time
     # because flake inputs are basically static
