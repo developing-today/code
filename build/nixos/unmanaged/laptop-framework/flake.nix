@@ -14,12 +14,8 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    hyprland = {
-      url = "github:hyprwm/Hyprland";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
-  outputs = { self, nixpkgs, zig-overlay, neovim-nightly-overlay, flake-utils, home-manager, hyprland, ... }:
+  outputs = { self, nixpkgs, zig-overlay, neovim-nightly-overlay, flake-utils, home-manager, ... }:
   let
     stateVersion = "23.11";
     overlays = [
@@ -30,7 +26,7 @@
       nixpkgs.overlays = overlays;
       system.stateVersion = stateVersion;
     } ./configuration.nix ];
-    hyprlandNixOsModules = [ hyprland.nixosModules.default {
+    hyprlandNixOsModules = [ {
       programs = {
         hyprland = {
           enable = true;
