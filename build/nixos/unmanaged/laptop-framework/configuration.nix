@@ -76,12 +76,15 @@ in {
     docker.enable = true;
   };
 
-  users.users.user = {
-    isNormalUser = true;
-    description = "user";
-    extraGroups = ["trusted-users"  "networkmanager" "wheel" "docker" "video" "kvm"];
-    packages = with pkgs; [firefox kate];
-  };
+  users = {
+    defaultUserShell = pkgs.nushell;
+    users.user = {
+      isNormalUser = true;
+      description = "user";
+      extraGroups = ["trusted-users"  "networkmanager" "wheel" "docker" "video" "kvm"];
+      packages = with pkgs; [firefox kate];
+    };
+  }; 
 
   fonts = {
     packages = with pkgs; [
