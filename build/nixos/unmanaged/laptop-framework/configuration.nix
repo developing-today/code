@@ -41,7 +41,10 @@ in {
 
   time.timeZone = "America/Chicago";
   nix = {
-    settings.experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake"];
+    settings = {
+      experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake"];
+      trusted-users = [ "user" ];
+    };
     package = pkgs.nixUnstable;
   };
   nixpkgs.config.allowUnfree = true;
@@ -76,7 +79,7 @@ in {
   users.users.user = {
     isNormalUser = true;
     description = "user";
-    extraGroups = ["networkmanager" "wheel" "docker" "video" "kvm"];
+    extraGroups = ["trusted-users"  "networkmanager" "wheel" "docker" "video" "kvm"];
     packages = with pkgs; [firefox kate];
   };
 
@@ -830,6 +833,12 @@ in {
         wireplumber
         dunst
         mako
+	bsdgames
+haskellPackages.misfortune
+taoup
+rPackages.fortunes
+emacsPackages.fortune-cookie
+fortune
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
