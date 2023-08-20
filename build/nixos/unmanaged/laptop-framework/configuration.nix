@@ -842,6 +842,8 @@ taoup
 rPackages.fortunes
 emacsPackages.fortune-cookie
 fortune
+ion
+dash
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
