@@ -844,6 +844,9 @@ emacsPackages.fortune-cookie
 fortune
 ion
 dash
+pls
+oh-my-zsh
+oh-my-fish
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
