@@ -19,3 +19,5 @@ targets
 **/.direnv
 **/dist
 **/.tmp
+*.kate-swp
+**/*.kate-swp
