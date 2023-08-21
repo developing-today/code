@@ -21,7 +21,22 @@ in {
 
   networking = {
     hostName = "nixos";
-    networkmanager.enable = true;
+#     hostId = "deadbeef";
+#     useDHCP = true;
+#     wireless = {
+#       enable = true;
+#       wifi.backend = "iwd";
+#       interfaces = [ ... ];
+#       networks = {
+#         ...
+#       };
+#     };
+    networkmanager = {
+      enable = true;
+#       unmanaged = [
+#         "*" "except:type:wwan" "except:type:gsm"
+#       ];
+    };
   };
 
   i18n = {
@@ -871,6 +886,8 @@ in {
       ]
       ++ [
         hyprpaper
+        acpi
+        acpitool
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
