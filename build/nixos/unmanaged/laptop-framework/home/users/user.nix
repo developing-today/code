@@ -1,5 +1,8 @@
-{ stateVersion, pkgs, ... }:
 {
+  stateVersion,
+  pkgs,
+  ...
+}: {
   nixpkgs.config.allowUnfree = true;
   xdg = {
     enable = true;
@@ -23,35 +26,35 @@
   };
   programs = {
     waybar = {
-    enable = true;
-    package = pkgs.waybar-hyprland.overrideAttrs (oldAttrs: {
+      enable = true;
+      package = pkgs.waybar-hyprland.overrideAttrs (oldAttrs: {
         mesonFlags = oldAttrs.mesonFlags ++ ["-Dexperimental=true"];
-    });
+      });
     };
     neovim = {
-    enable = true;
-    defaultEditor = true;
-    viAlias = true;
-    vimAlias = true;
-    vimdiffAlias = true;
-    package = pkgs.neovim-nightly;
-    extraConfig = ''
+      enable = true;
+      defaultEditor = true;
+      viAlias = true;
+      vimAlias = true;
+      vimdiffAlias = true;
+      package = pkgs.neovim-nightly;
+      extraConfig = ''
         set runtimepath+=/home/user/forks/NvChad
         set packpath+=/home/user/forks/NvChad
         luafile /home/user/forks/NvChad/_init.lua
-    '';
-    plugins = [
+      '';
+      plugins = [
         pkgs.vimPlugins.nvim-tree-lua
         {
-        plugin = pkgs.vimPlugins.sqlite-lua;
-        config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
+          plugin = pkgs.vimPlugins.sqlite-lua;
+          config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
         }
         {
-        plugin = pkgs.vimPlugins.vim-startify;
-        config = "let g:startify_change_to_vcs_root = 0";
+          plugin = pkgs.vimPlugins.vim-startify;
+          config = "let g:startify_change_to_vcs_root = 0";
         }
         pkgs.vimPlugins.vim-nix
-    ];
+      ];
     };
     abook.enable = true;
     autojump.enable = true;
@@ -137,9 +140,9 @@
     zsh = {
       enable = true;
       oh-my-zsh = {
-          enable = true;
-          plugins = ["git" "python" "docker" "fzf"];
-          theme = "dpoggi";
+        enable = true;
+        plugins = ["git" "python" "docker" "fzf"];
+        theme = "dpoggi";
       };
     };
   };

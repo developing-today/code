@@ -56,7 +56,6 @@
     };
 
     homeManagerNixOsModules = home.homeManagerNixOsModules stateVersion;
-
   in {
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;

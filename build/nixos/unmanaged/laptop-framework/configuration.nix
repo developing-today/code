@@ -43,22 +43,22 @@ in {
   nix = {
     settings = {
       experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake"];
-      trusted-users = [ "user" ];
+      trusted-users = ["user"];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
       trusted-public-keys = [
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
         "serokell-1:aIojg2Vxgv7MkzPJoftOO/I8HKX622sT+c0fjnZBLj0="
       ];
-      substituters = [ "https://cache.nixos.org" ];
+      substituters = ["https://cache.nixos.org"];
       trusted-substituters = [
         "s3://serokell-private-cache?endpoint=s3.eu-central-1.wasabisys.com&profile=serokell-private-cache-wasabi"
       ];
       auto-optimise-store = true;
-          pure-eval = true;
-#     restrict-eval = true;
-    use-registries = true;
-    use-cgroups = true;
+      pure-eval = true;
+      restrict-eval = true;
+      use-registries = true;
+      use-cgroups = true;
     };
     package = pkgs.nixUnstable;
     optimise.automatic = true;
@@ -102,7 +102,7 @@ in {
     users.user = {
       isNormalUser = true;
       description = "user";
-      extraGroups = ["trusted-users"  "networkmanager" "wheel" "docker" "video" "kvm"];
+      extraGroups = ["trusted-users" "networkmanager" "wheel" "docker" "video" "kvm"];
       packages = with pkgs; [firefox kate];
     };
   };
@@ -857,20 +857,21 @@ in {
         wireplumber
         dunst
         mako
-	bsdgames
-haskellPackages.misfortune
-taoup
-rPackages.fortunes
-emacsPackages.fortune-cookie
-fortune
-ion
-dash
-pls
-oh-my-zsh
-oh-my-fish
-      ] ++ [
-hyprpaper
-];
+        bsdgames
+        haskellPackages.misfortune
+        taoup
+        rPackages.fortunes
+        emacsPackages.fortune-cookie
+        fortune
+        ion
+        dash
+        pls
+        oh-my-zsh
+        oh-my-fish
+      ]
+      ++ [
+        hyprpaper
+      ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
