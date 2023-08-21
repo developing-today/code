@@ -847,7 +847,9 @@ dash
 pls
 oh-my-zsh
 oh-my-fish
-      ];
+      ] ++ [
+hyprpaper
+];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
