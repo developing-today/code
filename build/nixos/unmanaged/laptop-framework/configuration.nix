@@ -888,7 +888,10 @@ in {
         hyprpaper
         acpi
         acpitool
-      ];
+        dolphin
+        wofi
+
+        ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
