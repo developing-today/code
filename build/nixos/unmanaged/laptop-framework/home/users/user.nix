@@ -4,8 +4,9 @@
   xdg = {
     enable = true;
     userDirs.enable = true;
+
     configFile."hypr" = {
-      source = ../../programs/hyprland/config;
+      source = ../programs/hyprland/config;
       recursive = true;
     };
   };

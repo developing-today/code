@@ -656,7 +656,8 @@ export_lib() {
   export -f commands
 
   rebuild() {
-    sudo nixos-rebuild switch
+#    git add . ; nix flake lock --update-input home ; sudo nixos-rebuild switch --show-trace
+   sudo nixos-rebuild switch
   }
   export -f rebuild
 
