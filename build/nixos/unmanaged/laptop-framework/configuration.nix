@@ -21,21 +21,21 @@ in {
 
   networking = {
     hostName = "nixos";
-#     hostId = "deadbeef";
-#     useDHCP = true;
-#     wireless = {
-#       enable = true;
-#       wifi.backend = "iwd";
-#       interfaces = [ ... ];
-#       networks = {
-#         ...
-#       };
-#     };
+    #     hostId = "deadbeef";
+    #     useDHCP = true;
+    #     wireless = {
+    #       enable = true;
+    #       wifi.backend = "iwd";
+    #       interfaces = [ ... ];
+    #       networks = {
+    #         ...
+    #       };
+    #     };
     networkmanager = {
       enable = true;
-#       unmanaged = [
-#         "*" "except:type:wwan" "except:type:gsm"
-#       ];
+      #       unmanaged = [
+      #         "*" "except:type:wwan" "except:type:gsm"
+      #       ];
     };
   };
 
@@ -890,8 +890,7 @@ in {
         acpitool
         dolphin
         wofi
-
-        ];
+      ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
