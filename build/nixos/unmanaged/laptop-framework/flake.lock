@@ -9,16 +9,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1692419153,
+        "lastModified": 1692484559,
         "narHash": "sha256-2GtN4dOShBbZuM53hOJxCNJ8udAjaEBP1EhijnublGM=",
-        "owner": "developing-today-forks",
+        "owner": "kamadorueda",
         "repo": "alejandra",
-        "rev": "2a4e6f7e14b4df955bd587d8e4ca5d2794ba8c31",
+        "rev": "862262c37a4cb589106ec80a29127dee3860474a",
         "type": "github"
       },
       "original": {
-        "owner": "developing-today-forks",
-        "ref": "quote-urls",
+        "owner": "kamadorueda",
         "repo": "alejandra",
         "type": "github"
       }
@@ -272,7 +271,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-NnNMHEDoGPofVx0dDgMrJhymjzIdLcTUYY8bUYRwNkU=",
+        "narHash": "sha256-M37a+PEvs/V6hxCQSpLTnwL7Yqze/CeowLFhqWJRSXI=",
         "path": "./home",
         "type": "path"
       },
@@ -309,11 +308,11 @@
       },
       "locked": {
         "dir": "contrib",
-        "lastModified": 1692388511,
-        "narHash": "sha256-klXDm3hl62w3xoToLKmwbIbPAZ3j/B9iZWg6fx2Och0=",
+        "lastModified": 1692574189,
+        "narHash": "sha256-bPiITKG5fFB5vzx28sC9cfcz+BkfJGe2W5ZoiFiRUtA=",
         "owner": "neovim",
         "repo": "neovim",
-        "rev": "5a6c7c805b8bb1d1ed9fe829ed33f18ffa6f4f47",
+        "rev": "694814cdd54ac245d1f4d2c28dce7e9132fcb616",
         "type": "github"
       },
       "original": {
@@ -334,11 +333,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1692403508,
-        "narHash": "sha256-968Kk7DiDlOHSBSmMdzCP45IPUkScjLniQNCSIKi65s=",
+        "lastModified": 1692576342,
+        "narHash": "sha256-eIJqMmicuB93qQd38YIRW2v/0GczYzNN57Xf/rNZJTY=",
         "owner": "nix-community",
         "repo": "neovim-nightly-overlay",
-        "rev": "f0f52faaf2af2ab492b3d03ce294437266cdf497",
+        "rev": "76577f17abb193cb77d786a932aa1f78a8dcfa5a",
         "type": "github"
       },
       "original": {
@@ -399,11 +398,11 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1692519940,
-        "narHash": "sha256-X8RUibAxCNVANhoyUufuGpR2PNVhMV4tRtUlOGSXlzc=",
+        "lastModified": 1692601750,
+        "narHash": "sha256-OIpuoVFqDNQ56XaVmv1cAt51VIlSrUM1lMdKehak9UQ=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "121ca823109257d115cd2bef799417785d5b2b11",
+        "rev": "325b09c1b514d9ec4cf5f987eb6e576acb7fbc31",
         "type": "github"
       },
       "original": {
@@ -478,16 +477,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1692415111,
-        "narHash": "sha256-ScduY7h554sbF/X3W1hAJUVKA0/mpbrNZUlFX1iYzCM=",
-        "owner": "developing-today-forks",
+        "lastModified": 1692577245,
+        "narHash": "sha256-+hhC5OQc3GA4g1iORRlDOFZr/6Fjf+dwiThw/U3pta4=",
+        "owner": "mitchellh",
         "repo": "zig-overlay",
-        "rev": "c241158df5fefe73740d5b3e6324fd712f48027c",
+        "rev": "90dbbb28495a345587ea445c4fc6c0334657a28d",
         "type": "github"
       },
       "original": {
-        "owner": "developing-today-forks",
-        "ref": "quote-urls",
+        "owner": "mitchellh",
         "repo": "zig-overlay",
         "type": "github"
       }
