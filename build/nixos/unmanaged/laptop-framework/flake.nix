@@ -47,13 +47,7 @@
       ./configuration.nix
     ];
     hyprlandNixOsModules = [
-      {
-        programs = {
-          hyprland = {
-            enable = true;
-          };
-        };
-      }
+      (import ./programs/hyprland/enable.nix)
     ];
     system = "x86_64-linux";
     pkgs = import nixpkgs {
