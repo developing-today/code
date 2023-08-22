@@ -61,7 +61,7 @@
     };
     nix-software-center = {
       #       url = "github:vlinkz/nix-software-center";
-      url = "github:developing-today-forks/nix-software-center/overlay";
+      url = "github:developing-today-forks/nix-software-center/overlay"; # https://github.com/vlinkz/nix-software-center/pull/50
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.utils.follows = "flake-utils";
     };
