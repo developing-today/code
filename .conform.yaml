@@ -1,0 +1,30 @@
+policies:
+  - spec:
+      conventional:
+        scopes:
+          - build
+          - unmanaged
+          - nixos
+          - buck
+          - nix
+          - laptop-framework
+          - rust
+        types:
+          - build
+          - chore
+          - ci
+          - docs
+          - feat
+          - fix
+          - perf
+          - refactor
+          - style
+          - test
+          - bug
+          - fix
+          - bugfix
+          - todo
+          - minor
+      header:
+        length: 89
+    type: commit

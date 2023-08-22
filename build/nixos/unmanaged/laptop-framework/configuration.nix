@@ -296,7 +296,7 @@ in {
         ## block ick
         # These are so intellij file watchers has something to use
         nodejs-18_x
-        nodePackages.prettier
+        #         nodePackages.prettier
         nodePackages.wrangler
         nodePackages.vercel
         vimPlugins.nvim-treesitter-parsers.typescript
@@ -921,6 +921,15 @@ in {
         btop
         mosh
         any-nix-shell
+        #         waybar-hyprland-git
+        treefmt
+        lefthook
+        conform
+        #         vimPlugins.vim-toml
+        #         vimPlugins.vim-prettier
+        #         vimPlugins.nvim-treesitter-parsers.toml
+        prettierToml #overlay
+        shfmt
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

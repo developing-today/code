@@ -38,12 +38,8 @@
   };
   manual.manpages.enable = true;
   programs = {
-    waybar = {
-      enable = true;
-      package = pkgs.waybar-hyprland.overrideAttrs (oldAttrs: {
-        mesonFlags = oldAttrs.mesonFlags ++ ["-Dexperimental=true"];
-      });
-    };
+    waybar = import ../programs/waybar.nix {inherit pkgs;};
+    alacritty = import ../programs/alacritty.nix;
     neovim = {
       enable = true;
       defaultEditor = true;
@@ -151,7 +147,6 @@
     nushell.enable = true;
     obs-studio.enable = true;
     oh-my-posh.enable = true;
-    alacritty.enable = true;
     bat.enable = true;
 
     zsh = {
@@ -164,27 +159,25 @@
     };
     htop = {
       enable = true;
-      /*
-        settings = with pkgs.htop; {
+      settings = {
         delay = 10;
         show_program_path = false;
         show_cpu_frequency = true;
         show_cpu_temperature = true;
         hide_kernel_threads = true;
         leftMeters = [
-          (bar "AllCPUs2")
-          (bar "Memory")
-          (bar "Swap")
+          "AllCPUs2"
+          "Memory"
+          "Swap"
         ];
         rightMeters = [
-          (text "Hostname")
-          (text "Tasks")
-          (text "LoadAverage")
-          (text "Uptime")
-          (text "Systemd")
+          "Hostname"
+          "Tasks"
+          "LoadAverage"
+          "Uptime"
+          "Systemd"
         ];
       };
-      */
     };
 
     tmux = {
