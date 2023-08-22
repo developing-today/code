@@ -938,6 +938,8 @@ in {
         vault
         elmPackages.elm-format
         ormolu
+        cachix
+        nix-software-center # overlay
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

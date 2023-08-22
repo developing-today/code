@@ -1,9 +1,20 @@
 {
   inputs = {
+    # MANUALLY KEEP NIXPKGS AND NIXPKGS-LIB 1:1.
+    # CHANGE ONE CHANGE THE OTHER.
     # master then if it breaks unstable then if it breaks 23.11 or something.
     nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    nixpkgs-lib.url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-utils.url = "github:numtide/flake-utils"; # inputs.systems
+    flake-compat = {
+      url = "github:edolstra/flake-compat";
+      flake = false;
+    };
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs-lib";
+    };
     home = {
       url = "path:./home";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -14,14 +25,26 @@
     zig-overlay = {
       url = "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.flake-utils.follows = "flake-utils";
     };
     neovim-nightly-overlay = {
       url = "github:nix-community/neovim-nightly-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.flake-utils.follows = "flake-utils";
     };
     alejandra = {
       url = "github:kamadorueda/alejandra"; # url = "github:developing-today-forks/alejandra/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flakeCompat.follows = "flake-compat";
+    };
+    nix-software-center = {
+      #       url = "github:vlinkz/nix-software-center";
+      url = "github:developing-today-forks/nix-software-center/overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.utils.follows = "flake-utils";
     };
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
   };
@@ -29,11 +52,12 @@
   outputs = {
     self,
     nixpkgs,
-    zig-overlay,
-    neovim-nightly-overlay,
     flake-utils,
     home,
+    zig-overlay,
+    neovim-nightly-overlay,
     alejandra,
+    nix-software-center,
     ...
   }: let
     stateVersion = "23.11";
@@ -41,6 +65,7 @@
       zig-overlay.overlays.default
       neovim-nightly-overlay.overlay
       alejandra.overlay
+      nix-software-center.overlay
     ];
     systemNixOsModules = [
       {
