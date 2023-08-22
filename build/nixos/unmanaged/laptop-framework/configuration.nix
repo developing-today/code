@@ -928,8 +928,11 @@ in {
         #         vimPlugins.vim-toml
         #         vimPlugins.vim-prettier
         #         vimPlugins.nvim-treesitter-parsers.toml
-        prettierToml #overlay
+        #         prettierToml #overlay
+        nodePackages.prettier
+        nodePackages.prettier-plugin-toml
         shfmt
+        rustfmt
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

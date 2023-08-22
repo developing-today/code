@@ -21,7 +21,15 @@ includes = [
 ]
 options = ["--plugin", "prettier-plugin-toml", "--write"]
 
-[formatter.shell]
+[formatter.shfmt]
 command = "shfmt"
 includes = ["*.sh"]
 options = ["-i", "2", "-s", "-w"]
+
+[formatter.rustfmt]
+command = "rustfmt"
+includes = ["*.rs"]
+
+[formatter.shellcheck]
+command = "shellcheck"
+includes = ["*.sh"]
