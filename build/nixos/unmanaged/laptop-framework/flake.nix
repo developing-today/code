@@ -4,13 +4,35 @@
     # CHANGE ONE CHANGE THE OTHER.
     # master then if it breaks unstable then if it breaks 23.11 or something.
     nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
-    nixpkgs-lib.url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
     flake-utils.url = "github:numtide/flake-utils"; # inputs.systems
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;
     };
+    hercules-ci-agent = {
+      url = "github:hercules-ci/hercules-ci-agent";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    hercules-ci-effects = {
+      url = "github:hercules-ci/hercules-ci-effects";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    neovim-nightly-overlay = {
+      url = "github:nix-community/neovim-nightly-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+    };
+    nixpkgs-lib = {
+      url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
+    };
+
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs-lib";
@@ -26,13 +48,6 @@
       url = "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "flake-utils";
-    };
-    neovim-nightly-overlay = {
-      url = "github:nix-community/neovim-nightly-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-parts.follows = "flake-parts";
       inputs.flake-utils.follows = "flake-utils";
     };
     alejandra = {
