@@ -71,7 +71,7 @@ in {
       ];
       auto-optimise-store = true;
       pure-eval = true;
-      restrict-eval = true;
+      restrict-eval = false;
       use-registries = true;
       use-cgroups = true;
     };
