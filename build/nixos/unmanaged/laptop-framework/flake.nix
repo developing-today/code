@@ -10,6 +10,9 @@
       url = "github:edolstra/flake-compat";
       flake = false;
     };
+    # must type follows all out every time
+    # because flake inputs are basically static
+    # can't make a let var function closure thing around it or whatever
     hercules-ci-agent = {
       url = "github:hercules-ci/hercules-ci-agent";
       inputs.flake-parts.follows = "flake-parts";
@@ -21,18 +24,28 @@
       inputs.hercules-ci-agent.follows = "hercules-ci-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.flake-utils.follows = "flake-utils";
+    };
+    neovim-flake = {
+      url = "github:neovim/neovim?dir=contrib";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
     neovim-nightly-overlay = {
       url = "github:nix-community/neovim-nightly-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-compat.follows = "flake-compat";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.flake-utils.follows = "flake-utils";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.neovim-flake.follows = "neovim-flake";
     };
     nixpkgs-lib = {
       url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
     };
-
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs-lib";
@@ -40,15 +53,6 @@
     home = {
       url = "path:./home";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-    # must type this all out every time
-    # because flake inputs are basically static
-    # can't make a let var function closure thing around it or whatever
-    zig-overlay = {
-      url = "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "flake-utils";
     };
     alejandra = {
       url = "github:kamadorueda/alejandra"; # url = "github:developing-today-forks/alejandra/quote-urls";
