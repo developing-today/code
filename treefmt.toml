@@ -28,8 +28,51 @@ options = ["-i", "2", "-s", "-w"]
 
 [formatter.rustfmt]
 command = "rustfmt"
+options = ["--edition", "2021"]
 includes = ["*.rs"]
 
 [formatter.shellcheck]
 command = "shellcheck"
 includes = ["*.sh"]
+
+[formatter.ruby]
+command = "rufo"
+options = ["-x"]
+includes = ["*.rb"]
+
+[formatter.python]
+command = "black"
+includes = ["*.py"]
+
+[formatter.elm]
+command = "elm-format"
+options = ["--yes"]
+includes = ["*.elm"]
+
+[formatter.go]
+command = "gofmt"
+options = ["-w"]
+includes = ["*.go"]
+
+[formatter.haskell]
+command = "ormolu"
+options = [
+  "--ghc-opt",
+  "-XBangPatterns",
+  "--ghc-opt",
+  "-XPatternSynonyms",
+  "--ghc-opt",
+  "-XTypeApplications",
+  "--mode",
+  "inplace",
+  "--check-idempotence",
+]
+includes = ["*.hs"]
+excludes = ["examples/haskell/"]
+
+[formatter.terraform]
+# Careful, only terraform 1.3.0 or later accept a list of files.
+# see https://github.com/numtide/treefmt/issues/97
+command = "terraform"
+options = ["fmt"]
+includes = ["*.tf"]

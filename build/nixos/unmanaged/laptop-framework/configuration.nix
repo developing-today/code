@@ -932,6 +932,14 @@ in {
         nodePackages.prettier-plugin-toml
         shfmt
         rustfmt
+        rufo
+        black
+        terraform
+        packer
+        consul
+        vault
+        elmPackages.elm-format
+        ormolu
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
