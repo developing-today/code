@@ -96,7 +96,7 @@
     havoc.enable = true;
     helix.enable = true;
     hexchat.enable = true;
-#     htop.enable = true;
+    #     htop.enable = true;
     i3status-rust.enable = true;
     i3status.enable = true;
     info.enable = true;
@@ -117,7 +117,7 @@
     mcfly.enable = true;
     # mercurial.enable = true; # config
     pandoc.enable = true;
-#     password-store.enable = true;
+    #     password-store.enable = true;
     powerline-go.enable = true;
     pyenv.enable = true;
     pylint.enable = true;
@@ -138,7 +138,7 @@
     #          thunderbird.enable = true;
     tiny.enable = true;
     tmate.enable = true;
-#     tmux.enable = true;
+    #     tmux.enable = true;
     vim-vint.enable = true;
     vim.enable = true;
     #          vscode.enable = true;
@@ -164,7 +164,8 @@
     };
     htop = {
       enable = true;
-      /*settings = with pkgs.htop; {
+      /*
+        settings = with pkgs.htop; {
         delay = 10;
         show_program_path = false;
         show_cpu_frequency = true;
@@ -182,7 +183,8 @@
           (text "Uptime")
           (text "Systemd")
         ];
-      };*/
+      };
+      */
     };
 
     tmux = {

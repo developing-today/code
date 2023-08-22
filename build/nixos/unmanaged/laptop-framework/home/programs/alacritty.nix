@@ -1,11 +1,11 @@
-{ config, pkgs, ... }:
-
 {
-
+  config,
+  pkgs,
+  ...
+}: {
   programs.alacritty = {
     enable = true;
     settings = {
-
       window = {
         decorations = "none";
         dynamic_padding = false;
@@ -13,7 +13,6 @@
           columns = 0;
           lines = 0;
         };
-
       };
 
       scrolling = {
@@ -21,13 +20,18 @@
       };
 
       font = {
-        size = if config.hostId == "yoga" then 18 else 12;
+        size =
+          if config.hostId == "yoga"
+          then 18
+          else 12;
       };
 
       mouse_bindings = [
-        { mouse = "Middle"; action = "PasteSelection"; }
+        {
+          mouse = "Middle";
+          action = "PasteSelection";
+        }
       ];
-
 
       # Colors (Hyper)
       colors = {

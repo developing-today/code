@@ -63,15 +63,17 @@ in {
       builders-use-substitutes = true;
       trusted-public-keys = [
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        # lol pretty sure need to delete this.
         "serokell-1:aIojg2Vxgv7MkzPJoftOO/I8HKX622sT+c0fjnZBLj0="
       ];
       substituters = ["https://cache.nixos.org"];
       trusted-substituters = [
+        # lol pretty sure need to delete this.
         "s3://serokell-private-cache?endpoint=s3.eu-central-1.wasabisys.com&profile=serokell-private-cache-wasabi"
       ];
       auto-optimise-store = true;
       pure-eval = true;
-      restrict-eval = false;
+      restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
       use-registries = true;
       use-cgroups = true;
     };
@@ -891,34 +893,35 @@ in {
         dolphin
         wofi
 
-    wl-clipboard
-    wdisplays
+        wl-clipboard
+        wdisplays
 
-    spotify
-    vlc
+        spotify
+        vlc
 
-    signal-desktop
-    tdesktop
-    element-desktop
-    tor-browser-bundle-bin
-    monero-gui
-    discord
-    zoom-us
-    # calibre
-    slack
-    xournal
-    xdg-utils
+        signal-desktop
+        tdesktop
+        element-desktop
+        tor-browser-bundle-bin
+        monero-gui
+        discord
+        zoom-us
+        # calibre
+        slack
+        xournal
+        xdg-utils
 
-    bat
-    pv
-    exa
-    ripgrep
-    pwgen
-    docker-compose
-    tmux
-    btop
-    mosh
-        ];
+        bat
+        pv
+        exa
+        ripgrep
+        pwgen
+        docker-compose
+        tmux
+        btop
+        mosh
+        any-nix-shell
+      ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
