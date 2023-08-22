@@ -435,7 +435,6 @@ in {
         #       swayidledd
         swaylock
         waybar
-        waybar-hyprland
         wayland
         wdisplays
         wl-clipboard
@@ -657,7 +656,6 @@ in {
         sddm
         gnome.gdm
 
-        # Hyprland Rice
         #     hyprland
         xwayland
         cliphist

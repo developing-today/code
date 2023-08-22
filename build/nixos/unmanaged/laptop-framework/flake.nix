@@ -1,6 +1,8 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # todo figure out how to use this
+    # master then if it breaks unstable then if it breaks 23.11 or something.
+    nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
     flake-utils.url = "github:numtide/flake-utils";
     home = {
       url = "path:./home";

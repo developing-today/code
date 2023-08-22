@@ -1,8 +1,11 @@
 {
   description = "Home Manager Flake";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  inputs.home-manager.url = "github:nix-community/home-manager";
+  inputs = {
+    # master then if it breaks unstable then if it breaks 23.11 or something.
+    nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    home-manager.url = "github:nix-community/home-manager";
+  };
 
   outputs = {
     self,
