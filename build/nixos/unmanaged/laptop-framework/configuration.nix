@@ -890,7 +890,35 @@ in {
         acpitool
         dolphin
         wofi
-      ];
+
+    wl-clipboard
+    wdisplays
+
+    spotify
+    vlc
+
+    signal-desktop
+    tdesktop
+    element-desktop
+    tor-browser-bundle-bin
+    monero-gui
+    discord
+    zoom-us
+    # calibre
+    slack
+    xournal
+    xdg-utils
+
+    bat
+    pv
+    exa
+    ripgrep
+    pwgen
+    docker-compose
+    tmux
+    btop
+    mosh
+        ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
