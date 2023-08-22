@@ -122,7 +122,7 @@
     readline.enable = true;
     ripgrep.enable = true;
     rtorrent.enable = true;
-    sagemath.enable = true;
+    #     sagemath.enable = true; # oh my god 1 hour + build times and then it usually fails. if it's cached you're fine but on unstable it is just not always cached. even worse against master branch
     ssh.enable = true;
     starship.enable = true;
     swaylock.enable = true;
