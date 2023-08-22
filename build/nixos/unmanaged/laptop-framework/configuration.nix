@@ -677,7 +677,7 @@ in {
         gtk3
         gtk4
         hyprdim
-        waybar-hyprland
+        #waybar-hyprland
         wttrbar
         eww
         eww-wayland

@@ -1,7 +1,7 @@
 {pkgs, ...}: {
   enable = true;
   systemd.enable = true;
-  package = pkgs.waybar-hyprland.overrideAttrs (oldAttrs: {
+  package = pkgs.waybar.overrideAttrs (oldAttrs: {
     mesonFlags = oldAttrs.mesonFlags ++ ["-Dexperimental=true"];
   });
   style = ''
