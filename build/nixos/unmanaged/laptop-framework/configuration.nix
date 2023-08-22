@@ -925,10 +925,9 @@ in {
         treefmt
         lefthook
         conform
-        #         vimPlugins.vim-toml
-        #         vimPlugins.vim-prettier
-        #         vimPlugins.nvim-treesitter-parsers.toml
-        #         prettierToml #overlay
+        vimPlugins.vim-toml
+        vimPlugins.vim-prettier
+        vimPlugins.nvim-treesitter-parsers.toml
         nodePackages.prettier
         nodePackages.prettier-plugin-toml
         shfmt

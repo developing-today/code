@@ -35,17 +35,10 @@
     ...
   }: let
     stateVersion = "23.11";
-    #     prettierTomlOverlay = pkgs: super: {
-    #       prettierToml = pkgs.writeShellScriptBin "prettier" ''
-    #         ${pkgs.nodePackages.prettier}/bin/prettier --plugin prettier-plugin-toml \
-    #         "$@"
-    #       '';
-    #     };
     overlays = [
       zig-overlay.overlays.default
       neovim-nightly-overlay.overlay
       alejandra.overlay
-      #       prettierTomlOverlay
     ];
     systemNixOsModules = [
       {
