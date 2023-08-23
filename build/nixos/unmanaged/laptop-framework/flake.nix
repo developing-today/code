@@ -4,6 +4,9 @@
     # CHANGE ONE CHANGE THE OTHER.
     # master then if it breaks unstable then if it breaks 23.11 or something.
     nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    nixpkgs-lib = {
+      url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
+    };
     home = {
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -46,9 +49,6 @@
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
-    };
-    nixpkgs-lib = {
-      url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
     };
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
