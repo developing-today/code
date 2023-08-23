@@ -99,7 +99,7 @@
     # overlayNixOsModules = ?
     hyprlandNixOsModules = [
       (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
-      (import ./modules/nm-applet.nix)
+      #       (import ./modules/nm-applet.nix)
     ];
     homeManagerNixOsModules = home.homeManagerNixOsModules stateVersion;
     system = "x86_64-linux";
