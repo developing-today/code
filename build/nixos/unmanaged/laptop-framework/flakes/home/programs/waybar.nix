@@ -1,6 +1,6 @@
 {pkgs, ...}: {
   enable = true;
-  systemd.enable = true;
+  #   systemd.enable = true; # did not work?
   package = pkgs.waybar.overrideAttrs (oldAttrs: {
     mesonFlags = oldAttrs.mesonFlags ++ ["-Dexperimental=true"];
   });
