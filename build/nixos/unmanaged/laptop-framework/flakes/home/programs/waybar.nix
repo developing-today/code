@@ -13,21 +13,24 @@
     }
 
     * {
-        font-size: 18px;
+        font-size: 14px;
+        font-weight: bold;
+        color: #00FF66;
+        background-color: rgba(0, 0, 0, 0.1);
     }
   '';
   settings = [
     {
-      height = 30;
+      height = 0;
       layer = "top";
       position = "bottom";
-      tray = {spacing = 10;};
-      modules-center = ["hyprland/window"];
+      tray = {spacing = 0;};
       modules-left = ["hyprland/workspaces" "hyprland/submap"];
+      modules-center = ["hyprland/window"];
       modules-right =
         [
           "pulseaudio"
-          "network"
+          #           "network"
           "cpu"
           "memory"
           "temperature"
@@ -83,7 +86,7 @@
         format-source-muted = "";
         on-click = "pavucontrol";
       };
-      "sway/mode" = {format = ''<span style="italic">{}</span>'';};
+      "hyprland/submap" = {format = ''<span style="italic">{}</span>'';};
       temperature = {
         critical-threshold = 80;
         format = "{temperatureC}°C {icon}";
