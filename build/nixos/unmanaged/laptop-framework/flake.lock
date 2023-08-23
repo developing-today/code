@@ -175,7 +175,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-0OSaowLesUzThYgjJnq064aZXRfFz5rbByhQPYObazk=",
+        "narHash": "sha256-6nfAD1vltDBvR6pPjF10FRALsmhJO2EH66IxZhxILUQ=",
         "path": "./flakes/home",
         "type": "path"
       },
