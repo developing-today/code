@@ -147,7 +147,6 @@
     obs-studio.enable = true;
     oh-my-posh.enable = true;
     bat.enable = true;
-
     zsh = {
       enable = true;
       oh-my-zsh = {
@@ -178,12 +177,10 @@
         ];
       };
     };
-
     tmux = {
       enable = true;
       # setw -g mouse on
     };
-
     password-store = {
       enable = true;
       settings = {
