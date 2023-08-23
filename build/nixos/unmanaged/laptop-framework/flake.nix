@@ -4,6 +4,10 @@
     # CHANGE ONE CHANGE THE OTHER.
     # master then if it breaks unstable then if it breaks 23.11 or something.
     nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    home = {
+      url = "path:./flakes/home";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
     flake-utils.url = "github:numtide/flake-utils"; # inputs.systems
     flake-compat = {
@@ -50,10 +54,6 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs-lib";
     };
-    home = {
-      url = "path:./home";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     alejandra = {
       url = "github:kamadorueda/alejandra"; # url = "github:developing-today-forks/alejandra/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -94,19 +94,19 @@
         };
         system.stateVersion = stateVersion;
       }
-      ./configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
+      ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
     ];
     # overlayNixOsModules = ?
     hyprlandNixOsModules = [
-      (import ./programs/hyprland/enable.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
+      (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
+      (import ./modules/nm-applet.nix)
     ];
+    homeManagerNixOsModules = home.homeManagerNixOsModules stateVersion;
     system = "x86_64-linux";
     pkgs = import nixpkgs {
       system = system;
       overlays = overlays;
     };
-
-    homeManagerNixOsModules = home.homeManagerNixOsModules stateVersion;
   in {
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;

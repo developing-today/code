@@ -9,7 +9,7 @@
     userDirs.enable = true;
 
     configFile."hypr" = {
-      source = ../programs/hyprland/config;
+      source = ../config/hypr;
       recursive = true;
     };
     mimeApps.defaultApplications = {
@@ -65,7 +65,6 @@
         pkgs.vimPlugins.vim-nix
       ];
     };
-    # nm-applet todo
     abook.enable = true;
     autojump.enable = true;
     autorandr.enable = true;
