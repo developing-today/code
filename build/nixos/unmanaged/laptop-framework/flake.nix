@@ -3,6 +3,7 @@
     # MANUALLY KEEP NIXPKGS AND NIXPKGS-LIB 1:1.
     # CHANGE ONE CHANGE THE OTHER.
     # master then if it breaks unstable then if it breaks 23.11 or something.
+    # "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"
     nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs-lib = {
       url = "github:NixOS/nixpkgs?dir=lib"; # /nixos-unstable?dir=lib"; # /nixos-23.11?dir=lib";
