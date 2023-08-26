@@ -1,8 +1,12 @@
 [formatter]
 
-[formatter.nix]
+[formatter.alejandra]
 command = "alejandra"
 includes = ["*.nix"]
+
+[formatter.flake-checker]
+command = "nix run github:DeterminateSystems/flake-checker"
+includes = ["flake.lock"]
 
 [formatter.prettier]
 command = "prettier"
