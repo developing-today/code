@@ -940,6 +940,7 @@ in {
         ormolu
         cachix
         nix-software-center # overlay
+        brillo
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
