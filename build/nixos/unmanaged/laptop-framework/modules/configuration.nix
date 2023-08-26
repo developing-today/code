@@ -89,6 +89,7 @@ in {
   sound.enable = true;
   hardware = {
     #     bluetooth.enable = true;
+    brillo.enable = false;
     pulseaudio.enable = false;
     #     nvidia = {
     #       # Enable modesetting for Wayland compositors (hyprland)
@@ -940,6 +941,7 @@ in {
         ormolu
         cachix
         nix-software-center # overlay
+        brillo
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
