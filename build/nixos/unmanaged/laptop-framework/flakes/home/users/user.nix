@@ -75,10 +75,11 @@
     };
     abook.enable = true;
     autojump.enable = true;
+
     autorandr.enable = true;
     # bash.enable = true; # bashrc overrides my bashrc hmmm
     bashmount.enable = true;
-    chromium.enable = true;
+    #     chromium.enable = true; # long build times
     dircolors.enable = true;
     direnv = {
       enable = true;
