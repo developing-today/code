@@ -75,7 +75,7 @@ in {
         "s3://serokell-private-cache?endpoint=s3.eu-central-1.wasabisys.com&profile=serokell-private-cache-wasabi"
       ];
       auto-optimise-store = true;
-      pure-eval = true;
+      pure-eval = true; #false; #true;
       restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
       use-registries = true;
       use-cgroups = true;
