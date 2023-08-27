@@ -15,7 +15,10 @@ in {
   imports = [./hardware-configuration.nix ./cachix.nix];
 
   boot.loader = {
-    systemd-boot.enable = true;
+    systemd-boot = {
+      enable = true;
+      configurationLimit = 64;
+    };
     efi.canTouchEfiVariables = true;
   };
 
@@ -82,7 +85,7 @@ in {
     gc = {
       automatic = true;
       dates = "weekly";
-      options = "--delete-older-than 30d";
+      options = "--delete-older-than 60d";
     };
   };
   nixpkgs.config.allowUnfree = true;
@@ -120,7 +123,7 @@ in {
     users.user = {
       isNormalUser = true;
       description = "user";
-      extraGroups = ["trusted-users" "networkmanager" "wheel" "docker" "video" "kvm"];
+      extraGroups = ["trusted-users" "networkmanager" "wheel" "docker" "video" "kvm" "beep"];
       packages = with pkgs; [firefox kate];
     };
   };
@@ -943,6 +946,7 @@ in {
         cachix
         nix-software-center # overlay
         brillo
+        beep
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

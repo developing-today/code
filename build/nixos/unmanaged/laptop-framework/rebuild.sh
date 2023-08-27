@@ -1,3 +1,4 @@
+git add .
 cd flakes/home || exit 1
 nix flake update
 cd ../.. || exit 1

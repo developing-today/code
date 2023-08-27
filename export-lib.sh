@@ -75,14 +75,14 @@ export_lib() {
     args=()
     state=0
     for arg in "${@}"; do
-      if [ "${state}" -eq 0 ]; then
-        if [ "${arg}" == "{}" ]; then
+      if [[ ${state} -eq 0 ]]; then
+        if [[ ${arg} == "{}" ]]; then
           state=1
         else
           arg_1+=("${arg}")
         fi
-      elif [ "${state}" -eq 1 ]; then
-        if [ "${arg}" == ":::" ]; then
+      elif [[ ${state} -eq 1 ]]; then
+        if [[ ${arg} == ":::" ]]; then
           state=2
         else
           arg_2+=("${arg}")
@@ -99,11 +99,11 @@ export_lib() {
       exit_code=$?
     else
       for arg in "${args[@]}"; do
-        $cmd "${arg_1[@]}" "${arg}" "${arg_2[@]}"
+        "${cmd}" "${arg_1[@]}" "${arg}" "${arg_2[@]}"
         for_exit_code=$?
 
-        if [ "${for_exit_code}" -ne 0 ]; then
-          exit_code=$for_exit_code
+        if [[ ${for_exit_code} -ne 0 ]]; then
+          exit_code="${for_exit_code}"
         fi
       done
     fi
@@ -117,32 +117,38 @@ export_lib() {
 
   # shellcheck disable=SC2059
   probe_arch() {
-      # local ARCH # purposefully global, use carefully
-      ARCH=$(uname -m)
-      case $ARCH in
-          x86_64) ARCH="x86_64"  ;;
-          aarch64) ARCH="arm64" ;;
-          arm64) ARCH="arm64" ;;
-          *) printf "Architecture ${ARCH} is not supported by this installation script\n"; exit 1 ;;
-      esac
+    # local ARCH # purposefully global, use carefully
+    ARCH=$(uname -m)
+    case "${ARCH}" in
+    x86_64) ARCH="x86_64" ;;
+    aarch64) ARCH="arm64" ;;
+    arm64) ARCH="arm64" ;;
+    *)
+      printf "Architecture ${ARCH} is not supported by this installation script\n"
+      exit 1
+      ;;
+    esac
   }
   export -f probe_arch
 
   # shellcheck disable=SC2059
   probe_os() {
-      # local OS # purposefully global, use carefully
-      OS=$(uname -s)
-      case $OS in
-          Darwin) OS="Darwin" ;;
-          Linux) OS="Linux" ;;
-          *) printf "Operating system ${OS} is not supported by this installation script\n"; exit 1 ;;
-      esac
+    # local OS # purposefully global, use carefully
+    OS=$(uname -s)
+    case "${OS}" in
+    Darwin) OS="Darwin" ;;
+    Linux) OS="Linux" ;;
+    *)
+      printf "Operating system ${OS} is not supported by this installation script\n"
+      exit 1
+      ;;
+    esac
   }
   export -f probe_os
 
   # shellcheck disable=SC2059,SC2140
   print_logo() { # todo: make a logo
-      printf "${bright_blue}
+    printf "${bright_blue}
       \$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$
       \$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$
       \$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$
@@ -175,36 +181,36 @@ export_lib() {
   detect_profile() {
     local DETECTED_PROFILE SHELLTYPE
     DETECTED_PROFILE=''
-    SHELLTYPE="$(basename "/$SHELL")"
+    SHELLTYPE="$(basename "/${SHELL}")"
 
-    if [ "$SHELLTYPE" = "bash" ]; then
-      if [ -f "$HOME/.bashrc" ]; then
-        DETECTED_PROFILE="$HOME/.bashrc"
-      elif [ -f "$HOME/.bash_profile" ]; then
-        DETECTED_PROFILE="$HOME/.bash_profile"
+    if [[ ${SHELLTYPE} == "bash" ]]; then
+      if [[ -f "${HOME}/.bashrc" ]]; then
+        DETECTED_PROFILE="${HOME}/.bashrc"
+      elif [[ -f "${HOME}/.bash_profile" ]]; then
+        DETECTED_PROFILE="${HOME}/.bash_profile"
       fi
-    elif [ "$SHELLTYPE" = "zsh" ]; then
-      DETECTED_PROFILE="$HOME/.zshrc"
-    elif [ "$SHELLTYPE" = "fish" ]; then
-      DETECTED_PROFILE="$HOME/.config/fish/conf.d/turso.fish"
+    elif [[ ${SHELLTYPE} == "zsh" ]]; then
+      DETECTED_PROFILE="${HOME}/.zshrc"
+    elif [[ ${SHELLTYPE} == "fish" ]]; then
+      DETECTED_PROFILE="${HOME}/.config/fish/conf.d/turso.fish"
     fi
 
-    if [ -z "$DETECTED_PROFILE" ]; then
-      if [ -f "$HOME/.profile" ]; then
-        DETECTED_PROFILE="$HOME/.profile"
-      elif [ -f "$HOME/.bashrc" ]; then
-        DETECTED_PROFILE="$HOME/.bashrc"
-      elif [ -f "$HOME/.bash_profile" ]; then
-        DETECTED_PROFILE="$HOME/.bash_profile"
-      elif [ -f "$HOME/.zshrc" ]; then
-        DETECTED_PROFILE="$HOME/.zshrc"
-      elif [ -d "$HOME/.config/fish" ]; then
-        DETECTED_PROFILE="$HOME/.config/fish/conf.d/turso.fish"
+    if [[ -z ${DETECTED_PROFILE} ]]; then
+      if [[ -f "${HOME}/.profile" ]]; then
+        DETECTED_PROFILE="${HOME}/.profile"
+      elif [[ -f "${HOME}/.bashrc" ]]; then
+        DETECTED_PROFILE="${HOME}/.bashrc"
+      elif [[ -f "${HOME}/.bash_profile" ]]; then
+        DETECTED_PROFILE="${HOME}/.bash_profile"
+      elif [[ -f "${HOME}/.zshrc" ]]; then
+        DETECTED_PROFILE="${HOME}/.zshrc"
+      elif [[ -d "${HOME}/.config/fish" ]]; then
+        DETECTED_PROFILE="${HOME}/.config/fish/conf.d/turso.fish"
       fi
     fi
 
-    if [ ! -z "$DETECTED_PROFILE" ]; then
-      echo "$DETECTED_PROFILE"
+    if [[ -n ${DETECTED_PROFILE} ]]; then
+      echo "${DETECTED_PROFILE}"
     fi
   }
   export -f detect_profile
@@ -213,14 +219,14 @@ export_lib() {
   update_profile_for_turso() {
     local PROFILE_FILE
     PROFILE_FILE=$(detect_profile)
-    if ! grep -q "\.turso" "$PROFILE_FILE"; then
-      printf "\n${bright_blue}Updating profile ${reset}$PROFILE_FILE\n"
+    if ! grep -q "\.turso" "${PROFILE_FILE}"; then
+      printf "\n${bright_blue}Updating profile ${reset}${PROFILE_FILE}\n"
 
-      printf "\n# Turso\nexport PATH=\"$INSTALL_DIRECTORY:\$PATH\"\n" >> "$PROFILE_FILE"
+      printf "\n# Turso\nexport PATH=\"${INSTALL_DIRECTORY}:\$PATH\"\n" >>"${PROFILE_FILE}"
 
       printf "\nTurso will be available when you open a new terminal.\n"
       printf "If you want to make Turso available in this terminal, please run:\n"
-      printf "\nsource $PROFILE_FILE\n"
+      printf "\nsource ${PROFILE_FILE}\n"
     fi
   }
   export -f update_profile_for_turso
@@ -228,21 +234,21 @@ export_lib() {
   recursively_chmod_executable_scripts() {
     local target_dir
     target_dir=${1:-.}
-    find "$target_dir" -type f \( -name "*.sh" -o -name "*.ps1" -o -name "*.py" \) -exec chmod +x {} +
+    find "${target_dir}" -type f \( -name "*.sh" -o -name "*.ps1" -o -name "*.py" \) -exec chmod +x {} +
   }
   export -f recursively_chmod_executable_scripts
 
   recursively_remove_empty_folders_modified_more_than_14_days_ago() {
     local target_dir
     target_dir=${1:-.}
-    find "$target_dir" -type d -empty -mtime +14 -execdir rmdir --ignore-fail-on-non-empty {} + 2>/dev/null
+    find "${target_dir}" -type d -empty -mtime +14 -execdir rmdir --ignore-fail-on-non-empty {} + 2>/dev/null
   }
   export -f recursively_remove_empty_folders_modified_more_than_14_days_ago
 
   recursively_remove_zero_byte_files_modified_more_than_14_days_ago() {
     local target_dir
     target_dir=${1:-.}
-    find "$target_dir" -type f -empty -mtime +14 -exec rm -f {} +
+    find "${target_dir}" -type f -empty -mtime +14 -exec rm -f {} +
   }
   export -f recursively_remove_zero_byte_files_modified_more_than_14_days_ago
 
@@ -256,9 +262,9 @@ export_lib() {
 
     base_location="${1}"
     target_location="${2:-.}"
-    relative_path=$(realpath --relative-to="$target_location" "$base_location")
+    relative_path=$(realpath --relative-to="${target_location}" "${base_location}")
 
-    echo "$relative_path"
+    echo "${relative_path}"
   }
   export -f relative
 
@@ -267,24 +273,39 @@ export_lib() {
 
     target_location="${1:-.}"
     repo_root=$(git_repo_root)
-    relative_path=$(relative "$repo_root" "$target_location")
+    relative_path=$(relative "${repo_root}" "${target_location}")
 
-    echo "$relative_path"
+    echo "${relative_path}"
   }
   export -f relative_git_repo_root
 
   git_restore_all_deleted_files() {
-    git ls-files -d | xargs git checkout --
+    deleted_files=$(git ls-files -d)
+    if [[ ${?} -eq 1 ]]; then
+      exit 1
+    elif [[ -n ${deleted_files} ]]; then
+      echo "${deleted_files}" | xargs git checkout --
+    fi
   }
   export -f git_restore_all_deleted_files
 
   git_restore_all_modified_files() {
-    git ls-files -m | xargs git checkout --
+    modified_files=$(git ls-files -m)
+    if [[ ${?} -eq 1 ]]; then
+      exit 1
+    elif [[ -n ${modified_files} ]]; then
+      echo "${modified_files}" | xargs git checkout --
+    fi
   }
   export -f git_restore_all_modified_files
 
   git_restore_all_untracked_files() {
-    git ls-files -o --exclude-standard | xargs git checkout --
+    untracked_files=$(git ls-files -o --exclude-standard)
+    if [[ ${?} -eq 1 ]]; then
+      exit 1
+    elif [[ -n ${untracked_files} ]]; then
+      echo "${untracked_files}" | xargs git checkout --
+    fi
   }
   export -f git_restore_all_untracked_files
 
@@ -360,15 +381,18 @@ export_lib() {
     )
 
     # Choose a random range
-    local range=${ranges[$RANDOM % ${#ranges[@]}]}
-    local start=$(echo $range | awk '{ print $1 }')
-    local end=$(echo $range | awk '{ print $2 }')
+    local range,start,end
+    range=${ranges[RANDOM % ${#ranges[@]}]}
+    start=$(echo "${range}" | awk '{ print ${1} }')
+    end=$(echo "${range}" | awk '{ print ${2} }')
 
     # Generate a random number within the chosen range
     local random_number=$((RANDOM % (end - start + 1) + start))
 
     # Convert the random number to the corresponding Unicode character
-    printf "\\U$(printf '%x' $random_number)"
+
+    # shellcheck disable=SC2059
+    printf "\\U$(printf '%x' "${random_number}")"
   }
   export -f random_emoji
 
@@ -401,7 +425,7 @@ export_lib() {
       # Characters from Fire Emblem
       "Marth" "Ike" "Roy" "Lucina" "Chrom" "Robin" "Corrin" "Byleth" "Edelgard" "Dimitri" "Sigurd" "Eliwood" "Lyn" "Micaiah" "Tharja" "Camilla" "Alm" "Celica" "Eirika" "Ephraim" "Hector" "Leif" "Ninian" "Olwen" "Reinhardt" "Seliph" "Sothe" "Takumi" "Tiki" "Xander" "Azura" "Fjorm"
     )
-    printf "%s" "${words[$RANDOM % ${#words[@]}]}"
+    printf "%s" "${words[RANDOM % ${#words[@]}]}"
   }
   export -f random_word
 
@@ -416,7 +440,7 @@ export_lib() {
     fi
 
     # If the emoji_name is empty, use a safer alternative from a predefined list
-    if [[ -z "${emoji_name}" || "${emoji_name}" == "true" || "${emoji_name}" == "false" || "${emoji_name}" == "null" || "${emoji_name}" == "undefined" || "${emoji_name}" == "error" || "${emoji_name}" == "not_found" || "${emoji_name}" == "rate_limit_exceeded" || "${emoji_name}" == "invalid_credentials" || "${emoji_name}" == "api_usage" || "${emoji_name}" == "abuse_detected" || "${emoji_name}" == "file_too_large" || "${emoji_name}" == "unsupported_media_type" || "${emoji_name}" == "unprocessable" || "${emoji_name}" == "server_error" || "${emoji_name}" == "temporarily_unavailable" ]]; then
+    if [[ -z ${emoji_name} || ${emoji_name} == "true" || ${emoji_name} == "false" || ${emoji_name} == "null" || ${emoji_name} == "undefined" || ${emoji_name} == "error" || ${emoji_name} == "not_found" || ${emoji_name} == "rate_limit_exceeded" || ${emoji_name} == "invalid_credentials" || ${emoji_name} == "api_usage" || ${emoji_name} == "abuse_detected" || ${emoji_name} == "file_too_large" || ${emoji_name} == "unsupported_media_type" || ${emoji_name} == "unprocessable" || ${emoji_name} == "server_error" || ${emoji_name} == "temporarily_unavailable" ]]; then
       emoji_name=$(random_word)
     fi
 
@@ -427,11 +451,13 @@ export_lib() {
   export -f random_emoji_name
 
   datetime() {
+    #shellcheck disable=SC2312
     printf "%s" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   }
   export -f datetime
 
   today() {
+    #shellcheck disable=SC2312
     printf "%s" "$(date -u +"%Y-%m-%d")"
   }
   export -f today
@@ -440,13 +466,15 @@ export_lib() {
   git_commit_all() {
     declare commit_message emoji_message
 
-    if [[ "${1}" == "-" ]]; then
+    if [[ ${1} == "-" ]]; then
       shift
       commit_message="${*}"
-    elif [[ -n "${1}" ]]; then
+    elif [[ -n ${1} ]]; then
+      #shellcheck disable=SC2312
       emoji_message="$(random_emoji)$(random_emoji)$(random_emoji)"
       commit_message="${emoji_message}${*}"
     else
+      #shellcheck disable=SC2312
       emoji_message="$(random_emoji)$(random_emoji)$(random_emoji)"
       commit_message="${emoji_message}$(random_emoji_name || random_word)"
     fi
@@ -468,6 +496,7 @@ export_lib() {
   export -f git_commit_all_push
 
   source_lib() {
+    #shellcheck disable=SC2312
     . "$(git_repo_root)/export-lib.sh"
   }
   export -f source_lib
@@ -542,6 +571,7 @@ export_lib() {
   }
   export -f sw
 
+  #shellcheck disable=SC2120
   commit() {
     git_commit_all "${@}"
   }
@@ -638,26 +668,41 @@ export_lib() {
   export -f d
 
   power() {
-    upower -i $(upower -e | grep 'BAT') | grep --color=never -E "state|to full|percentage"
+    #shellcheck disable=SC2312
+    upower -i "$(upower -e | grep 'BAT')" | grep --color=never -E "state|to full|percentage"
   }
   export -f power
 
   commands() {
-    echo $PATH  |
+    #shellcheck disable=SC2312
+    echo "${PATH}" |
       tr : '\n' |
-      while read e; do
-        for i in $e/*; do
-          if [[ -x "$i" && -f "$i" ]]; then
-            echo $i
+      while read -r e; do
+        for i in "${e}"/*; do
+          if [[ -x ${i} && -f ${i} ]]; then
+            echo "${i}"
           fi
         done
       done
   }
   export -f commands
 
+  nix-clean() {
+    nix-env --delete-generations old
+    nix-store --gc
+    nix-channel --update
+    nix-env -u --always
+    for link in /nix/var/nix/gcroots/auto/*; do
+      #shellcheck disable=SC2312
+      rm "$(readlink "${link}")"
+    done
+    nix-collect-garbage -d
+  }
+  export -f nix-clean
+
   rebuild() {
-#    git add . ; nix flake lock --update-input home ; sudo nixos-rebuild switch --show-trace
-   sudo nixos-rebuild switch
+    #    git add . ; nix flake lock --update-input home ; sudo nixos-rebuild switch --show-trace
+    sudo nixos-rebuild switch
   }
   export -f rebuild
 
@@ -716,4 +761,3 @@ export_lib() {
 export_lib
 
 printf "%s\n" "done: export-lib script"
-
