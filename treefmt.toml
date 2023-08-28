@@ -1,12 +1,18 @@
 [formatter]
 
+# [formatter.<name>]
+# command = "<formatter-command>"
+# options = [“<formatter-option-1>”...]
+
 [formatter.alejandra]
 command = "alejandra"
 includes = ["*.nix"]
 
+# todo make options etc
 #[formatter.flake-checker]
 #command = "nix run github:DeterminateSystems/flake-checker"
 #includes = ["flake.lock"]
+
 [formatter.prettier]
 command = "prettier"
 includes = [
