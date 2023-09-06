@@ -13,7 +13,7 @@ rustdoc-types = "0.22.0"
 serde = { version = "1.0.139", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }
 serde_stacker = "0.1"
-anyhow = "1.0.58"
+anyhow = "1.0.75"
 fs-err = "2.7.0"
 indexmap = { version = "1.9.1", features = ["serde-1"] }
 petgraph = { version = "0.6.2", default-features = false, features = ["graphmap", "stable_graph"] }
