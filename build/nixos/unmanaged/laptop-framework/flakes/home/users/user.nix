@@ -87,7 +87,7 @@
     };
     emacs.enable = true;
     # eww.enable = true; # config
-    exa.enable = true;
+    eza.enable = true;
     firefox.enable = true;
     fzf.enable = true;
     gh.enable = true;
