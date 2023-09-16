@@ -75,8 +75,8 @@ in {
         "s3://serokell-private-cache?endpoint=s3.eu-central-1.wasabisys.com&profile=serokell-private-cache-wasabi"
       ];
       auto-optimise-store = true;
-      pure-eval = true;
-      #pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
+      #pure-eval = true;
+      pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
       restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
       use-registries = true;
       use-cgroups = true;
@@ -224,7 +224,7 @@ in {
         hyperfine
         # todo figure out how to use sway
         zellij # tmux
-        exa # ls
+        eza # exa # ls
         rmtrash # ctrl + z for rm
         mcfly
         dogdns # dns for dogs
@@ -311,7 +311,7 @@ in {
         ## endblock ick
 
         # Rust CLI Tools! I love rust.
-        exa
+        #exa
         bat
         tokei
         xsv
@@ -547,7 +547,7 @@ in {
         pipewire
         wireplumber
         alsaLib
-        pkgconfig
+        pkg-config
 
         # Standard Packages
         networkmanager
@@ -585,7 +585,7 @@ in {
         xfce.thunar
         kitty
         bat
-        exa
+        #exa
         pavucontrol
         blueman
         #trash-cli
@@ -675,7 +675,7 @@ in {
         eww-wayland
         xdg-desktop-portal-hyprland
         hyprland-protocols
-        hyprland-share-picker
+        # hyprland-share-picker
         hyprland-autoname-workspaces
         hyprland-per-window-layout
         nwg-displays
@@ -917,7 +917,7 @@ in {
 
         bat
         pv
-        exa
+        #exa
         ripgrep
         pwgen
         docker-compose
