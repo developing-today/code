@@ -322,7 +322,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-jgACzZhXbMmvJOOF7AEUpq3uKA9VRHDI7ew086pXBEE=",
+        "narHash": "sha256-JFW595HfcWPrnAVx8pm1dEk8QgUHgt8vmNqACSHh860=",
         "path": "./flakes/home",
         "type": "path"
       },
