@@ -18,39 +18,11 @@
     # must type follows all out every time
     # because flake inputs are basically static
     # can't make a let var function closure thing around it or whatever
-    hercules-ci-agent = {
-      url = "github:hercules-ci/hercules-ci-agent";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    hercules-ci-effects = {
-      url = "github:hercules-ci/hercules-ci-effects";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     zig-overlay = {
       url = "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-utils.follows = "flake-utils";
-    };
-    neovim-flake = {
-      url = "github:neovim/neovim?dir=contrib";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-    };
-    neovim-nightly-overlay = {
-      url = "github:nix-community/neovim-nightly-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.neovim-flake.follows = "neovim-flake";
-    };
-    flake-parts = {
-      url = "github:hercules-ci/flake-parts";
-      inputs.nixpkgs-lib.follows = "nixpkgs";
     };
     alejandra = {
       url = "github:kamadorueda/alejandra"; # url = "github:developing-today-forks/alejandra/quote-urls";
@@ -72,7 +44,6 @@
     flake-utils,
     home,
     zig-overlay,
-    neovim-nightly-overlay,
     alejandra,
     nix-software-center,
     ...
@@ -80,7 +51,6 @@
     stateVersion = "23.11";
     overlays = [
       zig-overlay.overlays.default
-      neovim-nightly-overlay.overlay
       alejandra.overlay
       nix-software-center.overlay
     ];

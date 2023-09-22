@@ -3,14 +3,14 @@
   pkgs,
   ...
 }: let
-  vscode-insiders = (pkgs.vscode.override {isInsiders = true;}).overrideAttrs (oldAttrs: rec {
-    src = builtins.fetchTarball {
-      url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
-      sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
-    };
-    version = "latest";
-    buildInputs = oldAttrs.buildInputs ++ [pkgs.krb5];
-  });
+  #  vscode-insiders = (pkgs.vscode.override {isInsiders = true;}).overrideAttrs (oldAttrs: rec {
+  #    src = builtins.fetchTarball {
+  #      url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
+  #      sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
+  #    };
+  #    version = "latest";
+  #    buildInputs = oldAttrs.buildInputs ++ [pkgs.krb5];
+  #  });
 in {
   imports = [./hardware-configuration.nix ./cachix.nix];
 
@@ -204,13 +204,14 @@ in {
     variables.EDITOR = "nvim";
     systemPackages = with pkgs;
       [
+        lf
         zigpkgs.master
         #
         git
         kitty
         xwayland
         direnv
-        vscode-insiders
+        #vscode-insiders
         openssl
         libsForQt5.yakuake
         tmux
@@ -218,8 +219,8 @@ in {
         ripgrep
         # ripgrep-all # regression cannot find hello 26 times 2023-08-19
         zoxide
-        vimPlugins.zoxide-vim
-        vimPlugins.telescope-zoxide
+        #vimPlugins.zoxide-vim
+        #vimPlugins.telescope-zoxide
         starship # replacement prompt (not shell)
         hyperfine
         # todo figure out how to use sway
@@ -305,7 +306,7 @@ in {
         #         nodePackages.prettier
         nodePackages.wrangler
         nodePackages.vercel
-        vimPlugins.nvim-treesitter-parsers.typescript
+        #vimPlugins.nvim-treesitter-parsers.typescript
         nodePackages.typescript
         nodePackages.typescript-language-server
         ## endblock ick
@@ -418,7 +419,7 @@ in {
         killall
         libva-utils
         spotify
-        skypeforlinux
+        #skypeforlinux
         zoom-us
         slack
         docker-compose
@@ -446,12 +447,12 @@ in {
         wl-clipboard
       ]
       ++ [
-        vim
+        #vim
         wget
         w3m
         dmenu
         neofetch
-        neovim
+        #neovim
         autojump
         starship
         brave
@@ -479,7 +480,7 @@ in {
         libverto
         lightdm # added by ilh
         mangohud
-        neovim
+        #neovim
         nfs-utils
         ninja
         nodejs
@@ -503,7 +504,7 @@ in {
         trash-cli
         unzip
         variety
-        vscode
+        #vscode
         xclip
       ]
       ++ [
@@ -554,7 +555,7 @@ in {
         networkmanagerapplet
         git
         fzf
-        vim
+        #vim
         tldr
         sox
         yad
@@ -929,9 +930,9 @@ in {
         treefmt
         lefthook
         conform
-        vimPlugins.vim-toml
-        vimPlugins.vim-prettier
-        vimPlugins.nvim-treesitter-parsers.toml
+        #vimPlugins.vim-toml
+        #vimPlugins.vim-prettier
+        #vimPlugins.nvim-treesitter-parsers.toml
         nodePackages.prettier
         nodePackages.prettier-plugin-toml
         shfmt

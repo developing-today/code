@@ -48,31 +48,8 @@
   programs = {
     waybar = import ../programs/waybar.nix {inherit pkgs;};
     alacritty = import ../programs/alacritty.nix;
-    neovim = {
-      enable = true;
-      defaultEditor = true;
-      viAlias = true;
-      vimAlias = true;
-      vimdiffAlias = true;
-      package = pkgs.neovim-nightly;
-      extraConfig = ''
-        set runtimepath+=/home/user/forks/NvChad
-        set packpath+=/home/user/forks/NvChad
-        luafile /home/user/forks/NvChad/_init.lua
-      '';
-      plugins = [
-        pkgs.vimPlugins.nvim-tree-lua
-        {
-          plugin = pkgs.vimPlugins.sqlite-lua;
-          config = "let g:sqlite_clib_path = '${pkgs.sqlite.out}/lib/libsqlite3.so'";
-        }
-        {
-          plugin = pkgs.vimPlugins.vim-startify;
-          config = "let g:startify_change_to_vcs_root = 0";
-        }
-        pkgs.vimPlugins.vim-nix
-      ];
-    };
+    #neovim = import ../programs/nvim.nix {inherit pkgs;};
+    #nixvim.enable = true;
     abook.enable = true;
     autojump.enable = true;
 
@@ -144,7 +121,7 @@
     tmate.enable = true;
     #     tmux.enable = true;
     vim-vint.enable = true;
-    vim.enable = true;
+    #vim.enable = true;
     #          vscode.enable = true;
     wlogout.enable = true;
     zathura.enable = true;
