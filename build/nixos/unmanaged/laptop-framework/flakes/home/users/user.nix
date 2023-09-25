@@ -120,7 +120,7 @@
     tiny.enable = true;
     tmate.enable = true;
     #     tmux.enable = true;
-    vim-vint.enable = true;
+    #vim-vint.enable = true;
     #vim.enable = true;
     #          vscode.enable = true;
     wlogout.enable = true;

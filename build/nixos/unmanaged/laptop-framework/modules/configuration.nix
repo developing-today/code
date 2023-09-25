@@ -949,6 +949,7 @@ in {
         nix-software-center # overlay
         brillo
         beep
+        fh
       ];
 
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

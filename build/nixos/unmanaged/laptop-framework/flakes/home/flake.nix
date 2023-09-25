@@ -3,7 +3,7 @@
 
   inputs = {
     # master then if it breaks unstable then if it breaks 23.11 or something.
-    nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
 
     home-manager = {
       url = "github:nix-community/home-manager";

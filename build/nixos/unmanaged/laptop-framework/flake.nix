@@ -4,7 +4,7 @@
     # CHANGE ONE CHANGE THE OTHER.
     # master then if it breaks unstable then if it breaks 23.11 or something.
     # "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"
-    nixpkgs.url = "github:NixOS/nixpkgs"; # /nixos-unstable"; # /nixos-23.11";
+    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     home = {
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";
