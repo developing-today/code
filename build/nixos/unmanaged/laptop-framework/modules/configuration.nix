@@ -60,7 +60,7 @@ in {
   time.timeZone = "America/Chicago";
   nix = {
     settings = {
-      experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "no-url-literals" "repl-flake"];
+      experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "repl-flake"]; # "no-url-literals" # <- removed no-url-literals for flakehub testing
       trusted-users = ["user"];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
@@ -319,7 +319,7 @@ in {
         fd
 
         # Development
-        neovim
+        # neovim
         tmux
         jq
         git-crypt
@@ -340,7 +340,7 @@ in {
         htop
         wtf
         lazygit
-        neofetch
+        #neofetch
 
         # Jokes
         fortune
@@ -451,7 +451,7 @@ in {
         wget
         w3m
         dmenu
-        neofetch
+        #neofetch
         #neovim
         autojump
         starship
@@ -592,7 +592,7 @@ in {
         #trash-cli
         ydotool
         cava
-        neofetch
+        #neofetch
         cpufetch
         starship
         lolcat

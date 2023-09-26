@@ -11,17 +11,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1694541876,
-        "narHash": "sha256-lStDIPizbJipd1JpNKX1olBKzyIosyC2U/mVFwJPcZE=",
-        "owner": "kamadorueda",
-        "repo": "alejandra",
-        "rev": "e53c2c6c6c103dc3f848dbd9fbd93ee7c69c109f",
-        "type": "github"
+        "narHash": "sha256-xFumnivtVwu5fFBOrTxrv6fv3geHKF04RGP23EsDVaI=",
+        "rev": "ef03f7ef74ec97fd91a016a51c9c9667fb315652",
+        "revCount": 501,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/kamadorueda/alejandra/3.0.0/0189dfd6-7f94-73d1-a2ab-3289043ca5dc/source.tar.gz"
       },
       "original": {
-        "owner": "kamadorueda",
-        "repo": "alejandra",
-        "type": "github"
+        "type": "tarball",
+        "url": "https://flakehub.com/f/kamadorueda/alejandra/%2A.tar.gz"
       }
     },
     "beautysh": {

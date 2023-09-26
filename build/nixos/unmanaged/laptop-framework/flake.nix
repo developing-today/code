@@ -25,7 +25,7 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     alejandra = {
-      url = "github:kamadorueda/alejandra"; # url = "github:developing-today-forks/alejandra/quote-urls";
+      url = "https://flakehub.com/f/kamadorueda/alejandra/*.tar.gz"; # url = "github:developing-today-forks/alejandra/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flakeCompat.follows = "flake-compat";
     };
