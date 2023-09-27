@@ -8,6 +8,7 @@
     home = {
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
     };
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/0.1.87.tar.gz"; # inputs.systems
