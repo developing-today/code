@@ -11,7 +11,7 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
-    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/0.1.87.tar.gz"; # inputs.systems
+    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;
@@ -26,13 +26,13 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     alejandra = {
-      url = "https://flakehub.com/f/kamadorueda/alejandra/\*.tar.gz"; # url = "github:developing-today-forks/alejandra/quote-urls";
+      url = "https://flakehub.com/f/kamadorueda/alejandra/*.tar.gz"; #*/ # url = "github:developing-today-forks/alejandra/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flakeCompat.follows = "flake-compat";
     };
     nix-software-center = {
       url = "github:vlinkz/nix-software-center";
-      #url = "https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz"; # https://github.com/vlinkz/nix-software-center/pull/50
+      #url = "https://flakehub.com/f/vlinkz/nix-software-center/*.tar.gz"; #*/ # https://github.com/vlinkz/nix-software-center/pull/50
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.utils.follows = "flake-utils";
     };

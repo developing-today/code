@@ -88,7 +88,7 @@
       },
       "original": {
         "type": "tarball",
-        "url": "https://flakehub.com/f/numtide/flake-utils/0.1.87.tar.gz"
+        "url": "https://flakehub.com/f/numtide/flake-utils/%2A.tar.gz"
       }
     },
     "flake-utils_2": {
@@ -230,7 +230,7 @@
       },
       "original": {
         "type": "tarball",
-        "url": "https://flakehub.com/f/nix-community/home-manager/0.1.3035.tar.gz"
+        "url": "https://flakehub.com/f/nix-community/home-manager/%2A.tar.gz"
       }
     },
     "neovim-flake": {

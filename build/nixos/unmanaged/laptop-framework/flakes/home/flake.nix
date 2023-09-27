@@ -2,14 +2,15 @@
   description = "Home Manager Flake";
 
   inputs = {
+    # todo: figure out that hyprland flake
     # master then if it breaks unstable then if it breaks 23.11 or something.
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
 
     home-manager = {
-      url = "https://flakehub.com/f/nix-community/home-manager/0.1.3035.tar.gz";
+      url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/0.1.87.tar.gz"; # inputs.systems
+    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;

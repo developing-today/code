@@ -150,7 +150,7 @@
       },
       "original": {
         "type": "tarball",
-        "url": "https://flakehub.com/f/numtide/flake-utils/0.1.87.tar.gz"
+        "url": "https://flakehub.com/f/numtide/flake-utils/%2A.tar.gz"
       }
     },
     "flake-utils_2": {
@@ -302,7 +302,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-KdIEcLKGmgzYO6CMjdhZBADAmeZILhT7DJrHF5DiR/A=",
+        "narHash": "sha256-fdxjUl8XHc2W8+bPk8t7h0Hz6QkJ/yBsL6EG2Io7ZZ8=",
         "path": "./flakes/home",
         "type": "path"
       },
@@ -327,7 +327,7 @@
       },
       "original": {
         "type": "tarball",
-        "url": "https://flakehub.com/f/nix-community/home-manager/0.1.3035.tar.gz"
+        "url": "https://flakehub.com/f/nix-community/home-manager/%2A.tar.gz"
       }
     },
     "neovim-flake": {
