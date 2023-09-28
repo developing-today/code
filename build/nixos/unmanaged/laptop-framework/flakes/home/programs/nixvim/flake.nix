@@ -2,10 +2,13 @@
   description = "A nixvim configuration";
 
   inputs = {
-    nixvim.url = "github:nix-community/nixvim";
+    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
+    nixvim = {
+      url = "github:nix-community/nixvim";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     flake-utils.url = "github:numtide/flake-utils";
   };
-
   outputs = {
     nixpkgs,
     nixvim,
