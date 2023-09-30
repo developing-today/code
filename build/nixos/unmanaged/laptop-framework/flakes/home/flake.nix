@@ -75,6 +75,11 @@
     ...
   } @ inputs: let
     system = "x86_64-linux";
+    vimnix = [
+      {
+        vimnix.enable = true;
+      }
+    ];
   in {
     homeManagerNixOsModules = stateVersion: [
       ({pkgs, ...}: {
@@ -82,6 +87,7 @@
           home-manager.nixosModules.home-manager
           vim.nixosModules.${system}
         ];
+        programs.nixvim.enable = true;
         home-manager.users.user = import ./users/user.nix {inherit stateVersion pkgs;};
       })
     ];
