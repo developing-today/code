@@ -1,11 +1,9 @@
 {
-  description = "Home Manager Flake";
-
   inputs = {
-    # todo: figure out that hyprland flake
-    # master then if it breaks unstable then if it breaks 23.11 or something.
+    #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
 
+    # todo: figure out that hyprland flake
     home-manager = {
       url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
       inputs.nixpkgs.follows = "nixpkgs";
@@ -43,23 +41,24 @@
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
     };
-    nixvim = {
-      url = "github:nix-community/nixvim";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    #     nixvim = {
+    #       url = "github:nix-community/nixvim";
+    #       inputs.nixpkgs.follows = "nixpkgs";
+    #     };
   };
 
   outputs = {
     self,
     nixpkgs,
     home-manager,
-    nixvim,
+    #     nixvim,
     ...
   }: {
     homeManagerNixOsModules = stateVersion: [
       ({pkgs, ...}: {
         imports = [
           home-manager.nixosModules.home-manager
+          #           nixvim.homeManagerModules.nixvim
         ];
         home-manager.users.user = import ./users/user.nix {inherit stateVersion pkgs;};
       })

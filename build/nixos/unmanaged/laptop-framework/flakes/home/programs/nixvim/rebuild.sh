@@ -22,6 +22,7 @@ for dir in "${script_dir}"/config/*; do
       ./rebuild.sh
     fi
     nix flake update
+    #     nix build .
     cd "${script_dir}" || exit 1
   fi
 done

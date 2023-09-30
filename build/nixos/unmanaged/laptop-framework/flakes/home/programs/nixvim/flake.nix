@@ -1,7 +1,6 @@
 {
-  description = "A nixvim configuration";
-
   inputs = {
+    #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixvim = {
       url = "github:nix-community/nixvim";
@@ -38,5 +37,28 @@
         # Lets you run `nix run .` to start nixvim
         default = nvim;
       };
+      /*
+      nixosModules.nixvim = { config, lib, pkgs, ... }: {
+        options.programs.nixvim.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+
+        config = lib.mkIf config.programs.nixvim.enable {
+          environment.systemPackages = [ nvim ];
+        };
+      };
+      homeManagerModules.nixvim = { config, lib, pkgs, ... }: {
+        options.programs.nixvim.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "Enable or disable NixVim.";
+        };
+
+        config = lib.mkIf config.programs.nixvim.enable {
+          environment.systemPackages = [ nvim ];
+        };
+      };
+      */
     });
 }

@@ -49,7 +49,7 @@
     waybar = import ../programs/waybar.nix {inherit pkgs;};
     alacritty = import ../programs/alacritty.nix;
     #neovim = import ../programs/nvim.nix {inherit pkgs;};
-    #nixvim.enable = true;
+    #     nixvim.enable = true;
     abook.enable = true;
     autojump.enable = true;
 
