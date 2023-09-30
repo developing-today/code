@@ -2,63 +2,50 @@
   inputs = {
     #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
-    nixvim = {
+    nixvim-upstream = {
       url = "github:nix-community/nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.beautysh.follows = "beautysh";
+      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
+
+    beautysh = {
+      url = "github:lovesegfault/beautysh";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # todo: drag out these follows
+    };
+
+    pre-commit-hooks = {
+      url = "github:cachix/pre-commit-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # todo: drag out these follows
+    };
   };
   outputs = {
     nixpkgs,
-    nixvim,
+    nixvim-upstream,
     flake-utils,
     ...
   } @ inputs: let
     config = import ./config; # import the module directly
   in
     flake-utils.lib.eachDefaultSystem (system: let
-      nixvimLib = nixvim.lib.${system};
+      nixvimLib = nixvim-upstream.lib.${system};
       pkgs = import nixpkgs {inherit system;};
-      nixvim' = nixvim.legacyPackages.${system};
-      nvim = nixvim'.makeNixvimWithModule {
+      nixvim = nixvim-upstream.legacyPackages.${system};
+      nixosModules = nixvim-upstream.nixosModules.nixvim;
+      homeManagerModules = nixvim-upstream.homeManagerModules.nixvim;
+      nvim = nixvim-upstream.makeNixvimWithModule {
         inherit pkgs;
         module = config;
       };
     in {
-      checks = {
-        # Run `nix flake check .` to verify that your config is not broken
-        default = nixvimLib.check.mkTestDerivationFromNvim {
-          inherit nvim;
-          name = "A nixvim configuration";
-        };
-      };
-
       packages = {
-        # Lets you run `nix run .` to start nixvim
         default = nvim;
       };
-      /*
-      nixosModules.nixvim = { config, lib, pkgs, ... }: {
-        options.programs.nixvim.enable = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-        };
-
-        config = lib.mkIf config.programs.nixvim.enable {
-          environment.systemPackages = [ nvim ];
-        };
-      };
-      homeManagerModules.nixvim = { config, lib, pkgs, ... }: {
-        options.programs.nixvim.enable = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-          description = "Enable or disable NixVim.";
-        };
-
-        config = lib.mkIf config.programs.nixvim.enable {
-          environment.systemPackages = [ nvim ];
-        };
-      };
-      */
+      nixosModules = nixosModules; # Re-export from nixvim
+      homeManagerModules = homeManagerModules; # Re-export from nixvim
     });
 }

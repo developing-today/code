@@ -40,25 +40,47 @@
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
+    }; # need to get this into vim flake
+    nixvim = {
+      url = "github:nix-community/nixvim";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
-    #     nixvim = {
-    #       url = "github:nix-community/nixvim";
-    #       inputs.nixpkgs.follows = "nixpkgs";
-    #     };
+    vim = {
+      url = "path:./programs/nixvim";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.nixvim-upstream.follows = "nixvim";
+      inputs.beautysh.follows = "beautysh";
+      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
+    };
+
+    beautysh = {
+      url = "github:lovesegfault/beautysh";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # todo: drag out these follows
+    };
+
+    pre-commit-hooks = {
+      url = "github:cachix/pre-commit-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # todo: drag out these follows
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
     home-manager,
-    #     nixvim,
+    vim,
     ...
-  }: {
+  } @ inputs: let
+    system = "x86_64-linux";
+  in {
     homeManagerNixOsModules = stateVersion: [
       ({pkgs, ...}: {
         imports = [
           home-manager.nixosModules.home-manager
-          #           nixvim.homeManagerModules.nixvim
+          vim.nixosModules.${system}
         ];
         home-manager.users.user = import ./users/user.nix {inherit stateVersion pkgs;};
       })

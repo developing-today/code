@@ -6,6 +6,19 @@
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
+      inputs.beautysh.follows = "beautysh";
+      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.neovim-flake.follows = "neovim-flake";
+      inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
+      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
+      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+      inputs.home-manager.follows = "home-manager";
+    };
+    home-manager = {
+      url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
@@ -13,6 +26,34 @@
       url = "github:edolstra/flake-compat";
       flake = false;
     };
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+    neovim-flake = {
+      url = "github:neovim/neovim?dir=contrib";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
+    hercules-ci-agent = {
+      url = "github:hercules-ci/hercules-ci-agent";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    hercules-ci-effects = {
+      url = "github:hercules-ci/hercules-ci-effects";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    neovim-nightly-overlay = {
+      url = "github:nix-community/neovim-nightly-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.neovim-flake.follows = "neovim-flake";
+    }; # need to get this into home/vim flake
     # must type follows all out every time
     # because flake inputs are basically static
     # can't make a let var function closure thing around it or whatever
@@ -32,6 +73,24 @@
       #url = "https://flakehub.com/f/vlinkz/nix-software-center/*.tar.gz"; #*/ # https://github.com/vlinkz/nix-software-center/pull/50
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.utils.follows = "flake-utils";
+    };
+    nixvim = {
+      url = "github:nix-community/nixvim";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.beautysh.follows = "beautysh";
+      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
+    };
+
+    beautysh = {
+      url = "github:lovesegfault/beautysh";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # todo: drag out these follows
+    };
+
+    pre-commit-hooks = {
+      url = "github:cachix/pre-commit-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # todo: drag out these follows
     };
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
   };
