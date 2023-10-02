@@ -22,10 +22,12 @@ for dir in "${script_dir}"/programs/*; do
       ./rebuild.sh
     fi
     nix flake update
+    nix flake check
     cd "${script_dir}" || exit 1
   fi
 done
 
 git add .
 nix flake update
+nix flake check
 git add .

@@ -45,6 +45,49 @@
         "type": "github"
       }
     },
+    "final-nixpkgs": {
+      "inputs": {
+        "flake-compat": [
+          "vim",
+          "flake-compat"
+        ],
+        "flake-parts": [
+          "vim",
+          "flake-parts"
+        ],
+        "flake-utils": [
+          "vim",
+          "flake-utils"
+        ],
+        "hercules-ci-agent": "hercules-ci-agent_2",
+        "hercules-ci-effects": [
+          "vim",
+          "hercules-ci-effects"
+        ],
+        "neovim-flake": [
+          "vim",
+          "neovim-flake"
+        ],
+        "neovim-nightly-overlay": [
+          "vim",
+          "neovim-nightly-overlay"
+        ],
+        "nixpkgs": [
+          "vim",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1,
+        "narHash": "sha256-rsxibeqzzA+og2JxJTbr0HgAa5KwRK0JvIH53trvf6Y=",
+        "path": "./pkgs",
+        "type": "path"
+      },
+      "original": {
+        "path": "./pkgs",
+        "type": "path"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -259,6 +302,22 @@
         "type": "github"
       }
     },
+    "haskell-flake_3": {
+      "locked": {
+        "lastModified": 1684780604,
+        "narHash": "sha256-2uMZsewmRn7rRtAnnQNw1lj0uZBMh4m6Cs/7dV5YF08=",
+        "owner": "srid",
+        "repo": "haskell-flake",
+        "rev": "74210fa80a49f1b6f67223debdbf1494596ff9f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "srid",
+        "ref": "0.3.0",
+        "repo": "haskell-flake",
+        "type": "github"
+      }
+    },
     "hercules-ci-agent": {
       "inputs": {
         "flake-parts": [
@@ -287,9 +346,37 @@
       "inputs": {
         "flake-parts": [
           "vim",
+          "final-nixpkgs",
           "flake-parts"
         ],
         "haskell-flake": "haskell-flake_2",
+        "nixpkgs": [
+          "vim",
+          "final-nixpkgs",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1693397971,
+        "narHash": "sha256-P5PQ8KzK/SXvEsw+AzG7OBUgnGhuUzKETNHhqVokc+0=",
+        "owner": "hercules-ci",
+        "repo": "hercules-ci-agent",
+        "rev": "344b8b1079731a8c1e144119174f684fb492e03a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hercules-ci",
+        "repo": "hercules-ci-agent",
+        "type": "github"
+      }
+    },
+    "hercules-ci-agent_3": {
+      "inputs": {
+        "flake-parts": [
+          "vim",
+          "flake-parts"
+        ],
+        "haskell-flake": "haskell-flake_3",
         "nixpkgs": [
           "vim",
           "nixpkgs"
@@ -365,11 +452,11 @@
       },
       "locked": {
         "dir": "contrib",
-        "lastModified": 1696187451,
-        "narHash": "sha256-AiGMtsPP6DiCgBjHJSPlr49+Oov2WdTDPd+ffZgkT5o=",
+        "lastModified": 1696214733,
+        "narHash": "sha256-2IqDjWfqhy7MbCbFs3GDRYIpfK2usL+CYGfh6uskK/0=",
         "owner": "neovim",
         "repo": "neovim",
-        "rev": "9ce1623837a817c3f4f5deff9c8ba862578b6009",
+        "rev": "09a17f91d0d362c6e58bfdbe3ccdeacffb0b44b9",
         "type": "github"
       },
       "original": {
@@ -467,11 +554,11 @@
         "pre-commit-hooks": "pre-commit-hooks"
       },
       "locked": {
-        "lastModified": 1696176774,
-        "narHash": "sha256-v8wBRXh3Xxu21pz5KPA50w445ghGO0OSPnM/13xvNy4=",
+        "lastModified": 1696211800,
+        "narHash": "sha256-l+gpz9TnPUJ/0iRnnQbKFdWuMpkygNS2TkvWvwszVB8=",
         "owner": "developing-today-forks",
         "repo": "nixvim-flake",
-        "rev": "47b72e41dde4bd1ca89c6852f20d2818587342d4",
+        "rev": "d3df753c8fcdafbc992626f3c72ccf9512fb3837",
         "type": "github"
       },
       "original": {
@@ -693,6 +780,7 @@
         "beautysh": [
           "beautysh"
         ],
+        "final-nixpkgs": "final-nixpkgs",
         "flake-compat": [
           "flake-compat"
         ],
@@ -702,7 +790,7 @@
         "flake-utils": [
           "flake-utils"
         ],
-        "hercules-ci-agent": "hercules-ci-agent_2",
+        "hercules-ci-agent": "hercules-ci-agent_3",
         "hercules-ci-effects": [
           "hercules-ci-effects"
         ],
@@ -724,7 +812,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-JDk6H9sai7DXak4ok8qXDZDC76/ytlF+YNaYhGnntu4=",
+        "narHash": "sha256-Qyb/a8Kcc+k8Qvy1jEwjJIarSJEI2TAlYXhu7mIhcNs=",
         "path": "./programs/nixvim",
         "type": "path"
       },

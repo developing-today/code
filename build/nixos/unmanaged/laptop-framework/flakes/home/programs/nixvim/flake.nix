@@ -3,9 +3,9 @@
     #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixvim-upstream = {
-      # url = "github:nix-community/nixvim";
-      url = "github:developing-today-forks/nixvim-flake";
-      inputs.nixpkgs.follows = "nixpkgs";
+      url = "github:nix-community/nixvim";
+      #       url = "github:developing-today-forks/nixvim-flake";
+      inputs.nixpkgs.follows = "final-nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.beautysh.follows = "beautysh";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
@@ -44,6 +44,16 @@
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
     }; # need to actually use this
+    final-nixpkgs = {
+      url = "path:./pkgs";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.neovim-flake.follows = "neovim-flake";
+      inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
+    };
 
     beautysh = {
       url = "github:lovesegfault/beautysh";
@@ -58,19 +68,16 @@
     };
   };
   outputs = {
-    nixpkgs,
+    final-nixpkgs,
     nixvim-upstream,
     flake-utils,
-    neovim-nightly-overlay,
     ...
   } @ inputs: let
     config = import ./config;
   in
     flake-utils.lib.eachDefaultSystem (system: let
-      overlay = inputs.neovim-nightly-overlay.overlay;
-      pkgs = import nixpkgs {
+      pkgs = import final-nixpkgs {
         inherit system;
-        overlays = [overlay];
       };
       nixvimLib = nixvim-upstream.lib.${system};
       nixvim = nixvim-upstream.legacyPackages.${system};
@@ -79,12 +86,10 @@
         module = config;
       };
       nixosModules = nixvim-upstream.nixosModules.nixvim;
-      homeManagerModules = nixvim-upstream.homeManagerModules.nixvim;
     in {
       packages = {
         default = nvim;
       };
       nixosModules = nixosModules;
-      homeManagerModules = homeManagerModules;
     });
 }
