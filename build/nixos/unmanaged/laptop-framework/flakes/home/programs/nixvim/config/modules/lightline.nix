@@ -1,5 +1,0 @@
-{
-  plugins.lightline = {
-    enable = true;
-  };
-}

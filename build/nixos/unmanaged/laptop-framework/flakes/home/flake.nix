@@ -80,7 +80,7 @@
     vim,
     ...
   } @ inputs: let
-    system = "x86_64-linux";
+    system = "x86_64-linux"; # something something flake-utils
     vimOverlay = vim.overlay.${system};
     overlays = [
       vimOverlay

@@ -442,7 +442,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-JN/uw0lF6/uZDcfYWOGLx8zWLCfjQLZ9hL+pJGpjeO8=",
+        "narHash": "sha256-SwlEi0hzo27qvhbLxrxmBJm74DGzhf2lUANCXJkeLaU=",
         "path": "./flakes/home",
         "type": "path"
       },
@@ -939,7 +939,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-/7ySl5fbI6uRpBjzYMIleymE76xM/0EJvBq+Yxn9vfg=",
+        "narHash": "sha256-ajAQKX25PhlJCsycRy/aSlFuHiBg5CUIjSOZsV5n7ak=",
         "path": "./programs/nixvim",
         "type": "path"
       },

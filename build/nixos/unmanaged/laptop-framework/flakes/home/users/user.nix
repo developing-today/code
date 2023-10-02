@@ -80,6 +80,7 @@
         # xd # i don't know what this is
         procs # replace proc
         sd
+        yarn
         fd # replace find
         #dust # abandoned
         tokei # this gives language stats about a repo
