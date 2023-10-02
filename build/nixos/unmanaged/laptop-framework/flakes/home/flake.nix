@@ -82,6 +82,9 @@
   } @ inputs: let
     system = "x86_64-linux";
     vimOverlay = vim.overlay.${system};
+    overlays = [
+      vimOverlay
+    ];
   in {
     homeManagerNixosModules = stateVersion: [
       ({...}: {
@@ -89,15 +92,15 @@
           home-manager.nixosModules.home-manager
           vim.nixosModules.${system}
         ];
-        nixpkgs.overlays = [vimOverlay];
-        #       programs.nixvim.enable = true;
+
         home-manager.useUserPackages = true;
         home-manager.useGlobalPkgs = true;
         home-manager.users.user = import ./users/user.nix {
           inherit stateVersion;
           pkgs = import nixpkgs {
             inherit system;
-            overlays = [vimOverlay];
+            overlays = overlays;
+            config.allowUnfree = true;
           };
         };
       })
