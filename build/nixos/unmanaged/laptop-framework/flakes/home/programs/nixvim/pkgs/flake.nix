@@ -42,29 +42,38 @@
     self,
     nixpkgs,
     neovim-nightly-overlay,
-    flake-utils,
     ...
-  }:
-    flake-utils.lib.eachDefaultSystem (
-      system: let
-        overlay = final: prev: {
-          inherit (neovim-nightly-overlay.packages.${system}) neovim;
-        };
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [overlay];
-        };
-        hasNixosModules = builtins.attrsets ? "nixosModules";
-      in
-        builtins.removeAttrs {
-          lib = pkgs.lib;
-          checks = {};
-          htmlDocs = nixpkgs.htmlDocs;
-          legacyPackages = pkgs;
-          nixosModules =
-            if hasNixosModules
-            then nixpkgs.nixosModules.${system}
-            else {};
-        } ["nixosModules"]
-    );
+  }: {
+    # Directly define outputs for each system
+    legacyPackages.x86_64-linux = let
+      overlay = final: prev: {
+        inherit (neovim-nightly-overlay.packages.x86_64-linux) neovim;
+      };
+      pkgs = import nixpkgs {
+        system = "x86_64-linux";
+        overlays = [overlay];
+      };
+    in
+      pkgs;
+
+    legacyPackages.aarch64-linux = let
+      overlay = final: prev: {
+        inherit (neovim-nightly-overlay.packages.aarch64-linux) neovim;
+      };
+      pkgs = import nixpkgs {
+        system = "aarch64-linux";
+        overlays = [overlay];
+      };
+    in
+      pkgs;
+
+    # Add more systems if needed
+
+    # Expose library
+    lib = nixpkgs.lib;
+
+    # Expose other top-level attributes as needed
+    checks = {}; # don't skip?
+    htmlDocs = nixpkgs.htmlDocs;
+  };
 }

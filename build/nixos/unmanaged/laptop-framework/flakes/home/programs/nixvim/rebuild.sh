@@ -20,8 +20,8 @@ for dir in "${script_dir}"/config/*; do
       chmod +x ./rebuild.sh
       ./rebuild.sh
     fi
-    nix flake update
-    nix flake check
+    nix flake update --show-trace
+    nix flake check --show-trace
     cd "${script_dir}" || exit 1
   fi
 done
@@ -39,14 +39,15 @@ for dir in "${script_dir}"/*; do
       chmod +x ./rebuild.sh
       ./rebuild.sh
     fi
-    nix flake update
-    nix flake check
+    nix flake update --show-trace
+    nix flake check --show-trace
+
     cd "${script_dir}" || exit 1
   fi
 done
 
 git add .
-nix flake update
-nix flake check
-nix build .
+nix flake update --show-trace
+nix flake check --show-trace
+nix build . --show-trace
 git add .

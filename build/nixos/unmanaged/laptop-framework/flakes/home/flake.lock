@@ -79,7 +79,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-rsxibeqzzA+og2JxJTbr0HgAa5KwRK0JvIH53trvf6Y=",
+        "narHash": "sha256-+NduNumPES/QgW3yBW84Ei8mea1rzTOlO5Sbdh3L8HI=",
         "path": "./pkgs",
         "type": "path"
       },
@@ -812,7 +812,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-Qyb/a8Kcc+k8Qvy1jEwjJIarSJEI2TAlYXhu7mIhcNs=",
+        "narHash": "sha256-SvivGJKXxYLcLFaz0d2k9sDtRP8uBhvch/5Tdh5m3uA=",
         "path": "./programs/nixvim",
         "type": "path"
       },

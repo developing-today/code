@@ -68,6 +68,7 @@
     };
   };
   outputs = {
+    nixpkgs,
     final-nixpkgs,
     nixvim-upstream,
     flake-utils,
@@ -76,9 +77,7 @@
     config = import ./config;
   in
     flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = import final-nixpkgs {
-        inherit system;
-      };
+      pkgs = final-nixpkgs.legacyPackages.${system};
       nixvimLib = nixvim-upstream.lib.${system};
       nixvim = nixvim-upstream.legacyPackages.${system};
       nvim = nixvim.makeNixvimWithModule {
