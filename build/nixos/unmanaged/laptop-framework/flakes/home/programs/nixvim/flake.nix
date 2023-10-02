@@ -67,15 +67,13 @@
     module = import ./config;
   in
     flake-utils.lib.eachDefaultSystem (system: let
-      overlays = [
-        inputs.neovim-nightly-overlay.overlay
-      ];
       pkgs = import nixpkgs {
         inherit system;
-        overlays = overlays;
+        overlays = [
+          inputs.neovim-nightly-overlay.overlay
+        ];
       };
-      nixvim' = nixvim.legacyPackages.${system};
-      neovim = nixvim'.makeNixvimWithModule {
+      neovim = nixvim.legacyPackages.${system}.makeNixvimWithModule {
         inherit pkgs;
         module = module;
       };
