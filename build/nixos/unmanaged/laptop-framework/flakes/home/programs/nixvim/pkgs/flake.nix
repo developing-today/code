@@ -44,11 +44,8 @@
     neovim-nightly-overlay,
     ...
   }: {
-    # Directly define outputs for each system
     legacyPackages.x86_64-linux = let
-      overlay = final: prev: {
-        inherit (neovim-nightly-overlay.packages.x86_64-linux) neovim;
-      };
+      overlay = neovim-nightly-overlay.overlay;
       pkgs = import nixpkgs {
         system = "x86_64-linux";
         overlays = [overlay];
@@ -57,9 +54,7 @@
       pkgs;
 
     legacyPackages.aarch64-linux = let
-      overlay = final: prev: {
-        inherit (neovim-nightly-overlay.packages.aarch64-linux) neovim;
-      };
+      overlay = neovim-nightly-overlay.overlay;
       pkgs = import nixpkgs {
         system = "aarch64-linux";
         overlays = [overlay];

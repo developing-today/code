@@ -41,17 +41,18 @@
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
     };
-
+    /*
     nixvim = {
       # url = "github:nix-community/nixvim";
       url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    */
     vim = {
       url = "path:./programs/nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
-      inputs.nixvim-upstream.follows = "nixvim";
+      #       inputs.nixvim-upstream.follows = "nixvim";
       inputs.beautysh.follows = "beautysh";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
       inputs.flake-parts.follows = "flake-parts";

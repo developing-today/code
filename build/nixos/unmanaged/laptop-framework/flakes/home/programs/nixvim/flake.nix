@@ -68,7 +68,6 @@
     };
   };
   outputs = {
-    nixpkgs,
     final-nixpkgs,
     nixvim-upstream,
     flake-utils,
