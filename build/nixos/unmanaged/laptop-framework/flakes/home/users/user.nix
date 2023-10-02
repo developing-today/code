@@ -43,6 +43,7 @@
     sessionVariables = {
       EDITOR = "nvim";
     };
+    packages = with pkgs; [neovim];
   };
   manual.manpages.enable = true;
   programs = {

@@ -73,7 +73,6 @@
       # todo: drag out these follows
     };
   };
-
   outputs = {
     self,
     nixpkgs,
@@ -82,16 +81,27 @@
     ...
   } @ inputs: let
     system = "x86_64-linux";
+    vimOverlay = vim.overlay.${system};
   in {
-    homeManagerNixOsModules = stateVersion: [
-      ({pkgs, ...}: {
+    homeManagerNixosModules = stateVersion: [
+      ({...}: {
         imports = [
           home-manager.nixosModules.home-manager
           vim.nixosModules.${system}
         ];
-        programs.nixvim.enable = true; # todo: figure out how to put this inside user.
-        home-manager.users.user = import ./users/user.nix {inherit stateVersion pkgs;};
+        nixpkgs.overlays = [vimOverlay];
+        #       programs.nixvim.enable = true;
+        home-manager.useUserPackages = true;
+        home-manager.useGlobalPkgs = true;
+        home-manager.users.user = import ./users/user.nix {
+          inherit stateVersion;
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [vimOverlay];
+          };
+        };
       })
     ];
+    vim-overlay = vimOverlay;
   };
 }

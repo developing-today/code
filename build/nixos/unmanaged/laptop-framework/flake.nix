@@ -111,8 +111,9 @@
       zig-overlay.overlays.default
       alejandra.overlay
       nix-software-center.overlay
+      home.vim-overlay
     ];
-    systemNixOsModules = [
+    systemNixosModules = [
       {
         nixpkgs = {
           overlays = overlays; # are overlays needed in home manager? document which/why?
@@ -122,12 +123,12 @@
       }
       ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
     ];
-    # overlayNixOsModules = ?
-    hyprlandNixOsModules = [
+    # overlayNixosModules = ?
+    hyprlandNixosModules = [
       (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
       #       (import ./modules/nm-applet.nix)
     ];
-    homeManagerNixOsModules = home.homeManagerNixOsModules stateVersion;
+    homeManagerNixosModules = home.homeManagerNixosModules stateVersion;
     system = "x86_64-linux";
     pkgs = import nixpkgs {
       system = system;
@@ -137,9 +138,9 @@
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;
       modules =
-        systemNixOsModules
-        ++ hyprlandNixOsModules
-        ++ homeManagerNixOsModules;
+        systemNixosModules
+        ++ hyprlandNixosModules
+        ++ homeManagerNixosModules;
     };
   };
   # cachix

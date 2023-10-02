@@ -74,7 +74,7 @@
       };
       nixvimLib = nixvim-upstream.lib.${system};
       nixvim = nixvim-upstream.legacyPackages.${system};
-      nvim = nixvim.makeNixvimWithModule {
+      neovim = nixvim.makeNixvimWithModule {
         inherit pkgs;
         module = config;
       };
@@ -82,9 +82,12 @@
       homeManagerModules = nixvim-upstream.homeManagerModules.nixvim;
     in {
       packages = {
-        default = nvim;
+        default = neovim;
       };
       nixosModules = nixosModules;
       homeManagerModules = homeManagerModules;
+      overlay = final: prev: {
+        neovim = neovim;
+      };
     });
 }
