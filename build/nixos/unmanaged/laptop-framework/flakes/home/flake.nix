@@ -51,7 +51,7 @@
       url = "path:./programs/nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
-      inputs.nixvim-upstream.follows = "nixvim";
+      inputs.nixvim.follows = "nixvim";
       inputs.beautysh.follows = "beautysh";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
       inputs.flake-parts.follows = "flake-parts";

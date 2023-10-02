@@ -442,7 +442,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-MZJD5K/QXj6oHkKln1u2Zi4iFbjqoyw/ybMFMt20MA8=",
+        "narHash": "sha256-qfERX/JZdZl+dSKDI755M6AMLzIWdvN7xQaYkWMt7CY=",
         "path": "./flakes/home",
         "type": "path"
       },
@@ -928,7 +928,7 @@
           "home",
           "nixpkgs"
         ],
-        "nixvim-upstream": [
+        "nixvim": [
           "home",
           "nixvim"
         ],
@@ -939,7 +939,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-Jw8TstHCZvjkgabf9smOo+JuE3GoYjDZC/J+x+14Z+4=",
+        "narHash": "sha256-u4KGLBZA+PXprFE15c8KR9x/iwZh8pF/XtI6k8rEblE=",
         "path": "./programs/nixvim",
         "type": "path"
       },

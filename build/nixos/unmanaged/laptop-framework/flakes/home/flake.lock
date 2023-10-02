@@ -715,7 +715,7 @@
         "nixpkgs": [
           "nixpkgs"
         ],
-        "nixvim-upstream": [
+        "nixvim": [
           "nixvim"
         ],
         "pre-commit-hooks": [
@@ -724,7 +724,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-Jw8TstHCZvjkgabf9smOo+JuE3GoYjDZC/J+x+14Z+4=",
+        "narHash": "sha256-u4KGLBZA+PXprFE15c8KR9x/iwZh8pF/XtI6k8rEblE=",
         "path": "./programs/nixvim",
         "type": "path"
       },

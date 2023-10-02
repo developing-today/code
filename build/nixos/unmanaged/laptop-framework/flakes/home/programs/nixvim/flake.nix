@@ -2,7 +2,7 @@
   inputs = {
     #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
-    nixvim-upstream = {
+    nixvim = {
       # url = "github:nix-community/nixvim";
       url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -59,33 +59,34 @@
   };
   outputs = {
     nixpkgs,
-    nixvim-upstream,
+    nixvim,
     flake-utils,
     neovim-nightly-overlay,
     ...
   } @ inputs: let
-    config = import ./config;
+    module = import ./config;
   in
     flake-utils.lib.eachDefaultSystem (system: let
-      overlay = inputs.neovim-nightly-overlay.overlay;
+      overlays = [
+        inputs.neovim-nightly-overlay.overlay
+      ];
       pkgs = import nixpkgs {
         inherit system;
-        overlays = [overlay];
+        overlays = overlays;
       };
-      nixvimLib = nixvim-upstream.lib.${system};
-      nixvim = nixvim-upstream.legacyPackages.${system};
-      neovim = nixvim.makeNixvimWithModule {
+      nixvim' = nixvim.legacyPackages.${system};
+      neovim = nixvim'.makeNixvimWithModule {
         inherit pkgs;
-        module = config;
+        module = module;
       };
-      nixosModules = nixvim-upstream.nixosModules.nixvim;
-      homeManagerModules = nixvim-upstream.homeManagerModules.nixvim;
+      nixosModules = nixvim.nixosModules.nixvim;
+      homeManagerModules = nixvim.homeManagerModules.nixvim;
     in {
       packages = {
         default = neovim;
       };
-      nixosModules = nixosModules;
-      homeManagerModules = homeManagerModules;
+      nixosModules = nixosModules; # unsure how to overlay nightly here.
+      homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
       overlay = final: prev: {
         neovim = neovim;
       };

@@ -283,7 +283,7 @@
         "type": "github"
       }
     },
-    "nixvim-upstream": {
+    "nixvim": {
       "inputs": {
         "beautysh": [
           "beautysh"
@@ -372,7 +372,7 @@
         "neovim-flake": "neovim-flake",
         "neovim-nightly-overlay": "neovim-nightly-overlay",
         "nixpkgs": "nixpkgs",
-        "nixvim-upstream": "nixvim-upstream",
+        "nixvim": "nixvim",
         "pre-commit-hooks": "pre-commit-hooks"
       }
     },
