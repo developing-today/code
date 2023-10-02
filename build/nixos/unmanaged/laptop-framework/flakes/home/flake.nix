@@ -40,9 +40,11 @@
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
-    }; # need to get this into vim flake
+    };
+
     nixvim = {
-      url = "github:nix-community/nixvim";
+      # url = "github:nix-community/nixvim";
+      url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
@@ -52,6 +54,11 @@
       inputs.nixvim-upstream.follows = "nixvim";
       inputs.beautysh.follows = "beautysh";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.neovim-flake.follows = "neovim-flake";
+      inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
     };
 
     beautysh = {
@@ -75,11 +82,6 @@
     ...
   } @ inputs: let
     system = "x86_64-linux";
-    vimnix = [
-      {
-        vimnix.enable = true;
-      }
-    ];
   in {
     homeManagerNixOsModules = stateVersion: [
       ({pkgs, ...}: {
@@ -87,7 +89,7 @@
           home-manager.nixosModules.home-manager
           vim.nixosModules.${system}
         ];
-        programs.nixvim.enable = true;
+        programs.nixvim.enable = true; # todo: figure out how to put this inside user.
         home-manager.users.user = import ./users/user.nix {inherit stateVersion pkgs;};
       })
     ];

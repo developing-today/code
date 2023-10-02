@@ -75,7 +75,8 @@
       inputs.utils.follows = "flake-utils";
     };
     nixvim = {
-      url = "github:nix-community/nixvim";
+      # url = "github:nix-community/nixvim";
+      url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.beautysh.follows = "beautysh";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
@@ -141,4 +142,8 @@
         ++ homeManagerNixOsModules;
     };
   };
+  # cachix
+  # binary cache
+  # content addressible
+  # nixos cache
 }
