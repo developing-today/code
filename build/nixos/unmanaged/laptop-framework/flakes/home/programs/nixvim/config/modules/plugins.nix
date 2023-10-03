@@ -2,7 +2,40 @@
   plugins = {
     bufferline = {};
     lightline = {};
+    commentary = {};
+    illuminate = {};
+    fugitive = {};
+    which-key = {
+      window = {
+        winblend = 10;
+      };
+    };
+    nvim-colorizer = {};
+    quickmath = {};
+    surround = {};
+    notify = {
+      level = 2;
+      topDown = false;
+      maxWidth = 400;
+    };
+    dap.extensions = {
+      dap-ui.enable = true;
+      dap-virtual-text.enable = true;
+    };
+    inc-rename = {};
+    #neoscroll = {};
+    nix = {};
 
+    lsp-format = {
+      setup.typescript = {
+        order = ["null-ls"];
+
+        exclude = [
+          "tsserver"
+          "eslint"
+        ];
+      };
+    };
     # Autocompletion
     nvim-cmp = {
       autoEnableSources = true;
