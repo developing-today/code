@@ -6,9 +6,13 @@ policies:
           - unmanaged
           - nixos
           - buck
-          - nix
+          - repo
           - laptop-framework
+          - nix
           - rust
+          - nvim
+          - vim
+          - vi
         types:
           - build
           - chore
