@@ -27,13 +27,13 @@ nix flake update
 git add .
 sudo nixos-rebuild switch
 
-nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary
+nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
 
 for dir in "${script_dir}"/flakes/*; do
   if [[ -d ${dir} ]]; then
     cd "${dir}" || exit 1
     if [[ -f "./rebuild.sh" ]]; then
-      nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary
+      nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
     fi
     cd "${script_dir}" || exit 1
   fi
