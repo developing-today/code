@@ -26,3 +26,15 @@ git add .
 nix flake update
 git add .
 sudo nixos-rebuild switch
+
+nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary
+
+for dir in "${script_dir}"/flakes/*; do
+  if [[ -d ${dir} ]]; then
+    cd "${dir}" || exit 1
+    if [[ -f "./rebuild.sh" ]]; then
+      nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary
+    fi
+    cd "${script_dir}" || exit 1
+  fi
+done

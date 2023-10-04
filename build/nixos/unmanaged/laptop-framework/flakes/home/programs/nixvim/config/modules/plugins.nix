@@ -5,11 +5,7 @@
     commentary = {};
     illuminate = {};
     fugitive = {};
-    which-key = {
-      window = {
-        winblend = 10;
-      };
-    };
+    which-key.window.winblend = 10;
     nvim-colorizer = {};
     quickmath = {};
     surround = {};
@@ -25,18 +21,13 @@
     inc-rename = {};
     #neoscroll = {};
     nix = {};
-
-    lsp-format = {
-      setup.typescript = {
-        order = ["null-ls"];
-
-        exclude = [
-          "tsserver"
-          "eslint"
-        ];
-      };
+    lsp-format.setup.typescript = {
+      order = ["null-ls"];
+      exclude = [
+        "tsserver"
+        "eslint"
+      ];
     };
-    # Autocompletion
     nvim-cmp = {
       autoEnableSources = true;
       # see -> https://github.com/pta2002/nixvim/blob/main/plugins/completion/nvim-cmp/cmp-helpers.nix#L12
@@ -62,22 +53,17 @@
         winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
         border = "single";
       };
-
       window.documentation = {
         winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
         border = "single";
       };
     };
     lspkind = {};
-    # Highlight & TreeSitter
     treesitter = {};
-    # Git helpers
+    harpoon.keymaps.addFile = "<leader>a";
     gitsigns = {};
-    # Status line
     lualine = {};
-    # Fuzzy finder
     telescope = {};
-    # LSP
     lsp = {
       servers = {
         bashls = {};
@@ -133,25 +119,20 @@
         vim.keymap.set('n', '<space>q', vim.diagnostic.setloclist, opts)
       '';
     };
-
-    lsp-lines = {
-      currentLine = true;
-    };
-    null-ls = {
-      sources.formatting = {
+    lsp-lines.currentLine = true;
+    null-ls.sources = {
+      formatting = {
         prettier.enable = true;
         # eslint.enable = true;
         shfmt.enable = true;
       };
-      sources.diagnostics.shellcheck.enable = true;
+      diagnostics.shellcheck.enable = true;
     };
     nix = {};
     nvim-autopairs = {};
     surround = {};
-    nvim-tree = {
-      updateFocusedFile = {
-        enable = true;
-      };
+    nvim-tree.updateFocusedFile = {
+      enable = true;
     };
   };
 }
