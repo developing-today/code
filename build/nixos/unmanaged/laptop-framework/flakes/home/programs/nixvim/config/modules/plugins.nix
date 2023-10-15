@@ -73,6 +73,8 @@
     gitsigns = {};
     lualine = {};
     telescope = {};
+    #copilot-lua = {};
+    copilot-vim = {};
     lsp = {
       servers = {
         bashls = {};
