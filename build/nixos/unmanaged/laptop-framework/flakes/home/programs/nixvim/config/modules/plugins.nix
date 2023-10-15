@@ -60,7 +60,10 @@
     };
     lspkind = {};
     treesitter = {};
-    harpoon.keymaps.addFile = "<leader>a";
+    harpoon.keymaps = {
+      addFile = "<leader>a";
+      toggleQuickMenu = "<leader>s";
+    };
     gitsigns = {};
     lualine = {};
     telescope = {};
