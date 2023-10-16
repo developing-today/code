@@ -143,8 +143,6 @@
         ++ homeManagerNixosModules;
     };
   };
-  # cachix
-  # binary cache
+  # hydra
   # content addressible
-  # nixos cache
 }

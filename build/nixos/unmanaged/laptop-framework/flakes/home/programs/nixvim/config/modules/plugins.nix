@@ -60,10 +60,21 @@
     };
     lspkind = {};
     treesitter = {};
-    harpoon.keymaps.addFile = "<leader>a";
+    harpoon.keymaps = {
+      addFile = "<leader>a";
+      toggleQuickMenu = "<leader>s";
+      navFile = {
+        "1" = "<C-j>";
+        "2" = "<C-k>";
+        "3" = "<C-l>";
+        "4" = "<C-m>";
+      };
+    };
     gitsigns = {};
     lualine = {};
     telescope = {};
+    #copilot-lua = {};
+    copilot-vim = {};
     lsp = {
       servers = {
         bashls = {};

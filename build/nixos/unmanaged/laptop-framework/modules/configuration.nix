@@ -94,7 +94,7 @@ in {
   hardware = {
     #     bluetooth.enable = true;
     brillo.enable = false;
-    pulseaudio.enable = false;
+    # pulseaudio.enable = false;
     #     nvidia = {
     #       # Enable modesetting for Wayland compositors (hyprland)
     #       modesetting.enable = true;

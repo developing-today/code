@@ -265,7 +265,7 @@
         docker-compose
         direnv
         pavucontrol
-        pulseaudio
+        #pulseaudio
         dunst
         cmake
         #         gcc
@@ -745,7 +745,7 @@
         rustfmt
         rufo
         black
-        terraform
+        #terraform
         packer
         consul
         vault
