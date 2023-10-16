@@ -828,7 +828,7 @@
     tealdeer.enable = true;
     terminator.enable = true;
     termite.enable = true;
-    texlive.enable = true;
+    #texlive.enable = true; # failed on wsl
     # thunderbird.enable = true;
     tiny.enable = true;
     tmate.enable = true;
