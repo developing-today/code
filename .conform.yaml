@@ -18,6 +18,7 @@ policies:
           - chore
           - ci
           - docs
+          - maint
           - feat
           - fix
           - perf

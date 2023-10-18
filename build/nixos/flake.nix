@@ -4,7 +4,7 @@
   inputs.std.inputs.nixpkgs.follows = "nixpkgs";
   inputs.std.inputs.mdbook-kroki-preprocessor.follows = "std/blank";
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
-#github:eza-community/eza
+  #github:eza-community/eza
   # tools
   inputs = {
     nixos-generators.url = "github:blaggacao/nixos-generators";
