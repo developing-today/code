@@ -66,7 +66,7 @@
       use-registries = true;
       use-cgroups = true;
     };
-    package = pkgs.nixUnstable;
+    package = pkgs.nixVersions.nix_2_18;
     optimise.automatic = true;
     gc = {
       automatic = true;
@@ -158,7 +158,7 @@
 
     locate = {
       enable = true;
-      locate = pkgs.plocate;
+      package = pkgs.plocate;
       interval = "hourly";
       localuser = null;
     };

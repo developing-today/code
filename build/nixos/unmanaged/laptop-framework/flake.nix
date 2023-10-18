@@ -2,6 +2,7 @@
   inputs = {
     #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
+    #nixpkgs.url = "github:DeterminateSystems/nixpkgs/nix_2_18_1";
     home = {
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";

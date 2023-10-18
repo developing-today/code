@@ -118,6 +118,7 @@
         "systems": "systems"
       },
       "locked": {
+        "lastModified": 1694529238,
         "narHash": "sha256-zsNZZGTGnMOf9YpHKJqMSsa0dXbfmxeoJ7xHlrt+xmY=",
         "rev": "ff7b65b44d01cf9ba6a71320833626af21126384",
         "revCount": 87,
@@ -341,6 +342,7 @@
         ]
       },
       "locked": {
+        "lastModified": 1697611555,
         "narHash": "sha256-8nYMduRQfGSQJr2cDMyodsuGlRcJAy0Ko8K4KkjurP8=",
         "rev": "05649393ac1f34980a5cf6a6e89de77626c9182b",
         "revCount": 3071,
@@ -361,11 +363,11 @@
       },
       "locked": {
         "dir": "contrib",
-        "lastModified": 1697620718,
-        "narHash": "sha256-btEZ/FH6Yv6MJOqEKFeQVpBJGPOHBLQ+MaUzNRVJ5BQ=",
+        "lastModified": 1697627942,
+        "narHash": "sha256-DuJfSeLOPb8sUlxXF6waYDXrsvzPdoW57o/HKBDIZwA=",
         "owner": "neovim",
         "repo": "neovim",
-        "rev": "831d662ac6756cab4fed6a9b394e68933b5fe325",
+        "rev": "c49cfd89fdd32d670c484b0b677bc8647e891a12",
         "type": "github"
       },
       "original": {
@@ -457,6 +459,7 @@
     },
     "nixpkgs_2": {
       "locked": {
+        "lastModified": 1697456312,
         "narHash": "sha256-roiSnrqb5r+ehnKCauPLugoU8S36KgmWraHgRqVYndo=",
         "rev": "ca012a02bf8327be9e488546faecae5e05d7d749",
         "revCount": 536534,
@@ -735,7 +738,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-rHibCmAJPLfVL6s45ACS2n91IsmfF5GIYwlHcUPVFjk=",
+        "narHash": "sha256-DCVSbwYoRaepspF+8Zp61x5fo7bzSmqnqG6EYFlRQQo=",
         "path": "./programs/nixvim",
         "type": "path"
       },
