@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-nix-shell -p nixVersions.nix_2_18 git cachix jq
+#nix-shell -p nixVersions.nix_2_18 git cachix jq
 # Get the directory of the script
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -19,7 +19,7 @@
     };
     neovim-flake = {
       url = "github:neovim/neovim?dir=contrib";
-      inputs.nixpkgs.follows = "nixpkgs";
+      #inputs.nixpkgs.follows = "nixpkgs"; # harpoon broken in unstable with nightly neovim
       inputs.flake-utils.follows = "flake-utils";
     };
     hercules-ci-agent = {

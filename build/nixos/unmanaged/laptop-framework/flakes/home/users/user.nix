@@ -265,7 +265,7 @@
         docker-compose
         direnv
         pavucontrol
-        #pulseaudio
+        pulseaudio
         dunst
         cmake
         #         gcc

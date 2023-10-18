@@ -2,16 +2,7 @@
   config,
   pkgs,
   ...
-}: let
-  #  vscode-insiders = (pkgs.vscode.override {isInsiders = true;}).overrideAttrs (oldAttrs: rec {
-  #    src = builtins.fetchTarball {
-  #      url = "https://code.visualstudio.com/sha/download?build=insider&os=linux-x64";
-  #      sha256 = "16fzxqs6ql4p2apq9aw7l10h4ag1r7jwlfvknk5rd2zmkscwhn6z";
-  #    };
-  #    version = "latest";
-  #    buildInputs = oldAttrs.buildInputs ++ [pkgs.krb5];
-  #  });
-in {
+}: {
   imports = [./hardware-configuration.nix ./cachix.nix];
 
   boot.loader = {
@@ -66,14 +57,8 @@ in {
       builders-use-substitutes = true;
       trusted-public-keys = [
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-        # lol pretty sure need to delete this.
-        "serokell-1:aIojg2Vxgv7MkzPJoftOO/I8HKX622sT+c0fjnZBLj0="
       ];
       substituters = ["https://cache.nixos.org"];
-      trusted-substituters = [
-        # lol pretty sure need to delete this.
-        "s3://serokell-private-cache?endpoint=s3.eu-central-1.wasabisys.com&profile=serokell-private-cache-wasabi"
-      ];
       auto-optimise-store = true;
       #pure-eval = true;
       pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
@@ -94,7 +79,7 @@ in {
   hardware = {
     #     bluetooth.enable = true;
     brillo.enable = false;
-    # pulseaudio.enable = false;
+    pulseaudio.enable = false;
     #     nvidia = {
     #       # Enable modesetting for Wayland compositors (hyprland)
     #       modesetting.enable = true;
