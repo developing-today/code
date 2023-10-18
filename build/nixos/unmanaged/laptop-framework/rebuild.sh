@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #nix-shell -p nixVersions.nix_2_18 git cachix jq
+#cat /mnt/c/wsl/cachix.key | cachix authtoken --stdin
 # Get the directory of the script
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
