@@ -67,7 +67,7 @@
         hyperfine
         # todo figure out how to use sway
         zellij # tmux
-        eza # exa # ls
+        #eza # exa # ls
         rmtrash # ctrl + z for rm
         mcfly
         dogdns # dns for dogs
@@ -710,15 +710,15 @@
         spotify
         vlc
 
-        signal-desktop
-        tdesktop
-        element-desktop
+        #signal-desktop
+        #tdesktop
+        #element-desktop # build time long, electron bad
         tor-browser-bundle-bin
         monero-gui
         discord
-        zoom-us
+        #zoom-us
         # calibre
-        slack
+        #slack
         xournal
         xdg-utils
 
@@ -777,7 +777,7 @@
     };
     emacs.enable = true;
     # eww.enable = true; # config
-    eza.enable = true;
+    #eza.enable = true;
     firefox.enable = true;
     fzf.enable = true;
     gh.enable = true;
@@ -813,12 +813,12 @@
     pandoc.enable = true;
     # password-store.enable = true;
     powerline-go.enable = true;
-    pyenv.enable = true;
+    #pyenv.enable = true;
     pylint.enable = true;
     pywal.enable = true;
     rbenv.enable = true;
     readline.enable = true;
-    ripgrep.enable = true;
+    #ripgrep.enable = true;
     rtorrent.enable = true;
     # sagemath.enable = true; # oh my god 1 hour + build times and then it usually fails. if it's cached you're fine but on unstable it is just not always cached. even worse against master branch
     ssh.enable = true;

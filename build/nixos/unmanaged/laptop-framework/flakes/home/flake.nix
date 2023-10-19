@@ -1,18 +1,17 @@
 {
   inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs";
     #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
-    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
+    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
 
     # todo: figure out that hyprland flake
     home-manager = {
-      url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
+      url = "github:nix-community/home-manager"; #*/
+      #url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
-    flake-compat = {
-      url = "github:edolstra/flake-compat";
-      flake = false;
-    };
+    flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";

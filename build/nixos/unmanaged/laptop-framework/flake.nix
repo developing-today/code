@@ -1,7 +1,8 @@
 {
   inputs = {
-    #     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
-    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
+    nixpkgs.url = "github:NixOS/nixpkgs";
+    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
+    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "github:DeterminateSystems/nixpkgs/nix_2_18_1";
     home = {
       url = "path:./flakes/home";
@@ -18,15 +19,13 @@
       inputs.home-manager.follows = "home-manager";
     };
     home-manager = {
-      url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
+      url = "github:nix-community/home-manager"; #*/
+      #url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
       inputs.nixpkgs.follows = "nixpkgs";
     };
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
-    flake-compat = {
-      url = "github:edolstra/flake-compat";
-      flake = false;
-    };
+    flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -54,7 +53,7 @@
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
       inputs.neovim-flake.follows = "neovim-flake";
-    }; # need to get this into home/vim flake
+    };
     # must type follows all out every time
     # because flake inputs are basically static
     # can't make a let var function closure thing around it or whatever
@@ -70,7 +69,8 @@
       inputs.flakeCompat.follows = "flake-compat";
     };
     nix-software-center = {
-      url = "github:vlinkz/nix-software-center";
+      url = "github:vlinkz/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
+      #url = "github:vlinkz/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
       #url = "https://flakehub.com/f/vlinkz/nix-software-center/*.tar.gz"; #*/ # https://github.com/vlinkz/nix-software-center/pull/50
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.utils.follows = "flake-utils";
@@ -108,6 +108,7 @@
     ...
   }: let
     stateVersion = "23.11";
+    #stateVersion = "23.05";
     overlays = [
       zig-overlay.overlays.default
       alejandra.overlay
