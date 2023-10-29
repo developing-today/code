@@ -21,3 +21,7 @@ targets
 **/.tmp
 *.kate-swp
 **/*.kate-swp
+.history
+**/.history
+*.exe
+**/*.exe
