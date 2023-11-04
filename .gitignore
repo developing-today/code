@@ -25,3 +25,5 @@ targets
 **/.history
 *.exe
 **/*.exe
+badger/*
+**/badger/

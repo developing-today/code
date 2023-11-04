@@ -1,1 +1,7 @@
 /gomod2nix-template
+/badger/*
+/badger/
+/badger
+badger/
+badger
+**/badger/

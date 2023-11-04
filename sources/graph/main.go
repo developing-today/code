@@ -1,10 +1,8 @@
 package main
 
 import (
-	"fmt"
-	"log"
-
 	"github.com/charmbracelet/charm/kv"
+	"github.com/charmbracelet/log"
 	badger "github.com/dgraph-io/badger/v4"
 )
 func handle(err error) {
@@ -14,7 +12,7 @@ func handle(err error) {
 }
 
 func main() {
-	fmt.Println("Hello flake")
+	log.Info("Hello flake")
 
 	// Open the Badger database located in the /tmp/badger directory.
   // It will be created if it doesn't exist.
@@ -36,7 +34,7 @@ func main() {
 			// This func with val would only be called if item.Value encounters no error.
 
 			// Accessing val here is valid.
-			// fmt.Printf("The answer is: %s\n", val)
+			// log.Infof("The answer is: %s\n", val)
 
 			// Copying or parsing val is valid.
 			// valCopy = append([]byte{}, val...)
@@ -48,15 +46,15 @@ func main() {
 		// handle(err)
 
 		// DO NOT access val here. It is the most common cause of bugs.
-		// fmt.Printf("NEVER do this. %s\n", valNot)
+		// log.Infof("NEVER do this. %s\n", valNot)
 
 		// You must copy it to use it outside item.Value(...).
-		// fmt.Printf("The answer is: %s\n", valCopy)
+		// log.Infof("The answer is: %s\n", valCopy)
 
 		// Alternatively, you could also use item.ValueCopy().
 		valCopy, err = item.ValueCopy(nil)
 		handle(err)
-		fmt.Printf("The answer is: %s\n", valCopy)
+		log.Info("", "answer", string(valCopy))
 
 		return nil
 	})
@@ -70,7 +68,7 @@ func main() {
   if food, err := cdb.Get([]byte("fave-food")); err != nil {
       log.Fatal(err)
   } else {
-      fmt.Printf("My fave food is %s.\n", food)
+      log.Info("My fave food is:", "food", string(food))
   }
 
   if err := cdb.Sync(); err != nil {
@@ -84,6 +82,6 @@ func main() {
   if food, err := cdb.Get([]byte("fave-food")); err != nil {
     log.Fatal(err)
   } else {
-    fmt.Printf("Is your fave food %s?\n", food)
+    log.Info("Is your fave food:", "food", string(food))
   }
 }

@@ -26,6 +26,9 @@
     "rust-analyzer.linkedProjects": [
         "./src/web-gen-api-axum/Cargo.toml"
     ],
+    "cSpell.words": [
+        "Infof"
+    ],
     "workbench.colorCustomizations": {
         "activityBar.background": "#1E3132",
         "titleBar.activeBackground": "#2B4446",
