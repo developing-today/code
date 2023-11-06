@@ -3,6 +3,12 @@ module github.com/developing-today/code/sources/graph
 go 1.17
 
 require (
+	github.com/charmbracelet/charm v0.12.6
+	github.com/charmbracelet/log v0.2.6-0.20231031233156-7472e5954a32
+	github.com/dgraph-io/badger/v4 v4.2.0
+)
+
+require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
 	github.com/caarlos0/sshmarshal v0.1.0 // indirect
@@ -11,13 +17,10 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/charmbracelet/bubbles v0.15.0 // indirect
 	github.com/charmbracelet/bubbletea v0.23.2 // indirect
-	github.com/charmbracelet/charm v0.12.6 // indirect
 	github.com/charmbracelet/keygen v0.4.2 // indirect
 	github.com/charmbracelet/lipgloss v0.9.1 // indirect
-	github.com/charmbracelet/log v0.2.6-0.20231031233156-7472e5954a32 // indirect
 	github.com/containerd/console v1.0.3 // indirect
 	github.com/dgraph-io/badger/v3 v3.2103.2 // indirect
-	github.com/dgraph-io/badger/v4 v4.2.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
