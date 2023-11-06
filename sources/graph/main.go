@@ -68,7 +68,8 @@ func main() {
   if food, err := cdb.Get([]byte("fave-food")); err != nil {
       log.Fatal(err)
   } else {
-      log.Info("My fave food is:", "food", string(food))
+      log.Info("My fave food is:")
+      log.Info("", "food", string(food))
   }
 
   if err := cdb.Sync(); err != nil {
@@ -82,6 +83,7 @@ func main() {
   if food, err := cdb.Get([]byte("fave-food")); err != nil {
     log.Fatal(err)
   } else {
-    log.Info("Is your fave food:", "food", string(food))
+    log.Info("Is your fave food:")
+    log.Info("", "food", string(food))
   }
 }

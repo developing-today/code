@@ -1,4 +1,4 @@
-module example.com/gomod2nix-template
+module github.com/developing-today/code/sources/graph
 
 go 1.17
 
