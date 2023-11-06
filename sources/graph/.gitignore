@@ -5,3 +5,5 @@
 badger/
 badger
 **/badger/
+
+dist/
