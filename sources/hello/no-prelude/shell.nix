@@ -1,1 +1,1 @@
-/home/user/code/shell.nix
+C:/home/user/code/shell.nix
