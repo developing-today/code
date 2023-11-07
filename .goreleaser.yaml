@@ -12,21 +12,41 @@ builds:
       - linux
       - windows
       - darwin
+      # - android
+      # - js
+      # - wasip1
     goarch:
       - amd64
       - 386
       - arm64
       - arm
-
+      # - wasm
+    # goarm:
+    #   - 6
+    #   - 7
+    #   - 8
+    ignore:
+      - goos: darwin
+        goarch: 386
+      - goos: darwin
+        goarch: arm
 archives:
   - id: "graph"
     builds:
       - "graph"
     format: tar.gz
-    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arm }}{{ .Arch }}"
     format_overrides:
       - goos: windows
         format: zip
 
 changelog:
   sort: asc
+
+# TODO:
+# android	386
+# android	amd64
+# android	arm
+# android	arm64
+# js	wasm
+# wasip1	wasm
