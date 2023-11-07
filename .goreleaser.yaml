@@ -13,72 +13,31 @@ builds:
     binary: "graph"
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-      - windows
-      - darwin
-      - android
-      - js
-      - wasip1
-    goarch:
-      # - wasm # import sys not support wasm
-      - amd64
-      - 386
-      - arm64
-      - arm
-    goarm:
-      - 5
-      - 6
-      - 7
-    goamd64:
-      - v1
-      - v2
-      - v3
-      - v4
-    ignore:
-      - goos: linux
-        goarch: wasm
-
-      - goos: windows
-        goarch: wasm
-
-      - goos: darwin
-        goarch: wasm
-      - goos: darwin
-        goarch: 386
-      - goos: darwin
-        goarch: arm
-
-      - goos: android
-        goarch: wasm
-      - goos: android
-        goarch: 386
-      - goos: android
-        goarch: arm
-
-      - goos: js
-        goarch: amd64
-      - goos: js
-        goarch: 386
-      - goos: js
-        goarch: arm64
-      - goos: js
-        goarch: arm
-
-      - goos: wasip1
-        goarch: amd64
-      - goos: wasip1
-        goarch: 386
-      - goos: wasip1
-        goarch: arm64
-      - goos: wasip1
-        goarch: arm
+    targets:
+      - android_arm_7
+      - android_arm64
+      - darwin_amd64_v1
+      - darwin_amd64_v3
+      - darwin_arm64
+      # - js_wasm # sys
+      - linux_386
+      - linux_amd64_v1
+      - linux_amd64_v3
+      - linux_amd64_v4
+      - linux_arm_7
+      - linux_arm64
+      # - wasip1_wasm # sys
+      - windows_386
+      - windows_amd64_v1
+      - windows_amd64_v3
+      - windows_amd64_v4
+      - windows_arm64
 archives:
-  - id: "graph"
+  - id: "archives"
     builds:
       - "graph"
     format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}_{{ .CommitDate }}_{{ .ShortCommit }}_{{ .Date }}"
+    name_template: "{{ .ProjectName }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}_{{ .ShortCommit }}_{{ .CommitDate }}_{{ .Date }}"
     format_overrides:
       - goos: windows
         format: zip
