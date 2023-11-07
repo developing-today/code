@@ -11,14 +11,14 @@ builds:
     goos:
       - linux
       - windows
-      - darwin
+      # - darwin
       # - android
       # - js
       # - wasip1
     goarch:
       - amd64
       - 386
-      - arm64
+      # - arm64
       # - arm
       # - wasm
     # goarm:
