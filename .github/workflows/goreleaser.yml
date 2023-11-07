@@ -2,10 +2,8 @@ name: goreleaser
 
 on:
   push:
-  #   tags:
-  #     - '*'
-  pull_request:
-  workflow_dispatch:
+    tags:
+      - '*'
 
 permissions:
   contents: write
@@ -39,10 +37,10 @@ jobs:
           MATRIX_CONTEXT: ${{ toJson(matrix) }}
         run: echo "$MATRIX_CONTEXT"
   goreleaser:
-    name: ${{ matrix }} goreleaser
+    name: ${{ matrix.working-directory }} goreleaser
     strategy:
       matrix:
-        include: [ { working-directory: "./sources/graph" } ]
+        include: [ { working-directory: "src/graph" } ]
     runs-on: ubuntu-latest
     steps:
       - name: Dump job context
@@ -66,7 +64,7 @@ jobs:
         with:
           go-version-file: "${{ matrix.working-directory }}/go.mod"
           check-latest: true
-      - name: Run GoReleaser ${{ matrix }}
+      - name: Run GoReleaser ${{ matrix.working-directory }}
         uses: goreleaser/goreleaser-action@v5
         with:
           distribution: goreleaser
