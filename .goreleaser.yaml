@@ -1,12 +1,12 @@
 builds:
   - id: "graph"
-    dir: "src/graph"
+    dir: "sources/graph"
     hooks:
       pre:
         - cmd: go mod tidy
-          dir: src/graph
+          dir: sources/graph
         - cmd: go generate ./...
-          dir: src/graph
+          dir: sources/graph
 
     binary: "graph"
     env:
