@@ -1,11 +1,10 @@
-before:
-  hooks:
-    - go mod tidy
-    - go generate ./...
-
 builds:
   - id: "graph"
     dir: "src/graph"
+    hooks:
+      pre:
+        - go mod tidy
+        - go generate ./...
     binary: "graph"
     env:
       - CGO_ENABLED=0
@@ -16,6 +15,8 @@ builds:
     goarch:
       - amd64
       - 386
+      - arm64
+      - arm
 
 archives:
   - id: "graph"
