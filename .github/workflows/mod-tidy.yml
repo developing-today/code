@@ -66,11 +66,14 @@ jobs:
 
       - name: Tidy Go modules in multiple directories
         run: |
+          set -ex -o pipefail
+
           dirs=("src/graph")
+
           for dir in "${dirs[@]}"; do
             if [[ -d "$dir" && -f "$dir/go.mod" ]]; then
-              echo "Running go mod tidy in $dir"
-              (cd "$dir" && go mod tidy)
+              echo "Running go mod tidy && go generate in $dir"
+              (cd "$dir" && go mod tidy -compat=1.17 && go generate ./...)
             else
               echo "Skipping $dir as it does not contain a go.mod file."
               exit 1
@@ -81,5 +84,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: 'Maintain: Update go.mod and generated files'
-          branch: ${{ github.ref }}
-          file_pattern: sources/graph/go.mod sources/graph/go.sum # Add other paths that might have changed due to go generate
+          branch: ${{ github.head_ref }}
