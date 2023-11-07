@@ -3,7 +3,7 @@ builds:
     dir: "src/graph"
     hooks:
       pre:
-        - cd src/graph
+        - sh -c "cd src/graph"
         - go mod tidy
         - go generate ./...
     binary: "graph"
