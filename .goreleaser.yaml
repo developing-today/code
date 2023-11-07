@@ -12,7 +12,6 @@ builds:
 
     binary: "graph"
     targets:
-      - android_arm_7
       - android_arm64
       - darwin_amd64_v1
       - darwin_amd64_v3
