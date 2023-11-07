@@ -19,7 +19,7 @@ builds:
       - js
       - wasip1
     goarch:
-      # - wasm # badgerdb not support wasm
+      # - wasm # import sys not support wasm
       - amd64
       - 386
       - arm64
