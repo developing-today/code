@@ -11,8 +11,6 @@ builds:
           dir: sources/graph
 
     binary: "graph"
-    env:
-      - CGO_ENABLED=0
     targets:
       - android_arm_7
       - android_arm64
