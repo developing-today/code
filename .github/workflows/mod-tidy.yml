@@ -73,6 +73,7 @@ jobs:
               (cd "$dir" && go mod tidy)
             else
               echo "Skipping $dir as it does not contain a go.mod file."
+              exit 1
             fi
           done
 
