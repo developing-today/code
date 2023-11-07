@@ -42,6 +42,8 @@ builds:
         goarch: wasm
       - goos: android
         goarch: 386
+      - goos: android
+        goarch: arm
 
       - goos: js
         goarch: amd64
