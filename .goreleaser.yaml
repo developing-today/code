@@ -70,12 +70,4 @@ archives:
 
 changelog:
   sort: asc
-
-# TODO:
-# goarm goamd64 go386
-# android	386
-# android	amd64
-# android	arm
-# android	arm64
-# js	wasm
-# wasip1	wasm
+# TODO: goarm goamd64 go386 etc.
