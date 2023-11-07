@@ -1,4 +1,3 @@
-project_name: code
 changelog:
   sort: asc
 builds:
@@ -79,7 +78,7 @@ archives:
     builds:
       - "graph"
     format: tar.gz
-    name_template: "{{ .Project }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}_{{ .CommitDate }}_{{ .ShortCommit }}_{{ .Date }}"
+    name_template: "{{ .ProjectName }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}_{{ .CommitDate }}_{{ .ShortCommit }}_{{ .Date }}"
     format_overrides:
       - goos: windows
         format: zip
