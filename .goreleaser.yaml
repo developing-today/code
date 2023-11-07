@@ -15,7 +15,7 @@ builds:
       - linux
       - windows
       - darwin
-      # - android # requires cgo
+      - android
       - js
       - wasip1
     goarch:
@@ -40,6 +40,8 @@ builds:
 
       - goos: android
         goarch: wasm
+      - goos: android
+        goarch: 386
 
       - goos: js
         goarch: amd64
