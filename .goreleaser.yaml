@@ -7,8 +7,8 @@ builds:
       pre:
         - cmd: go mod tidy -compat=1.17
           dir: sources/graph
-        # - cmd: go generate ./...
-        #   dir: sources/graph
+        - cmd: go generate ./...
+          dir: sources/graph
     binary: "graph"
     targets:
       - android_arm64
