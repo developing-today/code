@@ -17,7 +17,7 @@ anyhow = "1.0.58"
 fs-err = "2.7.0"
 indexmap = { version = "1.9.1", features = ["serde-1"] }
 petgraph = { version = "0.6.2", default-features = false, features = ["graphmap", "stable_graph"] }
-bimap = "0.6.2"
+bimap = "0.6.3"
 prettyplease = "0.2"
 quote = "1.0.20"
 proc-macro2 = { version = "1.0.40", features = ["span-locations"] }
