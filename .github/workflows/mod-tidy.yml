@@ -7,22 +7,74 @@ on:
       - '**.md' # Ignore markdown files changes
 
 jobs:
-  tidy:
+  dump_contexts_to_log:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
-        uses: actions/checkout@v2
-      
-      - name: Set up Go
-        uses: actions/setup-go@v2
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
+      - name: Dump job context
+        env:
+          JOB_CONTEXT: ${{ toJson(job) }}
+        run: echo "$JOB_CONTEXT"
+      - name: Dump steps context
+        env:
+          STEPS_CONTEXT: ${{ toJson(steps) }}
+        run: echo "$STEPS_CONTEXT"
+      - name: Dump runner context
+        env:
+          RUNNER_CONTEXT: ${{ toJson(runner) }}
+        run: echo "$RUNNER_CONTEXT"
+      - name: Dump strategy context
+        env:
+          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
+        run: echo "$STRATEGY_CONTEXT"
+      - name: Dump matrix context
+        env:
+          MATRIX_CONTEXT: ${{ toJson(matrix) }}
+        run: echo "$MATRIX_CONTEXT"
+  tidy:
+    name: ${{ matrix.working-directory }} tidy
+    strategy:
+      matrix:
+        include: [ { working-directory: "." } ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump job context
+        env:
+          JOB_CONTEXT: ${{ toJson(job) }}
+        run: echo "$JOB_CONTEXT"
+      - name: Dump strategy context
+        env:
+          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
+        run: echo "$STRATEGY_CONTEXT"
+      - name: Dump matrix context
+        env:
+          MATRIX_CONTEXT: ${{ toJson(matrix) }}
+        run: echo "$MATRIX_CONTEXT"
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          go-version: '1.18' # Specify the Go version
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version-file: "${{ matrix.working-directory }}/go.work"
+          check-latest: true
+          cache-dependency-path: "${{ matrix.working-directory }}/go.work.sum"
 
-      - name: Tidy Go modules
-        run: go mod tidy
-
-      - name: Generate Go files
-        run: go generate ./...
+      - name: Tidy Go modules in multiple directories
+        run: |
+          dirs=("src/graph")
+          for dir in "${dirs[@]}"; do
+            if [[ -d "$dir" && -f "$dir/go.mod" ]]; then
+              echo "Running go mod tidy in $dir"
+              (cd "$dir" && go mod tidy)
+            else
+              echo "Skipping $dir as it does not contain a go.mod file."
+            fi
+          done
 
       - name: Auto commit changes
         uses: stefanzweifel/git-auto-commit-action@v4
