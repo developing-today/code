@@ -3,9 +3,11 @@ builds:
     dir: "src/graph"
     hooks:
       pre:
-        - sh -c "cd src/graph"
-        - go mod tidy
-        - go generate ./...
+        - cmd: go mod tidy
+          dir: src/graph
+        - cmd: go generate ./...
+          dir: src/graph
+
     binary: "graph"
     env:
       - CGO_ENABLED=0
