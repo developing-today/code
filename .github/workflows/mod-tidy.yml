@@ -1,0 +1,32 @@
+name: Go Mod Tidy and Commit
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md' # Ignore markdown files changes
+
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+      
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.18' # Specify the Go version
+
+      - name: Tidy Go modules
+        run: go mod tidy
+
+      - name: Generate Go files
+        run: go generate ./...
+
+      - name: Auto commit changes
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: 'Maintain: Update go.mod and generated files'
+          branch: ${{ github.ref }}
+          file_pattern: sources/graph/go.mod sources/graph/go.sum # Add other paths that might have changed due to go generate
