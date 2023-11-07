@@ -1,3 +1,5 @@
+changelog:
+  sort: asc
 builds:
   - id: "graph"
     dir: "sources/graph"
@@ -24,6 +26,15 @@ builds:
       - 386
       - arm64
       - arm
+    goarm:
+      - 5
+      - 6
+      - 7
+    goamd64:
+      - v1
+      - v2
+      - v3
+      - v4
     ignore:
       - goos: linux
         goarch: wasm
@@ -67,11 +78,7 @@ archives:
     builds:
       - "graph"
     format: tar.gz
-    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .Project }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}_{{ .CommitDate }}_{{ .ShortCommit }}_{{ .Date }}"
     format_overrides:
       - goos: windows
         format: zip
-
-changelog:
-  sort: asc
-# TODO: goarm goamd64 go386 etc.
