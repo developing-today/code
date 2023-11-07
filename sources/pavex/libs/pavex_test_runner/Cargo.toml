@@ -10,7 +10,7 @@ name = "snaps"
 [dependencies]
 anyhow = "1.0.59"
 ahash = "0.8"
-console = "0.15.1"
+console = "0.15.7"
 fs-err = "2.7.0"
 libtest-mimic = "0.6.0"
 serde = { version = "1.0.141", features = ["derive"] }
