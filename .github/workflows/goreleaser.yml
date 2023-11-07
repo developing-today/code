@@ -42,7 +42,7 @@ jobs:
     name: ${{ matrix }} goreleaser
     strategy:
       matrix:
-        includes: [ "./sources/graph" ]
+        include: [ { working-directory: "./sources/graph" } ]
     runs-on: ubuntu-latest
     steps:
       - name: Dump job context
@@ -64,7 +64,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version-file: "${{ matrix }}/go.mod"
+          go-version-file: "${{ matrix.working-directory }}/go.mod"
           check-latest: true
       - name: Run GoReleaser ${{ matrix }}
         uses: goreleaser/goreleaser-action@v5
@@ -72,6 +72,6 @@ jobs:
           distribution: goreleaser
           version: latest
           args: release --clean
-          workdir: ${{ matrix }}
+          workdir: ${{ matrix.working-directory }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
