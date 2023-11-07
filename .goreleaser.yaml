@@ -1,0 +1,31 @@
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: "graph"
+    dir: "src/graph"
+    binary: "graph"
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - 386
+
+archives:
+  - id: "graph"
+    builds:
+      - "graph"
+    format: tar.gz
+    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+changelog:
+  sort: asc

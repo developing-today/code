@@ -40,7 +40,7 @@ jobs:
     name: ${{ matrix.working-directory }} goreleaser
     strategy:
       matrix:
-        include: [ { working-directory: "src/graph" } ]
+        include: [ { working-directory: "." } ]
     runs-on: ubuntu-latest
     steps:
       - name: Dump job context
