@@ -33,7 +33,7 @@ archives:
     builds:
       - "graph"
     format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}_{{ .ShortCommit }}_{{ .CommitDate }}_{{ .Date }}"
+    name_template: "{{ .ProjectName }}_{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}"
     format_overrides:
       - goos: windows
         format: zip
