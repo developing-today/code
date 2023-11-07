@@ -2,35 +2,37 @@ name: goreleaser
 
 on:
   push:
-    tags:
-      - '*'
-#   pull_request:
+  #   tags:
+  #     - '*'
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   goreleaser:
+    name: ${{ matrix }} goreleaser
+    strategy:
+      matrix:
+        includes: [ "./sources/graph" ]
     runs-on: ubuntu-latest
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      -
-        name: Set up Go
+      - name: Set up Go
         uses: actions/setup-go@v4
-      -
-        name: Run GoReleaser src/graph
+        with:
+          go-version-file: "${{ matrix }}/go.mod"
+          check-latest: true
+      - name: Run GoReleaser ${{ matrix }}
         uses: goreleaser/goreleaser-action@v5
         with:
-          # either 'goreleaser' (default) or 'goreleaser-pro'
           distribution: goreleaser
           version: latest
           args: release --clean
-          workdir: ./sources/graph
+          workdir: ${{ matrix }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Your GoReleaser Pro key, if you are using the 'goreleaser-pro' distribution
-          # GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
