@@ -3,22 +3,23 @@ package main
 import (
 	"github.com/charmbracelet/charm/kv"
 	"github.com/charmbracelet/log"
-	badger "github.com/dgraph-io/badger/v4"
+	badger "github.com/dgraph-io/badger/v3"
 )
+
 func handle(err error) {
-  if err != nil {
-    log.Fatal(err)
-  }
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {
 	log.Info("Hello flake")
 
 	// Open the Badger database located in the /tmp/badger directory.
-  // It will be created if it doesn't exist.
-  db, err := badger.Open(badger.DefaultOptions("badger"))
-  handle(err)
-  defer db.Close()
+	// It will be created if it doesn't exist.
+	db, err := badger.Open(badger.DefaultOptions("badger"))
+	handle(err)
+	defer db.Close()
 
 	err = db.Update(func(txn *badger.Txn) error {
 		err := txn.Set([]byte("answer"), []byte("42"))
@@ -31,17 +32,17 @@ func main() {
 
 		var valCopy []byte
 		// err = item.Value(func(val []byte) error {
-			// This func with val would only be called if item.Value encounters no error.
+		// This func with val would only be called if item.Value encounters no error.
 
-			// Accessing val here is valid.
-			// log.Infof("The answer is: %s\n", val)
+		// Accessing val here is valid.
+		// log.Infof("The answer is: %s\n", val)
 
-			// Copying or parsing val is valid.
-			// valCopy = append([]byte{}, val...)
+		// Copying or parsing val is valid.
+		// valCopy = append([]byte{}, val...)
 
-			// Assigning val slice to another variable is NOT OK.
-			// valNot = val // Do not do this.
-		 // return nil
+		// Assigning val slice to another variable is NOT OK.
+		// valNot = val // Do not do this.
+		// return nil
 		// })
 		// handle(err)
 
@@ -59,31 +60,31 @@ func main() {
 		return nil
 	})
 
-  cdb, err := kv.OpenWithDefaults("my-cute-db")
-  if err != nil {
-      log.Fatal(err)
-  }
-  defer cdb.Close()
+	cdb, err := kv.OpenWithDefaults("my-cute-db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cdb.Close()
 
-  if food, err := cdb.Get([]byte("fave-food")); err != nil {
-      log.Fatal(err)
-  } else {
-      log.Info("My fave food is:")
-      log.Info("", "food", string(food))
-  }
+	if food, err := cdb.Get([]byte("fave-food")); err != nil {
+		log.Fatal(err)
+	} else {
+		log.Info("My fave food is:")
+		log.Info("", "food", string(food))
+	}
 
-  if err := cdb.Sync(); err != nil {
-      log.Fatal(err)
-  }
+	if err := cdb.Sync(); err != nil {
+		log.Fatal(err)
+	}
 
-  if err := cdb.Set([]byte("fave-food"), []byte("gherkin")); err != nil {
-      log.Fatal(err)
-  }
+	if err := cdb.Set([]byte("fave-food"), []byte("gherkin")); err != nil {
+		log.Fatal(err)
+	}
 
-  if food, err := cdb.Get([]byte("fave-food")); err != nil {
-    log.Fatal(err)
-  } else {
-    log.Info("Is your fave food:")
-    log.Info("", "food", string(food))
-  }
+	if food, err := cdb.Get([]byte("fave-food")); err != nil {
+		log.Fatal(err)
+	} else {
+		log.Info("Is your fave food:")
+		log.Info("", "food", string(food))
+	}
 }
