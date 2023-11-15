@@ -5,7 +5,7 @@ go 1.21.3
 require (
 	github.com/charmbracelet/charm v0.12.6
 	github.com/charmbracelet/log v0.2.5
-	github.com/dgraph-io/badger/v3 v3.2103.2
+	github.com/dgraph-io/badger/v4 v4.2.0
 )
 
 require (
@@ -20,6 +20,7 @@ require (
 	github.com/charmbracelet/keygen v0.4.2 // indirect
 	github.com/charmbracelet/lipgloss v0.8.0 // indirect
 	github.com/containerd/console v1.0.3 // indirect
+	github.com/dgraph-io/badger/v3 v3.2103.2 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
