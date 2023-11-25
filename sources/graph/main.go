@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/charmbracelet/charm/kv"
 	"github.com/charmbracelet/log"
 	badger "github.com/dgraph-io/badger/v4"
@@ -13,11 +16,18 @@ func handle(err error) {
 }
 
 func main() {
-	log.Info("Hello flake")
+	log.Info("Hello")
 
-	// Open the Badger database located in the /tmp/badger directory.
+	e, err := os.Executable()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	// fmt.Println(path.Dir(e))
+
 	// It will be created if it doesn't exist.
-	db, err := badger.Open(badger.DefaultOptions("badger"))
+	opts := badger.DefaultOptions("badger")
+	db, err := badger.Open(opts)
 	handle(err)
 	defer db.Close()
 

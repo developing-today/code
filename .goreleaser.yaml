@@ -16,18 +16,18 @@ builds:
       - darwin_amd64_v3
       - darwin_arm64
       # - js_wasm # sys
-      - linux_386
+      # - linux_386 # badger compatibility ?
       - linux_amd64_v1
       - linux_amd64_v3
       - linux_amd64_v4
       - linux_arm_7
       - linux_arm64
       # - wasip1_wasm # sys
-      - windows_386
+      # - windows_386 # badger compatibility
       - windows_amd64_v1
       - windows_amd64_v3
       - windows_amd64_v4
-      - windows_arm64
+      # - windows_arm64 # badger compatibility ?
 archives:
   - id: "archives"
     builds:
