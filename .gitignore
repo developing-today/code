@@ -30,3 +30,4 @@ badger/*
 data/*
 **/data/
 __*__
+sources/**/data
