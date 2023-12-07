@@ -27,6 +27,7 @@
         "./src/web-gen-api-axum/Cargo.toml"
     ],
     "cSpell.words": [
-        "Infof"
+        "Infof",
+        "ksuid"
     ],
 }

@@ -75,9 +75,17 @@ def execute_into_list(conn, query):
             result_list.append(result.get_next())
 
         return result_list
+def execute(conn, query, **options):
+    prefix = options.get('prefix', "Executing query: ")
+    max_print_length = options.get('max_print_length', -1)
 
-def execute(conn, query):
-    print("Executing query:", query)
+    if max_print_length > 0:
+        combined_query = prefix + query
+        display_query = combined_query[:max_print_length] + "..." if len(combined_query) > max_print_length else combined_query
+        print(display_query)
+    elif max_print_length == -1:
+        print(prefix + query)
+
     return conn.execute(query)
 
 def is_valid_migration_name(filename, migration_count, counter, valid_new_counters):

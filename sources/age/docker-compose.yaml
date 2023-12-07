@@ -1,0 +1,30 @@
+version: '3'
+
+services:
+  age:
+    image: apache/age
+    container_name: myAge
+    ports:
+      - "5555:5555" # Expose age service on port 5555
+    volumes:
+      - age-data:/var/lib/age
+    depends_on:
+      - db
+    command: ["age", "--host", "0.0.0.0", "--port", "5432", "--store", "postgresql://postgresUser:postgresPW@db/postgresDB"]
+
+  db:
+    image: postgres
+    container_name: myPostgresDb
+    restart: always
+    ports:
+      - "5432:5432" # Expose PostgreSQL on its default port
+    environment:
+      POSTGRES_USER: postgresUser
+      POSTGRES_PASSWORD: postgresPW
+      POSTGRES_DB: postgresDB
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+volumes:
+  age-data:
+  db-data:
