@@ -1,5 +1,9 @@
-data
-data/
-data/*
-data/**
-__*__
+/gomod2nix-template
+/badger/*
+/badger/
+/badger
+badger/
+badger
+**/badger/
+
+dist/
