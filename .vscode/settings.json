@@ -30,4 +30,5 @@
         "Infof",
         "ksuid"
     ],
+    "xml.downloadExternalResources.enabled": true,
 }
