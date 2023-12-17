@@ -8,7 +8,7 @@ stuff {
         (predicate)"mentors" (object)"Gohan" (object)"Goten" (object)"Trunks" :=(object)"examples"{
           "2021-01" {
             failures {
-              Gohan "2021-01-05T123406"=("->training:standard|->Fail:Hospitalized:Literally-Resurrected")"Became giant ape while fighting Vegeta."
+              Gohan "2021-01-05T123406"=("training:standard:::Fail:Hospitalized:Literally-Resurrected")"Became giant ape while fighting Vegeta."
             }
             greater-failures {
               Goten  {
@@ -51,12 +51,11 @@ stuff {
 }
 
 
-(yes:yes:no:::bool)"=" 
- "yes"  "no"   "yes" :=(result)1 {
- ("3/3")"no"
+(yes:yes:no:::bool)"=" \
+ "yes" "no" "yes" /*(result)*/:=(result)1 (result)":"/*(result)*/{
+  (r1:3::0:1:0)"no"
 }
-
-
+gi
 (document:object)rdf {
     description (predi|cate::informal)"a description of the introduction to the resoruce description framework" {
         about "http://www.dlib.org/dlib/may98/miller/05miller.html"
@@ -105,7 +104,3 @@ stuff {
 "\\"
 
 }
-
-
-
-
