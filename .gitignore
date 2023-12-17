@@ -31,3 +31,4 @@ data/*
 **/data/
 __*__
 sources/**/data
+!sources/data
