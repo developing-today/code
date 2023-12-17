@@ -1,0 +1,111 @@
+stuff {
+(predicate)adventures {
+    (subject)character "Brian" {
+        (predicate#NotVeryWell)"writesBooks" (object#book#author:BrianGriffin)"Wish It, Want It, Do It" (object)"Faster Than the Speed of Love"
+        (predicate)"travelsWith" (object::Baby:Lois'sBaby::Kind-Of-Annoying)"Stewie" (object:FamilyGuy)"Peter"
+    }
+    (subject)character "Piccolo" `=(predicate)"hobbies"{
+        (predicate)"mentors" (object)"Gohan" (object)"Goten" (object)"Trunks" :=(object)"examples"{
+          "2021-01" {
+            failures {
+              Gohan "2021-01-05T123406"=("->training:standard|->Fail:Hospitalized:Literally-Resurrected")"Became giant ape while fighting Vegeta."
+            }
+            greater-failures {
+              Goten  {
+
+              }
+              Trunks
+            }
+          }
+        }
+        (predicate)"fightsAgainst" (object)"Android 17" (object)"Cell"
+    }
+
+// adventures {
+//     (subject)character="Brian" {
+//         (predicate)"writesBooks" (objects)"Wish It, Want It, Do It" "Faster Than the Speed of Love"
+//         (predicate)"travelsWith" (objects)"Stewie" "Peter"
+//     }
+//     (subject)character="Piccolo" {
+//         (predicate)"mentors" (objects)"Gohan" "Goten" "Trunks"
+//         (predicate)"fightsAgainst" (objects)"Android 17" "Cell"
+//     }
+// }
+
+// nodes
+// id, type, key, value
+// 1 value null Piccolo
+// 2 document null adventures
+// 3 value null Brian
+
+// links
+// id, type, from, to
+// 1 subject 1
+// 1 character 1
+
+// meta_links
+// id, type, from, to
+// 1 child 2 2
+// 1 child 2 3
+
+}
+
+
+(yes:yes:no:::bool)"=" 
+ "yes"  "no"   "yes" :=(result)1 {
+ ("3/3")"no"
+}
+
+
+(document:object)rdf {
+    description (predi|cate::informal)"a description of the introduction to the resoruce description framework" {
+        about "http://www.dlib.org/dlib/may98/miller/05miller.html"
+
+        title "An Introduction to the Resource Description Framework"
+        creator "Eric J. Miller"
+
+        description r"
+        The Resource Description Framework (RDF) is an infrastructure that enables the encoding,
+        exchange and reuse of structured metadata. rdf is an application of xml that imposes needed
+        structural constraints to provide unambiguous methods of expressing semantics. rdf additionally
+        provides a means for publishing both human-readable and machine-processable vocabularies designed
+        to encourage the reuse and extension of metadata semantics among disparate information communities.
+        the structural constraints rdf imposes to support the consistent encoding and exchange of
+        standardized metadata provides for the interchangeability of separate packages of metadata defined
+        by different resource description communities.
+        "
+
+        publisher "Corporation for National Research Initiatives"
+        type "Electronic Document"
+        format "text/html"
+        language "en"
+
+        subject {
+            item "machine-readable catalog record formats"
+            item "applications of computer file organization and access methods"
+        }
+
+        rights "Copyright @ 1998 Eric Miller"
+
+        relation {
+            relationType resource="http://purl.org/metadata/dublin_core_qualifiers#IsPartOf"
+            value resource="http://www.dlib.org/dlib/may98/05contents.html"
+        }
+    }
+}
+
+`;`;`;```'`?1:'2~!@#$%^&*-_+|o0😶‍🌫️oi1🐘😶‍🌫️.\
+
+"\"<>{}[]()|/\\\"\"/\\😶‍🌫️\\"\
+
+"\""
+
+""\
+
+"\\"
+
+}
+
+
+
+
