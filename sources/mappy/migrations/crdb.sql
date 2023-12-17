@@ -18,7 +18,9 @@ CREATE TABLE graph (
     created_at TIMESTAMPTZ DEFAULT now(),
     created_by JSON,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON
+    updated_by JSON,
+    expired_at TIMESTAMPTZ DEFAULT now(),
+    expired_by JSON
 );
 
 CREATE TABLE nodes (
@@ -41,7 +43,9 @@ CREATE TABLE nodes (
     created_at TIMESTAMPTZ DEFAULT now(),
     created_by JSON,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON
+    updated_by JSON,
+    expired_at TIMESTAMPTZ DEFAULT now(),
+    expired_by JSON
 );
 
 CREATE TABLE identifiers (
@@ -64,7 +68,9 @@ CREATE TABLE identifiers (
     created_at TIMESTAMPTZ DEFAULT now(),
     created_by JSON,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON
+    updated_by JSON,
+    expired_at TIMESTAMPTZ DEFAULT now(),
+    expired_by JSON
 );
 
 CREATE TABLE nodes_identifiers (
@@ -89,7 +95,9 @@ CREATE TABLE nodes_identifiers (
     created_at TIMESTAMPTZ DEFAULT now(),
     created_by JSON,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON
+    updated_by JSON,
+    expired_at TIMESTAMPTZ DEFAULT now(),
+    expired_by JSON
 );
 
 CREATE TABLE links (
@@ -114,7 +122,9 @@ CREATE TABLE links (
     created_at TIMESTAMPTZ DEFAULT now(),
     created_by JSON,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON
+    updated_by JSON,
+    expired_at TIMESTAMPTZ DEFAULT now(),
+    expired_by JSON
 );
 
 CREATE TABLE links_identifiers (
@@ -139,5 +149,7 @@ CREATE TABLE links_identifiers (
     created_at TIMESTAMPTZ DEFAULT now(),
     created_by JSON,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON
+    updated_by JSON,
+    expired_at TIMESTAMPTZ DEFAULT now(),
+    expired_by JSON
 );
