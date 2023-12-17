@@ -3,10 +3,13 @@ package main
 import (
 	"database/sql"
 	"embed"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/log"
 	"github.com/pressly/goose/v3"
+
+	_ "github.com/lib/pq"
 )
 
 //go:embed resources/general/migrations
@@ -16,8 +19,17 @@ var migrationsDir = "migrations"
 
 func main() {
 	log.Info("Hello")
-	var db *sql.DB
-	// setup database
+	baseConnString := os.Getenv("DATABASE_URL")
+	if baseConnString == "" {
+		log.Warn("DATABASE_URL is not set, using default")
+		baseConnString = "postgresql://root@localhost:26258/defaultdb?sslcert=C:%5cUsers%5cdrewr%5ccerts-desktop-tower%5Cclient.root.crt&sslkey=C:%5cUsers%5cdrewr%5ccerts-desktop-tower%5Cclient.root.key&sslmode=verify-full&sslrootcert=C:%5cUsers%5cdrewr%5ccerts-desktop-tower%5Cca.crt"
+	}
+
+	db, err := sql.Open("postgres", baseConnString+"&application_name=$ data_migrations")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
 
 	goose.SetBaseFS(embedMigrations)
 
@@ -47,23 +59,25 @@ func main() {
 
 		for _, migrationDir := range migrationDirs {
 			if !migrationDir.IsDir() {
-				log.Info("not a directory")
 				continue
 			}
 			migrationYearPath := strings.Join([]string{migrationPath, migrationDir.Name()}, "/")
-			log.Info("", "migration", migrationYearPath)
+			log.Info("", "migration-dir", migrationYearPath)
 
 			migrationYearDirFiles, err := embedMigrations.ReadDir(migrationYearPath)
 			if err != nil {
 				panic(err)
 			}
 			for _, migrationYearDirFile := range migrationYearDirFiles {
-				log.Info("", "migration-file", migrationYearDirFile.Name())
+				log.Info("", "migration-dir-file", migrationYearDirFile.Name())
 			}
+
+			log.Info("running migrations", "migration-dir", migrationYearPath)
 
 			if err := goose.Up(db, migrationYearPath); err != nil {
 				panic(err)
 			}
 		}
 	}
+	log.Info("Goodbye")
 }

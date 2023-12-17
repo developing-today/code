@@ -1,107 +1,115 @@
-CREATE TABLE nodes (
-    --
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+-- +goose Up
+CREATE TABLE IF NOT EXISTS nodes (
 
     --
-    graph_id UUID REFERENCES nodes(id),
-    class_id UUID REFERENCES nodes(id),
-    match_id UUID REFERENCES nodes(id),
-    merge_id UUID REFERENCES nodes(id),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid() --,
 
-    --
-    name_id UUID REFERENCES nodes(id),
-    kind_id UUID REFERENCES nodes(id),
-    sort_id UUID REFERENCES nodes(id),
-    tier_id UUID REFERENCES nodes(id),
+--     --
+--     graph_id UUID REFERENCES nodes(id),
+--     class_id UUID REFERENCES nodes(id),
+--     match_id UUID REFERENCES nodes(id),
+--     merge_id UUID REFERENCES nodes(id),
 
-    --
-    mode_id UUID REFERENCES nodes(id),
-    code_id UUID REFERENCES nodes(id),
-    hash_id UUID REFERENCES nodes(id),
+--     --
+--     name_id UUID REFERENCES nodes(id),
+--     kind_id UUID REFERENCES nodes(id),
+--     sort_id UUID REFERENCES nodes(id),
+--     tier_id UUID REFERENCES nodes(id),
 
-    --
-    item_id UUID REFERENCES nodes(id),
-    part_id UUID REFERENCES nodes(id),
-    slot_id UUID REFERENCES nodes(id),
+--     --
+--     mode_id UUID REFERENCES nodes(id),
+--     code_id UUID REFERENCES nodes(id),
+--     hash_id UUID REFERENCES nodes(id),
 
-    --
-    lead_id UUID REFERENCES nodes(id),
-    peer_id UUID REFERENCES nodes(id),
+--     --
+--     item_id UUID REFERENCES nodes(id),
+--     part_id UUID REFERENCES nodes(id),
+--     slot_id UUID REFERENCES nodes(id),
 
-    --
-    link_id UUID REFERENCES nodes(id),
-    root_id UUID REFERENCES nodes(id),
-    twig_id UUID REFERENCES nodes(id),
-    leaf_id UUID REFERENCES nodes(id),
+--     --
+--     lead_id UUID REFERENCES nodes(id),
+--     peer_id UUID REFERENCES nodes(id),
 
-    --
-    universal TEXT,
-    generic TEXT,
-    identifier TEXT,
-    specific TEXT,
+--     --
+--     link_id UUID REFERENCES nodes(id),
+--     root_id UUID REFERENCES nodes(id),
+--     twig_id UUID REFERENCES nodes(id),
+--     leaf_id UUID REFERENCES nodes(id),
 
-    --
-    short TEXT,
-    string TEXT,
-    summary TEXT,
-    extended TEXT,
+--     --
+--     universal TEXT,
+--     generic TEXT,
+--     identifier TEXT,
+--     specific TEXT,
 
-    --
-    priority INTEGER,
-    weight INTEGER,
-    score INTEGER,
-    location POINT,
-    locations MULTIPOINT,
-    shape GEOMETRYCOLLECTION,
-    map GEOMETRYCOLLECTION,
+--     --
+--     short TEXT,
+--     string TEXT,
+--     summary TEXT,
+--     extended TEXT,
 
-    --
-    acl JSON,
+--     --
+--     priority INTEGER,
+--     weight INTEGER,
+--     score INTEGER,
+--     location POINT,
+--     locations MULTIPOINT,
+--     shape GEOMETRYCOLLECTION,
+--     map GEOMETRYCOLLECTION,
 
-    --
-    kind JSON,
-    kinds JSON,
-    scope JSON,
-    scopes JSON,
+--     --
+--     acl JSON,
 
-    --
-    alias JSON,
-    aliases JSON,
+--     --
+--     kind JSON,
+--     kinds JSON,
+--     scope JSON,
+--     scopes JSON,
 
-    --
-    details JSON,
-    content JSON,
-    contents JSON,
+--     --
+--     alias JSON,
+--     aliases JSON,
 
-    --
-    arguments JSON,
-    properties JSON,
-    annotations JSON,
+--     --
+--     details JSON,
+--     content JSON,
+--     contents JSON,
 
-    --
-    published JSON,
-    unlisted JSON,
-    personal JSON,
+--     --
+--     arguments JSON,
+--     properties JSON,
+--     annotations JSON,
 
-    --
-    owners JSON,
-    admins JSON,
+--     --
+--     published JSON,
+--     unlisted JSON,
+--     personal JSON,
 
-    --
-    note JSON,
-    notes JSON,
+--     --
+--     owners JSON,
+--     admins JSON,
 
-    --
-    created_at TIMESTAMPTZ DEFAULT now(),
-    created_by JSON,
+--     --
+--     note JSON,
+--     notes JSON,
 
-    --
-    updated_at TIMESTAMPTZ DEFAULT now(),
-    updated_by JSON,
+--     --
+--     created_at TIMESTAMPTZ DEFAULT now(),
+--     created_by JSON,
 
-    --
-    expired_at TIMESTAMPTZ DEFAULT now(),
-    expired_by JSON
+--     --
+--     updated_at TIMESTAMPTZ DEFAULT now(),
+--     updated_by JSON,
 
---
+--     --
+--     expired_at TIMESTAMPTZ DEFAULT now(),
+--     expired_by JSON
+
+-- --
 );
+
+-- +goose Down
+DROP TABLE IF EXISTS nodes;
+
+-- --
