@@ -31,9 +31,4 @@
         "ksuid"
     ],
     "xml.downloadExternalResources.enabled": true,
-    "workbench.colorCustomizations": {
-        "activityBar.background": "#1E3132",
-        "titleBar.activeBackground": "#2B4446",
-        "titleBar.activeForeground": "#F8FBFB"
-    },
 }
