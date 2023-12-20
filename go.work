@@ -1,5 +1,7 @@
 go 1.21.3
 
 use ./src/graph
+
 use ./src/map
+
 use ./src/data
