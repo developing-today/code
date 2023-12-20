@@ -4,4 +4,7 @@ use ./src/graph
 
 use ./src/map
 
-use ./src/data
+use (
+	./src/data
+	./src/identity
+)
