@@ -34,16 +34,30 @@ func main() {
 			logging.Middleware(),
 			func(h ssh.Handler) ssh.Handler {
 				return func(s ssh.Session) {
-					result, err := auth.CheckPublicKey(s.Context(), s.PublicKey())
+					pkid, err := auth.CheckPublicKey(s.Context(), s.PublicKey())
 					switch {
 					case err == nil:
-						wish.Println(s, "Hey!", result)
+						wish.Println(s, "Hey!", pkid)
 
 					default:
 						publicKeyType := s.PublicKey().Type()
 						publicKeyData := base64.StdEncoding.EncodeToString(s.PublicKey().Marshal())
-						message := fmt.Sprintf("Hey, I don't know who you are! Error: %v, Result: %v, Public Key Type: %s, Public Key: %s", err, result, publicKeyType, publicKeyData)
+						message := fmt.Sprintf("Hey, I don't know who you are!\nError:\n%v\nPublic key:\n%s %s", err, publicKeyType, publicKeyData)
 						wish.Println(s, message)
+
+						uid, err := auth.InsertUser(s.Context())
+						if err != nil {
+							wish.Println(s, "Failed to insert user:", err)
+						} else {
+							wish.Println(s, "Inserted user id:", uid)
+
+							pkid, err := auth.InsertPublicKey(uid, s.PublicKey())
+							if err != nil {
+								wish.Println(s, "Failed to insert public key:", err)
+							} else {
+								wish.Println(s, "Inserted public key id: ", pkid, fmt.Sprintf("\n%s\n%s %s", "Inserted public key:", publicKeyType, publicKeyData))
+							}
+						}
 					}
 					h(s)
 				}
