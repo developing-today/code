@@ -1,3 +1,5 @@
+port 1
+host "0.0.0.0"
 config { parent1 {
     name "parent1"
     id 1234

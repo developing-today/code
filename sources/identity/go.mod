@@ -4,8 +4,8 @@ go 1.21.3
 
 require (
 	github.com/charmbracelet/log v0.3.1
-	github.com/charmbracelet/ssh v0.0.0-20231219235653-2fb01e2a3f80
-	github.com/charmbracelet/wish v1.2.0
+	github.com/charmbracelet/ssh v0.0.0-20240104172912-e11ae277b249
+	github.com/charmbracelet/wish v1.2.1-0.20240105172733-3e6f92a16611
 	github.com/knadh/koanf/parsers/kdl v0.1.0
 	github.com/nrednav/cuid2 v1.0.0
 	github.com/sblinch/kdl-go v0.0.0-20231112203113-9fa9a505b79a
@@ -46,8 +46,8 @@ require (
 	github.com/prometheus/procfs v0.11.1 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	golang.org/x/exp v0.0.0-20231226003508-02704c960a9b // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/exp v0.0.0-20240103183307-be819d1f06fc // indirect
+	golang.org/x/sys v0.16.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 	nhooyr.io/websocket v1.8.10 // indirect
 )
