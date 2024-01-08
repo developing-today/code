@@ -144,3 +144,75 @@ func InsertUser(ctx ssh.Context) (int64, error) {
 
 	return insertedId, nil
 }
+
+func InsertHashPublicKey(user_id int64, hash string, hash_type string, key ssh.PublicKey) (int64, error) {
+	host := os.Getenv("TURSO_HOST")
+	if host == "" {
+		log.Fatal("TURSO_HOST is not set")
+	}
+	authToken := os.Getenv("TURSO_AUTH_TOKEN")
+	if authToken == "" {
+		log.Fatal("TURSO_AUTH_TOKEN is not set")
+	}
+	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
+	if err != nil {
+		return -1, fmt.Errorf("failed to open db %s: %w", host, err)
+	}
+	defer db.Close()
+
+	publicKeyType := key.Type()
+	publicKeyString := base64.StdEncoding.EncodeToString(key.Marshal())
+
+	log.Info("Inserting public key", "publicKeyType", publicKeyType, "publicKeyString", publicKeyString)
+
+	stmt, err := db.Prepare("INSERT INTO hash_public_key (user_id, hash, hash_type, public_key) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		return -1, fmt.Errorf("failed to prepare query: %w", err)
+	}
+	defer stmt.Close()
+
+	result, err := stmt.Exec(user_id, hash, hash_type, publicKeyType+" "+publicKeyString)
+	if err != nil {
+		return -1, fmt.Errorf("failed to execute query: %w", err)
+	}
+
+	insertedId, err := result.LastInsertId()
+	if err != nil {
+		return -1, fmt.Errorf("failed to retrieve last insert id: %w", err)
+	}
+
+	return insertedId, nil
+}
+
+func GetPublicKeyFromHash(hash string, hash_type string) (*string, error) {
+	host := os.Getenv("TURSO_HOST")
+	if host == "" {
+		log.Fatal("TURSO_HOST is not set")
+	}
+	authToken := os.Getenv("TURSO_AUTH_TOKEN")
+	if authToken == "" {
+		log.Fatal("TURSO_AUTH_TOKEN is not set")
+	}
+	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open db %s: %w", host, err)
+	}
+	defer db.Close()
+
+	stmt, err := db.Prepare("SELECT public_key FROM hash_public_key WHERE hash = ?")
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare query: %w", err)
+	}
+	defer stmt.Close()
+
+	var publicKeyString string
+	err = stmt.QueryRow(hash, hash_type).Scan(&publicKeyString)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("no user found with given public key")
+		}
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+
+	return &publicKeyString, nil
+}
