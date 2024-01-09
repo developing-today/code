@@ -15,11 +15,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/melt"
 	"github.com/charmbracelet/promwish"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
+	"github.com/charmbracelet/wish/bubbletea"
 	"github.com/charmbracelet/wish/comment"
 	elapsed "github.com/charmbracelet/wish/elapsed"
 	"github.com/charmbracelet/wish/logging"
@@ -31,6 +36,66 @@ import (
 	"github.com/spf13/cobra"
 	gossh "golang.org/x/crypto/ssh"
 )
+
+type errMsg error
+
+type model struct {
+	spinner  spinner.Model
+	quitting bool
+	err      error
+	term     string
+	width    int
+	height   int
+}
+
+var quitKeys = key.NewBinding(
+	key.WithKeys("q", "esc", "ctrl+c"),
+	key.WithHelp("", "press q to quit"),
+)
+
+func (m model) Init() tea.Cmd {
+	return m.spinner.Tick
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.KeyMsg:
+		if key.Matches(msg, quitKeys) {
+			m.quitting = true
+			return m, tea.Quit
+
+		}
+		return m, nil
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		m.width = msg.Width
+	case errMsg:
+		m.err = msg
+		return m, nil
+
+	default:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m model) View() string {
+	s := "Your term is %s\n"
+	s += "Your window size is x: %d y: %d\n\n"
+
+	if m.err != nil {
+		return m.err.Error()
+	}
+	str := fmt.Sprintf(s, m.term, m.width, m.height)
+	str += fmt.Sprintf("\n\n   %s Loading forever... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
+	if m.quitting {
+		return str + "\n"
+	}
+	return str
+}
 
 var separator = "."
 var configuration = koanf.New(separator)
@@ -90,11 +155,32 @@ func main() {
 	}
 }
 
+func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
+	pty, _, active := s.Pty()
+	if !active {
+		wish.Fatalln(s, "no active terminal, skipping")
+		return nil, nil
+	}
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	m := model{
+		spinner:  sp,
+		quitting: false,
+		err:      nil,
+		term:     pty.Term,
+		width:    pty.Window.Width,
+		height:   pty.Window.Height,
+	}
+	return m, []tea.ProgramOption{tea.WithAltScreen()}
+}
+
 func start(cmd *cobra.Command, args []string) {
 	handler := scp.NewFileSystemHandler("./files")
 	s, err := wish.NewServer(
 		wish.WithMiddleware(
 			scp.Middleware(handler, handler),
+			bubbletea.Middleware(teaHandler),
 			comment.Middleware("Thanks, have a nice day!"),
 			elapsed.Middleware(),
 			promwish.Middleware("0.0.0.0:9222", "identity"),
