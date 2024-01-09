@@ -95,15 +95,17 @@ func start(cmd *cobra.Command, args []string) {
 	s, err := wish.NewServer(
 		wish.WithMiddleware(
 			scp.Middleware(handler, handler),
-			func(h ssh.Handler) ssh.Handler {
-				return func(s ssh.Session) {
-					h(s)
-				}
-			},
 			comment.Middleware("Thanks, have a nice day!"),
 			elapsed.Middleware(),
 			promwish.Middleware("0.0.0.0:9222", "identity"),
 			logging.Middleware(),
+			func(h ssh.Handler) ssh.Handler {
+				return func(s ssh.Session) {
+					log.Info("Session started", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network())
+					h(s)
+					log.Info("Session ended", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network())
+				}
+			},
 		),
 		wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
 			log.Info("Accepting password", "password", password, "len", len(password))
@@ -133,9 +135,13 @@ If you do not agree to these terms and conditions, you may not use this service 
 
 ` + fmt.Sprintf("You are using the identity server at %s:%d\n", configuration.String("host"), configuration.Int("port")) + `
 ` + fmt.Sprintf("You are connecting from %s\n", ctx.RemoteAddr().String()) + `
-` + fmt.Sprintf("Your connection id is %s\n", ctx.Permissions().Extensions["connection-id"]) + `
-` + fmt.Sprintf("Your room is %s\n", ctx.Permissions().Extensions["room"]) + `
-` + fmt.Sprintf("Your public key is %s %s\n", ctx.Permissions().Extensions["public-key-type"], ctx.Permissions().Extensions["public-key"])
+` + fmt.Sprintf("You are connecting from-with %s\n", ctx.RemoteAddr().Network()) + `
+` + fmt.Sprintf("You are connecting to %s\n", ctx.LocalAddr().String()) + `
+` + fmt.Sprintf("You are connecting to-with %s\n", ctx.LocalAddr().Network()) + `
+` + fmt.Sprintf("Your server version is %s\n", ctx.ServerVersion()) + `
+` + fmt.Sprintf("Your client version is %s\n", ctx.ClientVersion()) + `
+` + fmt.Sprintf("Your session id is %s\n", ctx.SessionID()) + `
+` + fmt.Sprintf("You are connecting with user %s\n", ctx.User())
 		}),
 		wish.WithAddress(fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port"))),
 		wish.WithHostKeyPath(hostKeyPath),
@@ -168,8 +174,30 @@ If you do not agree to these terms and conditions, you may not use this service 
 type Challenge struct {
 	Name        string
 	Instruction string
-	Questions   []string
-	Answers     []string
+	Questions   []Question
+}
+
+type Question struct {
+	Question   string
+	Answer     string
+	HideAnswer bool
+}
+
+func (c Challenge) ExecuteMutable(challenge gossh.KeyboardInteractiveChallenge) ([]string, error) {
+	var questions []string
+	var showAnswers []bool
+	for _, question := range c.Questions {
+		questions = append(questions, question.Question)
+		showAnswers = append(showAnswers, !question.HideAnswer)
+	}
+	answers, err := challenge(c.Name, c.Instruction, questions, showAnswers)
+	if err != nil {
+		return nil, err
+	}
+	for i, answer := range answers {
+		c.Questions[i].Answer = answer
+	}
+	return answers, nil
 }
 
 func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gossh.KeyboardInteractiveChallenge) bool {
@@ -185,27 +213,30 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	var interactive *string
 
 	if challenge != nil {
-
-		challengeName := "Room Challenge:"
-		instruction := "Select your room and enter the password if required."
-		questions := []string{"What is the room? ", "What is the password? (leave blank if none, password is sometimes required. Passwords are insecure, passwords may be visible to others.)"}
-		show := []bool{true, false}
-		answers, err := challenge(challengeName, instruction, questions, show)
+		c := Challenge{
+			Name:        "Room Challenge:",
+			Instruction: "Select your room and enter the password if required.",
+			Questions: []Question{
+				{
+					Question: "What is the room? ",
+					Answer:   "",
+				},
+				{
+					Question:   "What is the password? (leave blank if none, password is sometimes required. Passwords are insecure, passwords may be visible to others.) ",
+					Answer:     "",
+					HideAnswer: true,
+				},
+			},
+		}
+		_, err := c.ExecuteMutable(challenge)
 		if err != nil {
 			log.Error("Failed to get keyboard interactive response", "error", err)
 			return false
 		}
-		ctx.Permissions().Extensions["room"] = answers[0]
-		password = &answers[1]
+		ctx.Permissions().Extensions["room"] = c.Questions[0].Answer
+		password = &c.Questions[1].Answer
 
-		challengesJson, err := json.Marshal([]Challenge{
-			{
-				Name:        challengeName,
-				Instruction: instruction,
-				Questions:   questions,
-				Answers:     answers,
-			},
-		})
+		challengesJson, err := json.Marshal(c)
 		if err != nil {
 			log.Error("Failed to marshal challenges", "error", err)
 			return false
@@ -213,13 +244,14 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		interactiveStr := string(challengesJson)
 		interactive = &interactiveStr
 
-		log.Info("Accepting keyboard interactive", "response", answers, "room", answers[0])
+		log.Info("Accepting keyboard interactive", "response", interactiveStr, "len", len(interactiveStr))
 	}
 
 	var passwordLength *int64
 	var passwordHash *string
 	var passwordHashType *string
 	var passwordSha256 []byte
+	var passwordSha256Str string
 
 	if password != nil {
 		log.Info("Accepting password", "password", *password, "len", len(*password))
@@ -228,11 +260,8 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		hasher := sha256.New()
 		hasher.Write([]byte(*password))
 		passwordSha256 = hasher.Sum(nil)
-		passwordHashStr := base64.StdEncoding.EncodeToString(passwordSha256)
-		passwordHash = &passwordHashStr
-		if ctx.Permissions().Extensions == nil {
-			ctx.Permissions().Extensions = make(map[string]string)
-		}
+		passwordSha256Str = base64.StdEncoding.EncodeToString(passwordSha256)
+		passwordHash = &passwordSha256Str
 		ctx.Permissions().Extensions["password-hash"] = *passwordHash
 
 		passwordHashTypeStr := "sha256"
@@ -253,25 +282,80 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		ctx.Permissions().Extensions["public-key"] = *publicKey
 		ctx.Permissions().Extensions["public-key-type"] = publicKeyType
 	}
+	var textKeyId *int64
+	var hashKeyId *int64
+	var ed25519PrivateKey ed25519.PrivateKey
+	var ed25519PublicKey ed25519.PublicKey
+	var privateKeyId *int64
+
 	if publicKey == nil {
 		log.Info("No public key provided, generating one")
 		if password == nil || passwordLength == nil || passwordHash == nil || passwordHashType == nil || passwordSha256 == nil {
 			log.Error("No public key or password provided", "password", *password, "passwordLength", *passwordLength, "passwordHash", *passwordHash, "passwordHashType", *passwordHashType, "passwordSha256", passwordSha256)
 			return false
 		}
-		pk := ed25519.NewKeyFromSeed(passwordSha256) // need to put these in text instead, put random into regular
 
-		pubKey := pk.Public().(ed25519.PublicKey)
-		sshPubKey, err := gossh.NewPublicKey(pubKey)
+		// check if public key exists for sha,
+		// if interactive, text public key,
+		// if not interactive, hash public key,
+		// alternatively, ? if either exist use that one ?
+
+		if interactive != nil {
+			ed25519PrivateKey = ed25519.NewKeyFromSeed(passwordSha256)
+			ed25519PublicKey = ed25519PrivateKey.Public().(ed25519.PublicKey)
+		} else {
+			var err error
+			ed25519PublicKey, ed25519PrivateKey, err = ed25519.GenerateKey(nil)
+			if err != nil {
+				log.Error("Failed to generate private key", "error", err)
+				return false
+			}
+		}
+		log.Info("Generated private key", "pk", ed25519PrivateKey, "pkLen", len(ed25519PrivateKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PrivateKey))
+
+		privateKeyIdi, err := auth.InsertPrivateKey(ed25519PrivateKey)
+		if err != nil {
+			log.Error("Failed to insert private key", "error", err)
+			return false
+		}
+		privateKeyId = &privateKeyIdi
+
+		log.Info("Generated public key", "pk", ed25519PublicKey, "pkLen", len(ed25519PublicKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PublicKey), "privateKeyId", *privateKeyId)
+		ctx.Permissions().Extensions["private-key-seed"] = base64.StdEncoding.EncodeToString(ed25519PrivateKey.Seed())
+		ctx.Permissions().Extensions["private-key"] = base64.StdEncoding.EncodeToString(ed25519PrivateKey)
+		ctx.Permissions().Extensions["private-key-type"] = "ed25519"
+		ctx.Permissions().Extensions["public-key"] = base64.StdEncoding.EncodeToString(ed25519PublicKey)
+		ctx.Permissions().Extensions["public-key-type"] = "ed25519"
+
+		sshPubKey, err := gossh.NewPublicKey(ed25519PublicKey)
 		if err != nil {
 			log.Fatal("Failed to create SSH public key", err)
 		}
+
+		if interactive != nil {
+			textKeyIdi, err := auth.InsertTextPublicKey(passwordSha256Str, "sha256", sshPubKey)
+			if err != nil {
+				log.Error("Failed to insert text public key", "error", err)
+				return false
+			}
+			textKeyId = &textKeyIdi
+			log.Info("Inserted text public key", "textKeyId", *textKeyId)
+		} else {
+			hashKeyIdi, err := auth.InsertHashPublicKey(passwordSha256Str, "sha256", sshPubKey)
+			if err != nil {
+				log.Error("Failed to insert hash public key", "error", err)
+				return false
+			}
+			hashKeyId = &hashKeyIdi
+			log.Info("Inserted hash public key", "hashKeyId", *hashKeyId)
+		}
+
 		authorizedKey := gossh.MarshalAuthorizedKey(sshPubKey)
 		authKey := string(authorizedKey)
-		log.Info("Generated public key", "authKey", authKey, "authorizedKey", authorizedKey, "sshPubKey", sshPubKey, "pubKey", pubKey, "pk", pk, "pkLen", len(pk))
+		log.Info("Generated public key", "authKey", authKey, "authorizedKey", authorizedKey, "sshPubKey", sshPubKey, "sshPubKeyStr", string(sshPubKey.Marshal()))
+		ctx.Permissions().Extensions["public-key-authorized"] = authKey
 
-		// Encode to base64
-		publicKeyStr := base64.StdEncoding.EncodeToString(gossh.MarshalAuthorizedKey(sshPubKey))
+		publicKeyStr := base64.StdEncoding.EncodeToString(authorizedKey)
 		log.Info("Generated public key", "publicKeyStr", publicKeyStr)
 
 		publicKey = &publicKeyStr
@@ -296,12 +380,12 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		log.Info("Generated public key", "publicKey", publicKeyStr)
 		ctx.Permissions().Extensions["public-key"] = *publicKey
 		ctx.Permissions().Extensions["public-key-type"] = publicKeyType
-		pkMelted, err := melt.ToMnemonic(&pk)
+		pkMelted, err := melt.ToMnemonic(&ed25519PrivateKey)
 		if err != nil {
 			log.Error("Failed to melt private key", "error", err)
 			return false
 		}
-		ctx.Permissions().Extensions["private-key-melted"] = pkMelted
+		ctx.Permissions().Extensions["private-key-seed-melted"] = pkMelted
 		log.Info("Melted private key", "pkMelted", pkMelted)
 	}
 
@@ -337,6 +421,12 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	history := ""
 
 	log.Info("Connection opened", "openedAt", openedAt, "remoteAddr", remoteAddr, "remoteAddrNetwork", remoteAddrNetwork, "host", host, "port", port, "serverVersion", serverVersion, "clientVersion", clientVersion, "sessionHash", sessionHash, "permissionsCriticalOptions", permissionsCriticalOptions)
+
+	interactiveStr := ""
+	if interactive != nil {
+		interactiveStr = *interactive
+	}
+
 	connection := auth.Connection{
 		Status:                     &status,
 		Name:                       &user,
@@ -357,7 +447,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		RemoteAddr:                 &remoteAddr,
 		RemoteAddrNetwork:          &remoteAddrNetwork,
 		OpenedAt:                   &openedAt,
-		Interactive:                interactive,
+		Interactive:                &interactiveStr,
 		PasswordLength:             passwordLength,
 		PasswordHash:               passwordHash,
 		PasswordHashType:           passwordHashType,
@@ -416,6 +506,44 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	if err != nil {
 		log.Error("Failed to check public key", "error", err)
 		return false
+	}
+	connection.SetCharmID(result.ID)
+	if ed25519PrivateKey != nil {
+		affected, err := auth.UpdatePrivateKey(*privateKeyId, &result.ID, connectionID)
+		if err != nil {
+			log.Error("Failed to update private key", "error", err)
+			return false
+		}
+		log.Info("Updated private key", "affected", affected)
+		if affected < 1 {
+			log.Error("Failed to update private key, affected 0", "error", err)
+			return false
+		}
+	}
+	if textKeyId != nil {
+		affected, err := auth.UpdateTextPublicKey(*textKeyId, &result.ID, connectionID)
+		if err != nil {
+			log.Error("Failed to update text public key", "error", err)
+			return false
+		}
+		log.Info("Updated text public key", "affected", affected)
+
+		if affected < 1 {
+			log.Error("Failed to update text public key, affected 0", "error", err)
+			return false
+		}
+	}
+	if hashKeyId != nil {
+		affected, err := auth.UpdateHashPublicKey(*hashKeyId, &result.ID, connectionID)
+		if err != nil {
+			log.Error("Failed to update hash public key", "error", err)
+			return false
+		}
+		log.Info("Updated hash public key", "affected", affected)
+		if affected < 1 {
+			log.Error("Failed to update hash public key, affected 0", "error", err)
+			return false
+		}
 	}
 	ctx.Permissions().Extensions["charm-id"] = result.ID
 	ctx.Permissions().Extensions["charm-name"] = result.Name
