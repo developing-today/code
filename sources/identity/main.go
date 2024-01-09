@@ -101,9 +101,9 @@ func start(cmd *cobra.Command, args []string) {
 			logging.Middleware(),
 			func(h ssh.Handler) ssh.Handler {
 				return func(s ssh.Session) {
-					log.Info("Session started", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network())
+					log.Info("Session started", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network(), "charm-id", s.Context().Permissions().Extensions["charm-id"], "charm-name", s.Context().Permissions().Extensions["charm-name"], "charm-roles", s.Context().Permissions().Extensions["charm-roles"], "charm-created-at", s.Context().Permissions().Extensions["charm-created-at"], "charm-public-key-created-at", s.Context().Permissions().Extensions["charm-public-key-created-at"], "charm-public-key-type", s.Context().Permissions().Extensions["charm-public-key-type"], "charm-public-key", s.Context().Permissions().Extensions["charm-public-key"])
 					h(s)
-					log.Info("Session ended", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network())
+					log.Info("Session ended", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network(), "charm-id", s.Context().Permissions().Extensions["charm-id"], "charm-name", s.Context().Permissions().Extensions["charm-name"], "charm-roles", s.Context().Permissions().Extensions["charm-roles"], "charm-created-at", s.Context().Permissions().Extensions["charm-created-at"], "charm-public-key-created-at", s.Context().Permissions().Extensions["charm-public-key-created-at"], "charm-public-key-type", s.Context().Permissions().Extensions["charm-public-key-type"], "charm-public-key", s.Context().Permissions().Extensions["charm-public-key"])
 				}
 			},
 		),
@@ -205,6 +205,18 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	app := "identity"
 	connectionType := "ssh"
 	user := ctx.User()
+	var authMethod string
+
+	if key != nil {
+		authMethod = "public-key"
+	} else if password != nil {
+		authMethod = "password"
+	} else if challenge != nil {
+		authMethod = "keyboard-interactive"
+	} else {
+		log.Error("No authentication method provided")
+		return false
+	}
 
 	if ctx.Permissions().Extensions == nil {
 		ctx.Permissions().Extensions = make(map[string]string)
@@ -289,104 +301,151 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	var privateKeyId *int64
 
 	if publicKey == nil {
-		log.Info("No public key provided, generating one")
+		log.Info("No public key provided, gathering one")
 		if password == nil || passwordLength == nil || passwordHash == nil || passwordHashType == nil || passwordSha256 == nil {
 			log.Error("No public key or password provided", "password", *password, "passwordLength", *passwordLength, "passwordHash", *passwordHash, "passwordHashType", *passwordHashType, "passwordSha256", passwordSha256)
 			return false
 		}
 
-		// check if public key exists for sha,
-		// if interactive, text public key,
-		// if not interactive, hash public key,
-		// alternatively, ? if either exist use that one ?
-
 		if interactive != nil {
-			ed25519PrivateKey = ed25519.NewKeyFromSeed(passwordSha256)
-			ed25519PublicKey = ed25519PrivateKey.Public().(ed25519.PublicKey)
+			publicKeyStr, err := auth.GetPublicKeyFromText(passwordSha256Str, "%")
+			if err != nil {
+				log.Info("Failed to get public key from text", "error", err)
+			} else {
+				log.Info("Got public key from text", "publicKeyStr", publicKeyStr)
+				if publicKeyStr != "" {
+					out, comment, options, rest, err := gossh.ParseAuthorizedKey([]byte(publicKeyStr))
+					if err != nil {
+						log.Error("Failed to parse public key", "error", err)
+						return false
+					}
+					log.Info("Parsed public key", "out", out, "comment", comment, "options", options, "rest", rest)
+					publicKey = &publicKeyStr
+					publicKeyType = out.Type()
+
+					key = out
+					log.Info("Gathered public key", "publicKey", publicKeyStr)
+					ctx.Permissions().Extensions["public-key-type"] = publicKeyType
+					ctx.Permissions().Extensions["public-key-authorized"] = publicKeyStr
+					log.Info("Setting permissions extensions", "public-key-type", publicKeyType, "public-key-authorized", publicKeyStr, "public-key", publicKeyStr, "public-key-type", publicKeyType)
+				}
+			}
 		} else {
-			var err error
-			ed25519PublicKey, ed25519PrivateKey, err = ed25519.GenerateKey(nil)
+			publicKeyStr, err := auth.GetPublicKeyFromHash(passwordSha256Str, "%")
 			if err != nil {
-				log.Error("Failed to generate private key", "error", err)
-				return false
+				log.Info("Failed to get public key from hash", "error", err)
+			} else {
+				log.Info("Got public key from hash", "publicKeyStr", publicKeyStr)
+				if publicKeyStr != "" {
+					out, comment, options, rest, err := gossh.ParseAuthorizedKey([]byte(publicKeyStr))
+					if err != nil {
+						log.Error("Failed to parse public key", "error", err)
+						return false
+					}
+					log.Info("Parsed public key", "out", out, "comment", comment, "options", options, "rest", rest)
+					publicKey = &publicKeyStr
+					publicKeyType = out.Type()
+
+					key = out
+					log.Info("Gathered public key", "publicKey", publicKeyStr)
+					ctx.Permissions().Extensions["public-key-type"] = publicKeyType
+					ctx.Permissions().Extensions["public-key-authorized"] = publicKeyStr
+					log.Info("Setting permissions extensions", "public-key-type", publicKeyType, "public-key-authorized", publicKeyStr, "public-key", publicKeyStr, "public-key-type", publicKeyType)
+				}
 			}
 		}
-		log.Info("Generated private key", "pk", ed25519PrivateKey, "pkLen", len(ed25519PrivateKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PrivateKey))
+		if key == nil {
+			log.Info("No public key found, generating one")
+			if interactive != nil {
+				ed25519PrivateKey = ed25519.NewKeyFromSeed(passwordSha256)
+				ed25519PublicKey = ed25519PrivateKey.Public().(ed25519.PublicKey)
+			} else {
+				var err error
+				ed25519PublicKey, ed25519PrivateKey, err = ed25519.GenerateKey(nil)
+				if err != nil {
+					log.Error("Failed to generate private key", "error", err)
+					return false
+				}
+			}
+			log.Info("Generated private key", "pk", ed25519PrivateKey, "pkLen", len(ed25519PrivateKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PrivateKey))
 
-		privateKeyIdi, err := auth.InsertPrivateKey(ed25519PrivateKey)
-		if err != nil {
-			log.Error("Failed to insert private key", "error", err)
-			return false
-		}
-		privateKeyId = &privateKeyIdi
-
-		log.Info("Generated public key", "pk", ed25519PublicKey, "pkLen", len(ed25519PublicKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PublicKey), "privateKeyId", *privateKeyId)
-		ctx.Permissions().Extensions["private-key-seed"] = base64.StdEncoding.EncodeToString(ed25519PrivateKey.Seed())
-		ctx.Permissions().Extensions["private-key"] = base64.StdEncoding.EncodeToString(ed25519PrivateKey)
-		ctx.Permissions().Extensions["private-key-type"] = "ed25519"
-		ctx.Permissions().Extensions["public-key"] = base64.StdEncoding.EncodeToString(ed25519PublicKey)
-		ctx.Permissions().Extensions["public-key-type"] = "ed25519"
-
-		sshPubKey, err := gossh.NewPublicKey(ed25519PublicKey)
-		if err != nil {
-			log.Fatal("Failed to create SSH public key", err)
-		}
-
-		if interactive != nil {
-			textKeyIdi, err := auth.InsertTextPublicKey(passwordSha256Str, "sha256", sshPubKey)
+			privateKeyIdi, err := auth.InsertPrivateKey(ed25519PrivateKey)
 			if err != nil {
-				log.Error("Failed to insert text public key", "error", err)
+				log.Error("Failed to insert private key", "error", err)
 				return false
 			}
-			textKeyId = &textKeyIdi
-			log.Info("Inserted text public key", "textKeyId", *textKeyId)
-		} else {
-			hashKeyIdi, err := auth.InsertHashPublicKey(passwordSha256Str, "sha256", sshPubKey)
+			privateKeyId = &privateKeyIdi
+
+			log.Info("Generated public key", "pk", ed25519PublicKey, "pkLen", len(ed25519PublicKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PublicKey), "privateKeyId", *privateKeyId)
+			ctx.Permissions().Extensions["private-key-seed"] = base64.StdEncoding.EncodeToString(ed25519PrivateKey.Seed())
+			ctx.Permissions().Extensions["private-key"] = base64.StdEncoding.EncodeToString(ed25519PrivateKey)
+			ctx.Permissions().Extensions["private-key-type"] = "ed25519"
+			ctx.Permissions().Extensions["public-key"] = base64.StdEncoding.EncodeToString(ed25519PublicKey)
+			ctx.Permissions().Extensions["public-key-type"] = "ed25519"
+
+			sshPubKey, err := gossh.NewPublicKey(ed25519PublicKey)
 			if err != nil {
-				log.Error("Failed to insert hash public key", "error", err)
+				log.Fatal("Failed to create SSH public key", err)
+			}
+
+			if interactive != nil {
+				textKeyIdi, err := auth.InsertTextPublicKey(passwordSha256Str, "sha256", sshPubKey)
+				if err != nil {
+					log.Error("Failed to insert text public key", "error", err)
+					return false
+				}
+				textKeyId = &textKeyIdi
+				log.Info("Inserted text public key", "textKeyId", *textKeyId)
+			} else {
+				hashKeyIdi, err := auth.InsertHashPublicKey(passwordSha256Str, "sha256", sshPubKey)
+				if err != nil {
+					log.Error("Failed to insert hash public key", "error", err)
+					return false
+				}
+				hashKeyId = &hashKeyIdi
+				log.Info("Inserted hash public key", "hashKeyId", *hashKeyId)
+			}
+
+			authorizedKey := gossh.MarshalAuthorizedKey(sshPubKey)
+			authKey := string(authorizedKey)
+			log.Info("Generated public key", "authKey", authKey, "authorizedKey", authorizedKey, "sshPubKey", sshPubKey, "sshPubKeyStr", string(sshPubKey.Marshal()))
+			ctx.Permissions().Extensions["public-key-authorized"] = authKey
+
+			publicKeyStr := base64.StdEncoding.EncodeToString(authorizedKey)
+			log.Info("Generated public key", "publicKeyStr", publicKeyStr)
+
+			publicKey = &publicKeyStr
+			publicKeyType = "ed25519"
+			log.Info("Generated public key", "publicKey", *publicKey)
+			parts := strings.Fields(string(authorizedKey))
+			if len(parts) < 2 {
+				log.Fatal("Invalid public key format")
+			}
+			keyData, err := base64.StdEncoding.DecodeString(parts[1])
+			if err != nil {
+				log.Fatal("Failed to decode base64 public key", err)
+			}
+			log.Info("Generated public key, preparing", "keyData", keyData, "keyDataLen", len(keyData), "parts", parts, "publicKey", *publicKey)
+
+			out, comment, options, rest, err := gossh.ParseAuthorizedKey(authorizedKey)
+			if err != nil {
+				log.Fatal("Failed to parse public key", "error", err)
+			}
+			log.Info("Parsed public key", "out", out, "comment", comment, "options", options, "rest", rest)
+			key = out
+			log.Info("Generated public key", "publicKey", publicKeyStr)
+			ctx.Permissions().Extensions["public-key"] = *publicKey
+			ctx.Permissions().Extensions["public-key-type"] = publicKeyType
+			pkMelted, err := melt.ToMnemonic(&ed25519PrivateKey)
+			if err != nil {
+				log.Error("Failed to melt private key", "error", err)
 				return false
 			}
-			hashKeyId = &hashKeyIdi
-			log.Info("Inserted hash public key", "hashKeyId", *hashKeyId)
+			ctx.Permissions().Extensions["private-key-seed-melted"] = pkMelted
+			log.Info("Melted private key", "pkMelted", pkMelted)
 		}
-
-		authorizedKey := gossh.MarshalAuthorizedKey(sshPubKey)
-		authKey := string(authorizedKey)
-		log.Info("Generated public key", "authKey", authKey, "authorizedKey", authorizedKey, "sshPubKey", sshPubKey, "sshPubKeyStr", string(sshPubKey.Marshal()))
-		ctx.Permissions().Extensions["public-key-authorized"] = authKey
-
-		publicKeyStr := base64.StdEncoding.EncodeToString(authorizedKey)
-		log.Info("Generated public key", "publicKeyStr", publicKeyStr)
-
-		publicKey = &publicKeyStr
-		publicKeyType = "ed25519"
-		log.Info("Generated public key", "publicKey", *publicKey)
-		parts := strings.Fields(string(authorizedKey))
-		if len(parts) < 2 {
-			log.Fatal("Invalid public key format")
-		}
-		keyData, err := base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			log.Fatal("Failed to decode base64 public key", err)
-		}
-		log.Info("Generated public key, preparing", "keyData", keyData, "keyDataLen", len(keyData), "parts", parts, "publicKey", *publicKey)
-
-		out, comment, options, rest, err := gossh.ParseAuthorizedKey(authorizedKey)
-		if err != nil {
-			log.Fatal("Failed to parse public key", "error", err)
-		}
-		log.Info("Parsed public key", "out", out, "comment", comment, "options", options, "rest", rest)
-		key = out
-		log.Info("Generated public key", "publicKey", publicKeyStr)
-		ctx.Permissions().Extensions["public-key"] = *publicKey
-		ctx.Permissions().Extensions["public-key-type"] = publicKeyType
-		pkMelted, err := melt.ToMnemonic(&ed25519PrivateKey)
-		if err != nil {
-			log.Error("Failed to melt private key", "error", err)
-			return false
-		}
-		ctx.Permissions().Extensions["private-key-seed-melted"] = pkMelted
-		log.Info("Melted private key", "pkMelted", pkMelted)
+	} else {
+		log.Info("Public key provided", "publicKey", *publicKey, "key", key, "keyType", key.Type(), "keyMarshal", key.Marshal(), "keyMarshalLen", len(key.Marshal()))
 	}
 
 	if publicKey == nil {
@@ -432,6 +491,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		Name:                       &user,
 		Description:                &user,
 		App:                        &app,
+		AuthMethod:                 &authMethod,
 		Type:                       &connectionType,
 		Username:                   &user,
 		PublicKey:                  publicKey,
@@ -458,96 +518,96 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		History:                    &history,
 	}
 
-	log.Info("Inserting connection", "connection", connection.ToData())
+	log.Info("Inserting connection", "connection", connection.ToData(), "connectionID", connection.ConnectionID)
 	connectionID, err := connection.Insert()
 
 	if err != nil {
-		log.Error("Failed to insert connection", "error", err)
+		log.Error("Failed to insert connection", "error", err, "connectionID", connection.ConnectionID)
 		return false
 	}
-	log.Info("Inserted connection", "connectionID", &connectionID, "connection", connection)
+	log.Info("Inserted connection", "connectionID", &connectionID, "connection", connection.String(), "connectionID", connection.ConnectionID)
 	ctx.Permissions().Extensions["connection-id"] = fmt.Sprintf("%d", &connectionID)
 
 	permissionsExtensionsJson, err := json.Marshal(ctx.Permissions().Extensions)
 	if err != nil {
-		log.Error("Failed to marshal extensions", "error", err)
+		log.Error("Failed to marshal extensions", "error", err, "connectionID", connection.ConnectionID)
 		return false
 	}
-	log.Info("Setting permissions extensions", "permissionsExtensions", string(permissionsExtensionsJson))
+	log.Info("Setting permissions extensions", "permissionsExtensions", string(permissionsExtensionsJson), "connectionID", connection.ConnectionID)
 	connection.SetPermissionsExtensions(string(permissionsExtensionsJson))
 
-	log.Info("Checking public key", "publicKey", *publicKey)
+	log.Info("Checking public key", "publicKey", *publicKey, "connectionID", connection.ConnectionID)
 	result, err := auth.CheckPublicKey(ctx, key)
 
-	log.Info("Checked public key", "result", result, "error", err)
+	log.Info("Checked public key", "result", result, "error", err, "connectionID", connection.ConnectionID)
 	if err != nil {
 		var userID int64
 		userID, err = auth.InsertUser(ctx)
 		if err != nil {
-			log.Error("Failed to insert user", "error", err)
+			log.Error("Failed to insert user", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
-		log.Info("Inserted user", "userID", userID)
+		log.Info("Inserted user", "userID", userID, "connectionID", connection.ConnectionID)
 
 		var pk int64
 		pk, err = auth.InsertPublicKey(userID, key)
 		if err != nil {
-			log.Error("Failed to insert public key", "error", err)
+			log.Error("Failed to insert public key", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
-		log.Info("Inserted public key", "pk", pk)
+		log.Info("Inserted public key", "pk", pk, "connectionID", connection.ConnectionID)
 
 		result, err = auth.CheckPublicKey(ctx, key)
 
-		log.Info("Checked public key", "result", result, "error", err)
+		log.Info("Checked public key", "result", result, "error", err, "connectionID", connection.ConnectionID)
 	} else {
-		log.Info("Public key already exists", "result", result)
+		log.Info("Public key already exists", "result", result, "connectionID", connection.ConnectionID)
 	}
 	if err != nil {
-		log.Error("Failed to check public key", "error", err)
+		log.Error("Failed to check public key", "error", err, "connectionID", connection.ConnectionID)
 		return false
 	}
 	connection.SetCharmID(result.ID)
 	if ed25519PrivateKey != nil {
 		affected, err := auth.UpdatePrivateKey(*privateKeyId, &result.ID, connectionID)
 		if err != nil {
-			log.Error("Failed to update private key", "error", err)
+			log.Error("Failed to update private key", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
-		log.Info("Updated private key", "affected", affected)
+		log.Info("Updated private key", "affected", affected, "connectionID", connection.ConnectionID)
 		if affected < 1 {
-			log.Error("Failed to update private key, affected 0", "error", err)
+			log.Error("Failed to update private key, affected 0", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
 	}
 	if textKeyId != nil {
 		affected, err := auth.UpdateTextPublicKey(*textKeyId, &result.ID, connectionID)
 		if err != nil {
-			log.Error("Failed to update text public key", "error", err)
+			log.Error("Failed to update text public key", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
-		log.Info("Updated text public key", "affected", affected)
+		log.Info("Updated text public key", "affected", affected, "connectionID", connection.ConnectionID)
 
 		if affected < 1 {
-			log.Error("Failed to update text public key, affected 0", "error", err)
+			log.Error("Failed to update text public key, affected 0", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
 	}
 	if hashKeyId != nil {
 		affected, err := auth.UpdateHashPublicKey(*hashKeyId, &result.ID, connectionID)
 		if err != nil {
-			log.Error("Failed to update hash public key", "error", err)
+			log.Error("Failed to update hash public key", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
-		log.Info("Updated hash public key", "affected", affected)
+		log.Info("Updated hash public key", "affected", affected, "connectionID", connection.ConnectionID)
 		if affected < 1 {
-			log.Error("Failed to update hash public key, affected 0", "error", err)
+			log.Error("Failed to update hash public key, affected 0", "error", err, "connectionID", connection.ConnectionID)
 			return false
 		}
 	}
 	ctx.Permissions().Extensions["charm-id"] = result.ID
 	ctx.Permissions().Extensions["charm-name"] = result.Name
-	log.Info("Setting permissions extensions", "charm-id", result.ID, "charm-name", result.Name)
+	log.Info("Setting permissions extensions", "charm-id", result.ID, "charm-name", result.Name, "connectionID", connection.ConnectionID)
 	jsonRoles, err := json.Marshal(result.Roles)
 	if err != nil {
 		log.Error("Failed to marshal roles", "error", err)

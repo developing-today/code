@@ -378,7 +378,7 @@ func InsertHashPublicKey(hash string, hash_type string, key ssh.PublicKey) (int6
 }
 
 func GetPublicKeyFromHash(hash string, hash_type string) (string, error) {
-	log.Info("Getting public key", "hash", hash, "hash_type", hash_type)
+	log.Info("Getting hash public key", "hash", hash, "hash_type", hash_type)
 	host := os.Getenv("TURSO_HOST")
 	if host == "" {
 		log.Fatal("TURSO_HOST is not set")
@@ -393,7 +393,7 @@ func GetPublicKeyFromHash(hash string, hash_type string) (string, error) {
 	}
 	defer db.Close()
 
-	stmt, err := db.Prepare("SELECT public_key FROM hash_public_key WHERE hash = ?")
+	stmt, err := db.Prepare("SELECT public_key FROM hash_public_key WHERE hash = ? AND hash_type like ?")
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare query: %w", err)
 	}
@@ -465,7 +465,7 @@ func InsertTextPublicKey(text string, text_type string, key ssh.PublicKey) (int6
 }
 
 func GetPublicKeyFromText(text string, text_type string) (string, error) {
-	log.Info("Getting public key", "text", text, "text_type", text_type)
+	log.Info("Getting text public key", "text", text, "text_type", text_type)
 	host := os.Getenv("TURSO_HOST")
 	if host == "" {
 		log.Fatal("TURSO_HOST is not set")
@@ -480,7 +480,7 @@ func GetPublicKeyFromText(text string, text_type string) (string, error) {
 	}
 	defer db.Close()
 
-	stmt, err := db.Prepare("SELECT public_key FROM text_public_key WHERE text = ?")
+	stmt, err := db.Prepare("SELECT public_key FROM text_public_key WHERE text = ? AND text_type like ?")
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare query: %w", err)
 	}
@@ -500,7 +500,7 @@ func GetPublicKeyFromText(text string, text_type string) (string, error) {
 }
 
 func GetPublicKey(text string, text_type *string) (string, error) {
-	log.Info("Getting public key", "text", text, "text_type", text_type)
+	log.Info("Getting hash/text public key", "text", text, "text_type", text_type)
 	if text_type == nil {
 		text_type = new(string)
 		*text_type = "%"

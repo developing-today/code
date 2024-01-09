@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/wish v1.2.1-0.20240105172733-3e6f92a16611
 	github.com/knadh/koanf/parsers/kdl v0.1.0
 	github.com/nrednav/cuid2 v1.0.0
-	github.com/sblinch/kdl-go v0.0.0-20231112203113-9fa9a505b79a
+	github.com/sblinch/kdl-go v0.0.0-20240108033718-e453df3dbf65
 	github.com/spf13/cobra v1.8.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20231216154754-8383a53d618f
 	golang.org/x/crypto v0.17.0

@@ -17,6 +17,7 @@ type Connection struct {
 	CharmID                    *string
 	TargetID                   *string
 	App                        *string
+	AuthMethod                 *string
 	Type                       *string
 	Name                       *string
 	Description                *string
@@ -55,6 +56,7 @@ type ConnectionData struct {
 	CharmID                    string `json:"charm_id"`
 	TargetID                   string `json:"target_id"`
 	App                        string `json:"app"`
+	AuthMethod                 string `json:"auth_method"`
 	Type                       string `json:"type"`
 	Name                       string `json:"name"`
 	Description                string `json:"description"`
@@ -112,6 +114,7 @@ func (c *Connection) ToData() ConnectionData {
 		CharmID:                    derefString(c.CharmID),
 		TargetID:                   derefString(c.TargetID),
 		App:                        derefString(c.App),
+		AuthMethod:                 derefString(c.AuthMethod),
 		Type:                       derefString(c.Type),
 		Name:                       derefString(c.Name),
 		Description:                derefString(c.Description),
@@ -372,6 +375,7 @@ func (b *Connection) Insert() (*string, error) {
 			charm_id,
 			target_id,
 			app,
+			auth_method,
 			type,
 			name,
 			description,
@@ -433,6 +437,7 @@ func (b *Connection) Insert() (*string, error) {
 			?,
 			?,
 			?,
+			?,
 			?
 		)
 	`)
@@ -458,6 +463,7 @@ func (b *Connection) Insert() (*string, error) {
 		b.CharmID,
 		b.TargetID,
 		b.App,
+		b.AuthMethod,
 		b.Type,
 		b.Name,
 		b.Description,
