@@ -1,4 +1,4 @@
-package auth
+package observability"
 
 import (
 	"github.com/charmbracelet/log"
