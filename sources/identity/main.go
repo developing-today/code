@@ -30,9 +30,12 @@ import (
 	"github.com/charmbracelet/wish/logging"
 	"github.com/charmbracelet/wish/scp"
 	"github.com/developing-today/code/src/identity/auth"
+	"github.com/developing-today/code/src/identity/observability"
 	"github.com/knadh/koanf"
 	"github.com/knadh/koanf/parsers/kdl"
 	"github.com/knadh/koanf/providers/file"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 	"github.com/spf13/cobra"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -40,12 +43,18 @@ import (
 type errMsg error
 
 type model struct {
-	spinner  spinner.Model
-	quitting bool
-	err      error
-	term     string
-	width    int
-	height   int
+	spinner              spinner.Model
+	quitting             bool
+	err                  error
+	term                 string
+	width                int
+	height               int
+	meltedPrivateKeySeed string
+	choices              []string
+	cursor               int
+	selected             map[int]struct{}
+	charmId              string
+	publicKeyAuthorized  string
 }
 
 var quitKeys = key.NewBinding(
@@ -65,6 +74,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 
+		}
+		switch msg.String() {
+		// The "up" and "k" keys move the cursor up
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+
+		// The "down" and "j" keys move the cursor down
+		case "down", "j":
+			if m.cursor < len(m.choices)-1 {
+				m.cursor++
+			}
+
+		// The "enter" key and the spacebar (a literal space) toggle
+		// the selected state for the item that the cursor is pointing at.
+		case "enter", " ":
+			_, ok := m.selected[m.cursor]
+			if ok {
+				delete(m.selected, m.cursor)
+			} else {
+				m.selected[m.cursor] = struct{}{}
+			}
 		}
 		return m, nil
 	case tea.WindowSizeMsg:
@@ -86,15 +118,64 @@ func (m model) View() string {
 	s := "Your term is %s\n"
 	s += "Your window size is x: %d y: %d\n\n"
 
+	s = fmt.Sprintf(s, m.term, m.width, m.height)
+
+	s += "Which room?\n\n"
+
+	for i, choice := range m.choices {
+
+		// Is the cursor pointing at this choice?
+		cursor := " " // no cursor
+		if m.cursor == i {
+			cursor = ">" // cursor!
+		}
+
+		// Is this choice selected?
+		checked := " " // not selected
+		if _, ok := m.selected[i]; ok {
+			checked = "x" // selected!
+		}
+
+		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, choice)
+	}
+	s += "\n"
+
+	if m.meltedPrivateKeySeed != "" {
+		smelted := "Your private key seed is melted:\n\n%s\n\n"
+		s += fmt.Sprintf(smelted, m.meltedPrivateKeySeed)
+	} else {
+		authorizedPublicKeyText := "Your authorized public key is:\n\n%s\n\n"
+		s += fmt.Sprintf(authorizedPublicKeyText, m.publicKeyAuthorized)
+	}
+	charmIdText := "Your charm id is:\n\n%s\n\n"
+	s += fmt.Sprintf(charmIdText, m.charmId)
+
 	if m.err != nil {
 		return m.err.Error()
 	}
-	str := fmt.Sprintf(s, m.term, m.width, m.height)
-	str += fmt.Sprintf("\n\n   %s Loading forever... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
-	if m.quitting {
-		return str + "\n"
+
+	s += fmt.Sprintf("\n   %s Loading forever... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
+
+	var wrapAt int
+	if m.width < 24 {
+		wrapAt = m.width
+		s = wrap.String(s, wrapAt)
+	} else {
+		maxCutoff := 50
+
+		// Calculate proportionate cutoff
+		// Adjust the formula as per your proportionate cutoff logic
+		wrapAt = m.width - (m.width % 2) // Example formula
+		if wrapAt > maxCutoff {
+			wrapAt = maxCutoff
+		}
+
+		s = wordwrap.WrapString(s, wrapAt)
 	}
-	return str
+	if m.quitting {
+		return s + "\n"
+	}
+	return s
 }
 
 var separator = "."
@@ -164,49 +245,25 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	meltedPrivateKeySeed := s.Context().Permissions().Extensions["private-key-seed-melted"]
 	m := model{
-		spinner:  sp,
-		quitting: false,
-		err:      nil,
-		term:     pty.Term,
-		width:    pty.Window.Width,
-		height:   pty.Window.Height,
+		spinner:              sp,
+		quitting:             false,
+		err:                  nil,
+		term:                 pty.Term,
+		width:                pty.Window.Width,
+		height:               pty.Window.Height,
+		meltedPrivateKeySeed: meltedPrivateKeySeed,
+		choices:              []string{"Chat", "Game", "Upload"},
+		selected:             make(map[int]struct{}),
+		charmId:              s.Context().Permissions().Extensions["charm-id"],
+		publicKeyAuthorized:  s.Context().Permissions().Extensions["public-key-authorized"],
 	}
 	return m, []tea.ProgramOption{tea.WithAltScreen()}
 }
 
-func start(cmd *cobra.Command, args []string) {
-	handler := scp.NewFileSystemHandler("./files")
-	s, err := wish.NewServer(
-		wish.WithMiddleware(
-			scp.Middleware(handler, handler),
-			bubbletea.Middleware(teaHandler),
-			comment.Middleware("Thanks, have a nice day!"),
-			elapsed.Middleware(),
-			promwish.Middleware("0.0.0.0:9222", "identity"),
-			logging.Middleware(),
-			func(h ssh.Handler) ssh.Handler {
-				return func(s ssh.Session) {
-					log.Info("Session started", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network(), "charm-id", s.Context().Permissions().Extensions["charm-id"], "charm-name", s.Context().Permissions().Extensions["charm-name"], "charm-roles", s.Context().Permissions().Extensions["charm-roles"], "charm-created-at", s.Context().Permissions().Extensions["charm-created-at"], "charm-public-key-created-at", s.Context().Permissions().Extensions["charm-public-key-created-at"], "charm-public-key-type", s.Context().Permissions().Extensions["charm-public-key-type"], "charm-public-key", s.Context().Permissions().Extensions["charm-public-key"])
-					h(s)
-					log.Info("Session ended", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network(), "charm-id", s.Context().Permissions().Extensions["charm-id"], "charm-name", s.Context().Permissions().Extensions["charm-name"], "charm-roles", s.Context().Permissions().Extensions["charm-roles"], "charm-created-at", s.Context().Permissions().Extensions["charm-created-at"], "charm-public-key-created-at", s.Context().Permissions().Extensions["charm-public-key-created-at"], "charm-public-key-type", s.Context().Permissions().Extensions["charm-public-key-type"], "charm-public-key", s.Context().Permissions().Extensions["charm-public-key"])
-				}
-			},
-		),
-		wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
-			log.Info("Accepting password", "password", password, "len", len(password))
-			return Connect(ctx, nil, &password, nil)
-		}),
-		wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, challenge gossh.KeyboardInteractiveChallenge) bool {
-			log.Info("Accepting keyboard interactive")
-			return Connect(ctx, nil, nil, challenge)
-		}),
-		wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
-			log.Info("Accepting public key", "publicKeyType", key.Type(), "publicKeyString", base64.StdEncoding.EncodeToString(key.Marshal()))
-			return Connect(ctx, key, nil, nil)
-		}),
-		wish.WithBannerHandler(func(ctx ssh.Context) string {
-			return `
+func Banner(ctx ssh.Context) string {
+	return `
 Welcome to the identity server!
 
 By using this service, you agree to the following terms and conditions:
@@ -228,7 +285,33 @@ If you do not agree to these terms and conditions, you may not use this service 
 ` + fmt.Sprintf("Your client version is %s\n", ctx.ClientVersion()) + `
 ` + fmt.Sprintf("Your session id is %s\n", ctx.SessionID()) + `
 ` + fmt.Sprintf("You are connecting with user %s\n", ctx.User())
+}
+
+func start(cmd *cobra.Command, args []string) {
+	handler := scp.NewFileSystemHandler("./files")
+	s, err := wish.NewServer(
+		wish.WithMiddleware(
+			scp.Middleware(handler, handler),
+			bubbletea.Middleware(teaHandler),
+			comment.Middleware("Thanks, have a nice day!"),
+			elapsed.Middleware(),
+			promwish.Middleware("0.0.0.0:9222", "identity"),
+			logging.Middleware(),
+			observability.Middleware(),
+		),
+		wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
+			log.Info("Accepting password", "password", password, "len", len(password))
+			return Connect(ctx, nil, &password, nil)
 		}),
+		wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, challenge gossh.KeyboardInteractiveChallenge) bool {
+			log.Info("Accepting keyboard interactive")
+			return Connect(ctx, nil, nil, challenge)
+		}),
+		wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
+			log.Info("Accepting public key", "publicKeyType", key.Type(), "publicKeyString", base64.StdEncoding.EncodeToString(key.Marshal()))
+			return Connect(ctx, key, nil, nil)
+		}),
+		wish.WithBannerHandler(Banner),
 		wish.WithAddress(fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port"))),
 		wish.WithHostKeyPath(hostKeyPath),
 	)

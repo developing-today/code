@@ -39,6 +39,8 @@ Except as otherwise noted below and/or in [`README.md`](README.md) and/or in [`N
 
 A partial list of copyright acknowledgements related to this project.
 
+- within [ src/identity ] (src/identity)
+  - Charmbracelet, Inc for a wide variety of works - go to [ charm.sh ] (https://charm.sh) [ github.com/charmbracelet ] (https://github.com/charmbracelet)
 - within [`build/`](build)
   - for nix-related works within [`build/nix`](build/nix) and [`build/buck/preludes/nix-prelude`](build/buck/preludes/nix-prelude)
     - SPDX-License-Identifier: MIT OR Apache-2.0
