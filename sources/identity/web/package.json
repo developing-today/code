@@ -1,0 +1,34 @@
+{
+  "name": "web",
+  "version": "0.0.0",
+  "description": "Frontend part of the Gowebly project.",
+  "license": "MIT",
+  "browserslist": "> 0.5%, last 2 versions, not dead",
+  "source": [
+    "./assets/scripts.js",
+    "./assets/styles.scss"
+  ],
+  "targets": {
+    "default": {
+      "distDir": "./static"
+    }
+  },
+  "scripts": {
+    "watch": "parcel watch",
+    "fmt": "prettier --write .",
+    "dev": "parcel build --no-optimize",
+    "build": "parcel build"
+  },
+  "dependencies": {
+    "@tailwindcss/typography": "latest",
+    "tailwindcss": "latest",
+    "daisyui": "latest",
+    "hyperscript.org": "latest",
+    "htmx.org": "latest"
+  },
+  "devDependencies": {
+    "@parcel/transformer-sass": "latest",
+    "parcel": "latest",
+    "prettier": "latest"
+  }
+}

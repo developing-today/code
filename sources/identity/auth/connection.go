@@ -1,16 +1,106 @@
 package auth
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/nrednav/cuid2"
 )
 
+type contextKey struct {
+	name string
+}
+
+var ConnectionMapKey = &contextKey{"ConnectionMap"}
+
+// WithConnectionMap adds the SafeConnectionMap to the context
+func WithConnectionMap(ctx context.Context, connections *SafeConnectionMap) context.Context {
+	return context.WithValue(ctx, ConnectionMapKey, connections)
+}
+
+// GetConnectionMap retrieves the SafeConnectionMap from the context
+func GetConnectionMap(ctx context.Context) (*SafeConnectionMap, bool) {
+	connections, ok := ctx.Value(ConnectionMapKey).(*SafeConnectionMap)
+	return connections, ok
+}
+
+type SafeConnectionMap struct {
+	mu   sync.RWMutex
+	data map[string]Connection
+}
+
+// NewSafeConnectionMap creates and returns a new SafeConnectionMap
+func NewSafeConnectionMap() *SafeConnectionMap {
+	return &SafeConnectionMap{
+		data: make(map[string]Connection),
+	}
+}
+
+// Get safely retrieves an element from the map
+func (sm *SafeConnectionMap) Get(key string) (Connection, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	val, ok := sm.data[key]
+	return val, ok
+}
+
+// Set safely adds an element to the map
+func (sm *SafeConnectionMap) Set(key string, value Connection) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.data[key] = value
+}
+
+// Delete safely removes an element from the map
+func (sm *SafeConnectionMap) Delete(key string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	delete(sm.data, key)
+}
+
+// All safely retrieves all elements from the map
+func (sm *SafeConnectionMap) All() map[string]Connection {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.data
+}
+
+// Keys safely retrieves all keys from the map
+func (sm *SafeConnectionMap) Keys() []string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	keys := make([]string, 0, len(sm.data))
+	for k := range sm.data {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Len safely retrieves the length of the map
+func (sm *SafeConnectionMap) Len() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return len(sm.data)
+}
+
+// Values safely retrieves all values from the map
+func (sm *SafeConnectionMap) Values() []Connection {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	values := make([]Connection, 0, len(sm.data))
+	for _, v := range sm.data {
+		values = append(values, v)
+	}
+	return values
+}
+
+// Connection represents a connection
 type Connection struct {
 	ConnectionID               *string
 	Status                     *string
@@ -344,6 +434,23 @@ func (b *Connection) Update(column string, value interface{}) error {
 	log.Info("Connection updated", "connection_id", *b.ConnectionID, "affected", affected)
 
 	return nil
+
+}
+
+func (b *Connection) JSON() (string, error) {
+	jsonB, err := json.Marshal(b)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal connection: %v", err)
+	}
+	return string(jsonB), nil
+}
+
+func (b *Connection) HTML() (string, error) {
+	jsonString, err := b.JSON()
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal connection: %v", err)
+	}
+	return "<pre style=\"white-space: pre-wrap; overflow-wrap: anywhere;\">" + jsonString + "</pre>", nil
 
 }
 

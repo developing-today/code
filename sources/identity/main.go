@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
@@ -31,6 +32,7 @@ import (
 	"github.com/charmbracelet/wish/scp"
 	"github.com/developing-today/code/src/identity/auth"
 	"github.com/developing-today/code/src/identity/observability"
+	"github.com/developing-today/code/src/identity/web"
 	"github.com/knadh/koanf"
 	"github.com/knadh/koanf/parsers/kdl"
 	"github.com/knadh/koanf/providers/file"
@@ -43,6 +45,9 @@ import (
 type errMsg error
 
 type model struct {
+	ready                bool
+	content              string
+	viewport             viewport.Model
 	spinner              spinner.Model
 	quitting             bool
 	err                  error
@@ -66,55 +71,23 @@ func (m model) Init() tea.Cmd {
 	return m.spinner.Tick
 }
 
+const useHighPerformanceRenderer = false
+
+var (
+	titleStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1)
+	}()
+
+	infoStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Left = "┤"
+		return titleStyle.Copy().BorderStyle(b)
+	}()
+)
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-
-	case tea.KeyMsg:
-		if key.Matches(msg, quitKeys) {
-			m.quitting = true
-			return m, tea.Quit
-
-		}
-		switch msg.String() {
-		// The "up" and "k" keys move the cursor up
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-
-		// The "down" and "j" keys move the cursor down
-		case "down", "j":
-			if m.cursor < len(m.choices)-1 {
-				m.cursor++
-			}
-
-		// The "enter" key and the spacebar (a literal space) toggle
-		// the selected state for the item that the cursor is pointing at.
-		case "enter", " ":
-			_, ok := m.selected[m.cursor]
-			if ok {
-				delete(m.selected, m.cursor)
-			} else {
-				m.selected[m.cursor] = struct{}{}
-			}
-		}
-		return m, nil
-	case tea.WindowSizeMsg:
-		m.height = msg.Height
-		m.width = msg.Width
-	case errMsg:
-		m.err = msg
-		return m, nil
-
-	default:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-	}
-	return m, nil
-}
-
-func (m model) View() string {
 	s := "Your term is %s\n"
 	s += "Your window size is x: %d y: %d\n\n"
 
@@ -151,31 +124,96 @@ func (m model) View() string {
 	s += fmt.Sprintf(charmIdText, m.charmId)
 
 	if m.err != nil {
-		return m.err.Error()
+		return m, tea.Quit
 	}
 
 	s += fmt.Sprintf("\n   %s Loading forever... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
 
 	var wrapAt int
-	if m.width < 24 {
+	maxWrapMargin := 24
+	leastWrapColumnWithMargin := 24
+	mostWrapColumnBeforeMaxWrapMargin := 228
+
+	if m.width < leastWrapColumnWithMargin {
 		wrapAt = m.width
 		s = wrap.String(s, wrapAt)
 	} else {
-		maxCutoff := 50
+		var wrapAt int
+		if m.width <= mostWrapColumnBeforeMaxWrapMargin {
+			wrapAt = m.width - int(1+((m.width-(leastWrapColumnWithMargin+1))*maxWrapMargin)/(mostWrapColumnBeforeMaxWrapMargin-(leastWrapColumnWithMargin+1)))
+		} else {
+			wrapAt = m.width - (maxWrapMargin + 1)
+		}
+		s = wordwrap.String(s, wrapAt)
+	}
+	s = wrap.String(s, m.width)
+	if m.quitting {
+		return m, tea.Quit
+	}
+	m.viewport.SetContent(s)
 
-		// Calculate proportionate cutoff
-		// Adjust the formula as per your proportionate cutoff logic
-		wrapAt = m.width - (m.width % 2) // Example formula
-		if wrapAt > maxCutoff {
-			wrapAt = maxCutoff
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+	switch msg := msg.(type) {
+
+	case tea.KeyMsg:
+		if key.Matches(msg, quitKeys) {
+			m.quitting = true
+			return m, tea.Quit
 		}
 
-		s = wordwrap.WrapString(s, wrapAt)
+		switch msg.String() {
+		// The "up" and "k" keys move the cursor up
+		case "w", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+
+		// The "down" and "j" keys move the cursor down
+		case "s", "j":
+			if m.cursor < len(m.choices)-1 {
+				m.cursor++
+			}
+
+		// The "enter" key and the spacebar (a literal space) toggle
+		// the selected state for the item that the cursor is pointing at.
+		case "enter", " ":
+			_, ok := m.selected[m.cursor]
+			if ok {
+				delete(m.selected, m.cursor)
+			} else {
+				m.selected[m.cursor] = struct{}{}
+			}
+		}
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		m.width = msg.Width
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, msg.Height)
+			m.viewport.KeyMap.Down.SetKeys("down")
+			m.viewport.KeyMap.Up.SetKeys("up")
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height
+		}
+	case errMsg:
+		m.err = msg
+	default:
+		m.spinner, cmd = m.spinner.Update(msg)
 	}
-	if m.quitting {
-		return s + "\n"
-	}
-	return s
+
+	m.viewport, cmd = m.viewport.Update(msg)
+
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) View() string {
+	return m.viewport.View()
 }
 
 var separator = "."
@@ -192,7 +230,7 @@ func loadConfiguration() {
 			if err := configuration.Load(file.Provider(path), kdl.Parser()); err != nil {
 				log.Error("Failed to load config", "error", err)
 			} else {
-				log.Info("Loaded config", "path", path)
+				log.Info("Loaded config from file", "path", path)
 			}
 		} else {
 			log.Info("Config not found", "path", path)
@@ -264,18 +302,30 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 
 func Banner(ctx ssh.Context) string {
 	return `
-Welcome to the identity server!
+Welcome to the identity server! ("The Service")
 
-By using this service, you agree to the following terms and conditions:
+By using The Service, you agree to all of the following terms and conditions.
 
-- EACH PARTY MAKES NO WARRANTIES, EXPRESS, IMPLIED OR OTHERWISE, REGARDING ITS ACCURACY, COMPLETENESS OR PERFORMANCE.
+The user expressly understands and agrees that developing.today LLC, the operator of The Service, shall not be liable, in law or in equity, to them or to any third party for any direct, indirect, incidental, lost profits, special, consequential, punitive or exemplary damages.
 
-- THE SERVICE AND ANY RELATED SERVICES ARE PROVIDED ON AN "AS IS" AND "AS AVAILABLE" BASIS, WITHOUT WARRANTY OF ANY KIND, WHETHER WRITTEN OR ORAL, EXPRESS OR IMPLIED.
+EACH PARTY MAKES NO WARRANTIES, EXPRESS, IMPLIED OR OTHERWISE, REGARDING ACCURACY, COMPLETENESS OR PERFORMANCE.
 
-- TO THE FULL EXTENT PERMISSIBLE BY LAW, DEVELOPING.TODAY LLC WILL NOT BE LIABLE FOR ANY DAMAGES OF ANY KIND ARISING FROM THE USE OF ANY DEVELOPING.TODAY LLC SERVICE, OR FROM ANY INFORMATION, CONTENT, MATERIALS, PRODUCTS (INCLUDING SOFTWARE) OR OTHER SERVICES INCLUDED ON OR OTHERWISE MADE AVAILABLE TO YOU THROUGH ANY DEVELOPING.TODAY LLC SERVICE, INCLUDING, BUT NOT LIMITED TO DIRECT, INDIRECT, INCIDENTAL, PUNITIVE, AND CONSEQUENTIAL DAMAGES, UNLESS OTHERWISE SPECIFIED IN WRITING.
+THE SERVICE AND ANY RELATED SERVICES ARE PROVIDED ON AN "AS IS" AND "AS AVAILABLE" BASIS, WITHOUT WARRANTY OF ANY KIND, WHETHER WRITTEN OR ORAL, EXPRESS OR IMPLIED.
 
-If you do not agree to these terms and conditions, you may not use this service and must disconnect immediately.
+TO THE FULL EXTENT PERMISSIBLE BY LAW, DEVELOPING.TODAY LLC WILL NOT BE LIABLE FOR ANY DAMAGES OF ANY KIND ARISING FROM THE USE OF ANY DEVELOPING.TODAY LLC SERVICE, OR FROM ANY INFORMATION, CONTENT, MATERIALS, PRODUCTS (INCLUDING SOFTWARE) OR OTHER SERVICES INCLUDED ON OR OTHERWISE MADE AVAILABLE TO YOU THROUGH ANY DEVELOPING.TODAY LLC SERVICE, INCLUDING, BUT NOT LIMITED TO DIRECT, INDIRECT, INCIDENTAL, PUNITIVE, AND CONSEQUENTIAL DAMAGES, UNLESS OTHERWISE SPECIFIED IN WRITING.
 
+TO THE MAXIMUM EXTENT ALLOWED BY LAW, DEVELOPING.TODAY LLC DISCLAIMS ALL WARRANTIES AND REPRESENTATIONS OF ANY KIND, INCLUDING WITHOUT LIMITATION THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT, WHETHER EXPRESS, IMPLIED, OR STATUTORY. DEVELOPING.TODAY LLC PROVIDES NO GUARANTEES THAT THE SERVICES OR NETWORK WILL FUNCTION WITHOUT INTERRUPTION OR ERRORS AND PROVIDES THE NETWORK, SERVICES, AND ANY RELATED CONTENT OR PRODUCTS SUBJECT TO THESE PUBLIC NETWORK TERMS ON AN “AS IS” BASIS.
+
+By submitting your content (all information you transmit to any developing.today LLC service) ("Your Content") you hereby grant to developing.today LLC an irrevocable, perpetual, royalty-free, worldwide right and license (with right to sublicense) to use, distribute, reproduce, create derivate works of, perform and display Your Content, in whole or part, on or off the any developing.today LLC service for any purpose, commercial or otherwise without acknowledgment, consent or monetary or other compensation to you.
+
+You hereby represent and warrant that:
+- Your Content is an original work created by you
+- You have all the rights and consents in and to Your Content necessary to grant the above license
+- Your Content does not violate any privacy, publicity or any other applicable laws or regulations
+- You understand and agree that developing.today LLC may use any information provided on this form or information available that is associated with your developing.today LLC account to contact you about Your Content.
+- You agree that developing.today LLC has no obligation to exercise or exploit the above license.
+
+If you do not agree to all of the above terms and conditions, then you may not use The Service and must disconnect immediately.
 ` + fmt.Sprintf("You are using the identity server at %s:%d\n", configuration.String("host"), configuration.Int("port")) + `
 ` + fmt.Sprintf("You are connecting from %s\n", ctx.RemoteAddr().String()) + `
 ` + fmt.Sprintf("You are connecting from-with %s\n", ctx.RemoteAddr().Network()) + `
@@ -288,6 +338,8 @@ If you do not agree to these terms and conditions, you may not use this service 
 }
 
 func start(cmd *cobra.Command, args []string) {
+	connections := auth.NewSafeConnectionMap()
+	web.GoRunWebServer(connections)
 	handler := scp.NewFileSystemHandler("./files")
 	s, err := wish.NewServer(
 		wish.WithMiddleware(
@@ -297,19 +349,19 @@ func start(cmd *cobra.Command, args []string) {
 			elapsed.Middleware(),
 			promwish.Middleware("0.0.0.0:9222", "identity"),
 			logging.Middleware(),
-			observability.Middleware(),
+			observability.Middleware(connections),
 		),
 		wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
 			log.Info("Accepting password", "password", password, "len", len(password))
-			return Connect(ctx, nil, &password, nil)
+			return Connect(ctx, nil, &password, nil, connections)
 		}),
 		wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, challenge gossh.KeyboardInteractiveChallenge) bool {
 			log.Info("Accepting keyboard interactive")
-			return Connect(ctx, nil, nil, challenge)
+			return Connect(ctx, nil, nil, challenge, connections)
 		}),
 		wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
 			log.Info("Accepting public key", "publicKeyType", key.Type(), "publicKeyString", base64.StdEncoding.EncodeToString(key.Marshal()))
-			return Connect(ctx, key, nil, nil)
+			return Connect(ctx, key, nil, nil, connections)
 		}),
 		wish.WithBannerHandler(Banner),
 		wish.WithAddress(fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port"))),
@@ -322,7 +374,7 @@ func start(cmd *cobra.Command, args []string) {
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Info("Starting SSH server", "host", configuration.String("host"), "port", configuration.Int("port"))
+	log.Info("Starting ssh server", "host", configuration.String("host"), "port", configuration.Int("port"), "address", fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port")))
 	go func() {
 		if err := s.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 			log.Error("could not start server", "error", err)
@@ -331,7 +383,7 @@ func start(cmd *cobra.Command, args []string) {
 	}()
 
 	<-done
-	log.Info("Stopping SSH server")
+	log.Info("Stopping ssh server", "host", configuration.String("host"), "port", configuration.Int("port"), "address", fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port")))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -369,7 +421,7 @@ func (c Challenge) ExecuteMutable(challenge gossh.KeyboardInteractiveChallenge) 
 	return answers, nil
 }
 
-func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gossh.KeyboardInteractiveChallenge) bool {
+func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gossh.KeyboardInteractiveChallenge, connections *auth.SafeConnectionMap) bool {
 	status := "open"
 	app := "identity"
 	connectionType := "ssh"
@@ -695,7 +747,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		return false
 	}
 	log.Info("Inserted connection", "connectionID", &connectionID, "connection", connection.String(), "connectionID", connection.ConnectionID)
-	ctx.Permissions().Extensions["connection-id"] = fmt.Sprintf("%d", &connectionID)
+	ctx.Permissions().Extensions["connection-id"] = *connectionID
 
 	permissionsExtensionsJson, err := json.Marshal(ctx.Permissions().Extensions)
 	if err != nil {
@@ -775,6 +827,8 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		}
 	}
 	ctx.Permissions().Extensions["charm-id"] = result.ID
+	connections.Set(*connection.ConnectionID, connection)
+	ctx.SetValue("connection", connection)
 	ctx.Permissions().Extensions["charm-name"] = result.Name
 	log.Info("Setting permissions extensions", "charm-id", result.ID, "charm-name", result.Name, "connectionID", connection.ConnectionID)
 	jsonRoles, err := json.Marshal(result.Roles)
