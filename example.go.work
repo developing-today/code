@@ -1,0 +1,14 @@
+go 1.21.5
+
+use (
+	./code/sources/chat
+	./code/sources/data
+	./code/sources/database
+	./code/sources/graph
+	./code/sources/identity
+	./code/sources/import
+	./code/sources/launcher
+	./code/sources/map
+	./code/sources/tea
+	./charm
+)

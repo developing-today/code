@@ -1,2 +1,6 @@
-port 1
-host "0.0.0.0"
+identity.server port=1 host="0.0.0.0" {
+  jwt audience="identity" {
+    issuer "http://laptop-framework.raptor-pumpkinseed.ts.net:35354"
+    jwks "http://laptop-framework.raptor-pumpkinseed.ts.net:35354/.well-known/jwks.json"
+  }
+}

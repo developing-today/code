@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	charmcmd "github.com/charmbracelet/charm/cmd"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/melt"
@@ -220,11 +222,53 @@ var separator = "."
 var configuration = koanf.New(separator)
 var configurationPaths = []string{
 	"./config.kdl",
+	// identity.kdl identity.config.kdl config.identity.kdl identity.config
+	// run these against ? binary dir ? pwd of execution ? appdata ? .config ? .local ???
+	// then check for further locations/env-prefixes/etc from first pass, rerun on top with second pass
+	// (maybe config.kdl next to binary sets a new set of configurationPaths, finish out loading from defaults, then load from new paths)
+	// this pattern continues, after hard-code default env/file search, then custom file/env search, then eventually maybe nats/s3 or other remote or db config
 }
 var generatedKeyDirPath = ".ssh/generated"
 var hostKeyPath = ".ssh/term_info_ed25519"
 
 func loadConfiguration() {
+	// lower, replace prefix with identity.", also populate "" and "identity.server."
+	// IDENTITY_SERVER_*
+	// lower, replace prefix with "identity.", also populate ""
+	// IDENTITY_*
+	// lower, replace prefix with "charm.", also populate "charm.server."
+	// CHARM_SERVER_*
+	// lower, replace prefix with "charm."
+	// CHARM_*
+
+	// example of loading env var
+	// Load environment variables and merge into the loaded config.
+	// "MYVAR" is the prefix to filter the env vars by.
+	// "." is the delimiter used to represent the key hierarchy in env vars.
+	// The (optional, or can be nil) function can be used to transform
+	// the env var names, for instance, to lowercase them.
+	//
+	// For example, env vars: MYVAR_TYPE and MYVAR_PARENT1_CHILD1_NAME
+	// will be merged into the "type" and the nested "parent1.child1.name"
+	// keys in the config file here as we lowercase the key,
+	// replace `_` with `.` and strip the MYVAR_ prefix so that
+	// only "parent1.child1.name" remains.
+	// k.Load(env.Provider("MYVAR_", ".", func(s string) string {
+	// 	return strings.Replace(strings.ToLower(
+	// 		strings.TrimPrefix(s, "MYVAR_")), "_", ".", -1)
+	// }), nil)
+
+	// decide order of loading, defaults, env, file, env, file, remotes, etc.
+	// always overwrite previous?
+	// ever skip if already set?
+
+	// for file loading:
+	// maybe. not sure yet, especially for "".
+	// 1. loading from file as ""
+	// 2. loading from file as "identity.", put 1 in 2 where not set
+	// 3. loading from file as "identity.server.", put 2 in 3 where not set
+	// if i set port=1 and identity.server.port=3, then ""1,"identity"1,"identity.server"3
+	// if i set port=1 and identity.port=3, then ""1,"identity"3,"identity.server"3
 	for _, path := range configurationPaths {
 		if _, err := os.Stat(path); err == nil {
 			if err := configuration.Load(file.Provider(path), kdl.Parser()); err != nil {
@@ -251,24 +295,45 @@ func initializeAndLoadConfiguration() {
 
 func init() {
 	cobra.OnInitialize(initializeAndLoadConfiguration)
-	rootCmd.AddCommand(startCmd)
+	StartAllCmd.AddCommand(StartIdentityCmd)
+	StartCharmCmd := charmcmd.ServeCmd
+	StartCharmCmd.Use = "charm"
+	StartCharmCmd.Aliases = []string{"ch", "c"}
+	StartAllCmd.AddCommand(StartCharmCmd)
+	startAllAltCmd := *StartAllCmd
+	StartAllAltCmd = &startAllAltCmd
+	StartAllAltCmd.Use = "all"
+	StartAllAltCmd.Aliases = []string{"al", "a"}
+	StartAllCmd.AddCommand(StartAllAltCmd)
+	RootCmd.AddCommand(StartAllCmd)
+	RootCmd.AddCommand(charmcmd.RootCmd)
 }
 
-var rootCmd = &cobra.Command{
+var StartCharmCmd = &cobra.Command{}
+var StartAllAltCmd = &cobra.Command{}
+
+var RootCmd = &cobra.Command{
 	Use:   "identity",
 	Short: "publish your identity",
 	Long:  `publish your identity and allow others to connect to you.`,
 }
 
-var startCmd = &cobra.Command{
+var StartAllCmd = &cobra.Command{
 	Use:     "start",
-	Short:   "Starts the identity server",
-	Run:     start,
+	Short:   "Starts the identity and charm servers",
+	Run:     startAll,
 	Aliases: []string{"s", "run", "serve", "publish", "pub", "p", "i", "y", "u", "o", "p", "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "h", "j", "k", "l", "z", "x", "c", "v", "b"},
 }
 
+var StartIdentityCmd = &cobra.Command{
+	Use:     "identity",
+	Short:   "Starts only the identity server",
+	Run:     startIdentity,
+	Aliases: []string{"id", "i"},
+}
+
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -326,7 +391,7 @@ You hereby represent and warrant that:
 - You agree that developing.today LLC has no obligation to exercise or exploit the above license.
 
 If you do not agree to all of the above terms and conditions, then you may not use The Service and must disconnect immediately.
-` + fmt.Sprintf("You are using the identity server at %s:%d\n", configuration.String("host"), configuration.Int("port")) + `
+` + fmt.Sprintf("You are using the identity server at %s:%d\n", configuration.String("identity.server.host"), configuration.Int("identity.server.port")) + `
 ` + fmt.Sprintf("You are connecting from %s\n", ctx.RemoteAddr().String()) + `
 ` + fmt.Sprintf("You are connecting from-with %s\n", ctx.RemoteAddr().Network()) + `
 ` + fmt.Sprintf("You are connecting to %s\n", ctx.LocalAddr().String()) + `
@@ -337,9 +402,47 @@ If you do not agree to all of the above terms and conditions, then you may not u
 ` + fmt.Sprintf("You are connecting with user %s\n", ctx.User())
 }
 
-func start(cmd *cobra.Command, args []string) {
+func startAll(cmd *cobra.Command, args []string) {
+	var wg sync.WaitGroup
+	done := make(chan struct{}) // Channel to signal all tasks are done
+
+	// Helper function for running tasks
+	runTask := func(taskFunc func(*cobra.Command, []string)) {
+		defer wg.Done()
+
+		taskFunc(cmd, args) // Execute the task
+		// After task completion, optionally signal done for cleanup
+	}
+
+	wg.Add(2) // Prepare for two goroutines
+
+	// Start startCharm in its own goroutine
+	go runTask(func(cmd *cobra.Command, args []string) {
+		startCharm(cmd, args)
+	})
+
+	// Start startIdentity in its own goroutine
+	go runTask(func(cmd *cobra.Command, args []string) {
+		startIdentity(cmd, args)
+	})
+
+	go func() {
+		wg.Wait()   // Wait for both tasks to complete
+		close(done) // Signal that all tasks are done
+	}()
+
+	// Wait for the done signal before proceeding to cleanup or exit
+	<-done
+	fmt.Println("All tasks completed. Proceeding to cleanup and shutdown.")
+}
+
+func startCharm(cmd *cobra.Command, args []string) {
+	charmcmd.ServeCmdRunE(cmd, args)
+}
+
+func startIdentity(cmd *cobra.Command, args []string) {
 	connections := auth.NewSafeConnectionMap()
-	web.GoRunWebServer(connections)
+	web.GoRunWebServer(connections, configuration)
 	handler := scp.NewFileSystemHandler("./files")
 	s, err := wish.NewServer(
 		wish.WithMiddleware(
@@ -364,7 +467,7 @@ func start(cmd *cobra.Command, args []string) {
 			return Connect(ctx, key, nil, nil, connections)
 		}),
 		wish.WithBannerHandler(Banner),
-		wish.WithAddress(fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port"))),
+		wish.WithAddress(fmt.Sprintf("%s:%d", configuration.String("identity.server.host"), configuration.Int("identity.server.port"))),
 		wish.WithHostKeyPath(hostKeyPath),
 	)
 	if err != nil {
@@ -374,7 +477,7 @@ func start(cmd *cobra.Command, args []string) {
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Info("Starting ssh server", "host", configuration.String("host"), "port", configuration.Int("port"), "address", fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port")))
+	log.Info("Starting ssh server", "identity.server.host", configuration.String("identity.server.host"), "identity.server.port", configuration.Int("identity.server.port"), "address", fmt.Sprintf("%s:%d", configuration.String("identity.server.host"), configuration.Int("identity.server.port")))
 	go func() {
 		if err := s.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 			log.Error("could not start server", "error", err)
@@ -383,7 +486,7 @@ func start(cmd *cobra.Command, args []string) {
 	}()
 
 	<-done
-	log.Info("Stopping ssh server", "host", configuration.String("host"), "port", configuration.Int("port"), "address", fmt.Sprintf("%s:%d", configuration.String("host"), configuration.Int("port")))
+	log.Info("Stopping ssh server", "identity.server.host", configuration.String("identity.server.host"), "identity.server.port", configuration.Int("identity.server.port"), "address", fmt.Sprintf("%s:%d", configuration.String("identity.server.host"), configuration.Int("identity.server.port")))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

@@ -77,7 +77,7 @@ func BodyContent(h1, text string) templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<div id=\"app\"><div><a href=\"https://gowebly.org\" target=\"_blank\"><img src=\"/static/images/gowebly.svg\" class=\"gowebly logo\" alt=\"Gowebly logo\"></a><h1>Connections</h1>")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<div id=\"app\"><div><img src=\"/static/images/gowebly.svg\" class=\"gowebly logo\" alt=\"logo\"><h1>Connections</h1>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -94,7 +94,7 @@ func BodyContent(h1, text string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\">Get the connections on your server.</p><div class=\"content\"><button type=\"text\" hx-get=\"/api/id\" hx-target=\"#htmx-result\">Get Connections</button><div id=\"htmx-result\"></div></div><p class=\"read-the-docs\">Do more with SSH.</p><p class=\"read-the-docs\"><a href=\"http://developing.today\" target=\"_blank\">developing.today</a> &sdot; <a href=\"https://news.developing.today\" target=\"_blank\">news</a> &sdot; <a href=\"https://github.com/developing-today/code\" target=\"_blank\">code</a></p><p class=\"read-the-docs\" style=\"position: fixed; bottom: 0; right: 0;\">&copy; developing.today LLC</p></div></div>")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\">Get the connections on your server.</p><form id=\"connectionForm\" hx-post=\"/admin/api/id\" hx-target=\"#htmx-result\"><input type=\"text\" name=\"textField\" placeholder=\"Enter value\"> <button type=\"submit\">Get Connections</button></form><div id=\"htmx-result\"></div><p class=\"read-the-docs\">Do more with SSH.</p><p class=\"read-the-docs\"><a href=\"http://developing.today\" target=\"_blank\">developing.today</a> &sdot; <a href=\"https://news.developing.today\" target=\"_blank\">news</a> &sdot; <a href=\"https://github.com/developing-today/code\" target=\"_blank\">code</a></p><p class=\"read-the-docs\" style=\"position: fixed; bottom: 0; right: 0;\">&copy; developing.today LLC</p></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

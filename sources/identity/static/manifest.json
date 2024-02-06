@@ -1,7 +1,7 @@
 {
-    "name": "My PWA Project",
-    "short_name": "Project",
-    "description": "The PWA (Progressive Web App) part of the gowebly project.",
+    "name": "identity server",
+    "short_name": "identity",
+    "description": "identity server",
     "background_color": "#FEFEF5",
     "theme_color": "#FEFEF5",
     "display": "standalone",

@@ -26,8 +26,8 @@ type Result struct {
 	PublicKeyCreatedAt time.Time
 }
 
-func InsertPrivateKey(pk ed25519.PrivateKey) (int64, error) {
-	log.Info("Inserting private key", "privateKeyType", pk.Public().(ed25519.PublicKey), "privateKeyString", base64.StdEncoding.EncodeToString(pk))
+func GetDbConnectionWhichIPromiseToCloseMyself() (*sql.DB, error) {
+	log.Info("Getting db connection")
 	host := os.Getenv("TURSO_HOST")
 	if host == "" {
 		log.Fatal("TURSO_HOST is not set")
@@ -38,7 +38,21 @@ func InsertPrivateKey(pk ed25519.PrivateKey) (int64, error) {
 	}
 	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
 	if err != nil {
-		return -1, fmt.Errorf("failed to open db %s: %w", host, err)
+		return nil, fmt.Errorf("failed to open db %s: %w", host, err)
+	}
+	err = db.Ping()
+	if err != nil {
+		return nil, fmt.Errorf("failed to ping db %s: %w", host, err)
+	}
+	log.Info("Got db connection")
+	return db, nil
+}
+
+func InsertPrivateKey(pk ed25519.PrivateKey) (int64, error) {
+	log.Info("Inserting private key", "privateKeyType", pk.Public().(ed25519.PublicKey), "privateKeyString", base64.StdEncoding.EncodeToString(pk))
+	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
+	if err != nil {
+		return -1, fmt.Errorf("failed to open db: %w", err)
 	}
 	defer db.Close()
 
@@ -225,17 +239,9 @@ func CheckPublicKey(ctx ssh.Context, key ssh.PublicKey) (*Result, error) {
 
 func InsertPublicKey(user_id int64, key ssh.PublicKey) (int64, error) {
 	log.Info("Inserting public key", "user_id", user_id)
-	host := os.Getenv("TURSO_HOST")
-	if host == "" {
-		log.Fatal("TURSO_HOST is not set")
-	}
-	authToken := os.Getenv("TURSO_AUTH_TOKEN")
-	if authToken == "" {
-		log.Fatal("TURSO_AUTH_TOKEN is not set")
-	}
-	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
+	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
-		return -1, fmt.Errorf("failed to open db %s: %w", host, err)
+		return -1, fmt.Errorf("failed to open db: %w", err)
 	}
 	defer db.Close()
 
@@ -278,17 +284,9 @@ func InsertPublicKey(user_id int64, key ssh.PublicKey) (int64, error) {
 
 func InsertUser(ctx ssh.Context) (int64, error) {
 	log.Info("Inserting user", "name", ctx.User(), "remoteAddr", ctx.RemoteAddr().Network()+":"+ctx.RemoteAddr().String(), "localAddr", ctx.LocalAddr().Network()+":"+ctx.LocalAddr().String())
-	host := os.Getenv("TURSO_HOST")
-	if host == "" {
-		log.Fatal("TURSO_HOST is not set")
-	}
-	authToken := os.Getenv("TURSO_AUTH_TOKEN")
-	if authToken == "" {
-		log.Fatal("TURSO_AUTH_TOKEN is not set")
-	}
-	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
+	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
-		return -1, fmt.Errorf("failed to open db %s: %w", host, err)
+		return -1, fmt.Errorf("failed to open db: %w", err)
 	}
 	defer db.Close()
 
@@ -329,17 +327,9 @@ func InsertUser(ctx ssh.Context) (int64, error) {
 
 func InsertHashPublicKey(hash string, hash_type string, key ssh.PublicKey) (int64, error) {
 	log.Info("Inserting hash public key", "hash", hash, "hash_type", hash_type)
-	host := os.Getenv("TURSO_HOST")
-	if host == "" {
-		log.Fatal("TURSO_HOST is not set")
-	}
-	authToken := os.Getenv("TURSO_AUTH_TOKEN")
-	if authToken == "" {
-		log.Fatal("TURSO_AUTH_TOKEN is not set")
-	}
-	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
+	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
-		return -1, fmt.Errorf("failed to open db %s: %w", host, err)
+		return -1, fmt.Errorf("failed to open db: %w", err)
 	}
 	defer db.Close()
 
@@ -415,17 +405,9 @@ func GetPublicKeyFromHash(hash string, hash_type string) (string, error) {
 
 func InsertTextPublicKey(text string, text_type string, key ssh.PublicKey) (int64, error) {
 	log.Info("Inserting text public key", "text", text, "text_type", text_type)
-	host := os.Getenv("TURSO_HOST")
-	if host == "" {
-		log.Fatal("TURSO_HOST is not set")
-	}
-	authToken := os.Getenv("TURSO_AUTH_TOKEN")
-	if authToken == "" {
-		log.Fatal("TURSO_AUTH_TOKEN is not set")
-	}
-	db, err := sql.Open("libsql", fmt.Sprintf("libsql://%s?authToken=%s", host, authToken))
+	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
-		return -1, fmt.Errorf("failed to open db %s: %w", host, err)
+		return -1, fmt.Errorf("failed to open db: %w", err)
 	}
 	defer db.Close()
 

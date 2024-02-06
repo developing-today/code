@@ -14,22 +14,22 @@ import (
 )
 
 func indexViewHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		log.Error("render page", "method", r.Method, "status", http.StatusNotFound, "path", r.URL.Path)
-		return
-	}
+	// if r.URL.Path != "/" {
+	// 	http.NotFound(w, r)
+	// 	log.Error("render page", "method", r.Method, "status", http.StatusNotFound, "path", r.URL.Path)
+	// 	return
+	// }
 
 	metaTags := pages.MetaTags(
-		"gowebly, htmx example page, go with htmx",
-		"Welcome to example! You're here because it worked out.",
+		"identity server connections",
+		"identity server connections",
 	)
 	bodyContent := pages.BodyContent(
-		"Welcome to example!",
-		"You're here because it worked out.",
+		"identity server connections",
+		"identity server connections",
 	)
 	indexTemplate := templates.Layout(
-		"Welcome to example!",
+		"identity server connections",
 		metaTags,
 		bodyContent,
 	)
@@ -51,7 +51,7 @@ func showIDAPIHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var htmlContent strings.Builder
-	htmlContent.WriteString("<table><tr><th>ConnectionID</th><th>Status</th><th>CharmID</th><th>HTML</th></tr>")
+	htmlContent.WriteString("<table class=\"table-zebra\"><tr><th>ConnectionID</th><th>Status</th><th>CharmID</th><th>HTML</th></tr>")
 
 	for _, connection := range connections.All() {
 		htmlContent.WriteString(renderConnectionRow(&connection))
