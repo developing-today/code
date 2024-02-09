@@ -25,7 +25,7 @@ require (
 	golang.org/x/crypto v0.18.0
 )
 
-replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240203093224-df6db8c2ce2c
+replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240209064850-d1e7d27803f5
 
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
