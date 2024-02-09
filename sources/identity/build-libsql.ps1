@@ -17,6 +17,7 @@ try {
   Set-Location $PSScriptRoot
 
   go mod tidy
+  $env:GOEXPERIMENT = 'rangefunc'
   go build -v -tags libsql
 
 } finally {

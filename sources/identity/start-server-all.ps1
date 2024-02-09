@@ -24,4 +24,4 @@ $env:CHARM_SERVER_DB_DATA_SOURCE="libsql://${env:TURSO_HOST}?authToken=${env:TUR
 
 Set-Location $PSScriptRoot
 
-./identity serve
+./identity serve all
