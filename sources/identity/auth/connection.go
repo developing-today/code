@@ -138,6 +138,21 @@ type Connection struct {
 	CreatedAt                  *time.Time
 	UpdatedAt                  *time.Time
 	DeletedAt                  *time.Time
+	CookieID                   *string
+	CookieDomain               *string
+	CookieURL                  *string
+	CookieType                 *string
+	CookieName                 *string
+	CookieStatus               *string
+	CookieValue                *string
+	CookieSecretHash           *string
+	CookieSecretHashType       *string
+	CookieSecretType           *string
+	CookieSecretPayload        *string
+	CookieSecretExpiresAt      *time.Time
+	CookieCreatedAt            *time.Time
+	CookieExpiresAt            *time.Time
+	CookieContext              *string
 }
 
 type ConnectionData struct {
@@ -177,6 +192,21 @@ type ConnectionData struct {
 	CreatedAt                  string `json:"created_at"`
 	UpdatedAt                  string `json:"updated_at"`
 	DeletedAt                  string `json:"deleted_at"`
+	CookieID                   string `json:"cookie_id"`
+	CookieDomain               string `json:"cookie_domain"`
+	CookieURL                  string `json:"cookie_url"`
+	CookieType                 string `json:"cookie_type"`
+	CookieName                 string `json:"cookie_name"`
+	CookieStatus               string `json:"cookie_status"`
+	CookieValue                string `json:"cookie_value"`
+	CookieSecretHash           string `json:"cookie_secret_hash"`
+	CookieSecretHashType       string `json:"cookie_secret_hash_type"`
+	CookieSecretType           string `json:"cookie_secret_type"`
+	CookieSecretPayload        string `json:"cookie_secret_payload"`
+	CookieSecretExpiresAt      string `json:"cookie_secret_expires_at"`
+	CookieCreatedAt            string `json:"cookie_created_at"`
+	CookieExpiresAt            string `json:"cookie_expires_at"`
+	CookieContext              string `json:"cookie_context"`
 }
 
 func (c *Connection) ToData() ConnectionData {
@@ -235,6 +265,21 @@ func (c *Connection) ToData() ConnectionData {
 		CreatedAt:                  derefTime(c.CreatedAt),
 		UpdatedAt:                  derefTime(c.UpdatedAt),
 		DeletedAt:                  derefTime(c.DeletedAt),
+		CookieID:                   derefString(c.CookieID),
+		CookieDomain:               derefString(c.CookieDomain),
+		CookieURL:                  derefString(c.CookieURL),
+		CookieType:                 derefString(c.CookieType),
+		CookieName:                 derefString(c.CookieName),
+		CookieStatus:               derefString(c.CookieStatus),
+		CookieValue:                derefString(c.CookieValue),
+		CookieSecretHash:           derefString(c.CookieSecretHash),
+		CookieSecretHashType:       derefString(c.CookieSecretHashType),
+		CookieSecretType:           derefString(c.CookieSecretType),
+		CookieSecretPayload:        derefString(c.CookieSecretPayload),
+		CookieSecretExpiresAt:      derefTime(c.CookieSecretExpiresAt),
+		CookieCreatedAt:            derefTime(c.CookieCreatedAt),
+		CookieExpiresAt:            derefTime(c.CookieExpiresAt),
+		CookieContext:              derefString(c.CookieContext),
 	}
 }
 
@@ -434,7 +479,6 @@ func (b *Connection) Update(column string, value interface{}) error {
 	log.Info("Connection updated", "connection_id", *b.ConnectionID, "affected", affected)
 
 	return nil
-
 }
 
 func (b *Connection) JSON() (string, error) {
@@ -451,7 +495,6 @@ func (b *Connection) HTML() (string, error) {
 		return "", fmt.Errorf("failed to marshal connection: %v", err)
 	}
 	return "<pre style=\"white-space: pre-wrap; overflow-wrap: anywhere;\">" + jsonString + "</pre>", nil
-
 }
 
 func (b *Connection) Insert() (*string, error) {
@@ -510,8 +553,38 @@ func (b *Connection) Insert() (*string, error) {
 			remote_addr_network,
 			opened_at,
 			closed_at,
-			deleted_at
+			deleted_at,
+			cookie_id,
+			cookie_domain,
+			cookie_url,
+			cookie_type,
+			cookie_name,
+			cookie_status,
+			cookie_value,
+			cookie_secret_hash,
+			cookie_secret_hash_type,
+			cookie_secret_type,
+			cookie_secret_payload,
+			cookie_secret_expires_at,
+			cookie_created_at,
+			cookie_expires_at,
+			cookie_context
 		) VALUES (
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
 			?,
 			?,
 			?,
@@ -599,6 +672,21 @@ func (b *Connection) Insert() (*string, error) {
 		b.OpenedAt,
 		b.ClosedAt,
 		b.DeletedAt,
+		b.CookieID,
+		b.CookieDomain,
+		b.CookieURL,
+		b.CookieType,
+		b.CookieName,
+		b.CookieStatus,
+		b.CookieValue,
+		b.CookieSecretHash,
+		b.CookieSecretHashType,
+		b.CookieSecretType,
+		b.CookieSecretPayload,
+		b.CookieSecretExpiresAt,
+		b.CookieCreatedAt,
+		b.CookieExpiresAt,
+		b.CookieContext,
 	)
 
 	if err != nil {

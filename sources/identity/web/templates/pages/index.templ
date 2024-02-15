@@ -22,7 +22,7 @@ templ BodyContent(h1, text string) {
 				Get the connections on your server.
 			</p>
 			<form id="cookieForm" hx-post="/set-cookie" hx-target="#htmx-result" class="px-4 py-2 font-bold text-white bg-blue-500 rounded hover:bg-blue-700">
-				<input type="text" name="textField" placeholder="Enter token"/>
+				<input type="text" name="token" placeholder="Enter token"/>
 				<button type="submit">Get Cookie</button>
 			</form>
 			<br/>

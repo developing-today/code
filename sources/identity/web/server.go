@@ -10,8 +10,8 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/developing-today/code/src/identity/auth"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/chi/v5"            // replace with http ?
+	"github.com/go-chi/chi/v5/middleware" // ???
 	"github.com/knadh/koanf"
 
 	gowebly "github.com/gowebly/helpers"
@@ -54,7 +54,7 @@ func RunServer(connections *auth.SafeConnectionMap, configuration *koanf.Koanf) 
 	// router.With(jwtMiddleware.CheckJWT).Get("/admin/api/id", showIDAPIHandler)
 	router.Post("/admin/api/id", showIDAPIHandler)
 
-	router.Get("/set-cookie", setCookieHandler)
+	router.Post("/set-cookie", setCookieHandler)
 	router.Get("/invalidate-cookie", invalidateCookieHandler)
 
 	server := &http.Server{
@@ -69,6 +69,11 @@ func RunServer(connections *auth.SafeConnectionMap, configuration *koanf.Koanf) 
 	return server.ListenAndServe()
 }
 
+func ExpireCookie(token string) error {
+	// expire the cookie in the database
+	return nil
+}
+
 func invalidateCookieHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("token")
 
@@ -77,7 +82,12 @@ func invalidateCookieHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("Cookie found: %s", cookie.Value)
-	// expire the cookie in the database
+
+	err = ExpireCookie(cookie.Value)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
 	emptyCookie := &http.Cookie{
 		Name:     "token",
@@ -91,19 +101,66 @@ func invalidateCookieHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Cookie invalidated"))
 }
 
+func validateCookie(r *http.Request) (bool, error) {
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		return false, err
+	}
+	log.Printf("Cookie found: %s", cookie.Value)
+	// validate the cookie in the cache, else the database, if found, return true, else false and error (is it found but expired?)
+	return true, nil
+}
+
+func parseToken(token string) (bool, error) { //todo: return jwt.Token, error
+	// validate the token in the cache, else the database, if found, return true, else false and error (is it found but expired?)
+	if token == "" {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func NewTokenConnection(token string) (*auth.Connection, error) {
+
+	validateToken, err := parseToken(token)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if !validateToken {
+		return nil, nil
+	}
+
+	connection := &auth.Connection{}
+
+	connection.Insert()
+
+	return connection, nil
+}
+
 func setCookieHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
+	validateCookie, err := validateCookie(r)
+
+	if err == nil && validateCookie {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	// validate existing token cookie, do nothing if valid (validate checks cache, if not found, checks db)
 
 	token := r.FormValue("token")
 	log.Printf("Received token: %s", token)
 
-	// check for existing token cookie in cache, assign that if found
+	connection, err := NewTokenConnection(token)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	// validate token, if valid, set cookie in cache and db
+	if connection == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 
@@ -124,7 +181,7 @@ func ConnectionsMiddleware(connections *auth.SafeConnectionMap) func(next http.H
 	}
 }
 
-func jwtValidationMiddleware(next http.Handler) http.Handler {
+func JwtValidationMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tokenString := r.Header.Get("Authorization")
 		// tokenString := extractToken(r) // Implement this function to extract the JWT from the request

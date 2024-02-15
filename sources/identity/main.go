@@ -44,6 +44,9 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// todo embed default kdl file, default kdl file -> hard code vars in build -> config file -> env vars -> remote config (s3 -> db -> nats -> etc) (dont do all this, just this is the direction eventually as things become available if)
+// todo: dependency injection / remove globals and inits ???
+
 type errMsg error
 
 type model struct {
@@ -160,7 +163,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	)
 	switch msg := msg.(type) {
 
-	case tea.KeyMsg:
+	case tea.KeyMsg: // todo: super broken, fix this
 		if key.Matches(msg, quitKeys) {
 			m.quitting = true
 			return m, tea.Quit
