@@ -20,15 +20,15 @@
     "build": "parcel build"
   },
   "dependencies": {
-    "@tailwindcss/typography": "latest",
-    "tailwindcss": "latest",
-    "daisyui": "latest",
-    "hyperscript.org": "latest",
-    "htmx.org": "latest"
+    "@tailwindcss/typography": ">=0.5.10",
+    "tailwindcss": ">=3.4.1",
+    "daisyui": ">=4.7.2",
+    "hyperscript.org": ">=0.9.12",
+    "htmx.org": ">=1.9.10"
   },
   "devDependencies": {
-    "@parcel/transformer-sass": "latest",
-    "parcel": "latest",
-    "prettier": "latest"
+    "@parcel/transformer-sass": ">=2.11.0",
+    "parcel": ">=2.11.0",
+    "prettier": ">=3.2.5"
   }
 }

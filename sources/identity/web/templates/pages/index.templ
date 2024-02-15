@@ -21,12 +21,12 @@ templ BodyContent(h1, text string) {
 			<p class={ styledTextStyles() }>
 				Get the connections on your server.
 			</p>
-			<form id="cookieForm" hx-post="/set-cookie" hx-target="#htmx-result">
+			<form id="cookieForm" hx-post="/set-cookie" hx-target="#htmx-result" class="px-4 py-2 font-bold text-white bg-blue-500 rounded hover:bg-blue-700">
 				<input type="text" name="textField" placeholder="Enter token"/>
 				<button type="submit">Get Cookie</button>
 			</form>
 			<br/>
-			<form id="connectionForm" hx-post="/admin/api/id" hx-target="#htmx-result">
+			<form id="connectionForm" hx-post="/admin/api/id" hx-target="#htmx-result" class="px-4 py-2 font-bold text-white bg-blue-500 rounded hover:bg-blue-700">
 				<button type="submit">Get Connections</button>
 			</form>
 			<div id="htmx-result"></div>

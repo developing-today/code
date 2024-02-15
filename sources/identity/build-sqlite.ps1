@@ -29,12 +29,34 @@ try {
 
   try {
 
-    Write-Verbose "Set-Location $PSScriptRoot"
+    Write-Verbose "Set-Location $PSScriptRoot/web"
 
+    Set-Location $PSScriptRoot/web
+
+    if ($Update) {
+      Write-Verbose "npm install -g npm"
+      npm install -g npm
+      Write-Verbose "npm install -g npm-check-updates"
+      npm install -g npm-check-updates
+      Write-Verbose "ncu -g"
+      ncu -g
+      Write-Verbose "npm install"
+      npm install
+    }
+    else {
+      Write-Verbose "npm ci"
+      npm ci
+    }
+
+    Write-Verbose "npm run build"
+    npm run build
+
+    Write-Verbose "Set-Location $PSScriptRoot"
     Set-Location $PSScriptRoot
 
     if ([string]::IsNullOrEmpty($env:GOEXPERIMENT)) {
       $env:GOEXPERIMENT = 'rangefunc'
+      Write-Verbose "Setting GOEXPERIMENT to $env:GOEXPERIMENT"
     }
     Write-Verbose "GOEXPERIMENT: $env:GOEXPERIMENT"
 
