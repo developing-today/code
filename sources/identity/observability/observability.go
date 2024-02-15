@@ -6,7 +6,7 @@ import (
 	"github.com/developing-today/code/src/identity/auth"
 )
 
-// func Middleware() func(next ssh.Handler) ssh.Handler {
+// todo need to also handle cron/long-running tasks for cleanup
 func Middleware(connections *auth.SafeConnectionMap) func(next ssh.Handler) ssh.Handler {
 	return func(next ssh.Handler) ssh.Handler {
 		return func(s ssh.Session) {

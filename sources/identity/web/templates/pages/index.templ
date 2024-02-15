@@ -1,7 +1,6 @@
 package pages
 
 // MetaTags defines meta tags.
-
 templ MetaTags(keywords, description string) {
 	<meta name="keywords" content={ keywords }/>
 	<meta name="description" content={ description }/>
@@ -14,33 +13,36 @@ css styledTextStyles() {
 }
 
 // BodyContent defines HTML content.
-
 templ BodyContent(h1, text string) {
-    <div id="app">
-        <div>
-            <img src="/static/images/gowebly.svg" class="gowebly logo" alt="logo"/>
-            <h1>Connections</h1>
-            <p class={ styledTextStyles() }>
-                Get the connections on your server.
-            </p>
-            <form id="connectionForm" hx-post="/admin/api/id" hx-target="#htmx-result">
-                <input type="text" name="textField" placeholder="Enter value"/>
-                <button type="submit">Get Connections</button>
-            </form>
-            <div id="htmx-result"></div>
-            <p class="read-the-docs">
-                Do more with SSH.
-            </p>
-            <p class="read-the-docs">
-                <a href="http://developing.today" target="_blank">developing.today</a> &sdot;
-                <a href="https://news.developing.today" target="_blank">news</a> &sdot;
-                <a href="https://github.com/developing-today/code" target="_blank">code</a>
-            </p>
-            <p class="read-the-docs" style="position: fixed; bottom: 0; right: 0;">
-                &copy; developing.today LLC
-            </p>
-        </div>
-    </div>
+	<div id="app">
+		<div>
+			<img src="/static/images/gowebly.svg" class="gowebly logo" alt="logo"/>
+			<h1>Connections</h1>
+			<p class={ styledTextStyles() }>
+				Get the connections on your server.
+			</p>
+			<form id="cookieForm" hx-post="/set-cookie" hx-target="#htmx-result">
+				<input type="text" name="textField" placeholder="Enter token"/>
+				<button type="submit">Get Cookie</button>
+			</form>
+			<br/>
+			<form id="connectionForm" hx-post="/admin/api/id" hx-target="#htmx-result">
+				<button type="submit">Get Connections</button>
+			</form>
+			<div id="htmx-result"></div>
+			<p class="read-the-docs">
+				Do more with SSH.
+			</p>
+			<p class="read-the-docs">
+				<a href="http://developing.today" target="_blank">developing.today</a> &sdot;
+				<a href="https://news.developing.today" target="_blank">news</a> &sdot;
+				<a href="https://github.com/developing-today/code" target="_blank">code</a>
+			</p>
+			<p class="read-the-docs" style="position: fixed; bottom: 0; right: 0;">
+				&copy; developing.today LLC
+			</p>
+		</div>
+	</div>
 }
 
 // BodyScripts defines JavaScript code.

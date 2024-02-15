@@ -1,4 +1,8 @@
 #!/usr/bin/env pwsh
+param(
+  [switch]$ForceInstallTempl,
+  [switch]$Update
+)
 
 Set-StrictMode -Version Latest
 
@@ -10,18 +14,51 @@ if ($PSNativeCommandUseErrorActionPreference) {
   $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
 }
 
-."$PSScriptRoot/build-libsql.ps1"
+$originalVerbosePreference = $VerbosePreference
+$VerbosePreference = 'Continue'
 
-$env:CHARM_SERVER_DB_DRIVER="libsql"
+Write-Verbose "originalVerbosePreference: $originalVerbosePreference"
+Write-Verbose "VerbosePreference: $VerbosePreference"
 
-if ([string]::IsNullOrEmpty($env:TURSO_HOST)) {
-  throw "TURSO_HOST environment variable must be set"
+try {
+
+  $cwd = Get-Location
+
+  Write-Verbose "Current directory: $cwd"
+
+  try {
+
+    Write-Verbose "Set-Location $PSScriptRoot"
+
+    Set-Location $PSScriptRoot
+
+    ."$PSScriptRoot/build-libsql.ps1" -ForceInstallTempl:$ForceInstallTempl -Update:$Update
+
+    $env:CHARM_SERVER_DB_DRIVER = "libsql"
+
+    if ([string]::IsNullOrEmpty($env:TURSO_HOST)) {
+      throw "TURSO_HOST environment variable must be set"
+    }
+    if ([string]::IsNullOrEmpty($env:TURSO_AUTH_TOKEN)) {
+      throw "TURSO_AUTH_TOKEN environment variable must be set"
+    }
+    $env:CHARM_SERVER_DB_DATA_SOURCE = "libsql://${env:TURSO_HOST}?authToken=${env:TURSO_AUTH_TOKEN}"
+
+    $serverType = [System.IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Name) -replace '(?i)^start-server-', '' -replace '-', ' ' -replace ',', ' '
+
+    Write-Verbose "serverType: $serverType"
+
+    Write-Verbose "./identity serve $serverType"
+
+    Invoke-Expression "./identity serve $serverType"
+  }
+  finally {
+    Write-Verbose "Set-Location $cwd"
+
+    Set-Location $cwd
+  }
 }
-if ([string]::IsNullOrEmpty($env:TURSO_AUTH_TOKEN)) {
-  throw "TURSO_AUTH_TOKEN environment variable must be set"
+finally {
+  Write-Verbose "Resetting VerbosePreference to $originalVerbosePreference"
+  $VerbosePreference = $originalVerbosePreference
 }
-$env:CHARM_SERVER_DB_DATA_SOURCE="libsql://${env:TURSO_HOST}?authToken=${env:TURSO_AUTH_TOKEN}"
-
-Set-Location $PSScriptRoot
-
-./identity serve charm migrate

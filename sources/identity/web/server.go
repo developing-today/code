@@ -52,10 +52,10 @@ func RunServer(connections *auth.SafeConnectionMap, configuration *koanf.Koanf) 
 	router.Handle("/static/*", gowebly.StaticFileServerHandler(http.FS(static)))
 	router.Get("/admin/connections", indexViewHandler)
 	// router.With(jwtMiddleware.CheckJWT).Get("/admin/api/id", showIDAPIHandler)
+	router.Post("/admin/api/id", showIDAPIHandler)
 
 	router.Get("/set-cookie", setCookieHandler)
-	router.Get("/read-cookie", readCookieHandler)
-	router.Get("/delete-cookie", deleteCookieHandler)
+	router.Get("/invalidate-cookie", invalidateCookieHandler)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),
@@ -68,43 +68,53 @@ func RunServer(connections *auth.SafeConnectionMap, configuration *koanf.Koanf) 
 
 	return server.ListenAndServe()
 }
-func deleteCookieHandler(w http.ResponseWriter, r *http.Request) {
-	cookie := &http.Cookie{
-		Name:    "token",
-		Value:   "",
-		Expires: time.Unix(0, 0),
-		MaxAge:  -1, // Browser-specific behavior; some require setting MaxAge to -1
-	}
 
-	http.SetCookie(w, cookie)
-	w.Write([]byte("Cookie deleted"))
-}
-func readCookieHandler(w http.ResponseWriter, r *http.Request) {
+func invalidateCookieHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("token")
+
 	if err != nil {
-		if err == http.ErrNoCookie {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte("No token cookie"))
-			return
-		}
-		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("No cookie found"))
 		return
 	}
+	log.Printf("Cookie found: %s", cookie.Value)
+	// expire the cookie in the database
 
-	// Use the cookie.Value as needed
-	fmt.Fprintf(w, "Cookie value: %s\n", cookie.Value)
-}
-func setCookieHandler(w http.ResponseWriter, r *http.Request) {
-	cookie := &http.Cookie{
+	emptyCookie := &http.Cookie{
 		Name:     "token",
-		Value:    "your_jwt_token_here",
-		Expires:  time.Now().Add(24 * time.Hour),
-		HttpOnly: true, // Recommended for security (not accessible via JavaScript)
+		Value:    "",
+		Expires:  time.Unix(0, 0),
+		HttpOnly: true,
+		MaxAge:   -1,
 	}
 
-	http.SetCookie(w, cookie)
-	w.Write([]byte("Cookie set"))
+	http.SetCookie(w, emptyCookie)
+	w.Write([]byte("Cookie invalidated"))
 }
+
+func setCookieHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// validate existing token cookie, do nothing if valid (validate checks cache, if not found, checks db)
+
+	token := r.FormValue("token")
+	log.Printf("Received token: %s", token)
+
+	// check for existing token cookie in cache, assign that if found
+
+	// validate token, if valid, set cookie in cache and db
+
+	w.WriteHeader(http.StatusNoContent)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    "validationToken",
+		Expires:  time.Now().Add(24 * time.Hour),
+		HttpOnly: true,
+	})
+}
+
 func ConnectionsMiddleware(connections *auth.SafeConnectionMap) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
