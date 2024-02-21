@@ -63,6 +63,26 @@ func showIDAPIHandler(w http.ResponseWriter, r *http.Request) {
 	htmx.NewResponse().Write(w)
 	log.Info("request API", "method", r.Method, "status", http.StatusOK, "path", r.URL.Path)
 }
+func showIDAPIJsonHandler(w http.ResponseWriter, r *http.Request) {
+	connections, ok := auth.GetConnectionMap(r.Context())
+	if !ok {
+		http.Error(w, "Could not get connections from context", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	jsonConnections, err := connections.JSON()
+
+	if err != nil {
+		http.Error(w, "Could not get JSON for connections", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write([]byte(jsonConnections))
+	log.Info("request API", "method", r.Method, "status", http.StatusOK, "path", r.URL.Path)
+}
 
 func renderConnectionRow(c *auth.Connection) string {
 	html, err := c.HTML()

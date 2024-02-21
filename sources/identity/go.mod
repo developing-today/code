@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/a-h/templ v0.2.543
 	github.com/angelofallars/htmx-go v0.5.0
+	github.com/auth0/go-jwt-middleware/v2 v2.2.1
 	github.com/charmbracelet/bubbles v0.18.0
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/charm v0.12.6
@@ -14,7 +15,8 @@ require (
 	github.com/charmbracelet/promwish v0.7.1-0.20240111010057-b31c9c27b2d7
 	github.com/charmbracelet/ssh v0.0.0-20240202115812-f4ab1009799a
 	github.com/charmbracelet/wish v1.3.1
-	github.com/go-chi/chi/v5 v5.0.11
+	github.com/go-chi/chi v1.5.5
+	github.com/golang-jwt/jwt v3.2.2+incompatible
 	github.com/gowebly/helpers v0.3.0
 	github.com/knadh/koanf v1.5.1-0.20230129133018-38c5fe1d9b40
 	github.com/knadh/koanf/parsers/kdl v0.1.1
@@ -23,6 +25,7 @@ require (
 	github.com/spf13/cobra v1.8.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240208053015-5d6aa1e2196d
 	golang.org/x/crypto v0.19.0
+	gopkg.in/go-jose/go-jose.v2 v2.6.2
 )
 
 replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240209064850-d1e7d27803f5
@@ -31,7 +34,6 @@ require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230512164433-5d1fd1a340c9 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
-	github.com/auth0/go-jwt-middleware/v2 v2.2.1 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
@@ -103,7 +105,6 @@ require (
 	golang.org/x/term v0.17.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/protobuf v1.32.0 // indirect
-	gopkg.in/go-jose/go-jose.v2 v2.6.2 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.41.0 // indirect

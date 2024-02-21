@@ -19,7 +19,7 @@ func Middleware(connections *auth.SafeConnectionMap) func(next ssh.Handler) ssh.
 			next(s)
 			status := "closed"
 			conn.Status = &status
-			connections.Set(s.Context().Permissions().Extensions["connection-id"], conn)
+			connections.Set(s.Context().Permissions().Extensions["connection-id"], &conn)
 			log.Info("Session ended", "session", s, "sessionID", s.Context().SessionID(), "user", s.Context().User(), "remoteAddr", s.Context().RemoteAddr().String(), "remoteAddrNetwork", s.Context().RemoteAddr().Network(), "localAddr", s.Context().LocalAddr().String(), "localAddrNetwork", s.Context().LocalAddr().Network(), "charm-id", s.Context().Permissions().Extensions["charm-id"], "charm-name", s.Context().Permissions().Extensions["charm-name"], "charm-roles", s.Context().Permissions().Extensions["charm-roles"], "charm-created-at", s.Context().Permissions().Extensions["charm-created-at"], "charm-public-key-created-at", s.Context().Permissions().Extensions["charm-public-key-created-at"], "charm-public-key-type", s.Context().Permissions().Extensions["charm-public-key-type"], "charm-public-key", s.Context().Permissions().Extensions["charm-public-key"], "connection-id", connectionId)
 		}
 	}

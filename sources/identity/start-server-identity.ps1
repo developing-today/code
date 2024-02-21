@@ -1,7 +1,17 @@
 #!/usr/bin/env pwsh
 param(
-  [switch]$ForceInstallTempl,
-  [switch]$Update
+  [switch]$FastBuild,
+  [switch]$Tidy,
+  [switch]$SkipBuild,
+  [switch]$SkipBuildWebJs,
+  [switch]$SkipBuildTempl,
+  [switch]$SkipBuildGoGenerate,
+  [switch]$SkipBuildGoModTidy,
+  [switch]$SkipBuildGoGet,
+  [switch]$SkipBuildGoBuild,
+  [switch]$SkipBuildGoExperiment,
+  [switch]$Update,
+  [switch]$ForceInstallTempl
 )
 
 Set-StrictMode -Version Latest
@@ -17,8 +27,24 @@ if ($PSNativeCommandUseErrorActionPreference) {
 $originalVerbosePreference = $VerbosePreference
 $VerbosePreference = 'Continue'
 
+Write-Verbose "script: $($MyInvocation.MyCommand.Name)"
+Write-Verbose "psscriptroot: $PSScriptRoot"
+Write-Verbose "full script path: $PSScriptRoot$([IO.Path]::DirectorySeparatorChar)$($MyInvocation.MyCommand.Name)"
 Write-Verbose "originalVerbosePreference: $originalVerbosePreference"
 Write-Verbose "VerbosePreference: $VerbosePreference"
+
+if ($FastBuild) {
+  $SkipBuildWebJs = $true
+  $SkipBuildTempl = $true
+  $SkipBuildGoGenerate = $true
+  $SkipBuildGoModTidy = $true
+  $SkipBuildGoGet = $true
+  $SkipBuildGoExperiment = $true
+}
+
+if ($Tidy) {
+  $SkipBuildGoModTidy = $false
+}
 
 try {
 
@@ -32,8 +58,13 @@ try {
 
     Set-Location $PSScriptRoot
 
-    ."$PSScriptRoot/build-libsql.ps1" -ForceInstallTempl:$ForceInstallTempl -Update:$Update
-
+    if (-not $SkipBuild) {
+      Write-Verbose "Building libsql"
+      ."$PSScriptRoot/build-libsql.ps1" -ForceInstallTempl:$ForceInstallTempl -Update:$Update -SkipBuildWebJs:$SkipBuildWebJs -SkipBuildTempl:$SkipBuildTempl -SkipBuildGoGenerate:$SkipBuildGoGenerate -SkipBuildGoModTidy:$SkipBuildGoModTidy -SkipBuildGoGet:$SkipBuildGoGet -SkipBuildGoBuild:$SkipBuildGoBuild -SkipBuildGoExperiment:$SkipBuildGoExperiment
+    }
+    else {
+      Write-Verbose "Skipping libsql build"
+    }
     $env:CHARM_SERVER_DB_DRIVER = "libsql"
 
     if ([string]::IsNullOrEmpty($env:TURSO_HOST)) {

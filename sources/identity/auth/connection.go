@@ -32,18 +32,27 @@ func GetConnectionMap(ctx context.Context) (*SafeConnectionMap, bool) {
 
 type SafeConnectionMap struct {
 	mu   sync.RWMutex
-	data map[string]Connection
+	data map[string]*Connection
 }
 
 // NewSafeConnectionMap creates and returns a new SafeConnectionMap
 func NewSafeConnectionMap() *SafeConnectionMap {
 	return &SafeConnectionMap{
-		data: make(map[string]Connection),
+		data: make(map[string]*Connection),
 	}
 }
 
-// Get safely retrieves an element from the map
+// Get safely retrieves a copy of an element from the map
 func (sm *SafeConnectionMap) Get(key string) (Connection, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	val, ok := sm.data[key]
+	return *val, ok
+}
+
+// GetRef safely retrieves a reference to an element from the map
+// Be careful with this, as it allows you to modify the map
+func (sm *SafeConnectionMap) GetRef(key string) (*Connection, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	val, ok := sm.data[key]
@@ -51,7 +60,7 @@ func (sm *SafeConnectionMap) Get(key string) (Connection, bool) {
 }
 
 // Set safely adds an element to the map
-func (sm *SafeConnectionMap) Set(key string, value Connection) {
+func (sm *SafeConnectionMap) Set(key string, value *Connection) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.data[key] = value
@@ -66,6 +75,20 @@ func (sm *SafeConnectionMap) Delete(key string) {
 
 // All safely retrieves all elements from the map
 func (sm *SafeConnectionMap) All() map[string]Connection {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	data := make(map[string]Connection, len(sm.data))
+	for k, v := range sm.data {
+		data[k] = *v
+	}
+	return data
+}
+
+// All safely retrieves all elements from the map
+// Be careful with this, as it allows you to modify the map
+// Specifically, it returns a copy of the map, so modifying the map will not modify the original
+// But the elements are references, so modifying the elements will modify the original.
+func (sm *SafeConnectionMap) AllRef() map[string]*Connection {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.data
@@ -94,6 +117,18 @@ func (sm *SafeConnectionMap) Values() []Connection {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	values := make([]Connection, 0, len(sm.data))
+	for _, v := range sm.data {
+		values = append(values, *v)
+	}
+	return values
+}
+
+// ValuesRef safely retrieves all values from the map
+// Be careful with this, as it allows you to modify the map
+func (sm *SafeConnectionMap) ValuesRef() []*Connection {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	values := make([]*Connection, 0, len(sm.data))
 	for _, v := range sm.data {
 		values = append(values, v)
 	}
@@ -489,12 +524,34 @@ func (b *Connection) JSON() (string, error) {
 	return string(jsonB), nil
 }
 
+func (s *SafeConnectionMap) JSON() (string, error) {
+	jsonB, err := json.Marshal(s.All())
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal connection map: %v", err)
+	}
+	return string(jsonB), nil
+}
+
 func (b *Connection) HTML() (string, error) {
 	jsonString, err := b.JSON()
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal connection: %v", err)
 	}
 	return "<pre style=\"white-space: pre-wrap; overflow-wrap: anywhere;\">" + jsonString + "</pre>", nil
+}
+
+func (s *SafeConnectionMap) Insert(connection *Connection) (*string, error) {
+	connectionID, err := connection.Insert()
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert connection: %w", err)
+	}
+	s.Set(*connectionID, connection)
+
+	if connection.CookieID != nil {
+		cookieID := *connection.CookieID
+		s.Set(cookieID, connection)
+	}
+	return connectionID, nil
 }
 
 func (b *Connection) Insert() (*string, error) {

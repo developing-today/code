@@ -1,6 +1,14 @@
-identity.server port=1 host="0.0.0.0" {
-  jwt audience="identity" {
+identity.server ssh.port=1 host="0.0.0.0" web.port=7000 {
+  authorization {
+    cookie_name "Authorization"
+    header_name "Authorization"
+    header_prefix "Bearer"
+  }
+  jwt {
+    audience "identity"
     issuer "http://laptop-framework.raptor-pumpkinseed.ts.net:35354"
     jwks "http://laptop-framework.raptor-pumpkinseed.ts.net:35354/.well-known/jwks.json"
+    cache_ttl "10m"
   }
 }
+// todo throw on invalid files error
