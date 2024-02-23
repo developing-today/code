@@ -8,7 +8,9 @@ import (
 )
 
 func main() {
-	if err := cmd.RootCmd.Execute(); err != nil {
+	configuration := cmd.LoadDefaultConfiguration()
+
+	if err := cmd.RootCmd(configuration).Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}

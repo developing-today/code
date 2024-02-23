@@ -152,3 +152,11 @@ func (c *IdentityServerConfiguration) LoadConfiguration() {
 
 	log.Info("Loaded file configuration", "config", c.Configuration.Sprint())
 }
+
+func (c *IdentityServerConfiguration) SetConfiguration(config *IdentityServerConfiguration) {
+	c.Configuration = config.Configuration
+	c.ConfigurationLocations = config.ConfigurationLocations
+	c.EmbedFS = config.EmbedFS
+	c.JWTAudience = config.JWTAudience
+	c.JWKSProvider = config.JWKSProvider
+}

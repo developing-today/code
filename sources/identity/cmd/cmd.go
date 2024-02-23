@@ -59,6 +59,198 @@ remote config (
 
 // todo: dependency injection / remove globals and inits ???
 */
+
+var Separator = "."
+var ConfigurationFilePath = "config.kdl"
+var EmbeddedConfigurationFilePath = "embed/config.kdl"
+var GeneratedKeyDirPath = ".ssh/generated"
+var HostKeyPath = ".ssh/term_info_ed25519"
+var ScpFileSystemDirPath = "scp"
+
+func NewConfiguration() *configuration.IdentityServerConfiguration {
+	return &configuration.IdentityServerConfiguration{
+		Configuration: koanf.New(Separator),
+		ConfigurationLocations: &configuration.ConfigurationLocations{
+			ConfigurationFilePaths: []string{
+				ConfigurationFilePath,
+				// identity.kdl identity.config.kdl config.identity.kdl identity.config
+				// run these against ? binary dir ? pwd of execution ? appdata ? .config ? .local ???
+				// then check for further locations/env-prefixes/etc from first pass, rerun on top with second pass
+				// (maybe config.kdl next to binary sets a new set of configurationPaths, finish out loading from defaults, then load from new paths)
+				// this pattern continues, after hard-code default env/file search, then custom file/env search, then eventually maybe nats/s3 or other remote or db config
+			},
+			EmbeddedConfigurationFilePaths: []string{
+				EmbeddedConfigurationFilePath,
+			},
+		},
+		EmbedFS: &configuration.EmbedFS,
+	}
+}
+
+func StartCharmCmd(config *configuration.IdentityServerConfiguration) *cobra.Command {
+	result := charmcmd.ServeCmd
+	result.Use = "charm"
+	result.Aliases = []string{"ch", "c"}
+	return result
+}
+
+func StartAllAltCmd(command cobra.Command) *cobra.Command {
+	result := command
+	result.Use = "all"
+	result.Aliases = []string{"al", "a"}
+	return &result
+}
+
+func LoadDefaultConfiguration() *configuration.IdentityServerConfiguration {
+	config := NewConfiguration()
+	config.LoadConfiguration()
+	log.Info("Loaded config", "config", config.Configuration.Sprint())
+	return config
+}
+
+func RootCmd(config *configuration.IdentityServerConfiguration) *cobra.Command {
+	result := &cobra.Command{
+		Use:   "identity",
+		Short: "publish your identity",
+		Long:  `publish your identity and allow others to connect to you.`,
+	}
+	result.AddCommand(charmcmd.RootCmd, StartAllCmd(config))
+	return result
+}
+
+func StartAllCmd(config *configuration.IdentityServerConfiguration) *cobra.Command {
+	result := &cobra.Command{
+		Use:     "start",
+		Short:   "Starts the identity and charm servers",
+		Run:     StartAll(config),
+		Aliases: []string{"s", "run", "serve", "publish", "pub", "p", "i", "y", "u", "o", "p", "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "h", "j", "k", "l", "z", "x", "c", "v", "b"},
+	}
+	result.AddCommand(StartCharmCmd(config), StartIdentityCmd(config), StartStreamCmd(config), StartAllAltCmd(*result))
+	return result
+}
+
+func StartIdentityCmd(config *configuration.IdentityServerConfiguration) *cobra.Command {
+	return &cobra.Command{
+		Use:     "identity",
+		Short:   "Starts only the identity server",
+		Run:     StartIdentity(config),
+		Aliases: []string{"id", "i"},
+	}
+}
+
+func StartStreamCmd(config *configuration.IdentityServerConfiguration) *cobra.Command {
+	return &cobra.Command{
+		Use:     "stream",
+		Short:   "Starts only the stream server",
+		Run:     StartStream(config),
+		Aliases: []string{"tr", "t"},
+	}
+}
+
+func StartAll(config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+	return func(cmd *cobra.Command, args []string) {
+		tasks := []func(*cobra.Command, []string){
+			StartCharm(config),
+			StartIdentity(config),
+			StartStream(config),
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(len(tasks))
+
+		for _, task := range tasks {
+			go RunTask(&wg, task)(cmd, args)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		<-done
+		fmt.Println("All tasks completed. Proceeding to cleanup and shutdown.")
+	}
+}
+
+func RunTask(wg *sync.WaitGroup, taskFunc func(*cobra.Command, []string)) func(*cobra.Command, []string) {
+	return func(cmd *cobra.Command, args []string) {
+		defer wg.Done()
+		taskFunc(cmd, args)
+	}
+}
+
+func StartStream(config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+	return func(cmd *cobra.Command, args []string) {
+		log.Info("Starting stream server")
+	}
+}
+
+func StartCharm(config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+	return func(cmd *cobra.Command, args []string) {
+		log.Info("Starting charm server")
+		charmcmd.ServeCmdRunE(cmd, args)
+	}
+}
+
+func StartIdentity(config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+	return func(cmd *cobra.Command, args []string) {
+		log.Info("Starting identity server")
+		// todo split web and ssh into separate functions
+		connections := auth.NewSafeConnectionMap()
+		web.GoRunWebServer(connections, config)
+		handler := scp.NewFileSystemHandler(ScpFileSystemDirPath)
+		s, err := wish.NewServer(
+			wish.WithMiddleware(
+				scp.Middleware(handler, handler),
+				bubbletea.Middleware(TeaHandler), // todo: before bubbletea, use non-fullscreen teahandler to accept TOS if not this verion accepted in DB. check connection for previous tos, but this might need to be a charm user column? // separate todo: add tos table in database and pulldown latest tos on boot?
+				comment.Middleware("Thanks, have a nice day!"),
+				elapsed.Middleware(),
+				promwish.Middleware("0.0.0.0:9222", "identity"),
+				logging.Middleware(),
+				observability.Middleware(connections),
+			),
+			wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
+				log.Info("Accepting password", "password", password, "len", len(password))
+				return Connect(ctx, nil, &password, nil, connections)
+			}),
+			wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, challenge gossh.KeyboardInteractiveChallenge) bool {
+				log.Info("Accepting keyboard interactive")
+				return Connect(ctx, nil, nil, challenge, connections)
+			}),
+			wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
+				log.Info("Accepting public key", "publicKeyType", key.Type(), "publicKeyString", base64.StdEncoding.EncodeToString(key.Marshal()))
+				return Connect(ctx, key, nil, nil, connections)
+			}),
+			wish.WithBannerHandler(Banner(config)),
+			wish.WithAddress(fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port"))),
+			wish.WithHostKeyPath(HostKeyPath),
+		)
+		if err != nil {
+			log.Error("could not start server", "error", err)
+			return
+		}
+
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+		log.Info("Starting ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
+		go func() {
+			if err := s.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+				log.Error("could not start server", "error", err)
+				done <- os.Interrupt
+			}
+		}()
+
+		<-done
+		log.Info("Stopping ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := s.Shutdown(ctx); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+			log.Error("could not stop server", "error", err)
+		}
+	}
+}
+
 type errMsg error
 
 type model struct {
@@ -88,19 +280,19 @@ func (m model) Init() tea.Cmd {
 	return m.spinner.Tick
 }
 
-const useHighPerformanceRenderer = false
+const UseHighPerformanceRenderer = false
 
 var (
-	titleStyle = func() lipgloss.Style {
+	TitleStyle = func() lipgloss.Style {
 		b := lipgloss.RoundedBorder()
 		b.Right = "├"
 		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1)
 	}()
 
-	infoStyle = func() lipgloss.Style {
+	InfoStyle = func() lipgloss.Style {
 		b := lipgloss.RoundedBorder()
 		b.Left = "┤"
-		return titleStyle.Copy().BorderStyle(b)
+		return TitleStyle.Copy().BorderStyle(b)
 	}()
 )
 
@@ -233,85 +425,7 @@ func (m model) View() string {
 	return m.viewport.View()
 }
 
-var separator = "."
-var configurationFilePath = "config.kdl"
-var embeddedConfigurationFilePath = "embed/config.kdl"
-var generatedKeyDirPath = ".ssh/generated"
-var hostKeyPath = ".ssh/term_info_ed25519"
-var scpFileSystemDirPath = "scp"
-var config = NewConfiguration()
-
-func initializeConfig() {
-	config = NewConfiguration()
-}
-
-func NewConfiguration() configuration.IdentityServerConfiguration {
-	return configuration.IdentityServerConfiguration{
-		Configuration: koanf.New(separator),
-		ConfigurationLocations: &configuration.ConfigurationLocations{
-			ConfigurationFilePaths: []string{
-				configurationFilePath,
-				// identity.kdl identity.config.kdl config.identity.kdl identity.config
-				// run these against ? binary dir ? pwd of execution ? appdata ? .config ? .local ???
-				// then check for further locations/env-prefixes/etc from first pass, rerun on top with second pass
-				// (maybe config.kdl next to binary sets a new set of configurationPaths, finish out loading from defaults, then load from new paths)
-				// this pattern continues, after hard-code default env/file search, then custom file/env search, then eventually maybe nats/s3 or other remote or db config
-			},
-			EmbeddedConfigurationFilePaths: []string{
-				embeddedConfigurationFilePath,
-			},
-		},
-		EmbedFS: &configuration.EmbedFS,
-	}
-}
-
-func initializeAndLoadConfiguration() {
-	initializeConfig()
-	log.Debug("Initialized config", "config", config.Configuration.Sprint())
-	config.LoadConfiguration()
-	log.Info("Loaded config", "config", config.Configuration.Sprint())
-}
-
-func init() {
-	cobra.OnInitialize(initializeAndLoadConfiguration)
-	StartCharmCmd := charmcmd.ServeCmd
-	StartCharmCmd.Use = "charm"
-	StartCharmCmd.Aliases = []string{"ch", "c"}
-	StartAllCmd.AddCommand(StartCharmCmd)
-	StartAllCmd.AddCommand(StartIdentityCmd)
-	startAllAltCmd := *StartAllCmd
-	StartAllAltCmd = &startAllAltCmd
-	StartAllAltCmd.Use = "all"
-	StartAllAltCmd.Aliases = []string{"al", "a"}
-	StartAllCmd.AddCommand(StartAllAltCmd)
-	RootCmd.AddCommand(StartAllCmd)
-	RootCmd.AddCommand(charmcmd.RootCmd)
-}
-
-var StartCharmCmd = &cobra.Command{}  // constructed in init
-var StartAllAltCmd = &cobra.Command{} // constructed in init
-
-var RootCmd = &cobra.Command{
-	Use:   "identity",
-	Short: "publish your identity",
-	Long:  `publish your identity and allow others to connect to you.`,
-}
-
-var StartAllCmd = &cobra.Command{
-	Use:     "start",
-	Short:   "Starts the identity and charm servers",
-	Run:     startAll,
-	Aliases: []string{"s", "run", "serve", "publish", "pub", "p", "i", "y", "u", "o", "p", "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "h", "j", "k", "l", "z", "x", "c", "v", "b"},
-}
-
-var StartIdentityCmd = &cobra.Command{
-	Use:     "identity",
-	Short:   "Starts only the identity server",
-	Run:     startIdentity,
-	Aliases: []string{"id", "i"},
-}
-
-func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
+func TeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	pty, _, active := s.Pty()
 	if !active {
 		wish.Fatalln(s, "no active terminal, skipping")
@@ -337,8 +451,9 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	return m, []tea.ProgramOption{tea.WithAltScreen()}
 }
 
-func Banner(ctx ssh.Context) string {
-	return `
+func Banner(config *configuration.IdentityServerConfiguration) func(ctx ssh.Context) string {
+	return func(ctx ssh.Context) string {
+		return `
 Welcome to the identity server! ("The Service")
 
 By using The Service, you agree to all of the following terms and conditions.
@@ -372,99 +487,6 @@ If you do not agree to all of the above terms and conditions, then you may not u
 ` + fmt.Sprintf("Your client version is %s\n", ctx.ClientVersion()) + `
 ` + fmt.Sprintf("Your session id is %s\n", ctx.SessionID()) + `
 ` + fmt.Sprintf("You are connecting with user %s\n", ctx.User())
-}
-
-func startAll(cmd *cobra.Command, args []string) {
-	var wg sync.WaitGroup
-	done := make(chan struct{}) // Channel to signal all tasks are done
-
-	// Helper function for running tasks
-	runTask := func(taskFunc func(*cobra.Command, []string)) {
-		defer wg.Done()
-
-		taskFunc(cmd, args) // Execute the task
-		// After task completion, optionally signal done for cleanup
-	}
-
-	wg.Add(2) // Prepare for two goroutines
-
-	// Start startCharm in its own goroutine
-	go runTask(func(cmd *cobra.Command, args []string) {
-		startCharm(cmd, args)
-	})
-
-	// Start startIdentity in its own goroutine
-	go runTask(func(cmd *cobra.Command, args []string) {
-		startIdentity(cmd, args)
-	})
-
-	go func() {
-		wg.Wait()   // Wait for both tasks to complete
-		close(done) // Signal that all tasks are done
-	}()
-
-	// Wait for the done signal before proceeding to cleanup or exit
-	<-done
-	fmt.Println("All tasks completed. Proceeding to cleanup and shutdown.")
-}
-
-func startCharm(cmd *cobra.Command, args []string) {
-	charmcmd.ServeCmdRunE(cmd, args)
-}
-
-func startIdentity(cmd *cobra.Command, args []string) {
-	// todo split web and ssh into separate functions
-	connections := auth.NewSafeConnectionMap()
-	web.GoRunWebServer(connections, &config)
-	handler := scp.NewFileSystemHandler(scpFileSystemDirPath)
-	s, err := wish.NewServer(
-		wish.WithMiddleware(
-			scp.Middleware(handler, handler),
-			bubbletea.Middleware(teaHandler), // todo: before bubbletea, use non-fullscreen teahandler to accept TOS if not this verion accepted in DB. check connection for previous tos, but this might need to be a charm user column? // separate todo: add tos table in database and pulldown latest tos on boot?
-			comment.Middleware("Thanks, have a nice day!"),
-			elapsed.Middleware(),
-			promwish.Middleware("0.0.0.0:9222", "identity"),
-			logging.Middleware(),
-			observability.Middleware(connections),
-		),
-		wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
-			log.Info("Accepting password", "password", password, "len", len(password))
-			return Connect(ctx, nil, &password, nil, connections)
-		}),
-		wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, challenge gossh.KeyboardInteractiveChallenge) bool {
-			log.Info("Accepting keyboard interactive")
-			return Connect(ctx, nil, nil, challenge, connections)
-		}),
-		wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
-			log.Info("Accepting public key", "publicKeyType", key.Type(), "publicKeyString", base64.StdEncoding.EncodeToString(key.Marshal()))
-			return Connect(ctx, key, nil, nil, connections)
-		}),
-		wish.WithBannerHandler(Banner),
-		wish.WithAddress(fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port"))),
-		wish.WithHostKeyPath(hostKeyPath),
-	)
-	if err != nil {
-		log.Error("could not start server", "error", err)
-		return
-	}
-
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Info("Starting ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
-	go func() {
-		if err := s.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
-			log.Error("could not start server", "error", err)
-			done <- os.Interrupt
-		}
-	}()
-
-	<-done
-	log.Info("Stopping ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := s.Shutdown(ctx); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
-		log.Error("could not stop server", "error", err)
 	}
 }
 

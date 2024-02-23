@@ -153,6 +153,17 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 	return func(token *jwt.Token) (interface{}, error) {
 		log.Info("Validating token", "token", token)
 
+		alg, ok := token.Header["alg"].(string)
+		if !ok {
+			log.Error("Expecting JWT header to have string 'alg'")
+			return nil, fmt.Errorf("expecting JWT header to have string 'alg'")
+		}
+		log.Info("Algorithm", "alg", alg)
+		if alg == "" || strings.ToLower(alg) == "none" {
+			log.Error("Invalid algorithm", "alg", alg)
+			return nil, fmt.Errorf("invalid algorithm")
+		}
+
 		kid, ok := token.Header["kid"].(string)
 		if !ok {
 			log.Error("Expecting JWT header to have string 'kid'")
@@ -190,6 +201,10 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 			log.Error("Key ID does not match", "kid", kid, "keyID", cacheKey.KeyID, "cacheKey", cacheKey)
 			return nil, fmt.Errorf("key ID does not match")
 		}
+		if cacheKey.Algorithm != alg {
+			log.Error("Algorithm does not match", "alg", alg, "algorithm", cacheKey.Algorithm, "cacheKey", cacheKey)
+			return nil, fmt.Errorf("algorithm does not match")
+		}
 		if !cacheKey.Valid() {
 			log.Error("Key is not valid", "cacheKey", cacheKey)
 			return nil, fmt.Errorf("key is not valid")
@@ -206,6 +221,7 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 		switch key := cacheKey.Key.(type) {
 		case ed25519.PublicKey:
 			log.Info("Key", "key", key, "type", "ed25519.PublicKey")
+
 			return key, nil
 		default:
 			log.Error("Key is not a valid type", "key", key, "type", fmt.Sprintf("%T", key), "expectedType", []string{"ed25519.PublicKey"})

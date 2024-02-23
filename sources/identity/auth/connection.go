@@ -31,7 +31,7 @@ func GetConnectionMap(ctx context.Context) (*SafeConnectionMap, bool) {
 }
 
 type SafeConnectionMap struct {
-	mu   sync.RWMutex
+	mu   sync.RWMutex // todo ristretto
 	data map[string]*Connection
 }
 
@@ -123,6 +123,20 @@ func (sm *SafeConnectionMap) Values() []Connection {
 	return values
 }
 
+func (sm *SafeConnectionMap) ValuesUnique() []*Connection {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	values := make([]*Connection, 0, len(sm.data))
+	unique := make(map[string]bool)
+	for _, v := range sm.data {
+		if _, ok := unique[*v.ConnectionID]; !ok {
+			unique[*v.ConnectionID] = true
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
 // ValuesRef safely retrieves all values from the map
 // Be careful with this, as it allows you to modify the map
 func (sm *SafeConnectionMap) ValuesRef() []*Connection {
@@ -131,6 +145,20 @@ func (sm *SafeConnectionMap) ValuesRef() []*Connection {
 	values := make([]*Connection, 0, len(sm.data))
 	for _, v := range sm.data {
 		values = append(values, v)
+	}
+	return values
+}
+
+func (sm *SafeConnectionMap) ValuesRefUnique() []*Connection {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	values := make([]*Connection, 0, len(sm.data))
+	unique := make(map[string]bool)
+	for _, v := range sm.data {
+		if _, ok := unique[*v.ConnectionID]; !ok {
+			unique[*v.ConnectionID] = true
+			values = append(values, v)
+		}
 	}
 	return values
 }
