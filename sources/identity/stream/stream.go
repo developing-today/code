@@ -12,6 +12,9 @@ import (
 func RunStreamServer(ctx context.Context, config *configuration.IdentityServerConfiguration, cmd *cobra.Command, args []string) {
 	log.Info("Starting stream server")
 	time.Sleep(5 * time.Second)
+
+	// TODO: Implement NATS server, when this shuts down it crashes the rest of the server. uncomment and fix
+
 	// // Extract TLS configuration from IdentityServerConfiguration
 	// certFile := config.Configuration.String("tls.cert.server")
 	// keyFile := config.Configuration.String("tls.key.server")

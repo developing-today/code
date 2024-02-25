@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 
 	"github.com/charmbracelet/log"
@@ -9,10 +8,7 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
-	configuration := cmd.LoadDefaultConfiguration()
-
-	if err := cmd.RootCmd(ctx, configuration).Execute(); err != nil {
+	if err := cmd.DefaultRootCmd().Execute(); err != nil {
 		log.Error(err)
 		os.Exit(1)
 	}

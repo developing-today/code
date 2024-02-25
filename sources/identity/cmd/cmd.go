@@ -131,6 +131,14 @@ func LoadDefaultConfiguration() *configuration.IdentityServerConfiguration {
 	return config
 }
 
+func DefaultRootCmd() *cobra.Command {
+	return RootCmd(context.Background(), LoadDefaultConfiguration())
+}
+
+func DefaultRootCmdWithContext(ctx context.Context) *cobra.Command {
+	return RootCmd(ctx, LoadDefaultConfiguration())
+}
+
 func RootCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
 	result := &cobra.Command{
 		Use:   "identity",
