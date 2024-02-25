@@ -93,7 +93,7 @@ func WrappedCharmFromContext(ctx context.Context, config *configuration.Identity
 	go func() {
 		<-ctx.Done()
 
-		p, err := os.FindProcess(os.Getpid())
+		p, err := os.FindProcess(os.Getpid()) // TODO: fix this remove it or something, this doesn't work on windows
 		if err != nil {
 			log.Error("could not find process", "error", err)
 			return
