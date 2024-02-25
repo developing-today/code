@@ -33,15 +33,15 @@ var static embed.FS
 
 // todo make a input struct for webserver and use opts pattern
 
-func RunWebServer(connections *auth.SafeConnectionMap, config *koanf.Koanf) {
-	if err := RunServer(connections, config); err != nil {
+func RunWebServer(ctx context.Context, connections *auth.SafeConnectionMap, config *koanf.Koanf) {
+	if err := RunServer(ctx, connections, config); err != nil {
 		log.Error("Failed to start server!", "details", err.Error())
 		os.Exit(1)
 	}
 }
 
-func GoRunWebServer(connections *auth.SafeConnectionMap, configuration *configuration.IdentityServerConfiguration) {
-	go RunWebServer(connections, configuration.Configuration)
+func GoRunWebServer(ctx context.Context, connections *auth.SafeConnectionMap, configuration *configuration.IdentityServerConfiguration) {
+	go RunWebServer(ctx, connections, configuration.Configuration)
 }
 
 func Strings(config *koanf.Koanf, key string) []string {
@@ -59,7 +59,7 @@ func Strings(config *koanf.Koanf, key string) []string {
 	return []string{stringValue}
 }
 
-func RunServer(connections *auth.SafeConnectionMap, config *koanf.Koanf) error {
+func RunServer(ctx context.Context, connections *auth.SafeConnectionMap, config *koanf.Koanf) error {
 	jwksURLString := config.String("identity.server.jwt.jwks")
 	log.Info("JWKS URL", "jwks", jwksURLString)
 	jwksURL, err := url.Parse(jwksURLString)
@@ -142,8 +142,30 @@ func RunServer(connections *auth.SafeConnectionMap, config *koanf.Koanf) error {
 		WriteTimeout: 20 * time.Second,
 	}
 
-	log.Info("Starting web server...", "webPort", webPort)
-	return server.ListenAndServe()
+	go func() {
+		log.Info("Starting web server", "port", webPort)
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Error("HTTP server ListenAndServe error:", "error", err)
+		}
+	}()
+
+	log.Info("Web server started", "port", webPort)
+
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log.Info("Shutting down web server...")
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Error("Server shutdown error:", "error", err)
+		return err
+	}
+
+	log.Info("Web server stopped")
+
+	return nil
 }
 
 func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cacheTTL time.Duration) (jwt.Keyfunc, error) {

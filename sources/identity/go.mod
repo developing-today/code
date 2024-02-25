@@ -12,7 +12,7 @@ require (
 	github.com/charmbracelet/lipgloss v0.9.1
 	github.com/charmbracelet/log v0.3.1
 	github.com/charmbracelet/melt v0.6.0
-	github.com/charmbracelet/promwish v0.7.1-0.20240111010057-b31c9c27b2d7
+	github.com/charmbracelet/promwish v0.7.1-0.20240207115211-16eca892c72a
 	github.com/charmbracelet/ssh v0.0.0-20240202115812-f4ab1009799a
 	github.com/charmbracelet/wish v1.3.1
 	github.com/go-chi/chi v1.5.5
@@ -28,7 +28,9 @@ require (
 	gopkg.in/go-jose/go-jose.v2 v2.6.2
 )
 
-replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240209064850-d1e7d27803f5
+replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240225103047-e4778561c8b2
+
+replace github.com/charmbracelet/promwish => github.com/developing-today-forks/promwish v0.7.1-0.20240225132336-cfc604974e84
 
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
@@ -41,8 +43,8 @@ require (
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/charmbracelet/keygen v0.5.0 // indirect
-	github.com/charmbracelet/x/errors v0.0.0-20240212161549-c6c7abef80f4 // indirect
-	github.com/charmbracelet/x/exp/term v0.0.0-20240212161549-c6c7abef80f4 // indirect
+	github.com/charmbracelet/x/errors v0.0.0-20240222131549-03ee51df8bea // indirect
+	github.com/charmbracelet/x/exp/term v0.0.0-20240222131549-03ee51df8bea // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/creack/pty v1.1.21 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -62,7 +64,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jacobsa/crypto v0.0.0-20190317225127-9f44e2d11115 // indirect
-	github.com/klauspost/compress v1.17.6 // indirect
+	github.com/klauspost/compress v1.17.7 // indirect
 	github.com/libsql/sqlite-antlr4-parser v0.0.0-20230802215326-5cb5bb604475 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -87,8 +89,8 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.18.0 // indirect
-	github.com/prometheus/client_model v0.5.0 // indirect
-	github.com/prometheus/common v0.46.0 // indirect
+	github.com/prometheus/client_model v0.6.0 // indirect
+	github.com/prometheus/common v0.48.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
@@ -98,7 +100,7 @@ require (
 	github.com/xrash/smetrics v0.0.0-20231213231151-1d8dd44e695e // indirect
 	go.opencensus.io v0.24.0 // indirect
 	goji.io v2.0.2+incompatible // indirect
-	golang.org/x/exp v0.0.0-20240213143201-ec583247a57a // indirect
+	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
 	golang.org/x/net v0.21.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/sys v0.17.0 // indirect
