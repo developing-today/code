@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <script type="text/javascript" src="https://unpkg.com/centrifuge@^5/dist/centrifuge.js"></script>
+  <title>Centrifuge chat example with logging</title>
+</head>
+
+<body>
+  <input type="text" id="input" />
+  <script type="text/javascript">
+    function drawText(text) {
+      const div = document.createElement('div');
+      div.innerHTML = text + '<br>';
+      document.body.appendChild(div);
+      console.log('Message displayed: ', text); // Logging displayed text
+    }
+
+    const centrifuge = new Centrifuge('ws://localhost:8000/connection/websocket');
+
+    centrifuge.on('connected', function (ctx) {
+      drawText('Connected over ' + ctx.transport);
+      console.log('Connected: ', ctx); // Logging connection context
+    });
+
+    centrifuge.on('disconnected', function (ctx) {
+      console.log('Disconnected: ', ctx); // Logging disconnection context
+    });
+
+    const sub = centrifuge.newSubscription("chat");
+
+    sub.on('publication', function (ctx) {
+      drawText(JSON.stringify(ctx.data));
+      console.log('Message received: ', ctx.data); // Logging received message
+    });
+
+    sub.on('subscribe', function (ctx) {
+      console.log('Subscription successful: ', ctx); // Logging subscription success
+    });
+
+    sub.on('error', function (ctx) {
+      console.error('Subscription error: ', ctx); // Logging subscription error
+    });
+
+    try {
+      sub.subscribe();
+    } catch (error) {
+      console.error('Subscribe error: ', error); // Error handling for subscribe
+    }
+
+    const input = document.getElementById("input");
+    input.addEventListener('keyup', function (e) {
+      if (e.key === "Enter") { // Corrected key check to "Enter"
+        e.preventDefault();
+        try {
+          sub.publish(this.value);
+          console.log('Message published: ', this.value); // Logging published message
+        } catch (error) {
+          console.error('Publish error: ', error); // Error handling for publish
+        }
+        input.value = '';
+      }
+    });
+
+    centrifuge.connect();
+  </script>
+</body>
+
+</html>
