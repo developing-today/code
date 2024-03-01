@@ -107,6 +107,14 @@ func (c *IdentityServerConfiguration) LoadConfiguration() {
 	c.Configuration.Set("identity.server.port", 1)
 	c.Configuration.Set("identity.server.web.port", 7000)
 
+	c.Configuration.Set("identity.server.nats.host", "localhost")
+	c.Configuration.Set("identity.server.nats.port", 4222)
+	c.Configuration.Set("identity.server.tls.cert.server", "./data/tls/cert.pem")
+	c.Configuration.Set("identity.server.tls.cert.client", "./data/tls/client-cert.pem")
+	c.Configuration.Set("identity.server.tls.key.server", "./data/tls/key.pem")
+	c.Configuration.Set("identity.server.tls.key.client", "./data/tls/client-key.pem")
+	c.Configuration.Set("identity.server.tls.ca", "./data/tls/ca.pem")
+
 	log.Info("Loaded default configuration", "config", c.Configuration.Sprint())
 	log.Info("Loading embedded file configuration", "config", c.ConfigurationLocations.EmbeddedConfigurationFilePaths)
 

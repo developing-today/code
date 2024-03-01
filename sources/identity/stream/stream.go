@@ -2,8 +2,10 @@ package stream
 
 import (
 	"context"
+	"net/http"
 	"time"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/charmbracelet/log"
 	"github.com/developing-today/code/src/identity/configuration"
 	"github.com/spf13/cobra"
@@ -11,56 +13,67 @@ import (
 
 func RunStreamServer(ctx context.Context, config *configuration.IdentityServerConfiguration, cmd *cobra.Command, args []string) {
 	log.Info("Starting stream server")
-	time.Sleep(5 * time.Second)
+	node, err := centrifuge.New(centrifuge.Config{})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// TODO: Implement NATS server, when this shuts down it crashes the rest of the server. uncomment and fix
+	SetupNodeHandlers(node)
 
-	// // Extract TLS configuration from IdentityServerConfiguration
-	// certFile := config.Configuration.String("tls.cert.server")
-	// keyFile := config.Configuration.String("tls.key.server")
-	// caFile := config.Configuration.String("tls.ca")
-	// host := config.Configuration.String("nats.host")
-	// port := config.Configuration.Int("nats.port")
+	srv := &http.Server{Addr: ":8000", Handler: nil}
 
-	// serverTlsConfig, err := server.GenTLSConfig(&server.TLSConfigOpts{
-	// 	CertFile: certFile,
-	// 	KeyFile:  keyFile,
-	// 	CaFile:   caFile,
-	// 	Verify:   true,
-	// })
-	// if err != nil {
-	// 	log.Fatalf("TLS config error: %v", err)
-	// }
+	wsHandler := centrifuge.NewWebsocketHandler(node, centrifuge.WebsocketConfig{})
+	http.Handle("/connection/websocket", Auth(wsHandler))
+	http.Handle("/", http.FileServer(http.Dir("./")))
 
-	// // Setup the embedded server options.
-	// opts := server.Options{
-	// 	Host:      host,
-	// 	Port:      port,
-	// 	TLSConfig: serverTlsConfig,
-	// }
+	go func() {
+		<-ctx.Done()
 
-	// // Initialize and start the NATS server
-	// ns, err := server.NewServer(&opts)
-	// if err != nil {
-	// 	log.Fatalf("Server initialization error: %v", err)
-	// }
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	// go func() {
-	// 	log.Info("NATS server starting")
-	// 	ns.Start()
-	// 	if ns.ReadyForConnections(10 * time.Second) {
-	// 		log.Info("NATS server ready for connections")
-	// 	}
-	// }()
-	// defer func() {
-	// 	log.Info("NATS server shutting down")
-	// 	ns.Shutdown()
-	// 	log.Info("Stopping stream server")
-	// }()
+		log.Info("Shutting down server")
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error("Shutdown error", "error", err)
+		}
+	}()
 
-	// select {
-	// case <-ctx.Done():
-	// 	log.Info("Stream server cancelled")
-	// 	return
-	// }
+	log.Info("Starting server", "url", "http://localhost:8000")
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatal("ListenAndServe error", "error", err)
+	}
+}
+
+func SetupNodeHandlers(node *centrifuge.Node) {
+	node.OnConnect(func(client *centrifuge.Client) {
+		transportName := client.Transport().Name()
+		transportProto := client.Transport().Protocol()
+		log.Info("Client connected", "transportName", transportName, "transportProto", transportProto)
+
+		client.OnSubscribe(func(e centrifuge.SubscribeEvent, cb centrifuge.SubscribeCallback) {
+			log.Info("Client subscribes on channel", "channel", e.Channel)
+			cb(centrifuge.SubscribeReply{}, nil)
+		})
+
+		client.OnPublish(func(e centrifuge.PublishEvent, cb centrifuge.PublishCallback) {
+			log.Info("Client publishes into channel", "channel", e.Channel, "data", string(e.Data))
+			cb(centrifuge.PublishReply{}, nil)
+		})
+
+		client.OnDisconnect(func(e centrifuge.DisconnectEvent) {
+			log.Info("Client disconnected")
+		})
+	})
+}
+
+func Auth(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		cred := &centrifuge.Credentials{
+			UserID: "",
+		}
+		newCtx := centrifuge.SetCredentials(ctx, cred)
+		r = r.WithContext(newCtx)
+		h.ServeHTTP(w, r)
+	})
 }

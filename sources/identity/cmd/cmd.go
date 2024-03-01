@@ -40,6 +40,10 @@ import (
 	"github.com/knadh/koanf"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/samber/do/v2"
 	"github.com/spf13/cobra"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -54,12 +58,12 @@ remote config (
 
 	s3 ->
 	db ->
-	nats ->
+	nats/centrifuge ->
 	etc) (
 	dont do all this, just this is the direction eventually as things become available if)
 */
 
-// todo: put these into configuration
+// todo: put these into configuration but also as flat defaults in configuration
 var Separator = "."
 var ConfigurationFilePath = "config.kdl"
 var EmbeddedConfigurationFilePath = "embed/config.kdl"
@@ -77,7 +81,7 @@ func NewConfiguration() *configuration.IdentityServerConfiguration {
 				// run these against ? binary dir ? pwd of execution ? appdata ? .config ? .local ???
 				// then check for further locations/env-prefixes/etc from first pass, rerun on top with second pass
 				// (maybe config.kdl next to binary sets a new set of configurationPaths, finish out loading from defaults, then load from new paths)
-				// this pattern continues, after hard-code default env/file search, then custom file/env search, then eventually maybe nats/s3 or other remote or db config
+				// this pattern continues, after hard-code default env/file search, then custom file/env search, then eventually maybe nats/centrifuge/s3 or other remote or db config
 			},
 			EmbeddedConfigurationFilePaths: []string{
 				EmbeddedConfigurationFilePath,
@@ -88,6 +92,12 @@ func NewConfiguration() *configuration.IdentityServerConfiguration {
 }
 
 func WrappedCharmFromContext(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	cmd := charmcmd.RootCmd
 
 	go func() {
@@ -107,10 +117,22 @@ func WrappedCharmFromContext(ctx context.Context, config *configuration.Identity
 }
 
 func CharmCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return WrappedCharmFromContext(ctx, config)
 }
 
 func StartCharmCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	result := WrappedCharmFromContext(ctx, config)
 	result.Use = "charm"
 	result.Aliases = []string{"ch", "c"}
@@ -136,10 +158,19 @@ func DefaultRootCmd() *cobra.Command {
 }
 
 func DefaultRootCmdWithContext(ctx context.Context) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return RootCmd(ctx, LoadDefaultConfiguration())
 }
 
 func RootCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	result := &cobra.Command{
 		Use:   "identity",
 		Short: "publish your identity",
@@ -150,6 +181,12 @@ func RootCmd(ctx context.Context, config *configuration.IdentityServerConfigurat
 }
 
 func StartAllCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	result := &cobra.Command{
 		Use:     "start",
 		Short:   "Starts the identity and charm servers",
@@ -162,6 +199,12 @@ func StartAllCmd(ctx context.Context, config *configuration.IdentityServerConfig
 }
 
 func StartIdentityCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return &cobra.Command{
 		Use:     "identity",
 		Short:   "Starts only the identity server",
@@ -171,6 +214,12 @@ func StartIdentityCmd(ctx context.Context, config *configuration.IdentityServerC
 }
 
 func StartStreamCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return &cobra.Command{
 		Use:     "stream",
 		Short:   "Starts only the stream server",
@@ -180,6 +229,12 @@ func StartStreamCmd(ctx context.Context, config *configuration.IdentityServerCon
 }
 
 func GetTasks(ctx context.Context, config *configuration.IdentityServerConfiguration) []func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return []func(ictx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string){
 		StartStream(config),
 		StartCharm(config),
@@ -188,15 +243,50 @@ func GetTasks(ctx context.Context, config *configuration.IdentityServerConfigura
 }
 
 func StartAllTasks(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(cmd *cobra.Command, args []string) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		StartAll(ctx, GetTasks(ctx, config)...)(cmd, args)
+		StartTasks(ctx, GetTasks(ctx, config)...)(cmd, args)
 	}
 }
 
-func StartAll(ctx context.Context, tasks ...func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)) func(*cobra.Command, []string) {
+//	type Application struct {
+//		MustInvoke []*Application
+//		Name       *string
+//		Service    interface{}
+//		tasks      []func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)
+//	}
+//
+//	type Application[T any] struct {
+//		Service T
+//		Compile func(*cobra.Command, []string)
+//	}
+type Application[T any] interface {
+	Service() T
+	Compile(*cobra.Command, []string) func(*cobra.Command, []string)
+}
+type Service[T any] interface {
+	Provide(injector *do.Injector) error
+	Invoke(injector *do.Injector) T
+}
+
+type JwtVerifierService struct {
+}
+type JwtVerifierApp struct {
+	Application[JwtVerifierService]
+}
+
+func StartTasks(ctx context.Context, tasks ...func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)) func(*cobra.Command, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return func(cmd *cobra.Command, args []string) {
 		if ctx == nil {
 			ctx = context.Background()
@@ -216,8 +306,8 @@ func StartAll(ctx context.Context, tasks ...func(context.Context, *sync.WaitGrou
 		}
 
 		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT, os.Interrupt, os.Kill)
-		defer signal.Stop(c)
+		// signal.Notify(c, os.Interrupt) // , syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT // , os.Kill // todo: this needs to let me force kill it, maybe take out os.kill or something?
+		// defer signal.Stop(c)
 
 		select {
 		case <-c:
@@ -234,16 +324,28 @@ func StartAll(ctx context.Context, tasks ...func(context.Context, *sync.WaitGrou
 }
 
 func CleanupAndShutdown(cancel context.CancelFunc, done chan struct{}) {
+	log.Info("Cleaning up and shutting down.")
 	cancel()
+	log.Info("Cancelled context. waiting for tasks to complete.")
 	<-done
+	log.Info("All tasks done. Shutting down.")
 }
 
 func FinalShutdown(ctx context.Context, cmd *cobra.Command, args []string, tasks ...func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cmd == nil {
+		panic("cmd is nil")
+	}
 	log.Info("All tasks cleaned up. Shutting down.", "len(tasks)", len(tasks), "command", cmd.Name(), "args", args)
 	log.Info("Bye!", "time", time.Now())
 }
 
 func RunTask(ctx context.Context, wg *sync.WaitGroup, taskFunc func(context.Context, *cobra.Command, []string)) func(*cobra.Command, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return func(cmd *cobra.Command, args []string) {
 		if ctx == nil {
 			ctx = context.Background()
@@ -254,18 +356,23 @@ func RunTask(ctx context.Context, wg *sync.WaitGroup, taskFunc func(context.Cont
 }
 
 func StartStreamFromContext(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(cmd *cobra.Command, args []string) {
-		if ctx == nil {
-			ctx = context.Background()
-		}
 		StartStream(config)(ctx, nil)(cmd, args)
 	}
 }
 
 func StartStream(config *configuration.IdentityServerConfiguration) func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(ctx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string) {
 		return func(cmd *cobra.Command, args []string) {
-			// todo: do something with the wait group ! don't increment for stream itself, but for the tasks it runs !! todo: is this the wrong way around? fuck
 			log.Info("Starting stream server")
 			if ctx == nil {
 				ctx = context.Background()
@@ -278,15 +385,20 @@ func StartCharmFromContext(ctx context.Context, config *configuration.IdentitySe
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(cmd *cobra.Command, args []string) {
 		StartCharm(config)(ctx, nil)(cmd, args)
 	}
 }
 
 func StartCharm(config *configuration.IdentityServerConfiguration) func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(ctx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string) {
 		return func(cmd *cobra.Command, args []string) {
-			// todo: do something with the wait group ! don't increment for stream itself, but for the tasks it runs !! todo: is this the wrong way around? fuck
 			log.Info("Starting charm server")
 			if err := charmcmd.ServeCmdRunEWithContext(ctx, cmd, args); err != nil {
 				log.Error("Error running charm server command", "error", err)
@@ -299,14 +411,25 @@ func StartIdentityFromContext(ctx context.Context, config *configuration.Identit
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(cmd *cobra.Command, args []string) {
 		StartIdentity(config)(ctx, nil)(cmd, args)
 	}
 }
+
+var keyTypeCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "wish_auth_by_type_total",
+	Help: "The total number of authentications by type",
+}, []string{"type"})
+
 func StartIdentity(config *configuration.IdentityServerConfiguration) func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
+	if config == nil {
+		panic("config is nil")
+	}
 	return func(goctx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string) {
 		return func(cmd *cobra.Command, args []string) {
-			// todo: do something with the wait group ! don't increment for stream itself, but for the tasks it runs !! todo: is this the wrong way around? fuck
 			log.Info("Starting identity server")
 			if goctx == nil {
 				goctx = context.Background()
@@ -314,13 +437,21 @@ func StartIdentity(config *configuration.IdentityServerConfiguration) func(conte
 			connections := auth.NewSafeConnectionMap()
 			web.GoRunWebServer(goctx, connections, config)
 			handler := scp.NewFileSystemHandler(ScpFileSystemDirPath)
+			registry := prometheus.NewRegistry()
+
 			s, err := wish.NewServer(
 				wish.WithMiddleware(
 					scp.Middleware(handler, handler),
 					bubbletea.Middleware(TeaHandler),
 					comment.Middleware("Thanks, have a nice day!"),
 					elapsed.Middleware(),
-					promwish.MiddlewareWithContext(goctx, "0.0.0.0:9222", "identity", promwish.SkipDefaultDoneSignals(), promwish.WithWaitGroup(wg)),
+					promwish.MiddlewareRegistry(
+						registry,
+						prometheus.Labels{
+							"app": "identity",
+						},
+						promwish.DefaultCommandFn,
+					),
 					logging.Middleware(),
 					observability.Middleware(connections),
 				),
@@ -345,12 +476,25 @@ func StartIdentity(config *configuration.IdentityServerConfiguration) func(conte
 				return
 			}
 
+			metrics := promwish.NewServer(
+				"localhost:9222",
+				promhttp.InstrumentMetricHandler(
+					registry, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
+				),
+			)
+
 			done := make(chan os.Signal, 1)
-			signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-			log.Info("Starting ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
 			go func() {
+				log.Info("Starting ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
 				if err := s.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 					log.Error("could not start server", "error", err)
+					done <- os.Interrupt
+				}
+			}()
+			go func() {
+				log.Info("Starting metrics server", "address", "localhost:9222")
+				if err = metrics.ListenAndServe(); err != nil {
+					log.Fatal("Fail to start metrics server", "error", err)
 					done <- os.Interrupt
 				}
 			}()
@@ -363,13 +507,20 @@ func StartIdentity(config *configuration.IdentityServerConfiguration) func(conte
 				}
 			}()
 
+			signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 			<-done
+			log.Info("Done signal received, shutting down ssh server and metrics server.")
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			log.Info("Shutting down ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
 			if err := s.Shutdown(ctx); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 				log.Error("could not stop server", "error", err)
 			}
-			log.Info("Stopping ssh server", "identity.server.host", config.Configuration.String("identity.server.host"), "identity.server.ssh.port", config.Configuration.Int("identity.server.ssh.port"), "address", fmt.Sprintf("%s:%d", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")))
+			log.Info("Stopping metrics server", "address", "localhost:9222")
+			if err := metrics.Shutdown(ctx); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+				log.Error("could not stop metrics server", "error", err)
+			}
+			log.Info("Stopped ssh and metrics servers", "time", time.Now())
 		}
 	}
 }
