@@ -76,6 +76,8 @@ github.com/charmbracelet/promwish v0.7.1-0.20240207115211-16eca892c72a h1:Lss/6x
 github.com/charmbracelet/promwish v0.7.1-0.20240207115211-16eca892c72a/go.mod h1:goUZLOznBTC1mNdzR159pS9alz/quEjMkQwO9L7VrMc=
 github.com/charmbracelet/promwish v0.7.1-0.20240301193744-83a66da07faa h1:LPj4YGVb2ibvUcc3Rsna7nEniKLPd+4+TwiifvRUbP4=
 github.com/charmbracelet/promwish v0.7.1-0.20240301193744-83a66da07faa/go.mod h1:uBUtuH96hSDko9+oVmlWyMHzBaKQ7SVkVTsIIcgTz6E=
+github.com/charmbracelet/ssh v0.0.0-20240301204039-e79ff702f5b3 h1:BI6Vno579jK/NKUwrvboHtMfF2On6kh6mU1cguf5+vQ=
+github.com/charmbracelet/ssh v0.0.0-20240301204039-e79ff702f5b3/go.mod h1:wUZ0VTrLI5ixIbYOSRHrqrZnfj8EXgLZOOvQYAQ2f18=
 github.com/charmbracelet/wish v1.3.1 h1:HXrHadxu6qbZOfwjEuu2OWpGWuhpKVd26Ecpv+QEc58=
 github.com/charmbracelet/wish v1.3.1/go.mod h1:4GbN5YK/Qmip0k/nT+dOuYVpdKgj3oZBnsOeEJlG9fE=
 github.com/charmbracelet/x/errors v0.0.0-20240222131549-03ee51df8bea h1:yhfWma0tKEAgKKyevfOJej8wsiPXgaAiFEpDQ9miBEA=

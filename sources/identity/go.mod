@@ -14,7 +14,7 @@ require (
 	github.com/charmbracelet/log v0.3.1
 	github.com/charmbracelet/melt v0.6.0
 	github.com/charmbracelet/promwish v0.7.1-0.20240301193744-83a66da07faa
-	github.com/charmbracelet/ssh v0.0.0-20240202115812-f4ab1009799a
+	github.com/charmbracelet/ssh v0.0.0-20240301204039-e79ff702f5b3
 	github.com/charmbracelet/wish v1.3.1
 	github.com/go-chi/chi v1.5.5
 	github.com/golang-jwt/jwt v3.2.2+incompatible
@@ -32,8 +32,6 @@ require (
 )
 
 replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240225103047-e4778561c8b2
-
-replace github.com/charmbracelet/ssh => github.com/developing-today-forks/ssh v0.0.0-20240301201110-744c36bdb9f9
 
 require (
 	github.com/FZambia/eagle v0.1.0 // indirect

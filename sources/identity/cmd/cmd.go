@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -44,6 +43,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/do/v2"
+	converter "github.com/samber/go-type-to-string"
 	"github.com/spf13/cobra"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -73,7 +73,8 @@ var ScpFileSystemDirPath = "scp"
 
 func NewConfiguration() *configuration.IdentityServerConfiguration {
 	return &configuration.IdentityServerConfiguration{
-		Configuration: koanf.New(Separator),
+		ConfigurationSeparator: Separator,
+		Configuration:          koanf.New(Separator),
 		ConfigurationLocations: &configuration.ConfigurationLocations{
 			ConfigurationFilePaths: []string{
 				ConfigurationFilePath,
@@ -88,6 +89,35 @@ func NewConfiguration() *configuration.IdentityServerConfiguration {
 			},
 		},
 		EmbedFS: &configuration.EmbedFS,
+	}
+}
+
+type ConfigurationService interface {
+	Configuration() any
+	Koanf() (*koanf.Koanf, error)
+}
+
+type ConfigurationServiceImpl struct {
+	config    *koanf.Koanf
+	separator string
+	locations *configuration.ConfigurationLocations
+}
+
+func (cs *ConfigurationServiceImpl) Configuration() any {
+	return cs.config
+}
+
+func (cs *ConfigurationServiceImpl) Koanf() (*koanf.Koanf, error) {
+	return cs.config, nil
+}
+
+func NewConfigurationService(config *koanf.Koanf, separator string, locations *configuration.ConfigurationLocations) func(do.Injector) (ConfigurationService, error) {
+	return func(i do.Injector) (ConfigurationService, error) {
+		return &ConfigurationServiceImpl{
+			config:    config,
+			separator: separator,
+			locations: locations,
+		}, nil
 	}
 }
 
@@ -137,6 +167,13 @@ func StartCharmCmd(ctx context.Context, config *configuration.IdentityServerConf
 	result.Use = "charm"
 	result.Aliases = []string{"ch", "c"}
 	return result
+}
+
+// HealthCheck performs a health check of the charm service.
+func (cs *CharmServiceImpl) HealthCheck() error {
+	// Placeholder for health check logic
+	log.Info("Health check passed for CharmService")
+	return nil
 }
 
 func StartAllAltCmd(command cobra.Command) *cobra.Command {
@@ -190,7 +227,7 @@ func StartAllCmd(ctx context.Context, config *configuration.IdentityServerConfig
 	result := &cobra.Command{
 		Use:     "start",
 		Short:   "Starts the identity and charm servers",
-		Run:     StartAllTasks(ctx, config),
+		Run:     StartAllServices(ctx, config),
 		Aliases: []string{"s", "run", "serve", "publish", "pub", "p", "i", "y", "u", "o", "p", "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "h", "j", "k", "l", "z", "x", "c", "v", "b"},
 	}
 	result.AddCommand(StartCharmCmd(ctx, config), StartIdentityCmd(ctx, config), StartStreamCmd(ctx, config))
@@ -223,26 +260,12 @@ func StartStreamCmd(ctx context.Context, config *configuration.IdentityServerCon
 	return &cobra.Command{
 		Use:     "stream",
 		Short:   "Starts only the stream server",
-		Run:     StartStreamFromContext(ctx, config),
+		Run:     StartStreamFromContext(ctx),
 		Aliases: []string{"tr", "t"},
 	}
 }
 
-func GetTasks(ctx context.Context, config *configuration.IdentityServerConfiguration) []func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if config == nil {
-		panic("config is nil")
-	}
-	return []func(ictx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string){
-		StartStream(config),
-		StartCharm(config),
-		StartIdentity(config),
-	}
-}
-
-func StartAllTasks(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+func StartAllServices(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -253,158 +276,498 @@ func StartAllTasks(ctx context.Context, config *configuration.IdentityServerConf
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		StartTasks(ctx, GetTasks(ctx, config)...)(cmd, args)
+		StartServices(ctx, config)(cmd, args)
 	}
 }
 
-//	type Application struct {
-//		MustInvoke []*Application
-//		Name       *string
-//		Service    interface{}
-//		tasks      []func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)
-//	}
-//
-//	type Application[T any] struct {
-//		Service T
-//		Compile func(*cobra.Command, []string)
-//	}
-type Application[T any] interface {
-	Service() T
-	Compile(*cobra.Command, []string) func(*cobra.Command, []string)
-}
-type Service[T any] interface {
-	Provide(injector *do.Injector) error
-	Invoke(injector *do.Injector) T
-}
+var DefaultDoneSignals = []os.Signal{os.Interrupt, syscall.SIGINT, syscall.SIGTERM}
 
-type JwtVerifierService struct {
-}
-type JwtVerifierApp struct {
-	Application[JwtVerifierService]
-}
-
-func StartTasks(ctx context.Context, tasks ...func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)) func(*cobra.Command, []string) {
-	if ctx == nil {
-		ctx = context.Background()
+func InvokeAs[T any](i do.Injector) (T, error) {
+	t, err := do.InvokeAs[T](i)
+	if err == nil {
+		log.Info("Invoked as", "type", converter.GetType[T]())
 	}
+	return t, err
+}
+
+func Invoke[T any](i do.Injector) (T, error) {
+	t, err := do.Invoke[T](i)
+	if err == nil {
+		log.Info("Invoked", "type", converter.GetType[T]())
+	}
+	return t, err
+}
+
+func MustInvokeAny[T any](i do.Injector) T {
+	t, err1 := Invoke[T](i)
+	if err1 == nil {
+		return t
+	}
+	t, err2 := InvokeAs[T](i)
+	if err2 == nil {
+		return t
+	}
+	log.Error("Failed to invoke any", "mustInvokeError", err1, "mustInvokeAsError", err2)
+	panic(err2)
+}
+
+// The first matching service in the scope tree is returned.
+func Start[T any](i do.Injector) {
+	MustInvokeAny[T](i)
+}
+
+// type Provider[T any] func(do.Injector) (T, error)
+func Provide[T any](i do.Injector, providers ...do.Provider[T]) {
+	name := converter.GetType[T]()
+	log.Info("Providing service", "serviceName", name)
+	for _, provider := range providers {
+		do.Provide[T](i, provider)
+		log.Info("Provided service", "serviceName", name)
+	}
+}
+
+func StartServices(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
 	return func(cmd *cobra.Command, args []string) {
-		if ctx == nil {
-			ctx = context.Background()
-		}
+		log.Info("Setting up shutdown context")
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		var wg sync.WaitGroup
-		wg.Add(len(tasks))
+		osDone := make(chan os.Signal, 1)
+		defer signal.Stop(osDone)
+		signal.Notify(osDone, DefaultDoneSignals...)
 
-		for _, task := range tasks {
-			go func(task func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)) {
-				defer wg.Done()
-				defer cancel()
-				task(ctx, &wg)(cmd, args)
-			}(task)
-		}
+		iDone := make(chan os.Signal, 1)
+		defer signal.Stop(iDone)
 
-		c := make(chan os.Signal, 1)
-		// signal.Notify(c, os.Interrupt) // , syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT // , os.Kill // todo: this needs to let me force kill it, maybe take out os.kill or something?
-		// defer signal.Stop(c)
+		done := make(chan os.Signal, 1)
+		defer signal.Stop(done)
 
-		select {
-		case <-c:
-			log.Info("SIGINT received, cancelling tasks.")
+		go func() {
+			log.Info("Waiting for signals to shutdown services")
+			select {
+			case <-osDone:
+				log.Info("Signal received, shutting down services")
+			case <-ctx.Done():
+				log.Info("Context cancelled, ensuring all services complete.")
+			}
 			cancel()
-		case <-ctx.Done():
-			log.Info("Context cancelled, ensuring all tasks complete.")
-		}
+			log.Info("Cancelled context. waiting for services to complete.")
+		}()
+		go func() {
+			log.Info("Waiting for signals injector has shutdown")
+			<-iDone
+			log.Info("Signal received, injector has shutdown")
+			cancel()
+			FinalShutdown(ctx, cmd, args)
+			done <- syscall.SIGINT
+		}()
 
-		wg.Wait()
-		log.Info("All tasks have completed or been cancelled. Proceeding to cleanup and shutdown.")
-		FinalShutdown(ctx, cmd, args, tasks...)
+		log.Info("Creating injector")
+
+		i := do.NewWithOpts(&do.InjectorOpts{
+			HookAfterRegistration: func(scope *do.Scope, serviceName string) {
+				log.Info("Registered service", "serviceName", serviceName)
+			},
+			HookAfterShutdown: func(scope *do.Scope, serviceName string) {
+				log.Info("Shutdown service", "serviceName", serviceName)
+			},
+			Logf: func(format string, args ...interface{}) {
+				log.Warnf(format, args...)
+			},
+		})
+
+		log.Info("Injector created, setting up injector shutdown signal")
+
+		go func() {
+			select {
+			case <-ctx.Done():
+				log.Info("Context done, shutting down")
+
+				errors := i.Shutdown()
+				log.Info("Shutdown complete")
+
+				if errors != nil {
+					for _, err := range *errors {
+						log.Error("Error shutting down", "error", err)
+					}
+				} else {
+					log.Info("All services have been shut down")
+				}
+				iDone <- syscall.SIGINT
+			}
+		}()
+		go func() {
+			log.Info("Waiting for signals to shutdown injector")
+			signal, errors := i.ShutdownOnSignals(DefaultDoneSignals...)
+			log.Info("Signals received, injector was shutdown", "signal", signal, "errors", errors)
+			if errors != nil {
+				for _, err := range *errors {
+					log.Error("Error shutting down", "error", err)
+				}
+			}
+			log.Info("Signals received, shutdown")
+			osDone <- signal
+			iDone <- signal
+		}()
+
+		log.Info("Providing services")
+
+		Provide(i, NewContextService(ctx))
+		Provide(i, NewIdentityServerConfigurationService(config))
+		Provide(i, NewCommandService(cmd, args))
+		Provide(i, NewConfigurationService(config.Configuration, config.ConfigurationSeparator, config.ConfigurationLocations))
+		Provide(i, NewCharmService)
+		Provide(i, NewIdentityService)
+		Provide(i, NewStreamService)
+
+		log.Info("Starting services")
+		Start[CharmService](i)
+		Start[IdentityService](i)
+		Start[StreamService](i)
+		log.Info("Services started")
+		log.Info("Waiting for signals to shutdown")
+		<-done
 	}
 }
 
 func CleanupAndShutdown(cancel context.CancelFunc, done chan struct{}) {
 	log.Info("Cleaning up and shutting down.")
 	cancel()
-	log.Info("Cancelled context. waiting for tasks to complete.")
+	log.Info("Cancelled context. waiting for services to complete.")
 	<-done
-	log.Info("All tasks done. Shutting down.")
+	log.Info("All services done. Shutting down.")
 }
 
-func FinalShutdown(ctx context.Context, cmd *cobra.Command, args []string, tasks ...func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string)) {
+func FinalShutdown(ctx context.Context, cmd *cobra.Command, args []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if cmd == nil {
 		panic("cmd is nil")
 	}
-	log.Info("All tasks cleaned up. Shutting down.", "len(tasks)", len(tasks), "command", cmd.Name(), "args", args)
+	log.Info("All services cleaned up. Shutting down.", "command", cmd.Name(), "args", args)
 	log.Info("Bye!", "time", time.Now())
 }
 
-func RunTask(ctx context.Context, wg *sync.WaitGroup, taskFunc func(context.Context, *cobra.Command, []string)) func(*cobra.Command, []string) {
+type StreamService interface {
+	Start()
+	Shutdown() error
+	HealthCheck() error
+	IsStreamService() bool
+}
+
+type StreamServiceImpl struct {
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+	command    CommandService
+	context    ContextService
+}
+
+func (ss *StreamServiceImpl) IsStreamService() bool {
+	return true
+}
+
+func (ss *StreamServiceImpl) HealthCheck() error {
+	log.Info("Health check passed for StreamService")
+	return nil
+}
+
+func NewStreamService(i do.Injector) (StreamService, error) {
+	contextService := MustGetContextService(i)
+	command := MustGetCommandService(i)
+	service := &StreamServiceImpl{
+		context: contextService,
+		command: command,
+	}
+	service.Start()
+	return service, nil
+}
+
+func (ss *StreamServiceImpl) Start() {
+	log.Info("Starting stream server")
+	if ss.ctx != nil {
+		panic("ctx is already set, service is already running")
+	}
+	ss.ctx, ss.cancelFunc = context.WithCancel(ss.context.Context())
+	go stream.RunStreamServer(ss.ctx, ss.command.GetCommand(), ss.command.GetArgs())
+}
+
+func (ss *StreamServiceImpl) Shutdown() error {
+	log.Info("Stream service shutdown requested")
+	if ss.cancelFunc != nil && ss.ctx.Err() == nil {
+		log.Info("Stream service stopping...")
+		ss.cancelFunc()
+		ss.context.Shutdown() // this service shuts down the parent context
+		log.Info("Stream service stopped")
+	} else {
+		log.Info("Stream service already stopped")
+	}
+	return nil
+}
+
+func StartStreamFromContext(ctx context.Context) func(*cobra.Command, []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return func(cmd *cobra.Command, args []string) {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		defer wg.Done()
-		taskFunc(ctx, cmd, args)
+		StartStream()(ctx)(cmd, args)
 	}
 }
 
-func StartStreamFromContext(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if config == nil {
-		panic("config is nil")
-	}
-	return func(cmd *cobra.Command, args []string) {
-		StartStream(config)(ctx, nil)(cmd, args)
-	}
-}
-
-func StartStream(config *configuration.IdentityServerConfiguration) func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
-	if config == nil {
-		panic("config is nil")
-	}
-	return func(ctx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string) {
+func StartStream() func(context.Context) func(*cobra.Command, []string) {
+	return func(ctx context.Context) func(*cobra.Command, []string) {
 		return func(cmd *cobra.Command, args []string) {
 			log.Info("Starting stream server")
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			stream.RunStreamServer(ctx, config, cmd, args)
+			stream.RunStreamServer(ctx, cmd, args)
 		}
-	}
-}
-func StartCharmFromContext(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if config == nil {
-		panic("config is nil")
-	}
-	return func(cmd *cobra.Command, args []string) {
-		StartCharm(config)(ctx, nil)(cmd, args)
 	}
 }
 
-func StartCharm(config *configuration.IdentityServerConfiguration) func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
-	if config == nil {
-		panic("config is nil")
+type CharmService interface {
+	Start()
+	Shutdown() error
+	HealthCheck() error
+	IsCharmService() bool
+}
+
+type CharmServiceImpl struct {
+	command    CommandService
+	context    ContextService
+	cancelFunc context.CancelFunc
+	ctx        context.Context
+}
+
+func (cs *CharmServiceImpl) IsCharmService() bool {
+	return true
+}
+
+type CommandService interface {
+	GetCommand() *cobra.Command
+	GetArgs() []string
+}
+
+type CommandServiceImpl struct {
+	cmd  *cobra.Command
+	args []string
+}
+
+func (cs *CommandServiceImpl) GetCommand() *cobra.Command {
+	return cs.cmd
+}
+
+func (cs *CommandServiceImpl) GetArgs() []string {
+	return cs.args
+}
+
+func NewCommandService(cmd *cobra.Command, args []string) func(do.Injector) (CommandService, error) {
+	return func(i do.Injector) (CommandService, error) {
+		return &CommandServiceImpl{
+			cmd:  cmd,
+			args: args,
+		}, nil
 	}
-	return func(ctx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string) {
-		return func(cmd *cobra.Command, args []string) {
-			log.Info("Starting charm server")
-			if err := charmcmd.ServeCmdRunEWithContext(ctx, cmd, args); err != nil {
-				log.Error("Error running charm server command", "error", err)
-			}
+}
+
+func MustGetCommandService(i do.Injector) CommandService {
+	return MustInvokeAny[CommandService](i)
+}
+
+func NewCharmService(i do.Injector) (*CharmServiceImpl, error) {
+	service := &CharmServiceImpl{
+		context: MustGetContextService(i),
+		command: MustGetCommandService(i),
+	}
+	go service.Start()
+	return service, nil
+}
+
+func (cs *CharmServiceImpl) Start() {
+	go func() {
+		log.Info("Starting charm server")
+		if cs.ctx != nil {
+			panic("ctx is already set, service is already running")
 		}
+		cs.ctx, cs.cancelFunc = context.WithCancel(cs.context.Context())
+		if err := charmcmd.ServeCmdRunEWithContext(cs.ctx, cs.command.GetCommand(), cs.command.GetArgs()); err != nil {
+			log.Error("Error running charm server command", "error", err)
+			panic(err)
+		}
+	}()
+}
+
+func (cs *CharmServiceImpl) Shutdown() error {
+	log.Info("Charm service shutdown requested")
+	if cs.cancelFunc != nil && cs.ctx.Err() == nil {
+		log.Info("Charm service stopping...")
+		cs.cancelFunc()
+		cs.context.Shutdown() // this service shuts down the parent context
+		log.Info("Charm service stopped")
+	} else if cs.ctx.Err() != nil {
+		log.Info("Charm service already stopped")
+	} else {
+		log.Info("Charm service has not been started")
 	}
+	return nil
+}
+
+type ContextService interface {
+	Shutdown() error
+	HealthCheck() error
+	Context() context.Context
+	CancelFunc() context.CancelFunc
+	IsContextService() bool
+}
+
+func MustGetNewContext(i do.Injector) (context.Context, context.CancelFunc) {
+	return context.WithCancel(MustInvokeAny[ContextService](i).Context())
+}
+
+func MustGetContextService(i do.Injector) ContextService {
+	return MustInvokeAny[ContextService](i)
+}
+
+type ContextServiceImpl struct {
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+}
+
+func (is *ContextServiceImpl) IsContextService() bool {
+	return true
+}
+
+func (is *ContextServiceImpl) HealthCheck() error {
+	if is.ctx.Err() != nil {
+		log.Error("Health check failed for ContextService", "error", is.ctx.Err())
+		return is.ctx.Err()
+	}
+	log.Info("Health check passed for ContextService")
+	return nil
+}
+
+func (is *ContextServiceImpl) CancelFunc() context.CancelFunc {
+	return is.cancelFunc
+}
+
+func (is *ContextServiceImpl) Context() context.Context {
+	return is.ctx
+}
+
+func NewContextService(ctx context.Context) func(do.Injector) (ContextService, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancelFunc := context.WithCancel(ctx)
+	return NewContextServiceWithCancel(ctx, cancelFunc)
+}
+
+func NewContextServiceWithCancel(ctx context.Context, cancelFunc context.CancelFunc) func(do.Injector) (ContextService, error) {
+	return func(i do.Injector) (ContextService, error) {
+		service := &ContextServiceImpl{
+			ctx:        ctx,
+			cancelFunc: cancelFunc,
+		}
+		return service, nil
+	}
+}
+
+func (is *ContextServiceImpl) Shutdown() error {
+	log.Info("Context service shutdown requested")
+	if is.cancelFunc != nil && is.ctx.Err() == nil {
+		log.Info("Context service stopping...")
+		is.cancelFunc()
+		log.Info("Context service stopped")
+	} else if is.ctx.Err() != nil {
+		log.Info("Context service already stopped")
+	} else {
+		log.Info("Context service has not been started")
+	}
+	return nil
+}
+
+type IdentityServiceConfiguration interface {
+	Configuration() *configuration.IdentityServerConfiguration
+}
+
+type IdentityServiceConfigurationImpl struct {
+	config *configuration.IdentityServerConfiguration
+}
+
+func (isc *IdentityServiceConfigurationImpl) Configuration() *configuration.IdentityServerConfiguration {
+	return isc.config
+}
+
+func NewIdentityServerConfigurationService(config *configuration.IdentityServerConfiguration) func(do.Injector) (IdentityServiceConfiguration, error) {
+	return func(i do.Injector) (IdentityServiceConfiguration, error) {
+		return &IdentityServiceConfigurationImpl{
+			config: config,
+		}, nil
+	}
+}
+
+type IdentityService interface {
+	Start()
+	Shutdown() error
+	HealthCheck() error
+	IsIdentityService() bool
+}
+
+type IdentityServiceImpl struct {
+	context    ContextService
+	command    CommandService
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+	config     IdentityServiceConfiguration
+}
+
+func MustGetIdentityServerConfigurationService(i do.Injector) IdentityServiceConfiguration {
+	return MustInvokeAny[IdentityServiceConfiguration](i)
+}
+
+func NewIdentityService(i do.Injector) (IdentityService, error) {
+	context := MustGetContextService(i)
+	command := MustGetCommandService(i)
+	config := MustGetIdentityServerConfigurationService(i)
+	service := &IdentityServiceImpl{
+		context: context,
+		command: command,
+		config:  config,
+	}
+	service.Start()
+	return service, nil
+}
+
+func (is *IdentityServiceImpl) Start() {
+	log.Info("Starting identity server")
+	if is.ctx != nil {
+		panic("ctx is already set, service is already running")
+	}
+	is.ctx, is.cancelFunc = context.WithCancel(is.context.Context())
+	go StartIdentity(is.config.Configuration())(is.ctx)(is.command.GetCommand(), is.command.GetArgs())
+}
+
+func (is *IdentityServiceImpl) Shutdown() error {
+	log.Info("Identity service shutdown requested")
+	if is.cancelFunc != nil && is.ctx.Err() == nil {
+		log.Info("Identity service stopping...")
+		is.cancelFunc()
+		is.context.Shutdown() // this service shuts down the parent context
+		log.Info("Identity service stopped")
+	} else {
+		log.Info("Identity service already stopped")
+	}
+	return nil
+}
+
+func (is *IdentityServiceImpl) HealthCheck() error {
+	log.Info("Health check passed for IdentityService")
+	return nil
+}
+
+func (is *IdentityServiceImpl) IsIdentityService() bool {
+	return true
 }
 
 func StartIdentityFromContext(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
@@ -415,7 +778,7 @@ func StartIdentityFromContext(ctx context.Context, config *configuration.Identit
 		panic("config is nil")
 	}
 	return func(cmd *cobra.Command, args []string) {
-		StartIdentity(config)(ctx, nil)(cmd, args)
+		StartIdentity(config)(ctx)(cmd, args)
 	}
 }
 
@@ -424,11 +787,11 @@ var keyTypeCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "The total number of authentications by type",
 }, []string{"type"})
 
-func StartIdentity(config *configuration.IdentityServerConfiguration) func(context.Context, *sync.WaitGroup) func(*cobra.Command, []string) {
+func StartIdentity(config *configuration.IdentityServerConfiguration) func(context.Context) func(*cobra.Command, []string) {
 	if config == nil {
 		panic("config is nil")
 	}
-	return func(goctx context.Context, wg *sync.WaitGroup) func(*cobra.Command, []string) {
+	return func(goctx context.Context) func(*cobra.Command, []string) {
 		return func(cmd *cobra.Command, args []string) {
 			log.Info("Starting identity server")
 			if goctx == nil {

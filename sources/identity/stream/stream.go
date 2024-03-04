@@ -7,11 +7,10 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/charmbracelet/log"
-	"github.com/developing-today/code/src/identity/configuration"
 	"github.com/spf13/cobra"
 )
 
-func RunStreamServer(ctx context.Context, config *configuration.IdentityServerConfiguration, cmd *cobra.Command, args []string) {
+func RunStreamServer(ctx context.Context, cmd *cobra.Command, args []string) {
 	log.Info("Starting stream server")
 	node, err := centrifuge.New(centrifuge.Config{})
 	if err != nil {

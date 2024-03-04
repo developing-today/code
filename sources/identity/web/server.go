@@ -172,7 +172,7 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 	jwksClient := jwks.NewCachingProvider(issuer, cacheTTL, jwks.WithCustomJWKSURI(jwksURL)) // probably find a way to remove custom jwks
 	log.Info("JWKS Validator", "jwksClientCacheTTL", cacheTTL, "jwksURL", jwksURL, "issuer", issuer, "audience", audience, "jwksClientCustomJWKSURI", jwksClient.CustomJWKSURI, "jwksClientIssuerURL", jwksClient.IssuerURL)
 
-	return func(token *jwt.Token) (interface{}, error) {
+	return func(token *jwt.Token) (any, error) {
 		log.Info("Validating token", "token", token)
 
 		alg, ok := token.Header["alg"].(string)
@@ -235,7 +235,7 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 		aud := token.Claims.(jwt.MapClaims)["aud"]
 		log.Info("Audience", "aud", aud, "audience", audience)
 
-		if !audienceContainsAll(aud.([]interface{}), audience) {
+		if !audienceContainsAll(aud.([]any), audience) {
 			log.Error("Invalid audience", "aud", aud, "audience", audience)
 			return nil, fmt.Errorf("invalid audience, expected %v, got %v", audience, aud)
 		}
@@ -252,7 +252,7 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 	}, nil
 }
 
-func audienceContains(aud string, audience []interface{}) bool {
+func audienceContains(aud string, audience []any) bool {
 	for _, a := range audience {
 		if a == aud {
 			log.Info("Audience contains", "aud", a, "audience", audience)
@@ -263,7 +263,7 @@ func audienceContains(aud string, audience []interface{}) bool {
 	return false
 }
 
-func audienceContainsAll(aud []interface{}, audience []string) bool {
+func audienceContainsAll(aud []any, audience []string) bool {
 	for _, a := range audience {
 		if !audienceContains(a, aud) {
 			log.Error("Audience does not contain", "aud", a, "audience", aud)

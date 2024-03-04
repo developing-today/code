@@ -27,6 +27,7 @@ type ConfigurationLocations struct {
 type IdentityServerConfiguration struct {
 	Configuration          *koanf.Koanf
 	ConfigurationLocations *ConfigurationLocations
+	ConfigurationSeparator string
 	EmbedFS                *embed.FS
 	JWKSProvider           *jwks.Provider
 	JWTAudience            []string

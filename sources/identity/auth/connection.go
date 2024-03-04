@@ -508,7 +508,7 @@ func (b *Connection) SetComments(comments string) error {
 	return nil
 }
 
-func (b *Connection) Update(column string, value interface{}) error {
+func (b *Connection) Update(column string, value any) error {
 	host := os.Getenv("TURSO_HOST")
 	if host == "" {
 		log.Fatal("TURSO_HOST is not set")
