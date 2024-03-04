@@ -39,7 +39,7 @@ func (is *ContextServiceImpl) HealthCheck() error {
 		log.Error("Health check failed for ContextService", "error", is.ctx.Err())
 		return is.ctx.Err()
 	}
-	log.Info("Health check passed for ContextService")
+	// log.Info("Health check passed for ContextService")
 	return nil
 }
 

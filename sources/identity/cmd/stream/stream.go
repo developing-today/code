@@ -46,7 +46,7 @@ func (ss *StreamServiceImpl) IsStreamService() bool {
 }
 
 func (ss *StreamServiceImpl) HealthCheck() error {
-	log.Info("Health check passed for StreamService")
+	// log.Info("Health check passed for StreamService")
 	return nil
 }
 

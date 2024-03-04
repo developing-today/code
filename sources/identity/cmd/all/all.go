@@ -65,11 +65,13 @@ func StartServices(ctx context.Context, config *configuration.IdentityServerConf
 	return func(cmd *cobra.Command, args []string) {
 		log.Info("Setting up shutdown context")
 		ctx, cancel := context.WithCancel(ctx)
+		defer FinalShutdown(ctx, cmd, args)
 		defer cancel()
 
 		osDone := make(chan os.Signal, 1)
 		defer signal.Stop(osDone)
-		signal.Notify(osDone, configuration.DefaultDoneSignals...)
+		doneSignals := configuration.DefaultDoneSignals
+		signal.Notify(osDone, doneSignals...)
 
 		iDone := make(chan os.Signal, 1)
 		defer signal.Stop(iDone)
@@ -85,6 +87,7 @@ func StartServices(ctx context.Context, config *configuration.IdentityServerConf
 			case <-ctx.Done():
 				log.Info("Context cancelled, ensuring all services complete.")
 			}
+			log.Info("Canceling context")
 			cancel()
 			log.Info("Cancelled context. waiting for services to complete.")
 		}()
@@ -93,8 +96,9 @@ func StartServices(ctx context.Context, config *configuration.IdentityServerConf
 			<-iDone
 			log.Info("Signal received, injector has shutdown")
 			cancel()
-			FinalShutdown(ctx, cmd, args)
+			log.Info("Cancelled context. Sending final shutdown signal")
 			done <- syscall.SIGINT
+			log.Info("Final shutdown signal sent")
 		}()
 
 		log.Info("Creating injector")
@@ -133,7 +137,7 @@ func StartServices(ctx context.Context, config *configuration.IdentityServerConf
 		}()
 		go func() {
 			log.Info("Waiting for signals to shutdown injector")
-			signal, errors := i.ShutdownOnSignals(configuration.DefaultDoneSignals...)
+			signal, errors := i.ShutdownOnSignals(doneSignals...)
 			log.Info("Signals received, injector was shutdown", "signal", signal, "errors", errors)
 			if errors != nil {
 				for _, err := range *errors {
@@ -160,17 +164,23 @@ func StartServices(ctx context.Context, config *configuration.IdentityServerConf
 		d.Start[identity.IdentityService](i)
 		d.Start[stream.StreamService](i)
 		log.Info("Services started")
+
+		go func() {
+			for {
+				health := i.HealthCheck()
+				for k, v := range health {
+					if v != nil {
+						log.Error("Health check failed", "service", k, "error", v)
+						cancel()
+					}
+				}
+				time.Sleep(15 * time.Second)
+			}
+		}()
+
 		log.Info("Waiting for signals to shutdown")
 		<-done
 	}
-}
-
-func CleanupAndShutdown(cancel context.CancelFunc, done chan struct{}) {
-	log.Info("Cleaning up and shutting down.")
-	cancel()
-	log.Info("Cancelled context. waiting for services to complete.")
-	<-done
-	log.Info("All services done. Shutting down.")
 }
 
 func FinalShutdown(ctx context.Context, cmd *cobra.Command, args []string) {
