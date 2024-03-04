@@ -4,11 +4,11 @@ import (
 	"os"
 
 	"github.com/charmbracelet/log"
-	"github.com/developing-today/code/src/identity/cmd"
+	"github.com/developing-today/code/src/identity/cmd/root"
 )
 
 func main() {
-	if err := cmd.DefaultRootCmd().Execute(); err != nil {
+	if err := root.DefaultRootCmd().Execute(); err != nil {
 		log.Error(err)
 		os.Exit(1)
 	}

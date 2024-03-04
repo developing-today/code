@@ -4,6 +4,7 @@ import (
 	"embed"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/auth0/go-jwt-middleware/v2/jwks"
@@ -15,6 +16,30 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/rawbytes"
 )
+
+/*
+// todo
+embed default kdl file,
+default kdl file ->
+hard code vars in build ->
+config file -> env vars ->
+remote config (
+
+	s3 ->
+	db ->
+	nats/centrifuge ->
+	etc) (
+	dont do all this, just this is the direction eventually as things become available if)
+*/
+
+// todo: put these into configuration but also as flat defaults in configuration
+var Separator = "."
+var ConfigurationFilePath = "config.kdl"
+var EmbeddedConfigurationFilePath = "embed/config.kdl"
+var GeneratedKeyDirPath = ".ssh/generated"
+var HostKeyPath = ".ssh/term_info_ed25519"
+var ScpFileSystemDirPath = "scp"
+var DefaultDoneSignals = []os.Signal{os.Interrupt, syscall.SIGINT, syscall.SIGTERM}
 
 //go:embed all:embed
 var EmbedFS embed.FS
