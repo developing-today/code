@@ -13,8 +13,8 @@ import (
 	icfg "github.com/developing-today/code/src/identity/cmd/configuration"
 	contextservice "github.com/developing-today/code/src/identity/cmd/context"
 	d "github.com/developing-today/code/src/identity/cmd/do"
-	"github.com/developing-today/code/src/identity/cmd/identity"
-	idc "github.com/developing-today/code/src/identity/cmd/identity/configuration"
+	ssh "github.com/developing-today/code/src/identity/cmd/ssh"
+	idc "github.com/developing-today/code/src/identity/cmd/ssh/configuration"
 	"github.com/developing-today/code/src/identity/cmd/stream"
 	"github.com/developing-today/code/src/identity/configuration"
 	"github.com/samber/do/v2"
@@ -28,7 +28,7 @@ func StartAllAltCmd(command cobra.Command) *cobra.Command {
 	return &result
 }
 
-func StartAllCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+func StartAllCmd(ctx context.Context, config *configuration.SshServerConfiguration) *cobra.Command {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -41,12 +41,12 @@ func StartAllCmd(ctx context.Context, config *configuration.IdentityServerConfig
 		Run:     StartAllServices(ctx, config),
 		Aliases: []string{"s", "run", "serve", "publish", "pub", "p", "i", "y", "u", "o", "p", "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "h", "j", "k", "l", "z", "x", "c", "v", "b"},
 	}
-	result.AddCommand(charm.StartCharmCmd(ctx, config), identity.StartIdentityCmd(ctx, config), stream.StartStreamCmd(ctx, config))
+	result.AddCommand(charm.StartCharmCmd(ctx, config), ssh.StartIdentityCmd(ctx, config), stream.StartStreamCmd(ctx, config))
 	result.AddCommand(StartAllAltCmd(*result))
 	return result
 }
 
-func StartAllServices(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+func StartAllServices(ctx context.Context, config *configuration.SshServerConfiguration) func(*cobra.Command, []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -61,7 +61,7 @@ func StartAllServices(ctx context.Context, config *configuration.IdentityServerC
 	}
 }
 
-func StartServices(ctx context.Context, config *configuration.IdentityServerConfiguration) func(*cobra.Command, []string) {
+func StartServices(ctx context.Context, config *configuration.SshServerConfiguration) func(*cobra.Command, []string) {
 	return func(cmd *cobra.Command, args []string) {
 		log.Info("Setting up shutdown context")
 		ctx, cancel := context.WithCancel(ctx)
@@ -152,16 +152,16 @@ func StartServices(ctx context.Context, config *configuration.IdentityServerConf
 		log.Info("Providing services")
 
 		d.Provide(i, contextservice.NewContextService(ctx))
-		d.Provide(i, idc.NewIdentityServerConfigurationService(config))
+		d.Provide(i, idc.NewSshServerConfigurationService(config))
 		d.Provide(i, command.NewCommandService(cmd, args))
 		d.Provide(i, icfg.NewConfigurationService(config.Configuration, config.ConfigurationSeparator, config.ConfigurationLocations))
 		d.Provide(i, charm.NewCharmService)
-		d.Provide(i, identity.NewIdentityService)
+		d.Provide(i, ssh.NewSshService)
 		d.Provide(i, stream.NewStreamService)
 
 		log.Info("Starting services")
 		d.Start[charm.CharmService](i)
-		d.Start[identity.IdentityService](i)
+		d.Start[ssh.SshService](i)
 		d.Start[stream.StreamService](i)
 		log.Info("Services started")
 

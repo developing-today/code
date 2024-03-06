@@ -40,7 +40,7 @@ func RunWebServer(ctx context.Context, connections *auth.SafeConnectionMap, conf
 	}
 }
 
-func GoRunWebServer(ctx context.Context, connections *auth.SafeConnectionMap, configuration *configuration.IdentityServerConfiguration) {
+func GoRunWebServer(ctx context.Context, connections *auth.SafeConnectionMap, configuration *configuration.SshServerConfiguration) {
 	go RunWebServer(ctx, connections, configuration.Configuration)
 }
 

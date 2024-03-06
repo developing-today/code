@@ -6,7 +6,7 @@ import (
 	charmcmd "github.com/charmbracelet/charm/cmd"
 
 	"github.com/developing-today/code/src/identity/cmd/all"
-	"github.com/developing-today/code/src/identity/cmd/identity/configuration"
+	"github.com/developing-today/code/src/identity/cmd/ssh/configuration"
 	cfg "github.com/developing-today/code/src/identity/configuration"
 	"github.com/spf13/cobra"
 )
@@ -22,7 +22,7 @@ func DefaultRootCmdWithContext(ctx context.Context) *cobra.Command {
 	return RootCmd(ctx, configuration.LoadDefaultConfiguration())
 }
 
-func RootCmd(ctx context.Context, config *cfg.IdentityServerConfiguration) *cobra.Command {
+func RootCmd(ctx context.Context, config *cfg.SshServerConfiguration) *cobra.Command {
 	if ctx == nil {
 		ctx = context.Background()
 	}

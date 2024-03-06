@@ -1,3 +1,18 @@
+charm
+charm.exe
+data
+*.db
+*.log
+dist
+cmd/coverage.out
+charm-keys-backup.tar
+completions/
+manpages/
+identity
+identity.exe
+*.exe
+.ssh
+
 # Auto-generated .gitignore file.
 # See https://gowebly.org for more information.
 

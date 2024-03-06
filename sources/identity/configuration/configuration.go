@@ -49,7 +49,7 @@ type ConfigurationLocations struct {
 	EmbeddedConfigurationFilePaths []string
 }
 
-type IdentityServerConfiguration struct {
+type SshServerConfiguration struct {
 	Configuration          *koanf.Koanf
 	ConfigurationLocations *ConfigurationLocations
 	ConfigurationSeparator string
@@ -70,7 +70,7 @@ var (
 	Prefix = GetEnv(namespace.Prefix, "dt")
 )
 
-func (c *IdentityServerConfiguration) LoadConfiguration() {
+func (c *SshServerConfiguration) LoadConfiguration() {
 	// lower, replace prefix with identity.", also populate "" and "identity.server."
 	// IDENTITY_SERVER_*
 	// lower, replace prefix with "identity.", also populate ""
@@ -187,7 +187,7 @@ func (c *IdentityServerConfiguration) LoadConfiguration() {
 	log.Info("Loaded file configuration", "config", c.Configuration.Sprint())
 }
 
-func (c *IdentityServerConfiguration) SetConfiguration(config *IdentityServerConfiguration) {
+func (c *SshServerConfiguration) SetConfiguration(config *SshServerConfiguration) {
 	c.Configuration = config.Configuration
 	c.ConfigurationLocations = config.ConfigurationLocations
 	c.EmbedFS = config.EmbedFS

@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func StartStreamCmd(ctx context.Context, config *configuration.IdentityServerConfiguration) *cobra.Command {
+func StartStreamCmd(ctx context.Context, config *configuration.SshServerConfiguration) *cobra.Command {
 	if ctx == nil {
 		ctx = context.Background()
 	}
