@@ -1,15 +1,11 @@
 #!/usr/bin/env sh
 /boot/dietpi/dietpi-software install 188 # install latest go version (and git)
 apt update
-apt install -y wget libicu72
+apt install -y wget libicu72 npm
+npm install -g npm@latest
 wget https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
 dpkg -i powershell_7.4.1-1.deb_amd64.deb
 apt install -f
-rm powershell_7.4.1-1.deb_amd64.deb
-# curl -fsSL https://deb.nodesource.com/setup_21.x | bash - &&\
-# apt-get install -y nodejs
-apt install npm
-npm install -g npm@latest
 
 cd ~$USER
 if [ ! -d "code" ]; then
