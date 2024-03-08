@@ -6,7 +6,10 @@ wget https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershel
 dpkg -i powershell_7.4.1-1.deb_amd64.deb
 apt install -f
 rm powershell_7.4.1-1.deb_amd64.deb
+# curl -fsSL https://deb.nodesource.com/setup_21.x | bash - &&\
+# apt-get install -y nodejs
 apt install npm
+npm install -g npm@latest
 git clone https://github.com/developing-today/code
 cd code/source/identity
 chmod +x *.ps1

@@ -51,7 +51,7 @@ try {
       Write-Verbose "go install github.com/a-h/templ/cmd/templ@latest"
       go install github.com/a-h/templ/cmd/templ@latest
 
-      $goBinPath = "$(go env GOPATH)\bin"
+      $goBinPath = Join-Path (go env GOPATH) "bin"
       if (-Not $goBinPath) {
         $goBinPath = go env GOBIN
       }
