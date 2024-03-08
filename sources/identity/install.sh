@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-/boot/dietpit/dietpi-software install 188 # install latest go version (and git)
+/boot/dietpi/dietpi-software install 188 # install latest go version (and git)
 apt update
 apt install -y wget
 wget https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
