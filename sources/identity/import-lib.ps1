@@ -33,7 +33,11 @@ try {
       param(
         [switch]$Force
       )
-      $templCommand = "templ"
+      $goBinPath = Join-Path (go env GOPATH) "bin"
+      Write-Verbose "goBinPath: $goBinPath"
+
+      $templCommand = Join-Path $goBinPath "templ"
+      Write-Verbose "templCommand: $templCommand"
 
       try {
         $output = & $templCommand --version
@@ -50,12 +54,6 @@ try {
 
       Write-Verbose "go install github.com/a-h/templ/cmd/templ@latest"
       go install github.com/a-h/templ/cmd/templ@latest
-
-      $goBinPath = Join-Path (go env GOPATH) "bin"
-      if (-Not $goBinPath) {
-        $goBinPath = go env GOBIN
-      }
-      Write-Verbose "goBinPath: $goBinPath"
 
       if (-Not ($env:PATH -split ';' -contains $goBinPath)) {
         Write-Verbose "Adding Go bin path to the current session PATH..."

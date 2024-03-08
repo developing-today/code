@@ -96,12 +96,16 @@ try {
     if (-not $SkipBuildTempl) {
 
       Install-Templ -Force:$ForceInstallTempl
+      $goBinPath = Join-Path (go env GOPATH) "bin"
+      Write-Verbose "goBinPath: $goBinPath"
+      $templCommand = Join-Path $goBinPath "templ"
+      Write-Verbose "templCommand: $templCommand"
 
       Write-Verbose "templ fmt"
-      templ fmt .
+      ."$templCommand" fmt .
 
       Write-Verbose "templ generate"
-      $generateOutput = templ generate
+      $generateOutput = ."$templCommand" generate
       Write-Verbose "templ generate output:"
       $generateOutput -split "`n" | ForEach-Object { Write-Verbose ($_ -replace "\(Γ£ù\)", "❌" -replace "\(Γ£ô\)", "✅") }
 
