@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 /boot/dietpi/dietpi-software install 188 # install latest go version (and git)
+source /etc/bash.bashrc
 apt update
 apt install -y wget libicu72 npm
 npm install -g npm@latest
 wget https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
 dpkg -i powershell_7.4.1-1.deb_amd64.deb
 apt install -f
-
 cd ~$USER
 if [ ! -d "code" ]; then
   git clone https://github.com/developing-today/code
@@ -15,5 +15,4 @@ else
 fi
 cd code/source/identity
 chmod +x *.ps1
-
 ./start-server-all.ps1
