@@ -25,6 +25,7 @@ require (
 	github.com/nrednav/cuid2 v1.0.0
 	github.com/prometheus/client_golang v1.19.0
 	github.com/samber/do/v2 v2.0.0-beta.5
+	github.com/samber/go-type-to-string v1.2.0
 	github.com/spf13/cobra v1.8.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240208053015-5d6aa1e2196d
 	golang.org/x/crypto v0.20.0
@@ -101,7 +102,6 @@ require (
 	github.com/redis/rueidis v1.0.22 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/samber/go-type-to-string v1.2.0 // indirect
 	github.com/sblinch/kdl-go v0.0.0-20240108033718-e453df3dbf65 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/segmentio/encoding v0.3.6 // indirect
