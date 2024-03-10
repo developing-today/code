@@ -29,7 +29,7 @@ require (
 	github.com/spf13/cobra v1.8.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240208053015-5d6aa1e2196d
 	golang.org/x/crypto v0.21.0
-	gopkg.in/go-jose/go-jose.v2 v2.6.2
+	gopkg.in/go-jose/go-jose.v2 v2.6.3
 )
 
 replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240310034134-33438f790aed
