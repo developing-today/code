@@ -96,7 +96,7 @@ try {
     if (-not $SkipBuildTempl) {
 
       Install-Templ -Force:$ForceInstallTempl
-      $goBinPath = Join-Path (go env GOPATH) "bin"
+      $goBinPath = Join-Path $(go env GOPATH) "bin"
       Write-Verbose "goBinPath: $goBinPath"
       $templCommand = Join-Path $goBinPath "templ"
       Write-Verbose "templCommand: $templCommand"

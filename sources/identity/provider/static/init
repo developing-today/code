@@ -4,7 +4,7 @@ if [ -z "$CHARM_URL" ] || [ "$CHARM_URL" = "{{CHARM_URL}}" ]; then
   CHARM_URL="cloud.charm.sh"
 fi
 export CHARM_URL
-CHARM_LINK_URL="{{CHARM_LINK_URL}}"
+CHARM_LINK_URL="http://127.0.0.1:3333/link"
 if [ -z "$CHARM_LINK_URL" ] || [ "$CHARM_LINK_URL" = "\{\{CHARM_LINK_URL\}\}" ]; then
   echo "No charm link provided"
   exit 1

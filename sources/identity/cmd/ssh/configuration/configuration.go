@@ -1,7 +1,6 @@
 package configuration
 
 import (
-	"github.com/charmbracelet/log"
 	"github.com/developing-today/code/src/identity/configuration"
 	"github.com/knadh/koanf"
 	"github.com/samber/do/v2"
@@ -31,7 +30,7 @@ func NewConfiguration() *configuration.SshServerConfiguration {
 func LoadDefaultConfiguration() *configuration.SshServerConfiguration {
 	config := NewConfiguration()
 	config.LoadConfiguration()
-	log.Info("Loaded config", "config", config.Configuration.Sprint())
+	// log.Info("Loaded config", "config", config.Configuration.Sprint())
 	return config
 }
 

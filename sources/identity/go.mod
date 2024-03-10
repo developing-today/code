@@ -28,11 +28,11 @@ require (
 	github.com/samber/go-type-to-string v1.2.0
 	github.com/spf13/cobra v1.8.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240208053015-5d6aa1e2196d
-	golang.org/x/crypto v0.20.0
+	golang.org/x/crypto v0.21.0
 	gopkg.in/go-jose/go-jose.v2 v2.6.2
 )
 
-replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240225103047-e4778561c8b2
+replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240310034134-33438f790aed
 
 require (
 	github.com/FZambia/eagle v0.1.0 // indirect
@@ -56,6 +56,7 @@ require (
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/go-jose/go-jose v2.6.2+incompatible // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
@@ -114,16 +115,15 @@ require (
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
 	golang.org/x/net v0.21.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
-	golang.org/x/sys v0.17.0 // indirect
-	golang.org/x/term v0.17.0 // indirect
+	golang.org/x/sys v0.18.0 // indirect
+	golang.org/x/term v0.18.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/protobuf v1.32.0 // indirect
-	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.41.0 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.7.2 // indirect
-	modernc.org/sqlite v1.29.1 // indirect
+	modernc.org/sqlite v1.29.2 // indirect
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 	nhooyr.io/websocket v1.8.10 // indirect

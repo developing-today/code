@@ -141,25 +141,25 @@ func (c *SshServerConfiguration) LoadConfiguration() {
 	c.Configuration.Set("identity.server.tls.key.client", "./data/tls/client-key.pem")
 	c.Configuration.Set("identity.server.tls.ca", "./data/tls/ca.pem")
 
-	log.Info("Loaded default configuration", "config", c.Configuration.Sprint())
-	log.Info("Loading embedded file configuration", "config", c.ConfigurationLocations.EmbeddedConfigurationFilePaths)
+	// log.Info("Loaded default configuration", "config", c.Configuration.Sprint())
+	// log.Info("Loading embedded file configuration", "config", c.ConfigurationLocations.EmbeddedConfigurationFilePaths)
 
 	for _, path := range c.ConfigurationLocations.EmbeddedConfigurationFilePaths {
 		data, err := c.EmbedFS.ReadFile(path)
 		if err != nil {
-			log.Info("Embedded Config not found or error reading", "path", path, "error", err)
+			// log.Info("Embedded Config not found or error reading", "path", path, "error", err)
 			continue
 		}
 
 		if err := c.Configuration.Load(rawbytes.Provider(data), kdl.Parser()); err != nil {
 			log.Error("Failed to load embedded config", "error", err)
 		} else {
-			log.Info("Loaded config from embedded file", "path", path)
+			// log.Info("Loaded config from embedded file", "path", path)
 		}
 	}
 
-	log.Info("Loaded embedded configuration", "config", c.Configuration.Sprint())
-	log.Info("Loading environment configuration", "environment_variable_prefix", prefix, "lvl", "WARN")
+	// log.Info("Loaded embedded configuration", "config", c.Configuration.Sprint())
+	// log.Info("Loading environment configuration", "environment_variable_prefix", prefix, "lvl", "WARN")
 
 	c.Configuration.Load(env.Provider(prefix, ".", func(s string) string {
 		return strings.Replace(strings.Replace(strings.Replace(strings.ToLower(
@@ -169,22 +169,22 @@ func (c *SshServerConfiguration) LoadConfiguration() {
 			" ", "_", -1)
 	}), nil)
 
-	log.Info("Loaded environment configuration", "config", c.Configuration.Sprint())
-	log.Info("Loading file configuration", "paths", c.ConfigurationLocations.ConfigurationFilePaths)
+	// log.Info("Loaded environment configuration", "config", c.Configuration.Sprint())
+	// log.Info("Loading file configuration", "paths", c.ConfigurationLocations.ConfigurationFilePaths)
 
 	for _, path := range c.ConfigurationLocations.ConfigurationFilePaths {
 		if _, err := os.Stat(path); err == nil {
 			if err := c.Configuration.Load(file.Provider(path), kdl.Parser()); err != nil {
 				log.Error("Failed to load file config", "error", err)
 			} else {
-				log.Info("Loaded config from file", "path", path)
+				// log.Info("Loaded config from file", "path", path)
 			}
 		} else {
-			log.Info("Config file not found", "path", path)
+			// log.Info("Config file not found", "path", path)
 		}
 	}
 
-	log.Info("Loaded file configuration", "config", c.Configuration.Sprint())
+	// log.Info("Loaded file configuration", "config", c.Configuration.Sprint())
 }
 
 func (c *SshServerConfiguration) SetConfiguration(config *SshServerConfiguration) {

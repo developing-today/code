@@ -4,7 +4,7 @@ ENV DEV false
 
 RUN apt-get update && apt-get install ucspi-tcp
 
-EXPOSE 3000
+EXPOSE 3333
 
 COPY . /app
 
