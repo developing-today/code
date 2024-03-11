@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -euo pipefail
+set -eu
 random() {
   echo $(dd if=/dev/urandom bs=1 count=64 2>/dev/null | xxd -p)
 }

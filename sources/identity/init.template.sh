@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -euo pipefail
+set -eu
 if [ -n "$1" ]; then
   CHARM_URL="$1"
 fi

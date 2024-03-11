@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -euo pipefail
+set -eu
 if [ -n "$1" ]; then
   BOOTSTRAP_HOST="$1"
 fi
