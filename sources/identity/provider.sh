@@ -1,8 +1,5 @@
 #!/usr/bin/env sh
-set -eu
-random() {
-  echo $(dd if=/dev/urandom bs=1 count=64 2>/dev/null | xxd -p)
-}
+set -u
 if [ -n "$1" ]; then
   CHARM_DIR="$1"
 fi
@@ -35,6 +32,10 @@ if [ -z "$TURSO_AUTH_TOKEN" ]; then
   echo "TURSO_AUTH_TOKEN not set"
   exit 1
 fi
+set -e
+random() {
+  echo $(dd if=/dev/urandom bs=1 count=64 2>/dev/null | xxd -p)
+}
 IP=$(hostname -I | awk '{print $1}')
 if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
   IP=$(hostname -I | awk '{print $2}')

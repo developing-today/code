@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -eu
+set -u
 if [ -n "$1" ]; then
   BOOTSTRAP_HOST="$1"
 fi
@@ -18,6 +18,7 @@ fi
 if [ -z "$BOOTSTRAP_SCRIPT" ]; then
   BOOTSTRAP_SCRIPT="init"
 fi
+set -e
 apt update
 apt install -y curl
 curl -o "$BOOTSTRAP_SCRIPT" "http://$BOOTSTRAP_HOST/$BOOTSTRAP_URL_PATH/$BOOTSTRAP_SCRIPT"

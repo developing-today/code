@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -eu
+set -u
 if [ -n "$1" ]; then
   CHARM_URL="$1"
 fi
@@ -31,6 +31,7 @@ if [ -z "$CHARM_LINK_URL" ] || [ "$CHARM_LINK_URL" = "\{\{CHARM_LINK_URL\}\}" ];
   echo "Using default link: $CHARM_LINK_URL"
 fi
 export CHARM_LINK_URL
+set -e
 /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
 /boot/dietpi/dietpi-software install 188 # go (git by dependency)
 source /etc/bash.bashrc
