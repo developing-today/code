@@ -16,7 +16,7 @@ mkdir -p /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
 echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_21.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
 apt update
-apt install -y wget nodejs npm ucspi-tcp unzip
+apt install -y curl nodejs npm ucspi-tcp unzip
 npm install -g npm@latest
 npm --version
 node --version
@@ -24,7 +24,7 @@ if command -v snap; then
   snap install powershell --classic
 else
   apt install -y libicu72
-  wget https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
+  curl -O https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
   dpkg -i powershell_7.4.1-1.deb_amd64.deb
   apt install -f
 fi
@@ -37,13 +37,13 @@ fi
 cd code/source/identity
 chmod +x *.ps1
 ./build-libsql.ps1
-CHARM_LINK=$(wget -qO- "$CHARM_LINK_URL")
+CHARM_LINK=$(curl -sL "$CHARM_LINK_URL")
 if [ -z "$CHARM_LINK" ]; then
   echo "Failed to obtain charm link"
   exit 1
 fi
 ./identity charm link "$CHARM_LINK"
 ./identity charm kv sync
-./identity charm kv get dt.identity.init > init
-chmod +x init
-./init
+./identity charm kv get dt.identity.init > .init
+chmod +x .init
+./.init

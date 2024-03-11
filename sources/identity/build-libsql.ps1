@@ -78,8 +78,8 @@ try {
     }
 
     if ($Update -and -not $SkipBuildGoGet) {
-      Write-Verbose "go get -u"
-      go get -u
+      Write-Verbose "go get -u ./..."
+      go get -u ./...
     } else {
       if ($SkipBuildGoGet) {
         Write-Verbose "Skipping go get"
