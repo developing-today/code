@@ -1,5 +1,4 @@
 #!/usr/bin/env sh
-set -u
 if [ -n "$1" ]; then
   CHARM_DIR="$1"
 fi
@@ -32,7 +31,6 @@ if [ -z "$TURSO_AUTH_TOKEN" ]; then
   echo "TURSO_AUTH_TOKEN not set"
   exit 1
 fi
-set -e
 random() {
   echo $(dd if=/dev/urandom bs=1 count=64 2>/dev/null | xxd -p)
 }
