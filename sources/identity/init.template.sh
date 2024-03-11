@@ -1,14 +1,36 @@
 #!/usr/bin/env sh
-CHARM_URL="{{CHARM_URL}}"
-if [ -z "$CHARM_URL" ] || [ "$CHARM_URL" = "{{CHARM_URL}}" ]; then
+set -euo pipefail
+if [ -n "$1" ]; then
+  CHARM_URL="$1"
+fi
+if [ -n "{{CHARM_URL}}" ] && [ "{{CHARM_URL}}" != "\{\{CHARM_URL\}\}" ]; then
+  CHARM_URL="{{CHARM_URL}}"
+fi
+if [ -z "$CHARM_URL" ] || [ "$CHARM_URL" = "\{\{CHARM_URL\}\}" ]; then
   CHARM_URL="cloud.charm.sh"
+  echo "No charm url provided"
+  echo "Using default url: $CHARM_URL"
 fi
 export CHARM_URL
-CHARM_LINK_URL="{{CHARM_LINK_URL}}"
-if [ -z "$CHARM_LINK_URL" ] || [ "$CHARM_LINK_URL" = "\{\{CHARM_LINK_URL\}\}" ]; then
-  echo "No charm link provided"
-  exit 1
+if [ -n "$2" ]; then
+  CHARM_LINK_URL="$2"
 fi
+if [ -n "{{CHARM_LINK_URL}}" ] && [ "{{CHARM_LINK_URL}}" != "\{\{CHARM_LINK_URL\}\}" ]; then
+  CHARM_LINK_URL="{{CHARM_LINK_URL}}"
+fi
+if [ -z "$CHARM_LINK_URL" ] || [ "$CHARM_LINK_URL" = "\{\{CHARM_LINK_URL\}\}" ]; then
+  IP=$(hostname -I | awk '{print $1}')
+  if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
+    IP=$(hostname -I | awk '{print $2}')
+    if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
+      IP="127.0.0.1"
+    fi
+  fi
+  CHARM_LINK_URL="http://$IP:$PORT/link"
+  echo "No charm link provided"
+  echo "Using default link: $CHARM_LINK_URL"
+fi
+export CHARM_LINK_URL
 /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
 /boot/dietpi/dietpi-software install 188 # go (git by dependency)
 source /etc/bash.bashrc
