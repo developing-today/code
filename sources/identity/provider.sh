@@ -3,7 +3,7 @@ if [ -n "$1" ]; then
   CHARM_DIR="$1"
 fi
 random() {
-  echo $(dd if=/dev/urandom bs=1 count=64 2>/dev/null | xxd -p)
+  dd if=/dev/urandom bs=1 count="${1:-16}" 2>/dev/null | xxd -p | tr -d '[:space:]'
 }
 if [ -z "$CHARM_DIR" ]; then
   CHARM_DIR=~/code/source/identity/data/charms/$(random)

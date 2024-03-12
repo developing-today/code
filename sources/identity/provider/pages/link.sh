@@ -1,9 +1,6 @@
 if [[ "$REQUEST_METHOD" != "POST" ]]; then
   return $(status_code 405)
 else
-random() {
-  dd if=/dev/urandom bs=1 count="${1:-32}" 2>/dev/null | xxd -p | tr -d '[:space:]'
-}
 for key in "${!FORM_DATA[@]}"; do
   if [[ "$key" == "keys" ]]; then
     KEYS="${FORM_DATA[$key]}"
@@ -13,21 +10,28 @@ done
 if [[ -z "$KEYS" ]]; then
   return $(status_code 405)
 fi
-RANDOM_ID=$(random 32)
+random() {
+  dd if=/dev/urandom bs=1 count="${1:-16}" 2>/dev/null | xxd -p | tr -d '[:space:]'
+}
+RANDOM_ID=$(random)
 IDENTITY_DIR="$(realpath ~)/code/src/identity"
 CHARM_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
 mkdir -p "$CHARM_DIR"
 LINK_CODE_PATH=$CHARM_DIR/.link
 rm -rf "$LINK_CODE_PATH"
 mkdir -p "$(dirname "$LINK_CODE_PATH")"
+if [[ -z "$BACKGROUND_JOB_DIR" ]]; || [[ ! -d "$BACKGROUND_JOB_DIR" ]]; then
+  echo "Background job directory not found = $BACKGROUND_JOB_DIR" >&2
+  return $(status_code 405)
+fi
 BACKGROUND_JOB_PATH="$BACKGROUND_JOB_DIR/$RANDOM_ID.sh"
+echo "background job path = $BACKGROUND_JOB_PATH ; link code path = $LINK_CODE_PATH" >&2
 cat << EOF > "$BACKGROUND_JOB_PATH"
 #!/usr/bin/env bash
-CHARM_DIR="$CHARM_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "${FORM_DATA[$key]}"
+CHARM_DIR="$CHARM_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "$KEYS"
 EOF
-echo "background job path = $BACKGROUND_JOB_PATH ; link code path = $LINK_CODE_PATH" >&2
-max_wait=60 # seconds
-wait_interval=1 # seconds
+max_wait=60
+wait_interval=1
 elapsed_time=0
 while [[ ! -f "$LINK_CODE_PATH" && $elapsed_time -lt $max_wait ]]; do
   sleep $wait_interval
