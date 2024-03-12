@@ -43,7 +43,7 @@ mkdir -p /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg
 echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_21.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
 apt update
-apt install -y curl nodejs npm ucspi-tcp unzip
+apt install -y curl nodejs npm ucspi-tcp unzip xxd
 npm install -g npm@latest
 npm --version
 node --version
@@ -55,16 +55,16 @@ else
   dpkg -i powershell_7.4.1-1.deb_amd64.deb
   apt install -f
 fi
-cd ~$USER
+cd ~
 if [ ! -d "code" ]; then
   git clone https://github.com/developing-today/code
 else
   echo "code directory already exists"
 fi
 cd code/src/identity
-chmod +x *.ps1
+chmod +x *.ps1 *.sh
 ./build-libsql.ps1
-"CHARM_LINK_URL=$CHARM_LINK_URL" ./provider.sh &
+CHARM_LINK_URL="$CHARM_LINK_URL" ./provider.sh &
 get_http_status() {
     local url=$1
     curl -o /dev/null -s -w "%{http_code}\n" "$url"
@@ -85,7 +85,7 @@ while : ; do
     echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status"
 
     if [ "$http_status" -eq 405 ]; then
-        echo "Received 405 code, exiting."
+        echo "Verified charm link url is working, breaking loop."
         break
     fi
 
@@ -98,6 +98,13 @@ fi
 response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 
 if [ -n "$response" ]; then
+    extracted_value=$(echo "$response" | sed -n 's/.*HTTP\/1\.1 200 \(.*\)\r.*/\1/p')
+
+    if [ -n "$extracted_value" ]; then
+        echo "Unexpected response: $extracted_value"
+        exit 1
+    fi
+
     CHARM_LINK=$response
 else
     echo "Failed to obtain charm link"
