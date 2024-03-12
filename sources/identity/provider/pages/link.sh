@@ -1,6 +1,9 @@
 if [[ "$REQUEST_METHOD" != "POST" ]]; then
   return $(status_code 405)
 else
+if [[ -z "$INIT_URL" ]]; then
+  return $(status_code 405)
+fi
 for key in "${!FORM_DATA[@]}"; do
   if [[ "$key" == "keys" ]]; then
     KEYS="${FORM_DATA[$key]}"
@@ -15,9 +18,9 @@ random() {
 }
 RANDOM_ID=$(random)
 IDENTITY_DIR="$(realpath ~)/code/src/identity"
-CHARM_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
-mkdir -p "$CHARM_DIR"
-LINK_CODE_PATH=$CHARM_DIR/.link
+CHARM_DATA_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
+mkdir -p "$CHARM_DATA_DIR"
+LINK_CODE_PATH=$CHARM_DATA_DIR/.link
 rm -rf "$LINK_CODE_PATH"
 mkdir -p "$(dirname "$LINK_CODE_PATH")"
 if [[ -z "$BACKGROUND_JOB_DIR" ]] || [[ ! -d "$BACKGROUND_JOB_DIR" ]]; then
@@ -28,7 +31,29 @@ BACKGROUND_JOB_PATH="$BACKGROUND_JOB_DIR/$RANDOM_ID.sh"
 echo "background job path = $BACKGROUND_JOB_PATH ; link code path = $LINK_CODE_PATH" >&2
 cat << EOF > "$BACKGROUND_JOB_PATH"
 #!/usr/bin/env bash
-CHARM_DIR="$CHARM_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "$KEYS"
+set -ex
+CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv set dt.identity.secret.TURSO_HOST "$TURSO_HOST"
+CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv set dt.identity.secret.TURSO_AUTH_TOKEN "$TURSO_AUTH_TOKEN"
+CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv set dt.identity.init << EOF2
+#!/usr/bin/env bash
+cd ~/code/source/identity
+$IDENTITY_DIR/identity charm kv sync
+TURSO_HOST=$($IDENTITY_DIR/identity charm kv get dt.identity.secret.TURSO_HOST)
+export TURSO_HOST
+if [ -z "\$TURSO_HOST" ]; then
+  echo "TURSO_HOST not set"
+  exit 1
+fi
+TURSO_AUTH_TOKEN=$($IDENTITY_DIR/identity charm kv get dt.identity.secret.TURSO_AUTH_TOKEN)
+export TURSO_AUTH_TOKEN
+if [ -z "\$TURSO_AUTH_TOKEN" ]; then
+  echo "TURSO_AUTH_TOKEN not set"
+  exit 1
+fi
+$IDENTITY_DIR/provider.sh "$CHARM_DATA_DIR" "$INIT_URL" "$PORT" &
+$IDENTITY_DIR/start-server-all.ps1
+EOF2
+CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "$KEYS"
 EOF
 max_wait=60
 wait_interval=1

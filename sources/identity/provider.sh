@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 if [ -n "$1" ]; then
-  CHARM_DIR="$1"
+  CHARM_DATA_DIR="$1"
 fi
 random() {
   dd if=/dev/urandom bs=1 count="${1:-16}" 2>/dev/null | xxd -p | tr -d '[:space:]'
 }
-if [ -z "$CHARM_DIR" ]; then
-  CHARM_DIR=~/code/source/identity/data/charms/$(random)
+if [ -z "$CHARM_DATA_DIR" ]; then
+  RANDOM_ID=$(random)
+  IDENTITY_DIR="$(realpath ~)/code/src/identity"
+  CHARM_DATA_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
 fi
 if [ -n "$2" ]; then
   INIT_URL=$2
@@ -48,30 +50,8 @@ if [ -z "$CHARM_LINK_URL" ]; then
   CHARM_LINK_URL="http://$IP:$PORT/link"
 fi
 cp -f ./init.template.sh ./provider/static/init
-sed -i "s|{{CHARM_DIR}}|$CHARM_DIR|g" ./provider/static/init
+sed -i "s|{{CHARM_DATA_DIR}}|$CHARM_DATA_DIR|g" ./provider/static/init
 sed -i "s|{{CHARM_LINK_URL}}|$CHARM_LINK_URL|g" ./provider/static/init
 
-./identity charm kv set dt.identity.secret.TURSO_HOST "$TURSO_HOST"
-./identity charm kv set dt.identity.secret.TURSO_AUTH_TOKEN "$TURSO_AUTH_TOKEN"
-./identity charm kv set dt.identity.init << EOF
-#!/usr/bin/env bash
-cd ~/code/source/identity
-./identity charm kv sync
-TURSO_HOST=$(./identity charm kv get dt.identity.secret.TURSO_HOST)
-export TURSO_HOST
-if [ -z "\$TURSO_HOST" ]; then
-  echo "TURSO_HOST not set"
-  exit 1
-fi
-TURSO_AUTH_TOKEN=$(./identity charm kv get dt.identity.secret.TURSO_AUTH_TOKEN)
-export TURSO_AUTH_TOKEN
-if [ -z "\$TURSO_AUTH_TOKEN" ]; then
-  echo "TURSO_AUTH_TOKEN not set"
-  exit 1
-fi
-./provider.sh "$CHARM_DIR" "$INIT_URL" "$PORT" &
-./start-server-all.ps1
-EOF
-
 ./provider/background.sh &
-PORT=$PORT CHARM_DIR=$CHARM_DIR ./provider/start.sh
+INIT_URL=$INIT_URL PORT=$PORT CHARM_DATA_DIR=$CHARM_DATA_DIR ./provider/start.sh
