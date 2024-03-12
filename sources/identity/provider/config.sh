@@ -1,6 +1,8 @@
 PROJECT_NAME=provider
+PROJECT_DIR="$(pwd)"
+
 if [[ -z "$BACKGROUND_JOB_DIR" ]]; then
-  BACKGROUND_JOB_DIR="$(realpath "${0%/*}")/.."
+  BACKGROUND_JOB_DIR="$PROJECT_DIR/background"
 fi
 if [[ -z "$BACKGROUND_JOB_EXECUTING_DIR" ]]; then
   BACKGROUND_JOB_EXECUTING_DIR="$BACKGROUND_JOB_DIR/executing"

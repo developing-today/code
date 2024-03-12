@@ -13,16 +13,20 @@ done
 if [[ -z "$KEYS" ]]; then
   return $(status_code 405)
 fi
-CHARM_DIR=$(realpath $CHARM_DIR)"/$(random)"
+RANDOM_ID=$(random 32)
+IDENTITY_DIR="$(realpath ~)/code/src/identity"
+CHARM_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
 mkdir -p "$CHARM_DIR"
 LINK_CODE_PATH=$CHARM_DIR/.link
 rm -rf "$LINK_CODE_PATH"
 mkdir -p "$(dirname "$LINK_CODE_PATH")"
-cat << EOF > "$BACKGROUND_JOB_DIR/$(basename "$(dirname "$CHARM_DIR")").sh"
+BACKGROUND_JOB_PATH="$BACKGROUND_JOB_DIR/$RANDOM_ID.sh"
+cat << EOF > "$BACKGROUND_JOB_PATH"
 #!/usr/bin/env bash
-CHARM_DIR="$CHARM_DIR" ~/code/src/identity/identity charm link -d -o "$LINK_CODE_PATH" -k "${FORM_DATA[$key]}"
+CHARM_DIR="$CHARM_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "${FORM_DATA[$key]}"
 EOF
-echo "Created background job: $BACKGROUND_JOB_DIR/$(basename "$(dirname "$CHARM_DIR")").sh" >&2
+echo "background job path: $BACKGROUND_JOB_PATH" >&2
+echo "link code path: $LINK_CODE_PATH" >&2
 max_wait=60 # seconds
 wait_interval=1 # seconds
 elapsed_time=0

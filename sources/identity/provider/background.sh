@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 cd "${0%/*}"
 
 [[ -f 'config.sh' ]] && source config.sh
@@ -29,4 +28,4 @@ monitor_files() {
 }
 mkdir -p "$BACKGROUND_JOB_EXECUTING_DIR" "$BACKGROUND_JOB_COMPLETE_DIR" "$BACKGROUND_JOB_FAILED_DIR"
 mv "$BACKGROUND_JOB_EXECUTING_DIR"/* "$BACKGROUND_JOB_FAILED_DIR/" 2>/dev/null
-monitor_files &
+monitor_files
