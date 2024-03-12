@@ -25,28 +25,27 @@ cat << EOF > "$BACKGROUND_JOB_PATH"
 #!/usr/bin/env bash
 CHARM_DIR="$CHARM_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "${FORM_DATA[$key]}"
 EOF
-echo "background job path: $BACKGROUND_JOB_PATH" >&2
-echo "link code path: $LINK_CODE_PATH" >&2
+echo "background job path = $BACKGROUND_JOB_PATH ; link code path = $LINK_CODE_PATH" >&2
 max_wait=60 # seconds
 wait_interval=1 # seconds
 elapsed_time=0
 while [[ ! -f "$LINK_CODE_PATH" && $elapsed_time -lt $max_wait ]]; do
   sleep $wait_interval
   ((elapsed_time+=wait_interval))
-  echo "Waiting for link code: $elapsed_time seconds elapsed" >&2
 done
-echo "Elapsed time: $elapsed_time" >&2
 if [[ "$elapsed_time" -ge $max_wait ]]; then
+  echo "Link code not found = $LINK_CODE_PATH" >&2
   return $(status_code 405)
 fi
 if [[ ! -f "$LINK_CODE_PATH" ]]; then
+  echo "Link code not found = $LINK_CODE_PATH" >&2
   return $(status_code 405)
 fi
 LINK_CODE=$(cat "$LINK_CODE_PATH")
 if [[ -z "$LINK_CODE" ]]; then
+  echo "Link code not found = $LINK_CODE_PATH" >&2
   return $(status_code 405)
 fi
-echo "Obtained charm link code: $LINK_CODE" >&2
+echo "Obtained charm link code = $LINK_CODE" >&2
 respond 200 "$LINK_CODE"
 fi
-echo "Done" >&2

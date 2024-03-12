@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 if [ -n "$1" ]; then
   CHARM_DIR="$1"
 fi
@@ -54,7 +54,7 @@ sed -i "s|{{CHARM_LINK_URL}}|$CHARM_LINK_URL|g" ./provider/static/init
 ./identity charm kv set dt.identity.secret.TURSO_HOST "$TURSO_HOST"
 ./identity charm kv set dt.identity.secret.TURSO_AUTH_TOKEN "$TURSO_AUTH_TOKEN"
 ./identity charm kv set dt.identity.init <<EOF
-#!/usr/bin/env pwsh
+#!/usr/bin/env bash
 cd ~/code/source/identity
 ./identity charm kv sync
 TURSO_HOST=$(./identity charm kv get dt.identity.secret.TURSO_HOST)
