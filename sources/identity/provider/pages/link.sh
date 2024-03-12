@@ -20,7 +20,7 @@ mkdir -p "$CHARM_DIR"
 LINK_CODE_PATH=$CHARM_DIR/.link
 rm -rf "$LINK_CODE_PATH"
 mkdir -p "$(dirname "$LINK_CODE_PATH")"
-if [[ -z "$BACKGROUND_JOB_DIR" ]]; || [[ ! -d "$BACKGROUND_JOB_DIR" ]]; then
+if [[ -z "$BACKGROUND_JOB_DIR" ]] || [[ ! -d "$BACKGROUND_JOB_DIR" ]]; then
   echo "Background job directory not found = $BACKGROUND_JOB_DIR" >&2
   return $(status_code 405)
 fi

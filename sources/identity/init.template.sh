@@ -89,7 +89,6 @@ fi
 cd code/src/identity
 chmod +x *.ps1 *.sh
 ./build-libsql.ps1
-CHARM_LINK_URL="$CHARM_LINK_URL" ./provider.sh &
 get_http_status() {
     local url=$1
     curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
@@ -117,10 +116,15 @@ while : ; do
 
     sleep 2
 done
-set -e
 echo "Obtaining charm link"
-response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 
+response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
+LAST_EXIT_CODE=$?
+if [ "$LAST_EXIT_CODE" -ne 0 ]; then
+    echo "Failed to obtain charm link"
+    exit 1
+fi
+set -e
 if [ -n "$response" ]; then
     extracted_value=$(echo "$response" | sed -n 's/.*HTTP\/1\.1 200 \(.*\)\r.*/\1/p')
 
