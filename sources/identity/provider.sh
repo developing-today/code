@@ -73,4 +73,5 @@ fi
 ./start-server-all.ps1
 EOF
 
+./provider/background.sh &
 PORT=$PORT CHARM_DIR=$CHARM_DIR ./provider/start.sh
