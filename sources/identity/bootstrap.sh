@@ -21,4 +21,4 @@ apt update
 apt install -y curl
 curl -o "$BOOTSTRAP_SCRIPT" "http://$BOOTSTRAP_HOST/$BOOTSTRAP_URL_PATH/$BOOTSTRAP_SCRIPT"
 chmod +x "./$BOOTSTRAP_SCRIPT"
-"./$BOOTSTRAP_SCRIPT"
+source "./$BOOTSTRAP_SCRIPT"

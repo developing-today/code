@@ -1,5 +1,7 @@
 ./init
 ./.init
+.link
+./.link
 ./provider/static/init
 ./provider/data/
 ./provider/stream/

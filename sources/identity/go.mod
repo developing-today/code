@@ -32,7 +32,7 @@ require (
 	gopkg.in/go-jose/go-jose.v2 v2.6.3
 )
 
-replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240310061729-3b7e199cf626
+replace github.com/charmbracelet/charm => github.com/developing-today-forks/charm v0.12.7-0.20240312075138-411f9ff4f8ac
 
 require (
 	github.com/FZambia/eagle v0.1.0 // indirect
