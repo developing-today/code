@@ -140,7 +140,9 @@ set -ex
 CHARM_LINK=$extracted_value
 ./identity charm link -d "$CHARM_LINK"
 ./identity charm kv sync
+cat .init
 ./identity charm kv get dt.identity.init > .init
+cat .init
 chmod +x .init
 echo "Running .init"
 set +e
