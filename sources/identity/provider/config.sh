@@ -1,1 +1,13 @@
 PROJECT_NAME=provider
+if [[ -z "$BACKGROUND_JOB_DIR" ]]; then
+  BACKGROUND_JOB_DIR="$(realpath "${0%/*}")/.."
+fi
+if [[ -z "$BACKGROUND_JOB_EXECUTING_DIR" ]]; then
+  BACKGROUND_JOB_EXECUTING_DIR="$BACKGROUND_JOB_DIR/executing"
+fi
+if [[ -z "$BACKGROUND_JOB_COMPLETE_DIR" ]]; then
+  BACKGROUND_JOB_COMPLETE_DIR="$BACKGROUND_JOB_DIR/complete"
+fi
+if [[ -z "$BACKGROUND_JOB_FAILED_DIR" ]]; then
+  BACKGROUND_JOB_FAILED_DIR="$BACKGROUND_JOB_DIR/failed"
+fi

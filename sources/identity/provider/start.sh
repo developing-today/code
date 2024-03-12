@@ -21,6 +21,8 @@ mkdir -p sessions
 mkdir -p pubsub
 mkdir -p data
 mkdir -p uploads
+mkdir -p exec
+
 
 PORT=${PORT:-3333}
 

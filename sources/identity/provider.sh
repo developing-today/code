@@ -6,7 +6,7 @@ random() {
   echo $(dd if=/dev/urandom bs=1 count=64 2>/dev/null | xxd -p)
 }
 if [ -z "$CHARM_DIR" ]; then
-  CHARM_DIR=~$USER/code/source/identity/data/charms/$(random)
+  CHARM_DIR=~/code/source/identity/data/charms/$(random)
 fi
 if [ -n "$2" ]; then
   INIT_URL=$2
@@ -55,7 +55,7 @@ sed -i "s|{{CHARM_LINK_URL}}|$CHARM_LINK_URL|g" ./provider/static/init
 ./identity charm kv set dt.identity.secret.TURSO_AUTH_TOKEN "$TURSO_AUTH_TOKEN"
 ./identity charm kv set dt.identity.init <<EOF
 #!/usr/bin/env pwsh
-cd ~\$USER/code/source/identity
+cd ~/code/source/identity
 ./identity charm kv sync
 TURSO_HOST=$(./identity charm kv get dt.identity.secret.TURSO_HOST)
 export TURSO_HOST

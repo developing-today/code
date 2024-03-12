@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # must be bash because we source a bashrc file
+set -ex
 if [ -n "$1" ]; then
   CHARM_URL="$1"
 fi
@@ -42,18 +43,42 @@ fi
 mkdir -p /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg
 echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_21.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
-apt update
-apt install -y curl nodejs npm ucspi-tcp unzip xxd
+DEBIAN_FRONTEND=noninteractive apt update
+DEBIAN_FRONTEND=noninteractive apt dist-upgrade -yq
+DEBIAN_FRONTEND=noninteractive apt autoremove -y
+DEBIAN_FRONTEND=noninteractive apt autoclean -y
+DEBIAN_FRONTEND=noninteractive apt install -y curl nodejs ucspi-tcp unzip xxd unattended-upgrades
+AUTO_UPGRADES_FILE="/etc/apt/apt.conf.d/20auto-upgrades"
+REQUIRED_LINES=(
+    'APT::Periodic::Update-Package-Lists "1";'
+    'APT::Periodic::Download-Upgradeable-Packages "1";'
+    'APT::Periodic::AutocleanInterval "7";'
+    'APT::Periodic::Unattended-Upgrade "1";'
+)
+add_line_if_not_present() {
+    local line="$1"
+    local file="$2"
+    grep -qF -- "$line" "$file" || echo "$line" >> "$file"
+}
+if [ ! -f "$AUTO_UPGRADES_FILE" ]; then
+    echo "$AUTO_UPGRADES_FILE does not exist, creating it..."
+    touch "$AUTO_UPGRADES_FILE"
+fi
+for line in "${REQUIRED_LINES[@]}"; do
+    add_line_if_not_present "$line" "$AUTO_UPGRADES_FILE"
+done
+echo "The $AUTO_UPGRADES_FILE has been updated."
+
 npm install -g npm@latest
 npm --version
 node --version
 if command -v snap; then
   snap install powershell --classic
 else
-  apt install -y libicu72
-  curl -O https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
+  DEBIAN_FRONTEND=noninteractive apt install -y libicu72
+  curl -LO https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
   dpkg -i powershell_7.4.1-1.deb_amd64.deb
-  apt install -f
+  DEBIAN_FRONTEND=noninteractive apt install -f
 fi
 cd ~
 if [ ! -d "code" ]; then
@@ -67,11 +92,12 @@ chmod +x *.ps1 *.sh
 CHARM_LINK_URL="$CHARM_LINK_URL" ./provider.sh &
 get_http_status() {
     local url=$1
-    curl -o /dev/null -s -w "%{http_code}\n" "$url"
+    curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
 }
 
 start_time=$(date +%s)
 
+set +e
 while : ; do
     current_time=$(date +%s)
     elapsed_time=$((current_time - start_time))
@@ -84,34 +110,34 @@ while : ; do
     http_status=$(get_http_status "$CHARM_LINK_URL")
     echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status"
 
-    if [ "$http_status" -eq 405 ]; then
-        echo "Verified charm link url is working, breaking loop."
+    if [ "$http_status" -ne 000 ]; then
+        echo "Verified charm link url is responding, breaking loop."
         break
     fi
 
     sleep 2
 done
-if [ "$elapsed_time" -ge 60 ]; then
-    echo "Failed to obtain charm link"
-    exit 1
-fi
+set -e
+echo "Obtaining charm link"
 response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 
 if [ -n "$response" ]; then
     extracted_value=$(echo "$response" | sed -n 's/.*HTTP\/1\.1 200 \(.*\)\r.*/\1/p')
 
-    if [ -n "$extracted_value" ]; then
+    if [ -z "$extracted_value" ]; then
         echo "Unexpected response: $extracted_value"
         exit 1
     fi
-
-    CHARM_LINK=$response
 else
     echo "Failed to obtain charm link"
     exit 1
 fi
+set -ex
+CHARM_LINK=$extracted_value
 ./identity charm link -d "$CHARM_LINK"
 ./identity charm kv sync
 ./identity charm kv get dt.identity.init > .init
 chmod +x .init
+echo "Running .init"
+set +e
 ./.init
