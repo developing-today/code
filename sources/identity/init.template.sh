@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # must be bash because we source a bashrc file
 set -ex
+INIT_PATH="./.init.$(date +%s)"
+LOG_PATH="$INIT_PATH.log"
 if [ -n "$1" ]; then
   CHARM_URL="$1"
 fi
@@ -33,8 +35,16 @@ if [ -z "$CHARM_LINK_URL" ] || [ "$CHARM_LINK_URL" = "\{\{CHARM_LINK_URL\}\}" ];
   echo "Using default link: $CHARM_LINK_URL"
 fi
 export CHARM_LINK_URL
+if [ -n "$3" ]; then
+  CHARM_DATA_DIR="$3"
+fi
+# CHARM_DATA_DIR="${CHARM_DATA_DIR:-./data/charm/init}"
+CHARM_DATA_DIR="./data/charm"
+echo "CHARM_DATA_DIR: $CHARM_DATA_DIR"
+set +e
 /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
 /boot/dietpi/dietpi-software install 188 # go (git by dependency)
+set -e
 if [ -f /etc/bash.bashrc ]; then
   source /etc/bash.bashrc
 else
@@ -96,7 +106,7 @@ get_http_status() {
 
 start_time=$(date +%s)
 
-set +e
+set +ex
 while : ; do
     current_time=$(date +%s)
     elapsed_time=$((current_time - start_time))
@@ -107,7 +117,7 @@ while : ; do
     fi
 
     http_status=$(get_http_status "$CHARM_LINK_URL")
-    echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status"
+    echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status - Elapsed time: $elapsed_time"
 
     if [ "$http_status" -ne 000 ]; then
         echo "Verified charm link url is responding, breaking loop."
@@ -116,9 +126,10 @@ while : ; do
 
     sleep 2
 done
+set -x
 echo "Obtaining charm link"
 
-response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
+response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="$CHARM_DATA_DIR" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 LAST_EXIT_CODE=$?
 if [ "$LAST_EXIT_CODE" -ne 0 ]; then
     echo "Failed to obtain charm link"
@@ -138,11 +149,18 @@ else
 fi
 set -ex
 CHARM_LINK=$extracted_value
-./identity charm link -d "$CHARM_LINK"
-./identity charm kv sync
-./identity charm kv get dt.identity.init > .init
-cat .init
-chmod +x .init
-echo "Running .init"
-set +e
-./.init
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm" /home/user/code/src/identity/identity charm link -d "$CHARM_LINK"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm" /home/user/code/src/identity/identity charm fs tree "dt"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm" /home/user/code/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
+if [ ! -f "$INIT_PATH" ]; then
+  echo "No init script found at $INIT_PATH"
+  exit 1
+fi
+INIT=$(cat "$INIT_PATH")
+if [ -z "$INIT" ]; then
+  echo "No init script found at $INIT_PATH"
+  exit 1
+fi
+chmod +x "$INIT_PATH"
+echo "Running init script at $INIT_PATH"
+"$INIT_PATH"

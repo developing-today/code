@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -ex
+LOG_PATH="/home/user/code/src/identity/data/charm/link/d96cc1b2cf6c9b5e2d6c17eb7cecb3ae/.init.d96cc1b2cf6c9b5e2d6c17eb7cecb3ae.1710433151.$(date +%s).log"
+cd /home/user/code/src/identity
+/home/user/code/src/identity/identity charm kv sync
+TURSO_HOST=$(/home/user/code/src/identity/identity charm kv get dt.identity.secret.TURSO_HOST)
+export TURSO_HOST
+if [ -z "great-star-lord-dezren39.turso.io" ]; then
+  echo "TURSO_HOST not set"
+  exit 1
+fi
+TURSO_AUTH_TOKEN=$(/home/user/code/src/identity/identity charm kv get dt.identity.secret.TURSO_AUTH_TOKEN)
+export TURSO_AUTH_TOKEN
+if [ -z "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIyMDIzLTEyLTE5VDEyOjQyOjA3LjMxMjQyNjg1M1oiLCJpZCI6IjE2ZDM4NjRhLTMzNDMtMTFlZS1iNzhlLTM2OThjMjQ5MDc2YyJ9.sXu-4DpLoq-gGtu5L-9qt8JFDjOBnTOrrXT1TQpdcKXNUD7t0ytZt_EDjKAP8olnUr659oUOGqbAABhPJlPbCA" ]; then
+  echo "TURSO_AUTH_TOKEN not set"
+  exit 1
+fi
+/home/user/code/src/identity/provider.sh "/home/user/code/src/identity/data/charm/link/d96cc1b2cf6c9b5e2d6c17eb7cecb3ae" "172.25.16.117/init" "3333" &
+/home/user/code/src/identity/start-server-all.ps1
+home/user/code/src/identity/start-server-all.ps1

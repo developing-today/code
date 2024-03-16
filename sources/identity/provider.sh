@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-if [ -n "$1" ]; then
-  CHARM_DATA_DIR="$1"
-fi
+set -ex
+exec 3>&1 4>&2
+trap 'exec 2>&4 1>&3' 0 1 2 3
 random() {
   dd if=/dev/urandom bs=1 count="${1:-16}" 2>/dev/null | xxd -p | tr -d '[:space:]'
 }
+RANDOM_ID=$(random)
+exec 1> >(tee -a ./.provider.$RANDOM_ID.$(date +%s).log) 2>&1
+if [ -n "$1" ]; then
+  CHARM_DATA_DIR="$1"
+fi
 if [ -z "$CHARM_DATA_DIR" ]; then
-  RANDOM_ID=$(random)
-  IDENTITY_DIR="$(realpath ~)/code/src/identity"
-  CHARM_DATA_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
+  # CHARM_DATA_DIR="./data/charm/link/$RANDOM_ID"
+  CHARM_DATA_DIR="./data/charm"
 fi
 if [ -n "$2" ]; then
   INIT_URL=$2
@@ -53,5 +57,17 @@ cp -f ./init.template.sh ./provider/static/init
 sed -i "s|{{CHARM_DATA_DIR}}|$CHARM_DATA_DIR|g" ./provider/static/init
 sed -i "s|{{CHARM_LINK_URL}}|$CHARM_LINK_URL|g" ./provider/static/init
 
-./provider/background.sh &
-INIT_URL=$INIT_URL PORT=$PORT CHARM_DATA_DIR=$CHARM_DATA_DIR ./provider/start.sh
+echo "#!/usr/bin/env bash" > .env
+
+echo "TURSO_HOST=$TURSO_HOST" >> .env
+echo "TURSO_AUTH_TOKEN=$TURSO_AUTH_TOKEN" >> .env
+echo "CHARM_DATA_DIR=$CHARM_DATA_DIR" >> .env
+echo "CHARM_LINK_URL=$CHARM_LINK_URL" >> .env
+echo "PORT=$PORT" >> .env
+echo "INIT_URL=$INIT_URL" >> .env
+echo "IDENTITY_DIR=$IDENTITY_DIR" >> .env
+echo "CHARM_LINK_URL=$CHARM_LINK_URL" >> .env
+echo "BASE_RANDOM_ID=$RANDOM_ID" >> .env
+echo "BASE_CHARM_DATA_DIR=$CHARM_DATA_DIR" >> .env
+
+./provider/start.sh
