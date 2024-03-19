@@ -12,7 +12,7 @@ if [ -n "$1" ]; then
 fi
 if [ -z "$CHARM_DATA_DIR" ]; then
   # CHARM_DATA_DIR="./data/charm/link/$RANDOM_ID"
-  CHARM_DATA_DIR="./data/charm"
+  CHARM_DATA_DIR="./data/charm/provider"
 fi
 if [ -n "$2" ]; then
   INIT_URL=$2

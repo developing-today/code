@@ -35,76 +35,78 @@ if [ -z "$CHARM_LINK_URL" ] || [ "$CHARM_LINK_URL" = "\{\{CHARM_LINK_URL\}\}" ];
   echo "Using default link: $CHARM_LINK_URL"
 fi
 export CHARM_LINK_URL
-if [ -n "$3" ]; then
-  CHARM_DATA_DIR="$3"
-fi
+# if [ -n "$3" ]; then
+#   CHARM_DATA_DIR="$3"
+# fi
 # CHARM_DATA_DIR="${CHARM_DATA_DIR:-./data/charm/init}"
-CHARM_DATA_DIR="./data/charm"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer"
 echo "CHARM_DATA_DIR: $CHARM_DATA_DIR"
-set +e
-/boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
-/boot/dietpi/dietpi-software install 188 # go (git by dependency)
-set -e
-if [ -f /etc/bash.bashrc ]; then
-  source /etc/bash.bashrc
-else
-  echo "/etc/bash.bashrc does not exist, continuing without sourcing it."
-fi
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg
-echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_21.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
-DEBIAN_FRONTEND=noninteractive apt update
-DEBIAN_FRONTEND=noninteractive apt dist-upgrade -yq
-DEBIAN_FRONTEND=noninteractive apt autoremove -y
-DEBIAN_FRONTEND=noninteractive apt autoclean -y
-DEBIAN_FRONTEND=noninteractive apt install -y curl nodejs ucspi-tcp unzip xxd unattended-upgrades
-AUTO_UPGRADES_FILE="/etc/apt/apt.conf.d/20auto-upgrades"
-REQUIRED_LINES=(
-    'APT::Periodic::Update-Package-Lists "1";'
-    'APT::Periodic::Download-Upgradeable-Packages "1";'
-    'APT::Periodic::AutocleanInterval "7";'
-    'APT::Periodic::Unattended-Upgrade "1";'
-)
-add_line_if_not_present() {
-    local line="$1"
-    local file="$2"
-    grep -qF -- "$line" "$file" || echo "$line" >> "$file"
-}
-if [ ! -f "$AUTO_UPGRADES_FILE" ]; then
-    echo "$AUTO_UPGRADES_FILE does not exist, creating it..."
-    touch "$AUTO_UPGRADES_FILE"
-fi
-for line in "${REQUIRED_LINES[@]}"; do
-    add_line_if_not_present "$line" "$AUTO_UPGRADES_FILE"
-done
-echo "The $AUTO_UPGRADES_FILE has been updated."
+if [ -z "$NO_INSTALL" ]; then
+  set +e
+  /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
+  /boot/dietpi/dietpi-software install 188 # go (git by dependency)
+  set -e
+  if [ -f /etc/bash.bashrc ]; then
+    source /etc/bash.bashrc
+  else
+    echo "/etc/bash.bashrc does not exist, continuing without sourcing it."
+  fi
+  mkdir -p /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_21.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
+  DEBIAN_FRONTEND=noninteractive apt update
+  DEBIAN_FRONTEND=noninteractive apt dist-upgrade -yq
+  DEBIAN_FRONTEND=noninteractive apt autoremove -y
+  DEBIAN_FRONTEND=noninteractive apt autoclean -y
+  DEBIAN_FRONTEND=noninteractive apt install -y curl nodejs ucspi-tcp unzip xxd unattended-upgrades
+  AUTO_UPGRADES_FILE="/etc/apt/apt.conf.d/20auto-upgrades"
+  REQUIRED_LINES=(
+      'APT::Periodic::Update-Package-Lists "1";'
+      'APT::Periodic::Download-Upgradeable-Packages "1";'
+      'APT::Periodic::AutocleanInterval "7";'
+      'APT::Periodic::Unattended-Upgrade "1";'
+  )
+  add_line_if_not_present() {
+      local line="$1"
+      local file="$2"
+      grep -qF -- "$line" "$file" || echo "$line" >> "$file"
+  }
+  if [ ! -f "$AUTO_UPGRADES_FILE" ]; then
+      echo "$AUTO_UPGRADES_FILE does not exist, creating it..."
+      touch "$AUTO_UPGRADES_FILE"
+  fi
+  for line in "${REQUIRED_LINES[@]}"; do
+      add_line_if_not_present "$line" "$AUTO_UPGRADES_FILE"
+  done
+  echo "The $AUTO_UPGRADES_FILE has been updated."
 
-npm install -g npm@latest
-npm --version
-node --version
-if command -v snap; then
-  snap install powershell --classic
-else
-  DEBIAN_FRONTEND=noninteractive apt install -y libicu72
-  curl -LO https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
-  dpkg -i powershell_7.4.1-1.deb_amd64.deb
-  DEBIAN_FRONTEND=noninteractive apt install -f
+  npm install -g npm@latest
+  npm --version
+  node --version
+  if command -v snap; then
+    snap install powershell --classic
+  else
+    DEBIAN_FRONTEND=noninteractive apt install -y libicu72
+    curl -LO https://github.com/PowerShell/PowerShell/releases/download/v7.4.1/powershell_7.4.1-1.deb_amd64.deb
+    dpkg -i powershell_7.4.1-1.deb_amd64.deb
+    DEBIAN_FRONTEND=noninteractive apt install -f
+  fi
+  cd ~
+  if [ ! -d "code" ]; then
+    git clone https://github.com/developing-today/code
+  else
+    echo "code directory already exists"
+  fi
+  cd code/src/identity
+  chmod +x *.ps1 *.sh
+  ./build-libsql.ps1
 fi
-cd ~
-if [ ! -d "code" ]; then
-  git clone https://github.com/developing-today/code
-else
-  echo "code directory already exists"
-fi
-cd code/src/identity
-chmod +x *.ps1 *.sh
-./build-libsql.ps1
 get_http_status() {
     local url=$1
     curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
 }
-
 start_time=$(date +%s)
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
 
 set +ex
 while : ; do
@@ -129,7 +131,7 @@ done
 set -x
 echo "Obtaining charm link"
 
-response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="$CHARM_DATA_DIR" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
+response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 LAST_EXIT_CODE=$?
 if [ "$LAST_EXIT_CODE" -ne 0 ]; then
     echo "Failed to obtain charm link"
@@ -149,9 +151,14 @@ else
 fi
 set -ex
 CHARM_LINK=$extracted_value
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm" /home/user/code/src/identity/identity charm link -d "$CHARM_LINK"
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm" /home/user/code/src/identity/identity charm fs tree "dt"
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm" /home/user/code/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs tree "/"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm link -d "$CHARM_LINK"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs tree "/"
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
 if [ ! -f "$INIT_PATH" ]; then
   echo "No init script found at $INIT_PATH"
   exit 1
