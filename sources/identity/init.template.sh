@@ -151,12 +151,27 @@ else
 fi
 set -ex
 CHARM_LINK=$extracted_value
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs tree "/"
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm link -d "$CHARM_LINK"
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs tree "/"
+START_TIME=$SECONDS
+TIMEOUT=30
+
+while : ; do
+    LINE_COUNT=$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs tree "charm:dt/identity/init" | wc -l)
+
+    if [ "$LINE_COUNT" -gt 1 ]; then
+        echo "Output has more than one line."
+        break
+    fi
+
+    ELAPSED_TIME=$(( SECONDS - START_TIME ))
+    if [ "$ELAPSED_TIME" -ge "$TIMEOUT" ]; then
+        echo "Timeout reached, exiting."
+        exit 1
+    fi
+
+    sleep 1
+done
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
 if [ ! -f "$INIT_PATH" ]; then
