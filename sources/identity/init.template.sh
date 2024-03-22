@@ -151,6 +151,7 @@ else
 fi
 set -ex
 CHARM_LINK=$extracted_value
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs rm "charm:dt/identity/init/init" 2>/dev/null || true # is this wrong?
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm link -d "$CHARM_LINK"
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
 START_TIME=$SECONDS
@@ -172,7 +173,7 @@ while : ; do
 
     sleep 1
 done
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
+# CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
 CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
 if [ ! -f "$INIT_PATH" ]; then
   echo "No init script found at $INIT_PATH"

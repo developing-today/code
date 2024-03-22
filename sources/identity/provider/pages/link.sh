@@ -39,7 +39,9 @@ cat <<EOF >"$INIT_PATH"
 #!/usr/bin/env bash
 set -ex
 output() {
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv reset @$RANDOM_ID
+# CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
+CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv reset @$RANDOM_ID # ?? needed?
+# CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
 TURSO_HOST=\$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv get dt.identity.secret.TURSO_HOST@$RANDOM_ID)
 export TURSO_HOST
 if [ -z "\$TURSO_HOST" ]; then
@@ -62,9 +64,9 @@ cat "$INIT_PATH" >&2
 chmod +x "$INIT_PATH"
 echo "\n\n\n=====================\n\n\n" >&2
 CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm id >&2
-CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list >&2
-CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID >&2
-CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/" >&2
+# CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list >&2
+# CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID >&2
+# CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/" >&2 # breaks things???
 echo "\n\n\n=====================\n\n\n" >&2
 BACKGROUND_PATH=$CHARM_DATA_DIR/.background.$RANDOM_ID.$(date +%s)
 BACKGROUND_SCRIPT_PATH="$BACKGROUND_PATH.sh"
@@ -83,22 +85,22 @@ echo "INIT_URL = $INIT_URL" | tee -a "\$BACKGROUND_LOG"
 echo "PORT = $PORT" | tee -a "\$BACKGROUND_LOG"
 echo "TURSO_HOST = $TURSO_HOST" | tee -a "\$BACKGROUND_LOG"
 echo "charm id = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm id)" | tee -a "\$BACKGROUND_LOG"
-echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
-echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list )" | tee -a "\$BACKGROUND_LOG"
-echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID)" | tee -a "\$BACKGROUND_LOG"
+# echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
+# echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list )" | tee -a "\$BACKGROUND_LOG"
+# echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID)" | tee -a "\$BACKGROUND_LOG"
 CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm link -d -o "$LINK_CODE_PATH" -k "$KEYS" | tee -a "\$BACKGROUND_LOG"
 echo "charm link exit code = \$?" | tee -a "\$BACKGROUND_LOG"
 echo "charm id = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm id)" | tee -a "\$BACKGROUND_LOG"
-echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
-echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list)" | tee -a "\$BACKGROUND_LOG"
-echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID)" | tee -a "\$BACKGROUND_LOG"
+# echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
+# echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list)" | tee -a "\$BACKGROUND_LOG"
+# echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID)" | tee -a "\$BACKGROUND_LOG"
 echo "charm kv set dt.identity.secret.TURSO_HOST = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv set "dt.identity.secret.TURSO_HOST@$RANDOM_ID" "$TURSO_HOST")" | tee -a "\$BACKGROUND_LOG"
 echo "charm kv set dt.identity.secret.TURSO_AUTH_TOKEN = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv set "dt.identity.secret.TURSO_AUTH_TOKEN@$RANDOM_ID" "$TURSO_AUTH_TOKEN")" | tee -a "\$BACKGROUND_LOG"
-echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list)" | tee -a "\$BACKGROUND_LOG"
-echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID)" | tee -a "\$BACKGROUND_LOG"
-echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
+# echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list)" | tee -a "\$BACKGROUND_LOG"
+# echo "charm kv list = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm kv list @$RANDOM_ID)" | tee -a "\$BACKGROUND_LOG"
+# echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
 echo "charm fs cp = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs cp "$INIT_PATH" "charm:dt/identity/init/init")" | tee -a "\$BACKGROUND_LOG"
-echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
+# echo "charm fs tree = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm fs tree "/")" | tee -a "\$BACKGROUND_LOG"
 echo "charm id = \$(CHARM_DATA_DIR="$CHARM_DATA_DIR" $IDENTITY_DIR/identity charm id)" | tee -a "\$BACKGROUND_LOG"
 echo "CLOSE" | tee -a "\$BACKGROUND_LOG"
 EOF
