@@ -103,10 +103,26 @@ if [ -z "$NO_INSTALL" ]; then
   chmod +x *.ps1 *.sh
 fi
 ./build-libsql.ps1
+# get_http_status() {
+#     local url=$1
+#     curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
+# }
 get_http_status() {
     local url=$1
-    curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
+    local stderr_temp=$(mktemp)
+    # Timeout set to 10 seconds; adjust as needed.
+    local http_status=$(curl -Lo /dev/null -s -w "%{http_code}\n" --connect-timeout 60 "$url" 2>"$stderr_temp")
+
+    if [[ $http_status -ne 200 ]]; then
+        echo "Error or non-200 status code received. Details:"
+        cat "$stderr_temp"
+    else
+        echo $http_status
+    fi
+
+    rm "$stderr_temp"  # Clean up the temporary file.
 }
+
 start_time=$(date +%s)
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm id
 
