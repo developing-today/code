@@ -23,7 +23,8 @@ random() {
   dd if=/dev/urandom bs=1 count="${1:-16}" 2>/dev/null | xxd -p | tr -d '[:space:]'
 }
 RANDOM_ID=$(random)
-IDENTITY_DIR="$(realpath ~)/code/src/identity"
+REPO_ROOT=$(git rev-parse --show-toplevel)
+IDENTITY_DIR="$REPO_ROOT/sources/identity"
 CHARM_DATA_DIR="$IDENTITY_DIR/data/charm/provider/$RANDOM_ID"
 mkdir -p "$CHARM_DATA_DIR"
 LINK_PATH="$CHARM_DATA_DIR/.link.$RANDOM_ID.$(date +%s)"
@@ -38,16 +39,17 @@ cat <<EOF >"$INIT_PATH"
 #!/usr/bin/env bash
 set -ex
 output() {
-# CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv reset @$RANDOM_ID # ?? needed?
-# CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
-TURSO_HOST=\$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv get dt.identity.secret.TURSO_HOST@$RANDOM_ID)
+REPO_ROOT=\$(git rev-parse --show-toplevel)
+# CHARM_DATA_DIR="\$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
+CHARM_DATA_DIR="\$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm kv reset @$RANDOM_ID # ?? needed?
+# CHARM_DATA_DIR="\$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
+TURSO_HOST=\$(CHARM_DATA_DIR="\$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm kv get dt.identity.secret.TURSO_HOST@$RANDOM_ID)
 export TURSO_HOST
 if [ -z "\$TURSO_HOST" ]; then
   echo "TURSO_HOST not set"
   exit 1
 fi
-TURSO_AUTH_TOKEN=\$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm kv get dt.identity.secret.TURSO_AUTH_TOKEN@$RANDOM_ID)
+TURSO_AUTH_TOKEN=\$(CHARM_DATA_DIR="\$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm kv get dt.identity.secret.TURSO_AUTH_TOKEN@$RANDOM_ID)
 export TURSO_AUTH_TOKEN
 if [ -z "\$TURSO_AUTH_TOKEN" ]; then
   echo "TURSO_AUTH_TOKEN not set"
