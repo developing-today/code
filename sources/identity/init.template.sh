@@ -111,6 +111,7 @@ start_time=$(date +%s)
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm id
 
 set +ex
+echo "Waiting for charm link to be available"
 while : ; do
     current_time=$(date +%s)
     elapsed_time=$((current_time - start_time))
@@ -120,6 +121,7 @@ while : ; do
         break
     fi
 
+    echo "Checking charm link url: $CHARM_LINK_URL"
     http_status=$(get_http_status "$CHARM_LINK_URL")
     echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status - Elapsed time: $elapsed_time"
 
