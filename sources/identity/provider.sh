@@ -18,7 +18,7 @@ if [ -n "$2" ]; then
   INIT_URL=$2
 fi
 if [ -z "$INIT_URL" ]; then
-  INIT_URL="$(hostname -I | awk '{print $1}')/init"
+  INIT_URL="$(hostname -I | awk '{print $1}')/init" # this or the hostname method
 fi
 if [ -n "$3" ]; then
   PORT=$3
@@ -44,7 +44,7 @@ if [ -n "$6" ]; then
   CHARM_LINK_URL=$6
 fi
 if [ -z "$CHARM_LINK_URL" ]; then
-  IP=$(hostname -I | awk '{print $1}')
+  IP=$(hostname -I | awk '{print $1}') # this or the hostname method
   if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
     IP=$(hostname -I | awk '{print $2}')
     if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
