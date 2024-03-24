@@ -24,8 +24,7 @@ random() {
 }
 RANDOM_ID=$(random)
 IDENTITY_DIR="$(realpath ~)/code/src/identity"
-# CHARM_DATA_DIR="$IDENTITY_DIR/data/charm/link/$RANDOM_ID"
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/provider/$RANDOM_ID"
+CHARM_DATA_DIR="$IDENTITY_DIR/data/charm/provider/$RANDOM_ID"
 mkdir -p "$CHARM_DATA_DIR"
 LINK_PATH="$CHARM_DATA_DIR/.link.$RANDOM_ID.$(date +%s)"
 logged() {

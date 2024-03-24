@@ -39,7 +39,8 @@ export CHARM_LINK_URL
 #   CHARM_DATA_DIR="$3"
 # fi
 # CHARM_DATA_DIR="${CHARM_DATA_DIR:-./data/charm/init}"
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer"
+REPO_ROOT=$(git rev-parse --show-toplevel)
+CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer"
 echo "CHARM_DATA_DIR: $CHARM_DATA_DIR"
 if [ -z "$NO_INSTALL" ]; then
   set +e
@@ -47,6 +48,7 @@ if [ -z "$NO_INSTALL" ]; then
   /boot/dietpi/dietpi-software install 188 # go (git by dependency)
   set -e
   if [ -f /etc/bash.bashrc ]; then
+    echo "Sourcing /etc/bash.bashrc"
     source /etc/bash.bashrc
   else
     echo "/etc/bash.bashrc does not exist, continuing without sourcing it."
@@ -106,7 +108,7 @@ get_http_status() {
     curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
 }
 start_time=$(date +%s)
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
+CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm id
 
 set +ex
 while : ; do
@@ -131,7 +133,7 @@ done
 set -x
 echo "Obtaining charm link"
 
-response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
+response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 LAST_EXIT_CODE=$?
 if [ "$LAST_EXIT_CODE" -ne 0 ]; then
     echo "Failed to obtain charm link"
@@ -151,14 +153,14 @@ else
 fi
 set -ex
 CHARM_LINK=$extracted_value
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs rm "charm:dt/identity/init/init" 2>/dev/null || true # is this wrong?
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm link -d "$CHARM_LINK"
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm id
+CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm fs rm "charm:dt/identity/init/init" 2>/dev/null || true # is this wrong?
+CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm link -d "$CHARM_LINK"
+CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm id
 START_TIME=$SECONDS
 TIMEOUT=30
 
 while : ; do
-    LINE_COUNT=$(CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs tree "charm:dt/identity/init" | wc -l)
+    LINE_COUNT=$(CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm fs tree "charm:dt/identity/init" | wc -l)
 
     if [ "$LINE_COUNT" -gt 1 ]; then
         echo "Output has more than one line."
@@ -173,8 +175,8 @@ while : ; do
 
     sleep 1
 done
-# CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm kv list
-CHARM_DATA_DIR="/home/user/code/src/identity/data/charm/consumer" /home/user/code/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
+# CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm kv list
+CHARM_DATA_DIR="$REPO_ROOT/src/identity/data/charm/consumer" $REPO_ROOT/src/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"
 if [ ! -f "$INIT_PATH" ]; then
   echo "No init script found at $INIT_PATH"
   exit 1
