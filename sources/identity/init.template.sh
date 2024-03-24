@@ -105,7 +105,7 @@ fi
 ./build-libsql.ps1
 get_http_status() {
     local url=$1
-    curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
+    curl -Lo /dev/null -s -w "%{http_code}\n" --connect-timeout 1 "$url"
 }
 start_time=$(date +%s)
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm id
