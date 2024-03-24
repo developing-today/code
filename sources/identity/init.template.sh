@@ -101,8 +101,8 @@ if [ -z "$NO_INSTALL" ]; then
   fi
   cd code/sources/identity
   chmod +x *.ps1 *.sh
-  ./build-libsql.ps1
 fi
+./build-libsql.ps1
 get_http_status() {
     local url=$1
     curl -Lo /dev/null -s -w "%{http_code}\n" "$url"
