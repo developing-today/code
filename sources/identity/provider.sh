@@ -53,6 +53,7 @@ if [ -z "$CHARM_LINK_URL" ]; then
   fi
   CHARM_LINK_URL="http://$IP:$PORT/link"
 fi
+mkdir -p ./provider/static
 cp -f ./init.template.sh ./provider/static/init
 sed -i "s|{{CHARM_DATA_DIR}}|$CHARM_DATA_DIR|g" ./provider/static/init
 sed -i "s|{{CHARM_LINK_URL}}|$CHARM_LINK_URL|g" ./provider/static/init
