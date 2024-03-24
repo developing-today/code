@@ -14,17 +14,24 @@ if [ -z "$CHARM_DATA_DIR" ]; then
   # CHARM_DATA_DIR="./data/charm/link/$RANDOM_ID"
   CHARM_DATA_DIR="./data/charm/provider"
 fi
-if [ -n "$2" ]; then
-  INIT_URL=$2
-fi
-if [ -z "$INIT_URL" ]; then
-  INIT_URL="$(hostname -I | awk '{print $1}')/init" # this or the hostname method
-fi
 if [ -n "$3" ]; then
   PORT=$3
 fi
 if [ -z "$PORT" ]; then
   PORT=3333
+fi
+if [ -n "$2" ]; then
+  INIT_URL=$2
+fi
+IP=$(hostname -I | awk '{print $1}') # this or the hostname method
+if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
+  IP=$(hostname -I | awk '{print $2}')
+  if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
+    IP="127.0.0.1"
+  fi
+fi
+if [ -z "$INIT_URL" ]; then
+  INIT_URL="http://$IP:$PORT/init"
 fi
 if [ -n "$4" ]; then
   TURSO_HOST=$4
@@ -44,13 +51,6 @@ if [ -n "$6" ]; then
   CHARM_LINK_URL=$6
 fi
 if [ -z "$CHARM_LINK_URL" ]; then
-  IP=$(hostname -I | awk '{print $1}') # this or the hostname method
-  if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
-    IP=$(hostname -I | awk '{print $2}')
-    if [ "$(expr substr "$IP" 1 4)" = "172." ]; then
-      IP="127.0.0.1"
-    fi
-  fi
   CHARM_LINK_URL="http://$IP:$PORT/link"
 fi
 mkdir -p ./provider/static

@@ -134,7 +134,7 @@ while : ; do
 
     if [ "$elapsed_time" -ge 60 ]; then
         echo "1 minute has elapsed, stopping."
-        break
+        exit 1
     fi
 
     echo "Checking charm link url: $CHARM_LINK_URL"
