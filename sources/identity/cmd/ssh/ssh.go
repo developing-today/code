@@ -149,7 +149,12 @@ var KeyTypeCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 func authTypeCounterMiddleware(counter *prometheus.CounterVec) wish.Middleware {
 	return func(sh ssh.Handler) ssh.Handler {
 		return func(s ssh.Session) {
+			if counter == nil {
+				log.Error("counter is nil")
+				return
+			}
 			counter.WithLabelValues(s.PublicKey().Type()).Inc()
+			sh(s)
 		}
 	}
 }
