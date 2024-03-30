@@ -71,4 +71,10 @@ echo "CHARM_LINK_URL=$CHARM_LINK_URL" >> .env
 echo "BASE_RANDOM_ID=$RANDOM_ID" >> .env
 echo "BASE_CHARM_DATA_DIR=$CHARM_DATA_DIR" >> .env
 
+if [ ! -f ./identity ]; then
+  echo "identity not found"
+  echo "running ./build-libsql.sh"
+  ./build-libsql.ps1
+fi
+
 ./provider/start.sh
