@@ -153,7 +153,26 @@ func authTypeCounterMiddleware(counter *prometheus.CounterVec) wish.Middleware {
 				log.Error("counter is nil")
 				return
 			}
-			counter.WithLabelValues(s.PublicKey().Type()).Inc()
+			if s == nil {
+				log.Error("session is nil")
+				return
+			}
+			connMapAny := s.Context().Value(auth.ConnectionMapKey)
+			authMethod := ""
+			switch connMap := connMapAny.(type) {
+			case map[string]string:
+				log.Info("authType is map[string]string")
+				connMap = connMapAny.(map[string]string)
+				authMethod = connMap["AuthMethod"]
+				log.Info("authMethod", "authMethod", authMethod)
+				if authMethod == "" {
+					log.Error("authMethod is empty", "connMap", connMap)
+					return
+				}
+			default:
+				log.Info("connMap is not map[string]string", "connMap", connMapAny)
+			}
+			counter.WithLabelValues(authMethod).Inc()
 			sh(s)
 		}
 	}
