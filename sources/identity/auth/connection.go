@@ -12,21 +12,20 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/nrednav/cuid2"
 )
+type ContextKey string
 
-type contextKey struct {
-	name string
+func GetConnectionMapKey() ContextKey {
+	return "ConnectionMap"
 }
-
-var ConnectionMapKey = &contextKey{"ConnectionMap"}
 
 // WithConnectionMap adds the SafeConnectionMap to the context
 func WithConnectionMap(ctx context.Context, connections *SafeConnectionMap) context.Context {
-	return context.WithValue(ctx, ConnectionMapKey, connections)
+	return context.WithValue(ctx, GetConnectionMapKey(), connections)
 }
 
 // GetConnectionMap retrieves the SafeConnectionMap from the context
 func GetConnectionMap(ctx context.Context) (*SafeConnectionMap, bool) {
-	connections, ok := ctx.Value(ConnectionMapKey).(*SafeConnectionMap)
+	connections, ok := ctx.Value(GetConnectionMapKey()).(*SafeConnectionMap)
 	return connections, ok
 }
 
