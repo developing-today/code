@@ -105,10 +105,10 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 
 		i := do.NewWithOpts(&do.InjectorOpts{
 			HookAfterRegistration: func(scope *do.Scope, serviceName string) {
-				log.Info("Registered service", "serviceName", serviceName)
+				log.Warn("Registered service", "serviceName", serviceName)
 			},
 			HookAfterShutdown: func(scope *do.Scope, serviceName string) {
-				log.Info("Shutdown service", "serviceName", serviceName)
+				log.Warn("Shutdown service", "serviceName", serviceName)
 			},
 			Logf: func(format string, args ...interface{}) {
 				log.Warnf(format, args...)
