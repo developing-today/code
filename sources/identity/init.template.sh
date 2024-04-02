@@ -42,7 +42,7 @@ export CHARM_LINK_URL
 REPO_ROOT=$(git rev-parse --show-toplevel)
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer"
 echo "CHARM_DATA_DIR: $CHARM_DATA_DIR"
-if [ -z "$NO_INSTALL" ]; then
+if [ -z "$NO_INSTALL" || "$NO_INSTALL" -eq 0 ]; then
   set +e
   /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
   /boot/dietpi/dietpi-software install 188 # go (git by dependency)
