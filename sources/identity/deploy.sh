@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -ex
 function deploy() {
   HOST="${1:-localhost}"
   PORT="${2:-3333}"
