@@ -433,10 +433,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		m.spinner, cmd = m.spinner.Update(msg)
 	}
+	var cmdV tea.Cmd
+	m.viewport, cmdV = m.viewport.Update(msg)
 
-	m.viewport, cmd = m.viewport.Update(msg)
-
-	cmds = append(cmds, cmd)
+	cmds = append(cmds, cmd, cmdV)
 
 	return m, tea.Batch(cmds...)
 }

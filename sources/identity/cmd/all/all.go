@@ -111,6 +111,12 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 				log.Warn("Shutdown service", "serviceName", serviceName)
 			},
 			Logf: func(format string, args ...interface{}) {
+				if format == "DI <scope=[root]>: requested healthcheck" ||
+					format == "DI <scope=[root]>: requested healthcheck for service %s" ||
+					format == "DI <scope=[root]>: got healthcheck results: %v" {
+					log.Debugf(format, args...)
+					return
+				}
 				log.Warnf(format, args...)
 			},
 		})
