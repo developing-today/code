@@ -273,7 +273,16 @@ func StartIdentity(config *configuration.SshServerConfiguration) func(context.Co
 
 type errMsg error
 
+type modelMode int
+
+const (
+	loadingMode modelMode = iota
+	normalMode
+	boxerMode
+)
+
 type model struct {
+	mode 							 modelMode
 	ready bool
 	// content              string
 	viewport             viewport.Model
@@ -289,6 +298,9 @@ type model struct {
 	selected             map[int]struct{}
 	charmId              string
 	publicKeyAuthorized  string
+	loadDuration				 time.Duration
+	initDateTime				 time.Time
+	loadInitDateTime		 time.Time
 }
 
 var quitKeys = key.NewBinding(
@@ -317,30 +329,45 @@ var (
 )
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	s := "Your term is %s\n"
-	s += "Your window size is x: %d y: %d\n\n"
+	switch m.mode {
+		case normalMode:
+			return m.updateNormal(msg)
+		case loadingMode:
+			return m.updateLoading(msg)
+		case boxerMode:
+			return m.updateBoxer(msg)
+		default:
+			panic("unknown mode")
+	}
+}
 
-	s = fmt.Sprintf(s, m.term, m.width, m.height)
+func (m model) updateBoxer(msg tea.Msg) (tea.Model, tea.Cmd) {
+	b := NewBoxerModel()
+	b.tui.UpdateSize(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return b.Update(msg)
+}
 
-	s += "Which room?\n\n"
-
+func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
+	s := "Which room?\n\n"
 	for i, choice := range m.choices {
-
-		// Is the cursor pointing at this choice?
-		cursor := " " // no cursor
+		cursor := " "
 		if m.cursor == i {
-			cursor = ">" // cursor!
+			cursor = ">"
 		}
 
-		// Is this choice selected?
-		checked := " " // not selected
+		checked := " "
 		if _, ok := m.selected[i]; ok {
-			checked = "x" // selected!
+			checked = "x"
 		}
 
 		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, choice)
 	}
 	s += "\n"
+	s += "Your term is %s\n"
+	s += "Your window size is x: %d y: %d\n"
+	s = fmt.Sprintf(s, m.term, m.width, m.height)
+	charmIdText := "Your charm id: %s\n"
+	s += fmt.Sprintf(charmIdText, m.charmId)
 
 	if m.meltedPrivateKeySeed != "" {
 		smelted := "Your private key seed is melted:\n\n%s\n\n"
@@ -349,8 +376,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		authorizedPublicKeyText := "Your authorized public key is:\n\n%s\n\n"
 		s += fmt.Sprintf(authorizedPublicKeyText, m.publicKeyAuthorized)
 	}
-	charmIdText := "Your charm id is:\n\n%s\n\n"
-	s += fmt.Sprintf(charmIdText, m.charmId)
 
 	if m.err != nil {
 		return m, tea.Quit
@@ -387,27 +412,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	)
 	switch msg := msg.(type) {
 
-	case tea.KeyMsg: // todo: super broken, fix this
+	case tea.KeyMsg:
 		if key.Matches(msg, quitKeys) {
 			m.quitting = true
 			return m, tea.Quit
 		}
 
 		switch msg.String() {
-		// The "up" and "k" keys move the cursor up
 		case "w", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-
-		// The "down" and "j" keys move the cursor down
 		case "s", "j":
 			if m.cursor < len(m.choices)-1 {
 				m.cursor++
 			}
-
-		// The "enter" key and the spacebar (a literal space) toggle
-		// the selected state for the item that the cursor is pointing at.
 		case "enter", " ":
 			_, ok := m.selected[m.cursor]
 			if ok {
@@ -415,6 +434,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.selected[m.cursor] = struct{}{}
 			}
+		case "tab":
+			m.mode = boxerMode
 		}
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
@@ -441,6 +462,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if key.Matches(msg, quitKeys) {
+			m.quitting = true
+			return m, tea.Quit
+		}
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		m.width = msg.Width
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, msg.Height)
+			m.viewport.KeyMap.Down.SetKeys("down")
+			m.viewport.KeyMap.Up.SetKeys("up")
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height
+		}
+	case errMsg:
+		m.err = msg
+	default:
+		m.spinner, _ = m.spinner.Update(msg)
+	}
+	m.viewport.SetContent(fmt.Sprintf("   %s Loading... %s\n\n", m.spinner.View(), quitKeys.Help().Desc))
+	if m.loadInitDateTime.Add(m.loadDuration).Before(time.Now()) {
+		m.mode = normalMode
+	}
+	return m, m.spinner.Tick
+}
+
 func (m model) View() string {
 	return m.viewport.View()
 }
@@ -455,7 +507,12 @@ func TeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	meltedPrivateKeySeed := s.Context().Permissions().Extensions["private-key-seed-melted"]
+	dt := time.Now()
 	m := model{
+		mode: loadingMode,
+		loadDuration: 3 * time.Second,
+		loadInitDateTime: dt,
+		initDateTime: dt,
 		spinner:              sp,
 		quitting:             false,
 		err:                  nil,
@@ -466,14 +523,24 @@ func TeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		choices:              []string{"Chat", "Game", "Upload"},
 		selected:             make(map[int]struct{}),
 		charmId:              s.Context().Permissions().Extensions["charm-id"],
-		publicKeyAuthorized:  s.Context().Permissions().Extensions["public-key-authorized"],
+		publicKeyAuthorized:  s.Context().Permissions().Extensions["charm-public-key"],
 	}
 	return m, []tea.ProgramOption{tea.WithAltScreen()}
 }
 
 func Banner(config *configuration.SshServerConfiguration) func(ctx ssh.Context) string {
 	return func(ctx ssh.Context) string {
-		return `
+		/*
+			todo: clean this up,
+			make a middleware huh? to get tos accepted,
+			tos version in database put tos signatures in db,
+			select tos from db cache on launch
+			use tosService for both banner and huh form middleware,
+			allowed license types / select-box
+			license type in db
+			license compatibility
+		*/
+			return `
 Welcome to the identity server! ("The Service")
 
 By using The Service, you agree to all of the following terms and conditions.
