@@ -342,12 +342,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateBoxer(msg tea.Msg) (tea.Model, tea.Cmd) {
-	b := NewBoxerModel()
-	b.tui.UpdateSize(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-	return b.Update(msg)
+	return NewBoxerModel(m, msg)
 }
 
 func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+	switch msg := msg.(type) {
+
+	case tea.KeyMsg:
+		if key.Matches(msg, quitKeys) {
+			m.quitting = true
+			return m, tea.Quit
+		}
+
+		switch msg.String() {
+			case "w", "k":
+				if m.cursor > 0 {
+					m.cursor--
+				}
+			case "s", "j":
+				if m.cursor < len(m.choices)-1 {
+					m.cursor++
+				}
+			case "enter", " ":
+				_, ok := m.selected[m.cursor]
+				if ok {
+					delete(m.selected, m.cursor)
+					} else {
+						m.selected[m.cursor] = struct{}{}
+					}
+			case "tab", "#":
+				m.mode = boxerMode
+				return m.updateBoxer(msg)
+		}
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		m.width = msg.Width
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, msg.Height)
+			m.viewport.KeyMap.Down.SetKeys("down")
+			m.viewport.KeyMap.Up.SetKeys("up")
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height
+		}
+	case errMsg:
+		m.err = msg
+	default:
+		m.spinner, cmd = m.spinner.Update(msg)
+	}
+	var cmdV tea.Cmd
+	m.viewport, cmdV = m.viewport.Update(msg)
+
 	s := "Which room?\n\n"
 	for i, choice := range m.choices {
 		cursor := " "
@@ -406,60 +456,7 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.viewport.SetContent(s)
 
-	var (
-		cmd  tea.Cmd
-		cmds []tea.Cmd
-	)
-	switch msg := msg.(type) {
-
-	case tea.KeyMsg:
-		if key.Matches(msg, quitKeys) {
-			m.quitting = true
-			return m, tea.Quit
-		}
-
-		switch msg.String() {
-		case "w", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "s", "j":
-			if m.cursor < len(m.choices)-1 {
-				m.cursor++
-			}
-		case "enter", " ":
-			_, ok := m.selected[m.cursor]
-			if ok {
-				delete(m.selected, m.cursor)
-			} else {
-				m.selected[m.cursor] = struct{}{}
-			}
-		case "tab":
-			m.mode = boxerMode
-		}
-	case tea.WindowSizeMsg:
-		m.height = msg.Height
-		m.width = msg.Width
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height)
-			m.viewport.KeyMap.Down.SetKeys("down")
-			m.viewport.KeyMap.Up.SetKeys("up")
-			m.ready = true
-		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height
-		}
-	case errMsg:
-		m.err = msg
-	default:
-		m.spinner, cmd = m.spinner.Update(msg)
-	}
-	var cmdV tea.Cmd
-	m.viewport, cmdV = m.viewport.Update(msg)
-
-	cmds = append(cmds, cmd, cmdV)
-
-	return m, tea.Batch(cmds...)
+	return m, tea.Batch(append(cmds, cmd, cmdV)...)
 }
 
 func (m model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -510,7 +507,7 @@ func TeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	dt := time.Now()
 	m := model{
 		mode: loadingMode,
-		loadDuration: 3 * time.Second,
+		loadDuration: 1 * time.Second,
 		loadInitDateTime: dt,
 		initDateTime: dt,
 		spinner:              sp,

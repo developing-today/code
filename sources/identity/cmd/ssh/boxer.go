@@ -17,12 +17,17 @@ const (
 	lowerAddr  = "lower"
 )
 
-func NewBoxerModel() BoxerModel {
-	v := viewport.New(0, 0)
-	v.SetContent("tel'aran'rhiod, the world of dreams")
-	middle := viewPortHolder{v}
+func NewBoxerModel(o model, msg tea.Msg) (BoxerModel, tea.Cmd) {
+	m := BoxerModel{tui: boxer.Boxer{}, o: o}
+	columns := []boxer.Node{}
 
-	m := BoxerModel{tui: boxer.Boxer{}}
+	columns = append(columns, stripErr(m.tui.CreateLeaf(leftAddr, stringer("chat"))))
+
+	v := viewport.New(0, 0)
+	v.SetContent("el dorado")
+	columns = append(columns, stripErr(m.tui.CreateLeaf(middleAddr, viewPortHolder{v})))
+
+	columns = append(columns, stripErr(m.tui.CreateLeaf(rightAddr, stringer("upload"))))
 	m.tui.LayoutTree = boxer.Node{
 		VerticalStacked: true,
 		SizeFunc: func(_ boxer.Node, widthOrHeight int) []int {
@@ -36,19 +41,16 @@ func NewBoxerModel() BoxerModel {
 			}
 		},
 		Children: []boxer.Node{
-			stripErr(m.tui.CreateLeaf(upperAddr, spinnerHolder{spinner.New()})),
+			stripErr(m.tui.CreateLeaf(upperAddr, stringer("tel'aran'rhiod, the world of dreams"))),
 			{
-				Children: []boxer.Node{
-					// make sure to encapsulate the models into a leaf with CreateLeaf:
-					stripErr(m.tui.CreateLeaf(leftAddr, stringer(leftAddr))),
-					stripErr(m.tui.CreateLeaf(middleAddr, middle)),
-					stripErr(m.tui.CreateLeaf(rightAddr, stringer(rightAddr))),
-				},
+				Children: columns,
 			},
-			stripErr(m.tui.CreateLeaf(lowerAddr, stringer(fmt.Sprintf("%s: use ctrl+c to quit", lowerAddr)))),
+			stripErr(m.tui.CreateLeaf(lowerAddr, stringer(fmt.Sprintf("%s: use ctrl+c to quit", "boxer")))),
 		},
 	}
-	return m
+	m.tui.UpdateSize(tea.WindowSizeMsg{Width: o.width, Height: o.height})
+	m.Update(msg)
+	return m, nil
 }
 
 func stripErr(n boxer.Node, _ error) boxer.Node {
@@ -57,6 +59,7 @@ func stripErr(n boxer.Node, _ error) boxer.Node {
 
 type BoxerModel struct {
 	tui boxer.Boxer
+	o	 model
 }
 
 func (m BoxerModel) Init() tea.Cmd {
@@ -68,12 +71,15 @@ func (m BoxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "tab", "#":
+			m.o.mode = normalMode
+			return m.o, m.o.spinner.Tick
 		}
 	case tea.WindowSizeMsg:
 		m.tui.UpdateSize(msg)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
-		m.editModel(upperAddr, func(v tea.Model) (tea.Model, error) {
+		m.editModel("spinner", func(v tea.Model) (tea.Model, error) {
 			v, cmd = v.Update(msg)
 			return v, nil
 		})
