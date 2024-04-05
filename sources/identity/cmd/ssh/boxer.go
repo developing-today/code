@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -72,7 +73,8 @@ func (m BoxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "tab", "#":
-			m.o.mode = normalMode
+			m.o.mode = loadingMode
+			m.o.loadInitDateTime = time.Now()
 			return m.o, m.o.spinner.Tick
 		}
 	case tea.WindowSizeMsg:

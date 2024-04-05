@@ -507,7 +507,7 @@ func TeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	dt := time.Now()
 	m := model{
 		mode: loadingMode,
-		loadDuration: 1 * time.Second,
+		loadDuration: 500 * time.Millisecond,
 		loadInitDateTime: dt,
 		initDateTime: dt,
 		spinner:              sp,
