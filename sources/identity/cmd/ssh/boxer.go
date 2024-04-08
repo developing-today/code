@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/log"
 	boxer "github.com/treilik/bubbleboxer"
 )
 
@@ -16,19 +17,129 @@ const (
 	middleAddr = "middle"
 	rightAddr  = "right"
 	lowerAddr  = "lower"
+	chat = "Chat"
+	upload = "Upload"
+	game = "Game"
+	defaultEmpty = " defaultEmpty"
+	defaultDream = " defaultDream"
+	defaultHelp = " defaultHelp"
+	defaultChat = " defaultChat"
+	defaultViewport = " defaultViewport"
+	defaultUpload = " defaultUpload"
 )
 
-func NewBoxerModel(o model, msg tea.Msg) (BoxerModel, tea.Cmd) {
-	m := BoxerModel{tui: boxer.Boxer{}, o: o}
+func (o *model) defaultModels(modelName string) tea.Model {
+	log.Info("Creating default model", "model", modelName)
+	switch modelName {
+	case chat:
+		return o.chatModel()
+	case upload:
+		return stringer("Upload")
+	case game:
+		return stringer("Game")
+	case defaultChat:
+		return stringer("chat")
+	case defaultEmpty:
+		return stringer("")
+	case defaultDream:
+		return stringer("tel'aran'rhiod, the world of dreams")
+	case defaultViewport:
+		v := viewport.New(0, 0)
+		v.SetContent("el dorado")
+		return viewPortHolder{v}
+	case defaultHelp:
+		return stringer(fmt.Sprintf("%s: use ctrl+c to quit", "boxer"))
+	case defaultUpload:
+		return stringer("upload")
+	default:
+		return stringer("unknown")
+	}
+}
+
+func arrayContains(arr []string, s string) bool {
+	for _, a := range arr {
+		if a == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *model) NewBoxerModel(msg tea.Msg) (m BoxerModel, cmd tea.Cmd) {
+	selected := GetSelected(o)
+	m = BoxerModel{tui: boxer.Boxer{}, o: o}
+	m.o.boxer = &m
 	columns := []boxer.Node{}
 
-	columns = append(columns, stripErr(m.tui.CreateLeaf(leftAddr, stringer("chat"))))
+	leftModelName := o.layout[leftAddr]
+	if leftModelName == "" {
+		log.Info("No model name found for left column, using default", "model", defaultChat)
+		leftModelName = defaultChat
+	}
+	var leftModel tea.Model
+	if arrayContains(selected, leftModelName) {
+		leftModel = o.models[leftModelName]
+		if leftModel == nil {
+			leftModel = o.defaultModels(leftModelName)
+			o.models[leftModelName] = leftModel
+		}
+	} else {
+		leftModel = nil
+	}
+	if leftModel != nil {
+		columns = append(columns, stripErr(m.tui.CreateLeaf(leftAddr, leftModel)))
+	}
 
-	v := viewport.New(0, 0)
-	v.SetContent("el dorado")
-	columns = append(columns, stripErr(m.tui.CreateLeaf(middleAddr, viewPortHolder{v})))
+	middleModelName := o.layout[middleAddr]
+	if middleModelName == "" {
+		log.Info("No model name found for middle column, using default", "model", defaultViewport)
+		middleModelName = defaultViewport
+	}
+	var middleModel tea.Model
+	if arrayContains(selected, middleModelName) {
+		middleModel = o.models[middleModelName]
+		if middleModel == nil {
+			middleModel = o.defaultModels(middleModelName)
+			o.models[middleModelName] = middleModel
+		}
+	} else {
+		middleModel = nil
+	}
+	if middleModel != nil {
+		columns = append(columns, stripErr(m.tui.CreateLeaf(middleAddr, middleModel)))
+	}
 
-	columns = append(columns, stripErr(m.tui.CreateLeaf(rightAddr, stringer("upload"))))
+	rightModelName := o.layout[rightAddr]
+	if rightModelName == "" {
+		log.Info("No model name found for right column, using default", "model", defaultUpload)
+		rightModelName = defaultUpload
+	}
+	var rightModel tea.Model
+	if arrayContains(selected, rightModelName) {
+		rightModel = o.models[rightModelName]
+		if rightModel == nil {
+			rightModel = o.defaultModels(rightModelName)
+			o.models[rightModelName] = rightModel
+		}
+	} else {
+		rightModel = nil
+	}
+	if rightModel != nil {
+		columns = append(columns, stripErr(m.tui.CreateLeaf(rightAddr, rightModel)))
+	}
+	if len(columns) == 0 {
+		log.Info("No columns found, using default", "model", defaultEmpty)
+		if m.o.models[defaultEmpty] == nil {
+			m.o.models[defaultEmpty] = o.defaultModels(defaultEmpty)
+		}
+		columns = append(columns, stripErr(m.tui.CreateLeaf(leftAddr, m.o.models[defaultEmpty])))
+	}
+	if m.o.models[defaultDream] == nil {
+		m.o.models[defaultDream] = o.defaultModels(defaultDream)
+	}
+	if m.o.models[defaultHelp] == nil {
+		m.o.models[defaultHelp] = o.defaultModels(defaultHelp)
+	}
 	m.tui.LayoutTree = boxer.Node{
 		VerticalStacked: true,
 		SizeFunc: func(_ boxer.Node, widthOrHeight int) []int {
@@ -42,11 +153,11 @@ func NewBoxerModel(o model, msg tea.Msg) (BoxerModel, tea.Cmd) {
 			}
 		},
 		Children: []boxer.Node{
-			stripErr(m.tui.CreateLeaf(upperAddr, stringer("tel'aran'rhiod, the world of dreams"))),
+			stripErr(m.tui.CreateLeaf(upperAddr, m.o.models[defaultDream])),
 			{
 				Children: columns,
 			},
-			stripErr(m.tui.CreateLeaf(lowerAddr, stringer(fmt.Sprintf("%s: use ctrl+c to quit", "boxer")))),
+			stripErr(m.tui.CreateLeaf(lowerAddr, m.o.models[defaultHelp])),
 		},
 	}
 	m.tui.UpdateSize(tea.WindowSizeMsg{Width: o.width, Height: o.height})
@@ -60,12 +171,13 @@ func stripErr(n boxer.Node, _ error) boxer.Node {
 
 type BoxerModel struct {
 	tui boxer.Boxer
-	o	 model
+	o   *model
 }
 
 func (m BoxerModel) Init() tea.Cmd {
 	return spinner.Tick
 }
+
 func (m BoxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -89,6 +201,7 @@ func (m BoxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
 func (m BoxerModel) View() string {
 	return m.tui.View()
 }
@@ -116,9 +229,11 @@ func (s stringer) String() string {
 }
 
 // satisfy the tea.Model interface
-func (s stringer) Init() tea.Cmd                           { return nil }
+func (s stringer) Init() tea.Cmd { return nil }
+
 func (s stringer) Update(msg tea.Msg) (tea.Model, tea.Cmd) { return s, nil }
-func (s stringer) View() string                            { return s.String() }
+
+func (s stringer) View() string { return s.String() }
 
 type spinnerHolder struct {
 	m spinner.Model
@@ -127,11 +242,13 @@ type spinnerHolder struct {
 func (s spinnerHolder) Init() tea.Cmd {
 	return s.m.Tick
 }
+
 func (s spinnerHolder) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m, cmd := s.m.Update(msg)
 	s.m = m
 	return s, cmd
 }
+
 func (s spinnerHolder) View() string {
 	return s.m.View()
 }
@@ -143,6 +260,7 @@ type viewPortHolder struct {
 func (v viewPortHolder) Init() tea.Cmd {
 	return nil
 }
+
 func (v viewPortHolder) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	size, ok := msg.(tea.WindowSizeMsg)
 	if ok {
@@ -154,6 +272,7 @@ func (v viewPortHolder) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	v.m = m
 	return v, cmd
 }
+
 func (v viewPortHolder) View() string {
 	return v.m.View()
 }

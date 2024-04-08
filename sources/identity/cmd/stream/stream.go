@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/developing-today/code/src/identity/cmd/command"
 	ctx "github.com/developing-today/code/src/identity/cmd/context"
+	d "github.com/developing-today/code/src/identity/cmd/do"
 	"github.com/developing-today/code/src/identity/configuration"
 	"github.com/developing-today/code/src/identity/stream"
 	"github.com/samber/do/v2"
@@ -102,4 +103,9 @@ func StartStream() func(context.Context) func(*cobra.Command, []string) {
 			stream.RunStreamServer(ctx, cmd, args)
 		}
 	}
+}
+
+
+func MustGetStreamService(i do.Injector) StreamService {
+	return d.MustInvokeAny[StreamService](i)
 }

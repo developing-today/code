@@ -41,7 +41,7 @@ func StartAllCmd(ctx context.Context, config *configuration.SshServerConfigurati
 		Run:     StartAllServices(ctx, config),
 		Aliases: []string{"s", "run", "serve", "publish", "pub", "p", "i", "y", "u", "o", "p", "q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "h", "j", "k", "l", "z", "x", "c", "v", "b"},
 	}
-	result.AddCommand(charm.StartCharmCmd(ctx, config), ssh.StartIdentityCmd(ctx, config), stream.StartStreamCmd(ctx, config))
+	result.AddCommand(charm.StartCharmCmd(ctx, config), ssh.StartSshCmd(ctx, config), stream.StartStreamCmd(ctx, config))
 	result.AddCommand(StartAllAltCmd(*result))
 	return result
 }
@@ -164,14 +164,16 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 		d.Provide(i, charm.NewCharmService)
 		d.Provide(i, ssh.NewSshService)
 		d.Provide(i, stream.NewStreamService)
+		d.Provide(i, ssh.NewStreamClientService)
 
 		log.Info("Starting services")
 		d.Start[charm.CharmService](i)
 		d.Start[ssh.SshService](i)
-		d.Start[stream.StreamService](i)
+
 		log.Info("Services started")
 
 		go func() {
+			time.Sleep(5 * time.Second)
 			for {
 				health := i.HealthCheck()
 				for k, v := range health {

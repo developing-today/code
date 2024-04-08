@@ -50,7 +50,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func StartIdentityCmd(ctx context.Context, config *configuration.SshServerConfiguration) *cobra.Command {
+func StartSshCmd(ctx context.Context, config *configuration.SshServerConfiguration) *cobra.Command {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -59,8 +59,8 @@ func StartIdentityCmd(ctx context.Context, config *configuration.SshServerConfig
 	}
 	return &cobra.Command{
 		Use:     "ssh",
-		Short:   "Starts only the identity server",
-		Run:     StartIdentityFromContext(ctx, config),
+		Short:   "Starts only the ssh server",
+		Run:     StartSshFromContext(ctx, config),
 		Aliases: []string{"id", "i"},
 	}
 }
@@ -69,7 +69,7 @@ type SshService interface {
 	Start()
 	Shutdown() error
 	HealthCheck() error
-	IsIdentityService() bool
+	IsSshService() bool
 }
 
 type SshServiceImpl struct {
@@ -78,6 +78,7 @@ type SshServiceImpl struct {
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 	config     icfg.SshServiceConfiguration
+	streamClient StreamClientService
 }
 
 func MustGetSshServerConfigurationService(i do.Injector) icfg.SshServiceConfiguration {
@@ -88,47 +89,51 @@ func NewSshService(i do.Injector) (SshService, error) {
 	context := ctx.MustGetContextService(i)
 	command := command.MustGetCommandService(i)
 	config := MustGetSshServerConfigurationService(i)
+	streamClient := MustGetStreamClientService(i)
+	streamClient.Start()
 	service := &SshServiceImpl{
 		context: context,
 		command: command,
 		config:  config,
+		streamClient: streamClient,
 	}
 	service.Start()
 	return service, nil
 }
 
 func (is *SshServiceImpl) Start() {
-	log.Info("Starting identity server")
+	log.Info("Starting ssh server")
 	if is.ctx != nil {
-		panic("ctx is already set, service is already running")
+		panic("ctx is already set, ssh service is already running")
 	}
 	is.ctx, is.cancelFunc = context.WithCancel(is.context.Context())
-	go StartIdentity(is.config.Configuration())(is.ctx)(is.command.GetCommand(), is.command.GetArgs())
+	go StartSsh(is.streamClient, is.config.Configuration())(is.ctx)(is.command.GetCommand(), is.command.GetArgs())
 }
 
 func (is *SshServiceImpl) Shutdown() error {
-	log.Info("Identity service shutdown requested")
+	log.Info("Ssh service shutdown requested")
 	if is.cancelFunc != nil && is.ctx.Err() == nil {
-		log.Info("Identity service stopping...")
+		log.Info("Ssh service stopping...")
 		is.cancelFunc()
 		is.context.Shutdown() // this service shuts down the parent context
-		log.Info("Identity service stopped")
+		log.Info("Ssh service stopped")
 	} else {
-		log.Info("Identity service already stopped")
+		log.Info("Ssh service already stopped")
 	}
 	return nil
 }
 
 func (is *SshServiceImpl) HealthCheck() error {
-	// log.Info("Health check passed for IdentityService")
+	// log.Info("Health check passed for SshService")
 	return nil
 }
 
-func (is *SshServiceImpl) IsIdentityService() bool {
+func (is *SshServiceImpl) IsSshService() bool {
 	return true
 }
 
-func StartIdentityFromContext(ctx context.Context, config *configuration.SshServerConfiguration) func(*cobra.Command, []string) {
+// broken
+func StartSshFromContext(ctx context.Context, config *configuration.SshServerConfiguration) func(*cobra.Command, []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -136,7 +141,7 @@ func StartIdentityFromContext(ctx context.Context, config *configuration.SshServ
 		panic("config is nil")
 	}
 	return func(cmd *cobra.Command, args []string) {
-		StartIdentity(config)(ctx)(cmd, args)
+		// TODO: fix StartSsh(config)(ctx)(cmd, args)
 	}
 }
 
@@ -169,13 +174,13 @@ func authTypeCounterMiddleware(counter *prometheus.CounterVec) wish.Middleware {
 	}
 }
 
-func StartIdentity(config *configuration.SshServerConfiguration) func(context.Context) func(*cobra.Command, []string) {
+func StartSsh(streamClient StreamClientService, config *configuration.SshServerConfiguration) func(context.Context) func(*cobra.Command, []string) {
 	if config == nil {
 		panic("config is nil")
 	}
 	return func(goctx context.Context) func(*cobra.Command, []string) {
 		return func(cmd *cobra.Command, args []string) {
-			log.Info("Starting identity server")
+			log.Info("Starting ssh server")
 			if goctx == nil {
 				goctx = context.Background()
 			}
@@ -187,14 +192,14 @@ func StartIdentity(config *configuration.SshServerConfiguration) func(context.Co
 			s, err := wish.NewServer(
 				wish.WithMiddleware(
 					scp.Middleware(handler, handler),
-					bubbletea.Middleware(TeaHandler),
+					bubbletea.Middleware(TeaHandlerWithStream(streamClient)),
 					comment.Middleware("Thanks, have a nice day!"),
 					elapsed.Middleware(),
 					authTypeCounterMiddleware(KeyTypeCounter),
 					promwish.MiddlewareRegistry(
 						registry,
 						prometheus.Labels{
-							"app": "identity",
+							"app": "ssh",
 						},
 						promwish.DefaultCommandFn,
 					),
@@ -282,9 +287,8 @@ const (
 )
 
 type model struct {
-	mode 							 modelMode
-	ready bool
-	// content              string
+	mode                 modelMode
+	ready                bool
 	viewport             viewport.Model
 	spinner              spinner.Model
 	quitting             bool
@@ -296,11 +300,33 @@ type model struct {
 	choices              []string
 	cursor               int
 	selected             map[int]struct{}
+	models							 map[string]tea.Model
+	layout               map[string]string
+	changes              int
 	charmId              string
 	publicKeyAuthorized  string
-	loadDuration				 time.Duration
-	initDateTime				 time.Time
-	loadInitDateTime		 time.Time
+	loadDuration         time.Duration
+	initDateTime         time.Time
+	loadInitDateTime     time.Time
+	boxer                *BoxerModel
+	streamClient         StreamClientService
+}
+
+
+func (m model) chatModel() tea.Model {
+	sub, err := m.streamClient.Subscribe("chat")
+	if err != nil {
+		log.Error("Error subscribing to chat", "error", err)
+		return nil
+	}
+	model := NewChatModel(sub)
+	m.models["chat"] = model
+	return model
+}
+
+func NewChatModel(sub StreamSubscription) tea.Model {
+	// sub.Subscription.Publish(context.Background(), []byte("{}"))
+	return stringer("hello")
 }
 
 var quitKeys = key.NewBinding(
@@ -342,7 +368,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateBoxer(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return NewBoxerModel(m, msg)
+	if m.boxer == nil {
+		log.Info("No boxer model, creating new boxer model")
+		m.changes = 0
+		return m.NewBoxerModel(msg)
+	}
+	if m.changes > 0 {
+		log.Info("Changes detected", "changes", m.changes)
+		m.changes = 0
+		return m.NewBoxerModel(msg)
+	}
+	log.Info("Updating boxer model, no changes detected")
+	return m.boxer.Update(msg)
 }
 
 func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -368,15 +405,16 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor++
 				}
 			case "enter", " ":
+				m.changes++
 				_, ok := m.selected[m.cursor]
 				if ok {
 					delete(m.selected, m.cursor)
-					} else {
-						m.selected[m.cursor] = struct{}{}
-					}
+				} else {
+					m.selected[m.cursor] = struct{}{}
+				}
 			case "tab", "#":
 				m.mode = boxerMode
-				return m.updateBoxer(msg)
+				return m.updateBoxer(nil)
 		}
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
@@ -399,7 +437,7 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, cmdV = m.viewport.Update(msg)
 
 	s := "Which room?\n\n"
-	for i, choice := range m.choices {
+		for i, choice := range m.choices {
 		cursor := " "
 		if m.cursor == i {
 			cursor = ">"
@@ -494,35 +532,53 @@ func (m model) View() string {
 	return m.viewport.View()
 }
 
-func TeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
-	pty, _, active := s.Pty()
-	if !active {
-		wish.Fatalln(s, "no active terminal, skipping")
-		return nil, nil
+func TeaHandlerWithStream(streamClient StreamClientService) func(ssh.Session) (tea.Model, []tea.ProgramOption) {
+	return func(s ssh.Session) (tea.Model, []tea.ProgramOption) {
+		pty, _, active := s.Pty()
+		if !active {
+			wish.Fatalln(s, "no active terminal, skipping")
+			return nil, nil
+		}
+		sp := spinner.New()
+		sp.Spinner = spinner.Dot
+		sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+		meltedPrivateKeySeed := s.Context().Permissions().Extensions["private-key-seed-melted"]
+		dt := time.Now()
+		m := model{
+			mode: loadingMode,
+			loadDuration: 200 * time.Millisecond,
+			loadInitDateTime: dt,
+			initDateTime: dt,
+			spinner:              sp,
+			quitting:             false,
+			err:                  nil,
+			term:                 pty.Term,
+			width:                pty.Window.Width,
+			height:               pty.Window.Height,
+			meltedPrivateKeySeed: meltedPrivateKeySeed,
+			choices:              []string{"Upload", "Game", "Chat"},
+			selected:             make(map[int]struct{}),
+			models:							 make(map[string]tea.Model),
+			layout:               make(map[string]string),
+			charmId:              s.Context().Permissions().Extensions["charm-id"],
+			publicKeyAuthorized:  s.Context().Permissions().Extensions["charm-public-key"],
+			streamClient: streamClient,
+		}
+		m.layout[leftAddr] = m.choices[0]
+		m.layout[middleAddr] = m.choices[1]
+		m.layout[rightAddr] = m.choices[2]
+		log.Info("Starting tea handler", "meltedPrivateKeySeed", meltedPrivateKeySeed, "charmId", m.charmId, "publicKeyAuthorized", m.publicKeyAuthorized, "term", m.term, "width", m.width, "height", m.height, "model", m)
+		return m, []tea.ProgramOption{tea.WithAltScreen()}
 	}
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	meltedPrivateKeySeed := s.Context().Permissions().Extensions["private-key-seed-melted"]
-	dt := time.Now()
-	m := model{
-		mode: loadingMode,
-		loadDuration: 500 * time.Millisecond,
-		loadInitDateTime: dt,
-		initDateTime: dt,
-		spinner:              sp,
-		quitting:             false,
-		err:                  nil,
-		term:                 pty.Term,
-		width:                pty.Window.Width,
-		height:               pty.Window.Height,
-		meltedPrivateKeySeed: meltedPrivateKeySeed,
-		choices:              []string{"Chat", "Game", "Upload"},
-		selected:             make(map[int]struct{}),
-		charmId:              s.Context().Permissions().Extensions["charm-id"],
-		publicKeyAuthorized:  s.Context().Permissions().Extensions["charm-public-key"],
+}
+func GetSelected(m *model) []string {
+	var selected []string
+	for i := range m.choices {
+		if _, ok := m.selected[i]; ok {
+			selected = append(selected, m.choices[i])
+		}
 	}
-	return m, []tea.ProgramOption{tea.WithAltScreen()}
+	return selected
 }
 
 func Banner(config *configuration.SshServerConfiguration) func(ctx ssh.Context) string {
@@ -538,7 +594,7 @@ func Banner(config *configuration.SshServerConfiguration) func(ctx ssh.Context) 
 			license compatibility
 		*/
 			return `
-Welcome to the identity server! ("The Service")
+Welcome to the ssh server! ("The Service")
 
 By using The Service, you agree to all of the following terms and conditions.
 
@@ -562,7 +618,7 @@ You hereby represent and warrant that:
 - You agree that developing.today LLC has no obligation to exercise or exploit the above license.
 
 If you do not agree to all of the above terms and conditions, then you may not use The Service and must disconnect immediately.
-` + fmt.Sprintf("You are using the identity server at %s:%d\n", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")) + `
+` + fmt.Sprintf("You are using the ssh server at %s:%d\n", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")) + `
 ` + fmt.Sprintf("You are connecting from %s\n", ctx.RemoteAddr().String()) + `
 ` + fmt.Sprintf("You are connecting from-with %s\n", ctx.RemoteAddr().Network()) + `
 ` + fmt.Sprintf("You are connecting to %s\n", ctx.LocalAddr().String()) + `
@@ -605,7 +661,7 @@ func (c Challenge) ExecuteMutable(challenge gossh.KeyboardInteractiveChallenge) 
 
 func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gossh.KeyboardInteractiveChallenge, connections *auth.SafeConnectionMap) bool {
 	status := "open"
-	app := "identity"
+	app := "ssh"
 	connectionType := "ssh"
 	user := ctx.User()
 	var authMethod string

@@ -67,12 +67,12 @@ func SetupNodeHandlers(node *centrifuge.Node) {
 
 func Auth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		cred := &centrifuge.Credentials{
-			UserID: "",
-		}
-		newCtx := centrifuge.SetCredentials(ctx, cred)
-		r = r.WithContext(newCtx)
+		// ctx := r.Context()
+		// cred := &centrifuge.Credentials{
+		// 	UserID: "",
+		// }
+		// newCtx := centrifuge.SetCredentials(ctx, cred)
+		// r = r.WithContext(newCtx)
 		h.ServeHTTP(w, r)
 	})
 }
