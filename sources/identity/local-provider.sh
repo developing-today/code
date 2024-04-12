@@ -3,6 +3,7 @@
 set -e
 
 echo "+ . ~/.turso.auth"
+# shellcheck disable=SC1090
 . ~/.turso.auth
 echo "<REDACTED>"
 
