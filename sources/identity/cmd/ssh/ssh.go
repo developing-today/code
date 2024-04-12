@@ -17,6 +17,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
+	"github.com/centrifugal/centrifuge-go"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -319,13 +320,32 @@ func (m model) chatModel() tea.Model {
 		log.Error("Error subscribing to chat", "error", err)
 		return nil
 	}
+	sub.Subscription.OnPublication(func(e centrifuge.PublicationEvent) {
+		log.Info("Publication from server-side channel in model", "channel", sub.Subscription.Channel, "data", string(e.Data))
+	})
+	sub.Subscription.OnSubscribed(func(e centrifuge.SubscribedEvent) {
+		log.Info("Subscribed on channel in model", "channel", sub.Subscription.Channel, "wasRecovering", e.WasRecovering, "recovered", e.Recovered)
+	})
+	log.Info("Subscription created", "channel", sub.Subscription.Channel)
+	log.Info("Publishing to chat", "channel", sub.Subscription.Channel, "data", "hello1")
+	result, err := sub.Subscription.Publish(context.Background(), []byte("hello1"))
+	log.Info("Publish result", "result", result, "error", err, "channel", sub.Subscription.Channel, "data", "hello1")
+	log.Info("Publishing to chat", "channel", sub.Subscription.Channel, "data", "hello2")
+	result, err = sub.Subscription.Publish(context.Background(), []byte("hello2"))
+	log.Info("Publish result", "result", result, "error", err, "channel", sub.Subscription.Channel, "data", "hello2")
+	log.Info("Publishing to chat", "channel", sub.Subscription.Channel, "data", "hello3")
+	result, err = sub.Subscription.Publish(context.Background(), []byte("hello3"))
+	log.Info("Publish result", "result", result, "error", err, "channel", sub.Subscription.Channel, "data", "hello3")
+	log.Info("Creating chat model", "sub", sub)
 	model := NewChatModel(sub)
+	log.Info("Chat model created", "model", model)
 	m.models["chat"] = model
 	return model
 }
 
 func NewChatModel(sub StreamSubscription) tea.Model {
-	// sub.Subscription.Publish(context.Background(), []byte("{}"))
+
+	sub.Subscription.Publish(context.Background(), []byte("hello"))
 	return stringer("hello")
 }
 
@@ -564,6 +584,7 @@ func TeaHandlerWithStream(streamClient StreamClientService) func(ssh.Session) (t
 			publicKeyAuthorized:  s.Context().Permissions().Extensions["charm-public-key"],
 			streamClient: streamClient,
 		}
+		m.selected[2] = struct{}{}
 		m.layout[leftAddr] = m.choices[0]
 		m.layout[middleAddr] = m.choices[1]
 		m.layout[rightAddr] = m.choices[2]
@@ -618,6 +639,7 @@ You hereby represent and warrant that:
 - You agree that developing.today LLC has no obligation to exercise or exploit the above license.
 
 If you do not agree to all of the above terms and conditions, then you may not use The Service and must disconnect immediately.
+
 ` + fmt.Sprintf("You are using the ssh server at %s:%d\n", config.Configuration.String("identity.server.host"), config.Configuration.Int("identity.server.ssh.port")) + `
 ` + fmt.Sprintf("You are connecting from %s\n", ctx.RemoteAddr().String()) + `
 ` + fmt.Sprintf("You are connecting from-with %s\n", ctx.RemoteAddr().Network()) + `

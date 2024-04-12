@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
-	"time"
+
+	// "strings"
+	// "time"
 
 	_ "net/http/pprof"
 
@@ -100,25 +101,25 @@ func (sc *StreamClient) Shutdown() error {
 }
 
 func (sc *StreamClient) HealthCheck() error {
-	state := sc.Client.State()
-	if state != centrifuge.StateConnected {
-		if state == centrifuge.StateDisconnected {
-			log.Info("Client is disconnected, reconnecting")
-			err := sc.Client.Connect()
-			if err != nil {
-				return err
-			}
-		}
-		state = sc.Client.State()
-		if state == centrifuge.StateConnecting {
-			log.Info("Client is connecting, waiting for connection")
-			time.Sleep(500 * time.Millisecond)
-			state = sc.Client.State()
-		}
-		if state != centrifuge.StateConnected {
-			return errors.New(strings.ToLower("client is not connected, state: " + string(state)))
-		}
-	}
+	// state := sc.Client.State()
+	// if state != centrifuge.StateConnected {
+	// 	if state == centrifuge.StateDisconnected {
+	// 		log.Info("Client is disconnected, reconnecting")
+	// 		err := sc.Client.Connect()
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	state = sc.Client.State()
+	// 	if state == centrifuge.StateConnecting {
+	// 		log.Info("Client is connecting, waiting for connection")
+	// 		time.Sleep(500 * time.Millisecond)
+	// 		state = sc.Client.State()
+	// 	}
+	// 	if state != centrifuge.StateConnected {
+	// 		return errors.New(strings.ToLower("client is not connected, state: " + string(state)))
+	// 	}
+	// }
 	return nil
 }
 
@@ -143,10 +144,8 @@ func NewDefaultStreamClient() (client *StreamClient, err error) {
 
 func NewJsonClient() *centrifuge.Client {
 	return centrifuge.NewJsonClient(
-		"ws://localhost:8000/connection/websocket",
-		centrifuge.Config{
-			Token: "",
-		},
+		"ws://127.0.0.1:8000/connection/websocket",
+		centrifuge.Config{},
 	)
 }
 
@@ -222,13 +221,16 @@ type StreamSubscription struct {
 func (sc *StreamClient) NewSubscription(channel string, config ...centrifuge.SubscriptionConfig) (sub StreamSubscription, err error) {
 	s, ok := sc.Client.GetSubscription(channel)
 	if ok {
+		log.Info("Subscription already exists", "channel", channel)
 		return StreamSubscription{Subscription: s},nil
 	}
+	log.Info("Creating subscription", "channel", channel)
 	s, err = sc.Client.NewSubscription(channel, config...)
 	if err != nil {
 		log.Error("Error creating subscription", "error", err)
 		return StreamSubscription{},err
 	}
+	log.Info("Subscription created", "channel", channel)
 	return StreamSubscription{Subscription: s},nil
 }
 
@@ -250,9 +252,11 @@ func (ss *StreamSubscription) AddDefaultHandlers() error {
 		log.Error("Subscription error", "channel", sub.Channel, "error", e.Error)
 	})
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
+		log.Info("Publication from channel", "channel", sub.Channel, "data", string(e.Data), "offset", e.Offset)
 		var chatMessage *ChatMessage
 		err := json.Unmarshal(e.Data, &chatMessage)
 		if err != nil {
+			log.Error("Publication error", "err", err)
 			return
 		}
 		log.Info("Someone says", "channel", sub.Channel, "input", chatMessage.Input, "offset", e.Offset)

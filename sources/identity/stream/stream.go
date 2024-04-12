@@ -19,7 +19,7 @@ func RunStreamServer(ctx context.Context, cmd *cobra.Command, args []string) {
 
 	SetupNodeHandlers(node)
 
-	srv := &http.Server{Addr: ":8000", Handler: nil}
+	srv := &http.Server{Addr: "0.0.0.0:8000", Handler: nil}
 
 	wsHandler := centrifuge.NewWebsocketHandler(node, centrifuge.WebsocketConfig{})
 	http.Handle("/connection/websocket", Auth(wsHandler))
@@ -37,13 +37,14 @@ func RunStreamServer(ctx context.Context, cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	log.Info("Starting server", "url", "http://localhost:8000")
+	log.Info("Starting server", "url", srv.Addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal("ListenAndServe error", "error", err)
 	}
 }
 
 func SetupNodeHandlers(node *centrifuge.Node) {
+	log.Info("Setting up node handlers")
 	node.OnConnect(func(client *centrifuge.Client) {
 		transportName := client.Transport().Name()
 		transportProto := client.Transport().Protocol()
@@ -62,17 +63,21 @@ func SetupNodeHandlers(node *centrifuge.Node) {
 		client.OnDisconnect(func(e centrifuge.DisconnectEvent) {
 			log.Info("Client disconnected")
 		})
+
+		log.Info("Client handlers set up")
 	})
 }
 
 func Auth(h http.Handler) http.Handler {
+	log.Info("Setting up auth middleware")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// ctx := r.Context()
-		// cred := &centrifuge.Credentials{
-		// 	UserID: "",
-		// }
-		// newCtx := centrifuge.SetCredentials(ctx, cred)
-		// r = r.WithContext(newCtx)
+		ctx := r.Context()
+		cred := &centrifuge.Credentials{
+			UserID: "",
+		}
+		newCtx := centrifuge.SetCredentials(ctx, cred)
+		r = r.WithContext(newCtx)
+		log.Info("Authenticating request", "url", r.URL.String())
 		h.ServeHTTP(w, r)
 	})
 }

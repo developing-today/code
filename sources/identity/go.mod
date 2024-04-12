@@ -7,6 +7,7 @@ require (
 	github.com/angelofallars/htmx-go v0.5.0
 	github.com/auth0/go-jwt-middleware/v2 v2.2.1
 	github.com/centrifugal/centrifuge v0.31.0
+	github.com/centrifugal/centrifuge-go v0.10.2
 	github.com/charmbracelet/bubbles v0.18.0
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/charm v0.12.6
@@ -27,6 +28,7 @@ require (
 	github.com/samber/do/v2 v2.0.0-beta.5
 	github.com/samber/go-type-to-string v1.2.0
 	github.com/spf13/cobra v1.8.0
+	github.com/treilik/bubbleboxer v0.2.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240220085343-4ae0eb9d0898
 	golang.org/x/crypto v0.22.0
 	gopkg.in/go-jose/go-jose.v2 v2.6.3
@@ -43,7 +45,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
 	github.com/calmh/randomart v1.1.0 // indirect
-	github.com/centrifugal/centrifuge-go v0.10.2 // indirect
 	github.com/centrifugal/protocol v0.12.1 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
@@ -108,7 +109,6 @@ require (
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/segmentio/encoding v0.4.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/treilik/bubbleboxer v0.2.0 // indirect
 	github.com/tyler-smith/go-bip39 v1.1.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20231213231151-1d8dd44e695e // indirect
