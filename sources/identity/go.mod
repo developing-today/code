@@ -12,11 +12,11 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/charm v0.12.6
 	github.com/charmbracelet/lipgloss v0.10.0
-	github.com/charmbracelet/log v0.3.1
+	github.com/charmbracelet/log v0.4.0
 	github.com/charmbracelet/melt v0.6.0
-	github.com/charmbracelet/promwish v0.7.1-0.20240301193744-83a66da07faa
-	github.com/charmbracelet/ssh v0.0.0-20240301204039-e79ff702f5b3
-	github.com/charmbracelet/wish v1.3.2
+	github.com/charmbracelet/promwish v0.7.1-0.20240514150216-a8e3117016ad
+	github.com/charmbracelet/ssh v0.0.0-20240401141849-854cddfa2917
+	github.com/charmbracelet/wish v1.4.0
 	github.com/go-chi/chi v1.5.5
 	github.com/golang-jwt/jwt v3.2.2+incompatible
 	github.com/gowebly/helpers v0.3.0
@@ -24,7 +24,7 @@ require (
 	github.com/knadh/koanf/parsers/kdl v0.1.1
 	github.com/muesli/reflow v0.3.0
 	github.com/nrednav/cuid2 v1.0.0
-	github.com/prometheus/client_golang v1.19.0
+	github.com/prometheus/client_golang v1.19.1
 	github.com/samber/do/v2 v2.0.0-beta.5
 	github.com/samber/go-type-to-string v1.2.0
 	github.com/spf13/cobra v1.8.0
@@ -50,7 +50,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/charmbracelet/keygen v0.5.0 // indirect
 	github.com/charmbracelet/x/errors v0.0.0-20240307183742-ad8dadc14f31 // indirect
-	github.com/charmbracelet/x/exp/term v0.0.0-20240307183742-ad8dadc14f31 // indirect
+	github.com/charmbracelet/x/exp/term v0.0.0-20240328150354-ab9afc214dfd // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/creack/pty v1.1.21 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
