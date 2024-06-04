@@ -18,16 +18,19 @@ for dir in "${script_dir}"/flakes/*; do
       chmod +x ./rebuild.sh
       ./rebuild.sh
     fi
+    # todo: update-ref instead of update sometimes
     nix flake update
     cd "${script_dir}" || exit 1
   fi
 done
 
 git add .
+# todo: update-ref instead of update sometimes
 nix flake update
 git add .
 sudo nixos-rebuild switch
 
+#TODO: don't do cachix if not setup
 nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
 
 for dir in "${script_dir}"/flakes/*; do
