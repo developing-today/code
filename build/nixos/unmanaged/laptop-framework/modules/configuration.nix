@@ -162,22 +162,24 @@
       interval = "hourly";
       localuser = null;
     };
-    xserver = {
-      enable = true;
       displayManager = {
         #autoLogin = { enable = true; user = "user"; };
         #defaultSession = "hyprland";
         sddm.enable = true;
         #gdm.enable = true;
       };
+    xserver = {
+      enable = true;
       #            libinput.enable = true;
       desktopManager = {
         #plasma6.enable = true;
         #plasma5.enable = true;
         gnome.enable = true;
       } ;
+      xkb = {
       layout = "us";
-      xkbVariant = "";
+        variant = "";
+      };
       # #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
     };
   };
@@ -218,7 +220,7 @@
         gcc
         binutils
         clang
-        clang-tools_9
+        #clang-tools_9
         llvmPackages.bintools
       ]
       ++ [

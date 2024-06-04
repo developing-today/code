@@ -232,7 +232,7 @@
         jack2
         lmms
 
-        rnix-lsp
+        #rnix-lsp
         #         gcc
         ripgrep
         fd
@@ -494,8 +494,8 @@
         lxde.lxsession
         #     inputs.hyprwm-contrib.packages.${system}.grimblast
         gtklock
-        #         eww
-        eww-wayland
+                 eww
+        #eww-wayland
         xdg-desktop-portal-hyprland
         hyprland-protocols
         # hyprland-share-picker
@@ -677,7 +677,7 @@
         # hot-lib-reloader
         racer
         # rustfix
-        cargo-graph
+        #cargo-graph
         # fenix
         # vim-racer
         # egui_graphs
