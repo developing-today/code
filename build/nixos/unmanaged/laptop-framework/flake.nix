@@ -8,13 +8,9 @@
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
-      inputs.beautysh.follows = "beautysh";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.neovim-flake.follows = "neovim-flake";
       inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
-      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.home-manager.follows = "home-manager";
     };
@@ -30,20 +26,9 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
-    neovim-flake = {
-      url = "github:neovim/neovim?dir=contrib";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-    };
-    hercules-ci-agent = {
-      url = "github:hercules-ci/hercules-ci-agent";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     hercules-ci-effects = {
       url = "github:hercules-ci/hercules-ci-effects";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     neovim-nightly-overlay = {
@@ -52,7 +37,6 @@
       inputs.flake-parts.follows = "flake-parts";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.neovim-flake.follows = "neovim-flake";
     };
     # must type follows all out every time
     # because flake inputs are basically static
@@ -76,24 +60,11 @@
       inputs.utils.follows = "flake-utils";
     };
     nixvim = {
-      # url = "github:nix-community/nixvim";
-      url = "github:developing-today-forks/nixvim-flake";
+      url = "github:nix-community/nixvim";
+      #url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.beautysh.follows = "beautysh";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
 
-    beautysh = {
-      url = "github:lovesegfault/beautysh";
-      inputs.nixpkgs.follows = "nixpkgs";
-      # todo: drag out these follows
-    };
-
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      # todo: drag out these follows
-    };
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
   };
 

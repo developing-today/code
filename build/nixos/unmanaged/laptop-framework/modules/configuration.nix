@@ -168,12 +168,12 @@
         #autoLogin = { enable = true; user = "user"; };
         #defaultSession = "hyprland";
         sddm.enable = true;
-        gdm.enable = true;
+        #gdm.enable = true;
       };
       #            libinput.enable = true;
       desktopManager = {
-        plasma.enable = true;
-        plasma5.enable = true;
+        plasma6.enable = true;
+        #plasma5.enable = true;
         gnome.enable = true;
       } ;
       layout = "us";

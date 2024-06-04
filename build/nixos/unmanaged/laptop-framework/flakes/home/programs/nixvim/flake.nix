@@ -17,11 +17,6 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
-    hercules-ci-agent = {
-      url = "github:hercules-ci/hercules-ci-agent";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     hercules-ci-effects = {
       url = "github:hercules-ci/hercules-ci-effects";
       inputs.flake-parts.follows = "flake-parts";
@@ -35,17 +30,6 @@
       inputs.flake-compat.follows = "flake-compat";
     }; # need to actually use this
 
-    beautysh = {
-      url = "github:lovesegfault/beautysh";
-      inputs.nixpkgs.follows = "nixpkgs";
-      # todo: drag out these follows
-    };
-
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      # todo: drag out these follows
-    };
   };
   outputs = {
     nixpkgs,

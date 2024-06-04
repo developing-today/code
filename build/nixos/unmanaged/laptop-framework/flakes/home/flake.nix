@@ -11,7 +11,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
-    flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
+    flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz"; # flake = false?
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -30,34 +30,19 @@
     };
 
     nixvim = {
-      # url = "github:nix-community/nixvim";
-      url = "github:developing-today-forks/nixvim-flake";
+      url = "github:nix-community/nixvim";
+      #url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
       url = "path:./programs/nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
       inputs.nixvim.follows = "nixvim";
-      inputs.beautysh.follows = "beautysh";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.flake-compat.follows = "flake-compat";
       inputs.flake-parts.follows = "flake-parts";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.neovim-flake.follows = "neovim-flake";
       inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
-    };
-
-    beautysh = {
-      url = "github:lovesegfault/beautysh";
-      inputs.nixpkgs.follows = "nixpkgs";
-      # todo: drag out these follows
-    };
-
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      # todo: drag out these follows
     };
   };
   outputs = {
