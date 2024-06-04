@@ -4,12 +4,8 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "github:NixOS/nixpkgs";
     nixvim = {
-      # url = "github:nix-community/nixvim";
-      url = "github:developing-today-forks/nixvim-flake";
+      url = "github:nix-community/nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.beautysh.follows = "beautysh";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
 
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
@@ -21,11 +17,6 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
-    neovim-flake = {
-      url = "github:neovim/neovim?dir=contrib";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-    };
     hercules-ci-agent = {
       url = "github:hercules-ci/hercules-ci-agent";
       inputs.flake-parts.follows = "flake-parts";
@@ -34,7 +25,6 @@
     hercules-ci-effects = {
       url = "github:hercules-ci/hercules-ci-effects";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     neovim-nightly-overlay = {
@@ -43,7 +33,6 @@
       inputs.flake-parts.follows = "flake-parts";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.neovim-flake.follows = "neovim-flake";
     }; # need to actually use this
 
     beautysh = {
@@ -84,7 +73,7 @@
       pkgs = import nixpkgs {
         inherit system;
         overlays = [
-          inputs.neovim-nightly-overlay.overlay
+          inputs.neovim-nightly-overlay.overlays.default
         ];
       };
       module = import ./config {inherit enableModules pkgs;};

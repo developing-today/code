@@ -31,15 +31,15 @@
     nvim-cmp = {
       autoEnableSources = true;
       # see -> https://github.com/pta2002/nixvim/blob/main/plugins/completion/nvim-cmp/cmp-helpers.nix#L12
-      sources = [
-        {name = "luasnip";}
-        {name = "nvim_lsp";}
-        {name = "nvim_lua";}
-        {name = "path";}
-        {name = "buffer";}
-      ];
+      #sources = [
+      #  {name = "luasnip";}
+      #  {name = "nvim_lsp";}
+      #  {name = "nvim_lua";}
+      #  {name = "path";}
+      #  {name = "buffer";}
+      #];
       # see -> https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/mapping.lua#L36
-      mappingPresets = ["insert" "cmdline"];
+      #mappingPresets = ["insert" "cmdline"];
       mapping = {
         "<C-b>" = ''cmp.mapping(cmp.mapping.scroll_docs(-1), { "i" })'';
         "<C-f>" = ''cmp.mapping(cmp.mapping.scroll_docs(1), { "i" })'';
@@ -47,7 +47,7 @@
         "<C-l>" = "cmp.mapping(cmp.mapping.complete())";
         "<CR>" = "cmp.mapping.confirm { select = true }";
       };
-      snippet.expand = "luasnip";
+      #snippet.expand = "luasnip";
       formatting.fields = ["kind" "abbr" "menu"];
       window.completion = {
         winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
@@ -137,7 +137,7 @@
         # eslint.enable = true;
         shfmt.enable = true;
       };
-      diagnostics.shellcheck.enable = true;
+      #diagnostics.shellcheck.enable = true;
     };
     nix = {};
     nvim-autopairs = {};
