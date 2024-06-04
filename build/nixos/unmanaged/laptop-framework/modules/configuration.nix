@@ -162,12 +162,12 @@
       interval = "hourly";
       localuser = null;
     };
-      displayManager = {
-        #autoLogin = { enable = true; user = "user"; };
-        #defaultSession = "hyprland";
-        sddm.enable = true;
-        #gdm.enable = true;
-      };
+    displayManager = {
+      #autoLogin = { enable = true; user = "user"; };
+      #defaultSession = "hyprland";
+      sddm.enable = true;
+      #gdm.enable = true;
+    };
     xserver = {
       enable = true;
       #            libinput.enable = true;
@@ -175,9 +175,9 @@
         #plasma6.enable = true;
         #plasma5.enable = true;
         gnome.enable = true;
-      } ;
+      };
       xkb = {
-      layout = "us";
+        layout = "us";
         variant = "";
       };
       # #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
@@ -202,8 +202,9 @@
       [
         # overlays # todo- move into user
         zigpkgs.master
-        nix-software-center
+        #nix-software-center
         alejandra
+        neovim
       ]
       ++ [
         # dwm

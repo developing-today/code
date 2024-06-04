@@ -471,15 +471,15 @@
             reshape2
           ];
         })
-        (pkgs.rstudioWrapper.override {
-          packages = with pkgs.rPackages; [
-            dplyr
-            xts
-            ggplot2
-            reshape2
-            rstudioapi
-          ];
-        })
+        #(pkgs.rstudioWrapper.override {
+        #  packages = with pkgs.rPackages; [
+        #    dplyr
+        #    xts
+        #    ggplot2
+        #    reshape2
+        #    rstudioapi
+        #  ];
+        #})
 
         # Command Shells
         nushell
@@ -494,7 +494,7 @@
         lxde.lxsession
         #     inputs.hyprwm-contrib.packages.${system}.grimblast
         gtklock
-                 eww
+        eww
         #eww-wayland
         xdg-desktop-portal-hyprland
         hyprland-protocols
@@ -684,7 +684,7 @@
         pgfplots
         # plotly
         # plotlib
-        duckdb
+        #duckdb # long compile todo
         # trustfall
         # soup
         libsForQt5.polkit-kde-agent
