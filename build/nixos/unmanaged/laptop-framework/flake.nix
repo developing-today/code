@@ -78,6 +78,7 @@
     nix-software-center,
     ...
   }: let
+    yes = "yes";
     stateVersion = "23.11";
     #stateVersion = "23.05";
     overlays = [

@@ -172,7 +172,7 @@
       };
       #            libinput.enable = true;
       desktopManager = {
-        plasma6.enable = true;
+        #plasma6.enable = true;
         #plasma5.enable = true;
         gnome.enable = true;
       } ;
