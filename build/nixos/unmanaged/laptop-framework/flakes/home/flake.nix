@@ -16,20 +16,9 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
-    neovim-flake = {
-      url = "github:neovim/neovim?dir=contrib";
-      #inputs.nixpkgs.follows = "nixpkgs"; # harpoon broken in unstable with nightly neovim
-      inputs.flake-utils.follows = "flake-utils";
-    };
-    hercules-ci-agent = {
-      url = "github:hercules-ci/hercules-ci-agent";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     hercules-ci-effects = {
       url = "github:hercules-ci/hercules-ci-effects";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-agent.follows = "hercules-ci-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     neovim-nightly-overlay = {
@@ -38,7 +27,6 @@
       inputs.flake-parts.follows = "flake-parts";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.neovim-flake.follows = "neovim-flake";
     };
 
     nixvim = {
