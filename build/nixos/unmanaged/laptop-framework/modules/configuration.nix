@@ -168,9 +168,14 @@
         #autoLogin = { enable = true; user = "user"; };
         #defaultSession = "hyprland";
         sddm.enable = true;
+        gdm.enable = true;
       };
       #            libinput.enable = true;
-      #       desktopManager.plasma5.enable = true;
+      desktopManager = {
+        plasma.enable = true;
+        plasma5.enable = true;
+        gnome.enable = true;
+      } ;
       layout = "us";
       xkbVariant = "";
       # #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
