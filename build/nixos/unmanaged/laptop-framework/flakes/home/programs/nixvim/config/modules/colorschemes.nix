@@ -1,10 +1,12 @@
 {...}: {
   colorschemes = {
     nord = {
-      #disable_background = true;
-      italic = true;
-      borders = true;
-      contrast = true;
+      settings = {
+        #disable_background = true;
+        italic = true;
+        borders = true;
+        contrast = true;
+      };
     };
   };
 }

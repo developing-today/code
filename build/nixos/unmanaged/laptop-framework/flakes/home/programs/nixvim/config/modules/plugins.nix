@@ -28,7 +28,7 @@
         "eslint"
       ];
     };
-    nvim-cmp = {
+    cmp = {
       autoEnableSources = true;
       # see -> https://github.com/pta2002/nixvim/blob/main/plugins/completion/nvim-cmp/cmp-helpers.nix#L12
       #sources = [
@@ -40,6 +40,7 @@
       #];
       # see -> https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/mapping.lua#L36
       #mappingPresets = ["insert" "cmdline"];
+      settings = {
       mapping = {
         "<C-b>" = ''cmp.mapping(cmp.mapping.scroll_docs(-1), { "i" })'';
         "<C-f>" = ''cmp.mapping(cmp.mapping.scroll_docs(1), { "i" })'';
@@ -48,14 +49,17 @@
         "<CR>" = "cmp.mapping.confirm { select = true }";
       };
       #snippet.expand = "luasnip";
-      formatting.fields = ["kind" "abbr" "menu"];
-      window.completion = {
+        formatting.fields = ["kind" "abbr" "menu"];
+      window = {
+completion = {
         winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
         border = "single";
       };
-      window.documentation = {
+      documentation = {
         winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
         border = "single";
+      };
+      };
       };
     };
     lspkind = {};
@@ -131,7 +135,7 @@
       '';
     };
     lsp-lines.currentLine = true;
-    null-ls.sources = {
+    none-ls.sources = {
       formatting = {
         prettier.enable = true;
         # eslint.enable = true;
