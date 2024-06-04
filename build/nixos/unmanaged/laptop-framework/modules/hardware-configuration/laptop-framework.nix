@@ -17,15 +17,20 @@
   boot.kernelModules = ["kvm-intel"];
   boot.extraModulePackages = [];
 
-  fileSystems."/" = {
-    device = "/dev/disk/by-uuid/4ff08191-f7ec-4a7a-a62e-b67b5b39dd8b";
-    fsType = "ext4";
-  };
+  fileSystems."/" =
+    {
+      # device = "/dev/disk/by-uuid/3c389f91-1874-47d5-b126-760ff86a8b0b";
+      device = "/dev/disk/by-label/NIXROOT";
+      fsType = "ext4";
+    };
 
-  fileSystems."/boot" = {
-    device = "/dev/disk/by-uuid/8835-61BC";
-    fsType = "vfat";
-  };
+  fileSystems."/boot" =
+    {
+      #device = "/dev/disk/by-uuid/9045-3EBA";
+      device = "/dev/disk/by-label/NIXBOOT";
+      fsType = "vfat";
+      options = [ "fmask=0022" "dmask=0022" ];
+    };
 
   swapDevices = [];
 
@@ -37,6 +42,6 @@
   # networking.interfaces.wlp166s0.useDHCP = lib.mkDefault true;
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
-  powerManagement.cpuFreqGovernor = lib.mkDefault "powersave";
+  powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
   hardware.cpu.intel.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
 }

@@ -3,7 +3,7 @@
   pkgs,
   ...
 }: {
-  imports = [./hardware-configuration/hyperv.nix ./cachix.nix];
+  imports = [./hardware-configuration/laptop-framework.nix ./cachix.nix];
 
   boot.loader = {
     systemd-boot = {
