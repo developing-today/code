@@ -208,7 +208,7 @@
         nixpkgs-fmt
         statix
         # Python
-        pyright
+        #pyright
         #         python-debug
         black
         # Typescript
@@ -236,7 +236,7 @@
         #         gcc
         ripgrep
         fd
-        nodePackages.pyright
+        #nodePackages.pyright
         nodePackages.eslint
         ccls
 

@@ -91,7 +91,7 @@ completion = {
         lua-ls = {};
         jsonls = {};
         pylsp = {};
-        pyright = {};
+        #pyright = {};
       };
       onAttach = ''
         -- Enable completion triggered by <c-x><c-o>
