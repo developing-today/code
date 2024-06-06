@@ -164,7 +164,7 @@
     };
     displayManager = {
       #autoLogin = { enable = true; user = "user"; };
-      #defaultSession = "hyprland";
+      defaultSession = "hyprland";
       sddm.enable = true;
       #gdm.enable = true;
     };
