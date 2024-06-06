@@ -4,10 +4,10 @@
     window = {
       decorations = "none";
       dynamic_padding = false;
-      padding = {
-        columns = 0;
-        lines = 0;
-      };
+      #padding = {
+      #columns = 0;
+      #lines = 0;
+      #};
     };
 
     scrolling = {
@@ -18,12 +18,14 @@
       size = 12;
     };
 
-    mouse_bindings = [
-      {
-        mouse = "Middle";
-        action = "PasteSelection";
-      }
-    ];
+    mouse = {
+      bindings = [
+        {
+          mouse = "Middle";
+          action = "PasteSelection";
+        }
+      ];
+    };
 
     # Colors (Hyper)
     colors = {
