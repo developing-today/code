@@ -68,6 +68,7 @@
         # todo figure out how to use sway
         zellij # tmux
         #eza # exa # ls
+        eza
         rmtrash # ctrl + z for rm
         mcfly
         dogdns # dns for dogs
