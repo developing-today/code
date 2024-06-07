@@ -427,7 +427,6 @@
         transmission-gtk
         slurp
         gparted
-        vlc
         mpv
         krabby
         zellij
@@ -709,7 +708,7 @@
         wdisplays
 
         spotify
-        vlc
+        vlc # build time long, vlc good, try again later
 
         #signal-desktop
         #tdesktop
