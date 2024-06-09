@@ -56,7 +56,12 @@
         #vscode-insiders
         openssl
         bitwarden
+        bitwarden-desktop
         bitwarden-cli
+        bitwarden-menu
+        rofi-rbw
+        rbw
+        vaultwarden
         libsForQt5.yakuake
         tmux
         alacritty
