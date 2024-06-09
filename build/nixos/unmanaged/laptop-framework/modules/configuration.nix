@@ -150,6 +150,10 @@
       };
       jack.enable = true;
     };
+    #fwupd.enable = true; # laptop-framework # don't follow this guide you have a framework 12 intel # https://github.com/NixOS/nixos-hardware/tree/master/framework/13-inch/13th-gen-intel#getting-the-fingerprint-sensor-to-work
+    # https://knowledgebase.frame.work/ubuntu-fingerprint-troubleshooting-r1_DA0TMn
+    # TODO: pull the hardware flake for 12th gen intel
+    # nixos-hardware.nixosModules.framework-12th-gen-intel
     #     devmon.enable = true;
     #     udisks2.enable = true;
     #     gvfs.enable = true;
