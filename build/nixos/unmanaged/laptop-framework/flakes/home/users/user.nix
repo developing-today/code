@@ -55,6 +55,8 @@
         direnv
         #vscode-insiders
         openssl
+        bitwarden
+        bitwarden-cli
         libsForQt5.yakuake
         tmux
         alacritty
