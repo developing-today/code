@@ -52,14 +52,14 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flakeCompat.follows = "flake-compat";
     };
-    nix-software-center = {
-      url = "github:snowfallorg/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
-      #url = "github:vlinkz/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
-      #url = "github:vlinkz/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
-      #url = "https://flakehub.com/f/vlinkz/nix-software-center/*.tar.gz"; #*/ # https://github.com/vlinkz/nix-software-center/pull/50
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.utils.follows = "flake-utils";
-    };
+    #nix-software-center = {
+    #  url = "github:snowfallorg/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
+    #  #url = "github:vlinkz/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
+    #  #url = "github:vlinkz/nix-software-center"; #https://flakehub.com/f/vlinkz/nix-software-center/0.1.2.tar.gz";
+    #  #url = "https://flakehub.com/f/vlinkz/nix-software-center/*.tar.gz"; #*/ # https://github.com/vlinkz/nix-software-center/pull/50
+    #  inputs.nixpkgs.follows = "nixpkgs";
+    #  inputs.utils.follows = "flake-utils";
+    #};
     nixvim = {
       #url = "github:nix-community/nixvim";
       url = "github:developing-today-forks/nix-community_nixvim";
@@ -77,7 +77,7 @@
     home,
     zig-overlay,
     alejandra,
-    nix-software-center,
+    #nix-software-center,
     ...
   }: let
     yes = "yes";
@@ -86,7 +86,7 @@
     overlays = [
       zig-overlay.overlays.default
       alejandra.overlay
-      nix-software-center.overlay
+      #nix-software-center.overlay
       home.vim-overlay
     ];
     systemNixosModules = [

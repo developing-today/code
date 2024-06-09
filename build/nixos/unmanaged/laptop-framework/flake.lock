@@ -497,7 +497,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-hncvtnMfMiuzOLH5i4vKtd0ftGilOxVWZO4uVP4sYd8=",
+        "narHash": "sha256-1fJfouWIjyO4Vxy9OWRCQGwhNwRgg/x4EiVE2C/F8sI=",
         "path": "./flakes/home",
         "type": "path"
       },
@@ -659,63 +659,13 @@
         "type": "github"
       }
     },
-    "nix-software-center": {
-      "inputs": {
-        "nixos-appstream-data": "nixos-appstream-data",
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "utils": [
-          "flake-utils"
-        ]
-      },
-      "locked": {
-        "lastModified": 1714856183,
-        "narHash": "sha256-Ue7xV+rZqImux4DDj3VMla4LIH2g8VeXbTJwgvX7wOo=",
-        "owner": "snowfallorg",
-        "repo": "nix-software-center",
-        "rev": "b9e0f53536e1e94e7d8c3cda3c6866b3f9d01386",
-        "type": "github"
-      },
-      "original": {
-        "owner": "snowfallorg",
-        "repo": "nix-software-center",
-        "type": "github"
-      }
-    },
-    "nixos-appstream-data": {
-      "inputs": {
-        "flake-utils": [
-          "nix-software-center",
-          "utils"
-        ],
-        "nixpkgs": [
-          "nix-software-center",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1712858390,
-        "narHash": "sha256-XE7gr+zU3N4SHPAhsgk8cVAFp1iBg+Lxxp3y4dUF1vE=",
-        "owner": "korfuri",
-        "repo": "nixos-appstream-data",
-        "rev": "0465d42a4433faa63b7a5eb0b8d397937c9fc13a",
-        "type": "github"
-      },
-      "original": {
-        "owner": "korfuri",
-        "ref": "flake",
-        "repo": "nixos-appstream-data",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1717906981,
-        "narHash": "sha256-N/cYpdztNFJs7Pjg9N6o1lnxsfxyRKha7wlkURnhs9Q=",
+        "lastModified": 1717911364,
+        "narHash": "sha256-hhvlat7rxNMdCVjY7cE6h1+DrFqBRCjtnDElPNzksnc=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "8a46e631bd81a7699b87e0d1bae4da772429bfa4",
+        "rev": "9832df4c9016bd83cb31d8a522cf2e80a91c9ee9",
         "type": "github"
       },
       "original": {
@@ -789,7 +739,6 @@
         "home": "home",
         "home-manager": "home-manager_2",
         "neovim-nightly-overlay": "neovim-nightly-overlay",
-        "nix-software-center": "nix-software-center",
         "nixpkgs": "nixpkgs",
         "nixvim": "nixvim_2",
         "zig-overlay": "zig-overlay"
@@ -933,7 +882,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-Ui3oX8mqhnAz5qYadhdZbQohgUrEzYziaDLNDx4nCOc=",
+        "narHash": "sha256-ZkxUNYFEaj3WF1deh/toG1TB2o6JNA5FtZ/gP0fxuYg=",
         "path": "./programs/nixvim",
         "type": "path"
       },
