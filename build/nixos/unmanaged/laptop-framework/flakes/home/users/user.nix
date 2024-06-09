@@ -64,6 +64,8 @@
         #pinentry
         #pinentry-qt
         #fprint
+        pinentry-all # TODO: consider pinentry though gnupg services service, also consider whether this should be global and not for 'user'
+        pinentry-rofi
         vaultwarden
         libsForQt5.yakuake
         tmux
