@@ -61,6 +61,9 @@
         bitwarden-menu
         rofi-rbw
         rbw
+        #pinentry
+        #pinentry-qt
+        #fprint
         vaultwarden
         libsForQt5.yakuake
         tmux
@@ -232,7 +235,7 @@
         plasma5Packages.kdenlive
         git
         git-crypt
-        gnupg
+        #gnupg
         audacity
         gimp
         nano
