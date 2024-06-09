@@ -4,7 +4,8 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "github:NixOS/nixpkgs";
     nixvim = {
-      url = "github:nix-community/nixvim";
+      # url = "github:nix-community/nixvim"; # gdtoolkit -> gdtoolkit_4
+      url = "github:developing-today-forks/nix-community_nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -29,7 +30,6 @@
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
       inputs.flake-compat.follows = "flake-compat";
     }; # need to actually use this
-
   };
   outputs = {
     nixpkgs,

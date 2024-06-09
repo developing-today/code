@@ -4,13 +4,15 @@
   ...
 }: {
   imports = [./hardware-configuration/laptop-framework.nix ./cachix.nix];
-
-  boot.loader = {
-    systemd-boot = {
-      enable = true;
-      configurationLimit = 64;
+  boot = {
+    tmp = {cleanOnBoot = true;};
+    loader = {
+      systemd-boot = {
+        enable = true;
+        configurationLimit = 64;
+      };
+      efi.canTouchEfiVariables = true;
     };
-    efi.canTouchEfiVariables = true;
   };
 
   networking = {
