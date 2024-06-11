@@ -32,10 +32,10 @@ type StreamClientService interface {
 
 type StreamClient struct {
 	ContextService ctx.ContextService
-	Client *centrifuge.Client
-	ctx 				context.Context
-	cancelFunc context.CancelFunc
-	streamService stream.StreamService
+	Client         *centrifuge.Client
+	ctx            context.Context
+	cancelFunc     context.CancelFunc
+	streamService  stream.StreamService
 }
 
 func MustGetStreamClientService(i do.Injector) StreamClientService {
@@ -48,8 +48,8 @@ func NewStreamClientService(i do.Injector) (StreamClientService, error) {
 	streamService := stream.MustGetStreamService(i)
 	streamClient := StreamClient{
 		ContextService: context,
-		Client: NewJsonClient(),
-		streamService: streamService,
+		Client:         NewJsonClient(),
+		streamService:  streamService,
 	}
 	log.Info("Stream client service created, adding default handlers")
 	err := streamClient.AddDefaultHandlers()
@@ -144,7 +144,7 @@ func NewDefaultStreamClient() (client *StreamClient, err error) {
 
 func NewJsonClient() *centrifuge.Client {
 	return centrifuge.NewJsonClient(
-		"ws://127.0.0.1:8000/connection/websocket",
+		"ws://127.0.0.1:8001/connection/websocket",
 		centrifuge.Config{},
 	)
 }
@@ -222,16 +222,16 @@ func (sc *StreamClient) NewSubscription(channel string, config ...centrifuge.Sub
 	s, ok := sc.Client.GetSubscription(channel)
 	if ok {
 		log.Info("Subscription already exists", "channel", channel)
-		return StreamSubscription{Subscription: s},nil
+		return StreamSubscription{Subscription: s}, nil
 	}
 	log.Info("Creating subscription", "channel", channel)
 	s, err = sc.Client.NewSubscription(channel, config...)
 	if err != nil {
 		log.Error("Error creating subscription", "error", err)
-		return StreamSubscription{},err
+		return StreamSubscription{}, err
 	}
 	log.Info("Subscription created", "channel", channel)
-	return StreamSubscription{Subscription: s},nil
+	return StreamSubscription{Subscription: s}, nil
 }
 
 func (ss *StreamSubscription) AddDefaultHandlers() error {
@@ -282,15 +282,15 @@ func (ss *StreamSubscription) Subscribe() error {
 func (sc *StreamClient) GetSubscription(channel string) (StreamSubscription, bool) {
 	sub, ok := sc.Client.GetSubscription(channel)
 	if ok {
-		return StreamSubscription{Subscription: sub},true
+		return StreamSubscription{Subscription: sub}, true
 	}
-	return StreamSubscription{},false
+	return StreamSubscription{}, false
 }
 
 func (sc *StreamClient) Subscribe(channel string) (sub StreamSubscription, err error) {
 	sub, ok := sc.GetSubscription(channel)
 	if ok {
-		return sub,nil
+		return sub, nil
 	}
 	sub, err = sc.NewSubscription(channel)
 	if err != nil {

@@ -1,4 +1,4 @@
-identity.server ssh.port=1 host="0.0.0.0" web.port=7000 {
+identity.server ssh.port=1313 host="0.0.0.0" web.port=7000 {
   authorization {
     cookie_name "Authorization"
     header_name "Authorization"

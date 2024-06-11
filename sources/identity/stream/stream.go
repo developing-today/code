@@ -19,7 +19,7 @@ func RunStreamServer(ctx context.Context, cmd *cobra.Command, args []string) {
 
 	SetupNodeHandlers(node)
 
-	srv := &http.Server{Addr: "0.0.0.0:8000", Handler: nil}
+	srv := &http.Server{Addr: "0.0.0.0:8001", Handler: nil}
 
 	wsHandler := centrifuge.NewWebsocketHandler(node, centrifuge.WebsocketConfig{})
 	http.Handle("/connection/websocket", Auth(wsHandler))
