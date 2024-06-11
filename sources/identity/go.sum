@@ -104,6 +104,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/developing-today-forks/charm v0.12.7-0.20240411043137-59254b871c13 h1:B9Hxm0qwaDNgY5oER+ij7weJiFOl0pa4AFfG76JRLUA=
 github.com/developing-today-forks/charm v0.12.7-0.20240411043137-59254b871c13/go.mod h1:6xzxrach+U21VLDQYKlWRMq+Basc95gD4AQ8v7LLEhE=
+github.com/developing-today-forks/charm v0.12.7-0.20240611043443-15e844dd73b1 h1:8WXyYBe7ysJvewy02n6uQ7bNSlYNMMEiF0suOfnKTAI=
+github.com/developing-today-forks/charm v0.12.7-0.20240611043443-15e844dd73b1/go.mod h1:pYGqWo5/lkzLiAa8gebqlB+yYNR8Tsf2z6JHmmOmv4Q=
 github.com/dgraph-io/badger/v3 v3.2103.5 h1:ylPa6qzbjYRQMU6jokoj4wzcaweHylt//CH0AKt0akg=
 github.com/dgraph-io/badger/v3 v3.2103.5/go.mod h1:4MPiseMeDQ3FNCYwRbbcBOGJLf5jsE0PPFzRiKjtcdw=
 github.com/dgraph-io/ristretto v0.1.1 h1:6CWw5tJNgpegArSHpNHJKldNeq03FQCwYvfMVWajOK8=
