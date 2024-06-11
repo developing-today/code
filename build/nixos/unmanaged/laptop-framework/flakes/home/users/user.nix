@@ -164,6 +164,7 @@
         #vimPlugins.nvim-treesitter-parsers.typescript
         nodePackages.typescript
         nodePackages.typescript-language-server
+        nodePackages.prettier-plugin-toml
         ## endblock ick
 
         # Rust CLI Tools! I love rust.
