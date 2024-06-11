@@ -767,6 +767,8 @@
         brillo
         beep
         fh
+        charm-freeze
+        charm
       ];
   };
   manual.manpages.enable = true;
