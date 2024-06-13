@@ -76,7 +76,12 @@
       options = "--delete-older-than 60d";
     };
   };
-  nixpkgs.config.allowUnfree = true;
+  nixpkgs.config = {
+    allowUnfree = true;
+    permittedInsecurePackages = [
+      "electron" # le sigh
+    ];
+  };
   sound.enable = true;
   hardware = {
     #     bluetooth.enable = true;

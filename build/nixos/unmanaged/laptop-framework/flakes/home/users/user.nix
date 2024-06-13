@@ -3,8 +3,12 @@
   pkgs,
   ...
 }: {
-  nixpkgs.config.allowUnfree = true;
-
+  nixpkgs.config = {
+    allowUnfree = true;
+    permittedInsecurePackages = [
+      "electron" # le sigh
+    ];
+  };
   gtk = {
     enable = true;
     gtk3.extraConfig.gtk-decoration-layout = "menu:";

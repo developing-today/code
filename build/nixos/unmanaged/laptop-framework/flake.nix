@@ -93,7 +93,12 @@
       {
         nixpkgs = {
           overlays = overlays; # are overlays needed in home manager? document which/why?
-          config.allowUnfree = true;
+          config = {
+            allowUnfree = true;
+            permittedInsecurePackages = [
+              "electron" # le sigh
+            ];
+          };
         };
         system.stateVersion = stateVersion;
       }

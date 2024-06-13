@@ -74,7 +74,12 @@
           pkgs = import nixpkgs {
             inherit system;
             overlays = overlays;
-            config.allowUnfree = true;
+            config = {
+              allowUnfree = true;
+              permittedInsecurePackages = [
+                "electron" # le sigh
+              ];
+            };
           };
         };
       })
