@@ -56,12 +56,6 @@
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {
         inherit system;
-        config = {
-          allowUnfree = true;
-          permittedInsecurePackages = [
-            "electron"
-          ];
-        };
         overlays = [
           inputs.neovim-nightly-overlay.overlays.default
         ];

@@ -116,7 +116,6 @@
       overlays = overlays;
     };
   in {
-    #hydraJobs = import ./modules/hydra.nix { inherit inputs outputs; }; # https://git.sr.ht/~fd/nix-configs/tree/main/item/flake.nix
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;
       modules =

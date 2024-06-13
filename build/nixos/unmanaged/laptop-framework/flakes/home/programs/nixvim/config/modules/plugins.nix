@@ -41,28 +41,27 @@
       # see -> https://github.com/hrsh7th/nvim-cmp/blob/main/lua/cmp/config/mapping.lua#L36
       #mappingPresets = ["insert" "cmdline"];
       settings = {
-        mapping = {
-          "<C-b>" = ''cmp.mapping(cmp.mapping.scroll_docs(-1), { "i" })'';
-          "<C-f>" = ''cmp.mapping(cmp.mapping.scroll_docs(1), { "i" })'';
-          "<C-e>" = "cmp.mapping(cmp.mapping.abort())";
-          "<C-l>" = "cmp.mapping(cmp.mapping.complete())";
-          "<CR>" = "cmp.mapping.confirm { select = true }";
-        };
-        #snippet.expand = "luasnip";
+      mapping = {
+        "<C-b>" = ''cmp.mapping(cmp.mapping.scroll_docs(-1), { "i" })'';
+        "<C-f>" = ''cmp.mapping(cmp.mapping.scroll_docs(1), { "i" })'';
+        "<C-e>" = "cmp.mapping(cmp.mapping.abort())";
+        "<C-l>" = "cmp.mapping(cmp.mapping.complete())";
+        "<CR>" = "cmp.mapping.confirm { select = true }";
+      };
+      #snippet.expand = "luasnip";
         formatting.fields = ["kind" "abbr" "menu"];
-        window = {
-          completion = {
-            winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
-            border = "single";
-          };
-          documentation = {
-            winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
-            border = "single";
-          };
-        };
+      window = {
+completion = {
+        winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
+        border = "single";
+      };
+      documentation = {
+        winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
+        border = "single";
+      };
+      };
       };
     };
-    mini = {};
     lspkind = {};
     treesitter = {};
     harpoon.keymaps = {
@@ -135,7 +134,6 @@
         vim.keymap.set('n', '<space>q', vim.diagnostic.setloclist, opts)
       '';
     };
-    # TODO: https://github.com/charm-community/freeze.nvim
     lsp-lines.currentLine = true;
     none-ls.sources = {
       formatting = {
