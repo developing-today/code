@@ -1,5 +1,6 @@
 {...}: {
   plugins = {
+    # telescope-tabs
     bufferline = {};
     lightline = {};
     commentary = {};
