@@ -53,7 +53,23 @@
   time.timeZone = "America/Chicago";
   nix = {
     settings = {
-      experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups"]; # "no-url-literals" # <- removed no-url-literals for flakehub testing
+      experimental-features = [
+        "auto-allocate-uids"
+        "ca-derivations"
+        "cgroups"
+        "dynamic-derivations"
+        "fetch-closure"
+        "flakes"
+        "git-hashing"
+        # "local-overlay-store" # look into this
+        # "mounted-ssh-store" # look into this
+        "nix-command"
+        # "no-url-literals" # <- removed no-url-literals for flakehub testing
+        "parse-toml-timestamps"
+        "read-only-local-store"
+        "recursive-nix"
+        "verified-fetches"
+      ];
       trusted-users = ["user"];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
