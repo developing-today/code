@@ -4,9 +4,9 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs.url = "github:NixOS/nixpkgs";
     nixvim = {
-      # url = "github:nix-community/nixvim"; # gdtoolkit -> gdtoolkit_4
-      url = "github:developing-today-forks/nix-community_nixvim";
-      inputs.nixpkgs.follows = "nixpkgs";
+      url = "github:nix-community/nixvim"; # gdtoolkit -> gdtoolkit_4
+      #url = "github:developing-today-forks/nix-community_nixvim";
+      #inputs.nixpkgs.follows = "nixpkgs"; # https://github.com/nix-community/nixvim/issues/1702
     };
 
     flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
