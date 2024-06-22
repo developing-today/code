@@ -53,7 +53,7 @@
   time.timeZone = "America/Chicago";
   nix = {
     settings = {
-      experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups" "repl-flake"]; # "no-url-literals" # <- removed no-url-literals for flakehub testing
+      experimental-features = ["nix-command" "flakes" "auto-allocate-uids" "ca-derivations" "cgroups"]; # "no-url-literals" # <- removed no-url-literals for flakehub testing
       trusted-users = ["user"];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
@@ -68,7 +68,7 @@
       use-registries = true;
       use-cgroups = true;
     };
-    package = pkgs.nixVersions.nix_2_18;
+    package = pkgs.nixVersions.nix_2_23;
     optimise.automatic = true;
     gc = {
       automatic = true;
