@@ -497,7 +497,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-IIHn+5Q//B1fGUNshRfYjBeI22fKDO2eG5/I7QtHKMM=",
+        "narHash": "sha256-vDNr0F1BivSrSCjkQoEsfoTtlGWCGRYgkKuYyvrh6zQ=",
         "path": "./flakes/home",
         "type": "path"
       },
@@ -661,11 +661,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1719024789,
-        "narHash": "sha256-z0K0iuBwoTOQvwAEVNI5sZF6NnkBtWA0el9XSdTNjMw=",
+        "lastModified": 1719030334,
+        "narHash": "sha256-jcaZ8yRLJ/fipJO051DdTHnfZiWFVtDeVSJ2CbtiKoU=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "44e3ac88c64ddf112af9b46136cc6fad58148d21",
+        "rev": "81aff3c1def16bd7aff1fd5f4dc78596853d53c3",
         "type": "github"
       },
       "original": {
@@ -896,7 +896,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-2VE5WUfJJzn3DObMzefJi8yRxiZyYL1Qz/uzyyDMuM4=",
+        "narHash": "sha256-J4YNF2n3kFZl307hzF5+jFfgFa50mBTNlAU7g19c6Bc=",
         "path": "./programs/nixvim",
         "type": "path"
       },
