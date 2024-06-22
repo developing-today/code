@@ -61,10 +61,10 @@
     #  inputs.utils.follows = "flake-utils";
     #};
     nixvim = {
-      #url = "github:nix-community/nixvim";
-      url = "github:developing-today-forks/nix-community_nixvim";
+      url = "github:nix-community/nixvim";
+      #url = "github:developing-today-forks/nix-community_nixvim";
       #url = "github:developing-today-forks/nixvim-flake";
-      inputs.nixpkgs.follows = "nixpkgs";
+      #inputs.nixpkgs.follows = "nixpkgs";
     };
 
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
