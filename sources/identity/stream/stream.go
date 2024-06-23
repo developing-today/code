@@ -57,7 +57,11 @@ func SetupNodeHandlers(node *centrifuge.Node) {
 
 		client.OnPublish(func(e centrifuge.PublishEvent, cb centrifuge.PublishCallback) {
 			log.Info("Client publishes into channel", "channel", e.Channel, "data", string(e.Data))
-			cb(centrifuge.PublishReply{}, nil)
+			if cb == nil {
+				log.Info("Publish Callback is null")
+			} else {
+				cb(centrifuge.PublishReply{}, nil)
+			}
 		})
 
 		client.OnDisconnect(func(e centrifuge.DisconnectEvent) {

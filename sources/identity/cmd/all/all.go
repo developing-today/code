@@ -163,7 +163,6 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 		d.Provide(i, icfg.NewConfigurationService(config.Configuration, config.ConfigurationSeparator, config.ConfigurationLocations))
 		d.Provide(i, charm.NewCharmService)
 		d.Provide(i, ssh.NewSshService)
-		d.Provide(i, stream.NewStreamService)
 		d.Provide(i, ssh.NewStreamClientService)
 
 		log.Info("Starting services")
