@@ -105,7 +105,6 @@ func StartStream() func(context.Context) func(*cobra.Command, []string) {
 	}
 }
 
-
 func MustGetStreamService(i do.Injector) StreamService {
 	return d.MustInvokeAny[StreamService](i)
 }

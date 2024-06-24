@@ -12,20 +12,20 @@ import (
 )
 
 const (
-	upperAddr  = "upper"
-	leftAddr   = "left"
-	middleAddr = "middle"
-	rightAddr  = "right"
-	lowerAddr  = "lower"
-	chat = "Chat"
-	upload = "Upload"
-	game = "Game"
-	defaultEmpty = " defaultEmpty"
-	defaultDream = " defaultDream"
-	defaultHelp = " defaultHelp"
-	defaultChat = " defaultChat"
+	upperAddr       = "upper"
+	leftAddr        = "left"
+	middleAddr      = "middle"
+	rightAddr       = "right"
+	lowerAddr       = "lower"
+	chat            = "Chat"
+	upload          = "Upload"
+	game            = "Game"
+	defaultEmpty    = " defaultEmpty"
+	defaultDream    = " defaultDream"
+	defaultHelp     = " defaultHelp"
+	defaultChat     = " defaultChat"
 	defaultViewport = " defaultViewport"
-	defaultUpload = " defaultUpload"
+	defaultUpload   = " defaultUpload"
 )
 
 func (o *model) defaultModels(modelName string) tea.Model {

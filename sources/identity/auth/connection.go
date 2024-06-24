@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/nrednav/cuid2"
 )
+
 type ContextKey string
 
 func GetConnectionMapKey() ContextKey {

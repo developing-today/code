@@ -74,11 +74,11 @@ type SshService interface {
 }
 
 type SshServiceImpl struct {
-	context    ctx.ContextService
-	command    command.CommandService
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-	config     icfg.SshServiceConfiguration
+	context      ctx.ContextService
+	command      command.CommandService
+	ctx          context.Context
+	cancelFunc   context.CancelFunc
+	config       icfg.SshServiceConfiguration
 	streamClient StreamClientService
 }
 
@@ -93,9 +93,9 @@ func NewSshService(i do.Injector) (SshService, error) {
 	streamClient := MustGetStreamClientService(i)
 	streamClient.Start()
 	service := &SshServiceImpl{
-		context: context,
-		command: command,
-		config:  config,
+		context:      context,
+		command:      command,
+		config:       config,
 		streamClient: streamClient,
 	}
 	service.Start()
@@ -165,10 +165,10 @@ func authTypeCounterMiddleware(counter *prometheus.CounterVec) wish.Middleware {
 			}
 			switch conn := s.Context().Value("connection").(type) {
 			case auth.Connection:
-					log.Info("authMethod", "authMethod", *conn.AuthMethod)
-					counter.WithLabelValues(*conn.AuthMethod).Inc()
+				log.Info("authMethod", "authMethod", *conn.AuthMethod)
+				counter.WithLabelValues(*conn.AuthMethod).Inc()
 			default:
-					log.Error("invalid context for acquiring authMethod from connection from Context", "context", s.Context(), "connection", s.Context().Value("connection"))
+				log.Error("invalid context for acquiring authMethod from connection from Context", "context", s.Context(), "connection", s.Context().Value("connection"))
 			}
 			sh(s)
 		}
@@ -301,7 +301,7 @@ type model struct {
 	choices              []string
 	cursor               int
 	selected             map[int]struct{}
-	models							 map[string]tea.Model
+	models               map[string]tea.Model
 	layout               map[string]string
 	changes              int
 	charmId              string
@@ -312,7 +312,6 @@ type model struct {
 	boxer                *BoxerModel
 	streamClient         StreamClientService
 }
-
 
 func (m model) chatModel() tea.Model {
 	sub, err := m.streamClient.Subscribe("chat")
@@ -376,14 +375,14 @@ var (
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.mode {
-		case normalMode:
-			return m.updateNormal(msg)
-		case loadingMode:
-			return m.updateLoading(msg)
-		case boxerMode:
-			return m.updateBoxer(msg)
-		default:
-			panic("unknown mode")
+	case normalMode:
+		return m.updateNormal(msg)
+	case loadingMode:
+		return m.updateLoading(msg)
+	case boxerMode:
+		return m.updateBoxer(msg)
+	default:
+		panic("unknown mode")
 	}
 }
 
@@ -416,25 +415,25 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-			case "w", "k":
-				if m.cursor > 0 {
-					m.cursor--
-				}
-			case "s", "j":
-				if m.cursor < len(m.choices)-1 {
-					m.cursor++
-				}
-			case "enter", " ":
-				m.changes++
-				_, ok := m.selected[m.cursor]
-				if ok {
-					delete(m.selected, m.cursor)
-				} else {
-					m.selected[m.cursor] = struct{}{}
-				}
-			case "tab", "#":
-				m.mode = boxerMode
-				return m.updateBoxer(nil)
+		case "w", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "s", "j":
+			if m.cursor < len(m.choices)-1 {
+				m.cursor++
+			}
+		case "enter", " ":
+			m.changes++
+			_, ok := m.selected[m.cursor]
+			if ok {
+				delete(m.selected, m.cursor)
+			} else {
+				m.selected[m.cursor] = struct{}{}
+			}
+		case "tab", "#":
+			m.mode = boxerMode
+			return m.updateBoxer(nil)
 		}
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
@@ -457,7 +456,7 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, cmdV = m.viewport.Update(msg)
 
 	s := "Which room?\n\n"
-		for i, choice := range m.choices {
+	for i, choice := range m.choices {
 		cursor := " "
 		if m.cursor == i {
 			cursor = ">"
@@ -565,10 +564,10 @@ func TeaHandlerWithStream(streamClient StreamClientService) func(ssh.Session) (t
 		meltedPrivateKeySeed := s.Context().Permissions().Extensions["private-key-seed-melted"]
 		dt := time.Now()
 		m := model{
-			mode: loadingMode,
-			loadDuration: 200 * time.Millisecond,
-			loadInitDateTime: dt,
-			initDateTime: dt,
+			mode:                 loadingMode,
+			loadDuration:         200 * time.Millisecond,
+			loadInitDateTime:     dt,
+			initDateTime:         dt,
 			spinner:              sp,
 			quitting:             false,
 			err:                  nil,
@@ -578,11 +577,11 @@ func TeaHandlerWithStream(streamClient StreamClientService) func(ssh.Session) (t
 			meltedPrivateKeySeed: meltedPrivateKeySeed,
 			choices:              []string{"Upload", "Game", "Chat"},
 			selected:             make(map[int]struct{}),
-			models:							 make(map[string]tea.Model),
+			models:               make(map[string]tea.Model),
 			layout:               make(map[string]string),
 			charmId:              s.Context().Permissions().Extensions["charm-id"],
 			publicKeyAuthorized:  s.Context().Permissions().Extensions["charm-public-key"],
-			streamClient: streamClient,
+			streamClient:         streamClient,
 		}
 		m.selected[2] = struct{}{}
 		m.layout[leftAddr] = m.choices[0]
@@ -614,7 +613,7 @@ func Banner(config *configuration.SshServerConfiguration) func(ctx ssh.Context) 
 			license type in db
 			license compatibility
 		*/
-			return `
+		return `
 Welcome to the ssh server! ("The Service")
 
 By using The Service, you agree to all of the following terms and conditions.
