@@ -45,7 +45,7 @@ echo "CHARM_DATA_DIR: $CHARM_DATA_DIR"
 if [ -z "$NO_INSTALL" ] || [ "$NO_INSTALL" == "0" ]; then
   set +e
   /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
-  /boot/dietpi/dietpi-software install 188 # go (git by dependency)
+  /boot/dietpi/dietpi-software install 188       # go (git by dependency)
   set -e
   if [ -f /etc/bash.bashrc ]; then
     echo "Sourcing /etc/bash.bashrc"
@@ -63,22 +63,22 @@ if [ -z "$NO_INSTALL" ] || [ "$NO_INSTALL" == "0" ]; then
   DEBIAN_FRONTEND=noninteractive apt install -y curl nodejs ucspi-tcp unzip xxd unattended-upgrades
   AUTO_UPGRADES_FILE="/etc/apt/apt.conf.d/20auto-upgrades"
   REQUIRED_LINES=(
-      'APT::Periodic::Update-Package-Lists "1";'
-      'APT::Periodic::Download-Upgradeable-Packages "1";'
-      'APT::Periodic::AutocleanInterval "7";'
-      'APT::Periodic::Unattended-Upgrade "1";'
+    'APT::Periodic::Update-Package-Lists "1";'
+    'APT::Periodic::Download-Upgradeable-Packages "1";'
+    'APT::Periodic::AutocleanInterval "7";'
+    'APT::Periodic::Unattended-Upgrade "1";'
   )
   add_line_if_not_present() {
-      local line="$1"
-      local file="$2"
-      grep -qF -- "$line" "$file" || echo "$line" >> "$file"
+    local line="$1"
+    local file="$2"
+    grep -qF -- "$line" "$file" || echo "$line" >>"$file"
   }
   if [ ! -f "$AUTO_UPGRADES_FILE" ]; then
-      echo "$AUTO_UPGRADES_FILE does not exist, creating it..."
-      touch "$AUTO_UPGRADES_FILE"
+    echo "$AUTO_UPGRADES_FILE does not exist, creating it..."
+    touch "$AUTO_UPGRADES_FILE"
   fi
   for line in "${REQUIRED_LINES[@]}"; do
-      add_line_if_not_present "$line" "$AUTO_UPGRADES_FILE"
+    add_line_if_not_present "$line" "$AUTO_UPGRADES_FILE"
   done
   echo "The $AUTO_UPGRADES_FILE has been updated."
 
@@ -104,33 +104,33 @@ if [ -z "$NO_INSTALL" ] || [ "$NO_INSTALL" == "0" ]; then
 fi
 ./build-libsql.ps1
 get_http_status() {
-    local url=$1
-    curl -Lo /dev/null -s -w "%{http_code}\n" --connect-timeout 1 "$url"
+  local url=$1
+  curl -Lo /dev/null -s -w "%{http_code}\n" --connect-timeout 1 "$url"
 }
 start_time=$(date +%s)
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm id
 
 set +ex
 echo "Waiting for charm link to be available"
-while : ; do
-    current_time=$(date +%s)
-    elapsed_time=$((current_time - start_time))
+while :; do
+  current_time=$(date +%s)
+  elapsed_time=$((current_time - start_time))
 
-    if [ "$elapsed_time" -ge 60 ]; then
-        echo "1 minute has elapsed, stopping."
-        exit 1
-    fi
+  if [ "$elapsed_time" -ge 60 ]; then
+    echo "1 minute has elapsed, stopping."
+    exit 1
+  fi
 
-    echo "Checking charm link url: $CHARM_LINK_URL"
-    http_status=$(get_http_status "$CHARM_LINK_URL")
-    echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status - Elapsed time: $elapsed_time"
+  echo "Checking charm link url: $CHARM_LINK_URL"
+  http_status=$(get_http_status "$CHARM_LINK_URL")
+  echo "Checking URL: $CHARM_LINK_URL - HTTP status: $http_status - Elapsed time: $elapsed_time"
 
-    if [ "$http_status" -ne 000 ]; then
-        echo "Verified charm link url is responding, breaking loop."
-        break
-    fi
+  if [ "$http_status" -ne 000 ]; then
+    echo "Verified charm link url is responding, breaking loop."
+    break
+  fi
 
-    sleep 2
+  sleep 2
 done
 set -x
 echo "Obtaining charm link"
@@ -138,20 +138,20 @@ echo "Obtaining charm link"
 response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
 LAST_EXIT_CODE=$?
 if [ "$LAST_EXIT_CODE" -ne 0 ]; then
-    echo "Failed to obtain charm link"
-    exit 1
+  echo "Failed to obtain charm link"
+  exit 1
 fi
 set -e
 if [ -n "$response" ]; then
-    extracted_value=$(echo "$response" | sed -n 's/.*HTTP\/1\.1 200 \(.*\)\r.*/\1/p')
+  extracted_value=$(echo "$response" | sed -n 's/.*HTTP\/1\.1 200 \(.*\)\r.*/\1/p')
 
-    if [ -z "$extracted_value" ]; then
-        echo "Unexpected response: $extracted_value"
-        exit 1
-    fi
-else
-    echo "Failed to obtain charm link"
+  if [ -z "$extracted_value" ]; then
+    echo "Unexpected response: $extracted_value"
     exit 1
+  fi
+else
+  echo "Failed to obtain charm link"
+  exit 1
 fi
 set -ex
 CHARM_LINK=$extracted_value
@@ -161,21 +161,21 @@ CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sour
 START_TIME=$SECONDS
 TIMEOUT=30
 
-while : ; do
-    LINE_COUNT=$(CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm fs tree "charm:dt/identity/init" | wc -l)
+while :; do
+  LINE_COUNT=$(CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm fs tree "charm:dt/identity/init" | wc -l)
 
-    if [ "$LINE_COUNT" -gt 1 ]; then
-        echo "Output has more than one line."
-        break
-    fi
+  if [ "$LINE_COUNT" -gt 1 ]; then
+    echo "Output has more than one line."
+    break
+  fi
 
-    ELAPSED_TIME=$(( SECONDS - START_TIME ))
-    if [ "$ELAPSED_TIME" -ge "$TIMEOUT" ]; then
-        echo "Timeout reached, exiting."
-        exit 1
-    fi
+  ELAPSED_TIME=$((SECONDS - START_TIME))
+  if [ "$ELAPSED_TIME" -ge "$TIMEOUT" ]; then
+    echo "Timeout reached, exiting."
+    exit 1
+  fi
 
-    sleep 1
+  sleep 1
 done
 # CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm kv list
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm fs cat "charm:dt/identity/init/init" >"$INIT_PATH"

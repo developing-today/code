@@ -31,7 +31,7 @@ download_framework() {
 # Function to check if the project name is valid
 is_valid_project_name() {
   local name="$1"
-  if [[ ! "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  if [[ ! $name =~ ^[a-zA-Z0-9_-]+$ ]]; then
     return 1
   fi
   return 0
@@ -42,9 +42,9 @@ setup_project() {
   echo "Creating a new project '$PROJECT_NAME'..."
   cp -r "$TMP_DIR" "./$PROJECT_NAME"
   cd "$PROJECT_NAME"
-  echo "PROJECT_NAME=${PROJECT_NAME}" > "config.sh"
-  if [[ ! -z "$TAILWIND" ]]; then
-    echo "TAILWIND=on" >> "config.sh"
+  echo "PROJECT_NAME=${PROJECT_NAME}" >"config.sh"
+  if [[ -n $TAILWIND ]]; then
+    echo "TAILWIND=on" >>"config.sh"
   fi
   echo "Project '$PROJECT_NAME' is ready!"
   echo ""
@@ -63,10 +63,10 @@ main() {
   if [ -z "$1" ]; then
     # we need to connect to /dev/tty in order to read stdin
     if [ ! -t 0 ]; then
-        if [ ! -t 1 ]; then
-            echo "Error: Unable to run interactively!" 1>&2
-            exit 1
-        fi
+      if [ ! -t 1 ]; then
+        echo "Error: Unable to run interactively!" 1>&2
+        exit 1
+      fi
       read -p "Enter a project name: " PROJECT_NAME </dev/tty
       read -n 1 -p "Would you like to use tailwind? (y/n) " TAILWIND_CHOICE </dev/tty
       echo
@@ -99,7 +99,7 @@ main() {
     exit 1
   fi
 
-  if [[ "$TAILWIND_CHOICE" == "y" ]] || [[ "$TAILWIND_CHOICE" == "Y" ]]; then
+  if [[ $TAILWIND_CHOICE == "y" ]] || [[ $TAILWIND_CHOICE == "Y" ]]; then
     ZIP_NAME="template-tailwind.zip"
     TAILWIND=on
   fi
