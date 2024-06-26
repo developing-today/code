@@ -497,7 +497,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-LcY5FXZNYmkIHedS47ndFgIBuHkFmC5qNJXiXYMF1y0=",
+        "narHash": "sha256-Qp4EHEcRXNfX4zrFoKGgEpk1CPZ1bOFc0e85MMh1VDI=",
         "path": "./flakes/home",
         "type": "path"
       },
@@ -661,11 +661,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1719382238,
-        "narHash": "sha256-NN94Kk8PVievM6GNvk4xkV4IsDELPdqJ5DDxWleHYF8=",
+        "lastModified": 1719385338,
+        "narHash": "sha256-a2ymfibHzayW8Qykc7wlzq4PwneKOLV+ZMRAczXcsT0=",
         "owner": "dezren39",
         "repo": "nixpkgs",
-        "rev": "5609231cb8d1e54b464460f7c07cb3c9fc79acff",
+        "rev": "54ef7feff29447eacdfb9319387e0e9a25372541",
         "type": "github"
       },
       "original": {
@@ -897,7 +897,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-XVhpi9E3WJW3WjudYfvgpVxP+ggBs1wYp0e9Qbdr6rE=",
+        "narHash": "sha256-XMXhxaVSZhWXFzyNerbyOuWS0qes1fH4hvTwdIauCEU=",
         "path": "./programs/nixvim",
         "type": "path"
       },
