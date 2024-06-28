@@ -21,15 +21,15 @@ for dir in "${script_dir}"/programs/*; do
       chmod +x ./rebuild.sh
       ./rebuild.sh
     fi
-# TODO: do update-ref sometimes instead of update
-    nix flake update
+    # TODO: do update-ref sometimes instead of update
+    nix flake update --verbose
     cd "${script_dir}" || exit 1
   fi
 done
 
 git add .
 # TODO: do update-ref sometimes instead of update
-nix flake update
+nix flake update --verbose
 git add .
 
 #TODO: setup cachix, skip cachix if not setup

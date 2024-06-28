@@ -19,26 +19,26 @@ for dir in "${script_dir}"/flakes/*; do
       ./rebuild.sh
     fi
     # todo: update-ref instead of update sometimes
-    nix flake update
+    nix flake update --verbose
     cd "${script_dir}" || exit 1
   fi
 done
 
 git add .
 # todo: update-ref instead of update sometimes
-nix flake update
+nix flake update --verbose
 git add .
-sudo nixos-rebuild switch
+sudo nixos-rebuild switch --upgrade --verbose
 
 #TODO: don't do cachix if not setup
-#nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
+#nix flake archive --verbose --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
 
 for dir in "${script_dir}"/flakes/*; do
   if [[ -d ${dir} ]]; then
     cd "${dir}" || exit 1
     if [[ -f "./rebuild.sh" ]]; then
-echo ""
-#      nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
+      echo ""
+      #      nix flake archive --verbose --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
     fi
     cd "${script_dir}" || exit 1
   fi

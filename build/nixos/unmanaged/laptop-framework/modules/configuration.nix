@@ -159,6 +159,7 @@
   };
 
   services = {
+    tailscale.enable = true;
     printing.enable = true;
     pipewire = {
       enable = true;

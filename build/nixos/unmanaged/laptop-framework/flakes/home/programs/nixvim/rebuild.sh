@@ -21,13 +21,13 @@ for dir in "${script_dir}"/config/*; do
       chmod +x ./rebuild.sh
       ./rebuild.sh
     fi
-    nix flake update
-    nix build
-    #nix build --json |
+    nix flake update --verbose
+    nix build --verbose
+    #nix build --verbose --json |
     #  jq -r '.[].outputs | to_entries[].value' |
     #  cachix push binary
-# TODO: skip cachix if not setup
-    #nix flake archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
+    # TODO: skip cachix if not setup
+    #nix flake archive --verbose --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
 
     cd "${script_dir}" || exit 1
   fi
@@ -35,13 +35,13 @@ done
 
 git add .
 # TODO: sometimes do update-ref instead of update
-nix flake update
+nix flake update --verbose
 # TODO: skip cachix if not setup
-nix build
-#nix build --json |
+nix build --verbose
+#nix build --verbose --json |
 #  jq -r '.[].outputs | to_entries[].value' |
 #  cachix push binary
-#nix flake archive --json |
+#nix flake archive --verbose --json |
 #  jq -r '.path,(.inputs|to_entries[].value.path)' |
 #  cachix push binary # todo: make optional
 
