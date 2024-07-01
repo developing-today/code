@@ -5,6 +5,12 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "github:DeterminateSystems/nixpkgs/nix_2_18_1";
+    sops-nix = {
+      url = "github:mic92/sops-nix";
+      #inputs.nixpkgs-stable.follows ="nixpkgs";
+      #inputs.nixpkgs.follows ="nixpkgs";
+    };
+
     home = {
       url = "path:./flakes/home";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -78,9 +84,11 @@
     home,
     zig-overlay,
     alejandra,
+    sops-nix,
     #nix-software-center,
     ...
-  }: let
+  } @ inputs: let
+    inherit (self) outputs;
     yes = "yes";
     stateVersion = "23.11";
     #stateVersion = "23.05";
@@ -104,6 +112,7 @@
         system.stateVersion = stateVersion;
       }
       ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
+      #sops-nix.nixosModules.sops
     ];
     # overlayNixosModules = ?
     hyprlandNixosModules = [
@@ -116,7 +125,9 @@
       system = system;
       overlays = overlays;
     };
+    lib = nixpkgs.lib; #// home-manager.lib;
   in {
+    inherit lib;
     #hydraJobs = import ./modules/hydra.nix { inherit inputs outputs; }; # https://git.sr.ht/~fd/nix-configs/tree/main/item/flake.nix
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       inherit system;
@@ -125,6 +136,7 @@
         ++ hyprlandNixosModules
         ++ homeManagerNixosModules;
     };
+    specialArgs = {inherit inputs outputs;};
   };
   # hydra
   # content addressible

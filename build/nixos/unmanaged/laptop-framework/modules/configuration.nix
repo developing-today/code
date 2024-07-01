@@ -1,9 +1,15 @@
 {
+  outputs,
+  lib,
   config,
   pkgs,
   ...
 }: {
-  imports = [./hardware-configuration/laptop-framework.nix ./cachix.nix];
+  imports = [
+    ./hardware-configuration/laptop-framework.nix
+    #./sops.nix
+    ./cachix.nix
+  ];
   boot = {
     tmp = {cleanOnBoot = true;};
     loader = {
@@ -32,6 +38,9 @@
       #       unmanaged = [
       #         "*" "except:type:wwan" "except:type:gsm"
       #       ];
+    };
+    firewall = {
+      allowedUDPPorts = [config.services.tailscale.port];
     };
   };
 
@@ -182,7 +191,15 @@
     #     blueman.enable = true;
     flatpak.enable = true;
     dbus.enable = true;
-    openssh.enable = true;
+    openssh = {
+      enable = true;
+      hostKeys = [
+        {
+          path = "/etc/ssh/ssh_host_ed25519_key";
+          type = "ed25519";
+        }
+      ];
+    };
 
     locate = {
       enable = true;
@@ -233,6 +250,7 @@
         #nix-software-center
         alejandra
         neovim
+        tailscale
       ]
       ++ [
         # dwm
