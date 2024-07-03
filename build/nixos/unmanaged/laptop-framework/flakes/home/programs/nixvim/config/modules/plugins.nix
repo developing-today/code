@@ -1,18 +1,18 @@
-{...}: {
+{ ... }: {
   plugins = {
     #telescope-tabs = {};
-    telescope = {};
+    telescope = { };
     #goto-preview = {};
     #coc = {};
-    bufferline = {};
-    lightline = {};
-    commentary = {};
-    illuminate = {};
-    fugitive = {};
+    bufferline = { };
+    lightline = { };
+    commentary = { };
+    illuminate = { };
+    fugitive = { };
     which-key.window.winblend = 10;
-    nvim-colorizer = {};
-    quickmath = {};
-    surround = {};
+    nvim-colorizer = { };
+    quickmath = { };
+    surround = { };
     notify = {
       level = 2;
       topDown = false;
@@ -22,15 +22,12 @@
       dap-ui.enable = true;
       dap-virtual-text.enable = true;
     };
-    inc-rename = {};
+    inc-rename = { };
     #neoscroll = {};
-    nix = {};
+    nix = { };
     lsp-format.setup.typescript = {
-      order = ["null-ls"];
-      exclude = [
-        "tsserver"
-        "eslint"
-      ];
+      order = [ "null-ls" ];
+      exclude = [ "tsserver" "eslint" ];
     };
     cmp = {
       autoEnableSources = true;
@@ -53,7 +50,7 @@
           "<CR>" = "cmp.mapping.confirm { select = true }";
         };
         #snippet.expand = "luasnip";
-        formatting.fields = ["kind" "abbr" "menu"];
+        formatting.fields = [ "kind" "abbr" "menu" ];
         window = {
           completion = {
             winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
@@ -66,9 +63,9 @@
         };
       };
     };
-    mini = {};
-    lspkind = {};
-    treesitter = {};
+    mini = { };
+    lspkind = { };
+    treesitter = { };
     harpoon.keymaps = {
       addFile = "<leader>a";
       toggleQuickMenu = "<leader>s";
@@ -79,23 +76,23 @@
         "4" = "<C-m>";
       };
     };
-    gitsigns = {};
-    lualine = {};
-    telescope = {};
+    gitsigns = { };
+    lualine = { };
+    telescope = { };
     #copilot-lua = {};
-    copilot-vim = {};
+    copilot-vim = { };
     lsp = {
       servers = {
-        bashls = {};
-        gopls = {};
+        bashls = { };
+        gopls = { };
         #rnix-lsp = {};
-        rust-analyzer = {};
-        html = {};
-        eslint = {};
-        tsserver = {};
-        lua-ls = {};
-        jsonls = {};
-        pylsp = {};
+        rust-analyzer = { };
+        html = { };
+        eslint = { };
+        tsserver = { };
+        lua-ls = { };
+        jsonls = { };
+        pylsp = { };
         #pyright = {};
       };
       onAttach = ''
@@ -149,11 +146,9 @@
       };
       #diagnostics.shellcheck.enable = true;
     };
-    nix = {};
-    nvim-autopairs = {};
-    surround = {};
-    nvim-tree.updateFocusedFile = {
-      enable = true;
-    };
+    nix = { };
+    nvim-autopairs = { };
+    surround = { };
+    nvim-tree.updateFocusedFile = { enable = true; };
   };
 }

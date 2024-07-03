@@ -1,8 +1,4 @@
-{
-  stateVersion,
-  pkgs,
-  ...
-}: {
+{ stateVersion, pkgs, ... }: {
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
@@ -44,14 +40,9 @@
       ls = "exa";
       cat = "bat";
     };
-    sessionVariables = {
-      EDITOR = "nvim";
-    };
+    sessionVariables = { EDITOR = "nvim"; };
     packages = with pkgs;
-      [
-        neovim
-      ]
-      ++ [
+      [ neovim ] ++ [
         lf
         #
         git
@@ -223,7 +214,8 @@
         lua-language-server
         # Nix
         nil
-        nixpkgs-fmt
+        nixpkgs-fmt # ??
+        nixfmt
         statix
         # Python
         #pyright
@@ -265,8 +257,7 @@
         espeak
         blink1-tool
         flameshot
-      ]
-      ++ [
+      ] ++ [
         alacritty
         autorandr
         brightnessctl
@@ -290,8 +281,7 @@
         gnumake
         libtool
         vdpauinfo
-      ]
-      ++ [
+      ] ++ [
         glib
         grim
         slurp
@@ -300,8 +290,7 @@
         swaylock
         wdisplays
         wl-clipboard
-      ]
-      ++ [
+      ] ++ [
         #vim
         wget
         w3m
@@ -357,8 +346,7 @@
         variety
         #vscode
         xclip
-      ]
-      ++ [
+      ] ++ [
         alacritty # gpu accelerated terminal
         #     dbus-sway-environment
         #     configure-gtk
@@ -374,8 +362,7 @@
         bemenu # wayland clone of dmenu
         mako # notification system developed by swaywm maintainer
         wdisplays # tool to configure displays
-      ]
-      ++ [
+      ] ++ [
         # Core Packages
         lld
         #         gcc
@@ -481,12 +468,7 @@
         go
         ## R
         (pkgs.rWrapper.override {
-          packages = with pkgs.rPackages; [
-            dplyr
-            xts
-            ggplot2
-            reshape2
-          ];
+          packages = with pkgs.rPackages; [ dplyr xts ggplot2 reshape2 ];
         })
         #(pkgs.rstudioWrapper.override {
         #  packages = with pkgs.rPackages; [
@@ -526,8 +508,7 @@
         #         polybar
         polybarFull
         endlessh
-      ]
-      ++ [
+      ] ++ [
         oil
         toilet
         nsh
@@ -713,8 +694,7 @@
         pls
         #         oh-my-zsh
         oh-my-fish
-      ]
-      ++ [
+      ] ++ [
         hyprpaper
         acpi
         acpitool
@@ -778,7 +758,7 @@
   };
   manual.manpages.enable = true;
   programs = {
-    waybar = import ../programs/waybar.nix {inherit pkgs;};
+    waybar = import ../programs/waybar.nix { inherit pkgs; };
     alacritty = import ../programs/alacritty.nix;
     # neovim = import ../programs/nvim.nix {inherit pkgs;};
     # nixvim.enable = true;
@@ -869,7 +849,7 @@
       enable = true;
       oh-my-zsh = {
         enable = true;
-        plugins = ["git" "python" "docker" "fzf"];
+        plugins = [ "git" "python" "docker" "fzf" ];
         theme = "dpoggi";
       };
     };
@@ -881,18 +861,8 @@
         show_cpu_frequency = true;
         show_cpu_temperature = true;
         hide_kernel_threads = true;
-        leftMeters = [
-          "AllCPUs2"
-          "Memory"
-          "Swap"
-        ];
-        rightMeters = [
-          "Hostname"
-          "Tasks"
-          "LoadAverage"
-          "Uptime"
-          "Systemd"
-        ];
+        leftMeters = [ "AllCPUs2" "Memory" "Swap" ];
+        rightMeters = [ "Hostname" "Tasks" "LoadAverage" "Uptime" "Systemd" ];
       };
     };
     tmux = {
@@ -901,9 +871,7 @@
     };
     password-store = {
       enable = true;
-      settings = {
-        PASSWORD_STORE_DIR = "$XDG_DATA_HOME/password-store";
-      };
+      settings = { PASSWORD_STORE_DIR = "$XDG_DATA_HOME/password-store"; };
     };
   };
 }

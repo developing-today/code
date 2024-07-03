@@ -3,14 +3,18 @@
 # [formatter.<name>]
 # command = "<formatter-command>"
 # options = [“<formatter-option-1>”...]
-[formatter.alejandra]
-command = "alejandra"
+#[formatter.alejandra]
+#command = "alejandra"
+#includes = ["*.nix"]
+[formatter.nixfmt]
+command = "nixfmt"
 includes = ["*.nix"]
 
 # todo make options etc
 #[formatter.flake-checker]
 #command = "nix run github:DeterminateSystems/flake-checker"
 #includes = ["flake.lock"]
+
 [formatter.prettier]
 command = "prettier"
 includes = [
@@ -82,3 +86,5 @@ excludes = ["examples/haskell/"]
 #command = "terraform"
 #options = ["fmt"]
 #includes = ["*.tf"]
+
+# packer?

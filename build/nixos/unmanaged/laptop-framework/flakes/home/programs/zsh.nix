@@ -1,9 +1,4 @@
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}: {
+{ config, lib, pkgs, ... }: {
   programs.zsh = {
     enable = true;
     enableAutosuggestions = true;
@@ -33,7 +28,7 @@
     shellAliases = {
       cat = "bat";
       ll = "exa -la";
-      pyclean = "find . | grep -E '(__pycache__|\.pyc|\.pyo$)' | xargs rm -rf";
+      pyclean = "find . | grep -E '(__pycache__|.pyc|.pyo$)' | xargs rm -rf";
       pc = "pycharm-community . > /dev/null 2>&1 &";
     };
 

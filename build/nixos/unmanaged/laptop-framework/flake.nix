@@ -22,13 +22,15 @@
       inputs.home-manager.follows = "home-manager";
     };
     home-manager = {
-      url = "github:nix-community/home-manager"; #*/
+      url = "github:nix-community/home-manager"; # */
       #url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
       inputs.nixpkgs.follows = "nixpkgs";
     };
     #  hardware.url = "github:nixos/nixos-hardware"; # todo figure out how to use this
-    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; #*/ # inputs.systems
-    flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
+    flake-utils.url =
+      "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; # */ # inputs.systems
+    flake-compat.url =
+      "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -49,13 +51,15 @@
     # because flake inputs are basically static
     # can't make a let var function closure thing around it or whatever
     zig-overlay = {
-      url = "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
+      url =
+        "github:mitchellh/zig-overlay"; # url = "github:developing-today-forks/zig-overlay/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-utils.follows = "flake-utils";
     };
     alejandra = {
-      url = "https://flakehub.com/f/kamadorueda/alejandra/*.tar.gz"; #*/ # url = "github:developing-today-forks/alejandra/quote-urls";
+      url =
+        "https://flakehub.com/f/kamadorueda/alejandra/*.tar.gz"; # */ # url = "github:developing-today-forks/alejandra/quote-urls";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flakeCompat.follows = "flake-compat";
     };
@@ -77,67 +81,61 @@
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    flake-utils,
-    home,
-    zig-overlay,
-    alejandra,
-    sops-nix,
+  outputs = { self, nixpkgs, flake-utils, home, zig-overlay, alejandra, sops-nix
+    ,
     #nix-software-center,
-    ...
-  } @ inputs: let
-    inherit (self) outputs;
-    yes = "yes";
-    stateVersion = "23.11";
-    #stateVersion = "23.05";
-    overlays = [
-      zig-overlay.overlays.default
-      alejandra.overlay
-      #nix-software-center.overlay
-      home.vim-overlay
-    ];
-    systemNixosModules = [
-      {
-        nixpkgs = {
-          overlays = overlays; # are overlays needed in home manager? document which/why?
-          config = {
-            allowUnfree = true;
-            permittedInsecurePackages = [
-              "electron" # le sigh
-            ];
+    ... }@inputs:
+    let
+      inherit (self) outputs;
+      yes = "yes";
+      stateVersion = "23.11";
+      #stateVersion = "23.05";
+      overlays = [
+        zig-overlay.overlays.default
+        alejandra.overlay
+        #nix-software-center.overlay
+        home.vim-overlay
+      ];
+      systemNixosModules = [
+        {
+          nixpkgs = {
+            overlays =
+              overlays; # are overlays needed in home manager? document which/why?
+            config = {
+              allowUnfree = true;
+              permittedInsecurePackages = [
+                "electron" # le sigh
+              ];
+            };
           };
-        };
-        system.stateVersion = stateVersion;
-      }
-      ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
-      #sops-nix.nixosModules.sops
-    ];
-    # overlayNixosModules = ?
-    hyprlandNixosModules = [
-      (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
-      #       (import ./modules/nm-applet.nix)
-    ];
-    homeManagerNixosModules = home.homeManagerNixosModules stateVersion;
-    system = "x86_64-linux";
-    pkgs = import nixpkgs {
-      system = system;
-      overlays = overlays;
+          system.stateVersion = stateVersion;
+        }
+        ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
+        #sops-nix.nixosModules.sops
+      ];
+      # overlayNixosModules = ?
+      hyprlandNixosModules = [
+        (import
+          ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
+        #       (import ./modules/nm-applet.nix)
+      ];
+      homeManagerNixosModules = home.homeManagerNixosModules stateVersion;
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        system = system;
+        overlays = overlays;
+      };
+      lib = nixpkgs.lib; # // home-manager.lib;
+    in {
+      inherit lib;
+      #hydraJobs = import ./modules/hydra.nix { inherit inputs outputs; }; # https://git.sr.ht/~fd/nix-configs/tree/main/item/flake.nix
+      nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = systemNixosModules ++ hyprlandNixosModules
+          ++ homeManagerNixosModules;
+      };
+      specialArgs = { inherit inputs outputs; };
     };
-    lib = nixpkgs.lib; #// home-manager.lib;
-  in {
-    inherit lib;
-    #hydraJobs = import ./modules/hydra.nix { inherit inputs outputs; }; # https://git.sr.ht/~fd/nix-configs/tree/main/item/flake.nix
-    nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
-      inherit system;
-      modules =
-        systemNixosModules
-        ++ hyprlandNixosModules
-        ++ homeManagerNixosModules;
-    };
-    specialArgs = {inherit inputs outputs;};
-  };
   # hydra
   # content addressible
 }

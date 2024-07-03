@@ -1,4 +1,4 @@
-{...}: {
+{ ... }: {
   keymaps = [
     {
       mode = "n";
@@ -8,9 +8,7 @@
     {
       mode = "n";
       key = "<esc>";
-      options = {
-        silent = true;
-      };
+      options = { silent = true; };
       action = ":noh<CR>";
     }
   ];

@@ -1,4 +1,4 @@
-{pkgs, ...}: {
+{ pkgs, ... }: {
   enable = true;
   defaultEditor = true;
   viAlias = true;

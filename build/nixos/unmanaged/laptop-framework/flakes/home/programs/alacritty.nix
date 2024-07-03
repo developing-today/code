@@ -10,21 +10,15 @@
       #};
     };
 
-    scrolling = {
-      history = 10000;
-    };
+    scrolling = { history = 10000; };
 
-    font = {
-      size = 12;
-    };
+    font = { size = 12; };
 
     mouse = {
-      bindings = [
-        {
-          mouse = "Middle";
-          action = "PasteSelection";
-        }
-      ];
+      bindings = [{
+        mouse = "Middle";
+        action = "PasteSelection";
+      }];
     };
 
     # Colors (Hyper)
