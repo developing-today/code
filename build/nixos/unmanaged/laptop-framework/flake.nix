@@ -1,7 +1,7 @@
 {
   inputs = {
     #nixpkgs.url = "github:NixOS/nixpkgs";
-    nixpkgs.url = "github:dezren39/nixpkgs/patch-2";
+    nixpkgs.url = "github:dezren39/nixpkgs/master";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "github:DeterminateSystems/nixpkgs/nix_2_18_1";
