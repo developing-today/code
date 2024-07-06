@@ -13,16 +13,20 @@
     }
 
     * {
-        font-size: 14px;
+        font-size: 12px;
         font-weight: bold;
         color: #00FF66;
         background-color: rgba(0, 0, 0, 0.1);
+        padding: 0px;
+        margin: 0px;
+        min-height: 0px;
     }
   '';
   settings = [{
-    height = 0;
+    height =
+      18; # the minimum effective number is affected by font-size and GTK_THEME
     layer = "top";
-    position = "bottom";
+    position = "top"; # "bottom";
     tray = { spacing = 0; };
     modules-left = [ "hyprland/workspaces" "hyprland/submap" ];
     modules-center = [ "hyprland/window" ];
@@ -31,14 +35,14 @@
       #           "network"
       "cpu"
       "memory"
-      "temperature"
+      # "temperature"
     ] ++ [ "battery" ] ++ [ "clock" "tray" ];
     battery = {
-      format = "{capacity}% {icon}";
-      format-alt = "{time} {icon}";
-      format-charging = "{capacity}% ";
+      format = "{capacity}%{icon}";
+      format-alt = "{time}{icon}";
+      format-charging = "{capacity}%";
       format-icons = [ "" "" "" "" "" ];
-      format-plugged = "{capacity}% ";
+      format-plugged = "{capacity}%";
       states = {
         critical = 15;
         warning = 30;
@@ -46,26 +50,26 @@
     };
     clock = {
       format-alt = "{:%Y-%m-%d}";
-      tooltip-format = "{:%Y-%m-%d | %H:%M}";
+      tooltip-format = "{:%Y-%m-%dT%H:%M}";
     };
     cpu = {
-      format = "{usage}% ";
+      format = "{usage}%";
       tooltip = false;
     };
-    memory = { format = "{}% "; };
+    memory = { format = "{}%"; };
     network = {
       interval = 1;
       format-alt = "{ifname}: {ipaddr}/{cidr}";
-      format-disconnected = "Disconnected ⚠";
+      format-disconnected = "Disconnected⚠";
       format-ethernet =
         "{ifname}: {ipaddr}/{cidr}   up: {bandwidthUpBits} down: {bandwidthDownBits}";
       format-linked = "{ifname} (No IP) ";
       format-wifi = "{essid} ({signalStrength}%) ";
     };
     pulseaudio = {
-      format = "{volume}% {icon} {format_source}";
-      format-bluetooth = "{volume}% {icon} {format_source}";
-      format-bluetooth-muted = " {icon} {format_source}";
+      format = "{volume}%{icon} {format_source}";
+      format-bluetooth = "{volume}%{icon}{format_source}";
+      format-bluetooth-muted = "{icon}{format_source}";
       format-icons = {
         car = "";
         default = [ "" "" "" ];
@@ -76,7 +80,7 @@
         portable = "";
       };
       format-muted = " {format_source}";
-      format-source = "{volume}% ";
+      format-source = "{volume}%";
       format-source-muted = "";
       on-click = "pavucontrol";
     };
