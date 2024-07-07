@@ -1,1 +1,4 @@
-{ ... }: { highlight.ExtraWhitespace.bg = "red"; }
+{ ... }:
+{
+  highlight.ExtraWhitespace.bg = "red";
+}

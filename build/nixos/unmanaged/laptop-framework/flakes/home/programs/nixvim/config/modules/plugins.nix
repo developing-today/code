@@ -1,4 +1,5 @@
-{ ... }: {
+{ ... }:
+{
   plugins = {
     #telescope-tabs = {};
     telescope = { };
@@ -27,7 +28,10 @@
     nix = { };
     lsp-format.setup.typescript = {
       order = [ "null-ls" ];
-      exclude = [ "tsserver" "eslint" ];
+      exclude = [
+        "tsserver"
+        "eslint"
+      ];
     };
     cmp = {
       autoEnableSources = true;
@@ -50,7 +54,11 @@
           "<CR>" = "cmp.mapping.confirm { select = true }";
         };
         #snippet.expand = "luasnip";
-        formatting.fields = [ "kind" "abbr" "menu" ];
+        formatting.fields = [
+          "kind"
+          "abbr"
+          "menu"
+        ];
         window = {
           completion = {
             winhighlight = "Normal:Pmenu,FloatBorder:Pmenu,Search:None";
@@ -149,6 +157,8 @@
     nix = { };
     nvim-autopairs = { };
     surround = { };
-    nvim-tree.updateFocusedFile = { enable = true; };
+    nvim-tree.updateFocusedFile = {
+      enable = true;
+    };
   };
 }

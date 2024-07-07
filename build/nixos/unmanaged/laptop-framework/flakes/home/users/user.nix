@@ -1,4 +1,5 @@
-{ stateVersion, pkgs, ... }: {
+{ stateVersion, pkgs, ... }:
+{
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
@@ -40,9 +41,13 @@
       ls = "exa";
       cat = "bat";
     };
-    sessionVariables = { EDITOR = "nvim"; };
-    packages = with pkgs;
-      [ neovim ] ++ [
+    sessionVariables = {
+      EDITOR = "nvim";
+    };
+    packages =
+      with pkgs;
+      [ neovim ]
+      ++ [
         lf
         #
         git
@@ -215,7 +220,8 @@
         # Nix
         nil
         nixpkgs-fmt # ??
-        nixfmt
+        #nixfmt
+        nixfmt-rfc-style
         statix
         # Python
         #pyright
@@ -257,7 +263,8 @@
         espeak
         blink1-tool
         flameshot
-      ] ++ [
+      ]
+      ++ [
         alacritty
         autorandr
         brightnessctl
@@ -281,7 +288,8 @@
         gnumake
         libtool
         vdpauinfo
-      ] ++ [
+      ]
+      ++ [
         glib
         grim
         slurp
@@ -290,7 +298,8 @@
         swaylock
         wdisplays
         wl-clipboard
-      ] ++ [
+      ]
+      ++ [
         #vim
         wget
         w3m
@@ -346,7 +355,8 @@
         variety
         #vscode
         xclip
-      ] ++ [
+      ]
+      ++ [
         alacritty # gpu accelerated terminal
         #     dbus-sway-environment
         #     configure-gtk
@@ -362,7 +372,8 @@
         bemenu # wayland clone of dmenu
         mako # notification system developed by swaywm maintainer
         wdisplays # tool to configure displays
-      ] ++ [
+      ]
+      ++ [
         # Core Packages
         lld
         #         gcc
@@ -468,7 +479,12 @@
         go
         ## R
         (pkgs.rWrapper.override {
-          packages = with pkgs.rPackages; [ dplyr xts ggplot2 reshape2 ];
+          packages = with pkgs.rPackages; [
+            dplyr
+            xts
+            ggplot2
+            reshape2
+          ];
         })
         #(pkgs.rstudioWrapper.override {
         #  packages = with pkgs.rPackages; [
@@ -481,7 +497,8 @@
         #})
 
         # Command Shells
-        nushell
+        #nushell
+        nushellFull
 
         #     hyprland
         cliphist
@@ -508,8 +525,9 @@
         #         polybar
         polybarFull
         endlessh
-      ] ++ [
-        oil
+      ]
+      ++ [
+        #oil # oil is python oils-for-unix is cpp
         toilet
         nsh
         lsd
@@ -694,7 +712,8 @@
         pls
         #         oh-my-zsh
         oh-my-fish
-      ] ++ [
+      ]
+      ++ [
         hyprpaper
         acpi
         acpitool
@@ -849,7 +868,12 @@
       enable = true;
       oh-my-zsh = {
         enable = true;
-        plugins = [ "git" "python" "docker" "fzf" ];
+        plugins = [
+          "git"
+          "python"
+          "docker"
+          "fzf"
+        ];
         theme = "dpoggi";
       };
     };
@@ -861,8 +885,18 @@
         show_cpu_frequency = true;
         show_cpu_temperature = true;
         hide_kernel_threads = true;
-        leftMeters = [ "AllCPUs2" "Memory" "Swap" ];
-        rightMeters = [ "Hostname" "Tasks" "LoadAverage" "Uptime" "Systemd" ];
+        leftMeters = [
+          "AllCPUs2"
+          "Memory"
+          "Swap"
+        ];
+        rightMeters = [
+          "Hostname"
+          "Tasks"
+          "LoadAverage"
+          "Uptime"
+          "Systemd"
+        ];
       };
     };
     tmux = {
@@ -871,7 +905,9 @@
     };
     password-store = {
       enable = true;
-      settings = { PASSWORD_STORE_DIR = "$XDG_DATA_HOME/password-store"; };
+      settings = {
+        PASSWORD_STORE_DIR = "$XDG_DATA_HOME/password-store";
+      };
     };
   };
 }

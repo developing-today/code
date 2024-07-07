@@ -1,4 +1,5 @@
-{ ... }: {
+{ ... }:
+{
   colorschemes = {
     nord = {
       settings = {

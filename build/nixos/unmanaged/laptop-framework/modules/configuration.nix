@@ -1,11 +1,20 @@
-{ outputs, lib, config, pkgs, ... }: {
+{
+  outputs,
+  lib,
+  config,
+  pkgs,
+  ...
+}:
+{
   imports = [
     ./hardware-configuration/laptop-framework.nix
     #./sops.nix
     ./cachix.nix
   ];
   boot = {
-    tmp = { cleanOnBoot = true; };
+    tmp = {
+      cleanOnBoot = true;
+    };
     loader = {
       systemd-boot = {
         enable = true;
@@ -33,7 +42,9 @@
       #         "*" "except:type:wwan" "except:type:gsm"
       #       ];
     };
-    firewall = { allowedUDPPorts = [ config.services.tailscale.port ]; };
+    firewall = {
+      allowedUDPPorts = [ config.services.tailscale.port ];
+    };
   };
 
   i18n = {
@@ -74,15 +85,12 @@
       trusted-users = [ "user" ];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
-      trusted-public-keys =
-        [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
+      trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
       substituters = [ "https://cache.nixos.org" ];
       auto-optimise-store = true;
       #pure-eval = true;
-      pure-eval =
-        false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
-      restrict-eval =
-        false; # could i even make a conclusive list of domains to allow access to?
+      pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
+      restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
       use-registries = true;
       use-cgroups = true;
     };
@@ -130,7 +138,7 @@
   };
 
   users = {
-    defaultUserShell = pkgs.nushell;
+    defaultUserShell = pkgs.oils-for-unix; # pkgs.nushellFull; #oils-for-unix; #nushell;
     users.user = {
       isNormalUser = true;
       description = "user";
@@ -143,7 +151,10 @@
         "kvm"
         "beep"
       ];
-      packages = with pkgs; [ firefox kate ];
+      packages = with pkgs; [
+        firefox
+        kate
+      ];
     };
   };
 
@@ -162,8 +173,14 @@
       enable = true;
       defaultFonts = {
         monospace = [ "Meslo LG M Regular Nerd Font Complete Mono" ];
-        serif = [ "Noto Serif" "Source Han Serif" ];
-        sansSerif = [ "Noto Sans" "Source Han Sans" ];
+        serif = [
+          "Noto Serif"
+          "Source Han Serif"
+        ];
+        sansSerif = [
+          "Noto Sans"
+          "Source Han Sans"
+        ];
       };
     };
   };
@@ -194,10 +211,12 @@
     dbus.enable = true;
     openssh = {
       enable = true;
-      hostKeys = [{
-        path = "/etc/ssh/ssh_host_ed25519_key";
-        type = "ed25519";
-      }];
+      hostKeys = [
+        {
+          path = "/etc/ssh/ssh_host_ed25519_key";
+          type = "ed25519";
+        }
+      ];
     };
 
     locate = {
@@ -231,29 +250,29 @@
     partition-manager.enable = true;
     steam = {
       enable = true;
-      remotePlay.openFirewall =
-        true; # Open ports in the firewall for Steam Remote Play
-      dedicatedServer.openFirewall =
-        true; # Open ports in the firewall for Source Dedicated Server
+      remotePlay.openFirewall = true; # Open ports in the firewall for Steam Remote Play
+      dedicatedServer.openFirewall = true; # Open ports in the firewall for Source Dedicated Server
     };
   };
   environment = {
-    sessionVariables.NIXOS_OZONE_WL =
-      "1"; # This variable fixes electron apps in wayland
+    sessionVariables.NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
     variables.EDITOR = "nvim";
     # things end up in systempackages if
     # they are required for boot or login
     # have namespace conflicts i don't want to deal with in home manager
     # etc.
-    systemPackages = with pkgs;
+    systemPackages =
+      with pkgs;
       [
+        oils-for-unix
         # overlays # todo- move into user
         zigpkgs.master
         #nix-software-center
         alejandra
         neovim
         tailscale
-      ] ++ [
+      ]
+      ++ [
         # dwm
         xwayland
         waybar
@@ -262,19 +281,22 @@
         lightdm
         gnome.gdm
         awesome
-      ] ++ [
+      ]
+      ++ [
         # build
         gcc
         binutils
         clang
         #clang-tools_9
         llvmPackages.bintools
-      ] ++ [
+      ]
+      ++ [
         # gtk
         gtk2
         gtk3
         gtk4
-      ] ++ [
+      ]
+      ++ [
         # fortune
         bsdgames
         haskellPackages.misfortune

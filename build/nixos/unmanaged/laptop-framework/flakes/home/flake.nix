@@ -10,10 +10,8 @@
       #url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-utils.url =
-      "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; # */ # inputs.systems
-    flake-compat.url =
-      "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz"; # flake = false?
+    flake-utils.url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; # */ # inputs.systems
+    flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz"; # flake = false?
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -48,15 +46,24 @@
       inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
     };
   };
-  outputs = { self, nixpkgs, home-manager, vim, ... }@inputs:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      home-manager,
+      vim,
+      ...
+    }@inputs:
     let
       system = "x86_64-linux"; # something something flake-utils
       vimOverlay = vim.overlay.${system};
       overlays = [ vimOverlay ];
-    in {
-      homeManagerNixosModules = stateVersion:
-        [
-          ({ ... }: {
+    in
+    {
+      homeManagerNixosModules = stateVersion: [
+        (
+          { ... }:
+          {
             imports = [
               home-manager.nixosModules.home-manager
               vim.nixosModules.${system}
@@ -78,8 +85,9 @@
                 };
               };
             };
-          })
-        ];
+          }
+        )
+      ];
       vim-overlay = vimOverlay;
     };
 }

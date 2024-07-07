@@ -1,4 +1,5 @@
-{ ... }: {
+{ ... }:
+{
   options = {
     shiftwidth = 2;
     smartindent = true;

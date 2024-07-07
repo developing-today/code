@@ -1,1 +1,4 @@
-{ ... }: { globals.mapleader = " "; }
+{ ... }:
+{
+  globals.mapleader = " ";
+}
