@@ -138,7 +138,7 @@
   };
 
   users = {
-    defaultUserShell = pkgs.oils-for-unix; # pkgs.nushellFull; #oils-for-unix; #nushell;
+    defaultUserShell = pkgs.nushell; # oils-for-unix; #nushell;
     users.user = {
       isNormalUser = true;
       description = "user";
@@ -264,6 +264,7 @@
     systemPackages =
       with pkgs;
       [
+        nushell
         oils-for-unix
         # overlays # todo- move into user
         zigpkgs.master

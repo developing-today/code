@@ -363,7 +363,7 @@
         xdg-utils # for opening default programs when clicking links
         glib # gsettings
         dracula-theme # gtk theme
-        gnome3.adwaita-icon-theme # default gnome cursors
+        adwaita-icon-theme # default gnome cursors
         swaylock
         swayidle
         grim # screenshot functionality
@@ -439,7 +439,7 @@
         starship
         #         lolcat
         gimp
-        transmission-gtk
+        transmission_4-gtk
         slurp
         gparted
         mpv
@@ -498,7 +498,7 @@
 
         # Command Shells
         #nushell
-        nushellFull
+        #nushell
 
         #     hyprland
         cliphist
@@ -861,6 +861,7 @@
     # zplug.enable = true;
     fish.enable = true;
     nushell.enable = true;
+    #oils-for-unix.enable = true;
     obs-studio.enable = true;
     oh-my-posh.enable = true;
     bat.enable = true;

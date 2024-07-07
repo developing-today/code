@@ -145,7 +145,6 @@
       '';
     };
     # TODO: https://github.com/charm-community/freeze.nvim
-    lsp-lines.currentLine = true;
     none-ls.sources = {
       formatting = {
         prettier.enable = true;
