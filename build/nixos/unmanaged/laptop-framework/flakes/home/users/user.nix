@@ -860,7 +860,27 @@
     zoxide.enable = true;
     # zplug.enable = true;
     fish.enable = true;
-    nushell.enable = true;
+    nushell = {
+      enable = true;
+      environmentVariables = {
+        NIXOS_OZONE_WL = "1";
+        ELECTRON_OZONE_PLATFORM_HINT = "auto";
+        EDITOR = "nvim";
+        VISUAL = "nvim";
+        TERM = "alacritty";
+      };
+      shellAliases = {
+        #switch = "sudo nixos-rebuild switch";
+      };
+      extraConfig = ''
+        $env.config = {
+            filesize_metric: false
+            table_mode: rounded
+            use_ls_colors: true
+           show_banner: false,
+        }
+      '';
+    };
     #oils-for-unix.enable = true;
     obs-studio.enable = true;
     oh-my-posh.enable = true;

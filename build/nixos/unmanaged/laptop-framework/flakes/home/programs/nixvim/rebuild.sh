@@ -22,7 +22,7 @@ for dir in "${script_dir}"/config/*; do
       ./rebuild.sh
     fi
     nix flake update --verbose
-    nix build --verbose
+    nix build --verbose --show-trace
     #nix build --verbose --json |
     #  jq -r '.[].outputs | to_entries[].value' |
     #  cachix push binary
@@ -37,7 +37,7 @@ git add .
 # TODO: sometimes do update-ref instead of update
 nix flake update --verbose
 # TODO: skip cachix if not setup
-nix build --verbose
+nix build --verbose --show-trace
 #nix build --verbose --json |
 #  jq -r '.[].outputs | to_entries[].value' |
 #  cachix push binary
