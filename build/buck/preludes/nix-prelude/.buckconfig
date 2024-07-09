@@ -1,5 +1,0 @@
-[repositories]
-prelude = .
-
-[buildfile]
-name = BUILD
