@@ -34,3 +34,7 @@ sources/**/data
 !sources/data
 .ssh/*
 **/.ssh/
+.direnv
+result*
+*.qcow2
+.nixie

@@ -2,3 +2,4 @@ keys:
   - &laptop-framework age125acas5y8hnwl5uhcp364xm8zlhtwsjqvxxpge8k04dzzr67acrq0ttc34
 creation_rules:
   - age: *laptop-framework
+# todo: common vs per-host vs per-user
