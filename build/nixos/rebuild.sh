@@ -28,7 +28,7 @@ git add .
 # todo: update-ref instead of update sometimes
 nix flake update --verbose
 git add .
-sudo nixos-rebuild switch --upgrade --verbose --show-trace
+sudo nixos-rebuild switch --upgrade --verbose --show-trace --flake '.'
 
 #TODO: don't do cachix if not setup
 #nix flake archive --verbose --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
