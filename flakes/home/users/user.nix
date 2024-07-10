@@ -189,7 +189,7 @@
         ipfs
 
         # Media
-        youtube-dl
+        yt-dlp #youtube-dl
         imagemagick
 
         # Overview

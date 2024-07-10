@@ -272,6 +272,7 @@
         alejandra
         neovim
         tailscale
+        nixfmt-rfc-style
       ]
       ++ [
         # dwm
