@@ -13,32 +13,32 @@ git add .
 for dir in "${script_dir}"/flakes/*; do
   if [[ -d ${dir} ]]; then
     cd "${dir}" || exit 1
-    # If a rebuild script exists, execute it
-    if [[ -f "./rebuild.sh" ]]; then
-      chmod +x ./rebuild.sh
-      ./rebuild.sh
+    # If a rebuild --json script exists, execute it
+    if [[ -f "./rebuild --json.sh" ]]; then
+      chmod +x ./rebuild --json.sh
+      ./rebuild --json.sh
     fi
     # todo: update-ref instead of update sometimes
-    nix flake update --print-build-logs --verbose --show-trace
+    nix flake update --print-build-logs --verbose --keep-going --log-format raw --fallback --repair --show-trace
     cd "${script_dir}" || exit 1
   fi
 done
 
 git add .
 # todo: update-ref instead of update sometimes
-nix flake update --print-build-logs --verbose --show-trace
+nix flake update --print-build-logs --verbose --keep-going --log-format raw --fallback --repair --show-trace
 git add .
-sudo nixos-rebuild switch --upgrade --print-build-logs --verbose --show-trace --flake '.'
+sudo nixos-rebuild --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format raw --fallback --repair --show-trace --flake '.'
 
 #TODO: don't do cachix if not setup
-#nix flake archive --print-build-logs --verbose --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
+#nix flake archive --print-build-logs --verbose --keep-going --log-format raw --fallback --repair --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
 
 for dir in "${script_dir}"/flakes/*; do
   if [[ -d ${dir} ]]; then
     cd "${dir}" || exit 1
-    if [[ -f "./rebuild.sh" ]]; then
+    if [[ -f "./rebuild --json.sh" ]]; then
       echo ""
-      #      nix flake archive --print-build-logs --verbose --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
+      #      nix flake archive --print-build-logs --verbose --keep-going --log-format raw --fallback --repair --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
     fi
     cd "${script_dir}" || exit 1
   fi

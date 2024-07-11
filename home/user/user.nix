@@ -777,9 +777,9 @@
   };
   manual.manpages.enable = true;
   programs = {
-    waybar = import ../programs/waybar.nix { inherit pkgs; };
-    alacritty = import ../programs/alacritty.nix;
-    # neovim = import ../programs/nvim.nix {inherit pkgs;};
+    waybar = import programs/waybar.nix { inherit pkgs; };
+    alacritty = import programs/alacritty.nix;
+    # neovim = import programs/nvim.nix {inherit pkgs;};
     # nixvim.enable = true;
     abook.enable = true;
     autojump.enable = true;

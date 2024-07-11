@@ -264,6 +264,7 @@
     systemPackages =
       with pkgs;
       [
+        nix-output-monitor
         nushell
         oils-for-unix
         # overlays # todo- move into user

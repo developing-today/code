@@ -10,17 +10,6 @@
       #inputs.nixpkgs-stable.follows ="nixpkgs";
       #inputs.nixpkgs.follows ="nixpkgs";
     };
-
-    home = {
-      url = "path:./flakes/home";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
-      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
-      inputs.home-manager.follows = "home-manager";
-    };
     home-manager = {
       url = "github:nix-community/home-manager"; # */
       #url = "https://flakehub.com/f/nix-community/home-manager/*.tar.gz"; #*/
@@ -73,7 +62,17 @@
       #url = "github:developing-today-forks/nixvim-flake";
       #inputs.nixpkgs.follows = "nixpkgs";
     };
-
+    vim = {
+      url = "path:./flakes/nixvim";
+      #url = "github:developing-today/code?dir=flakes/nixvim";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixvim.follows = "nixvim";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.flake-compat.follows = "flake-compat";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
+      inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
+    };
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
   };
 
@@ -82,10 +81,11 @@
       self,
       nixpkgs,
       flake-utils,
-      home,
       zig-overlay,
       alejandra,
       sops-nix,
+      vim,
+      home-manager,
       #nix-software-center,
       ...
     }@inputs:
@@ -98,7 +98,7 @@
         zig-overlay.overlays.default
         alejandra.overlay
         #nix-software-center.overlay
-        home.vim-overlay
+        vim.overlay.${system}
       ];
       systemNixosModules = [
         {
@@ -115,14 +115,41 @@
         }
         ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
         #sops-nix.nixosModules.sops
-        ./modules/sops.nix
+        #./modules/sops.nix
       ];
       # overlayNixosModules = ?
       hyprlandNixosModules = [
         (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
         #       (import ./modules/nm-applet.nix)
       ];
-      homeManagerNixosModules = home.homeManagerNixosModules stateVersion;
+      homeManagerNixosModules = [
+        (
+          { ... }:
+          {
+            imports = [
+              home-manager.nixosModules.home-manager
+              vim.nixosModules.${system}
+            ];
+
+            home-manager.useUserPackages = true;
+            home-manager.useGlobalPkgs = true;
+            home-manager.backupFileExtension = "backup";
+            home-manager.users.user = import ./home/user/user.nix {
+              inherit stateVersion;
+              pkgs = import nixpkgs {
+                inherit system;
+                overlays = overlays;
+                config = {
+                  allowUnfree = true;
+                  permittedInsecurePackages = [
+                    "electron" # le sigh
+                  ];
+                };
+              };
+            };
+          }
+        )
+      ];
       system = "x86_64-linux";
       pkgs = import nixpkgs {
         system = system;
