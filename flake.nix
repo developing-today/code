@@ -115,6 +115,7 @@
         }
         ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
         #sops-nix.nixosModules.sops
+        ./modules/sops.nix
       ];
       # overlayNixosModules = ?
       hyprlandNixosModules = [

@@ -36,8 +36,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
-      #url = "path:./programs/nixvim";
-      url = "github:developing-today/code?dir=flakes/nixvim";
+      url = "path:./programs/nixvim";
+      #url = "github:developing-today/code?dir=flakes/nixvim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";
       inputs.flake-utils.follows = "flake-utils";
