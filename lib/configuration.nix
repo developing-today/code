@@ -284,6 +284,7 @@
         e2fsprogs
         asciinema
         # charm stuff?
+        statix
 
         oils-for-unix # todo: osh default shell?
         # overlays # todo- move into user

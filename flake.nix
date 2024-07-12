@@ -113,13 +113,13 @@
           };
           system.stateVersion = stateVersion;
         }
-        ./modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
+        ./lib/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
         #sops-nix.nixosModules.sops
         #./modules/sops.nix
       ];
       # overlayNixosModules = ?
       hyprlandNixosModules = [
-        (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
+        (import ./modules/nixos/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
         #       (import ./modules/nm-applet.nix)
       ];
       system = "x86_64-linux";
@@ -179,7 +179,6 @@
       };
       devShell.${system} = devShellInner;
     };
-      # hydra
+  # hydra
   # content addressible
 }
-

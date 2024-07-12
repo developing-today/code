@@ -17,12 +17,12 @@ for dir in "${script_dir}"/config/*; do
     fi
     cd "${dir}" || exit 1
     # If a rebuild --json script exists, execute it
-    if [[ -f "./rebuild --json.sh" ]]; then
-      chmod +x ./rebuild --json.sh
-      ./rebuild --json.sh
+    if [[ -f "./rebuild.sh" ]]; then
+      chmod +x ./rebuild.sh
+      ./rebuild.sh
     fi
-    nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback  --show-trace |& nom --json
-    nix build --json --print-out-paths --print-build-logs --verbose --keep-going --log-format internal-json --fallback   --show-trace |& nom --json
+    nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+    nix build --json --print-out-paths --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
     #nom build --json --print-out-paths --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback   --show-trace --json |
     #  jq -r '.[].outputs | to_entries[].value' |
     #  cachix push binary
@@ -34,10 +34,12 @@ for dir in "${script_dir}"/config/*; do
 done
 
 git add .
+
+if [[ -f "./flake.nix" ]]; then
 # TODO: sometimes do update-ref instead of update
-nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback  --show-trace |& nom --json
+nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
 # TODO: skip cachix if not setup
-nix build --json --print-out-paths --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback   --show-trace |& nom --json
+nix build --json --print-out-paths --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
 #nom build --json --print-out-paths --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback   --show-trace --json |
 #  jq -r '.[].outputs | to_entries[].value' |
 #  cachix push binary
@@ -46,3 +48,4 @@ nix build --json --print-out-paths --json --print-build-logs --verbose --keep-go
 #  cachix push binary # todo: make optional
 
 git add .
+fi
