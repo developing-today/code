@@ -1,4 +1,0 @@
-000-\d+-.*\.dtm\.(sql|go)$:
-  Type: "goose"
-  Date: "2023-12-17"
-  Description: "developing today migration file"

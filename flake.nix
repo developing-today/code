@@ -63,8 +63,8 @@
       #inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
-      url = "path:./flakes/nixvim";
-      #url = "github:developing-today/code?dir=flakes/nixvim";
+      url = "path:./src/vim";
+      #url = "github:developing-today/code?dir=src/vim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";
       inputs.flake-utils.follows = "flake-utils";
@@ -122,6 +122,20 @@
         (import ./modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
         #       (import ./modules/nm-applet.nix)
       ];
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        system = system;
+        overlays = overlays;
+      };
+      lib = nixpkgs.lib;
+      zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
+
+      zed-fhs = pkgs.buildFHSUserEnv {
+        name = "zed";
+        targetPkgs = pkgs: [ zed-editor ];
+        runScript = "zed";
+      };
+
       homeManagerNixosModules = [
         (
           { ... }:
@@ -150,24 +164,22 @@
           }
         )
       ];
-      system = "x86_64-linux";
-      pkgs = import nixpkgs {
-        system = system;
-        overlays = overlays;
-      };
-      lib = nixpkgs.lib; # // home-manager.lib;
+
+      devShellInner = pkgs.mkShell { buildInputs = [ zed-fhs ]; };
+
     in
     {
-      inherit lib;
-      #hydraJobs = import ./modules/hydra.nix { inherit inputs outputs; }; # https://git.sr.ht/~fd/nix-configs/tree/main/item/flake.nix
-      nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
+      inherit lib pkgs devShellInner;
+      nixosConfigurations.nixos = lib.nixosSystem {
         inherit system;
         modules = systemNixosModules ++ hyprlandNixosModules ++ homeManagerNixosModules;
       };
       specialArgs = {
         inherit inputs outputs;
       };
+      devShell.${system} = devShellInner;
     };
-  # hydra
+      # hydra
   # content addressible
 }
+
