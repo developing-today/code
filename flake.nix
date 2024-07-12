@@ -63,7 +63,7 @@
       #inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
-      url = "path:./pkg/vim";
+      url = "path:./pkgs/vim";
       #url = "github:developing-today/code?dir=src/vim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";

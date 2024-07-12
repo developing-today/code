@@ -638,12 +638,12 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-/83ivKaurJjqFMja88wr/qpOc3A3z9P8xd2AIJDLTe8=",
-        "path": "./flakes/nixvim",
+        "narHash": "sha256-/BTNfIvgg3f+FkPFJvWg+Of99nLI/Xp+DoeY375XjKw=",
+        "path": "./pkgs/vim",
         "type": "path"
       },
       "original": {
-        "path": "./flakes/nixvim",
+        "path": "./pkgs/vim",
         "type": "path"
       }
     },
