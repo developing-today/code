@@ -1,3 +1,0 @@
-[submodule "build/buck/preludes/buck2-prelude"]
-	path = build/buck/preludes/buck2-prelude
-	url = https://github.com/facebook/buck2-prelude
