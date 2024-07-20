@@ -67,10 +67,10 @@ fi
 for dir in "${script_dir}"/pkgs/*; do
   if [[ -d ${dir} ]]; then
     cd "${dir}" || exit 1
-    if [[ -f "./rebuild.sh" ]]; then
+    #if [[ -f "./rebuild.sh" ]]; then
       #echo ""
       #      nom flake archive --print-build-logs --verbose --keep-going --log-format internal-json --fallback  --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
-    fi
+    #fi
     cd "${script_dir}" || exit 1
   fi
 done

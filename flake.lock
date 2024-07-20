@@ -587,11 +587,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1721437190,
-        "narHash": "sha256-Vd086/j5HMMq3fq9nFon5f4Oy8X7kbwh4eMZojj+zhE=",
+        "lastModified": 1721447640,
+        "narHash": "sha256-YiifObOR4zooMFPvht8pgrj2aZm7HD2KrazwBKoqdt0=",
         "owner": "dezren39",
         "repo": "nixpkgs",
-        "rev": "62631beee8a3d3be8605dc85d5c251ad1e41400d",
+        "rev": "8f23c64a6e53697ecdc91d99f1d9ef047af5dfc2",
         "type": "github"
       },
       "original": {
@@ -846,7 +846,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-hbGiFF5h6teCuOGZx4e6aXQcyjYm/YoFu/d2NPVhn6c=",
+        "narHash": "sha256-7q7fjd478CQJeO7yACm/9P80ITApIjiQeDVQmrTD5Cg=",
         "path": "./pkgs/vim",
         "type": "path"
       },
