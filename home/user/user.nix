@@ -18,7 +18,7 @@
     userDirs.enable = true;
 
     configFile."hypr" = {
-      source = ../config/hypr;
+      source = ../../lib/hypr;
       recursive = true;
     };
     mimeApps.defaultApplications = {
@@ -770,7 +770,7 @@
         cachix
         brillo
         beep
-        fh
+        #fh # ffi parse failure
         charm-freeze
         charm
       ];

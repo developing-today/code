@@ -5,6 +5,7 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "github:DeterminateSystems/nixpkgs/nix_2_18_1";
+    nix-topology.url = "github:oddlama/nix-topology";
     sops-nix = {
       url = "github:mic92/sops-nix";
       #inputs.nixpkgs-stable.follows ="nixpkgs";
@@ -87,6 +88,7 @@
       vim,
       home-manager,
       #nix-software-center,
+      nix-topology,
       ...
     }@inputs:
     let
@@ -99,8 +101,10 @@
         alejandra.overlay
         #nix-software-center.overlay
         vim.overlay.${system}
+        nix-topology.overlays.default
       ];
       systemNixosModules = [
+        nix-topology.nixosModules.default
         {
           nixpkgs = {
             overlays = overlays; # are overlays needed in home manager? document which/why?
@@ -116,6 +120,8 @@
         ./lib/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
         #sops-nix.nixosModules.sops
         #./modules/sops.nix
+        ./modules/nixos/cachix.nix
+        ./hosts/laptop-framework/hardware-configuration/laptop-framework.nix
       ];
       # overlayNixosModules = ?
       hyprlandNixosModules = [
@@ -128,13 +134,13 @@
         overlays = overlays;
       };
       lib = nixpkgs.lib;
-      zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
+      #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
 
-      zed-fhs = pkgs.buildFHSUserEnv {
-        name = "zed";
-        targetPkgs = pkgs: [ zed-editor ];
-        runScript = "zed";
-      };
+      #zed-fhs = pkgs.buildFHSUserEnv {
+      #  name = "zed";
+      #  targetPkgs = pkgs: [ zed-editor ];
+      #  runScript = "zed";
+      #};
 
       homeManagerNixosModules = [
         (
@@ -165,7 +171,7 @@
         )
       ];
 
-      devShellInner = pkgs.mkShell { buildInputs = [ zed-fhs ]; };
+      devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs*/ ]; };
 
     in
     {
@@ -178,6 +184,17 @@
         inherit inputs outputs;
       };
       devShell.${system} = devShellInner;
+      # Repeat this for each system where you want to build your topology.
+      # You can do this manually or use flake-utils.
+      topology.x86_64-linux = import nix-topology {
+        inherit pkgs; # Only this package set must include nix-topology.overlays.default
+        modules = [
+          ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
+          #./topology.nix
+          # Inline module to inform topology of your existing NixOS hosts.
+          { nixosConfigurations = self.nixosConfigurations; }
+        ];
+      };
     };
   # hydra
   # content addressible

@@ -7,9 +7,7 @@
 }:
 {
   imports = [
-    ./hardware-configuration/laptop-framework.nix
     #./sops.nix
-    ./cachix.nix
   ];
   boot = {
     tmp = {
@@ -108,7 +106,7 @@
       "electron" # le sigh
     ];
   };
-  sound.enable = true;
+  #sound.enable = true;
   hardware = {
     #     bluetooth.enable = true;
     brillo.enable = false;
@@ -264,7 +262,7 @@
     systemPackages =
       with pkgs;
       [
-        zed-editor
+        #zed-editor
         nix-output-monitor
         nix-tree
         nix-du
@@ -274,17 +272,18 @@
         niv
         nh
         nvd
-        unbuffer
+        expect #unbuffer
         nushell
         ncurses
         bc
-        grep
+        #grep
         gawk
         choose
         e2fsprogs
         asciinema
         # charm stuff?
         statix
+        deadnix
 
         oils-for-unix # todo: osh default shell?
         # overlays # todo- move into user
