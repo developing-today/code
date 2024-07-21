@@ -3,15 +3,15 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   inherit (config.colorscheme) colors harmonized;
-in {
+in
+{
   home.packages = [
-    (
-      pkgs.writeShellScriptBin "xterm" ''
-        ${lib.getExe config.programs.kitty.package} "$@"
-      ''
-    )
+    (pkgs.writeShellScriptBin "xterm" ''
+      ${lib.getExe config.programs.kitty.package} "$@"
+    '')
   ];
   # I prefer to use ssh -M explicitly, thanks.
   xdg.configFile."kitty/ssh.conf".text = ''

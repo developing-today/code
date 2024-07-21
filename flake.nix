@@ -127,7 +127,8 @@
     }@inputs:
     let
       inherit (self) outputs;
-      #stateVersion = "23.11";
+      stateVersion = "23.11";
+      system = "x86_64-linux";
       supportedSystems = [ "x86_64-linux" ]; # "x86_64-darwin" "aarch64-linux" "aarch64-darwin" ];
       lib = nixpkgs.lib // home-manager.lib;
       forEachSystem = f: lib.genAttrs supportedSystems;
@@ -138,16 +139,47 @@
           config.allowUnfree = true;
         }
       );
-    #inherit lib;
-    overlays = [ #import ./overlays { inherit inputs outputs;};
+      #inherit lib;
+      overlays = [
+        # import ./overlays { inherit inputs outputs;};
 
-                 #     zig-overlay.overlays.default
-                      #alejandra.overlay
-                      #nix-software-center.overlay
-                      vim.overlay.x86_64-linux #.${system}
-                      #nix-topology.overlays.default
-                    ];
-    in {
+        #     zig-overlay.overlays.default
+        #alejandra.overlay
+        #nix-software-center.overlay
+        vim.overlay.x86_64-linux # .${system}
+        #nix-topology.overlays.default
+      ];
+
+      homeManagerNixosModules = [
+        (
+          { ... }:
+          {
+            imports = [
+              home-manager.nixosModules.home-manager
+              #vim.nixosModules.${system}
+            ];
+
+            home-manager.useUserPackages = true;
+            home-manager.useGlobalPkgs = true;
+            home-manager.backupFileExtension = "backup";
+            home-manager.users.user = import ./home/user/user.nix {
+              inherit stateVersion;
+              pkgs = import nixpkgs {
+                inherit system;
+                overlays = overlays;
+                config = {
+                  allowUnfree = true;
+                  permittedInsecurePackages = [
+                    "electron" # le sigh
+                  ];
+                };
+              };
+            };
+          }
+        )
+      ];
+    in
+    {
       inherit lib;
       /*
         overlays = [
@@ -171,18 +203,19 @@
           #modules = [./hosts/laptop-framework];
           #overlays = overlays;
           modules =
-            [
+            homeManagerNixosModules
+            ++ [
               #nix-topology.nixosModules.default
               {
                 nixpkgs = {
 
-                    overlays = [
-                 #        zig-overlay.overlays.default
-                         #alejandra.overlay
-                         #nix-software-center.overlay
-                         vim.overlay.x86_64-linux #.${system}
-                         #nix-topology.overlays.default
-                       ];#overlays; # are overlays needed in home manager? document which/why?
+                  overlays = [
+                    #        zig-overlay.overlays.default
+                    #alejandra.overlay
+                    #nix-software-center.overlay
+                    vim.overlay.x86_64-linux # .${system}
+                    #nix-topology.overlays.default
+                  ]; # overlays; # are overlays needed in home manager? document which/why?
 
                   config = {
                     #allowUnfree = true;
@@ -208,7 +241,7 @@
                 { ... }:
                 {
                   imports = [
-                   # home-manager.nixosModules.home-manager
+                    # home-manager.nixosModules.home-manager
                     vim.nixosModules.x86_64-linux # .${system}
                   ];
 
@@ -223,10 +256,10 @@
 
                   #*/
                   #config = {
-                    #allowUnfree = true;
-                    #permittedInsecurePackages = [
-                    #  "electron" # le sigh
-                    #];
+                  #allowUnfree = true;
+                  #permittedInsecurePackages = [
+                  #  "electron" # le sigh
+                  #];
                   #};
                   #};
                   # }
@@ -239,7 +272,7 @@
         };
       };
 
-     homeConfigurations = {
+      homeConfigurations = {
         "user@laptop-framework" = lib.homeManagerConfiguration {
           modules = [ ./home/user/user.nix ];
           pkgs = pkgsFor.x86_64-linux;

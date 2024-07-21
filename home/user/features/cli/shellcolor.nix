@@ -1,7 +1,9 @@
-{config, lib, ...}: let
+{ config, lib, ... }:
+let
   rmHash = lib.removePrefix "#";
   inherit (config.colorscheme) colors harmonized;
-in {
+in
+{
   programs.shellcolor = {
     enable = true;
     settings = {

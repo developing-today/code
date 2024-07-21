@@ -1,14 +1,15 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   programs.browserpass.enable = true;
   programs.firefox = {
     enable = true;
     profiles.gabriel = {
-      bookmarks = {};
+      bookmarks = { };
       extensions = with pkgs.inputs.firefox-addons; [
         ublock-origin
         browserpass
       ];
-      bookmarks = {};
+      bookmarks = { };
       settings = {
         "browser.disableResetPrompt" = true;
         "browser.download.panel.shown" = true;
@@ -34,9 +35,9 @@
   };
 
   xdg.mimeApps.defaultApplications = {
-    "text/html" = ["firefox.desktop"];
-    "text/xml" = ["firefox.desktop"];
-    "x-scheme-handler/http" = ["firefox.desktop"];
-    "x-scheme-handler/https" = ["firefox.desktop"];
+    "text/html" = [ "firefox.desktop" ];
+    "text/xml" = [ "firefox.desktop" ];
+    "x-scheme-handler/http" = [ "firefox.desktop" ];
+    "x-scheme-handler/https" = [ "firefox.desktop" ];
   };
 }

@@ -1,4 +1,4 @@
-use crate::{jwt_auth, schemas::User, routes::users::password};
+use crate::{jwt_auth, routes::users::password, schemas::User};
 use anyhow::Context;
 use jsonwebtoken::EncodingKey;
 use pavex::{
@@ -30,8 +30,8 @@ pub async fn login(
     let user_record = get_user_by_id(&user_id, db_pool)
         .await
         .map_err(LoginError::UnexpectedError)?;
-    let jwt_token = jwt_auth::encode_token(user_id, jwt_key)
-        .map_err(LoginError::UnexpectedError)?;
+    let jwt_token =
+        jwt_auth::encode_token(user_id, jwt_key).map_err(LoginError::UnexpectedError)?;
 
     let body = LoginResponse {
         user: User {

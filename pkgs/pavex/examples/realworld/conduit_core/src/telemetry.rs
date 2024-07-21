@@ -1,9 +1,9 @@
 use tokio::task::JoinHandle;
 
 /// Spawn a blocking task without losing the current `tracing` span.
-/// 
+///
 /// # Why is this needed?
-/// 
+///
 /// `tracing`'s span context is thread-local, so when a blocking task is spawned
 /// the current span is lost. This function spawns a blocking task and
 /// explicitly re-attaches the current span to the workload in

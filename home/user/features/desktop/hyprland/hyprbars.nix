@@ -4,7 +4,8 @@
   lib,
   outputs,
   ...
-}: let
+}:
+let
   getHostname = x: lib.last (lib.splitString "@" x);
   remoteColorschemes = lib.mapAttrs' (n: v: {
     name = getHostname n;
@@ -17,19 +18,19 @@
     (pkgs.hyprbars.override {
       # Make sure it's using the same hyprland package as we are
       hyprland = config.wayland.windowManager.hyprland.package;
-    })
-    .overrideAttrs
-    (old: {
-      # Yeet the initialization notification (I hate it)
-      postPatch =
-        (old.postPatch or "")
-        + ''
-          ${lib.getExe pkgs.gnused} -i '/Initialized successfully/d' main.cpp
-        '';
-    });
-in {
+    }).overrideAttrs
+      (old: {
+        # Yeet the initialization notification (I hate it)
+        postPatch =
+          (old.postPatch or "")
+          + ''
+            ${lib.getExe pkgs.gnused} -i '/Initialized successfully/d' main.cpp
+          '';
+      });
+in
+{
   wayland.windowManager.hyprland = {
-    plugins = [hyprbars];
+    plugins = [ hyprbars ];
     settings = {
       "plugin:hyprbars" = {
         bar_height = 25;
@@ -39,35 +40,41 @@ in {
         bar_text_size = 12;
         bar_part_of_window = true;
         bar_precedence_over_border = true;
-        hyprbars-button = let
-          closeAction = "hyprctl dispatch killactive";
+        hyprbars-button =
+          let
+            closeAction = "hyprctl dispatch killactive";
 
-          isOnSpecial = ''hyprctl activewindow -j | jq -re 'select(.workspace.name == "special")' >/dev/null'';
-          moveToSpecial = "hyprctl dispatch movetoworkspacesilent special";
-          moveToActive = "hyprctl dispatch movetoworkspacesilent name:$(hyprctl -j activeworkspace | jq -re '.name')";
-          minimizeAction = "${isOnSpecial} && ${moveToActive} || ${moveToSpecial}";
+            isOnSpecial = ''hyprctl activewindow -j | jq -re 'select(.workspace.name == "special")' >/dev/null'';
+            moveToSpecial = "hyprctl dispatch movetoworkspacesilent special";
+            moveToActive = "hyprctl dispatch movetoworkspacesilent name:$(hyprctl -j activeworkspace | jq -re '.name')";
+            minimizeAction = "${isOnSpecial} && ${moveToActive} || ${moveToSpecial}";
 
-          maximizeAction = "hyprctl dispatch fullscreen 1";
-        in [
-          # Red close button
-          "${rgb config.colorscheme.harmonized.red},12,,${closeAction}"
-          # Yellow "minimize" (send to special workspace) button
-          "${rgb config.colorscheme.harmonized.yellow},12,,${minimizeAction}"
-          # Green "maximize" (fullscreen) button
-          "${rgb config.colorscheme.harmonized.green},12,,${maximizeAction}"
-        ];
+            maximizeAction = "hyprctl dispatch fullscreen 1";
+          in
+          [
+            # Red close button
+            "${rgb config.colorscheme.harmonized.red},12,,${closeAction}"
+            # Yellow "minimize" (send to special workspace) button
+            "${rgb config.colorscheme.harmonized.yellow},12,,${minimizeAction}"
+            # Green "maximize" (fullscreen) button
+            "${rgb config.colorscheme.harmonized.green},12,,${maximizeAction}"
+          ];
       };
 
-      windowrulev2 = [
-        "plugin:hyprbars:bar_color ${rgba config.colorscheme.colors.primary "ee"}, focus:1"
-        "plugin:hyprbars:title_color ${rgb config.colorscheme.colors.on_primary}, focus:1"
-      ] ++ (lib.flatten (lib.mapAttrsToList (name: colors: [
-        "plugin:hyprbars:bar_color ${rgba colors.primary_container "dd"}, title:^(\\[${name}\\])"
-        "plugin:hyprbars:title_color ${rgb colors.on_primary_container}, title:^(\\[${name}\\])"
+      windowrulev2 =
+        [
+          "plugin:hyprbars:bar_color ${rgba config.colorscheme.colors.primary "ee"}, focus:1"
+          "plugin:hyprbars:title_color ${rgb config.colorscheme.colors.on_primary}, focus:1"
+        ]
+        ++ (lib.flatten (
+          lib.mapAttrsToList (name: colors: [
+            "plugin:hyprbars:bar_color ${rgba colors.primary_container "dd"}, title:^(\\[${name}\\])"
+            "plugin:hyprbars:title_color ${rgb colors.on_primary_container}, title:^(\\[${name}\\])"
 
-        "plugin:hyprbars:bar_color ${rgba colors.primary "ee"}, title:^(\\[${name}\\]), focus:1"
-        "plugin:hyprbars:title_color ${rgb colors.on_primary}, title:^(\\[${name}\\]), focus:1"
-      ]) remoteColorschemes));
+            "plugin:hyprbars:bar_color ${rgba colors.primary "ee"}, title:^(\\[${name}\\]), focus:1"
+            "plugin:hyprbars:title_color ${rgb colors.on_primary}, title:^(\\[${name}\\]), focus:1"
+          ]) remoteColorschemes
+        ));
     };
   };
 }

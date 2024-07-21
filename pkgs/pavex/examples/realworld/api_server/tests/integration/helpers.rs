@@ -64,5 +64,4 @@ impl TestApi {
             .await
             .expect("Failed to execute request.")
     }
-
 }

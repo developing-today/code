@@ -8,7 +8,11 @@ pub(crate) fn articles_bp() -> Blueprint {
     bp.route(POST, "", f!(crate::routes::articles::publish_article));
     bp.route(GET, "/feed", f!(crate::routes::articles::get_feed));
     bp.route(GET, "/:slug", f!(crate::routes::articles::get_article));
-    bp.route(DELETE, "/:slug", f!(crate::routes::articles::delete_article));
+    bp.route(
+        DELETE,
+        "/:slug",
+        f!(crate::routes::articles::delete_article),
+    );
     bp.route(PUT, "/:slug", f!(crate::routes::articles::update_article));
     bp.route(
         DELETE,

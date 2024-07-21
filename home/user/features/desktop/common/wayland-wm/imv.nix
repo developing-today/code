@@ -1,3 +1,1 @@
-{
-  programs.imv.enable = true;
-}
+{ programs.imv.enable = true; }

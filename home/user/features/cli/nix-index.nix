@@ -1,8 +1,5 @@
+{ pkgs, lib, ... }:
 {
-  pkgs,
-  lib,
-  ...
-}: {
   programs.nix-index.enable = true;
 
   systemd.user.services.nix-index-database-sync = {
@@ -35,6 +32,6 @@
       OnBootSec = "10m";
       OnUnitActiveSec = "24h";
     };
-    Install.WantedBy = ["timers.target"];
+    Install.WantedBy = [ "timers.target" ];
   };
 }

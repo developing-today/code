@@ -3,9 +3,11 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   inherit (config.colorscheme) colors;
-in {
+in
+{
   home.persistence = {
     "/persist/${config.home.homeDirectory}".directories = [
       ".config/qutebrowser/bookmarks"
@@ -15,11 +17,11 @@ in {
   };
 
   xdg.mimeApps.defaultApplications = {
-    "text/html" = ["org.qutebrowser.qutebrowser.desktop"];
-    "text/xml" = ["org.qutebrowser.qutebrowser.desktop"];
-    "x-scheme-handler/http" = ["org.qutebrowser.qutebrowser.desktop"];
-    "x-scheme-handler/https" = ["org.qutebrowser.qutebrowser.desktop"];
-    "x-scheme-handler/qute" = ["org.qutebrowser.qutebrowser.desktop"];
+    "text/html" = [ "org.qutebrowser.qutebrowser.desktop" ];
+    "text/xml" = [ "org.qutebrowser.qutebrowser.desktop" ];
+    "x-scheme-handler/http" = [ "org.qutebrowser.qutebrowser.desktop" ];
+    "x-scheme-handler/https" = [ "org.qutebrowser.qutebrowser.desktop" ];
+    "x-scheme-handler/qute" = [ "org.qutebrowser.qutebrowser.desktop" ];
   };
 
   programs.qutebrowser = {
@@ -27,7 +29,11 @@ in {
     loadAutoconfig = true;
     settings = {
       downloads.open_dispatcher = "${lib.getExe pkgs.handlr-regex} open {}";
-      editor.command = ["${lib.getExe pkgs.handlr-regex}" "open" "{file}"];
+      editor.command = [
+        "${lib.getExe pkgs.handlr-regex}"
+        "open"
+        "{file}"
+      ];
       tabs = {
         show = "multiple";
         position = "left";

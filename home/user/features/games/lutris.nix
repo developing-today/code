@@ -1,8 +1,5 @@
+{ pkgs, config, ... }:
 {
-  pkgs,
-  config,
-  ...
-}: {
   home.packages = [
     (pkgs.lutris.override {
       extraPkgs = p: [

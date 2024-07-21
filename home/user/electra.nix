@@ -1,14 +1,21 @@
-{pkgs, lib, config, ...}: let
+{
+  pkgs,
+  lib,
+  config,
+  ...
+}:
+let
   nixGL = pkgs.inputs.nix-gl.nixGLIntel;
-in {
+in
+{
   imports = [
     ./global
     ./features/desktop/hyprland
     ./features/pass
   ];
-  home.persistence."/persist/${config.home.homeDirectory}" = lib.mkForce {};
+  home.persistence."/persist/${config.home.homeDirectory}" = lib.mkForce { };
   home.username = "gabriel";
-  home.packages = [nixGL];
+  home.packages = [ nixGL ];
 
   # programs.fish.interactiveShellInit = /* fish */ ''
   #   set -p LD_LIBRARY_PATH (${lib.getExe nixGL} printenv LD_LIBRARY_PATH)
@@ -24,13 +31,15 @@ in {
     extraConfig.commit.gpgSign = false;
   };
 
-  monitors = [{
-    name = "eDP-1";
-    width = 1920;
-    height = 1080;
-    workspace = "1";
-    primary = true;
-  }];
+  monitors = [
+    {
+      name = "eDP-1";
+      width = 1920;
+      height = 1080;
+      workspace = "1";
+      primary = true;
+    }
+  ];
   # Green
   wallpaper = pkgs.wallpapers.aenami-northern-lights;
   colorscheme.type = "rainbow";

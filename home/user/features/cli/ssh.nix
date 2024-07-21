@@ -3,21 +3,27 @@
   lib,
   config,
   ...
-}: let
+}:
+let
   nixosConfigs = builtins.attrNames outputs.nixosConfigurations;
-  homeConfigs = map (n: lib.last (lib.splitString "@" n)) (builtins.attrNames outputs.homeConfigurations);
+  homeConfigs = map (n: lib.last (lib.splitString "@" n)) (
+    builtins.attrNames outputs.homeConfigurations
+  );
   hostnames = lib.unique (homeConfigs ++ nixosConfigs);
-in {
+in
+{
   programs.ssh = {
     enable = true;
     matchBlocks = {
       net = {
-        host = builtins.concatStringsSep " " ([
+        host = builtins.concatStringsSep " " (
+          [
             "m7.rs"
             "*.m7.rs"
             "*.ts.m7.rs"
           ]
-          ++ hostnames);
+          ++ hostnames
+        );
         forwardAgent = true;
         remoteForwards = [
           {
@@ -36,8 +42,6 @@ in {
   };
 
   home.persistence = {
-    "/persist/${config.home.homeDirectory}".files = [
-      ".ssh/known_hosts"
-    ];
+    "/persist/${config.home.homeDirectory}".files = [ ".ssh/known_hosts" ];
   };
 }

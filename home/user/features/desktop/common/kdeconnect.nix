@@ -1,8 +1,5 @@
+{ pkgs, config, ... }:
 {
-  pkgs,
-  config,
-  ...
-}: {
   # Hide all .desktop, except for org.kde.kdeconnect.settings
   xdg.desktopEntries = {
     "org.kde.kdeconnect.sms" = {
@@ -29,6 +26,6 @@
   };
 
   home.persistence = {
-    "/persist/${config.home.homeDirectory}".directories = [".config/kdeconnect"];
+    "/persist/${config.home.homeDirectory}".directories = [ ".config/kdeconnect" ];
   };
 }

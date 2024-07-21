@@ -3,7 +3,8 @@
   lib,
   config,
   ...
-}: let
+}:
+let
   inherit (lib) mkIf;
   packageNames = map (p: p.pname or p.name or null) config.home.packages;
   hasPackage = name: lib.any (x: x == name) packageNames;
@@ -17,41 +18,40 @@
   hasShellColor = config.programs.shellcolor.enable;
   hasKitty = config.programs.kitty.enable;
   shellcolor = "${pkgs.shellcolord}/bin/shellcolor";
-in {
+in
+{
   programs.fish = {
     enable = true;
-    plugins =
-      lib.optional hasAwsCli
-      {
-        name = "aws";
-        src = pkgs.applyPatches {
-          src = pkgs.fetchFromGitHub {
-            owner = "oh-my-fish";
-            repo = "plugin-aws";
-            rev = "e53a1de3f826916cb83f6ebd34a7356af8f754d1";
-            hash = "sha256-l17v/aJ4PkjYM8kJDA0zUo87UTsfFqq+Prei/Qq0DRA=";
-          };
-          patches = [
-            (
-              builtins.toFile "fix-complete.diff" /* diff */ ''
-                diff --git a/completions/aws.fish b/completions/aws.fish
-                index fc75188..1e8d931 100644
-                --- a/completions/aws.fish
-                +++ b/completions/aws.fish
-                @@ -1,7 +1,7 @@
-                 function __aws_complete
-                   if set -q aws_completer_path
-                     set -lx COMP_SHELL fish
-                -    set -lx COMP_LINE (commandline -opc)
-                +    set -lx COMP_LINE (commandline -pc)
-
-                     if string match -q -- "-*" (commandline -opt)
-                       set COMP_LINE $COMP_LINE -
-              ''
-            )
-          ];
+    plugins = lib.optional hasAwsCli {
+      name = "aws";
+      src = pkgs.applyPatches {
+        src = pkgs.fetchFromGitHub {
+          owner = "oh-my-fish";
+          repo = "plugin-aws";
+          rev = "e53a1de3f826916cb83f6ebd34a7356af8f754d1";
+          hash = "sha256-l17v/aJ4PkjYM8kJDA0zUo87UTsfFqq+Prei/Qq0DRA=";
         };
+        patches = [
+          (builtins.toFile "fix-complete.diff" # diff
+            ''
+              diff --git a/completions/aws.fish b/completions/aws.fish
+              index fc75188..1e8d931 100644
+              --- a/completions/aws.fish
+              +++ b/completions/aws.fish
+              @@ -1,7 +1,7 @@
+               function __aws_complete
+                 if set -q aws_completer_path
+                   set -lx COMP_SHELL fish
+              -    set -lx COMP_LINE (commandline -opc)
+              +    set -lx COMP_LINE (commandline -pc)
+
+                   if string match -q -- "-*" (commandline -opt)
+                     set COMP_LINE $COMP_LINE -
+            ''
+          )
+        ];
       };
+    };
 
     shellAbbrs = rec {
       jqless = "jq -C | less -r";
@@ -103,9 +103,7 @@ in {
       # Merge history upon doing up-or-search
       # This lets multiple fish instances share history
       up-or-search =
-        /*
-        fish
-        */
+        # fish
         ''
           if commandline --search-mode
             commandline -f history-search-backward
@@ -127,23 +125,21 @@ in {
       # Integrate ssh with shellcolord
       ssh =
         mkIf hasShellColor # fish
-        
-        ''
-          ${shellcolor} disable $fish_pid
-          # Check if kitty is available
-          if set -q KITTY_PID && set -q KITTY_WINDOW_ID && type -q -f kitty
-            kitty +kitten ssh $argv
-          else
-            command ssh $argv
-          end
-          ${shellcolor} enable $fish_pid
-          ${shellcolor} apply $fish_pid
-        '';
+
+          ''
+            ${shellcolor} disable $fish_pid
+            # Check if kitty is available
+            if set -q KITTY_PID && set -q KITTY_WINDOW_ID && type -q -f kitty
+              kitty +kitten ssh $argv
+            else
+              command ssh $argv
+            end
+            ${shellcolor} enable $fish_pid
+            ${shellcolor} apply $fish_pid
+          '';
     };
     interactiveShellInit =
-      /*
-      fish
-      */
+      # fish
       ''
         # Open command buffer in vim when alt+e is pressed
         bind \ee edit_command_buffer

@@ -1,5 +1,5 @@
 #{ stateVersion, pkgs, ... }:
-{ pkgs, ... }:
+{ pkgs, ... }: {
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [

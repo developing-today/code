@@ -5,33 +5,42 @@
   pkgs,
   inputs,
   ...
-}: let
-  commonDeps = with pkgs; [coreutils gnugrep systemd];
+}:
+let
+  commonDeps = with pkgs; [
+    coreutils
+    gnugrep
+    systemd
+  ];
   # Function to simplify making waybar outputs
-  mkScript = {
-    name ? "script",
-    deps ? [],
-    script ? "",
-  }:
-    lib.getExe (pkgs.writeShellApplication {
-      inherit name;
-      text = script;
-      runtimeInputs = commonDeps ++ deps;
-    });
+  mkScript =
+    {
+      name ? "script",
+      deps ? [ ],
+      script ? "",
+    }:
+    lib.getExe (
+      pkgs.writeShellApplication {
+        inherit name;
+        text = script;
+        runtimeInputs = commonDeps ++ deps;
+      }
+    );
   # Specialized for JSON outputs
-  mkScriptJson = {
-    name ? "script",
-    deps ? [],
-    pre ? "",
-    text ? "",
-    tooltip ? "",
-    alt ? "",
-    class ? "",
-    percentage ? "",
-  }:
+  mkScriptJson =
+    {
+      name ? "script",
+      deps ? [ ],
+      pre ? "",
+      text ? "",
+      tooltip ? "",
+      alt ? "",
+      class ? "",
+      percentage ? "",
+    }:
     mkScript {
       inherit name;
-      deps = [pkgs.jq] ++ deps;
+      deps = [ pkgs.jq ] ++ deps;
       script = ''
         ${pre}
         jq -cn \
@@ -46,7 +55,8 @@
 
   swayCfg = config.wayland.windowManager.sway;
   hyprlandCfg = config.wayland.windowManager.hyprland;
-in {
+in
+{
   # Let it try to start a few more times
   systemd.user.services.waybar = {
     Unit.StartLimitBurst = 30;
@@ -54,7 +64,7 @@ in {
   programs.waybar = {
     enable = true;
     package = pkgs.waybar.overrideAttrs (oa: {
-      mesonFlags = (oa.mesonFlags or []) ++ ["-Dexperimental=true"];
+      mesonFlags = (oa.mesonFlags or [ ]) ++ [ "-Dexperimental=true" ];
     });
     systemd.enable = true;
     settings = {
@@ -65,7 +75,7 @@ in {
         margin = "6";
         position = "top";
         modules-left =
-          ["custom/menu"]
+          [ "custom/menu" ]
           ++ (lib.optionals swayCfg.enable [
             "sway/workspaces"
             "sway/mode"
@@ -114,7 +124,7 @@ in {
         };
         "custom/gpu" = {
           interval = 5;
-          exec = mkScript {script = "cat /sys/class/drm/card0/device/gpu_busy_percent";};
+          exec = mkScript { script = "cat /sys/class/drm/card0/device/gpu_busy_percent"; };
           format = "󰒋  {}%";
         };
         memory = {
@@ -180,21 +190,21 @@ in {
         "custom/tailscale-ping" = {
           interval = 10;
           return-type = "json";
-          exec = let
-            pingCmd = host: "timeout 2 tailscale ping -c 1 ${host} | tail -1 | cut -d ' ' -f8";
-            hosts = lib.attrNames outputs.nixosConfigurations;
-            homeMachine = "merope";
-            remoteMachine = "alcyone";
-          in
+          exec =
+            let
+              pingCmd = host: "timeout 2 tailscale ping -c 1 ${host} | tail -1 | cut -d ' ' -f8";
+              hosts = lib.attrNames outputs.nixosConfigurations;
+              homeMachine = "merope";
+              remoteMachine = "alcyone";
+            in
             mkScriptJson {
-              deps = [pkgs.tailscale];
+              deps = [ pkgs.tailscale ];
               # Build variables for each host
               pre = ''
                 ${lib.concatStringsSep "\n" (
                   map (host: ''
                     ping_${host}="$(${pingCmd host})" || ping_${host}="Disconnected"
-                  '')
-                  hosts
+                  '') hosts
                 )}
               '';
               # Access a remote machine's and a home machine's ping
@@ -211,23 +221,26 @@ in {
             deps = lib.optional hyprlandCfg.enable hyprlandCfg.package;
             text = "";
             tooltip = ''$(grep /etc/os-release PRETTY_NAME | cut -d '"' -f2)'';
-            class = let
-              isFullScreen =
-                if hyprlandCfg.enable
-                then "hyprctl activewindow -j | jq -e '.fullscreen' &>/dev/null"
-                else "false";
-            in "$(if ${isFullScreen}; then echo fullscreen; fi)";
+            class =
+              let
+                isFullScreen =
+                  if hyprlandCfg.enable then "hyprctl activewindow -j | jq -e '.fullscreen' &>/dev/null" else "false";
+              in
+              "$(if ${isFullScreen}; then echo fullscreen; fi)";
           };
         };
         "custom/hostname" = {
-          exec = mkScript {script = ''echo "$USER@$HOSTNAME"'';};
-          on-click = mkScript {script = "systemctl --user restart waybar";};
+          exec = mkScript { script = ''echo "$USER@$HOSTNAME"''; };
+          on-click = mkScript { script = "systemctl --user restart waybar"; };
         };
         "custom/unread-mail" = {
           interval = 5;
           return-type = "json";
           exec = mkScriptJson {
-            deps = [pkgs.findutils pkgs.procps];
+            deps = [
+              pkgs.findutils
+              pkgs.procps
+            ];
             pre = ''
               count=$(find ~/Mail/*/Inbox/new -type f | wc -l)
               if pgrep mbsync &>/dev/null; then
@@ -254,10 +267,15 @@ in {
           interval = 2;
           return-type = "json";
           exec = mkScriptJson {
-            deps = [pkgs.procps pkgs.gnupg];
-            pre = let
-              isUnlocked = "pgrep 'gpg-agent' &> /dev/null && gpg-connect-agent 'scd getinfo card_list' /bye | grep SERIALNO -q";
-            in ''status=$(${isUnlocked} && echo "unlocked" || echo "locked")'';
+            deps = [
+              pkgs.procps
+              pkgs.gnupg
+            ];
+            pre =
+              let
+                isUnlocked = "pgrep 'gpg-agent' &> /dev/null && gpg-connect-agent 'scd getinfo card_list' /bye | grep SERIALNO -q";
+              in
+              ''status=$(${isUnlocked} && echo "unlocked" || echo "locked")'';
             alt = "$status";
             tooltip = "GPG is $status";
           };
@@ -271,7 +289,7 @@ in {
           interval = 5;
           return-type = "json";
           exec = mkScriptJson {
-            deps = [pkgs.findutils];
+            deps = [ pkgs.findutils ];
             pre = ''
               if unit_status="$(systemctl --user is-active gammastep)"; then
                 period="$(journalctl --user -u gammastep.service -g 'Period: ' | tail -1 | cut -d ':' -f6 | xargs)"
@@ -311,7 +329,7 @@ in {
           interval = 2;
           return-type = "json";
           exec = mkScriptJson {
-            deps = [pkgs.playerctl];
+            deps = [ pkgs.playerctl ];
             pre = ''
               player="$(playerctl status -f "{{playerName}}" 2>/dev/null || echo "No player active" | cut -d '.' -f1)"
               count="$(playerctl -l 2>/dev/null | wc -l)"
@@ -342,20 +360,21 @@ in {
         "custom/rfkill" = {
           interval = 1;
           exec-if = mkScript {
-            deps = [pkgs.util-linux];
+            deps = [ pkgs.util-linux ];
             script = "rfkill | grep '\<blocked\>'";
           };
         };
         "custom/player" = {
           exec-if = mkScript {
-            deps = [pkgs.playerctl];
+            deps = [ pkgs.playerctl ];
             script = "playerctl status 2>/dev/null";
           };
-          exec = let
-            format = ''{"text": "{{title}} - {{artist}}", "alt": "{{status}}", "tooltip": "{{title}} - {{artist}} ({{album}})"}'';
-          in
+          exec =
+            let
+              format = ''{"text": "{{title}} - {{artist}}", "alt": "{{status}}", "tooltip": "{{title}} - {{artist}} ({{album}})"}'';
+            in
             mkScript {
-              deps = [pkgs.playerctl];
+              deps = [ pkgs.playerctl ];
               script = "playerctl metadata --format '${format}' 2>/dev/null";
             };
           return-type = "json";
@@ -368,7 +387,7 @@ in {
             "Stopped" = "󰓛";
           };
           on-click = mkScript {
-            deps = [pkgs.playerctl];
+            deps = [ pkgs.playerctl ];
             script = "playerctl play-pause";
           };
         };
@@ -379,14 +398,13 @@ in {
     # x y -> vertical, horizontal
     # x y z -> top, horizontal, bottom
     # w x y z -> top, right, bottom, left
-    style = let
-      inherit (inputs.nix-colors.lib.conversions) hexToRGBString;
-      inherit (config.colorscheme) colors;
-      toRGBA = color: opacity: "rgba(${hexToRGBString "," (lib.removePrefix "#" color)},${opacity})";
-    in
-      /*
-      css
-      */
+    style =
+      let
+        inherit (inputs.nix-colors.lib.conversions) hexToRGBString;
+        inherit (config.colorscheme) colors;
+        toRGBA = color: opacity: "rgba(${hexToRGBString "," (lib.removePrefix "#" color)},${opacity})";
+      in
+      # css
       ''
         * {
           font-family: ${config.fontProfiles.regular.family}, ${config.fontProfiles.monospace.family};

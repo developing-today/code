@@ -1,11 +1,9 @@
-{
-  config,
-  pkgs,
-  ...
-}: let
+{ config, pkgs, ... }:
+let
   c = config.colorscheme.colors;
-in {
-  home.packages = with pkgs; [vesktop];
+in
+{
+  home.packages = with pkgs; [ vesktop ];
 
   home.persistence = {
     "/persist/${config.home.homeDirectory}" = {
@@ -17,9 +15,7 @@ in {
   };
 
   xdg.configFile."vesktop/themes/base16.css".text =
-    /*
-    css
-    */
+    # css
     ''
       @import url("https://slowstab.github.io/dracula/BetterDiscord/source.css");
       @import url("https://mulverinex.github.io/legacy-settings-icons/dist-native.css");

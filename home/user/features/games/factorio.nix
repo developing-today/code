@@ -1,14 +1,11 @@
+{ pkgs, config, ... }:
 {
-  pkgs,
-  config,
-  ...
-}: {
   home = {
-    packages = [pkgs.factorio];
+    packages = [ pkgs.factorio ];
     persistence = {
       "/persist/${config.home.homeDirectory}" = {
         allowOther = true;
-        directories = [".factorio"];
+        directories = [ ".factorio" ];
       };
     };
   };

@@ -4,7 +4,8 @@
   pkgs,
   outputs,
   ...
-}: let
+}:
+let
   getHostname = x: lib.last (lib.splitString "@" x);
   remoteColorschemes = lib.mapAttrs' (n: v: {
     name = getHostname n;
@@ -12,7 +13,8 @@
   }) outputs.homeConfigurations;
   rgb = color: "rgb(${lib.removePrefix "#" color})";
   rgba = color: alpha: "rgba(${lib.removePrefix "#" color}${alpha})";
-in {
+in
+{
   imports = [
     ../common
     ../common/wayland-wm
@@ -21,13 +23,15 @@ in {
     ./hyprbars.nix
   ];
 
-  xdg.portal = let
-    hyprland = config.wayland.windowManager.hyprland.package;
-    xdph = pkgs.xdg-desktop-portal-hyprland.override {inherit hyprland;};
-  in {
-    extraPortals = [xdph];
-    configPackages = [hyprland];
-  };
+  xdg.portal =
+    let
+      hyprland = config.wayland.windowManager.hyprland.package;
+      xdph = pkgs.xdg-desktop-portal-hyprland.override { inherit hyprland; };
+    in
+    {
+      extraPortals = [ xdph ];
+      configPackages = [ hyprland ];
+    };
 
   home.packages = with pkgs; [
     grimblast
@@ -36,7 +40,7 @@ in {
 
   wayland.windowManager.hyprland = {
     enable = true;
-    package = pkgs.hyprland.override {wrapRuntimeDeps = false;};
+    package = pkgs.hyprland.override { wrapRuntimeDeps = false; };
     systemd = {
       enable = true;
       # Same as default, but stop graphical-session too
@@ -78,27 +82,31 @@ in {
         # Unfullscreen when opening something
         new_window_takes_over_fullscreen = 2;
       };
-      windowrulev2 = let
-        sweethome3d-tooltips = "title:^(win[0-9])$,class:^(com-eteks-sweethome3d-SweetHome3DBootstrap)$";
-        steam = "title:^()$,class:^(steam)$";
-        kdeconnect-pointer = "class:^(kdeconnect.daemon)$";
-      in [
-        "nofocus, ${sweethome3d-tooltips}"
+      windowrulev2 =
+        let
+          sweethome3d-tooltips = "title:^(win[0-9])$,class:^(com-eteks-sweethome3d-SweetHome3DBootstrap)$";
+          steam = "title:^()$,class:^(steam)$";
+          kdeconnect-pointer = "class:^(kdeconnect.daemon)$";
+        in
+        [
+          "nofocus, ${sweethome3d-tooltips}"
 
-        "stayfocused, ${steam}"
-        "minsize 1 1, ${steam}"
+          "stayfocused, ${steam}"
+          "minsize 1 1, ${steam}"
 
-        "size 100% 110%, ${kdeconnect-pointer}"
-        "center, ${kdeconnect-pointer}"
-        "nofocus, ${kdeconnect-pointer}"
-        "noblur, ${kdeconnect-pointer}"
-        "noanim, ${kdeconnect-pointer}"
-        "noshadow, ${kdeconnect-pointer}"
-        "noborder, ${kdeconnect-pointer}"
-        "suppressevent fullscreen, ${kdeconnect-pointer}"
-      ] ++ (lib.mapAttrsToList (name: colors:
-        "bordercolor ${rgba colors.primary "aa"} ${rgba colors.primary_container "aa"}, title:^(\\[${name}\\])"
-      ) remoteColorschemes);
+          "size 100% 110%, ${kdeconnect-pointer}"
+          "center, ${kdeconnect-pointer}"
+          "nofocus, ${kdeconnect-pointer}"
+          "noblur, ${kdeconnect-pointer}"
+          "noanim, ${kdeconnect-pointer}"
+          "noshadow, ${kdeconnect-pointer}"
+          "noborder, ${kdeconnect-pointer}"
+          "suppressevent fullscreen, ${kdeconnect-pointer}"
+        ]
+        ++ (lib.mapAttrsToList (
+          name: colors:
+          "bordercolor ${rgba colors.primary "aa"} ${rgba colors.primary_container "aa"}, title:^(\\[${name}\\])"
+        ) remoteColorschemes);
       layerrule = [
         "animation fade,hyprpicker"
         "animation fade,selection"
@@ -167,20 +175,23 @@ in {
         ];
       };
 
-      exec = ["${pkgs.swaybg}/bin/swaybg -i ${config.wallpaper} --mode fill"];
+      exec = [ "${pkgs.swaybg}/bin/swaybg -i ${config.wallpaper} --mode fill" ];
 
-      bind = let
-        grimblast = lib.getExe pkgs.grimblast;
-        tesseract = lib.getExe pkgs.tesseract;
-        pactl = lib.getExe' pkgs.pulseaudio "pactl";
-        notify-send = lib.getExe' pkgs.libnotify "notify-send";
-        defaultApp = type: "${lib.getExe pkgs.handlr-regex} launch ${type}";
-        remote = lib.getExe (pkgs.writeShellScriptBin "remote" ''
-          socket="$(basename "$(find ~/.ssh -name 'master-*' | head -1 | cut -d ':' -f1)")"
-          host="''${socket#master-}"
-          ssh "$host" "$@"
-        '');
-      in
+      bind =
+        let
+          grimblast = lib.getExe pkgs.grimblast;
+          tesseract = lib.getExe pkgs.tesseract;
+          pactl = lib.getExe' pkgs.pulseaudio "pactl";
+          notify-send = lib.getExe' pkgs.libnotify "notify-send";
+          defaultApp = type: "${lib.getExe pkgs.handlr-regex} launch ${type}";
+          remote = lib.getExe (
+            pkgs.writeShellScriptBin "remote" ''
+              socket="$(basename "$(find ~/.ssh -name 'master-*' | head -1 | cut -d ':' -f1)")"
+              host="''${socket#master-}"
+              ssh "$host" "$@"
+            ''
+          );
+        in
         [
           # Program bindings
           "SUPER,Return,exec,${defaultApp "x-scheme-handler/terminal"}"
@@ -209,46 +220,46 @@ in {
             playerctl = lib.getExe' config.services.playerctld.package "playerctl";
             playerctld = lib.getExe' config.services.playerctld.package "playerctld";
           in
-            lib.optionals config.services.playerctld.enable [
-              # Media control
-              ",XF86AudioNext,exec,${playerctl} next"
-              ",XF86AudioPrev,exec,${playerctl} previous"
-              ",XF86AudioPlay,exec,${playerctl} play-pause"
-              ",XF86AudioStop,exec,${playerctl} stop"
-              "ALT,XF86AudioNext,exec,${playerctld} shift"
-              "ALT,XF86AudioPrev,exec,${playerctld} unshift"
-              "ALT,XF86AudioPlay,exec,systemctl --user restart playerctld"
-            ]
+          lib.optionals config.services.playerctld.enable [
+            # Media control
+            ",XF86AudioNext,exec,${playerctl} next"
+            ",XF86AudioPrev,exec,${playerctl} previous"
+            ",XF86AudioPlay,exec,${playerctl} play-pause"
+            ",XF86AudioStop,exec,${playerctl} stop"
+            "ALT,XF86AudioNext,exec,${playerctld} shift"
+            "ALT,XF86AudioPrev,exec,${playerctld} unshift"
+            "ALT,XF86AudioPlay,exec,systemctl --user restart playerctld"
+          ]
         )
         ++
-        # Screen lock
-        (
-          let
-            swaylock = lib.getExe config.programs.swaylock.package;
-          in
+          # Screen lock
+          (
+            let
+              swaylock = lib.getExe config.programs.swaylock.package;
+            in
             lib.optionals config.programs.swaylock.enable [
               ",XF86Launch5,exec,${swaylock} -S --grace 2"
               ",XF86Launch4,exec,${swaylock} -S --grace 2"
               "SUPER,backspace,exec,${swaylock} -S --grace 2"
             ]
-        )
+          )
         ++
-        # Notification manager
-        (
-          let
-            makoctl = lib.getExe' config.services.mako.package "makoctl";
-          in
+          # Notification manager
+          (
+            let
+              makoctl = lib.getExe' config.services.mako.package "makoctl";
+            in
             lib.optionals config.services.mako.enable [
               "SUPER,w,exec,${makoctl} dismiss"
               "SUPERSHIFT,w,exec,${makoctl} restore"
             ]
-        )
+          )
         ++
-        # Launcher
-        (
-          let
-            wofi = lib.getExe config.programs.wofi.package;
-          in
+          # Launcher
+          (
+            let
+              wofi = lib.getExe config.programs.wofi.package;
+            in
             lib.optionals config.programs.wofi.enable [
               "SUPER,x,exec,${wofi} -S drun -x 10 -y 10 -W 25% -H 60%"
               "SUPER,s,exec,specialisation $(specialisation | ${wofi} -S dmenu)"
@@ -259,17 +270,18 @@ in {
             ]
             ++ (
               let
-                pass-wofi = lib.getExe (pkgs.pass-wofi.override {pass = config.programs.password-store.package;});
+                pass-wofi = lib.getExe (pkgs.pass-wofi.override { pass = config.programs.password-store.package; });
               in
-                lib.optionals config.programs.password-store.enable [
-                  ",Scroll_Lock,exec,${pass-wofi}" # fn+k
-                  ",XF86Calculator,exec,${pass-wofi}" # fn+f12
-                  "SUPER,semicolon,exec,${pass-wofi}"
-                  "SHIFT,Scroll_Lock,exec,${pass-wofi} fill" # fn+k
-                  "SHIFT,XF86Calculator,exec,${pass-wofi} fill" # fn+f12
-                  "SHIFTSUPER,semicolon,exec,${pass-wofi} fill"
-                ]
-            ) ++ (
+              lib.optionals config.programs.password-store.enable [
+                ",Scroll_Lock,exec,${pass-wofi}" # fn+k
+                ",XF86Calculator,exec,${pass-wofi}" # fn+f12
+                "SUPER,semicolon,exec,${pass-wofi}"
+                "SHIFT,Scroll_Lock,exec,${pass-wofi} fill" # fn+k
+                "SHIFT,XF86Calculator,exec,${pass-wofi} fill" # fn+f12
+                "SHIFTSUPER,semicolon,exec,${pass-wofi} fill"
+              ]
+            )
+            ++ (
               let
                 cliphist = lib.getExe config.services.cliphist.package;
               in
@@ -277,28 +289,33 @@ in {
                 ''SUPER,c,exec,selected=$(${cliphist} list | ${wofi} -S dmenu) && echo "$selected" | ${cliphist} decode | wl-copy''
               ]
             )
-        );
+          );
 
-      monitor = let
-        waybarSpace = let
-          inherit (config.wayland.windowManager.hyprland.settings.general) gaps_in gaps_out;
-          inherit (config.programs.waybar.settings.primary) position height width;
-          gap = gaps_out - gaps_in;
-        in {
-          top = if (position == "top") then height + gap else 0;
-          bottom = if (position == "bottom") then height + gap else 0;
-          left = if (position == "left") then width + gap else 0;
-          right = if (position == "right") then width + gap else 0;
-        };
-      in
+      monitor =
+        let
+          waybarSpace =
+            let
+              inherit (config.wayland.windowManager.hyprland.settings.general) gaps_in gaps_out;
+              inherit (config.programs.waybar.settings.primary) position height width;
+              gap = gaps_out - gaps_in;
+            in
+            {
+              top = if (position == "top") then height + gap else 0;
+              bottom = if (position == "bottom") then height + gap else 0;
+              left = if (position == "left") then width + gap else 0;
+              right = if (position == "right") then width + gap else 0;
+            };
+        in
         [
           ",addreserved,${toString waybarSpace.top},${toString waybarSpace.bottom},${toString waybarSpace.left},${toString waybarSpace.right}"
         ]
         ++ (map (
-          m: "${m.name},${
-            if m.enabled
-            then "${toString m.width}x${toString m.height}@${toString m.refreshRate},${toString m.x}x${toString m.y},1"
-            else "disable"
+          m:
+          "${m.name},${
+            if m.enabled then
+              "${toString m.width}x${toString m.height}@${toString m.refreshRate},${toString m.x}x${toString m.y},1"
+            else
+              "disable"
           }"
         ) (config.monitors));
 

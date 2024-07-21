@@ -3,7 +3,8 @@
   config,
   lib,
   ...
-}: let
+}:
+let
   ssh = "${pkgs.openssh}/bin/ssh";
 
   git-m7 = pkgs.writeShellScriptBin "git-m7" ''
@@ -32,7 +33,8 @@
     git commit --fixup "$@"
     GIT_SEQUENCE_EDITOR=true git rebase -i --autostash --autosquash $rev^
   '';
-in {
+in
+{
   home.packages = [
     git-m7
     git-fixup

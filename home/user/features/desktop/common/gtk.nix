@@ -3,13 +3,15 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   inherit (builtins) hashString toJSON;
-  rendersvg = pkgs.runCommand "rendersvg" {} ''
+  rendersvg = pkgs.runCommand "rendersvg" { } ''
     mkdir -p $out/bin
     ln -s ${pkgs.resvg}/bin/resvg $out/bin/rendersvg
   '';
-  materiaTheme = name: colors:
+  materiaTheme =
+    name: colors:
     pkgs.stdenv.mkDerivation {
       name = "generated-gtk-theme";
       src = pkgs.fetchFromGitHub {
@@ -29,7 +31,10 @@
         gtk4.dev
         optipng
       ];
-      phases = ["unpackPhase" "installPhase"];
+      phases = [
+        "unpackPhase"
+        "installPhase"
+      ];
       installPhase = ''
         HOME=/build
         chmod 777 -R .
@@ -69,22 +74,23 @@
         chmod 555 -R .
       '';
     };
-in rec {
+in
+rec {
   gtk = {
     enable = true;
     font = {
       name = config.fontProfiles.regular.family;
       size = 12;
     };
-    theme = let
-      inherit (config.colorscheme) mode colors;
-      name = "generated-${hashString "md5" (toJSON colors)}-${mode}";
-    in {
-      inherit name;
-      package = materiaTheme name (
-        lib.mapAttrs (_: v: lib.removePrefix "#" v) colors
-      );
-    };
+    theme =
+      let
+        inherit (config.colorscheme) mode colors;
+        name = "generated-${hashString "md5" (toJSON colors)}-${mode}";
+      in
+      {
+        inherit name;
+        package = materiaTheme name (lib.mapAttrs (_: v: lib.removePrefix "#" v) colors);
+      };
     iconTheme = {
       name = "Papirus";
       package = pkgs.papirus-icon-theme;
@@ -99,5 +105,5 @@ in rec {
     };
   };
 
-  xdg.portal.extraPortals = [pkgs.xdg-desktop-portal-gtk];
+  xdg.portal.extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
 }

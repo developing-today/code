@@ -1,5 +1,6 @@
-{pkgs, lib, ...}: {
-  home.packages = [pkgs.waypipe];
+{ pkgs, lib, ... }:
+{
+  home.packages = [ pkgs.waypipe ];
   systemd.user.services = {
     waypipe-client = {
       Unit.Description = "Runs waypipe on startup to support SSH forwarding";
@@ -8,7 +9,7 @@
         ExecStart = "${lib.getExe pkgs.waypipe} --socket %h/.waypipe/client.sock client";
         ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %h/.waypipe/client.sock";
       };
-      Install.WantedBy = ["default.target"];
+      Install.WantedBy = [ "default.target" ];
     };
     waypipe-server = {
       Unit.Description = "Runs waypipe on startup to support SSH forwarding";
@@ -18,7 +19,7 @@
         ExecStart = "${lib.getExe pkgs.waypipe} --socket %h/.waypipe/server.sock --title-prefix '[%H] ' --login-shell --display wayland-waypipe server -- ${lib.getExe' pkgs.coreutils "sleep"} infinity";
         ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %h/.waypipe/server.sock wayland-waypipe";
       };
-      Install.WantedBy = ["default.target"];
+      Install.WantedBy = [ "default.target" ];
     };
   };
 }
