@@ -13,5 +13,8 @@ in
 
   sops = {
     age.sshKeyPaths = map getKeyPath keys;
+    secrets.hello = {
+      sopsFile =  ./config.enc/common/secrets.yaml;
+    };
   };
 }
