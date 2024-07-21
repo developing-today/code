@@ -1,6 +1,5 @@
 {
-  sops-nix,
-  lib,
+  inputs,
   config,
   ...
 }:
@@ -10,9 +9,9 @@ let
   keys = builtins.filter isEd25519 config.services.openssh.hostKeys;
 in
 {
-  #imports = [ sops-nix.nixosModules.sops ];
+  imports = [ inputs.sops-nix.nixosModules.sops ];
 
-  #sops = {
-  #  age.sshKeyPaths = map getKeyPath keys;
-  #};
+  sops = {
+    age.sshKeyPaths = map getKeyPath keys;
+  };
 }
