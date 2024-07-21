@@ -138,17 +138,17 @@
           config.allowUnfree = true;
         }
       );
-    in
-    /*
-      pkgsFor = lib.genAttrs (import systems) (
-        system:
-          import nixpkgs {
-            #inherit system;
-            config.allowUnfree = true;
-          }
-      );
-    */
-    {
+    #inherit lib;
+    overlays = [ #import ./overlays { inherit inputs outputs;};
+
+                 #     zig-overlay.overlays.default
+                      #alejandra.overlay
+                      #nix-software-center.overlay
+                      vim.overlay.x86_64-linux #.${system}
+                      #nix-topology.overlays.default
+                    ];
+    in {
+      inherit lib;
       /*
         overlays = [
           zig-overlay.overlays.default
@@ -159,37 +159,31 @@
         ];
       */
       nixosModules = import ./modules/nixos;
-
       homeManagerModules = import ./modules/home-manager;
-
       #overlays = import ./overlays {inherit inputs outputs;};
-
       #hydraJobs = import ./hydra.nix {inherit inputs outputs;};
-
       #packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
-
       #devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
-
       #formatter = forEachSystem (pkgs: pkgs.alejandra);
-
       nixosConfigurations = {
         #laptop-framework = lib.nixosSystem {
         nixos = lib.nixosSystem {
           #modules = [./hosts/laptop-framework];
+          #overlays = overlays;
           modules =
             [
               #nix-topology.nixosModules.default
               {
                 nixpkgs = {
-                  /*
-                    overlays.x86_64-linux = [
-                         zig-overlay.overlays.default
+
+                    overlays = [
+                 #        zig-overlay.overlays.default
                          #alejandra.overlay
                          #nix-software-center.overlay
                          vim.overlay.x86_64-linux #.${system}
                          #nix-topology.overlays.default
                        ];#overlays; # are overlays needed in home manager? document which/why?
-                  */
+
                   config = {
                     #allowUnfree = true;
                     permittedInsecurePackages = [
@@ -227,13 +221,6 @@
                   #inherit system;
                   #overlays = overlays;
 
-                  #  overlays = [
-                 #     zig-overlay.overlays.default
-                      #alejandra.overlay
-                      #nix-software-center.overlay
-                  #    vim.overlay.x86_64-linux #.${system}
-                      #nix-topology.overlays.default
-                   # ];
                   #*/
                   #config = {
                     #allowUnfree = true;
@@ -252,7 +239,7 @@
         };
       };
 
-      /*homeConfigurations = {
+     homeConfigurations = {
         "user@laptop-framework" = lib.homeManagerConfiguration {
           modules = [ ./home/user/user.nix ];
           pkgs = pkgsFor.x86_64-linux;
@@ -260,7 +247,7 @@
             inherit inputs outputs;
           };
         };
-      };*/
+      };
     };
 }
 /*
