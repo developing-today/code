@@ -133,7 +133,8 @@ pub(super) fn complex_borrow_check(
                     }
                     StrategyOnBlock::Clone => {
                         'incoming: for incoming_blocked_id in incoming_blocked_ids {
-                            let Some(component_id) = call_graph[incoming_blocked_id].component_id() else {
+                            let Some(component_id) = call_graph[incoming_blocked_id].component_id()
+                            else {
                                 continue 'incoming;
                             };
                             let Some(clone_component_id) = get_clone_component_id(
@@ -142,7 +143,7 @@ pub(super) fn complex_borrow_check(
                                 krate_collection,
                                 component_db,
                                 computation_db,
-                                root_scope_id
+                                root_scope_id,
                             ) else {
                                 continue 'incoming;
                             };

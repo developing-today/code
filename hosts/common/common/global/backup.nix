@@ -3,7 +3,8 @@
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   exclude_patterns = [
     "**/.git"
     "**/*.pyc"
@@ -56,9 +57,7 @@
     keep_yearly = 1;
 
     checks = [
-      {
-        name = "repository";
-      }
+      { name = "repository"; }
       {
         name = "spot";
         frequency = "1 week";
@@ -75,61 +74,57 @@
 
     healthchecks.ping_url = "https://hc-ping.com/5546438b-6945-4e1e-93cf-31338745aab4";
   };
-in {
+in
+{
   services.borgmatic = {
     enable = true;
     configurations =
       {
-        "default" =
-          baseConfig
-          // {
-            repositories = [
-              # TODO: investigate why the NAS crashes
-              /*
+        "default" = baseConfig // {
+          repositories = [
+            # TODO: investigate why the NAS crashes
+            /*
               {
                 label = "samba-${config.networking.hostName}";
                 path = "/samba/borg/${config.networking.hostName}";
               }
-              */
-              {
-                label = "ssh-${config.networking.hostName}";
-                path = "ssh://guekka-backup@domino.zdimension.fr/./${config.networking.hostName}";
-              }
-            ];
-            source_directories = [
-              "/persist"
-              "/home"
-            ];
+            */
+            {
+              label = "ssh-${config.networking.hostName}";
+              path = "ssh://guekka-backup@domino.zdimension.fr/./${config.networking.hostName}";
+            }
+          ];
+          source_directories = [
+            "/persist"
+            "/home"
+          ];
 
-            encryption_passcommand = "${pkgs.coreutils}/bin/cat ${config.sops.secrets."${config.networking.hostName}-borgbackup-passphrase".path}";
-          };
+          encryption_passcommand = "${pkgs.coreutils}/bin/cat ${
+            config.sops.secrets."${config.networking.hostName}-borgbackup-passphrase".path
+          }";
+        };
       }
       //
       # TODO: maybe move this to a separate file
-      lib.optionalAttrs (config.networking.hostName == "horus")
-      {
-        "shared" =
-          baseConfig
-          // {
-            repositories = [
-              # TODO: investigate why the NAS crashes
-              /*
+      lib.optionalAttrs (config.networking.hostName == "horus") {
+        "shared" = baseConfig // {
+          repositories = [
+            # TODO: investigate why the NAS crashes
+            /*
               {
                 label = "samba-shared";
                 path = "/samba/borg/shared";
               }
-              */
-              {
-                label = "ssh-shared";
-                path = "ssh://guekka-backup@domino.zdimension.fr/./shared";
-              }
-            ];
-            source_directories = [
-              "/shared"
-            ];
+            */
+            {
+              label = "ssh-shared";
+              path = "ssh://guekka-backup@domino.zdimension.fr/./shared";
+            }
+          ];
+          source_directories = [ "/shared" ];
 
-            encryption_passcommand = "${pkgs.coreutils}/bin/cat ${config.sops.secrets.shared-borgbackup-passphrase.path}";
-          };
+          encryption_passcommand = "${pkgs.coreutils}/bin/cat ${config.sops.secrets.shared-borgbackup-passphrase.path}";
+        };
       };
   };
 
@@ -140,7 +135,7 @@ in {
   systemd.timers.borgmatic = {
     enable = true;
     description = "borgmatic backup";
-    wantedBy = ["timers.target"];
+    wantedBy = [ "timers.target" ];
     timerConfig = {
       Unit = "borgmatic.service";
       OnCalendar = "*-*-* 00:00:00";

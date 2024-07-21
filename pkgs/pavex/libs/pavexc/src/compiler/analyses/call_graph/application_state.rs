@@ -100,8 +100,9 @@ pub(crate) fn application_state_call_graph(
         component_db,
         constructible_db,
         lifecycle2invocations,
-        diagnostics
-    ) else {
+        diagnostics,
+    )
+    else {
         return Err(());
     };
 
@@ -119,10 +120,7 @@ pub(crate) fn application_state_call_graph(
         // We only care about errors at this point.
         output_node_indexes.remove(&root_node_index);
         for output_node_index in output_node_indexes {
-            let CallGraphNode::Compute {
-                component_id,
-                ..
-            } = &call_graph[output_node_index] else {
+            let CallGraphNode::Compute { component_id, .. } = &call_graph[output_node_index] else {
                 unreachable!()
             };
             let component = component_db.hydrated_component(*component_id, computation_db);
@@ -231,7 +229,9 @@ pub(crate) fn application_state_call_graph(
                 let fallible = component_db.hydrated_component(fallible_id, computation_db);
                 let fallible_callable = match &fallible {
                     HydratedComponent::Constructor(c) => {
-                        let Computation::Callable(c) = &c.0 else { unreachable!() };
+                        let Computation::Callable(c) = &c.0 else {
+                            unreachable!()
+                        };
                         c
                     }
                     HydratedComponent::RequestHandler(r) => &r.callable,
@@ -302,7 +302,7 @@ pub(crate) fn application_state_call_graph(
             component_db,
             constructible_db,
             lifecycle2invocations,
-            diagnostics
+            diagnostics,
         ) else {
             return Err(());
         };

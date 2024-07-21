@@ -383,7 +383,9 @@ fn get_trait_generic_bindings(
     generic_bindings: &mut HashMap<String, ResolvedType>,
 ) -> Result<(), anyhow::Error> {
     let inner = &resolved_item.item.inner;
-    let ItemEnum::Trait(trait_item) = inner else { unreachable!() };
+    let ItemEnum::Trait(trait_item) = inner else {
+        unreachable!()
+    };
     // TODO: handle defaults
     for (generic_slot, assigned_parameter) in trait_item
         .generics

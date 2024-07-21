@@ -1,14 +1,12 @@
-{
-  lib,
-  pkgs,
-  ...
-}: let
+{ lib, pkgs, ... }:
+let
   library = "/shared/edgar/books";
-in {
+in
+{
   services = {
     calibre-server = {
       enable = true;
-      libraries = [library];
+      libraries = [ library ];
     };
     calibre-web = {
       enable = true;

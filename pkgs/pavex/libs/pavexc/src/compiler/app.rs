@@ -431,7 +431,9 @@ fn verify_singletons(
         computation_db: &ComputationDb,
         diagnostics: &mut Vec<miette::Error>,
     ) {
-        let HydratedComponent::Constructor(c) = component_db.hydrated_component(component_id, computation_db) else {
+        let HydratedComponent::Constructor(c) =
+            component_db.hydrated_component(component_id, computation_db)
+        else {
             unreachable!()
         };
         let component_id = match c.0 {
@@ -469,7 +471,9 @@ fn verify_singletons(
     let clone = process_framework_path("core::clone::Clone", package_graph, krate_collection);
     for (singleton_type, component_id) in runtime_singletons {
         for trait_ in [&send, &sync, &clone] {
-            let ResolvedType::ResolvedPath(trait_) = trait_ else { unreachable!() };
+            let ResolvedType::ResolvedPath(trait_) = trait_ else {
+                unreachable!()
+            };
             if let Err(e) = assert_trait_is_implemented(krate_collection, singleton_type, trait_) {
                 missing_trait_implementation(
                     e,

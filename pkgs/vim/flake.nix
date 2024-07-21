@@ -1,5 +1,5 @@
 {
- inputs = {
+  inputs = {
     #nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "github:NixOS/nixpkgs/master";

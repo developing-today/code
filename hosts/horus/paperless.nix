@@ -1,7 +1,9 @@
-{config, ...}: let
+{ config, ... }:
+let
   port = 53214;
   virtualHost = "paperless.bizel.fr";
-in {
+in
+{
   services.paperless = {
     enable = true;
     settings = {
@@ -49,9 +51,7 @@ in {
         ensureDBOwnership = true;
       }
     ];
-    ensureDatabases = [
-      "paperless"
-    ];
+    ensureDatabases = [ "paperless" ];
   };
 
   sops.secrets.paperless = {

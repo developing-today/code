@@ -5,11 +5,13 @@
   pkgs,
   ...
 }:
-with lib; let
+with lib;
+let
   cfg = config.services.qbittorrent;
   configDir = "${cfg.dataDir}/.config";
   openFilesLimit = 4096;
-in {
+in
+{
   options.services.qbittorrent = {
     enable = mkOption {
       type = types.bool;
@@ -68,22 +70,20 @@ in {
   };
 
   config = mkIf cfg.enable {
-    environment.systemPackages = [pkgs.qbittorrent-nox];
+    environment.systemPackages = [ pkgs.qbittorrent-nox ];
 
     networking.firewall = mkIf cfg.openFirewall {
-      allowedTCPPorts = [cfg.port];
-      allowedUDPPorts = [cfg.port];
+      allowedTCPPorts = [ cfg.port ];
+      allowedUDPPorts = [ cfg.port ];
     };
 
-    systemd.tmpfiles.rules = [
-      "d '${cfg.dataDir}' 0700 ${cfg.user} ${cfg.group} - -"
-    ];
+    systemd.tmpfiles.rules = [ "d '${cfg.dataDir}' 0700 ${cfg.user} ${cfg.group} - -" ];
 
     systemd.services.qbittorrent = {
-      after = ["network.target"];
+      after = [ "network.target" ];
       description = "qBittorrent Daemon";
-      wantedBy = ["multi-user.target"];
-      path = [pkgs.qbittorrent];
+      wantedBy = [ "multi-user.target" ];
+      path = [ pkgs.qbittorrent ];
       serviceConfig = {
         ExecStart = ''
           ${pkgs.qbittorrent-nox}/bin/qbittorrent-nox \
@@ -109,7 +109,10 @@ in {
       };
     };
 
-    users.groups =
-      mkIf (cfg.group == "qbittorrent") {qbittorrent = {gid = null;};};
+    users.groups = mkIf (cfg.group == "qbittorrent") {
+      qbittorrent = {
+        gid = null;
+      };
+    };
   };
 }

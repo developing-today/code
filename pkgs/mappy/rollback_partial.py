@@ -1,7 +1,7 @@
 from lib import *
 
-data_directory = './data'
-migrations_directory = './migrations'
+data_directory = "./data"
+migrations_directory = "./migrations"
 
 db = kuzu.Database(data_directory)
 conn = kuzu.Connection(db)
@@ -21,8 +21,11 @@ else:
     if error == "":
         raise Exception("Version is not in error")
 
-    execute(conn, f'''
+    execute(
+        conn,
+        f"""
         MATCH (v:Version)
         WHERE v.counter = {version[1]}
         DELETE v return v.*
-    ''')
+    """,
+    )

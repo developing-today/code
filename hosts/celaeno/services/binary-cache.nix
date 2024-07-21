@@ -1,8 +1,5 @@
+{ config, pkgs, ... }:
 {
-  config,
-  pkgs,
-  ...
-}: {
   sops.secrets.cache-sig-key = {
     sopsFile = ../secrets.yaml;
   };

@@ -1,4 +1,5 @@
-{...}: {
+{ ... }:
+{
   imports = [
     ../common/global
     ../common/optional/bluetooth.nix

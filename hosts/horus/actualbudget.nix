@@ -1,12 +1,13 @@
 let
   dataDir = "/var/lib/actualbudget";
   port = 3750;
-in {
+in
+{
   users.users.actualbudget = {
     group = "actualbudget";
     isSystemUser = true;
   };
-  users.groups.actualbudget = {};
+  users.groups.actualbudget = { };
 
   virtualisation.oci-containers.containers.actualbudget = {
     autoStart = true;
@@ -18,11 +19,9 @@ in {
       # ACTUAL_UPLOAD_FILE_SIZE_LIMIT_MB = 20;
     };
     image = "ghcr.io/actualbudget/actual-server:latest";
-    ports = ["${toString port}:5006"];
-    volumes = ["${dataDir}/:/data"];
-    extraOptions = [
-      "--pull=always"
-    ];
+    ports = [ "${toString port}:5006" ];
+    volumes = [ "${dataDir}/:/data" ];
+    extraOptions = [ "--pull=always" ];
   };
 
   services.nginx.virtualHosts."actual.bizel.fr" = {

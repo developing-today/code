@@ -7,7 +7,7 @@
 }:
 (writeShellApplication {
   name = "xpo";
-  runtimeInputs = [openssh];
+  runtimeInputs = [ openssh ];
   text = builtins.readFile ./xpo.sh;
 })
 // {

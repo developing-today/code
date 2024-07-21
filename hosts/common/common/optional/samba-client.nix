@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   fileSystems."/samba" = {
     device = "//192.168.1.154/Disque dur";
     fsType = "cifs";

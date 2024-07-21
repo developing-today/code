@@ -1,4 +1,5 @@
-{pkgs, ...}: let
+{ pkgs, ... }:
+let
   cgit = pkgs.cgit-pink.overrideAttrs (_: {
     pname = "scgit";
     version = "0.1";
@@ -10,12 +11,14 @@
     };
   });
 
-  compileSass = file:
-    pkgs.runCommand "sass" {buildInputs = [pkgs.sass];} ''
+  compileSass =
+    file:
+    pkgs.runCommand "sass" { buildInputs = [ pkgs.sass ]; } ''
       sass ${file} > $out
     '';
   partials = "${pkgs.inputs.website.default}/public/cgit_partials";
-in {
+in
+{
   services = {
     nginx.virtualHosts."m7.rs" = {
       forceSSL = true;
@@ -41,7 +44,7 @@ in {
       master = "true";
       socket = "/run/uwsgi/cgit.sock";
       procname-master = "uwsgi cgit";
-      plugins = ["cgi"];
+      plugins = [ "cgi" ];
       cgi = "${cgit}/cgit/cgit.cgi";
     };
   };
@@ -49,7 +52,7 @@ in {
   systemd.services.create-cgit-cache = {
     description = "Create cache directory for cgit";
     enable = true;
-    wantedBy = ["uwsgi.service"];
+    wantedBy = [ "uwsgi.service" ];
     serviceConfig = {
       type = "oneshot";
     };

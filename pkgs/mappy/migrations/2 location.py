@@ -1,9 +1,12 @@
 from lib import *
 
+
 def run_migration(conn):
     print("Running 2 update migration...")
 
-    execute(conn, f'''
+    execute(
+        conn,
+        f"""
       CREATE NODE TABLE Location(
         id STRING,
         name STRING,
@@ -16,6 +19,9 @@ def run_migration(conn):
         claimed MAP(TIMESTAMP, STRUCT(num INT64[], str STRING[])),
         owners MAP(TIMESTAMP, STRUCT(num INT64[], str STRING[])),
         PRIMARY KEY (id))
-      ''')
+      """,
+    )
 
-    execute(conn, "CREATE REL TABLE Neighbors(FROM Location TO Location, distance UINT64)")
+    execute(
+        conn, "CREATE REL TABLE Neighbors(FROM Location TO Location, distance UINT64)"
+    )

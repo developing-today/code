@@ -1,18 +1,17 @@
-
+use color_eyre::eyre::Result;
+use futures::executor::block_on;
+use futures::future::ready;
+use js_sys::try_iter;
+use leptos::ev::Event;
+use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::*;
 use leptos_router::*;
 use rand::Rng;
 use std::str::FromStr;
-use futures::executor::block_on;
-use futures::future::ready;
-use color_eyre::eyre::Result;
 use tracing::info;
-use leptos::ev::Event;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
-use leptos::ev::SubmitEvent;
-use js_sys::try_iter;
 
 // wasm/leptos doesn't run these things right.. need multiple builds?
 // need to get back to buck2 build setups i think, but cargo might support
@@ -121,12 +120,10 @@ fn TestApp(cx: Scope) -> impl IntoView {
 #[component]
 fn ProgressBar(
     cx: Scope,
-    #[prop(default = 100)]
-    max: u16,
+    #[prop(default = 100)] max: u16,
     #[prop(into)] // #[prop(optional)]
-    value: Signal<i32>
-) -> impl IntoView
-{
+    value: Signal<i32>,
+) -> impl IntoView {
     view! { cx,
         <progress
             max=max
@@ -161,17 +158,21 @@ fn parse_input(input: &str) -> Result<i32, std::num::ParseIntError> {
     i32::from_str(input)
 }
 
-fn generate_random_number_and_multiply_result(input: Result<i32, std::num::ParseIntError>) -> Result<String, std::num::ParseIntError> {
+fn generate_random_number_and_multiply_result(
+    input: Result<i32, std::num::ParseIntError>,
+) -> Result<String, std::num::ParseIntError> {
     match input {
         Ok(num) => {
             let result = generate_random_number() * num;
             Ok(result.to_string())
-        },
+        }
         Err(e) => Err(e),
     }
 }
 
-fn generate_random_number_and_multiply_str_future(input: String) -> impl std::future::Future<Output = Result<String, String>> {
+fn generate_random_number_and_multiply_str_future(
+    input: String,
+) -> impl std::future::Future<Output = Result<String, String>> {
     let input_number = parse_input(&input);
     let result = generate_random_number_and_multiply_result(input_number);
     ready(match result {
@@ -187,7 +188,10 @@ pub fn RandomMultiplierForm(cx: Scope) -> impl IntoView {
     let submit = move |event: SubmitEvent| {
         event.prevent_default();
 
-        if let Some(form) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok()) {
+        if let Some(form) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok())
+        {
             let elements = form.elements();
             let length = elements.length();
 

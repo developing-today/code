@@ -1,15 +1,23 @@
-{inputs, ...}: {
+{ inputs, ... }:
+{
   imports = [
     inputs.hardware.nixosModules.lenovo-ideapad-15arh05
     inputs.nixpkgs.nixosModules.notDetected
   ];
 
-  boot.initrd.availableKernelModules = ["nvme" "xhci_pci" "ahci"];
-  boot.kernelModules = ["kvm-amd" "nvidia_modeset" "nvidia" "nvidia_uvm"];
-  # seems to fix instability
-  boot.kernelParams = [
-    "nvidia-drm.fbdev=1"
+  boot.initrd.availableKernelModules = [
+    "nvme"
+    "xhci_pci"
+    "ahci"
   ];
+  boot.kernelModules = [
+    "kvm-amd"
+    "nvidia_modeset"
+    "nvidia"
+    "nvidia_uvm"
+  ];
+  # seems to fix instability
+  boot.kernelParams = [ "nvidia-drm.fbdev=1" ];
 
   fileSystems."/boot" = {
     device = "/dev/disk/by-uuid/D632-F96F";
@@ -26,7 +34,7 @@
 
   hardware.cpu.amd.updateMicrocode = true;
 
-  services.xserver.videoDrivers = ["nvidia"];
+  services.xserver.videoDrivers = [ "nvidia" ];
 
   hardware.nvidia = {
     # should hopefully reduce power usage

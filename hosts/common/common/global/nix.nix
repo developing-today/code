@@ -1,14 +1,19 @@
+{ inputs, lib, ... }:
 {
-  inputs,
-  lib,
-  ...
-}: {
   nix = {
     daemonCPUSchedPolicy = "idle";
     settings = {
-      trusted-users = ["root" "@wheel"];
+      trusted-users = [
+        "root"
+        "@wheel"
+      ];
       auto-optimise-store = lib.mkDefault true;
-      experimental-features = ["nix-command" "flakes" "repl-flake" "ca-derivations"];
+      experimental-features = [
+        "nix-command"
+        "flakes"
+        "repl-flake"
+        "ca-derivations"
+      ];
       warn-dirty = false;
       builders-use-substitutes = true;
 
@@ -29,10 +34,10 @@
 
     # Add each flake input as a registry
     # To make nix3 commands consistent with the flake
-    registry = lib.mapAttrs (_name: v: {flake = v;}) inputs;
+    registry = lib.mapAttrs (_name: v: { flake = v; }) inputs;
 
     # Add nixpkgs input to NIX_PATH
     # This lets nix2 commands still use <nixpkgs>
-    nixPath = ["nixpkgs=${inputs.nixpkgs.outPath}"];
+    nixPath = [ "nixpkgs=${inputs.nixpkgs.outPath}" ];
   };
 }

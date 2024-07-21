@@ -1,3 +1,4 @@
-{pkgs, ...}: {
-  home.packages = [pkgs.ledger-live-desktop];
+{ pkgs, ... }:
+{
+  home.packages = [ pkgs.ledger-live-desktop ];
 }

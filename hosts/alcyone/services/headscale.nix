@@ -1,9 +1,8 @@
-{
-  config,
-  ...
-}: let
+{ config, ... }:
+let
   derpPort = 3478;
-in {
+in
+{
   services = {
     headscale = {
       enable = true;
@@ -14,8 +13,8 @@ in {
           override_local_dns = true;
           base_domain = "m7.rs";
           magic_dns = true;
-          domains = ["ts.m7.rs"];
-          nameservers = ["9.9.9.9"];
+          domains = [ "ts.m7.rs" ];
+          nameservers = [ "9.9.9.9" ];
         };
         server_url = "https://tailscale.m7.rs";
         metrics_listen_addr = "127.0.0.1:8095";
@@ -60,11 +59,11 @@ in {
   };
 
   # Derp server
-  networking.firewall.allowedUDPPorts = [derpPort];
+  networking.firewall.allowedUDPPorts = [ derpPort ];
 
-  environment.systemPackages = [config.services.headscale.package];
+  environment.systemPackages = [ config.services.headscale.package ];
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/headscale"];
+    "/persist".directories = [ "/var/lib/headscale" ];
   };
 }

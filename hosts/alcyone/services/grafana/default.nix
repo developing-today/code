@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   sops.secrets = {
     grafana-gabriel-password = {
       sopsFile = ../../secrets.yaml;
@@ -36,9 +37,7 @@
       };
       provision = {
         enable = true;
-        dashboards.settings.providers = [{
-          options.path = ./dashboards;
-        }];
+        dashboards.settings.providers = [ { options.path = ./dashboards; } ];
         datasources.settings = {
           apiVersion = 1;
           datasources = [
@@ -54,13 +53,15 @@
       };
     };
     nginx.virtualHosts = {
-      "dash.m7.rs" = let
-        port = config.services.grafana.settings.server.http_port;
-      in {
-        forceSSL = true;
-        enableACME = true;
-        locations."/".proxyPass = "http://localhost:${toString port}";
-      };
+      "dash.m7.rs" =
+        let
+          port = config.services.grafana.settings.server.http_port;
+        in
+        {
+          forceSSL = true;
+          enableACME = true;
+          locations."/".proxyPass = "http://localhost:${toString port}";
+        };
     };
   };
 }

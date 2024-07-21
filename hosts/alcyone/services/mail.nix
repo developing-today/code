@@ -4,11 +4,12 @@
   pkgs,
   inputs,
   ...
-}: {
-  imports = [inputs.nixos-mailserver.nixosModules.mailserver];
+}:
+{
+  imports = [ inputs.nixos-mailserver.nixosModules.mailserver ];
 
   # https://gitlab.com/simple-nixos-mailserver/nixos-mailserver/-/issues/275
-  services.dovecot2.sieve.extensions = ["fileinto"];
+  services.dovecot2.sieve.extensions = [ "fileinto" ];
 
   mailserver = rec {
     enable = true;
@@ -75,7 +76,7 @@
   # Webmail
   services.roundcube = rec {
     enable = true;
-    package = pkgs.roundcube.withPlugins (p: [p.carddav]);
+    package = pkgs.roundcube.withPlugins (p: [ p.carddav ]);
     hostName = "mail.m7.rs";
     extraConfig = ''
       $config['smtp_host'] = "tls://${hostName}:587";
@@ -86,8 +87,6 @@
   };
 
   environment.persistence = {
-    "/persist".directories = [
-      "/var/lib/rspamd"
-    ];
+    "/persist".directories = [ "/var/lib/rspamd" ];
   };
 }

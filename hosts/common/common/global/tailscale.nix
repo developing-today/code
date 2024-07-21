@@ -4,8 +4,9 @@
   pkgs,
   outputs,
   ...
-}: {
-  imports = [outputs.nixosModules.tailscale-autoconnect];
+}:
+{
+  imports = [ outputs.nixosModules.tailscale-autoconnect ];
 
   services.tailscaleAutoconnect = {
     enable = true;
@@ -16,11 +17,11 @@
   };
 
   sops.secrets.tailscale_key = {
-    restartUnits = ["tailscale-autoconnect.service"];
+    restartUnits = [ "tailscale-autoconnect.service" ];
     sopsFile = ../secrets.yaml;
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/tailscale"];
+    "/persist".directories = [ "/var/lib/tailscale" ];
   };
 }

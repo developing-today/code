@@ -1,4 +1,5 @@
-{lib, ...}: {
+{ lib, ... }:
+{
   xdg = {
     mime.enable = true;
     mimeApps.enable = true;

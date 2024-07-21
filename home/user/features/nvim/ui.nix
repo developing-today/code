@@ -1,4 +1,5 @@
-{pkgs, ...}: let
+{ pkgs, ... }:
+let
   gx-nvim = pkgs.vimUtils.buildVimPlugin {
     name = "gx-nvim";
     src = pkgs.fetchFromGitHub {
@@ -8,15 +9,14 @@
       hash = "sha256-QWJ/cPvSyMTJoWLg51BNFf9+/9i7G+nzennpHP/eQ4g=";
     };
   };
-in {
+in
+{
   programs.neovim.plugins = with pkgs.vimPlugins; [
     {
       plugin = gx-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('gx').setup{}
           vim.keymap.set({"n", "x"}, "gx", ":Browse<CR>", {
@@ -32,9 +32,7 @@ in {
       plugin = vim-fugitive;
       type = "viml";
       config =
-        /*
-        vim
-        */
+        # vim
         ''
           nmap <space>G :Git<CR>
         '';
@@ -43,9 +41,7 @@ in {
       plugin = nvim-bqf;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('bqf').setup{}
         '';
@@ -54,9 +50,7 @@ in {
       plugin = alpha-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           local alpha = require("alpha")
           local dashboard = require("alpha.themes.dashboard")
@@ -89,9 +83,7 @@ in {
       plugin = bufferline-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('bufferline').setup{}
         '';
@@ -100,9 +92,7 @@ in {
       plugin = scope-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('scope').setup{}
         '';
@@ -111,9 +101,7 @@ in {
       plugin = which-key-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('which-key').setup{}
         '';
@@ -122,9 +110,7 @@ in {
       plugin = range-highlight-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('range-highlight').setup{}
         '';
@@ -133,9 +119,7 @@ in {
       plugin = indent-blankline-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('ibl').setup{
             scope = { highlight = {"IndentBlankLine"} },
@@ -147,9 +131,7 @@ in {
       plugin = nvim-web-devicons;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('nvim-web-devicons').setup{}
         '';
@@ -158,9 +140,7 @@ in {
       plugin = gitsigns-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('gitsigns').setup{
             signs = {
@@ -177,9 +157,7 @@ in {
       plugin = nvim-colorizer-lua;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('colorizer').setup{}
         '';
@@ -188,9 +166,7 @@ in {
       plugin = fidget-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('fidget').setup{
             text = {
@@ -203,9 +179,7 @@ in {
       plugin = oil-nvim;
       type = "lua";
       config =
-        /*
-        lua
-        */
+        # lua
         ''
           require('oil').setup{
             buf_options = {

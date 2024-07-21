@@ -235,7 +235,8 @@ impl ConstructibleDb {
                 let mut snippets = Vec::new();
                 let mut source_code = None;
                 'inner: for (_, component_id) in &component_ids {
-                    let Some(user_component_id) = component_db.user_component_id(**component_id) else {
+                    let Some(user_component_id) = component_db.user_component_id(**component_id)
+                    else {
                         continue 'inner;
                     };
                     let location = component_db

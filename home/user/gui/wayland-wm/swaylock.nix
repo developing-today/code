@@ -1,6 +1,8 @@
-{config, ...}: let
+{ config, ... }:
+let
   inherit (config.colorscheme) palette;
-in {
+in
+{
   programs.swaylock = {
     enable = true;
     settings = {

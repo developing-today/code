@@ -1,4 +1,5 @@
-{modulesPath, ...}: {
+{ modulesPath, ... }:
+{
   imports = [
     ../common/optional/ephemeral-btrfs.nix
     (modulesPath + "/profiles/qemu-guest.nix")

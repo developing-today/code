@@ -3,10 +3,16 @@
   config,
   pkgs,
   ...
-}: let
+}:
+let
   cfg = config.services.wallabag;
   inherit (builtins) toJSON;
-  inherit (lib) mkOption mkEnableOption types mkIf;
+  inherit (lib)
+    mkOption
+    mkEnableOption
+    types
+    mkIf
+    ;
   wallabag = pkgs.wallabag.overrideAttrs (old: {
     patches =
       builtins.filter (patch: builtins.baseNameOf patch != "wallabag-data.patch") old.patches
@@ -73,15 +79,14 @@
     };
   };
 
-  php = pkgs.php.withExtensions ({
-    enabled,
-    all,
-  }:
+  php = pkgs.php.withExtensions (
+    { enabled, all }:
     enabled
     ++ (with all; [
       imagick
       tidy
-    ]));
+    ])
+  );
 
   wallabagServiceConfig = {
     CacheDirectory = "wallabag";
@@ -96,7 +101,8 @@
     StateDirectoryMode = "700";
     #DynamicUser = false;
   };
-in {
+in
+{
   options.services.wallabag = {
     enable = mkEnableOption "Enable Wallabag";
     domain = mkOption {
@@ -119,13 +125,23 @@ in {
       description = "wallabag data directory";
     };
     user = mkOption {
-      type = with types; oneOf [str int];
+      type =
+        with types;
+        oneOf [
+          str
+          int
+        ];
       default = "wallabag";
       description = "The user wallabag will run as.";
     };
 
     group = mkOption {
-      type = with types; oneOf [str int];
+      type =
+        with types;
+        oneOf [
+          str
+          int
+        ];
       default = "wallabag";
       description = "The group wallabag will run with.";
     };
@@ -148,7 +164,7 @@ in {
       };
     };
 
-    users.groups.${cfg.group} = {};
+    users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
       isSystemUser = true;
       inherit (cfg) group;
@@ -213,17 +229,19 @@ in {
 
     systemd.services.wallabag-install = {
       description = "Wallabag install service";
-      wantedBy = ["multi-user.target"];
-      before = ["phpfpm-wallabag.service"];
-      after = ["postgresql.service"];
-      path = with pkgs; [coreutils php phpPackages.composer];
-      serviceConfig =
-        {
-          User = cfg.user;
-          Restart = "always";
-          RuntimeMaxSec = "10m"; # wallabag stops working every now and then. This "fixes" it
-        }
-        // wallabagServiceConfig;
+      wantedBy = [ "multi-user.target" ];
+      before = [ "phpfpm-wallabag.service" ];
+      after = [ "postgresql.service" ];
+      path = with pkgs; [
+        coreutils
+        php
+        phpPackages.composer
+      ];
+      serviceConfig = {
+        User = cfg.user;
+        Restart = "always";
+        RuntimeMaxSec = "10m"; # wallabag stops working every now and then. This "fixes" it
+      } // wallabagServiceConfig;
       preStart = ''
         mkdir -p "${cfg.dataDir}/data/db"
       '';

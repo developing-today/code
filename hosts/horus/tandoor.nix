@@ -1,8 +1,5 @@
+{ config, pkgs, ... }:
 {
-  config,
-  pkgs,
-  ...
-}: {
   services.tandoor-recipes = {
     enable = true;
     package = pkgs.stable.tandoor-recipes; # unstable doesn't build

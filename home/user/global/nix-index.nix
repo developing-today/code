@@ -1,8 +1,12 @@
 # from https://github.com/Misterio77/nix-config/blob/main/home/misterio/features/cli/nix-index.nix
-{pkgs, ...}: let
+{ pkgs, ... }:
+let
   update-script = pkgs.writeShellApplication {
     name = "fetch-nix-index-database";
-    runtimeInputs = with pkgs; [wget coreutils];
+    runtimeInputs = with pkgs; [
+      wget
+      coreutils
+    ];
     text = ''
       filename="index-x86_64-linux"
       mkdir -p ~/.cache/nix-index
@@ -11,11 +15,14 @@
       ln -f "$filename" files
     '';
   };
-in {
+in
+{
   programs.nix-index.enable = true;
 
   systemd.user.services.nix-index-database-sync = {
-    Unit = {Description = "fetch mic92/nix-index-database";};
+    Unit = {
+      Description = "fetch mic92/nix-index-database";
+    };
     Service = {
       Type = "oneshot";
       ExecStart = "${update-script}/bin/fetch-nix-index-database";
@@ -24,11 +31,15 @@ in {
     };
   };
   systemd.user.timers.nix-index-database-sync = {
-    Unit = {Description = "Automatic github:mic92/nix-index-database fetching";};
+    Unit = {
+      Description = "Automatic github:mic92/nix-index-database fetching";
+    };
     Timer = {
       OnBootSec = "10m";
       OnUnitActiveSec = "24h";
     };
-    Install = {WantedBy = ["timers.target"];};
+    Install = {
+      WantedBy = [ "timers.target" ];
+    };
   };
 }

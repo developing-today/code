@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   programs.git = {
     enable = true;
 
@@ -16,8 +17,7 @@
       cma = "commit --amend --no-edit";
 
       # preserve original committer when rebasing. See <https://stackoverflow.com/a/76325489/10796945>
-      rebase-preserving = ''
-        !git -c rebase.instructionFormat='%s%nexec GIT_COMMITTER_DATE="%cD" GIT_COMMITTER_NAME="%cn" GIT_COMMITTER_EMAIL="%ce" GIT_AUTHOR_NAME="%cn" GIT_AUTHOR_EMAIL="%ce" git commit --amend --no-edit --reset-author --date="%cD"' rebase -i $@'';
+      rebase-preserving = ''!git -c rebase.instructionFormat='%s%nexec GIT_COMMITTER_DATE="%cD" GIT_COMMITTER_NAME="%cn" GIT_COMMITTER_EMAIL="%ce" GIT_AUTHOR_NAME="%cn" GIT_AUTHOR_EMAIL="%ce" git commit --amend --no-edit --reset-author --date="%cD"' rebase -i $@'';
 
       dfs = "diff --staged";
 
@@ -96,7 +96,11 @@
       };
     };
 
-    ignores = [".devenv" ".direnv" "result"];
+    ignores = [
+      ".devenv"
+      ".direnv"
+      "result"
+    ];
 
     difftastic = {
       enable = true;
@@ -108,7 +112,5 @@
     };
   };
 
-  home.packages = [
-    pkgs.git-absorb
-  ];
+  home.packages = [ pkgs.git-absorb ];
 }

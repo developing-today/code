@@ -4,9 +4,11 @@
   pkgs,
   ...
 }:
-with lib; let
+with lib;
+let
   cfg = config.services.cozy-cloud;
-in {
+in
+{
   options = {
     services.cozy-cloud = {
       enable = mkOption {
@@ -88,8 +90,11 @@ in {
 
     systemd.services.cozy-cloud = {
       description = "Cozy service";
-      after = ["network.target" "couchdb.service"];
-      wantedBy = ["multi-user.target"];
+      after = [
+        "network.target"
+        "couchdb.service"
+      ];
+      wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         User = "cozy";
         Group = "cozy";
@@ -131,9 +136,9 @@ in {
       group = "cozy";
       isSystemUser = true;
     };
-    users.groups.cozy = {};
+    users.groups.cozy = { };
 
-    environment.systemPackages = [pkgs.cozy-stack];
+    environment.systemPackages = [ pkgs.cozy-stack ];
 
     systemd.tmpfiles.rules = [
       "Z /etc/cozy/cozy.json 0700 cozy cozy"

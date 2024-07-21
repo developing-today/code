@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   imports = [
     ./optional/activitywatch.nix
 
@@ -26,7 +27,5 @@
     }
   ];
 
-  home.packages = [
-    pkgs.lan-mouse
-  ];
+  home.packages = [ pkgs.lan-mouse ];
 }

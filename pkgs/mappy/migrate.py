@@ -1,7 +1,7 @@
 from lib import *
 
-data_directory = './data'
-migrations_directory = './migrations'
+data_directory = "./data"
+migrations_directory = "./migrations"
 
 db = kuzu.Database(data_directory)
 conn = kuzu.Connection(db)

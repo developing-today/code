@@ -1,11 +1,13 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   programs.vscode = {
     enable = true;
     enableExtensionUpdateCheck = false;
     enableUpdateCheck = false;
     # i love immutability, but sometimes I want a one-time extension
     mutableExtensionsDir = true;
-    extensions = with pkgs.vscode-extensions;
+    extensions =
+      with pkgs.vscode-extensions;
       [
         arrterian.nix-env-selector
         github.copilot
@@ -73,7 +75,7 @@
       "nix.serverSettings" = {
         nil = {
           formatting = {
-            command = ["${pkgs.alejandra}/bin/alejandra"];
+            command = [ "${pkgs.alejandra}/bin/alejandra" ];
           };
           nix = {
             maxMemoryMB = 4096;

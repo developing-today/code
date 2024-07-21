@@ -6,9 +6,7 @@
   ...
 }:
 {
-  imports = [
-   ./sops.nix
-  ];
+  imports = [ ./sops.nix ];
   boot = {
     tmp = {
       cleanOnBoot = true;
@@ -272,7 +270,7 @@
         niv
         nh
         nvd
-        expect #unbuffer
+        expect # unbuffer
         nushell
         ncurses
         bc

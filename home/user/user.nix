@@ -1,5 +1,6 @@
 #{ stateVersion, pkgs, ... }:
-{ pkgs, ... }: {
+{ pkgs, ... }:
+{
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
@@ -35,7 +36,7 @@
     };
   };
   home = {
-    stateVersion = "23.11"; #stateVersion;
+    stateVersion = "23.11"; # stateVersion;
     #stateVersion = stateVersion;
     shellAliases = {
       l = "exa";
@@ -190,7 +191,7 @@
         ipfs
 
         # Media
-        yt-dlp #youtube-dl
+        yt-dlp # youtube-dl
         imagemagick
 
         # Overview

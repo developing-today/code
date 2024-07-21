@@ -3,15 +3,17 @@
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   flakeInputs = lib.filterAttrs (_: lib.isType "flake") inputs;
-in {
+in
+{
   nix = {
     package = pkgs.nixVersions.nix_2_22;
 
     settings = {
-      extra-substituters = lib.mkAfter ["https://cache.m7.rs"];
-      extra-trusted-public-keys = ["cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="];
+      extra-substituters = lib.mkAfter [ "https://cache.m7.rs" ];
+      extra-trusted-public-keys = [ "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg=" ];
       trusted-users = [
         "root"
         "@wheel"
@@ -38,7 +40,7 @@ in {
     };
 
     # Add each flake input as a registry and nix_path
-    registry = lib.mapAttrs (_: flake: {inherit flake;}) flakeInputs;
+    registry = lib.mapAttrs (_: flake: { inherit flake; }) flakeInputs;
     nixPath = lib.mapAttrsToList (n: _: "${n}=flake:${n}") flakeInputs;
   };
 }

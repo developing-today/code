@@ -1,12 +1,10 @@
-{
-  pkgs,
-  config,
-  ...
-}: let
+{ pkgs, config, ... }:
+let
   hydraUser = config.users.users.hydra.name;
   hydraGroup = config.users.users.hydra.group;
-in {
-  imports = [./machines.nix];
+in
+{
+  imports = [ ./machines.nix ];
 
   # https://github.com/NixOS/nix/issues/4178#issuecomment-738886808
   systemd.services.hydra-evaluator.environment.GC_DONT_GC = "true";
@@ -21,9 +19,7 @@ in {
       smtpHost = "localhost";
       useSubstitutes = true;
       extraConfig =
-        /*
-        xml
-        */
+        # xml
         ''
           Include ${config.sops.secrets.hydra-gh-auth.path}
           max_unsupported_time = 30
@@ -48,8 +44,8 @@ in {
     };
   };
   users.users = {
-    hydra-queue-runner.extraGroups = [hydraGroup];
-    hydra-www.extraGroups = [hydraGroup];
+    hydra-queue-runner.extraGroups = [ hydraGroup ];
+    hydra-www.extraGroups = [ hydraGroup ];
   };
   sops.secrets = {
     hydra-gh-auth = {
@@ -67,6 +63,6 @@ in {
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/hydra"];
+    "/persist".directories = [ "/var/lib/hydra" ];
   };
 }

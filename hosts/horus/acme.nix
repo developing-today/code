@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   # Enable acme for usage with nginx vhosts
   security.acme = {
     defaults.email = "trucmuche909@gmail.com";
@@ -13,12 +14,12 @@
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/acme"];
+    "/persist".directories = [ "/var/lib/acme" ];
   };
 
   sops.secrets.ovhDns = {
     sopsFile = ./secrets.yaml;
   };
 
-  users.users.nginx.extraGroups = ["acme"];
+  users.users.nginx.extraGroups = [ "acme" ];
 }

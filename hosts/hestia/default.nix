@@ -1,4 +1,5 @@
-{...}: {
+{ ... }:
+{
   imports = [
     ../common/global
     ../common/optional/android-connect.nix
@@ -26,7 +27,7 @@
       useDHCP = true;
       wakeOnLan.enable = true;
     };
-    firewall.allowedTCPPorts = [5900];
+    firewall.allowedTCPPorts = [ 5900 ];
   };
 
   services.tailscaleAutoconnect = {
@@ -40,5 +41,5 @@
   sops.secrets.hestia-borgbackup-passphrase.sopsFile = ./secrets.yaml;
 
   hardware.openrazer.enable = true;
-  hardware.openrazer.users = ["edgar"];
+  hardware.openrazer.users = [ "edgar" ];
 }

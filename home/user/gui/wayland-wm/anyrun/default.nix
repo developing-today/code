@@ -3,10 +3,9 @@
   inputs,
   config,
   ...
-}: {
-  imports = [
-    inputs.anyrun.homeManagerModules.default
-  ];
+}:
+{
+  imports = [ inputs.anyrun.homeManagerModules.default ];
 
   programs.anyrun = {
     enable = true;

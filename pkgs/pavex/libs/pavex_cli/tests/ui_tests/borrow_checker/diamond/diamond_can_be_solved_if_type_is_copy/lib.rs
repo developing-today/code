@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use pavex::f;
 use pavex::blueprint::{
     constructor::{CloningStrategy, Lifecycle},
     router::GET,
     Blueprint,
 };
+use pavex::f;
 use pavex::response::Response;
 
 // The call graph looks like this:

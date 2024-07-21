@@ -1,8 +1,5 @@
+{ pkgs, config, ... }:
 {
-  pkgs,
-  config,
-  ...
-}: {
   programs.fish.enable = true;
   users = {
     mutableUsers = false;
@@ -10,12 +7,15 @@
       edgar = {
         isNormalUser = true;
         shell = pkgs.fish;
-        openssh.authorizedKeys.keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFQ4dwdR5kG7RApFSuqiy11IoRG0pECnMLbiLLfttpwJ beelink"];
+        openssh.authorizedKeys.keys = [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFQ4dwdR5kG7RApFSuqiy11IoRG0pECnMLbiLLfttpwJ beelink"
+        ];
         hashedPasswordFile = config.sops.secrets.edgar-password.path;
 
-        extraGroups = let
-          ifTheyExist = groups: builtins.filter (group: builtins.hasAttr group config.users.groups) groups;
-        in
+        extraGroups =
+          let
+            ifTheyExist = groups: builtins.filter (group: builtins.hasAttr group config.users.groups) groups;
+          in
           [
             "wheel"
             "video"
@@ -51,8 +51,8 @@
 
   home-manager.users.edgar = import home/${config.networking.hostName}.nix;
 
-  security.pam.services.hyprlock = {};
-  security.pam.services.swaylock = {};
+  security.pam.services.hyprlock = { };
+  security.pam.services.swaylock = { };
 
   # But it seems too tedious
   sops.secrets.atuin_key = {

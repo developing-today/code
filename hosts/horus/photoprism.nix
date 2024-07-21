@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.photoprism = {
     enable = true;
     passwordFile = config.sops.secrets.photoprismPass.path;

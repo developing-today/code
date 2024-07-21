@@ -1,15 +1,13 @@
-{
-  config,
-  pkgs,
-  ...
-}: let
+{ config, pkgs, ... }:
+let
   reloadNvim = ''
     XDG_RUNTIME_DIR=''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
     for server in $XDG_RUNTIME_DIR/nvim.*; do
       nvim --server $server --remote-send '<Esc>:source $MYVIMRC<CR>' &
     done
   '';
-in {
+in
+{
   imports = [
     ./lsp.nix
     ./syntaxes.nix
@@ -21,9 +19,7 @@ in {
     enable = true;
 
     extraConfig =
-      /*
-      vim
-      */
+      # vim
       ''
         "Use system clipboard
         set clipboard=unnamedplus
@@ -123,9 +119,7 @@ in {
         cmap w!! w !sudo tee > /dev/null %
       '';
     extraLuaConfig =
-      /*
-      lua
-      */
+      # lua
       ''
         vim.keymap.set("n", "gD", vim.lsp.buf.declaration, { desc = "Go to declaration" })
         vim.keymap.set("n", "gd", vim.lsp.buf.definition, { desc = "Go to definition" })
@@ -159,9 +153,7 @@ in {
         plugin = nvim-autopairs;
         type = "lua";
         config =
-          /*
-          lua
-          */
+          # lua
           ''
             require('nvim-autopairs').setup{}
           '';
@@ -169,7 +161,9 @@ in {
     ];
   };
 
-  xdg.configFile."nvim/color.vim".source = pkgs.writeText "color.vim" (import ./theme.nix config.colorscheme);
+  xdg.configFile."nvim/color.vim".source = pkgs.writeText "color.vim" (
+    import ./theme.nix config.colorscheme
+  );
   xdg.configFile."nvim/color.vim".onChange = reloadNvim;
   xdg.configFile."nvim/init.lua".onChange = reloadNvim;
 

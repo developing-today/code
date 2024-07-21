@@ -1,7 +1,6 @@
-{lib, ...}: let
-  workspaces =
-    (map toString (lib.range 0 9))
-    ++ (map (n: "F${toString n}") (lib.range 1 12));
+{ lib, ... }:
+let
+  workspaces = (map toString (lib.range 0 9)) ++ (map (n: "F${toString n}") (lib.range 1 12));
   # Map keys to hyprland directions
   directions = rec {
     left = "l";
@@ -28,11 +27,9 @@
     "0" = "agrave";
   };
 
-  toAzerty = n:
-    if (builtins.elem n (lib.attrNames azerty))
-    then azerty.${n}
-    else n;
-in {
+  toAzerty = n: if (builtins.elem n (lib.attrNames azerty)) then azerty.${n} else n;
+in
+{
   wayland.windowManager.hyprland.settings = {
     bindm = [
       "SUPER,mouse:272,movewindow"
@@ -67,45 +64,28 @@ in {
       ]
       ++
       # Change workspace
-      (map (
-          n: "SUPER,${toAzerty n},workspace,name:${n}"
-        )
-        workspaces)
+      (map (n: "SUPER,${toAzerty n},workspace,name:${n}") workspaces)
       ++
-      # Move window to workspace
-      (map (
-          n: "SUPERSHIFT,${toAzerty n},movetoworkspacesilent,name:${n}"
-        )
-        workspaces)
+        # Move window to workspace
+        (map (n: "SUPERSHIFT,${toAzerty n},movetoworkspacesilent,name:${n}") workspaces)
       ++
-      # Move focus
-      (lib.mapAttrsToList (
-          key: direction: "SUPER,${key},movefocus,${direction}"
-        )
-        directions)
+        # Move focus
+        (lib.mapAttrsToList (key: direction: "SUPER,${key},movefocus,${direction}") directions)
       ++
-      # Swap windows
-      (lib.mapAttrsToList (
-          key: direction: "SUPERSHIFT,${key},swapwindow,${direction}"
-        )
-        directions)
+        # Swap windows
+        (lib.mapAttrsToList (key: direction: "SUPERSHIFT,${key},swapwindow,${direction}") directions)
       ++
-      # Move monitor focus
-      (lib.mapAttrsToList (
-          key: direction: "SUPERCONTROL,${key},focusmonitor,${direction}"
-        )
-        directions)
+        # Move monitor focus
+        (lib.mapAttrsToList (key: direction: "SUPERCONTROL,${key},focusmonitor,${direction}") directions)
       ++
-      # Move window to other monitor
-      (lib.mapAttrsToList (
+        # Move window to other monitor
+        (lib.mapAttrsToList (
           key: direction: "SUPERCONTROLSHIFT,${key},movewindow,mon:${direction}"
-        )
-        directions)
+        ) directions)
       ++
-      # Move workspace to other monitor
-      (lib.mapAttrsToList (
+        # Move workspace to other monitor
+        (lib.mapAttrsToList (
           key: direction: "SUPERALT,${key},movecurrentworkspacetomonitor,${direction}"
-        )
-        directions);
+        ) directions);
   };
 }

@@ -1,5 +1,6 @@
-{pkgs, ...}: {
-  home.packages = [pkgs.rclone];
+{ pkgs, ... }:
+{
+  home.packages = [ pkgs.rclone ];
 
   home.sessionVariables = {
     RCLONE_PROGRESS = "1";

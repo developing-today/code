@@ -1,20 +1,26 @@
 import kuzu
 
-db = kuzu.Database('./data')
+db = kuzu.Database("./data")
 conn = kuzu.Connection(db)
 
 # Define the schema
 # conn.execute("CREATE NODE TABLE Version(name STRING, counter INT64, PRIMARY KEY (counter))")
 # try getnewest version else create new version
 try:
-    results = conn.execute('MATCH (v:Version) RETURN v.name, v.counter ORDER BY v.counter DESC LIMIT 1;')
+    results = conn.execute(
+        "MATCH (v:Version) RETURN v.name, v.counter ORDER BY v.counter DESC LIMIT 1;"
+    )
     while results.has_next():
         print(results.get_next())
 except:
-    conn.execute("CREATE NODE TABLE Version(name STRING, counter INT64, PRIMARY KEY (counter))")
+    conn.execute(
+        "CREATE NODE TABLE Version(name STRING, counter INT64, PRIMARY KEY (counter))"
+    )
     conn.execute('CREATE (v:Version {name: "v1", counter: 1});')
     print("Version table created")
-    results = conn.execute('MATCH (v:Version) RETURN v.name, v.counter ORDER BY v.counter DESC LIMIT 1;')
+    results = conn.execute(
+        "MATCH (v:Version) RETURN v.name, v.counter ORDER BY v.counter DESC LIMIT 1;"
+    )
     while results.has_next():
         print(results.get_next())
 

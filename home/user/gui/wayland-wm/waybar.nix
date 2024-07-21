@@ -4,7 +4,8 @@
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   # Dependencies
   cat = "${pkgs.coreutils}/bin/cat";
   cut = "${pkgs.coreutils}/bin/cut";
@@ -31,29 +32,33 @@
   python = "${pkgs.python3}/bin/python3";
 
   # Function to simplify making waybar outputs
-  jsonOutput = name: {
-    pre ? "",
-    text ? "",
-    tooltip ? "",
-    alt ? "",
-    class ? "",
-    percentage ? "",
-  }: "${pkgs.writeShellScriptBin "waybar-${name}" ''
-    set -euo pipefail
-    ${pre}
-    ${jq} -cn \
-      --arg text "${text}" \
-      --arg tooltip "${tooltip}" \
-      --arg alt "${alt}" \
-      --arg class "${class}" \
-      --arg percentage "${percentage}" \
-      '{text:$text,tooltip:$tooltip,alt:$alt,class:$class,percentage:$percentage}'
-  ''}/bin/waybar-${name}";
-in {
+  jsonOutput =
+    name:
+    {
+      pre ? "",
+      text ? "",
+      tooltip ? "",
+      alt ? "",
+      class ? "",
+      percentage ? "",
+    }:
+    "${pkgs.writeShellScriptBin "waybar-${name}" ''
+      set -euo pipefail
+      ${pre}
+      ${jq} -cn \
+        --arg text "${text}" \
+        --arg tooltip "${tooltip}" \
+        --arg alt "${alt}" \
+        --arg class "${class}" \
+        --arg percentage "${percentage}" \
+        '{text:$text,tooltip:$tooltip,alt:$alt,class:$class,percentage:$percentage}'
+    ''}/bin/waybar-${name}";
+in
+{
   programs.waybar = {
     enable = true;
     package = pkgs.waybar.overrideAttrs (oa: {
-      mesonFlags = (oa.mesonFlags or []) ++ ["-Dexperimental=true"];
+      mesonFlags = (oa.mesonFlags or [ ]) ++ [ "-Dexperimental=true" ];
     });
     systemd.enable = true;
     settings = {
@@ -75,9 +80,7 @@ in {
             "hyprland/workspaces"
             "hyprland/submap"
           ])
-          ++ [
-            "custom/events"
-          ];
+          ++ [ "custom/events" ];
         modules-center = [
           "cpu"
           "custom/gpu"
@@ -129,7 +132,11 @@ in {
             headphone = "󰋋";
             headset = "󰋎";
             portable = "";
-            default = ["" "" ""];
+            default = [
+              ""
+              ""
+              ""
+            ];
           };
           on-click = pavucontrol;
         };
@@ -143,7 +150,18 @@ in {
         battery = {
           bat = "BAT0";
           interval = 10;
-          format-icons = ["󰁺" "󰁻" "󰁼" "󰁽" "󰁾" "󰁿" "󰂀" "󰂁" "󰂂" "󰁹"];
+          format-icons = [
+            "󰁺"
+            "󰁻"
+            "󰁼"
+            "󰁽"
+            "󰁾"
+            "󰁿"
+            "󰂀"
+            "󰂁"
+            "󰂂"
+            "󰁹"
+          ];
           format = "{icon} {capacity}%";
           format-charging = "󰂄 {capacity}%";
           onclick = "";
@@ -166,20 +184,22 @@ in {
         "custom/tailscale-ping" = {
           interval = 10;
           return-type = "json";
-          exec = let
-            inherit (builtins) concatStringsSep attrNames;
-            hosts = attrNames outputs.nixosConfigurations;
-            homeMachine = "hestia";
-            remoteMachine = "horus";
-          in
+          exec =
+            let
+              inherit (builtins) concatStringsSep attrNames;
+              hosts = attrNames outputs.nixosConfigurations;
+              homeMachine = "hestia";
+              remoteMachine = "horus";
+            in
             jsonOutput "tailscale-ping" {
               # Build variables for each host
               pre = ''
                 set -o pipefail
-                ${concatStringsSep "\n" (map (host: ''
+                ${concatStringsSep "\n" (
+                  map (host: ''
                     ping_${host}="$(${timeout} 2 ${ping} -c 1 -q ${host} 2>/dev/null | ${tail} -1 | ${cut} -d '/' -f5 | ${cut} -d '.' -f1)ms" || ping_${host}="Disconnected"
-                  '')
-                  hosts)}
+                  '') hosts
+                )}
               '';
               # Access a remote machine's and a home machine's ping
               text = "  $ping_${remoteMachine} /  $ping_${homeMachine}";
@@ -221,33 +241,31 @@ in {
           };
         };
         /*
-        TODO
-            "custom/gpg-agent" = {
-              interval = 2;
-              return-type = "json";
-              exec =
-                let gpgCmds = import ../../../cli/gpg-commands.nix { inherit pkgs; };
-                in
-                jsonOutput "gpg-agent" {
-                  pre = ''status=$(${gpgCmds.isUnlocked} && echo "unlocked" || echo "locked")'';
-                  alt = "$status";
-                  tooltip = "GPG is $status";
+          TODO
+              "custom/gpg-agent" = {
+                interval = 2;
+                return-type = "json";
+                exec =
+                  let gpgCmds = import ../../../cli/gpg-commands.nix { inherit pkgs; };
+                  in
+                  jsonOutput "gpg-agent" {
+                    pre = ''status=$(${gpgCmds.isUnlocked} && echo "unlocked" || echo "locked")'';
+                    alt = "$status";
+                    tooltip = "GPG is $status";
+                  };
+                format = "{icon}";
+                format-icons = {
+                  "locked" = "";
+                  "unlocked" = "";
                 };
-              format = "{icon}";
-              format-icons = {
-                "locked" = "";
-                "unlocked" = "";
+                on-click = "";
               };
-              on-click = "";
-            };
         */
         "custom/gamemode" = {
           exec-if = "${gamemoded} --status | ${grep} 'is active' -q";
           interval = 2;
           return-type = "json";
-          exec = jsonOutput "gamemode" {
-            tooltip = "Gamemode is active";
-          };
+          exec = jsonOutput "gamemode" { tooltip = "Gamemode is active"; };
           format = " ";
         };
         "custom/gammastep" = {
@@ -331,10 +349,9 @@ in {
           interval = 60;
           format = "{icon} {}";
           format-icons.default = "";
-          exec = let
-            script =
-              pkgs.writeText "script.py"
-              ''
+          exec =
+            let
+              script = pkgs.writeText "script.py" ''
                 import json
                 import subprocess
                 data = {}
@@ -353,7 +370,8 @@ in {
                 data['tooltip'] = output
                 print(json.dumps(data))
               '';
-          in "${python} ${script}";
+            in
+            "${python} ${script}";
           return-type = "json";
         };
       };
@@ -363,9 +381,10 @@ in {
     # x y -> vertical, horizontal
     # x y z -> top, horizontal, bottom
     # w x y z -> top, right, bottom, left
-    style = let
-      inherit (config.colorscheme) palette;
-    in
+    style =
+      let
+        inherit (config.colorscheme) palette;
+      in
       # css
       ''
         * {

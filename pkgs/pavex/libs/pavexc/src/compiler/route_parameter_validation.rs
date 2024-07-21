@@ -49,22 +49,33 @@ pub(crate) fn verify_route_parameters<'a, I>(
     for (router_key, call_graph) in handler_call_graphs {
         let Some((ok_route_params_node_id, ty_)) = call_graph.node_indices().find_map(|node_id| {
             let node = &call_graph[node_id];
-            let CallGraphNode::Compute { component_id, .. } = node else { return None; };
+            let CallGraphNode::Compute { component_id, .. } = node else {
+                return None;
+            };
             let hydrated_component = component_db.hydrated_component(*component_id, computation_db);
             let HydratedComponent::Constructor(Constructor(Computation::MatchResult(m))) =
-                hydrated_component else { return None; };
+                hydrated_component
+            else {
+                return None;
+            };
             if m.variant != MatchResultVariant::Ok {
                 return None;
             }
-            let ResolvedType::ResolvedPath(ty_) = &m.output else { return None; };
+            let ResolvedType::ResolvedPath(ty_) = &m.output else {
+                return None;
+            };
             if ty_.base_type == vec!["pavex", "extract", "route", "RouteParams"] {
                 Some((node_id, ty_.clone()))
             } else {
                 None
             }
-        }) else { continue; };
+        }) else {
+            continue;
+        };
 
-        let GenericArgument::TypeParameter(extracted_type) = &ty_.generic_arguments[0] else { unreachable!() };
+        let GenericArgument::TypeParameter(extracted_type) = &ty_.generic_arguments[0] else {
+            unreachable!()
+        };
 
         let Ok(struct_item) = must_be_a_plain_struct(
             component_db,
@@ -99,8 +110,13 @@ pub(crate) fn verify_route_parameters<'a, I>(
 
         let struct_field_names = {
             let mut struct_field_names = IndexSet::new();
-            let ResolvedType::ResolvedPath(extracted_path_type) = &extracted_type else { unreachable!() };
-            let StructKind::Plain { fields: field_ids, .. } = &struct_inner_item.kind else {
+            let ResolvedType::ResolvedPath(extracted_path_type) = &extracted_type else {
+                unreachable!()
+            };
+            let StructKind::Plain {
+                fields: field_ids, ..
+            } = &struct_inner_item.kind
+            else {
                 unreachable!()
             };
             for field_id in field_ids {
@@ -250,7 +266,9 @@ fn must_be_a_plain_struct(
 ) -> Result<rustdoc_types::Item, ()> {
     let error_suffix = match extracted_type {
         ResolvedType::ResolvedPath(t) => {
-            let Some(item_id) = t.rustdoc_id.clone() else { unreachable!() };
+            let Some(item_id) = t.rustdoc_id.clone() else {
+                unreachable!()
+            };
             let item = krate_collection.get_type_by_global_type_id(&GlobalItemId {
                 rustdoc_item_id: item_id,
                 package_id: t.package_id.clone(),

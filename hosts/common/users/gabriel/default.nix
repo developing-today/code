@@ -3,9 +3,11 @@
   config,
   lib,
   ...
-}: let
+}:
+let
   ifTheyExist = groups: builtins.filter (group: builtins.hasAttr group config.users.groups) groups;
-in {
+in
+{
   users.mutableUsers = false;
   users.users.gabriel = {
     isNormalUser = true;
@@ -27,9 +29,11 @@ in {
       "wireshark"
     ];
 
-    openssh.authorizedKeys.keys = lib.splitString "\n" (builtins.readFile ../../../../home/gabriel/ssh.pub);
+    openssh.authorizedKeys.keys = lib.splitString "\n" (
+      builtins.readFile ../../../../home/gabriel/ssh.pub
+    );
     hashedPasswordFile = config.sops.secrets.gabriel-password.path;
-    packages = [pkgs.home-manager];
+    packages = [ pkgs.home-manager ];
   };
 
   sops.secrets.gabriel-password = {
@@ -40,6 +44,6 @@ in {
   home-manager.users.gabriel = import ../../../../home/gabriel/${config.networking.hostName}.nix;
 
   security.pam.services = {
-    swaylock = {};
+    swaylock = { };
   };
 }

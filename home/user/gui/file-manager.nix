@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   home.packages = [
     pkgs.libsForQt5.dolphin
     pkgs.libsForQt5.dolphin-plugins

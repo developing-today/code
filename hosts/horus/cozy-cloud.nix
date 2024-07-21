@@ -3,7 +3,8 @@
   outputs,
   pkgs,
   ...
-}: {
+}:
+{
   imports = [
     outputs.nixosModules.couchdb-extended
     outputs.nixosModules.cozy-cloud
@@ -34,7 +35,7 @@
   };
 
   services.nginx.virtualHosts."*.cozy.bizel.fr" = {
-    serverAliases = ["cozy.bizel.fr"];
+    serverAliases = [ "cozy.bizel.fr" ];
     useACMEHost = "bizel.fr";
     forceSSL = true;
     locations."^~ /" = {
@@ -43,7 +44,7 @@
     };
   };
 
-  security.acme.certs."bizel.fr".extraDomainNames = ["*.cozy.bizel.fr"];
+  security.acme.certs."bizel.fr".extraDomainNames = [ "*.cozy.bizel.fr" ];
 
   sops.secrets.cozyAdminPass = {
     owner = "cozy";

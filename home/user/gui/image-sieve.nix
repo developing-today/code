@@ -1,3 +1,4 @@
-{pkgs, ...}: {
-  home.packages = [pkgs.image-sieve];
+{ pkgs, ... }:
+{
+  home.packages = [ pkgs.image-sieve ];
 }

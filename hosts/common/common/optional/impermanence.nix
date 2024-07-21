@@ -3,45 +3,61 @@
   lib,
   inputs,
   ...
-}: let
+}:
+let
   hostname = config.networking.hostName;
   disk = "/dev/disk/by-label/${hostname}";
-in {
-  imports = [
-    inputs.impermanence.nixosModule
-  ];
+in
+{
+  imports = [ inputs.impermanence.nixosModule ];
 
   # We're making the assumption the disk has a label
   fileSystems = {
     "/" = {
       device = disk;
       fsType = "btrfs";
-      options = ["subvol=root" "compress=zstd"];
+      options = [
+        "subvol=root"
+        "compress=zstd"
+      ];
     };
 
     "/home" = lib.mkDefault {
       device = disk;
       fsType = "btrfs";
-      options = ["subvol=home" "compress=zstd"];
+      options = [
+        "subvol=home"
+        "compress=zstd"
+      ];
     };
 
     "/nix" = {
       device = disk;
       fsType = "btrfs";
-      options = ["subvol=nix" "noatime" "compress=zstd"];
+      options = [
+        "subvol=nix"
+        "noatime"
+        "compress=zstd"
+      ];
     };
 
     "/persist" = {
       device = disk;
       fsType = "btrfs";
-      options = ["subvol=persist" "compress=zstd"];
+      options = [
+        "subvol=persist"
+        "compress=zstd"
+      ];
       neededForBoot = true;
     };
 
     "/var/log" = {
       device = disk;
       fsType = "btrfs";
-      options = ["subvol=log" "compress=zstd"];
+      options = [
+        "subvol=log"
+        "compress=zstd"
+      ];
       neededForBoot = true;
     };
   };
@@ -50,9 +66,7 @@ in {
   # and: https://discourse.nixos.org/t/impermanence-vs-systemd-initrd-w-tpm-unlocking/25167/3
   boot.initrd.systemd.enable = lib.mkDefault true;
   boot.initrd.systemd.services.rollback = {
-    wantedBy = [
-      "initrd.target"
-    ];
+    wantedBy = [ "initrd.target" ];
     requires = [
       # wait for device to be found
       "dev-disk-by\\x2dlabel-${hostname}.device"
@@ -61,9 +75,7 @@ in {
       "dev-disk-by\\x2dlabel-${hostname}.device"
       "systemd-cryptsetup@enc.service"
     ];
-    before = [
-      "sysroot.mount"
-    ];
+    before = [ "sysroot.mount" ];
     unitConfig.DefaultDependencies = "no";
     serviceConfig.Type = "oneshot";
     script = ''
@@ -93,9 +105,7 @@ in {
       "/etc/nixos"
       "/var/lib/nixos"
     ];
-    files = [
-      "/etc/machine-id"
-    ];
+    files = [ "/etc/machine-id" ];
   };
 
   security.sudo.extraConfig = ''

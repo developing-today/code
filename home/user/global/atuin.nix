@@ -3,7 +3,7 @@
     enable = true;
     enableBashIntegration = true;
     enableFishIntegration = true;
-    flags = ["--disable-up-arrow"]; # I prefer fish up arrow
+    flags = [ "--disable-up-arrow" ]; # I prefer fish up arrow
     settings = {
       auto_sync = true;
       sync_frequency = "5m";

@@ -1,7 +1,5 @@
+{ config, ... }:
 {
-  config,
-  ...
-}: {
   # Wireless secrets stored through sops
   sops.secrets.wireless = {
     sopsFile = ../secrets.yaml;
@@ -39,7 +37,7 @@
         pskRaw = "@MARCOS_SANTOS_5G@";
       };
       "eduroam" = {
-        authProtocols = ["WPA-EAP"];
+        authProtocols = [ "WPA-EAP" ];
         auth = ''
           pairwise=CCMP
           group=CCMP TKIP
@@ -65,7 +63,7 @@
   };
 
   # Ensure group exists
-  users.groups.network = {};
+  users.groups.network = { };
 
   systemd.services.wpa_supplicant.preStart = "touch /etc/wpa_supplicant.conf";
 }

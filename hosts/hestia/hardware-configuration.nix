@@ -1,4 +1,5 @@
-{inputs, ...}: {
+{ inputs, ... }:
+{
   imports = [
     inputs.hardware.nixosModules.common-cpu-amd
     inputs.hardware.nixosModules.common-gpu-amd
@@ -6,8 +7,14 @@
     inputs.nixpkgs.nixosModules.notDetected
   ];
 
-  boot.initrd.availableKernelModules = ["xhci_pci" "ahci" "usbhid" "usb_storage" "sd_mod"];
-  boot.kernelModules = ["kvm-amd"];
+  boot.initrd.availableKernelModules = [
+    "xhci_pci"
+    "ahci"
+    "usbhid"
+    "usb_storage"
+    "sd_mod"
+  ];
+  boot.kernelModules = [ "kvm-amd" ];
 
   fileSystems = {
     "/boot" = {
@@ -26,9 +33,7 @@
     };
   };
 
-  swapDevices = [
-    {device = "/dev/disk/by-uuid/501790d1-e37a-48a1-a5d0-4efca5425526";}
-  ];
+  swapDevices = [ { device = "/dev/disk/by-uuid/501790d1-e37a-48a1-a5d0-4efca5425526"; } ];
 
   hardware.cpu.amd.updateMicrocode = true;
 

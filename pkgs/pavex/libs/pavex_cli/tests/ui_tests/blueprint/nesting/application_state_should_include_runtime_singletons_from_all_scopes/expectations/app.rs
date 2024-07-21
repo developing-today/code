@@ -15,15 +15,10 @@ pub async fn build_application_state() -> crate::ApplicationState {
     let v0 = app::parent_singleton();
     let v1 = app::singleton_dep();
     let v2 = app::nested_singleton(v1);
-    crate::ApplicationState {
-        s0: v2,
-        s1: v0,
-    }
+    crate::ApplicationState { s0: v2, s1: v0 }
 }
 pub async fn run(
-    server_builder: pavex::hyper::server::Builder<
-        pavex::hyper::server::conn::AddrIncoming,
-    >,
+    server_builder: pavex::hyper::server::Builder<pavex::hyper::server::conn::AddrIncoming>,
     application_state: ApplicationState,
 ) -> Result<(), pavex::Error> {
     let server_state = std::sync::Arc::new(ServerState {
@@ -33,22 +28,20 @@ pub async fn run(
     let make_service = pavex::hyper::service::make_service_fn(move |_| {
         let server_state = server_state.clone();
         async move {
-            Ok::<
-                _,
-                pavex::hyper::Error,
-            >(
-                pavex::hyper::service::service_fn(move |request| {
-                    let server_state = server_state.clone();
-                    async move {
-                        let response = route_request(request, server_state).await;
-                        let response = pavex::hyper::Response::from(response);
-                        Ok::<_, pavex::hyper::Error>(response)
-                    }
-                }),
-            )
+            Ok::<_, pavex::hyper::Error>(pavex::hyper::service::service_fn(move |request| {
+                let server_state = server_state.clone();
+                async move {
+                    let response = route_request(request, server_state).await;
+                    let response = pavex::hyper::Response::from(response);
+                    Ok::<_, pavex::hyper::Error>(response)
+                }
+            }))
         }
     });
-    server_builder.serve(make_service).await.map_err(pavex::Error::new)
+    server_builder
+        .serve(make_service)
+        .await
+        .map_err(pavex::Error::new)
 }
 fn build_router() -> Result<pavex::routing::Router<u32>, pavex::routing::InsertError> {
     let mut router = pavex::routing::Router::new();
@@ -71,36 +64,30 @@ async fn route_request(
     };
     let route_id = matched_route.value;
     #[allow(unused)]
-    let url_params: pavex::extract::route::RawRouteParams<'_, '_> = matched_route
-        .params
-        .into();
+    let url_params: pavex::extract::route::RawRouteParams<'_, '_> = matched_route.params.into();
     match route_id {
-        0u32 => {
-            match &request_head.method {
-                &pavex::http::Method::GET => {
-                    route_handler_0(server_state.application_state.s0.clone()).await
-                }
-                _ => {
-                    let header_value = pavex::http::HeaderValue::from_static("GET");
-                    pavex::response::Response::method_not_allowed()
-                        .insert_header(pavex::http::header::ALLOW, header_value)
-                        .box_body()
-                }
+        0u32 => match &request_head.method {
+            &pavex::http::Method::GET => {
+                route_handler_0(server_state.application_state.s0.clone()).await
             }
-        }
-        1u32 => {
-            match &request_head.method {
-                &pavex::http::Method::GET => {
-                    route_handler_1(server_state.application_state.s1.clone()).await
-                }
-                _ => {
-                    let header_value = pavex::http::HeaderValue::from_static("GET");
-                    pavex::response::Response::method_not_allowed()
-                        .insert_header(pavex::http::header::ALLOW, header_value)
-                        .box_body()
-                }
+            _ => {
+                let header_value = pavex::http::HeaderValue::from_static("GET");
+                pavex::response::Response::method_not_allowed()
+                    .insert_header(pavex::http::header::ALLOW, header_value)
+                    .box_body()
             }
-        }
+        },
+        1u32 => match &request_head.method {
+            &pavex::http::Method::GET => {
+                route_handler_1(server_state.application_state.s1.clone()).await
+            }
+            _ => {
+                let header_value = pavex::http::HeaderValue::from_static("GET");
+                pavex::response::Response::method_not_allowed()
+                    .insert_header(pavex::http::header::ALLOW, header_value)
+                    .box_body()
+            }
+        },
         _ => pavex::response::Response::not_found().box_body(),
     }
 }

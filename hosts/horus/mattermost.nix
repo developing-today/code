@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   services.mattermost = {
     enable = true;
     siteUrl = "https://mattermost.bizel.fr";

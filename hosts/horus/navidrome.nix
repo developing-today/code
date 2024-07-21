@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.navidrome = {
     enable = true;
     settings = {

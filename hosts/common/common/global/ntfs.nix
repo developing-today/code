@@ -1,3 +1,1 @@
-{
-  boot.supportedFilesystems = ["ntfs"];
-}
+{ boot.supportedFilesystems = [ "ntfs" ]; }

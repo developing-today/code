@@ -1,4 +1,5 @@
-{pkgs, ...}: let
+{ pkgs, ... }:
+let
   website = pkgs.inputs.website.default;
   pgpKey = ../../../../home/gabriel/pgp.asc;
   sshKey = ../../../../home/gabriel/ssh.pub;
@@ -10,7 +11,8 @@
   days = n: (hours n) * 24;
   hours = n: (minutes n) * 60;
   minutes = n: n * 60;
-in {
+in
+{
   imports = [
     ./themes.nix
     ./shortner.nix

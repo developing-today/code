@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.nginx.virtualHosts."files.bizel.fr" = {
     forceSSL = true;
     useACMEHost = "bizel.fr";
@@ -16,6 +17,6 @@
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/www/files"];
+    "/persist".directories = [ "/var/www/files" ];
   };
 }

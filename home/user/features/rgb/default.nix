@@ -1,6 +1,8 @@
-{config, lib, ...}: let
+{ config, lib, ... }:
+let
   inherit (config.colorscheme) colors;
-in {
+in
+{
   services.rgbdaemon = {
     enable = true;
     daemons = {

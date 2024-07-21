@@ -28,6 +28,6 @@
       isSystemUser = true;
       group = "uptime-kuma";
     };
-    groups.uptime-kuma = {};
+    groups.uptime-kuma = { };
   };
 }

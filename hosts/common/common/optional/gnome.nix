@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   services = {
     xserver = {
       enable = true;
@@ -44,7 +45,7 @@
   ];
 
   # tray icons
-  services.udev.packages = with pkgs; [gnome.gnome-settings-daemon];
+  services.udev.packages = with pkgs; [ gnome.gnome-settings-daemon ];
 
   programs.dconf.enable = true;
 }

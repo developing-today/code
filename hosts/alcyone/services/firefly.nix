@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.firefly-iii = {
     enable = true;
     settings = {
@@ -12,17 +13,21 @@
     virtualHost = "firefly.m7.rs";
   };
 
-  services.mysql = let
-    inherit (config.services.firefly-iii) settings;
-  in {
-    ensureDatabases = [settings.DB_DATABASE];
-    ensureUsers = [
-      {
-        name = settings.DB_USERNAME;
-        ensurePermissions = {"${settings.DB_DATABASE}.*" = "ALL PRIVILEGES";};
-      }
-    ];
-  };
+  services.mysql =
+    let
+      inherit (config.services.firefly-iii) settings;
+    in
+    {
+      ensureDatabases = [ settings.DB_DATABASE ];
+      ensureUsers = [
+        {
+          name = settings.DB_USERNAME;
+          ensurePermissions = {
+            "${settings.DB_DATABASE}.*" = "ALL PRIVILEGES";
+          };
+        }
+      ];
+    };
 
   sops.secrets.firefly-key = {
     owner = "firefly-iii";
@@ -31,6 +36,6 @@
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/firefly-iii"];
+    "/persist".directories = [ "/var/lib/firefly-iii" ];
   };
 }

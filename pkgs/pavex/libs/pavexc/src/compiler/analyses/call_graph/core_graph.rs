@@ -232,11 +232,7 @@ where
             }
             'inner: {
                 let node = call_graph[node_index].clone();
-                let CallGraphNode::Compute {
-                    component_id,
-                    ..
-                } = node else
-                {
+                let CallGraphNode::Compute { component_id, .. } = node else {
                     break 'inner;
                 };
                 if let Some(error_handler_id) = component_db.error_handler_id(component_id) {
@@ -261,8 +257,10 @@ where
             'inner: {
                 let node = call_graph[node_index].clone();
                 let CallGraphNode::Compute {
-                    component_id, n_allowed_invocations,
-                } = node else {
+                    component_id,
+                    n_allowed_invocations,
+                } = node
+                else {
                     break 'inner;
                 };
                 let Some(transformer_ids) = component_db.transformer_ids(component_id) else {
@@ -371,9 +369,7 @@ fn inject_match_branching_nodes(
     let indexes = call_graph.node_indices().collect::<Vec<_>>();
     for node_index in indexes {
         let node = call_graph[node_index].clone();
-        let CallGraphNode::Compute {
-            component_id, ..
-        } = node else {
+        let CallGraphNode::Compute { component_id, .. } = node else {
             continue;
         };
         let Some((ok_match_id, err_match_id)) = component_db.match_ids(component_id) else {
@@ -442,7 +438,13 @@ fn take_references_as_inputs_if_they_suffice(
         .collect::<Vec<_>>();
     for node_index in indexes {
         let node = &call_graph[node_index];
-        let CallGraphNode::InputParameter { source, type_: input_type } = node else { continue; };
+        let CallGraphNode::InputParameter {
+            source,
+            type_: input_type,
+        } = node
+        else {
+            continue;
+        };
         match input_type {
             ResolvedType::Reference(_) => continue,
             _ => {

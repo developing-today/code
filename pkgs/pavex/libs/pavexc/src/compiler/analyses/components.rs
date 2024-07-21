@@ -180,7 +180,9 @@ impl ComponentDb {
                 package_graph,
                 krate_collection,
             );
-            let ResolvedType::ResolvedPath(into_response) = into_response else { unreachable!() };
+            let ResolvedType::ResolvedPath(into_response) = into_response else {
+                unreachable!()
+            };
             into_response
         };
 
@@ -572,8 +574,11 @@ impl ComponentDb {
         computation_db: &mut ComputationDb,
     ) {
         let constructor = {
-            let HydratedComponent::Constructor(constructor) = self.hydrated_component(constructor_id, computation_db)
-                else { unreachable!() };
+            let HydratedComponent::Constructor(constructor) =
+                self.hydrated_component(constructor_id, computation_db)
+            else {
+                unreachable!()
+            };
             constructor.into_owned()
         };
         if let Ok(constructor) = constructor.as_fallible() {
@@ -892,7 +897,9 @@ impl ComponentDb {
             let templated_component = component_db
                 .hydrated_component(component_id, computation_db)
                 .into_owned();
-            let HydratedComponent::Constructor(constructor) = templated_component else { unreachable!() };
+            let HydratedComponent::Constructor(constructor) = templated_component else {
+                unreachable!()
+            };
             match &constructor.0 {
                 Computation::FrameworkItem(_) | Computation::Callable(_) => component_id,
                 Computation::MatchResult(_) => _get_root_component_id(
@@ -909,7 +916,11 @@ impl ComponentDb {
         let id = _get_root_component_id(id, self, computation_db);
         let scope_id = self.scope_id(id);
         let cloning_strategy = self.id2cloning_strategy[&id];
-        let HydratedComponent::Constructor(constructor) = self.hydrated_component(id, computation_db).into_owned() else { unreachable!() };
+        let HydratedComponent::Constructor(constructor) =
+            self.hydrated_component(id, computation_db).into_owned()
+        else {
+            unreachable!()
+        };
         let lifecycle = self.lifecycle(id).cloned().unwrap();
         let bound_computation = constructor
             .0
@@ -930,7 +941,11 @@ impl ComponentDb {
         // We need to do that manually.
         if let Some((_, err_match_id)) = self.fallible_id2match_ids.get(&id) {
             let err_handler_id = self.match_err_id2error_handler_id[err_match_id];
-            let HydratedComponent::ErrorHandler(error_handler) = self.hydrated_component(err_handler_id, computation_db) else { unreachable!() };
+            let HydratedComponent::ErrorHandler(error_handler) =
+                self.hydrated_component(err_handler_id, computation_db)
+            else {
+                unreachable!()
+            };
 
             // `bindings` contains the concrete types for all the unassigned generic
             // type parameters that appear in the signature of the constructor.
@@ -984,7 +999,11 @@ impl ComponentDb {
             // Finally, we need to bound the error handler's transformers.
             if let Some(transformer_ids) = self.transformer_ids(err_handler_id).cloned() {
                 for transformer_id in transformer_ids {
-                    let HydratedComponent::Transformer(transformer) = self.hydrated_component(transformer_id, computation_db) else { unreachable!() };
+                    let HydratedComponent::Transformer(transformer) =
+                        self.hydrated_component(transformer_id, computation_db)
+                    else {
+                        unreachable!()
+                    };
                     let bound_transformer = transformer
                         .bind_generic_type_parameters(bindings)
                         .into_owned();

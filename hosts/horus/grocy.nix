@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.grocy = {
     enable = true;
     hostName = "grocy.bizel.fr";
@@ -10,6 +11,6 @@
   };
 
   environment.persistence."/persist" = {
-    directories = [config.services.grocy.dataDir];
+    directories = [ config.services.grocy.dataDir ];
   };
 }

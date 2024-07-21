@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   virtualisation.podman = {
     enable = true;
 
@@ -9,13 +10,9 @@
     defaultNetwork.settings.dns_enabled = true;
   };
 
-  environment.systemPackages = [
-    pkgs.podman-compose
-  ];
+  environment.systemPackages = [ pkgs.podman-compose ];
 
   environment.persistence = {
-    "/persist".directories = [
-      "/var/lib/containers"
-    ];
+    "/persist".directories = [ "/var/lib/containers" ];
   };
 }

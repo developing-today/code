@@ -1,6 +1,8 @@
-{config, ...}: let
+{ config, ... }:
+let
   host = "localhost:45852";
-in {
+in
+{
   services.miniflux = {
     enable = true;
     config = {
@@ -31,7 +33,7 @@ in {
     group = "miniflux";
   };
 
-  users.groups.miniflux = {};
+  users.groups.miniflux = { };
 
   sops.secrets.minifluxEnv = {
     sopsFile = ./secrets.yaml;

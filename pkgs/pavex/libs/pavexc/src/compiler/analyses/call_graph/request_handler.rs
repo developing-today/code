@@ -40,7 +40,8 @@ pub(crate) fn handler_call_graph(
         constructible_db,
         lifecycle2invocations,
         diagnostics,
-    ) else {
+    )
+    else {
         return Err(());
     };
 

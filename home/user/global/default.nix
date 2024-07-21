@@ -4,34 +4,33 @@
   pkgs,
   outputs,
   ...
-}: {
-  imports =
-    [
-      inputs.nix-colors.homeManagerModules.default
+}:
+{
+  imports = [
+    inputs.nix-colors.homeManagerModules.default
 
-      ./atuin.nix
-      ./bash.nix
-      ./bat.nix
-      ./bottom.nix
-      ./calendar.nix
-      ./direnv.nix
-      ./eza.nix
-      ./fish.nix
-      ./font.nix
-      ./fzf.nix
-      ./git.nix
-      ./helix
-      ./jq.nix
-      ./kitty.nix
-      ./mime.nix
-      ./nix-index.nix
-      ./rclone.nix
-      ./starship.nix
-      ./xdg.nix
-      ./yazi.nix
-      ./zoxide.nix
-    ]
-    ++ (builtins.attrValues outputs.homeManagerModules);
+    ./atuin.nix
+    ./bash.nix
+    ./bat.nix
+    ./bottom.nix
+    ./calendar.nix
+    ./direnv.nix
+    ./eza.nix
+    ./fish.nix
+    ./font.nix
+    ./fzf.nix
+    ./git.nix
+    ./helix
+    ./jq.nix
+    ./kitty.nix
+    ./mime.nix
+    ./nix-index.nix
+    ./rclone.nix
+    ./starship.nix
+    ./xdg.nix
+    ./yazi.nix
+    ./zoxide.nix
+  ] ++ (builtins.attrValues outputs.homeManagerModules);
 
   colorScheme = inputs.nix-colors.colorSchemes.selenized-light;
 

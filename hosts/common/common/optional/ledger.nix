@@ -1,3 +1,1 @@
-{
-  hardware.ledger.enable = true;
-}
+{ hardware.ledger.enable = true; }

@@ -1,9 +1,8 @@
-{
-  config,
-  ...
-}: let
+{ config, ... }:
+let
   port = "5232";
-in {
+in
+{
   services = {
     radicale = {
       enable = true;
@@ -44,6 +43,6 @@ in {
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/radicale"];
+    "/persist".directories = [ "/var/lib/radicale" ];
   };
 }

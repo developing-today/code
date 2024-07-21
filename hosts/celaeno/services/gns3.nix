@@ -1,4 +1,10 @@
-{config, pkgs, lib, ...}: {
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
+{
   services.gns3-server = {
     enable = true;
     settings.Server = {
@@ -26,12 +32,9 @@
     DeviceAllow = [
       "/dev/net/tun rw"
       "/dev/net/tap rw"
-    ] ++ lib.optionals config.virtualisation.libvirtd.enable [
-      "/dev/kvm"
-    ];
+    ] ++ lib.optionals config.virtualisation.libvirtd.enable [ "/dev/kvm" ];
     UMask = lib.mkForce "0022";
   };
-
 
   services.nginx.virtualHosts."gns3.m7.rs" = {
     forceSSL = true;

@@ -3,9 +3,11 @@
   outputs,
   lib,
   ...
-}: let
+}:
+let
   hosts = lib.attrNames outputs.nixosConfigurations;
-in {
+in
+{
   services = {
     prometheus = {
       enable = true;
@@ -17,22 +19,22 @@ in {
         {
           job_name = "hydra";
           scheme = "https";
-          static_configs = [{targets = ["hydra.m7.rs"];}];
+          static_configs = [ { targets = [ "hydra.m7.rs" ]; } ];
         }
         {
           job_name = "headscale";
           scheme = "https";
-          static_configs = [{targets = ["tailscale.m7.rs"];}];
+          static_configs = [ { targets = [ "tailscale.m7.rs" ]; } ];
         }
         {
           job_name = "grafana";
           scheme = "https";
-          static_configs = [{targets = ["dash.m7.rs"];}];
+          static_configs = [ { targets = [ "dash.m7.rs" ]; } ];
         }
         {
           job_name = "prometheus";
           scheme = "https";
-          static_configs = [{targets = ["metrics.m7.rs"];}];
+          static_configs = [ { targets = [ "metrics.m7.rs" ]; } ];
         }
         {
           job_name = "nginx";
@@ -50,21 +52,21 @@ in {
         {
           job_name = "hosts";
           scheme = "http";
-          static_configs =
-            map (hostname: {
-              targets = ["${hostname}:${toString config.services.prometheus.exporters.node.port}"];
-              labels.instance = hostname;
-            })
-            hosts;
+          static_configs = map (hostname: {
+            targets = [ "${hostname}:${toString config.services.prometheus.exporters.node.port}" ];
+            labels.instance = hostname;
+          }) hosts;
         }
       ];
-      extraFlags = let
-        prometheus = config.services.prometheus.package;
-      in [
-        # Custom consoles
-        "--web.console.templates=${prometheus}/etc/prometheus/consoles"
-        "--web.console.libraries=${prometheus}/etc/prometheus/console_libraries"
-      ];
+      extraFlags =
+        let
+          prometheus = config.services.prometheus.package;
+        in
+        [
+          # Custom consoles
+          "--web.console.templates=${prometheus}/etc/prometheus/consoles"
+          "--web.console.libraries=${prometheus}/etc/prometheus/console_libraries"
+        ];
     };
     nginx.virtualHosts = {
       "metrics.m7.rs" = {
@@ -76,6 +78,6 @@ in {
   };
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/prometheus2"];
+    "/persist".directories = [ "/var/lib/prometheus2" ];
   };
 }

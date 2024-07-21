@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.wiki-js = {
     enable = true;
     settings = {
@@ -36,8 +37,6 @@
         ensureDBOwnership = true;
       }
     ];
-    ensureDatabases = [
-      "wiki-js"
-    ];
+    ensureDatabases = [ "wiki-js" ];
   };
 }

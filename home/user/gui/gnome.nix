@@ -1,6 +1,8 @@
-{lib, ...}: let
+{ lib, ... }:
+let
   types = lib.hm.gvariant;
-in {
+in
+{
   dconf = {
     enable = true;
     settings = {
@@ -15,17 +17,18 @@ in {
           "pop-launcher-super-key@ManeLippert"
           "pop-shell@system76.com"
         ];
-        disabled-extensions = [
-          "native-window-placement@gnome-shell-extensions.gcampax.github.com"
-        ];
+        disabled-extensions = [ "native-window-placement@gnome-shell-extensions.gcampax.github.com" ];
       };
       "org/gnome/desktop/input-sources" = {
         sources = [
-          (types.mkTuple ["xkb" "fr+oss_latin9"])
+          (types.mkTuple [
+            "xkb"
+            "fr+oss_latin9"
+          ])
         ];
       };
       "org/gnome/desktop/wm/keybindings" = {
-        minimize = ["<Super>c"];
+        minimize = [ "<Super>c" ];
       };
       "org/gnome/desktop/wm/preferences" = {
         button-layout = "appmenu:minimize,maximize,close";

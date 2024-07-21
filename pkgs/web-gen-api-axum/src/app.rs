@@ -385,7 +385,6 @@ fn HomePage(cx: Scope) -> impl IntoView {
             <p>{submission_count_message}</p>
         </div>
     }
-
 }
 
 #[component]

@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   accounts.calendar = {
     basePath = ".local/share/calendars";
 
@@ -10,8 +11,14 @@
 
       vdirsyncer = {
         enable = true;
-        collections = ["from a" "from b"];
-        metadata = ["color" "displayname"];
+        collections = [
+          "from a"
+          "from b"
+        ];
+        metadata = [
+          "color"
+          "displayname"
+        ];
         conflictResolution = "remote wins";
       };
 
@@ -24,7 +31,11 @@
         type = "caldav";
         url = "https://nc.bizel.fr/remote.php/dav";
         userName = "edgar";
-        passwordCommand = ["${pkgs.bat}/bin/bat" "-p" "/home/edgar/secrets/nextcloud_pass"];
+        passwordCommand = [
+          "${pkgs.bat}/bin/bat"
+          "-p"
+          "/home/edgar/secrets/nextcloud_pass"
+        ];
       };
     };
   };

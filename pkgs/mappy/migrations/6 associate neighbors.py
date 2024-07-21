@@ -1,5 +1,6 @@
 from lib import *
 
+
 def run_migration(conn):
     print("Running update to create Neighbors relationships...")
 

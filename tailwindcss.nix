@@ -1,4 +1,6 @@
-{ pkgs ? import <nixpkgs> {} }:
+{
+  pkgs ? import <nixpkgs> { },
+}:
 
 let
   stdenv = pkgs.stdenv;
@@ -14,11 +16,14 @@ stdenv.mkDerivation rec {
     sha256 = "35e4fa253af4ddab73490b7443b7d08f0c664a8d8b3b878eadcbb54a7e0647f8";
   };
 
-  phases = ["installPhase" "patchPhase"];
+  phases = [
+    "installPhase"
+    "patchPhase"
+  ];
 
   installPhase = ''
-  mkdir -p $out/bin
-  install -m755 -D $src $out/bin/tailwindcss
+    mkdir -p $out/bin
+    install -m755 -D $src $out/bin/tailwindcss
   '';
 
   meta = with lib; {

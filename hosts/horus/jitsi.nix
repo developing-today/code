@@ -1,4 +1,5 @@
-{config, ...}: {
+{ config, ... }:
+{
   services.jitsi-meet = {
     enable = true;
     hostName = "jitsi.bizel.fr";

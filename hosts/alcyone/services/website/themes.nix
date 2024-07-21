@@ -1,13 +1,10 @@
-{
-  inputs,
-  pkgs,
-  ...
-}: let
+{ inputs, pkgs, ... }:
+let
   themes = pkgs.stdenv.mkDerivation {
     name = "website-themes";
     src = builtins.toFile "schemes" (builtins.toJSON inputs.nix-colors.colorSchemes);
     dontUnpack = true;
-    buildInputs = [pkgs.jq];
+    buildInputs = [ pkgs.jq ];
     buildPhase = ''
       build_css() {
         scheme_name="$1"
@@ -51,7 +48,8 @@
     '';
   };
   days = n: toString (n * 60 * 60 * 24);
-in {
+in
+{
   services.nginx.virtualHosts = {
     "m7.rs" = {
       forceSSL = true;

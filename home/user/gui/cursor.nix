@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   home.pointerCursor = {
     name = "Capitaine Cursors (Nord)";
     package = pkgs.capitaine-cursors-themed;

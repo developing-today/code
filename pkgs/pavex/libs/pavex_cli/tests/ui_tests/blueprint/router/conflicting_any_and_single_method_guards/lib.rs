@@ -1,8 +1,8 @@
-use pavex::f;
 use pavex::blueprint::{
     router::{ANY, GET},
     Blueprint,
 };
+use pavex::f;
 
 pub fn handler_1() -> pavex::response::Response {
     todo!()

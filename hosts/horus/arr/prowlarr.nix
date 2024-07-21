@@ -26,5 +26,5 @@
     group = "prowlarr";
     isSystemUser = true;
   };
-  users.groups.prowlarr = {};
+  users.groups.prowlarr = { };
 }

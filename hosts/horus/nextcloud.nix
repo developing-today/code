@@ -1,10 +1,8 @@
-{
-  pkgs,
-  config,
-  ...
-}: let
+{ pkgs, config, ... }:
+let
   appDir = "/var/lib/nextcloud";
-in {
+in
+{
   services.nextcloud = {
     enable = true;
     package = pkgs.nextcloud28;
@@ -16,7 +14,16 @@ in {
 
     extraAppsEnable = true;
     extraApps = with pkgs.nextcloud28Packages.apps; {
-      inherit bookmarks calendar contacts cospend deck forms polls tasks;
+      inherit
+        bookmarks
+        calendar
+        contacts
+        cospend
+        deck
+        forms
+        polls
+        tasks
+        ;
     };
 
     config = {
@@ -44,7 +51,7 @@ in {
   # Enable PostgreSQL
   services.postgresql = {
     # Ensure the database, user, and permissions always exist
-    ensureDatabases = ["nextcloud"];
+    ensureDatabases = [ "nextcloud" ];
     ensureUsers = [
       {
         name = "nextcloud";
@@ -55,8 +62,8 @@ in {
 
   # Ensure that postgres is running before running the setup
   systemd.services."nextcloud-setup" = {
-    requires = ["postgresql.service"];
-    after = ["postgresql.service"];
+    requires = [ "postgresql.service" ];
+    after = [ "postgresql.service" ];
   };
 
   services.nginx.virtualHosts.${config.services.nextcloud.hostName} = {

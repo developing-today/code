@@ -1,4 +1,9 @@
-{ lib, hyprland, hyprlandPlugins, fetchFromGitHub }:
+{
+  lib,
+  hyprland,
+  hyprlandPlugins,
+  fetchFromGitHub,
+}:
 hyprlandPlugins.mkHyprlandPlugin hyprland {
   pluginName = "hyprbars";
   version = "0.1";

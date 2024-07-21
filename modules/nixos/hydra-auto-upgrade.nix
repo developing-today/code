@@ -3,14 +3,19 @@
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   cfg = config.system.hydraAutoUpgrade;
-in {
+in
+{
   options = {
     system.hydraAutoUpgrade = {
       enable = lib.mkEnableOption "periodic hydra-based auto upgrade";
       operation = lib.mkOption {
-        type = lib.types.enum ["switch" "boot"];
+        type = lib.types.enum [
+          "switch"
+          "boot"
+        ];
         default = "switch";
       };
       dates = lib.mkOption {
@@ -76,10 +81,11 @@ in {
         nvd
       ];
 
-      script = let
-        evalUrl = "${cfg.instance}/jobset/${cfg.project}/${cfg.jobset}/latest-eval";
-        buildUrl = "${cfg.instance}/job/${cfg.project}/${cfg.jobset}/${cfg.job}/latest";
-      in
+      script =
+        let
+          evalUrl = "${cfg.instance}/jobset/${cfg.project}/${cfg.jobset}/latest-eval";
+          buildUrl = "${cfg.instance}/job/${cfg.project}/${cfg.jobset}/${cfg.job}/latest";
+        in
         (lib.optionalString (cfg.oldFlakeRef != null) ''
           flake="$(curl -sLH 'accept: application/json' ${evalUrl} | jq -r '.flake')"
           echo "New flake: $flake" >&2
@@ -121,8 +127,8 @@ in {
         '';
 
       startAt = cfg.dates;
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
     };
   };
 }

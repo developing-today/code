@@ -1,4 +1,5 @@
-{config, ...}: let
+{ config, ... }:
+let
   immichHost = "immich.bizel.fr";
 
   immichRoot = "/var/lib/immich";
@@ -13,7 +14,8 @@
   postgresDb = "immich";
 
   immichDatabaseDumps = "/var/backup/immich/db_dumps";
-in {
+in
+{
   services.nginx.virtualHosts."${immichHost}" = {
     extraConfig = ''
       ## Per https://immich.app/docs/administration/reverse-proxy...
@@ -43,7 +45,7 @@ in {
   virtualisation.oci-containers.containers = {
     immich_server = {
       image = "ghcr.io/immich-app/immich-server:${immichVersion}";
-      ports = ["127.0.0.1:2283:3001"];
+      ports = [ "127.0.0.1:2283:3001" ];
       extraOptions = [
         "--pull=newer"
         # Force DNS resolution to only be the podman dnsname name server; by default podman provides a resolv.conf
@@ -58,9 +60,7 @@ in {
         DB_DATABASE_NAME = postgresDb;
         REDIS_HOSTNAME = "immich_redis";
       };
-      environmentFiles = [
-        config.sops.secrets.immich_postgres.path
-      ];
+      environmentFiles = [ config.sops.secrets.immich_postgres.path ];
       volumes = [
         "${immichPhotosWithoutLibrary}:/usr/src/app/upload"
         "${immichLibrary}:/usr/src/app/upload/library"
@@ -70,13 +70,11 @@ in {
 
     immich_machine_learning = {
       image = "ghcr.io/immich-app/immich-machine-learning:${immichVersion}";
-      extraOptions = ["--pull=newer"];
+      extraOptions = [ "--pull=newer" ];
       environment = {
         IMMICH_VERSION = immichVersion;
       };
-      volumes = [
-        "${immichAppdataRoot}/model-cache:/cache"
-      ];
+      volumes = [ "${immichAppdataRoot}/model-cache:/cache" ];
     };
 
     immich_redis = {
@@ -89,19 +87,13 @@ in {
         POSTGRES_USER = postgresUser;
         POSTGRES_DB = postgresDb;
       };
-      environmentFiles = [
-        config.sops.secrets.immich_postgres.path
-      ];
-      volumes = [
-        "${postgresRoot}:/var/lib/postgresql/data"
-      ];
+      environmentFiles = [ config.sops.secrets.immich_postgres.path ];
+      volumes = [ "${postgresRoot}:/var/lib/postgresql/data" ];
     };
 
     immich_db_dumper = {
       image = "prodrigestivill/postgres-backup-local:14";
-      environmentFiles = [
-        config.sops.secrets.immich_postgres.path
-      ];
+      environmentFiles = [ config.sops.secrets.immich_postgres.path ];
       environment = {
         POSTGRES_HOST = "immich_postgres";
         POSTGRES_CLUSTER = "TRUE";
@@ -114,10 +106,8 @@ in {
         BACKUP_KEEP_WEEKS = "1";
         BACKUP_KEEP_MONTHS = "1";
       };
-      volumes = [
-        "${immichDatabaseDumps}:/db_dumps"
-      ];
-      dependsOn = ["immich_postgres"];
+      volumes = [ "${immichDatabaseDumps}:/db_dumps" ];
+      dependsOn = [ "immich_postgres" ];
     };
   };
 
@@ -144,7 +134,7 @@ in {
   ];
 
   users = {
-    groups.immich = {};
+    groups.immich = { };
     users.immich = {
       isSystemUser = true;
       group = "immich";
@@ -152,9 +142,7 @@ in {
   };
 
   # Normal users should not be able to modify the immich library directly
-  systemd.tmpfiles.rules = [
-    "d ${immichLibrary} 0755 immich immich"
-  ];
+  systemd.tmpfiles.rules = [ "d ${immichLibrary} 0755 immich immich" ];
 
   sops.secrets.immich_postgres.sopsFile = ./secrets.yaml;
 }

@@ -7,7 +7,7 @@
 
   environment.persistence = {
     "/persist" = {
-      directories = ["/var/lib/acme"];
+      directories = [ "/var/lib/acme" ];
     };
   };
 }

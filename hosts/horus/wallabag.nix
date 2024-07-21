@@ -1,9 +1,6 @@
+{ pkgs, outputs, ... }:
 {
-  pkgs,
-  outputs,
-  ...
-}: {
-  imports = [outputs.nixosModules.wallabag];
+  imports = [ outputs.nixosModules.wallabag ];
 
   services.wallabag = {
     enable = true;
@@ -33,8 +30,6 @@
         ensureDBOwnership = true;
       }
     ];
-    ensureDatabases = [
-      "wallabag"
-    ];
+    ensureDatabases = [ "wallabag" ];
   };
 }

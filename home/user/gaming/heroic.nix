@@ -1,3 +1,4 @@
-{pkgs, ...}: {
-  home.packages = with pkgs; [heroic];
+{ pkgs, ... }:
+{
+  home.packages = with pkgs; [ heroic ];
 }

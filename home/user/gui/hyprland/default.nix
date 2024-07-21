@@ -3,7 +3,8 @@
   config,
   pkgs,
   ...
-}: {
+}:
+{
   imports = [
     ../wayland-wm
 
@@ -97,9 +98,7 @@
         ];
       };
 
-      exec-once = [
-        "${pkgs.libsForQt5.polkit-kde-agent}/libexec/polkit-kde-authentication-agent-1"
-      ];
+      exec-once = [ "${pkgs.libsForQt5.polkit-kde-agent}/libexec/polkit-kde-authentication-agent-1" ];
 
       windowrule = [
         # League of legends
@@ -125,45 +124,48 @@
         #! Disable window flicker when autocomplete or tooltips appear
         "nofocus,class:^(jetbrains-.*)$,title:^(win.*)$,floating:1"
       ];
-      binde = let
-        brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
-        pactl = "${pkgs.pulseaudio}/bin/pactl";
-      in [
-        # Brightness
-        ",XF86MonBrightnessUp,exec,${brightnessctl} set +5%"
-        ",XF86MonBrightnessDown,exec,${brightnessctl} set 5%-"
-        # Volume
-        ",XF86AudioRaiseVolume,exec,${pactl} set-sink-volume @DEFAULT_SINK@ +5%"
-        ",XF86AudioLowerVolume,exec,${pactl} set-sink-volume @DEFAULT_SINK@ -5%"
-        ",XF86AudioMute,exec,${pactl} set-sink-mute @DEFAULT_SINK@ toggle"
-        "SHIFT,XF86AudioMute,exec,${pactl} set-source-mute @DEFAULT_SOURCE@ toggle"
-        ",XF86AudioMicMute,exec,${pactl} set-source-mute @DEFAULT_SOURCE@ toggle"
-      ];
-      bind = let
-        cliphist = "${pkgs.cliphist}/bin/cliphist";
-        hyprlock = lib.getExe config.programs.hyprlock.package;
-        playerctl = "${config.services.playerctld.package}/bin/playerctl";
-        playerctld = "${config.services.playerctld.package}/bin/playerctld";
-        makoctl = "${config.services.mako.package}/bin/makoctl";
-        rofi = lib.getExe config.programs.rofi.finalPackage;
-        pass-wofi = "${pkgs.pass-wofi.override {
-          pass = config.programs.password-store.package;
-        }}/bin/pass-wofi";
-        wl-copy = "${pkgs.wl-clipboard}/bin/wl-copy";
+      binde =
+        let
+          brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
+          pactl = "${pkgs.pulseaudio}/bin/pactl";
+        in
+        [
+          # Brightness
+          ",XF86MonBrightnessUp,exec,${brightnessctl} set +5%"
+          ",XF86MonBrightnessDown,exec,${brightnessctl} set 5%-"
+          # Volume
+          ",XF86AudioRaiseVolume,exec,${pactl} set-sink-volume @DEFAULT_SINK@ +5%"
+          ",XF86AudioLowerVolume,exec,${pactl} set-sink-volume @DEFAULT_SINK@ -5%"
+          ",XF86AudioMute,exec,${pactl} set-sink-mute @DEFAULT_SINK@ toggle"
+          "SHIFT,XF86AudioMute,exec,${pactl} set-source-mute @DEFAULT_SOURCE@ toggle"
+          ",XF86AudioMicMute,exec,${pactl} set-source-mute @DEFAULT_SOURCE@ toggle"
+        ];
+      bind =
+        let
+          cliphist = "${pkgs.cliphist}/bin/cliphist";
+          hyprlock = lib.getExe config.programs.hyprlock.package;
+          playerctl = "${config.services.playerctld.package}/bin/playerctl";
+          playerctld = "${config.services.playerctld.package}/bin/playerctld";
+          makoctl = "${config.services.mako.package}/bin/makoctl";
+          rofi = lib.getExe config.programs.rofi.finalPackage;
+          pass-wofi = "${
+            pkgs.pass-wofi.override { pass = config.programs.password-store.package; }
+          }/bin/pass-wofi";
+          wl-copy = "${pkgs.wl-clipboard}/bin/wl-copy";
 
-        grimblast = "${pkgs.grimblast}/bin/grimblast";
-        # TODO tly = "${pkgs.tly}/bin/tly";
-        # gtk-play = "${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play";
-        # notify-send = "${pkgs.libnotify}/bin/notify-send";
+          grimblast = "${pkgs.grimblast}/bin/grimblast";
+          # TODO tly = "${pkgs.tly}/bin/tly";
+          # gtk-play = "${pkgs.libcanberra-gtk3}/bin/canberra-gtk-play";
+          # notify-send = "${pkgs.libnotify}/bin/notify-send";
 
-        gtk-launch = "${pkgs.gtk3}/bin/gtk-launch";
-        xdg-mime = "${pkgs.xdg-utils}/bin/xdg-mime";
-        defaultApp = type: "${gtk-launch} $(${xdg-mime} query default ${type})";
+          gtk-launch = "${pkgs.gtk3}/bin/gtk-launch";
+          xdg-mime = "${pkgs.xdg-utils}/bin/xdg-mime";
+          defaultApp = type: "${gtk-launch} $(${xdg-mime} query default ${type})";
 
-        terminal = config.home.sessionVariables.TERMINAL;
-        browser = defaultApp "x-scheme-handler/https";
-        editor = defaultApp "text/plain";
-      in
+          terminal = config.home.sessionVariables.TERMINAL;
+          browser = defaultApp "x-scheme-handler/https";
+          editor = defaultApp "text/plain";
+        in
         [
           # Program bindings
           "SUPER,Return,exec,${terminal}"
@@ -193,50 +195,47 @@
           "ALT,XF86AudioPlay,exec,systemctl --user restart playerctld"
         ])
         ++
-        # Screen lock
-        (lib.optionals config.programs.hyprlock.enable [
-          ",XF86Launch5,exec,${hyprlock}"
-          ",XF86Launch4,exec,${hyprlock}"
-          "SUPER,backspace,exec,${hyprlock}"
-        ])
-        ++
-        # Notification manager
-        (lib.optionals config.services.mako.enable [
-          "SUPER,w,exec,${makoctl} dismiss"
-        ])
-        ++
-        # Launcher
-        (lib.optionals config.programs.rofi.enable [
-            "SUPER,d,exec,${rofi} -show combi -sidebar-mode"
-            "SUPERSHIFT,x,exec,${rofi} -show run"
-            "SUPER,tab,exec,${rofi} -show window"
-          ]
-          ++ (lib.optionals config.services.cliphist.enable [
-            "SUPER, c, exec, ${cliphist} list | ${rofi} -dmenu | ${cliphist} decode | ${wl-copy}" # Clipboard manager
+          # Screen lock
+          (lib.optionals config.programs.hyprlock.enable [
+            ",XF86Launch5,exec,${hyprlock}"
+            ",XF86Launch4,exec,${hyprlock}"
+            "SUPER,backspace,exec,${hyprlock}"
           ])
-          ++ (lib.optionals config.programs.password-store.enable [
-            ",Scroll_Lock,exec,${pass-wofi}" # fn+k
-            ",XF86Calculator,exec,${pass-wofi}" # fn+f12
-            "SUPER,semicolon,exec,pass-wofi"
-          ]));
+        ++
+          # Notification manager
+          (lib.optionals config.services.mako.enable [ "SUPER,w,exec,${makoctl} dismiss" ])
+        ++
+          # Launcher
+          (
+            lib.optionals config.programs.rofi.enable [
+              "SUPER,d,exec,${rofi} -show combi -sidebar-mode"
+              "SUPERSHIFT,x,exec,${rofi} -show run"
+              "SUPER,tab,exec,${rofi} -show window"
+            ]
+            ++ (lib.optionals config.services.cliphist.enable [
+              "SUPER, c, exec, ${cliphist} list | ${rofi} -dmenu | ${cliphist} decode | ${wl-copy}" # Clipboard manager
+            ])
+            ++ (lib.optionals config.programs.password-store.enable [
+              ",Scroll_Lock,exec,${pass-wofi}" # fn+k
+              ",XF86Calculator,exec,${pass-wofi}" # fn+f12
+              "SUPER,semicolon,exec,pass-wofi"
+            ])
+          );
 
       monitor =
         map (
-          m: let
+          m:
+          let
             resolution = "${toString m.width}x${toString m.height}@${toString m.refreshRate}";
             position = "${toString m.x}x${toString m.y}";
-          in "${m.name},${
-            if m.enabled
-            then "${resolution},${position},1"
-            else "disable"
-          }"
-        )
-        config.monitors
-        ++ [",preferred,auto,1"];
+          in
+          "${m.name},${if m.enabled then "${resolution},${position},1" else "disable"}"
+        ) config.monitors
+        ++ [ ",preferred,auto,1" ];
 
-      workspace = map (
-        m: "${m.name},${m.workspace}"
-      ) (lib.filter (m: m.enabled && m.workspace != null) config.monitors);
+      workspace = map (m: "${m.name},${m.workspace}") (
+        lib.filter (m: m.enabled && m.workspace != null) config.monitors
+      );
     };
 
     # This is order sensitive, so it has to come here.

@@ -1,11 +1,12 @@
 let
   uid = 9876;
   gid = 9877;
-in {
+in
+{
   virtualisation.oci-containers.containers.qbittorrent = {
     image = "dyonr/qbittorrentvpn";
-    ports = ["127.0.0.1:8081:8080"];
-    extraOptions = ["--cap-add=NET_ADMIN"];
+    ports = [ "127.0.0.1:8081:8080" ];
+    extraOptions = [ "--cap-add=NET_ADMIN" ];
     volumes = [
       "/etc/wireguard/:/config/wireguard/"
       "/var/lib/qbittorrent:/config"

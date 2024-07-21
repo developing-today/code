@@ -2,6 +2,6 @@
   services.postgresql.enable = true;
 
   environment.persistence = {
-    "/persist".directories = ["/var/lib/postgresql"];
+    "/persist".directories = [ "/var/lib/postgresql" ];
   };
 }

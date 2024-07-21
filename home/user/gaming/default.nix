@@ -1,9 +1,6 @@
-{pkgs, ...}: {
-  imports = [
-    ./heroic.nix
-  ];
+{ pkgs, ... }:
+{
+  imports = [ ./heroic.nix ];
 
-  home.packages = with pkgs; [
-    lutris
-  ];
+  home.packages = with pkgs; [ lutris ];
 }

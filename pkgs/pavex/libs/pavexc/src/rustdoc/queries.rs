@@ -334,8 +334,12 @@ impl CrateCollection {
             // This might take multiple iterations, since the alias might point to another
             // alias.
             loop {
-                let ItemEnum::Typedef(typedef) = &parent.inner else { break; };
-                let rustdoc_types::Type::ResolvedPath(p) = &typedef.type_ else { break; };
+                let ItemEnum::Typedef(typedef) = &parent.inner else {
+                    break;
+                };
+                let rustdoc_types::Type::ResolvedPath(p) = &typedef.type_ else {
+                    break;
+                };
                 // The aliased type might be a re-export of a foreign type,
                 // therefore we go through the summary here rather than
                 // going straight for a local id lookup.
