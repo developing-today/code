@@ -1,13 +1,13 @@
 {
-  outputs,
-  lib,
+  #outputs,
   config,
+  lib,
   pkgs,
   ...
 }:
 {
   imports = [
-    #./sops.nix
+   ./sops.nix
   ];
   boot = {
     tmp = {
@@ -287,7 +287,7 @@
 
         oils-for-unix # todo: osh default shell?
         # overlays # todo- move into user
-        zigpkgs.master
+        #zigpkgs.master
         #nix-software-center
         alejandra # unused now?
         neovim

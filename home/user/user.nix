@@ -1,5 +1,5 @@
-{ stateVersion, pkgs, ... }:
-{
+#{ stateVersion, pkgs, ... }:
+{ pkgs, ... }:
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
@@ -35,7 +35,8 @@
     };
   };
   home = {
-    stateVersion = stateVersion;
+    stateVersion = "23.11"; #stateVersion;
+    #stateVersion = stateVersion;
     shellAliases = {
       l = "exa";
       ls = "exa";
