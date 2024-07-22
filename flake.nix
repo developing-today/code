@@ -178,31 +178,7 @@
           }
         )
       ];
-    in
-    {
-      inherit lib;
-      /*
-        overlays = [
-          zig-overlay.overlays.default
-          alejandra.overlay
-          #nix-software-center.overlay
-          vim.overlay.${system}
-          nix-topology.overlays.default
-        ];
-      */
-      nixosModules = import ./modules/nixos;
-      homeManagerModules = import ./modules/home-manager;
-      #overlays = import ./overlays {inherit inputs outputs;};
-      #hydraJobs = import ./hydra.nix {inherit inputs outputs;};
-      #packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
-      #devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
-      #formatter = forEachSystem (pkgs: pkgs.alejandra);
-      nixosConfigurations = {
-        #laptop-framework = lib.nixosSystem {
-        nixos = lib.nixosSystem {
-          #modules = [./hosts/laptop-framework];
-          #overlays = overlays;
-          modules =
+      nixosModules =
             homeManagerNixosModules
             ++ [
               #nix-topology.nixosModules.default
@@ -266,6 +242,31 @@
                 }
               )
             ];
+    in
+    {
+      inherit lib;
+      /*
+        overlays = [
+          zig-overlay.overlays.default
+          alejandra.overlay
+          #nix-software-center.overlay
+          vim.overlay.${system}
+          nix-topology.overlays.default
+        ];
+      */
+      #nixosModules = import ./modules/nixos;
+      #homeManagerModules = import ./modules/home-manager;
+      #overlays = import ./overlays {inherit inputs outputs;};
+      #hydraJobs = import ./hydra.nix {inherit inputs outputs;};
+      #packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
+      #devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
+      #formatter = forEachSystem (pkgs: pkgs.alejandra);
+      nixosConfigurations = {
+        #laptop-framework = lib.nixosSystem {
+        nixos = lib.nixosSystem {
+          #modules = [./hosts/laptop-framework];
+          #overlays = overlays;
+          modules = nixosModules;
           specialArgs = {
             inherit inputs outputs;
           };
