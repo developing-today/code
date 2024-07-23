@@ -56,7 +56,7 @@ if [[ -f "./flake.nix" ]]; then
   echo "git add ."
   git add .
   echo "running nixos-rebuild switch..."
-  sudo nixos-rebuild --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+  sudo nixos-rebuild --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
   #else
   #echo "not a flake: ${dir}"
 fi

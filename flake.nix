@@ -1,14 +1,144 @@
-{
+  {
   description = "developing.today NixOS configuration";
   nixConfig = {
-    extra-substituters = [
-      "https://cache.m7.rs"
+    # This will add each flake input as a registry
+    # To make nix3 commands consistent with your flake
+    registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);
+
+    # This will additionally add your inputs to the system's legacy channels
+    # Making legacy nix commands consistent as well, awesome!
+    nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
+#     settings = {
+      experimental-features = [
+        "auto-allocate-uids"
+        "ca-derivations"
+        "cgroups"
+        "dynamic-derivations"
+        "fetch-closure"
+        "flakes"
+        "git-hashing"
+        # "local-overlay-store" # look into this
+        # "mounted-ssh-store" # look into this
+        "nix-command"
+        # "no-url-literals" # <- removed no-url-literals for flakehub testing
+        "parse-toml-timestamps"
+        "read-only-local-store"
+        "recursive-nix"
+        "verified-fetches"
+      ];
+#       trusted-users = [ "user" ];
+      use-xdg-base-directories = true;
+      builders-use-substitutes = true;
+#       substituters = [ "https://cache.nixos.org" ];
+#       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
+
+    trusted-users = [ "root" ];
+#     trusted-user = "root";
+    substituters = [
+      "https://cache.nixos.org"
+      #"https://hydra.nixos.org"
+      "https://nix-community.cachix.org"
+      "https://numtide.cachix.org"
+      "https://colmena.cachix.org"
       "https://nix-gaming.cachix.org"
+      "https://nrdxp.cachix.org"
+      "https://cache.m7.rs"
+      "https://sylvorg.cachix.org"
     ];
-    extra-trusted-public-keys = [
+    extra-substituters = [
+#       "https://cache.nixos.org"
+#       #"https://hydra.nixos.org"
+#       "https://nix-community.cachix.org"
+#       "https://numtide.cachix.org"
+#       "https://colmena.cachix.org"
+#       "https://nix-gaming.cachix.org"
+#       "https://nrdxp.cachix.org"
+#       "https://cache.m7.rs"
+#       "https://sylvorg.cachix.org"
+    ];
+    trusted-substituters = [
+      "https://cache.nixos.org"
+      #"https://hydra.nixos.org"
+      "https://nix-community.cachix.org"
+      "https://numtide.cachix.org"
+      "https://colmena.cachix.org"
+      "https://nix-gaming.cachix.org"
+      "https://nrdxp.cachix.org"
+      "https://cache.m7.rs"
+      "https://sylvorg.cachix.org"
+    ];
+    extra-trusted-substituters = [
+#       "https://cache.nixos.org"
+#       #"https://hydra.nixos.org"
+#       "https://nix-community.cachix.org"
+#       "https://numtide.cachix.org"
+#       "https://colmena.cachix.org"
+#       "https://nix-gaming.cachix.org"
+#       "https://nrdxp.cachix.org"
+#       "https://cache.m7.rs"
+#       "https://sylvorg.cachix.org"
+    ];
+    trusted-public-keys = [
       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+      "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+      "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
     ];
+    extra-trusted-public-keys = [
+#       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+#       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+#       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+#       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+#       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+#       "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+#       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+#       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+    ];
+    http-connections = 128;
+    max-substitution-jobs = 128;
+    keep-outputs = true;       # Nice for developers
+    keep-derivations = true;   # Idem
+    accept-flake-config = true;
+    #     allow-dirty = false;
+        allow-dirty = true;
+    #     builders-use-substitutes = true;
+    fallback = true;
+    log-lines = 128;
+    pure-eval = true;
+    # run-diff-hook = true;
+    # secret-key-files
+    show-trace = true;
+    # tarball-ttl = 0;
+    # trace-function-calls = true;
+    trace-verbose = true;
+    # use-xdg-base-directories = true;
+#     allow-dirty = false;
+
+
+    /*buildMachines = [ ];
+    distributedBuilds = true;
+    # optional, useful when the builder has a faster internet connection than yours
+    extraOptions = ''
+      builders-use-substitutes = true
+    '';*/
+      auto-optimise-store = true;
+      #pure-eval = true;
+      pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
+      restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
+      use-registries = true;
+      use-cgroups = true;
+#     };
+    package = pkgs.nixVersions.nix_2_23;
+    optimise.automatic = true;
+    gc = {
+      automatic = true;
+      dates = "weekly";
+      options = "--delete-older-than 180d";
+    };
   };
 
   inputs = {
@@ -124,7 +254,7 @@
       nix-topology,
       systems,
       ...
-    }@inputs:
+    }@inputs: # inputs @ {}: rec {
     let
       inherit (self) outputs;
       stateVersion = "23.11";
@@ -206,7 +336,7 @@
               #sops-nix.nixosModules.sops
               #./modules/sops.nix
               #./modules/nixos/cachix.nix
-              ./hosts/laptop-framework/hardware-configuration/laptop-framework.nix
+              ./hosts/nixos/modules/hardware-configuration
             ]
             ++ [
               (import ./modules/nixos/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
@@ -273,7 +403,8 @@
         };
       };
 
-      homeConfigurations = {
+      /*homeConfigurations = {
+        # Standalone HM only
         "user@laptop-framework" = lib.homeManagerConfiguration {
           modules = [ ./home/user/user.nix ];
           pkgs = pkgsFor.x86_64-linux;
@@ -281,7 +412,7 @@
             inherit inputs outputs;
           };
         };
-      };
+      };*/
     };
 }
 /*
