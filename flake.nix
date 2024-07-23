@@ -172,6 +172,14 @@
 #       devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
 #       formatter = forEachSystem (pkgs: pkgs.alejandra);
 #       hydra
+# https://github.com/Misterio77/nix-config
+# https://github.com/Mic92/dotfiles
+# deploy-rs https://github.com/serokell/deploy-rs (vs just using nixos-rebuild or ?? colmena??)
+# knot dns
+# what is nix.extraOptions ?
+# add @wheel to trusted-users ??
+#       TODO: tailscale https://guekka.github.io/nixos-server-2/
+#       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
 #       set content addressible default for all
 #        devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
 #           devShell.${system} = devShellInner;
