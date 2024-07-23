@@ -154,7 +154,19 @@
       ];};
     in
     rec {
-      inherit
+      inherit # all let vars should be added here. \/ \/
+# let self = builtins.trace self.outPath { } // { outPath = ./.; }; in self #https://github.com/NixOS/nix/issues/8300#issuecomment-1537501849
+#         self
+# .\#self.inputs
+# .\#self.lastModifiedDate
+# .\#self.outPath
+# .\#self.packages
+# .\#self.sourceInfo
+# .\#self.lastModified
+# .\#self.narHash
+# .\#self.outputs
+# .\#self.self
+# .\#self._type
         stateVersion
         system
         supportedSystems
@@ -162,8 +174,9 @@
         forEachSystem
         pkgsFor
         overlays
-        ; # all let vars should be added here.
+        ; # /\ all let vars should be added here. /\ /\
       nixosConfigurations = (import ./hosts) { inherit inputs; outputs = self.outputs; };
+# TODO: rootPath = ./.; # self.outPath # builtins.path
 #       nixosModules = import ./modules/nixos;
 #       homeManagerModules = import ./modules/home-manager;
 #       overlays = import ./overlays {inherit inputs outputs;};
@@ -232,6 +245,7 @@
     ];
     use-xdg-base-directories = true;
     builders-use-substitutes = true;
+#     trusted-users = [ "root" "@wheel" ];
     trusted-users = [ "root" ];
     substituters = [
       "https://cache.nixos.org"

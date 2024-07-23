@@ -39,14 +39,7 @@ let
       #nix-topology.nixosModules.default
       {
         nixpkgs = {
-
-          overlays = [
-            #        zig-overlay.overlays.default
-            #alejandra.overlay
-            #nix-software-center.overlay
-            inputs.vim.overlay.x86_64-linux # .${system}
-            #nix-topology.overlays.default
-          ]; # overlays; # are overlays needed in home manager? document which/why?
+            overlays = outputs.overlays.${outputs.system};
 
           config = {
             #allowUnfree = true;
