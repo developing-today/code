@@ -135,11 +135,11 @@
 #     package = pkgs.nixVersions.nix_2_23;
 #     optimise.automatic = true;
 # auto-optimise-store = true;
-    gc = {
-      automatic = true;
-      dates = "weekly";
-      options = "--delete-older-than 180d";
-    };
+#     gc = {
+#       automatic = true;
+#       dates = "weekly";
+#       options = "--delete-older-than 180d";
+#     };
   };
 
   inputs = {
