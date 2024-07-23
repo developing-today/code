@@ -61,10 +61,12 @@
 
   time.timeZone = "America/Chicago";
 
-  /*nixpkgs.overlays = [
-    outputs.overlays.default
-  ];
-  nixpkgs.config.allowUnfree = true;*/
+  /*
+    nixpkgs.overlays = [
+      outputs.overlays.default
+    ];
+    nixpkgs.config.allowUnfree = true;
+  */
   nix = {
     # This will add each flake input as a registry
     # To make nix3 commands consistent with your flake
@@ -91,104 +93,105 @@
         "recursive-nix"
         "verified-fetches"
       ];
-#       trusted-users = [ "user" ];
+      #       trusted-users = [ "user" ];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
-#       substituters = [ "https://cache.nixos.org" ];
-#       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
+      #       substituters = [ "https://cache.nixos.org" ];
+      #       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
 
-    trusted-users = [ "root" ];
-#     trusted-user = "root";
-    substituters = [
-      "https://cache.nixos.org"
-      #"https://hydra.nixos.org"
-      "https://nix-community.cachix.org"
-      "https://numtide.cachix.org"
-      "https://colmena.cachix.org"
-      "https://nix-gaming.cachix.org"
-      "https://nrdxp.cachix.org"
-      "https://cache.m7.rs"
-      "https://sylvorg.cachix.org"
-    ];
-    extra-substituters = [
-#       "https://cache.nixos.org"
-#       #"https://hydra.nixos.org"
-#       "https://nix-community.cachix.org"
-#       "https://numtide.cachix.org"
-#       "https://colmena.cachix.org"
-#       "https://nix-gaming.cachix.org"
-#       "https://nrdxp.cachix.org"
-#       "https://cache.m7.rs"
-#       "https://sylvorg.cachix.org"
-    ];
-    trusted-substituters = [
-      "https://cache.nixos.org"
-      #"https://hydra.nixos.org"
-      "https://nix-community.cachix.org"
-      "https://numtide.cachix.org"
-      "https://colmena.cachix.org"
-      "https://nix-gaming.cachix.org"
-      "https://nrdxp.cachix.org"
-      "https://cache.m7.rs"
-      "https://sylvorg.cachix.org"
-    ];
-    extra-trusted-substituters = [
-#       "https://cache.nixos.org"
-#       #"https://hydra.nixos.org"
-#       "https://nix-community.cachix.org"
-#       "https://numtide.cachix.org"
-#       "https://colmena.cachix.org"
-#       "https://nix-gaming.cachix.org"
-#       "https://nrdxp.cachix.org"
-#       "https://cache.m7.rs"
-#       "https://sylvorg.cachix.org"
-    ];
-    trusted-public-keys = [
-      "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-      "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
-      "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-      "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
-    ];
-    extra-trusted-public-keys = [
-#       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-#       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-#       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-#       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-#       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-#       "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
-#       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-#       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
-    ];
-    http-connections = 128;
-    max-substitution-jobs = 128;
-    keep-outputs = true;       # Nice for developers
-    keep-derivations = true;   # Idem
-    accept-flake-config = true;
-    #     allow-dirty = false;
-    #     builders-use-substitutes = true;
-    fallback = true;
-    log-lines = 128;
-#     pure-eval = true;
-    # run-diff-hook = true;
-    # secret-key-files
-    show-trace = true;
-    # tarball-ttl = 0;
-    # trace-function-calls = true;
-    trace-verbose = true;
-    # use-xdg-base-directories = true;
-    allow-dirty = true;
+      trusted-users = [ "root" ];
+      #     trusted-user = "root";
+      substituters = [
+        "https://cache.nixos.org"
+        #"https://hydra.nixos.org"
+        "https://nix-community.cachix.org"
+        "https://numtide.cachix.org"
+        "https://colmena.cachix.org"
+        "https://nix-gaming.cachix.org"
+        "https://nrdxp.cachix.org"
+        "https://cache.m7.rs"
+        "https://sylvorg.cachix.org"
+      ];
+      extra-substituters = [
+        #       "https://cache.nixos.org"
+        #       #"https://hydra.nixos.org"
+        #       "https://nix-community.cachix.org"
+        #       "https://numtide.cachix.org"
+        #       "https://colmena.cachix.org"
+        #       "https://nix-gaming.cachix.org"
+        #       "https://nrdxp.cachix.org"
+        #       "https://cache.m7.rs"
+        #       "https://sylvorg.cachix.org"
+      ];
+      trusted-substituters = [
+        "https://cache.nixos.org"
+        #"https://hydra.nixos.org"
+        "https://nix-community.cachix.org"
+        "https://numtide.cachix.org"
+        "https://colmena.cachix.org"
+        "https://nix-gaming.cachix.org"
+        "https://nrdxp.cachix.org"
+        "https://cache.m7.rs"
+        "https://sylvorg.cachix.org"
+      ];
+      extra-trusted-substituters = [
+        #       "https://cache.nixos.org"
+        #       #"https://hydra.nixos.org"
+        #       "https://nix-community.cachix.org"
+        #       "https://numtide.cachix.org"
+        #       "https://colmena.cachix.org"
+        #       "https://nix-gaming.cachix.org"
+        #       "https://nrdxp.cachix.org"
+        #       "https://cache.m7.rs"
+        #       "https://sylvorg.cachix.org"
+      ];
+      trusted-public-keys = [
+        "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+        "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+        "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+        "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+      ];
+      extra-trusted-public-keys = [
+        #       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+        #       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+        #       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        #       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        #       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        #       "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+        #       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+        #       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+      ];
+      http-connections = 128;
+      max-substitution-jobs = 128;
+      keep-outputs = true; # Nice for developers
+      keep-derivations = true; # Idem
+      accept-flake-config = true;
+      #     allow-dirty = false;
+      #     builders-use-substitutes = true;
+      fallback = true;
+      log-lines = 128;
+      #     pure-eval = true;
+      # run-diff-hook = true;
+      # secret-key-files
+      show-trace = true;
+      # tarball-ttl = 0;
+      # trace-function-calls = true;
+      trace-verbose = true;
+      # use-xdg-base-directories = true;
+      allow-dirty = true;
 
-
-    /*buildMachines = [ ];
-    distributedBuilds = true;
-    # optional, useful when the builder has a faster internet connection than yours
-    extraOptions = ''
-      builders-use-substitutes = true
-    '';*/
+      /*
+        buildMachines = [ ];
+        distributedBuilds = true;
+        # optional, useful when the builder has a faster internet connection than yours
+        extraOptions = ''
+          builders-use-substitutes = true
+        '';
+      */
       auto-optimise-store = true;
       #pure-eval = true;
       pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here

@@ -1,4 +1,4 @@
-  {
+{
   description = "developing.today NixOS configuration";
   inputs = {
     #nixpkgs.url = "github:NixOS/nixpkgs";
@@ -113,9 +113,9 @@
       nix-topology,
       systems,
       ...
-    }@inputs: # inputs @ {}: rec {
-    let
-      inherit (self) outputs;
+    }@inputs:
+    let # all let vars should be added to inherit below.
+      #       inherit (self) outputs;
       stateVersion = "23.11";
       system = "x86_64-linux";
       supportedSystems = [ "x86_64-linux" ]; # "x86_64-darwin" "aarch64-linux" "aarch64-darwin" ];
@@ -138,10 +138,29 @@
         vim.overlay.x86_64-linux # .${system}
         #nix-topology.overlays.default
       ];
-
-    in rec
-    {
-      inherit lib overlays system stateVersion;
+    in
+    rec {
+      inherit
+        stateVersion
+        system
+        supportedSystems
+        lib
+        forEachSystem
+        pkgsFor
+        overlays
+        ; # all let vars should be added here.
+      nixosConfigurations = {
+        #laptop-framework = lib.nixosSystem {
+        nixos = lib.nixosSystem {
+          #           modules = nixosModules;
+          modules = (import ./hosts/nixos/modules) { inherit inputs outputs; };
+          #overlays = overlays;
+          specialArgs = {
+            inherit inputs;
+            outputs = self.outputs;
+          };
+        };
+      };
       /*
         overlays = [
           zig-overlay.overlays.default
@@ -158,163 +177,152 @@
       #packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
       #devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
       #formatter = forEachSystem (pkgs: pkgs.alejandra);
-      nixosConfigurations = {
-        #laptop-framework = lib.nixosSystem {
-        nixos = lib.nixosSystem {
-#           modules = nixosModules;
-          modules = (import ./hosts/nixos/modules) { inherit inputs outputs; };
-          #overlays = overlays;
+
+      /*
+        homeConfigurations = {
+          # Standalone HM only
+          "user@laptop-framework" = lib.homeManagerConfiguration {
+            modules = [ ./home/user/user.nix ];
+            pkgs = pkgsFor.x86_64-linux;
+            extraSpecialArgs = { inherit inputs; outputs = self.outputs; };
+          };
+        };
+      */
+    };
+  # }
+  /*
+    nix-topology.nixosModules.default
+         {
+           nixpkgs = {
+             overlays = overlays; # are overlays needed in home manager? document which/why?
+             config = {
+               allowUnfree = true;
+               permittedInsecurePackages = [
+                 "electron" # le sigh
+               ];
+             };
+           };
+           system.stateVersion = stateVersion;
+         }
+         ./lib/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
+         #sops-nix.nixosModules.sops
+         ./modules/nixos/cachix.nix
+         ./hosts/laptop-framework/hardware-configuration/laptop-framework.nix
+       ];
+       # overlayNixosModules = ?
+       hyprlandNixosModules = [
+         (import ./modules/nixos/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
+         #       (import ./modules/nm-applet.nix)
+       ];
+       system = "x86_64-linux";
+       pkgs = import nixpkgs {
+         system = system;
+         overlays = overlays;
+       };
+       lib = nixpkgs.lib;
+       #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
+
+       #zed-fhs = pkgs.buildFHSUserEnv {
+       #  name = "zed";
+       #  targetPkgs = pkgs: [ zed-editor ];
+       #  runScript = "zed";
+       #};
+
+       homeManagerNixosModules = [
+         (
+           { ... }:
+           {
+             imports = [
+               home-manager.nixosModules.home-manager
+               vim.nixosModules.${system}
+             ];
+
+             home-manager.useUserPackages = true;
+             home-manager.useGlobalPkgs = true;
+             home-manager.backupFileExtension = "backup";
+             home-manager.users.user = import ./home/user/user.nix {
+               inherit stateVersion;
+               pkgs = import nixpkgs {
+                 inherit system;
+                 overlays = overlays;
+                 config = {
+                   allowUnfree = true;
+                   permittedInsecurePackages = [
+                     "electron" # le sigh
+                   ];
+                 };
+               };
+             };
+           }
+         )
+       ];
+
+       devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
+  */
+  /*
+    ]; };
+
+        in
+        {
+          inherit lib pkgs devShellInner;
+          nixosConfigurations.nixos = lib.nixosSystem {
+            inherit system;
+            modules = systemNixosModules ++ hyprlandNixosModules ++ homeManagerNixosModules;
+          };
           specialArgs = {
             inherit inputs outputs;
           };
-        };
-      };
-
-      /*homeConfigurations = {
-        # Standalone HM only
-        "user@laptop-framework" = lib.homeManagerConfiguration {
-          modules = [ ./home/user/user.nix ];
-          pkgs = pkgsFor.x86_64-linux;
-          extraSpecialArgs = {
-            inherit inputs outputs;
+          devShell.${system} = devShellInner;
+          # Repeat this for each system where you want to build your topology.
+          # You can do this manually or use flake-utils.
+          topology.x86_64-linux = import nix-topology {
+            inherit pkgs; # Only this package set must include nix-topology.overlays.default
+            modules = [
+              ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
+              #./topology.nix
+              # Inline module to inform topology of your existing NixOS hosts.
+              { nixosConfigurations = self.nixosConfigurations; }
+            ];
           };
         };
-      };*/
-    };
-# }
-/*
-  nix-topology.nixosModules.default
-       {
-         nixpkgs = {
-           overlays = overlays; # are overlays needed in home manager? document which/why?
-           config = {
-             allowUnfree = true;
-             permittedInsecurePackages = [
-               "electron" # le sigh
-             ];
-           };
-         };
-         system.stateVersion = stateVersion;
-       }
-       ./lib/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
-       #sops-nix.nixosModules.sops
-       ./modules/nixos/cachix.nix
-       ./hosts/laptop-framework/hardware-configuration/laptop-framework.nix
-     ];
-     # overlayNixosModules = ?
-     hyprlandNixosModules = [
-       (import ./modules/nixos/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
-       #       (import ./modules/nm-applet.nix)
-     ];
-     system = "x86_64-linux";
-     pkgs = import nixpkgs {
-       system = system;
-       overlays = overlays;
-     };
-     lib = nixpkgs.lib;
-     #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
-
-     #zed-fhs = pkgs.buildFHSUserEnv {
-     #  name = "zed";
-     #  targetPkgs = pkgs: [ zed-editor ];
-     #  runScript = "zed";
-     #};
-
-     homeManagerNixosModules = [
-       (
-         { ... }:
-         {
-           imports = [
-             home-manager.nixosModules.home-manager
-             vim.nixosModules.${system}
-           ];
-
-           home-manager.useUserPackages = true;
-           home-manager.useGlobalPkgs = true;
-           home-manager.backupFileExtension = "backup";
-           home-manager.users.user = import ./home/user/user.nix {
-             inherit stateVersion;
-             pkgs = import nixpkgs {
-               inherit system;
-               overlays = overlays;
-               config = {
-                 allowUnfree = true;
-                 permittedInsecurePackages = [
-                   "electron" # le sigh
-                 ];
-               };
-             };
-           };
-         }
-       )
-     ];
-
-     devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
-*/
-/*
-  ]; };
-
-      in
-      {
-        inherit lib pkgs devShellInner;
-        nixosConfigurations.nixos = lib.nixosSystem {
-          inherit system;
-          modules = systemNixosModules ++ hyprlandNixosModules ++ homeManagerNixosModules;
-        };
-        specialArgs = {
-          inherit inputs outputs;
-        };
-        devShell.${system} = devShellInner;
-        # Repeat this for each system where you want to build your topology.
-        # You can do this manually or use flake-utils.
-        topology.x86_64-linux = import nix-topology {
-          inherit pkgs; # Only this package set must include nix-topology.overlays.default
-          modules = [
-            ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
-            #./topology.nix
-            # Inline module to inform topology of your existing NixOS hosts.
-            { nixosConfigurations = self.nixosConfigurations; }
-          ];
-        };
-      };
-    # hydra
-    # content addressible
-  }
-*/
+      # hydra
+      # content addressible
+    }
+  */
   nixConfig = {
     # This will add each flake input as a registry
     # To make nix3 commands consistent with your flake
-#     registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);
+    #     registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);
 
     # This will additionally add your inputs to the system's legacy channels
     # Making legacy nix commands consistent as well, awesome!
-#     nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
-#     settings = {
-      experimental-features = [
-        "auto-allocate-uids"
-        "ca-derivations"
-        "cgroups"
-        "dynamic-derivations"
-        "fetch-closure"
-        "flakes"
-        "git-hashing"
-        # "local-overlay-store" # look into this
-        # "mounted-ssh-store" # look into this
-        "nix-command"
-        # "no-url-literals" # <- removed no-url-literals for flakehub testing
-        "parse-toml-timestamps"
-        "read-only-local-store"
-        "recursive-nix"
-        "verified-fetches"
-      ];
-#       trusted-users = [ "user" ];
-      use-xdg-base-directories = true;
-      builders-use-substitutes = true;
-#       substituters = [ "https://cache.nixos.org" ];
-#       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
+    #     nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
+    #     settings = {
+    experimental-features = [
+      "auto-allocate-uids"
+      "ca-derivations"
+      "cgroups"
+      "dynamic-derivations"
+      "fetch-closure"
+      "flakes"
+      "git-hashing"
+      # "local-overlay-store" # look into this
+      # "mounted-ssh-store" # look into this
+      "nix-command"
+      # "no-url-literals" # <- removed no-url-literals for flakehub testing
+      "parse-toml-timestamps"
+      "read-only-local-store"
+      "recursive-nix"
+      "verified-fetches"
+    ];
+    #       trusted-users = [ "user" ];
+    use-xdg-base-directories = true;
+    builders-use-substitutes = true;
+    #       substituters = [ "https://cache.nixos.org" ];
+    #       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
 
     trusted-users = [ "root" ];
-#     trusted-user = "root";
+    #     trusted-user = "root";
     substituters = [
       "https://cache.nixos.org"
       #"https://hydra.nixos.org"
@@ -327,15 +335,15 @@
       "https://sylvorg.cachix.org"
     ];
     extra-substituters = [
-#       "https://cache.nixos.org"
-#       #"https://hydra.nixos.org"
-#       "https://nix-community.cachix.org"
-#       "https://numtide.cachix.org"
-#       "https://colmena.cachix.org"
-#       "https://nix-gaming.cachix.org"
-#       "https://nrdxp.cachix.org"
-#       "https://cache.m7.rs"
-#       "https://sylvorg.cachix.org"
+      #       "https://cache.nixos.org"
+      #       #"https://hydra.nixos.org"
+      #       "https://nix-community.cachix.org"
+      #       "https://numtide.cachix.org"
+      #       "https://colmena.cachix.org"
+      #       "https://nix-gaming.cachix.org"
+      #       "https://nrdxp.cachix.org"
+      #       "https://cache.m7.rs"
+      #       "https://sylvorg.cachix.org"
     ];
     trusted-substituters = [
       "https://cache.nixos.org"
@@ -349,15 +357,15 @@
       "https://sylvorg.cachix.org"
     ];
     extra-trusted-substituters = [
-#       "https://cache.nixos.org"
-#       #"https://hydra.nixos.org"
-#       "https://nix-community.cachix.org"
-#       "https://numtide.cachix.org"
-#       "https://colmena.cachix.org"
-#       "https://nix-gaming.cachix.org"
-#       "https://nrdxp.cachix.org"
-#       "https://cache.m7.rs"
-#       "https://sylvorg.cachix.org"
+      #       "https://cache.nixos.org"
+      #       #"https://hydra.nixos.org"
+      #       "https://nix-community.cachix.org"
+      #       "https://numtide.cachix.org"
+      #       "https://colmena.cachix.org"
+      #       "https://nix-gaming.cachix.org"
+      #       "https://nrdxp.cachix.org"
+      #       "https://cache.m7.rs"
+      #       "https://sylvorg.cachix.org"
     ];
     trusted-public-keys = [
       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
@@ -370,26 +378,26 @@
       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
     ];
     extra-trusted-public-keys = [
-#       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-#       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-#       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-#       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-#       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-#       "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
-#       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-#       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+      #       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+      #       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+      #       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      #       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      #       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      #       "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+      #       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+      #       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
     ];
     http-connections = 128;
     max-substitution-jobs = 128;
-    keep-outputs = true;       # Nice for developers
-    keep-derivations = true;   # Idem
+    keep-outputs = true; # Nice for developers
+    keep-derivations = true; # Idem
     accept-flake-config = true;
     #     allow-dirty = false;
-        allow-dirty = true;
+    allow-dirty = true;
     #     builders-use-substitutes = true;
     fallback = true;
     log-lines = 128;
-#     pure-eval = true;
+    #     pure-eval = true;
     # run-diff-hook = true;
     # secret-key-files
     show-trace = true;
@@ -397,29 +405,30 @@
     # trace-function-calls = true;
     trace-verbose = true;
     # use-xdg-base-directories = true;
-#     allow-dirty = false;
+    #     allow-dirty = false;
 
-
-    /*buildMachines = [ ];
-    distributedBuilds = true;
-    # optional, useful when the builder has a faster internet connection than yours
-    extraOptions = ''
-      builders-use-substitutes = true
-    '';*/
-      auto-optimise-store = true;
-      #pure-eval = true;
-      pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
-      restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
-      use-registries = true;
-      use-cgroups = true;
-#     };
-#     package = pkgs.nixVersions.nix_2_23;
-#     optimise.automatic = true;
-# auto-optimise-store = true;
-#     gc = {
-#       automatic = true;
-#       dates = "weekly";
-#       options = "--delete-older-than 180d";
-#     };
+    /*
+      buildMachines = [ ];
+      distributedBuilds = true;
+      # optional, useful when the builder has a faster internet connection than yours
+      extraOptions = ''
+        builders-use-substitutes = true
+      '';
+    */
+    auto-optimise-store = true;
+    #pure-eval = true;
+    pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
+    restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
+    use-registries = true;
+    use-cgroups = true;
+    #     };
+    #     package = pkgs.nixVersions.nix_2_23;
+    #     optimise.automatic = true;
+    # auto-optimise-store = true;
+    #     gc = {
+    #       automatic = true;
+    #       dates = "weekly";
+    #       options = "--delete-older-than 180d";
+    #     };
   };
 }
