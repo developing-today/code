@@ -172,7 +172,7 @@
     #     builders-use-substitutes = true;
     fallback = true;
     log-lines = 128;
-    pure-eval = true;
+#     pure-eval = true;
     # run-diff-hook = true;
     # secret-key-files
     show-trace = true;
