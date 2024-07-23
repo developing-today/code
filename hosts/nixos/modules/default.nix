@@ -2,7 +2,7 @@
 let
   system = outputs.system;
   stateVersion = outputs.stateVersion;
-  overlays = outputs.overlays;
+  overlays = outputs.overlays.${system};
 
   homeManagerNixosModules = [
     (

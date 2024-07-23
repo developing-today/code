@@ -97,6 +97,20 @@
     # nix-rice = https://github.com/bertof/nix-rice # todo fork and rename this garbage
 
     systems.url = "github:nix-systems/default-linux";
+
+#     nix-inspect = {
+#       url = "github:bluskript/nix-inspect";
+#       inputs.nixpkgs.follows = "nixpkgs";
+#     };
+#     home-manager = {
+#       url = "github:nix-community/home-manager";
+#       inputs.nixpkgs.follows = "nixpkgs";
+#     };
+#     nixos-wsl = {
+#       url = "github:nix-community/NixOS-WSL";
+#       inputs.nixpkgs.follows = "nixpkgs";
+#     };
+
   };
 
   outputs =
@@ -129,7 +143,8 @@
         }
       );
       #inherit lib;
-      overlays = [
+      overlays = {
+      x86_64-linux = [
         # import ./overlays { inherit inputs outputs;};
 
         #     zig-overlay.overlays.default
@@ -137,7 +152,7 @@
         #nix-software-center.overlay
         vim.overlay.x86_64-linux # .${system}
         #nix-topology.overlays.default
-      ];
+      ];};
     in
     rec {
       inherit
@@ -149,18 +164,24 @@
         pkgsFor
         overlays
         ; # all let vars should be added here.
-      nixosConfigurations = {
-        #laptop-framework = lib.nixosSystem {
-        nixos = lib.nixosSystem {
-          #           modules = nixosModules;
-          modules = (import ./hosts/nixos/modules) { inherit inputs outputs; };
-          #overlays = overlays;
-          specialArgs = {
-            inherit inputs;
-            outputs = self.outputs;
-          };
-        };
-      };
+      nixosConfigurations =
+        {}//
+        (import ./hosts/nixos) { inherit inputs; outputs = self.outputs; };
+      #laptop-framework = lib.nixosSystem {
+#       {
+#         nixos = lib.nixosSystem {
+#           #           modules = nixosModules;
+#           modules = (import ./hosts/nixos/modules) {
+#             inherit inputs;
+#             outputs = self.outputs;
+#           };
+#           #overlays = overlays;
+#           specialArgs = {
+#             inherit inputs;
+#             outputs = self.outputs;
+#           };
+#         };
+#       };
       /*
         overlays = [
           zig-overlay.overlays.default
