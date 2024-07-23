@@ -142,7 +142,6 @@
           config.allowUnfree = true;
         }
       );
-      #inherit lib;
       overlays = {
       x86_64-linux = [
         # import ./overlays { inherit inputs outputs;};
@@ -164,161 +163,48 @@
         pkgsFor
         overlays
         ; # all let vars should be added here.
-      nixosConfigurations =
-        {}//
-        (import ./hosts/nixos) { inherit inputs; outputs = self.outputs; };
-      #laptop-framework = lib.nixosSystem {
-#       {
-#         nixos = lib.nixosSystem {
-#           #           modules = nixosModules;
-#           modules = (import ./hosts/nixos/modules) {
-#             inherit inputs;
-#             outputs = self.outputs;
-#           };
-#           #overlays = overlays;
-#           specialArgs = {
-#             inherit inputs;
-#             outputs = self.outputs;
+      nixosConfigurations = (import ./hosts) { inherit inputs; outputs = self.outputs; };
+#       nixosModules = import ./modules/nixos;
+#       homeManagerModules = import ./modules/home-manager;
+#       overlays = import ./overlays {inherit inputs outputs;};
+#       hydraJobs = import ./hydra.nix {inherit inputs outputs;};
+#       packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
+#       devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
+#       formatter = forEachSystem (pkgs: pkgs.alejandra);
+#       hydra
+#       set content addressible default for all
+#        devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
+#           devShell.${system} = devShellInner;
+#           # Repeat this for each system where you want to build your topology.
+#           # You can do this manually or use flake-utils.
+#           topology.x86_64-linux = import nix-topology {
+#             inherit pkgs; # Only this package set must include nix-topology.overlays.default
+#             modules = [
+#               ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
+#               #./topology.nix
+#               # Inline module to inform topology of your existing NixOS hosts.
+#               { nixosConfigurations = self.nixosConfigurations; }
+#             ];
 #           };
 #         };
-#       };
-      /*
-        overlays = [
-          zig-overlay.overlays.default
-          alejandra.overlay
-          #nix-software-center.overlay
-          vim.overlay.${system}
-          nix-topology.overlays.default
-        ];
-      */
-      #nixosModules = import ./modules/nixos;
-      #homeManagerModules = import ./modules/home-manager;
-      #overlays = import ./overlays {inherit inputs outputs;};
-      #hydraJobs = import ./hydra.nix {inherit inputs outputs;};
-      #packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
-      #devShells = forEachSystem (pkgs: import ./shell.nix {inherit pkgs;});
-      #formatter = forEachSystem (pkgs: pkgs.alejandra);
-
-      /*
-        homeConfigurations = {
-          # Standalone HM only
-          "user@laptop-framework" = lib.homeManagerConfiguration {
-            modules = [ ./home/user/user.nix ];
-            pkgs = pkgsFor.x86_64-linux;
-            extraSpecialArgs = { inherit inputs; outputs = self.outputs; };
-          };
-        };
-      */
-    };
-  # }
-  /*
-    nix-topology.nixosModules.default
-         {
-           nixpkgs = {
-             overlays = overlays; # are overlays needed in home manager? document which/why?
-             config = {
-               allowUnfree = true;
-               permittedInsecurePackages = [
-                 "electron" # le sigh
-               ];
-             };
-           };
-           system.stateVersion = stateVersion;
-         }
-         ./lib/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
-         #sops-nix.nixosModules.sops
-         ./modules/nixos/cachix.nix
-         ./hosts/laptop-framework/hardware-configuration/laptop-framework.nix
-       ];
-       # overlayNixosModules = ?
-       hyprlandNixosModules = [
-         (import ./modules/nixos/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
-         #       (import ./modules/nm-applet.nix)
-       ];
-       system = "x86_64-linux";
-       pkgs = import nixpkgs {
-         system = system;
-         overlays = overlays;
-       };
-       lib = nixpkgs.lib;
-       #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
-
-       #zed-fhs = pkgs.buildFHSUserEnv {
-       #  name = "zed";
-       #  targetPkgs = pkgs: [ zed-editor ];
-       #  runScript = "zed";
-       #};
-
-       homeManagerNixosModules = [
-         (
-           { ... }:
-           {
-             imports = [
-               home-manager.nixosModules.home-manager
-               vim.nixosModules.${system}
-             ];
-
-             home-manager.useUserPackages = true;
-             home-manager.useGlobalPkgs = true;
-             home-manager.backupFileExtension = "backup";
-             home-manager.users.user = import ./home/user/user.nix {
-               inherit stateVersion;
-               pkgs = import nixpkgs {
-                 inherit system;
-                 overlays = overlays;
-                 config = {
-                   allowUnfree = true;
-                   permittedInsecurePackages = [
-                     "electron" # le sigh
-                   ];
-                 };
-               };
-             };
-           }
-         )
-       ];
-
-       devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
-  */
-  /*
-    ]; };
-
-        in
-        {
-          inherit lib pkgs devShellInner;
-          nixosConfigurations.nixos = lib.nixosSystem {
-            inherit system;
-            modules = systemNixosModules ++ hyprlandNixosModules ++ homeManagerNixosModules;
-          };
-          specialArgs = {
-            inherit inputs outputs;
-          };
-          devShell.${system} = devShellInner;
-          # Repeat this for each system where you want to build your topology.
-          # You can do this manually or use flake-utils.
-          topology.x86_64-linux = import nix-topology {
-            inherit pkgs; # Only this package set must include nix-topology.overlays.default
-            modules = [
-              ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
-              #./topology.nix
-              # Inline module to inform topology of your existing NixOS hosts.
-              { nixosConfigurations = self.nixosConfigurations; }
-            ];
-          };
-        };
-      # hydra
-      # content addressible
-    }
-  */
+#     nix-topology.nixosModules.default
+#        #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
+#        #zed-fhs = pkgs.buildFHSUserEnv {
+#        #  name = "zed";
+#        #  targetPkgs = pkgs: [ zed-editor ];
+#        #  runScript = "zed";
+#        #};
+#         homeConfigurations = {
+#           # Standalone HM only
+#           "user@laptop-framework" = lib.homeManagerConfiguration {
+#             modules = [ ./home/user/user.nix ];
+#             pkgs = pkgsFor.x86_64-linux;
+#             extraSpecialArgs = { inherit inputs; outputs = self.outputs; };
+#           };
+#         };
+#       */
+  };
   nixConfig = {
-    # This will add each flake input as a registry
-    # To make nix3 commands consistent with your flake
-    #     registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);
-
-    # This will additionally add your inputs to the system's legacy channels
-    # Making legacy nix commands consistent as well, awesome!
-    #     nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
-    #     settings = {
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"
@@ -336,14 +222,9 @@
       "recursive-nix"
       "verified-fetches"
     ];
-    #       trusted-users = [ "user" ];
     use-xdg-base-directories = true;
     builders-use-substitutes = true;
-    #       substituters = [ "https://cache.nixos.org" ];
-    #       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
-
     trusted-users = [ "root" ];
-    #     trusted-user = "root";
     substituters = [
       "https://cache.nixos.org"
       #"https://hydra.nixos.org"
@@ -427,15 +308,12 @@
     trace-verbose = true;
     # use-xdg-base-directories = true;
     #     allow-dirty = false;
-
-    /*
-      buildMachines = [ ];
-      distributedBuilds = true;
-      # optional, useful when the builder has a faster internet connection than yours
-      extraOptions = ''
-        builders-use-substitutes = true
-      '';
-    */
+#       buildMachines = [ ];
+#       distributedBuilds = true;
+#       # optional, useful when the builder has a faster internet connection than yours
+#       extraOptions = ''
+#         builders-use-substitutes = true
+#       '';
     auto-optimise-store = true;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
