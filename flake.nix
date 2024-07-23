@@ -133,7 +133,8 @@
       use-cgroups = true;
 #     };
 #     package = pkgs.nixVersions.nix_2_23;
-    optimise.automatic = true;
+#     optimise.automatic = true;
+auto-optimise-store = true;
     gc = {
       automatic = true;
       dates = "weekly";
