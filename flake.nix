@@ -132,7 +132,7 @@
       use-registries = true;
       use-cgroups = true;
 #     };
-    package = pkgs.nixVersions.nix_2_23;
+#     package = pkgs.nixVersions.nix_2_23;
     optimise.automatic = true;
     gc = {
       automatic = true;
