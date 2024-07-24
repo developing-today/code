@@ -1,5 +1,4 @@
 {
-  #outputs,
   inputs,
   config,
   lib,
@@ -15,7 +14,7 @@
     loader = {
       systemd-boot = {
         enable = true;
-        configurationLimit = 64;
+        configurationLimit = 256;
       };
       efi.canTouchEfiVariables = true;
     };
@@ -76,6 +75,7 @@
     # Making legacy nix commands consistent as well, awesome!
     nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
     settings = {
+      # should make root flake nixConfig
       experimental-features = [
         "auto-allocate-uids"
         "ca-derivations"
@@ -102,71 +102,42 @@
       trusted-users = [ "root" ];
       #     trusted-user = "root";
       substituters = [
+        # TODO: priority order
         "https://cache.nixos.org"
-        #"https://hydra.nixos.org"
-        "https://nix-community.cachix.org"
-        "https://numtide.cachix.org"
-        "https://colmena.cachix.org"
-        "https://nix-gaming.cachix.org"
-        "https://nrdxp.cachix.org"
-        "https://cache.m7.rs"
-        "https://sylvorg.cachix.org"
-      ];
-      extra-substituters = [
-        #       "https://cache.nixos.org"
-        #       #"https://hydra.nixos.org"
-        #       "https://nix-community.cachix.org"
-        #       "https://numtide.cachix.org"
-        #       "https://colmena.cachix.org"
-        #       "https://nix-gaming.cachix.org"
-        #       "https://nrdxp.cachix.org"
-        #       "https://cache.m7.rs"
-        #       "https://sylvorg.cachix.org"
+        #         "https://nix-community.cachix.org"
+        #         "https://nix-gaming.cachix.org"
+        #         "https://cache.m7.rs"
+        #         "https://nrdxp.cachix.org"
+        #         "https://numtide.cachix.org"
+        #         "https://colmena.cachix.org"
+        #         "https://sylvorg.cachix.org"
       ];
       trusted-substituters = [
         "https://cache.nixos.org"
-        #"https://hydra.nixos.org"
-        "https://nix-community.cachix.org"
-        "https://numtide.cachix.org"
-        "https://colmena.cachix.org"
-        "https://nix-gaming.cachix.org"
-        "https://nrdxp.cachix.org"
-        "https://cache.m7.rs"
-        "https://sylvorg.cachix.org"
-      ];
-      extra-trusted-substituters = [
-        #       "https://cache.nixos.org"
-        #       #"https://hydra.nixos.org"
-        #       "https://nix-community.cachix.org"
-        #       "https://numtide.cachix.org"
-        #       "https://colmena.cachix.org"
-        #       "https://nix-gaming.cachix.org"
-        #       "https://nrdxp.cachix.org"
-        #       "https://cache.m7.rs"
-        #       "https://sylvorg.cachix.org"
+        #         "https://nix-community.cachix.org"
+        #         "https://nix-gaming.cachix.org"
+        #         "https://cache.m7.rs"
+        #         "https://nrdxp.cachix.org"
+        #         "https://numtide.cachix.org"
+        #         "https://colmena.cachix.org"
+        #         "https://sylvorg.cachix.org"
       ];
       trusted-public-keys = [
-        "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-        "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
-        "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-        "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+        #         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        #         "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+        #         "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+        #         "nrdxp.cachix.org-1:Fc5PSqY2Jm1TrWfm88l6cvGWwz3s93c6IOifQWnhNW4="
+        #         "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+        #         "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+        #         "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
       ];
-      extra-trusted-public-keys = [
-        #       "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-        #       "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-        #       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        #       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-        #       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        #       "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
-        #       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-        #       "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
-      ];
-      http-connections = 128;
-      max-substitution-jobs = 128;
+      extra-substituters = [ ];
+      extra-trusted-substituters = [ ];
+      extra-trusted-public-keys = [ ];
+      http-connections = 100; # 128 default:25
+      max-substitution-jobs = 64; # 128 default:16
+      # Store:querySubstitutablePaths Store::queryMissing binary-caches-parallel-connections fileTransferSettings.httpConnections
       keep-outputs = true; # Nice for developers
       keep-derivations = true; # Idem
       accept-flake-config = true;

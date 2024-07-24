@@ -39,7 +39,7 @@ let
       #nix-topology.nixosModules.default
       {
         nixpkgs = {
-            overlays = outputs.overlays.${outputs.system};
+          overlays = outputs.overlays.${outputs.system};
 
           config = {
             #allowUnfree = true;
