@@ -1,6 +1,7 @@
 #{ stateVersion, pkgs, ... }:
 { pkgs, ... }:
 {
+  imports = [ ../../modules/home-manager/yazi.nix ];
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
@@ -465,7 +466,7 @@
         ## Window Managers
         #awesome
         ## Desktop Environments
-        cinnamon.cinnamon-desktop
+        #cinnamon.cinnamon-desktop
         ## Programs
         nitrogen
         picom

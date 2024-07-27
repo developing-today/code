@@ -133,6 +133,7 @@
       inputs.gitignore.follows = "gitignore";
     };
 
+		yazi.url = "github:sxyazi/yazi";
 
     #     hardware.url = "github:nixos/nixos-hardware";
     #     systems.url = "github:nix-systems/default-linux";
@@ -162,7 +163,7 @@
     #       inputs.nixpkgs.follows = "nixpkgs";
     #     };
   };
-
+#  lib.fakeSha256 and lib.fakeSha512
   outputs =
     {
       self,
@@ -172,6 +173,7 @@
       sops-nix,
       vim,
       home-manager,
+      yazi,
       # nix-topology,
       # systems,
       ...
@@ -203,6 +205,7 @@
           #alejandra.overlay
           #nix-software-center.overlay
           vim.overlay.x86_64-linux # .${system}
+          yazi.overlays.default
           #nix-topology.overlays.default
         ];
       };
@@ -376,6 +379,10 @@
       #         "https://colmena.cachix.org"
       #         "https://sylvorg.cachix.org"
     ];
+    /*
+    extra-substituters = [ "https://yazi.cachix.org" ];
+    extra-trusted-public-keys = [ "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=" ];
+    */
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       #         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="

@@ -340,6 +340,20 @@
     systemPackages =
       with pkgs;
       [
+        yazi
+        kitty
+        kitty-img
+        kitty-themes
+        kitti3
+        kittysay
+        pixcat
+        termpdfpy
+        vimPlugins.vim-kitty-navigator
+        alacritty-theme
+        cinnamon-desktop
+        gnomeExtensions.toggle-alacritty
+        python312Packages.pycritty
+        zathura
         #zed-editor
         nix-output-monitor
         nix-tree
