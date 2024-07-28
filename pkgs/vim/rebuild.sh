@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -xeuo pipefail
+set -exuo pipefail
 #ulimit -n $(ulimit -Hn)
 #sudo prlimit --pid $$ --nofile=1000000:1000000
 # Get the directory of the script
