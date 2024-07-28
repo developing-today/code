@@ -15,13 +15,14 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # systems = {
-    #   url = "github:nix-systems/default-linux";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
+    systems = {
+      # url = "github:nix-systems/default-linux";
+      url = "github:nix-systems/default";
+      # inputs.nixpkgs.follows = "nixpkgs";
+    };
     flake-utils = {
       url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; # */ # inputs.systems
-      # inputs.systems
+      inputs.systems.follows = "systems";
     };
     flake-compat = {
       url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
@@ -96,6 +97,7 @@
       #url = "github:developing-today/code?dir=src/vim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";
+      inputs.systems.follows = "systems";
       inputs.flake-utils.follows = "flake-utils";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-parts.follows = "flake-parts";
@@ -121,7 +123,7 @@
     devshell = {
       url = "github:numtide/devshell";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
+      # inputs.flake-utils.follows = "flake-utils";
     };
 
     pre-commit-hooks = {
@@ -133,7 +135,18 @@
       inputs.gitignore.follows = "gitignore";
     };
 
-		yazi.url = "github:sxyazi/yazi";
+    # rust-overlay = {
+    #   url = "github:oxalica/rust-overlay";
+    #   # follows?
+    # };
+
+		yazi = {
+		  url = "github:sxyazi/yazi";
+			# not following to allow using yazi cache
+			# inputs.nixpkgs.follows = "nixpkgs";
+			# inputs.flake-utils.follows = "flake-utils";
+			# inputs.rust-overlay.follows = "rust-overlay";
+		};
 
     #     hardware.url = "github:nixos/nixos-hardware";
     #     systems.url = "github:nix-systems/default-linux";
@@ -360,7 +373,8 @@
     trusted-users = [ "root" ];
     substituters = [
       # TODO: priority order
-      "https://cache.nixos.org"
+      "https://cache.nixos.org" #priority
+      "https://yazi.cachix.org"
       #         "https://nix-community.cachix.org"
       #         "https://nix-gaming.cachix.org"
       #         "https://cache.m7.rs"
@@ -370,7 +384,8 @@
       #         "https://sylvorg.cachix.org"
     ];
     trusted-substituters = [
-      "https://cache.nixos.org"
+      "https://cache.nixos.org" #priority
+      "https://yazi.cachix.org"
       #         "https://nix-community.cachix.org"
       #         "https://nix-gaming.cachix.org"
       #         "https://cache.m7.rs"
@@ -385,6 +400,7 @@
     */
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k="
       #         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       #         "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
       #         "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
