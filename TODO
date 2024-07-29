@@ -1,3 +1,12 @@
+use impermanence
+
+make rebuild accept flags
+- no flake update
+  - (still update-ref for ./vim local refs)
+    - hard code? scan flake.lock?
+- install fh
+
+
 modules/
 mixins
 profiles
@@ -7,10 +16,4 @@ users
 https://github.com/MatthewCroughan/nixcfg
 https://github.com/nix-community/robotnix
 
-yuzi file manager
-lf
-ranger
-
-zathura
-sixel
 

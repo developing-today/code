@@ -9,7 +9,7 @@ in
 
   sops = {
     age.sshKeyPaths = map getKeyPath keys;
-    defaultSopsFile = ./config.env/common/secrets.yaml;
+    defaultSopsFile = ./config.enc/common/secrets.yaml;
     defaultSopsFormat = "yaml";
   };
 }

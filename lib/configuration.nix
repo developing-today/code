@@ -344,6 +344,11 @@
     systemPackages =
       with pkgs;
       [
+        lf
+        ranger
+        zathura
+        libsixel
+        lsix
         ncdu
         yq
         yazi
