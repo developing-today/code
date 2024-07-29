@@ -732,8 +732,8 @@
         #signal-desktop
         #tdesktop
         #element-desktop # build time long, electron bad
-        tor-browser-bundle-bin
-        monero-gui
+        #tor-browser-bundle-bin
+        #monero-gui
         discord
         #zoom-us
         # calibre
@@ -782,6 +782,7 @@
   programs = {
     waybar = import programs/waybar.nix { inherit pkgs; };
     alacritty = import programs/alacritty.nix;
+    kitty = import programs/kitty.nix;
     # neovim = import programs/nvim.nix {inherit pkgs;};
     # nixvim.enable = true;
     abook.enable = true;
@@ -821,7 +822,7 @@
     jujutsu.enable = true;
     # just.enable = true;
     kakoune.enable = true;
-    kitty.enable = true;
+    #kitty.enable = true;
     lazygit.enable = true;
     ledger.enable = true;
     less.enable = true;

@@ -344,6 +344,7 @@
     systemPackages =
       with pkgs;
       [
+        ncdu
         yq
         yazi
         kitty
