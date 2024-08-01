@@ -9,14 +9,14 @@ require (
 	github.com/centrifugal/centrifuge v0.31.0
 	github.com/centrifugal/centrifuge-go v0.10.2
 	github.com/charmbracelet/bubbles v0.18.0
-	github.com/charmbracelet/bubbletea v0.25.0
+	github.com/charmbracelet/bubbletea v0.26.6
 	github.com/charmbracelet/charm v0.12.6
-	github.com/charmbracelet/lipgloss v0.10.0
-	github.com/charmbracelet/log v0.3.1
+	github.com/charmbracelet/lipgloss v0.12.1
+	github.com/charmbracelet/log v0.4.0
 	github.com/charmbracelet/melt v0.6.0
-	github.com/charmbracelet/promwish v0.7.1-0.20240301193744-83a66da07faa
-	github.com/charmbracelet/ssh v0.0.0-20240301204039-e79ff702f5b3
-	github.com/charmbracelet/wish v1.3.2
+	github.com/charmbracelet/promwish v0.7.1-0.20240801215030-4001f6befdb9
+	github.com/charmbracelet/ssh v0.0.0-20240725163421-eb71b85b27aa
+	github.com/charmbracelet/wish v1.4.1
 	github.com/go-chi/chi v1.5.5
 	github.com/golang-jwt/jwt v3.2.2+incompatible
 	github.com/gowebly/helpers v0.3.0
@@ -24,13 +24,13 @@ require (
 	github.com/knadh/koanf/parsers/kdl v0.1.1
 	github.com/muesli/reflow v0.3.0
 	github.com/nrednav/cuid2 v1.0.0
-	github.com/prometheus/client_golang v1.19.0
+	github.com/prometheus/client_golang v1.19.1
 	github.com/samber/do/v2 v2.0.0-beta.5
 	github.com/samber/go-type-to-string v1.2.0
 	github.com/spf13/cobra v1.8.0
 	github.com/treilik/bubbleboxer v0.2.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240220085343-4ae0eb9d0898
-	golang.org/x/crypto v0.22.0
+	golang.org/x/crypto v0.25.0
 	gopkg.in/go-jose/go-jose.v2 v2.6.3
 )
 
@@ -49,14 +49,21 @@ require (
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/charmbracelet/keygen v0.5.0 // indirect
-	github.com/charmbracelet/x/errors v0.0.0-20240307183742-ad8dadc14f31 // indirect
-	github.com/charmbracelet/x/exp/term v0.0.0-20240307183742-ad8dadc14f31 // indirect
+	github.com/charmbracelet/x/ansi v0.1.4 // indirect
+	github.com/charmbracelet/x/conpty v0.1.0 // indirect
+	github.com/charmbracelet/x/errors v0.0.0-20240508181413-e8d8b6e2de86 // indirect
+	github.com/charmbracelet/x/exp/term v0.0.0-20240503143715-36ea203beff4 // indirect
+	github.com/charmbracelet/x/input v0.1.0 // indirect
+	github.com/charmbracelet/x/term v0.1.1 // indirect
+	github.com/charmbracelet/x/termios v0.1.0 // indirect
+	github.com/charmbracelet/x/windows v0.1.0 // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/creack/pty v1.1.21 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgraph-io/badger/v3 v3.2103.5 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -93,7 +100,7 @@ require (
 	github.com/muesli/mango-pflag v0.1.0 // indirect
 	github.com/muesli/roff v0.1.0 // indirect
 	github.com/muesli/sasquatch v0.0.0-20220506032543-a98cc9b4d8ec // indirect
-	github.com/muesli/termenv v0.15.2 // indirect
+	github.com/muesli/termenv v0.15.3-0.20240509142007-81b8f94111d5 // indirect
 	github.com/muesli/toktok v0.1.0 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -110,15 +117,16 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tyler-smith/go-bip39 v1.1.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/xrash/smetrics v0.0.0-20231213231151-1d8dd44e695e // indirect
 	go.opencensus.io v0.24.0 // indirect
 	goji.io v2.0.2+incompatible // indirect
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
-	golang.org/x/net v0.24.0 // indirect
-	golang.org/x/sync v0.6.0 // indirect
-	golang.org/x/sys v0.19.0 // indirect
-	golang.org/x/term v0.19.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/net v0.25.0 // indirect
+	golang.org/x/sync v0.7.0 // indirect
+	golang.org/x/sys v0.22.0 // indirect
+	golang.org/x/term v0.22.0 // indirect
+	golang.org/x/text v0.16.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240304020402-f0dba7c97c2b // indirect
 	modernc.org/libc v1.43.1 // indirect
