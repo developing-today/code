@@ -25,6 +25,7 @@
   '';
   settings = [
     {
+      start_hidden = true;
       height = 18; # the minimum effective number is affected by font-size and GTK_THEME
       layer = "top";
       position = "top"; # "bottom";

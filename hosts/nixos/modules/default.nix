@@ -26,6 +26,7 @@ let
               allowUnfree = true;
               permittedInsecurePackages = [
                 "electron" # le sigh
+                "qtwebkit-5.212.0-alpha4" # ???
               ];
             };
           };
@@ -45,6 +46,7 @@ let
             #allowUnfree = true;
             permittedInsecurePackages = [
               "electron" # le sigh
+              "qtwebkit-5.212.0-alpha4" # ???
             ];
           };
         };
@@ -71,7 +73,7 @@ let
           #exitNodeAllowLanAccess = true;
         };
         # default
-        #sops.secrets.tailscale_key = {
+        sops.secrets.tailscale_key = {};
         #  sopsFile = ../../../lib/config.enc/common/secrets.yaml;
         #};
       }
@@ -103,6 +105,7 @@ let
           #allowUnfree = true;
           #permittedInsecurePackages = [
           #  "electron" # le sigh
+          # "qtwebkit-5.212.0-alpha4" # ???
           #];
           #};
           #};

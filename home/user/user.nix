@@ -6,6 +6,7 @@
     allowUnfree = true;
     permittedInsecurePackages = [
       "electron" # le sigh
+      "qtwebkit-5.212.0-alpha4" # ???
     ];
   };
   gtk = {
@@ -871,7 +872,7 @@
         ELECTRON_OZONE_PLATFORM_HINT = "auto";
         EDITOR = "nvim";
         VISUAL = "nvim";
-        TERM = "alacritty";
+        TERM = "kitty"; #alacritty";
       };
       shellAliases = {
         #switch = "sudo nixos-rebuild switch";

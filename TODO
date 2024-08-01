@@ -1,5 +1,13 @@
+grimm/slurp vs hyprshot
+yazi shortcut yy
+osh ps1y
+wl-clipboard
+kitty ctrl+tab
+Dank Mono nerd font
+other nerd fonts
 use impermanence
-
+grimblast etc https://github.com/hyprwm/contrib
+what does hyprpicker do
 make rebuild accept flags
 - no flake update
   - (still update-ref for ./vim local refs)

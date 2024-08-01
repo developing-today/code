@@ -185,6 +185,7 @@
     allowUnfree = true;
     permittedInsecurePackages = [
       "electron" # le sigh
+      "qtwebkit-5.212.0-alpha4" # ???
     ];
   };
   #sound.enable = true;
@@ -217,7 +218,7 @@
   };
 
   users = {
-    defaultUserShell = pkgs.nushell; # oils-for-unix; #nushell;
+    defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell;
     users.user = {
       isNormalUser = true;
       description = "user";
@@ -308,7 +309,7 @@
     displayManager = {
       #autoLogin = { enable = true; user = "user"; };
       defaultSession = "hyprland";
-      sddm.enable = true;
+      sddm.enable = true; #/bin/osh
       #gdm.enable = true;
     };
     xserver = {
@@ -344,6 +345,40 @@
     systemPackages =
       with pkgs;
       [
+        playerctl
+        brillo
+        font-manager
+font-awesome
+fontpreview
+font-awesome_5
+#fontmatrix
+fontforge
+nerdfix
+nerdfonts
+nerdfix
+nerd-font-patcher
+terminus-nerdfont
+hackgen-nf-font
+maple-mono-NF
+udev-gothic-nf
+maple-mono-SC-NF
+fira-code
+hasklig
+maple-mono-woff2
+rictydiminished-with-firacode
+maple-mono-otf
+maple-mono-autohint
+monoid
+fira-code-symbols
+grimblast
+hyprland-monitor-attached
+hyprcursor
+hyprpicker
+hyprshade
+hyprkeys
+hyprlock
+hyprshot
+hyprdim
         lf
         ranger
         zathura

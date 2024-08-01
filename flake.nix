@@ -1,6 +1,7 @@
 {
   description = "developing.today NixOS configuration";
   inputs = {
+# switch to flakes, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     #nixpkgs.url = "github:NixOS/nixpkgs";
     nixpkgs.url = "github:dezren39/nixpkgs";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
@@ -32,7 +33,10 @@
       url = "github:hercules-ci/gitignore.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
+    waybar = {
+      url = "github:Alexays/Waybar";
+      #inputs.nixpkgs.follows = "nixpkgs";
+    };
     neovim-src = {
       url = "github:neovim/neovim";
       flake = false;
@@ -187,6 +191,7 @@
       vim,
       home-manager,
       yazi,
+      waybar,
       # nix-topology,
       # systems,
       ...
@@ -219,6 +224,7 @@
           #nix-software-center.overlay
           vim.overlay.x86_64-linux # .${system}
           yazi.overlays.default
+          waybar.overlays.default
           #nix-topology.overlays.default
         ];
       };
