@@ -1,7 +1,7 @@
 #{ stateVersion, pkgs, ... }:
 { pkgs, ... }:
 {
-  imports = [ ../../modules/home-manager/yazi.nix ];
+  imports = [ ../../home/common/modules/yazi.nix ];
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
@@ -781,9 +781,9 @@
   };
   manual.manpages.enable = true;
   programs = {
-    waybar = import programs/waybar.nix { inherit pkgs; };
-    alacritty = import programs/alacritty.nix;
-    kitty = import programs/kitty.nix;
+    waybar = import ../../home/common/programs/waybar.nix { inherit pkgs; };
+    alacritty = import ../../home/common/programs/alacritty.nix;
+    kitty = import ../../home/common/programs/kitty.nix;
     # neovim = import programs/nvim.nix {inherit pkgs;};
     # nixvim.enable = true;
     abook.enable = true;
