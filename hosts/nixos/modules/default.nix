@@ -3,7 +3,7 @@ let
   system = outputs.system;
   stateVersion = outputs.stateVersion;
   overlays = outputs.overlays.${system};
-
+  pkgs = outputs.pkgs.${system};
   homeManagerNixosModules = [
     (
       { ... }:
@@ -19,17 +19,7 @@ let
         # TODO: there is a thing that gets the root flake location
         home-manager.users.user = import ../../../home/user {
           inherit stateVersion;
-          pkgs = import inputs.nixpkgs {
-            inherit system;
-            overlays = overlays;
-            config = {
-              allowUnfree = true;
-              permittedInsecurePackages = [
-                "electron" # le sigh
-                "qtwebkit-5.212.0-alpha4" # ???
-              ];
-            };
-          };
+          pkgs = pkgs;
         };
       }
     )
@@ -39,17 +29,7 @@ let
     ++ [
       #nix-topology.nixosModules.default
       {
-        nixpkgs = {
-          overlays = outputs.overlays.${outputs.system};
-
-          config = {
-            #allowUnfree = true;
-            permittedInsecurePackages = [
-              "electron" # le sigh
-              "qtwebkit-5.212.0-alpha4" # ???
-            ];
-          };
-        };
+        #nixpkgs = pkgs;
         system.stateVersion = "23.11"; # stateVersion;
       }
       # TODO: there is a thing that gets the root flake location
@@ -63,20 +43,21 @@ let
     ++ [
       (import ../../../hosts/common/modules/tailscale-autoconnect.nix)
       (
-        { config, ... }: {
-        services.tailscaleAutoconnect = {
-          enable = true;
-          authkeyFile = config.sops.secrets.tailscale_key.path;
-          loginServer = "https://login.tailscale.com";
-          # default login server is controlplane, unsure why we are changing it.
-          #exitNode = "some-node-id";
-          #exitNodeAllowLanAccess = true;
-        };
-        # default
-        sops.secrets.tailscale_key = {};
-        #  sopsFile = ../../../lib/config.enc/common/secrets.yaml;
-        #};
-      }
+        { config, ... }:
+        {
+          services.tailscaleAutoconnect = {
+            enable = true;
+            authkeyFile = config.sops.secrets.tailscale_key.path;
+            loginServer = "https://login.tailscale.com";
+            # default login server is controlplane, unsure why we are changing it.
+            #exitNode = "some-node-id";
+            #exitNodeAllowLanAccess = true;
+          };
+          # default
+          sops.secrets.tailscale_key = { };
+          #  sopsFile = ../../../lib/config.enc/common/secrets.yaml;
+          #};
+        }
       )
       # TODO: there is a thing that gets the root flake location
       (import ../../../hosts/common/modules/hyprland.nix) # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies

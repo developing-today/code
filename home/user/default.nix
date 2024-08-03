@@ -872,7 +872,7 @@
         ELECTRON_OZONE_PLATFORM_HINT = "auto";
         EDITOR = "nvim";
         VISUAL = "nvim";
-        TERM = "kitty"; #alacritty";
+        TERM = "kitty"; # alacritty";
       };
       shellAliases = {
         #switch = "sudo nixos-rebuild switch";

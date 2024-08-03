@@ -1,7 +1,7 @@
 {
   description = "developing.today NixOS configuration";
   inputs = {
-# switch to flakes, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
+    # switch to flakes, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     #nixpkgs.url = "github:NixOS/nixpkgs";
     nixpkgs.url = "github:dezren39/nixpkgs";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
@@ -59,7 +59,6 @@
       inputs.git-hooks.follows = "git-hooks";
       inputs.neovim-src.follows = "neovim-src";
     };
-
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -113,7 +112,6 @@
       inputs.gitignore.follows = "gitignore";
       inputs.devshell.follows = "devshell";
       inputs.neovim-src.follows = "neovim-src";
-
     };
     #     TODO: flakehub fh
     nix-topology = {
@@ -123,13 +121,11 @@
       inputs.devshell.follows = "devshell";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
-
     devshell = {
       url = "github:numtide/devshell";
       inputs.nixpkgs.follows = "nixpkgs";
       # inputs.flake-utils.follows = "flake-utils";
     };
-
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -138,20 +134,17 @@
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
     };
-
     # rust-overlay = {
     #   url = "github:oxalica/rust-overlay";
     #   # follows?
     # };
-
-		yazi = {
-		  url = "github:sxyazi/yazi";
-			# not following to allow using yazi cache
-			# inputs.nixpkgs.follows = "nixpkgs";
-			# inputs.flake-utils.follows = "flake-utils";
-			# inputs.rust-overlay.follows = "rust-overlay";
-		};
-
+    yazi = {
+      url = "github:sxyazi/yazi";
+      # not following to allow using yazi cache
+      # inputs.nixpkgs.follows = "nixpkgs";
+      # inputs.flake-utils.follows = "flake-utils";
+      # inputs.rust-overlay.follows = "rust-overlay";
+    };
     #     hardware.url = "github:nixos/nixos-hardware";
     #     systems.url = "github:nix-systems/default-linux";
     #     hardware.url = "github:nixos/nixos-hardware";
@@ -180,7 +173,7 @@
     #       inputs.nixpkgs.follows = "nixpkgs";
     #     };
   };
-#  lib.fakeSha256 and lib.fakeSha512
+  #  lib.fakeSha256 and lib.fakeSha512
   outputs =
     {
       self,
@@ -202,158 +195,133 @@
       system = "x86_64-linux";
       supportedSystems = [ "x86_64-linux" ];
       lib = nixpkgs.lib // home-manager.lib;
-      forEachSystem = f: lib.genAttrs supportedSystems;
-
+      forEachSystem = f: lib.genAttrs supportedSystems f;
       pkgsFor = forEachSystem (
         system:
         import nixpkgs {
           inherit system;
-          config.allowUnfree = true;
+          overlays = overlays.${system};
+          config = {
+            allowUnfree = true;
+            permittedInsecurePackages = [
+              "electron" # le sigh
+              "qtwebkit-5.212.0-alpha4" # ???
+            ];
+          };
         }
       );
-      # shellForSystem = system: pkgs: import ./shell.nix { inherit pkgs; };
-
-      # devShells = forEachSystem (system: shellForSystem system (pkgsFor.${system}));
-      pkgs = pkgsFor.${system};
       overlays = {
         x86_64-linux = [
-          # import ./overlays { inherit inputs outputs;};
-
-          #     zig-overlay.overlays.default
-          #alejandra.overlay
-          #nix-software-center.overlay
+          # zig-overlay.overlays.default
           vim.overlay.x86_64-linux # .${system}
           yazi.overlays.default
           waybar.overlays.default
-          #nix-topology.overlays.default
+          # nix-topology.overlays.default
+          # rust-overlay
         ];
       };
+      supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
+        system:
+        let # all let vars should be added to inherit below.
+          pkgs = pkgsFor.${system};
+        in
+        rec {
+          inherit # all let vars should be added here. \/ \/ (from both lets)
+            pkgs
+            ; # /\ all let vars should be added here. /\ /\ (from both lets)
+          devShells = rec {
+            default = import ./shell.nix { inherit pkgs; };
+          };
+          devShell = import ./shell.nix { inherit pkgs; };
+          packages = rec {
+            default = devShell;
+          };
+          defaultPackage = packages.default;
+          apps = rec {
+            # TODO: makeapp
+            default = devShell;
+          };
+          # https://github.com/Misterio77/nix-starter-configs/blob/main/standard/flake.nix#L66
+        }
+      );
+      pkgs = supportedSystemsOutputs.x86_64-linux.pkgs;
     in
-    # flake-utils.lib.eachSystem supportedSystems (
-    #   system:
-    #   let
-    #     pkgs = pkgsFor.${system};
-    #   in
-      # pkgs = pk
-      # pkgs = pkgsFor.${system};
-      # devShell = devShells.${system}.default;
-      # devShell = shellForSystem system pkgs;
-      # devShells = devShellsFor system;
-      # packages = {
-      #   inherit pkgs;
-      #   defaultPackage = devShell;
-      #   ${system} = devShell;
-      # };
-      # defaultPackage = packages.defaultPackage;
-      flake-utils.lib.eachSystem supportedSystems
-      # flake-utils.lib.eachDefaultSystem
-            (system:
-            # 'devShells.x86_64-linux.default'
-            # 'devShell.x86_64-linux'
-            # 'packages.x86_64-linux.default'
-            # 'defaultPackage.x86_64-linux'
-              let # all let vars should be added to inherit below.
-                # overlays = [ (import rust-overlay) ];
-                pkgs = import nixpkgs {
-                  inherit system;
-                  config.allowUnfree = true;
-                };
-              in
-              rec {
-              inherit # all let vars should be added here. \/ \/ (from both lets)
-                 pkgs
-                 ; # /\ all let vars should be added here. /\ /\ (from both lets)
-
-                devShells = rec {
-                  default = import ./shell.nix { inherit pkgs; };
-                };
-                devShell = import ./shell.nix { inherit pkgs; };
-                packages = rec {
-                  default = devShell;
-                };
-                defaultPackage = packages.default;
-                apps = rec { # TODO: makeapp
-                  default = devShell;
-                };
-              }) // rec {
-        inherit # all let vars should be added here. \/ \/
-          # let self = builtins.trace self.outPath { } // { outPath = ./.; }; in self #https://github.com/NixOS/nix/issues/8300#issuecomment-1537501849
-          #         self
-          # .\#self.inputs
-          # .\#self.lastModifiedDate
-          # .\#self.outPath
-          # .\#self.packages
-          # .\#self.sourceInfo
-          # .\#self.lastModified
-          # .\#self.narHash
-          # .\#self.outputs
-          # .\#self.self
-          # .\#self._type
-          stateVersion
-          system
-          supportedSystems
-          lib
-          pkgs
-          overlays
-          ; # /\ all let vars should be added here. /\ /\
-
-        nixosConfigurations = (import ./hosts) {
-        # 'packages.x86_64-linux.nixosConfigurations."nixos".config.system.build.nixos-rebuild'
-        # 'legacyPackages.x86_64-linux.nixosConfigurations."nixos".config.system.build.nixos-rebuild'
-        # 'nixosConfigurations."nixos".config.system.build.nixos-rebuild'
-          inherit inputs;
-          outputs = self.outputs;
-        };
-        default = import ./shell.nix { inherit pkgs; };
-        # TODO: rootPath = ./.; # self.outPath # builtins.path
-        #       nixosModules = import ./modules/nixos;
-        #       homeManagerModules = import ./modules/home-manager;
-        #       overlays = import ./overlays {inherit inputs outputs;};
-        #       hydraJobs = import ./hydra.nix {inherit inputs outputs;};
-        #       packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
-        #       formatter = forEachSystem (pkgs: pkgs.alejandra);
-        #       hydra
-        # https://github.com/Misterio77/nix-config
-        # https://github.com/Mic92/dotfiles
-        # deploy-rs https://github.com/serokell/deploy-rs (vs just using nixos-rebuild or ?? colmena??)
-        # knot dns
-        # what is nix.extraOptions ?
-        # add @wheel to trusted-users ??
-        #       TODO: tailscale https://guekka.github.io/nixos-server-2/
-        #       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
-        #       set content addressible default for all
-        #        devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
-        #           devShell.${system} = devShellInner;
-        #           # Repeat this for each system where you want to build your topology.
-        #           # You can do this manually or use flake-utils.
-        #           topology.x86_64-linux = import nix-topology {
-        #             inherit pkgs; # Only this package set must include nix-topology.overlays.default
-        #             modules = [
-        #               ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
-        #               #./topology.nix
-        #               # Inline module to inform topology of your existing NixOS hosts.
-        #               { nixosConfigurations = self.nixosConfigurations; }
-        #             ];
-        #           };
-        #         };
-        #     nix-topology.nixosModules.default
-        #        #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
-        #        #zed-fhs = pkgs.buildFHSUserEnv {
-        #        #  name = "zed";
-        #        #  targetPkgs = pkgs: [ zed-editor ];
-        #        #  runScript = "zed";
-        #        #};
-        #         homeConfigurations = {
-        #           # Standalone HM only
-        #           "user@laptop-framework" = lib.homeManagerConfiguration {
-        #             modules = [ ./home/user/user.nix ];
-        #             pkgs = pkgsFor.x86_64-linux;
-        #             extraSpecialArgs = { inherit inputs; outputs = self.outputs; };
-        #           };
-        #         };
-        #       */
+    supportedSystemsOutputs
+    // rec {
+      inherit # all let vars should be added here. \/ \/
+        # let self = builtins.trace self.outPath { } // { outPath = ./.; }; in self #https://github.com/NixOS/nix/issues/8300#issuecomment-1537501849
+        #         self
+        # .\#self.inputs
+        # .\#self.lastModifiedDate
+        # .\#self.outPath
+        # .\#self.packages
+        # .\#self.sourceInfo
+        # .\#self.lastModified
+        # .\#self.narHash
+        # .\#self.outputs
+        # .\#self.self
+        # .\#self._type
+        stateVersion
+        system
+        supportedSystems
+        lib
+        #pkgs
+        overlays
+        ; # /\ all let vars should be added here. /\ /\
+      nixosConfigurations = (import ./hosts) {
+        inherit inputs;
+        outputs = self.outputs;
       };
-    # );
+      default = import ./shell.nix { inherit pkgs; };
+      # TODO: rootPath = ./.; # self.outPath # builtins.path
+      #       nixosModules = import ./modules/nixos;
+      #       homeManagerModules = import ./modules/home-manager;
+      #       overlays = import ./overlays {inherit inputs outputs;};
+      #       hydraJobs = import ./hydra.nix {inherit inputs outputs;};
+      #       packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
+      #       formatter = forEachSystem (pkgs: pkgs.alejandra);
+      #       hydra
+      # https://github.com/Misterio77/nix-config
+      # https://github.com/Mic92/dotfiles
+      # deploy-rs https://github.com/serokell/deploy-rs (vs just using nixos-rebuild or ?? colmena??)
+      # knot dns
+      # what is nix.extraOptions ?
+      # add @wheel to trusted-users ??
+      #       TODO: tailscale https://guekka.github.io/nixos-server-2/
+      #       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
+      #       set content addressible default for all
+      #        devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
+      #           devShell.${system} = devShellInner;
+      #           # Repeat this for each system where you want to build your topology.
+      #           # You can do this manually or use flake-utils.
+      #           topology.x86_64-linux = import nix-topology {
+      #             inherit pkgs; # Only this package set must include nix-topology.overlays.default
+      #             modules = [
+      #               ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
+      #               #./topology.nix
+      #               # Inline module to inform topology of your existing NixOS hosts.
+      #               { nixosConfigurations = self.nixosConfigurations; }
+      #             ];
+      #           };
+      #         };
+      #     nix-topology.nixosModules.default
+      #        #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
+      #        #zed-fhs = pkgs.buildFHSUserEnv {
+      #        #  name = "zed";
+      #        #  targetPkgs = pkgs: [ zed-editor ];
+      #        #  runScript = "zed";
+      #        #};
+      #         homeConfigurations = {
+      #           # Standalone HM only
+      #           "user@laptop-framework" = lib.homeManagerConfiguration {
+      #             modules = [ ./home/user/user.nix ];
+      #             pkgs = pkgsFor.x86_64-linux;
+      #             extraSpecialArgs = { inherit inputs; outputs = self.outputs; };
+      #           };
+      #         };
+      #       */
+    };
+  # );
   nixConfig = {
     # should match nix.settings
     experimental-features = [
@@ -379,7 +347,7 @@
     trusted-users = [ "root" ];
     substituters = [
       # TODO: priority order
-      "https://cache.nixos.org" #priority
+      "https://cache.nixos.org" # priority
       "https://yazi.cachix.org"
       #         "https://nix-community.cachix.org"
       #         "https://nix-gaming.cachix.org"
@@ -390,7 +358,7 @@
       #         "https://sylvorg.cachix.org"
     ];
     trusted-substituters = [
-      "https://cache.nixos.org" #priority
+      "https://cache.nixos.org" # priority
       "https://yazi.cachix.org"
       #         "https://nix-community.cachix.org"
       #         "https://nix-gaming.cachix.org"
@@ -401,8 +369,8 @@
       #         "https://sylvorg.cachix.org"
     ];
     /*
-    extra-substituters = [ "https://yazi.cachix.org" ];
-    extra-trusted-public-keys = [ "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=" ];
+      extra-substituters = [ "https://yazi.cachix.org" ];
+      extra-trusted-public-keys = [ "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=" ];
     */
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="

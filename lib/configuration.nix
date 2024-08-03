@@ -309,7 +309,7 @@
     displayManager = {
       #autoLogin = { enable = true; user = "user"; };
       defaultSession = "hyprland";
-      sddm.enable = true; #/bin/osh
+      sddm.enable = true; # /bin/osh
       #gdm.enable = true;
     };
     xserver = {
@@ -348,37 +348,37 @@
         playerctl
         brillo
         font-manager
-font-awesome
-fontpreview
-font-awesome_5
-#fontmatrix
-fontforge
-nerdfix
-nerdfonts
-nerdfix
-nerd-font-patcher
-terminus-nerdfont
-hackgen-nf-font
-maple-mono-NF
-udev-gothic-nf
-maple-mono-SC-NF
-fira-code
-hasklig
-maple-mono-woff2
-rictydiminished-with-firacode
-maple-mono-otf
-maple-mono-autohint
-monoid
-fira-code-symbols
-grimblast
-hyprland-monitor-attached
-hyprcursor
-hyprpicker
-hyprshade
-hyprkeys
-hyprlock
-hyprshot
-hyprdim
+        font-awesome
+        fontpreview
+        font-awesome_5
+        #fontmatrix
+        fontforge
+        nerdfix
+        nerdfonts
+        nerdfix
+        nerd-font-patcher
+        terminus-nerdfont
+        hackgen-nf-font
+        maple-mono-NF
+        udev-gothic-nf
+        maple-mono-SC-NF
+        fira-code
+        hasklig
+        maple-mono-woff2
+        rictydiminished-with-firacode
+        maple-mono-otf
+        maple-mono-autohint
+        monoid
+        fira-code-symbols
+        grimblast
+        hyprland-monitor-attached
+        hyprcursor
+        hyprpicker
+        hyprshade
+        hyprkeys
+        hyprlock
+        hyprshot
+        hyprdim
         lf
         ranger
         zathura
