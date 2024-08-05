@@ -1,21 +1,78 @@
 '@':
+  banana:
+    1110x.de_@_MX_42_0:
+      content: monday.mxroute.com
+      domain: 1110x.de
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: MX
+    1110x.de_@_MX_42_1:
+      content: monday-relay.mxroute.com
+      domain: 1110x.de
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: MX
+    1110x.de_@_TXT_42_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 1110x.de
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: TXT
+    1110x.de_blog_CNAME_42_0:
+      content: 1110x.de
+      domain: 1110x.de
+      name: blog
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: CNAME
+    1110x.de_mail_CNAME_42_0:
+      content: www.1110x.de
+      domain: 1110x.de
+      name: mail
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: CNAME
+    1110x.de_www_CNAME_42_0:
+      content: 1110x.de
+      domain: 1110x.de
+      name: www
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: CNAME
+    1110x.de_x._domainkey_TXT_42_0:
+      content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
+      domain: 1110x.de
+      name: x._domainkey
+      priority: "42"
+      provider: banana
+      ttl: "4200"
+      type: TXT
   porkbun:
     01b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 01b.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     01b.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 01b.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     01b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 01b.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     01b.us_blog_CNAME_0_0:
@@ -23,6 +80,7 @@
       domain: 01b.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     01b.us_mail_CNAME_0_0:
@@ -30,6 +88,7 @@
       domain: 01b.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     01b.us_www_CNAME_0_0:
@@ -37,24 +96,28 @@
       domain: 01b.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x111.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: 0x111.dev
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     0x111.dev_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 0x111.dev
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     0x111.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 0x111.dev
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     0x111.dev_blog_CNAME_0_0:
@@ -62,6 +125,7 @@
       domain: 0x111.dev
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x111.dev_mail_CNAME_0_0:
@@ -69,6 +133,7 @@
       domain: 0x111.dev
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x111.dev_www_CNAME_0_0:
@@ -76,24 +141,28 @@
       domain: 0x111.dev
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x1110.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: 0x1110.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     0x1110.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 0x1110.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     0x1110.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 0x1110.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     0x1110.com_blog_CNAME_0_0:
@@ -101,6 +170,7 @@
       domain: 0x1110.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x1110.com_mail_CNAME_0_0:
@@ -108,6 +178,7 @@
       domain: 0x1110.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x1110.com_www_CNAME_0_0:
@@ -115,24 +186,28 @@
       domain: 0x1110.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x1110.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: 0x1110.dev
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     0x1110.dev_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 0x1110.dev
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     0x1110.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 0x1110.dev
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     0x1110.dev_blog_CNAME_0_0:
@@ -140,6 +215,7 @@
       domain: 0x1110.dev
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x1110.dev_mail_CNAME_0_0:
@@ -147,6 +223,7 @@
       domain: 0x1110.dev
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     0x1110.dev_www_CNAME_0_0:
@@ -154,24 +231,28 @@
       domain: 0x1110.dev
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     1110x.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: 1110x.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     1110x.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 1110x.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     1110x.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 1110x.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     1110x.com_blog_CNAME_0_0:
@@ -179,6 +260,7 @@
       domain: 1110x.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     1110x.com_mail_CNAME_0_0:
@@ -186,6 +268,7 @@
       domain: 1110x.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     1110x.com_www_CNAME_0_0:
@@ -193,70 +276,28 @@
       domain: 1110x.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
-    1110x.de_@_MX_10_0:
-      content: monday.mxroute.com
-      domain: 1110x.de
-      priority: 10
-      ttl: 600
-      type: MX
-    1110x.de_@_MX_20_0:
-      content: monday-relay.mxroute.com
-      domain: 1110x.de
-      priority: 20
-      ttl: 600
-      type: MX
-    1110x.de_@_TXT_0_0:
-      content: v=spf1 include:mxlogin.com -all
-      domain: 1110x.de
-      priority: 0
-      ttl: 600
-      type: TXT
-    1110x.de_blog_CNAME_0_0:
-      content: 1110x.de
-      domain: 1110x.de
-      name: blog
-      priority: 0
-      ttl: 600
-      type: CNAME
-    1110x.de_mail_CNAME_0_0:
-      content: www.1110x.de
-      domain: 1110x.de
-      name: mail
-      priority: 0
-      ttl: 600
-      type: CNAME
-    1110x.de_www_CNAME_0_0:
-      content: 1110x.de
-      domain: 1110x.de
-      name: www
-      priority: 0
-      ttl: 600
-      type: CNAME
-    1110x.de_x._domainkey_TXT_0_0:
-      content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
-      domain: 1110x.de
-      name: x._domainkey
-      priority: 0
-      ttl: 3600
-      type: TXT
     1110x.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: 1110x.dev
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     1110x.dev_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 1110x.dev
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     1110x.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 1110x.dev
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     1110x.dev_blog_CNAME_0_0:
@@ -264,6 +305,7 @@
       domain: 1110x.dev
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     1110x.dev_mail_CNAME_0_0:
@@ -271,6 +313,7 @@
       domain: 1110x.dev
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     1110x.dev_www_CNAME_0_0:
@@ -278,24 +321,28 @@
       domain: 1110x.dev
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     15b.org_@_MX_10_0:
       content: monday.mxroute.com
       domain: 15b.org
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     15b.org_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 15b.org
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     15b.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 15b.org
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     15b.org_blog_CNAME_0_0:
@@ -303,6 +350,7 @@
       domain: 15b.org
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     15b.org_mail_CNAME_0_0:
@@ -310,6 +358,7 @@
       domain: 15b.org
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     15b.org_www_CNAME_0_0:
@@ -317,24 +366,28 @@
       domain: 15b.org
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     15b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 15b.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     15b.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 15b.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     15b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 15b.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     15b.us_blog_CNAME_0_0:
@@ -342,6 +395,7 @@
       domain: 15b.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     15b.us_mail_CNAME_0_0:
@@ -349,6 +403,7 @@
       domain: 15b.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     15b.us_www_CNAME_0_0:
@@ -356,24 +411,28 @@
       domain: 15b.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     32b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 32b.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     32b.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 32b.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     32b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 32b.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     32b.us_blog_CNAME_0_0:
@@ -381,6 +440,7 @@
       domain: 32b.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     32b.us_mail_CNAME_0_0:
@@ -388,6 +448,7 @@
       domain: 32b.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     32b.us_www_CNAME_0_0:
@@ -395,24 +456,28 @@
       domain: 32b.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     3dtropic.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: 3dtropic.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     3dtropic.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 3dtropic.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     3dtropic.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 3dtropic.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     3dtropic.com_blog_CNAME_0_0:
@@ -420,6 +485,7 @@
       domain: 3dtropic.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     3dtropic.com_mail_CNAME_0_0:
@@ -427,6 +493,7 @@
       domain: 3dtropic.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     3dtropic.com_www_CNAME_0_0:
@@ -434,24 +501,28 @@
       domain: 3dtropic.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     3dtropics.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: 3dtropics.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     3dtropics.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 3dtropics.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     3dtropics.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 3dtropics.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     3dtropics.com_blog_CNAME_0_0:
@@ -459,6 +530,7 @@
       domain: 3dtropics.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     3dtropics.com_mail_CNAME_0_0:
@@ -466,6 +538,7 @@
       domain: 3dtropics.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     3dtropics.com_www_CNAME_0_0:
@@ -473,24 +546,28 @@
       domain: 3dtropics.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     64b.org_@_MX_10_0:
       content: monday.mxroute.com
       domain: 64b.org
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     64b.org_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 64b.org
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     64b.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 64b.org
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     64b.org_blog_CNAME_0_0:
@@ -498,6 +575,7 @@
       domain: 64b.org
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     64b.org_mail_CNAME_0_0:
@@ -505,6 +583,7 @@
       domain: 64b.org
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     64b.org_www_CNAME_0_0:
@@ -512,24 +591,28 @@
       domain: 64b.org
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     64b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 64b.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     64b.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 64b.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     64b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 64b.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     64b.us_blog_CNAME_0_0:
@@ -537,6 +620,7 @@
       domain: 64b.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     64b.us_mail_CNAME_0_0:
@@ -544,6 +628,7 @@
       domain: 64b.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     64b.us_www_CNAME_0_0:
@@ -551,24 +636,28 @@
       domain: 64b.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     69b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 69b.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     69b.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 69b.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     69b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 69b.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     69b.us_blog_CNAME_0_0:
@@ -576,6 +665,7 @@
       domain: 69b.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     69b.us_mail_CNAME_0_0:
@@ -583,6 +673,7 @@
       domain: 69b.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     69b.us_www_CNAME_0_0:
@@ -590,24 +681,28 @@
       domain: 69b.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     79b.org_@_MX_10_0:
       content: monday.mxroute.com
       domain: 79b.org
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     79b.org_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 79b.org
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     79b.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 79b.org
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     79b.org_blog_CNAME_0_0:
@@ -615,6 +710,7 @@
       domain: 79b.org
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     79b.org_mail_CNAME_0_0:
@@ -622,6 +718,7 @@
       domain: 79b.org
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     79b.org_www_CNAME_0_0:
@@ -629,24 +726,28 @@
       domain: 79b.org
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     79b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 79b.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     79b.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: 79b.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     79b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 79b.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     79b.us_blog_CNAME_0_0:
@@ -654,6 +755,7 @@
       domain: 79b.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     79b.us_mail_CNAME_0_0:
@@ -661,6 +763,7 @@
       domain: 79b.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     79b.us_www_CNAME_0_0:
@@ -668,24 +771,28 @@
       domain: 79b.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     carbonfreezeme.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: carbonfreezeme.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     carbonfreezeme.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: carbonfreezeme.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     carbonfreezeme.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: carbonfreezeme.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     carbonfreezeme.com_blog_CNAME_0_0:
@@ -693,6 +800,7 @@
       domain: carbonfreezeme.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     carbonfreezeme.com_mail_CNAME_0_0:
@@ -700,6 +808,7 @@
       domain: carbonfreezeme.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     carbonfreezeme.com_www_CNAME_0_0:
@@ -707,24 +816,28 @@
       domain: carbonfreezeme.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     default.computer_@_MX_10_0:
       content: monday.mxroute.com
       domain: default.computer
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     default.computer_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: default.computer
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     default.computer_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: default.computer
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     default.computer_blog_CNAME_0_0:
@@ -732,6 +845,7 @@
       domain: default.computer
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     default.computer_mail_CNAME_0_0:
@@ -739,6 +853,7 @@
       domain: default.computer
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     default.computer_www_CNAME_0_0:
@@ -746,24 +861,28 @@
       domain: default.computer
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     default.properties_@_MX_10_0:
       content: monday.mxroute.com
       domain: default.properties
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     default.properties_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: default.properties
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     default.properties_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: default.properties
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     default.properties_blog_CNAME_0_0:
@@ -771,6 +890,7 @@
       domain: default.properties
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     default.properties_mail_CNAME_0_0:
@@ -778,6 +898,7 @@
       domain: default.properties
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     default.properties_www_CNAME_0_0:
@@ -785,24 +906,28 @@
       domain: default.properties
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developing-today.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: developing-today.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     developing-today.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: developing-today.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     developing-today.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developing-today.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     developing-today.com_blog_CNAME_0_0:
@@ -810,6 +935,7 @@
       domain: developing-today.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developing-today.com_mail_CNAME_0_0:
@@ -817,6 +943,7 @@
       domain: developing-today.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developing-today.com_www_CNAME_0_0:
@@ -824,24 +951,28 @@
       domain: developing-today.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developing.today_@_MX_10_0:
       content: monday.mxroute.com
       domain: developing.today
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     developing.today_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: developing.today
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     developing.today_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developing.today
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     developing.today_blog_CNAME_0_0:
@@ -849,6 +980,7 @@
       domain: developing.today
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developing.today_mail_CNAME_0_0:
@@ -856,6 +988,7 @@
       domain: developing.today
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developing.today_www_CNAME_0_0:
@@ -863,24 +996,28 @@
       domain: developing.today
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developingto.day_@_MX_10_0:
       content: monday.mxroute.com
       domain: developingto.day
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     developingto.day_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: developingto.day
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     developingto.day_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developingto.day
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     developingto.day_blog_CNAME_0_0:
@@ -888,6 +1025,7 @@
       domain: developingto.day
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developingto.day_mail_CNAME_0_0:
@@ -895,6 +1033,7 @@
       domain: developingto.day
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     developingto.day_www_CNAME_0_0:
@@ -902,24 +1041,28 @@
       domain: developingto.day
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: eau3d.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     eau3d.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: eau3d.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     eau3d.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: eau3d.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     eau3d.com_blog_CNAME_0_0:
@@ -927,6 +1070,7 @@
       domain: eau3d.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.com_mail_CNAME_0_0:
@@ -934,6 +1078,7 @@
       domain: eau3d.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.com_www_CNAME_0_0:
@@ -941,24 +1086,28 @@
       domain: eau3d.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: eau3d.dev
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     eau3d.dev_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: eau3d.dev
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     eau3d.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: eau3d.dev
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     eau3d.dev_blog_CNAME_0_0:
@@ -966,6 +1115,7 @@
       domain: eau3d.dev
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.dev_mail_CNAME_0_0:
@@ -973,6 +1123,7 @@
       domain: eau3d.dev
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.dev_www_CNAME_0_0:
@@ -980,24 +1131,28 @@
       domain: eau3d.dev
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.org_@_MX_10_0:
       content: monday.mxroute.com
       domain: eau3d.org
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     eau3d.org_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: eau3d.org
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     eau3d.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: eau3d.org
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     eau3d.org_blog_CNAME_0_0:
@@ -1005,6 +1160,7 @@
       domain: eau3d.org
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.org_mail_CNAME_0_0:
@@ -1012,6 +1168,7 @@
       domain: eau3d.org
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     eau3d.org_www_CNAME_0_0:
@@ -1019,24 +1176,28 @@
       domain: eau3d.org
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     grandnag.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: grandnag.us
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     grandnag.us_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: grandnag.us
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     grandnag.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: grandnag.us
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     grandnag.us_blog_CNAME_0_0:
@@ -1044,6 +1205,7 @@
       domain: grandnag.us
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     grandnag.us_mail_CNAME_0_0:
@@ -1051,6 +1213,7 @@
       domain: grandnag.us
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     grandnag.us_www_CNAME_0_0:
@@ -1058,24 +1221,28 @@
       domain: grandnag.us
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     hax.live_@_MX_10_0:
       content: monday.mxroute.com
       domain: hax.live
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     hax.live_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: hax.live
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     hax.live_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: hax.live
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     hax.live_blog_CNAME_0_0:
@@ -1083,6 +1250,7 @@
       domain: hax.live
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     hax.live_mail_CNAME_0_0:
@@ -1090,6 +1258,7 @@
       domain: hax.live
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     hax.live_www_CNAME_0_0:
@@ -1097,24 +1266,28 @@
       domain: hax.live
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     l0x.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: l0x.dev
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     l0x.dev_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: l0x.dev
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     l0x.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: l0x.dev
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     l0x.dev_blog_CNAME_0_0:
@@ -1122,6 +1295,7 @@
       domain: l0x.dev
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     l0x.dev_mail_CNAME_0_0:
@@ -1129,6 +1303,7 @@
       domain: l0x.dev
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     l0x.dev_www_CNAME_0_0:
@@ -1136,24 +1311,28 @@
       domain: l0x.dev
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     lair.cloud_@_MX_10_0:
       content: monday.mxroute.com
       domain: lair.cloud
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     lair.cloud_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: lair.cloud
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     lair.cloud_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: lair.cloud
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     lair.cloud_blog_CNAME_0_0:
@@ -1161,6 +1340,7 @@
       domain: lair.cloud
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     lair.cloud_mail_CNAME_0_0:
@@ -1168,6 +1348,7 @@
       domain: lair.cloud
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     lair.cloud_www_CNAME_0_0:
@@ -1175,24 +1356,28 @@
       domain: lair.cloud
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     o3d.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: o3d.dev
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     o3d.dev_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: o3d.dev
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     o3d.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: o3d.dev
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     o3d.dev_blog_CNAME_0_0:
@@ -1200,6 +1385,7 @@
       domain: o3d.dev
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     o3d.dev_mail_CNAME_0_0:
@@ -1207,6 +1393,7 @@
       domain: o3d.dev
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     o3d.dev_www_CNAME_0_0:
@@ -1214,24 +1401,28 @@
       domain: o3d.dev
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     printmy.pictures_@_MX_10_0:
       content: monday.mxroute.com
       domain: printmy.pictures
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     printmy.pictures_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: printmy.pictures
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     printmy.pictures_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: printmy.pictures
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     printmy.pictures_blog_CNAME_0_0:
@@ -1239,6 +1430,7 @@
       domain: printmy.pictures
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     printmy.pictures_mail_CNAME_0_0:
@@ -1246,6 +1438,7 @@
       domain: printmy.pictures
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     printmy.pictures_www_CNAME_0_0:
@@ -1253,24 +1446,28 @@
       domain: printmy.pictures
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     printmy3dmodel.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: printmy3dmodel.com
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     printmy3dmodel.com_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: printmy3dmodel.com
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     printmy3dmodel.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: printmy3dmodel.com
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     printmy3dmodel.com_blog_CNAME_0_0:
@@ -1278,6 +1475,7 @@
       domain: printmy3dmodel.com
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     printmy3dmodel.com_mail_CNAME_0_0:
@@ -1285,6 +1483,7 @@
       domain: printmy3dmodel.com
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     printmy3dmodel.com_www_CNAME_0_0:
@@ -1292,24 +1491,28 @@
       domain: printmy3dmodel.com
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.how_@_MX_10_0:
       content: monday.mxroute.com
       domain: rom.how
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     rom.how_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: rom.how
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     rom.how_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: rom.how
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     rom.how_blog_CNAME_0_0:
@@ -1317,6 +1520,7 @@
       domain: rom.how
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.how_mail_CNAME_0_0:
@@ -1324,6 +1528,7 @@
       domain: rom.how
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.how_www_CNAME_0_0:
@@ -1331,24 +1536,28 @@
       domain: rom.how
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.rest_@_MX_10_0:
       content: monday.mxroute.com
       domain: rom.rest
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     rom.rest_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: rom.rest
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     rom.rest_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: rom.rest
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     rom.rest_blog_CNAME_0_0:
@@ -1356,6 +1565,7 @@
       domain: rom.rest
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.rest_mail_CNAME_0_0:
@@ -1363,6 +1573,7 @@
       domain: rom.rest
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.rest_www_CNAME_0_0:
@@ -1370,24 +1581,28 @@
       domain: rom.rest
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.run_@_MX_10_0:
       content: monday.mxroute.com
       domain: rom.run
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     rom.run_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: rom.run
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     rom.run_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: rom.run
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     rom.run_blog_CNAME_0_0:
@@ -1395,6 +1610,7 @@
       domain: rom.run
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.run_mail_CNAME_0_0:
@@ -1402,6 +1618,7 @@
       domain: rom.run
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     rom.run_www_CNAME_0_0:
@@ -1409,24 +1626,28 @@
       domain: rom.run
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     s0s.pw_@_MX_10_0:
       content: monday.mxroute.com
       domain: s0s.pw
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     s0s.pw_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: s0s.pw
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     s0s.pw_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: s0s.pw
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     s0s.pw_blog_CNAME_0_0:
@@ -1434,6 +1655,7 @@
       domain: s0s.pw
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     s0s.pw_mail_CNAME_0_0:
@@ -1441,6 +1663,7 @@
       domain: s0s.pw
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     s0s.pw_www_CNAME_0_0:
@@ -1448,24 +1671,28 @@
       domain: s0s.pw
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     security.cab_@_MX_10_0:
       content: monday.mxroute.com
       domain: security.cab
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     security.cab_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: security.cab
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     security.cab_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: security.cab
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     security.cab_blog_CNAME_0_0:
@@ -1473,6 +1700,7 @@
       domain: security.cab
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     security.cab_mail_CNAME_0_0:
@@ -1480,6 +1708,7 @@
       domain: security.cab
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     security.cab_www_CNAME_0_0:
@@ -1487,24 +1716,28 @@
       domain: security.cab
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     yak.pub_@_MX_10_0:
       content: monday.mxroute.com
       domain: yak.pub
       priority: 10
+      provider: porkbun
       ttl: 600
       type: MX
     yak.pub_@_MX_20_0:
       content: monday-relay.mxroute.com
       domain: yak.pub
       priority: 20
+      provider: porkbun
       ttl: 600
       type: MX
     yak.pub_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: yak.pub
       priority: 0
+      provider: porkbun
       ttl: 600
       type: TXT
     yak.pub_blog_CNAME_0_0:
@@ -1512,6 +1745,7 @@
       domain: yak.pub
       name: blog
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     yak.pub_mail_CNAME_0_0:
@@ -1519,6 +1753,7 @@
       domain: yak.pub
       name: mail
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
     yak.pub_www_CNAME_0_0:
@@ -1526,1338 +1761,732 @@
       domain: yak.pub
       name: www
       priority: 0
+      provider: porkbun
       ttl: 600
       type: CNAME
+banana:
+  1110x.de:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          priority: "42"
+          provider: banana
+          ttl: "4200"
+        - content: monday-relay.mxroute.com
+          priority: "42"
+          provider: banana
+          ttl: "4200"
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          priority: "42"
+          provider: banana
+          ttl: "4200"
+    blog:
+      CNAME:
+        - content: 1110x.de
+          priority: "42"
+          provider: banana
+          ttl: "4200"
+    mail:
+      CNAME:
+        - content: www.1110x.de
+          priority: "42"
+          provider: banana
+          ttl: "4200"
+    www:
+      CNAME:
+        - content: 1110x.de
+          priority: "42"
+          provider: banana
+          ttl: "4200"
+    x._domainkey:
+      TXT:
+        - content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
+          priority: "42"
+          provider: banana
+          ttl: "4200"
 porkbun:
   01b.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 01b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.01b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 01b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   0x111.dev:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 0x111.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.0x111.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 0x111.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
   0x1110.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 0x1110.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.0x1110.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 0x1110.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   0x1110.dev:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 0x1110.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.0x1110.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 0x1110.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
   1110x.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 1110x.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.1110x.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 1110x.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
-  1110x.de:
-    '@':
-      MX:
-        - content: monday.mxroute.com
-          priority: 10
-          provider: porkbun
-          ttl: 600
-        - content: monday-relay.mxroute.com
-          priority: 20
-          provider: porkbun
-          ttl: 600
-      TXT:
-        - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
-    blog:
-      CNAME:
-        - content: 1110x.de
-          priority: 0
-          provider: porkbun
-          ttl: 600
-    mail:
-      CNAME:
-        - content: www.1110x.de
-          priority: 0
-          provider: porkbun
-          ttl: 600
-    www:
-      CNAME:
-        - content: 1110x.de
-          priority: 0
-          provider: porkbun
-          ttl: 600
-    x._domainkey:
-      TXT:
-        - content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
-          priority: 0
-          provider: porkbun
-          ttl: 3600
   1110x.dev:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 1110x.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.1110x.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 1110x.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
   15b.org:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 15b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.15b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 15b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
   15b.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 15b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.15b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 15b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   32b.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 32b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.32b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 32b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   3dtropic.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 3dtropic.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.3dtropic.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 3dtropic.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   3dtropics.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 3dtropics.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.3dtropics.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 3dtropics.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   64b.org:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 64b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.64b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 64b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
   64b.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 64b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.64b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 64b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   69b.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 69b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.69b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 69b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   79b.org:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 79b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.79b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 79b.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
   79b.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: 79b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.79b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: 79b.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   carbonfreezeme.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: carbonfreezeme.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.carbonfreezeme.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: carbonfreezeme.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   default.computer:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: default.computer
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.default.computer
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: default.computer
-          priority: 0
-          provider: porkbun
-          ttl: 600
   default.properties:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: default.properties
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.default.properties
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: default.properties
-          priority: 0
-          provider: porkbun
-          ttl: 600
   developing-today.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: developing-today.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.developing-today.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: developing-today.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   developing.today:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: developing.today
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.developing.today
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: developing.today
-          priority: 0
-          provider: porkbun
-          ttl: 600
   developingto.day:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: developingto.day
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.developingto.day
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: developingto.day
-          priority: 0
-          provider: porkbun
-          ttl: 600
   eau3d.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: eau3d.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.eau3d.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: eau3d.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   eau3d.dev:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: eau3d.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.eau3d.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: eau3d.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
   eau3d.org:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: eau3d.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.eau3d.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: eau3d.org
-          priority: 0
-          provider: porkbun
-          ttl: 600
   grandnag.us:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: grandnag.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.grandnag.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: grandnag.us
-          priority: 0
-          provider: porkbun
-          ttl: 600
   hax.live:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: hax.live
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.hax.live
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: hax.live
-          priority: 0
-          provider: porkbun
-          ttl: 600
   l0x.dev:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: l0x.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.l0x.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: l0x.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
   lair.cloud:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: lair.cloud
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.lair.cloud
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: lair.cloud
-          priority: 0
-          provider: porkbun
-          ttl: 600
   o3d.dev:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: o3d.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.o3d.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: o3d.dev
-          priority: 0
-          provider: porkbun
-          ttl: 600
   printmy.pictures:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: printmy.pictures
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.printmy.pictures
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: printmy.pictures
-          priority: 0
-          provider: porkbun
-          ttl: 600
   printmy3dmodel.com:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: printmy3dmodel.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.printmy3dmodel.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: printmy3dmodel.com
-          priority: 0
-          provider: porkbun
-          ttl: 600
   rom.how:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: rom.how
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.rom.how
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: rom.how
-          priority: 0
-          provider: porkbun
-          ttl: 600
   rom.rest:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: rom.rest
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.rom.rest
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: rom.rest
-          priority: 0
-          provider: porkbun
-          ttl: 600
   rom.run:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: rom.run
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.rom.run
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: rom.run
-          priority: 0
-          provider: porkbun
-          ttl: 600
   s0s.pw:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: s0s.pw
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.s0s.pw
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: s0s.pw
-          priority: 0
-          provider: porkbun
-          ttl: 600
   security.cab:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: security.cab
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.security.cab
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: security.cab
-          priority: 0
-          provider: porkbun
-          ttl: 600
   yak.pub:
     '@':
       MX:
         - content: monday.mxroute.com
           priority: 10
-          provider: porkbun
-          ttl: 600
         - content: monday-relay.mxroute.com
           priority: 20
-          provider: porkbun
-          ttl: 600
       TXT:
         - content: v=spf1 include:mxlogin.com -all
-          priority: 0
-          provider: porkbun
-          ttl: 600
     blog:
       CNAME:
         - content: yak.pub
-          priority: 0
-          provider: porkbun
-          ttl: 600
     mail:
       CNAME:
         - content: www.yak.pub
-          priority: 0
-          provider: porkbun
-          ttl: 600
     www:
       CNAME:
         - content: yak.pub
-          priority: 0
-          provider: porkbun
-          ttl: 600

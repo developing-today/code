@@ -1,24 +1,25 @@
 {
   lib,
-  defaultDNSConfig ? {
-    provider = "porkbun";
-    ttl = 600;
-    priority = 0;
-    records = {
-      "@" = {
-        "MX" = [
-          { content = "monday.mxroute.com"; priority = 10; }
-          { content = "monday-relay.mxroute.com"; priority = 20; }
-        ];
-        "TXT" = "v=spf1 include:mxlogin.com -all";
-      };
-      "www" = "@";
-      "mail" = "www.@";
-      "blog" = "@";
-    };
-  },
   DNSConfig ? {
+    "@" = {
+      provider = "porkbun";
+      records = {
+        "@" = {
+          "MX" = [
+            { content = "monday.mxroute.com"; priority = 10; }
+            { content = "monday-relay.mxroute.com"; priority = 20; }
+          ];
+          "TXT" = "v=spf1 include:mxlogin.com -all";
+        };
+        "www" = "@";
+        "mail" = "www.@";
+        "blog" = "@";
+      };
+    };
     "1110x.de" = {
+      provider = "banana"; # TODO: this should work
+      ttl = "4200"; # TODO: this should work
+      priority = "42"; # TODO: this should work
       records = {
         "x._domainkey" = {
          "TXT" = {
@@ -70,14 +71,8 @@
   ...
 }:
 let
-  globalDefaultProvider = defaultDNSConfig.provider;
-  globalDefaultTTL = defaultDNSConfig.ttl or 600;
-  globalDefaultPriority = defaultDNSConfig.priority or 0;
   generateRecords = domain: config:
     let
-      defaultProvider = config.provider or globalDefaultProvider;
-      defaultTTL = config.ttl or globalDefaultTTL;
-      defaultPriority = config.priority or globalDefaultPriority;
       processRecord = name: recordSet:
         let
           processEntry = type: content:
@@ -102,25 +97,19 @@ let
         in
         map (r: r // {
           inherit domain name;
-          provider =
-            if r.provider or null != null then r.provider
-            else if defaultProvider != null then defaultProvider
-            else throw "provider is required for domain: ${toString domain}, record: ${toString r}";
-          ttl = r.ttl or defaultTTL;
-          priority = r.priority or defaultPriority;
-          type = lib.toUpper (
-            if r.type or null != null then r.type
-            else throw "type is required for domain: ${toString domain}, record: ${toString r}"
-          );
-        }) flattenedRecords;
+          type = lib.toUpper (r.type or (throw "type is required for domain: ${toString domain}, record: ${toString r}"));
+          } // (lib.optionalAttrs (config.provider or null != null) { inherit (config) provider; })
+                    // (lib.optionalAttrs (config.ttl or null != null) { inherit (config) ttl; })
+                    // (lib.optionalAttrs (config.priority or null != null) { inherit (config) priority; })
+                  ) flattenedRecords;
       allRecords = lib.flatten (lib.mapAttrsToList processRecord (config.records or {}));
-      defaultRecords = lib.flatten (lib.mapAttrsToList processRecord defaultDNSConfig.records);
+      defaultRecords = if domain != "@" then lib.flatten (lib.mapAttrsToList processRecord (DNSConfig."@".records or {})) else [];
     in
     allRecords ++ defaultRecords;
 
-  allRecords = lib.flatten (lib.mapAttrsToList generateRecords DNSConfig);
+  allRecords = lib.flatten (lib.mapAttrsToList generateRecords (removeAttrs DNSConfig ["@"]));
 
-  groupByProvider = lib.groupBy (r: r.provider) allRecords;
+  groupByProvider = lib.groupBy (r: r.provider or (DNSConfig."@".provider or null)) allRecords;
 
   structureRecords = records:
     lib.foldl' (acc: r:
@@ -143,14 +132,16 @@ let
     structureRecords records
   ) groupByProvider;
 
-
   createCondensedRecords = records:
   let
     flattenRecord = domain: name: type: record: priorityIndex: itemIndex:
       let
         key = "${domain}_${name}_${type}_${toString priorityIndex}_${toString itemIndex}";
+        provider = record.provider or (DNSConfig."@".provider or (throw "No provider specified for ${domain}"));
+        ttl = record.ttl or (DNSConfig."@".ttl or 600); # TODO: just allow empty and rely on per-provider defaults or hardcode defaults in terraform code?
+        priority = record.priority or (DNSConfig."@".priority or 0); # TODO: just allow empty and rely on per-provider defaults or hardcode defaults in terraform code?
         completeRecord = removeAttrs record ["provider"] // {
-          inherit domain type;
+          inherit domain type provider ttl priority;
         } // (if name != "@" then { inherit name; } else {});
       in
       { ${key} = completeRecord; };
@@ -175,13 +166,14 @@ let
       lib.flatten (lib.mapAttrsToList (domain: domainRecords:
         flattenDomain domain domainRecords
       ) records);
+  in
+  lib.mapAttrs (provider: records:
+    let
+      flatRecords = flattenProvider records;
     in
-    lib.mapAttrs (provider: records:
-      let
-        flatRecords = flattenProvider records;
-      in
-      lib.foldl' (acc: record: acc // record) {} flatRecords
-    ) records;
+    lib.foldl' (acc: record: acc // record) {} flatRecords
+  ) records;
+
   condensedRecords = createCondensedRecords finalStructure;
 in
 {
