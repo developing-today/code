@@ -1,0 +1,22 @@
+porkbun_api_key: ENC[AES256_GCM,data:A4gxhj9zQza7nEhcMPG78Uzf+gMG1ohfWBdTswXW6S+4OoquxQhp65NdzmwoAkTVsmfKT9sH93t+SuJ9RPfreSS7+mE=,iv:G7Ma+fzxm/dDQvD7ypPIH/614MFIwFgSfNtQZMCLFVU=,tag:Vo9+gjitppZJIvfQfqtMRg==,type:str]
+porkbun_secret_key: ENC[AES256_GCM,data:LqI97P++JQf0sTZYmCa4TrLT9EiN0+uKKZYJz0uCy5JmhzsG0iCaXAEsXd8nSBu5MdIapMqzW6Ggr4s1BwRUoaUN5UY=,iv:kZaiRTvx9InnhaA4wWLfDLRoosxHl+ACYNBZNx5wxg4=,tag:kc26VBJnmKHHnU7wwaZAQQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age125acas5y8hnwl5uhcp364xm8zlhtwsjqvxxpge8k04dzzr67acrq0ttc34
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB0clZRdHNMZTNLdDFrQ3kx
+            YVVQcjR1ZURkajRSeTZaSDY0Tk5MK3k5TlJBCld0UEN6MVBoelN4Q3JkaEZpZ2lU
+            SlRiVThRYmVaK05mTTJBODF3elI2Q1UKLS0tIGNxOTlGNyszeEt1Y1RMc0dXWWJG
+            ZTQvV1hCRjFReXl4MlNBMVRURnlvR00KXlOo+071w9HYAfrqxiaMKjzGUkFjHwXn
+            2zWryO7zgzXgiTJ8EHlADDeIRIsr/ZEXP9EncT8hwJurNs8vnuHRFg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2024-08-05T00:20:14Z"
+    mac: ENC[AES256_GCM,data:186ShMI4TDre9VVs8AaymBPSz2LaHY1RAG7JO3d6A2VLVNuxD90T6DEV2KkwM6zQQERj+LXdPEuW2Om4lMcghDp1L0XyPextntu5i5sIyxKAWnK9L/5wYAiAQCdRyMPV1R8OSsP6hmskC1d2XZ59AvvjZ2J1EbzkOXGvregfCzE=,iv:vIcEh+01F76z7nYOngYzMtVjHjsYtZBrMpDFkoKQAuE=,tag:bfQ8LLTrF8NiEZD2pE2rdA==,type:str]
+    pgp: []
+    unencrypted_suffix: _unencrypted
+    version: 3.9.0

@@ -45,6 +45,7 @@ result*
 # .tfstate files
 *.tfstate
 *.tfstate.*
+!*.tfstate.enc
 
 # Crash log files
 crash.log
@@ -76,3 +77,5 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+*tfplan*

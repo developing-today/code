@@ -53,10 +53,9 @@ let
             #exitNode = "some-node-id";
             #exitNodeAllowLanAccess = true;
           };
-          # default
-          sops.secrets.tailscale_key = { };
-          #  sopsFile = ../../../lib/config.enc/common/secrets.yaml;
-          #};
+          sops.secrets.tailscale_key = {
+            sopsFile = ../../../lib/config.enc/common/tailscale.yaml;
+          };
         }
       )
       # TODO: there is a thing that gets the root flake location

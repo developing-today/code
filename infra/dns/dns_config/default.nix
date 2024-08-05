@@ -1,31 +1,23 @@
-# required
-# type (String) The type of DNS Record to create
-# domain (String) The base domain to to create the record on
-# optional
-# name (String) The subdomain for the record itself without the base domain
-# content (String) The content of the record
-# notes (String) Notes to add to the record
-# prio (String) The priority of the record
-# ttl (String) The ttl of the record, the minimum is 600
 {
   lib,
-  defaultDnsConfig ? {
+  defaultDNSConfig ? {
     provider = "porkbun";
     ttl = 600;
+    priority = 0;
     records = {
       "@" = {
         "MX" = [
           { content = "monday.mxroute.com"; priority = 10; }
           { content = "monday-relay.mxroute.com"; priority = 20; }
         ];
-        "TXT" = "v=spf1 include:mxlogin.com -all"; # accepts string or list of strings or list of dicts/strings
+        "TXT" = "v=spf1 include:mxlogin.com -all";
       };
-      "www" = "@"; # if string then it will be a CNAME record
-      "mail" = "www.@"; # if string cname, assume @ is replaced with domain
-      "blog" = "@"; # if string then it will be a CNAME record
+      "www" = "@";
+      "mail" = "www.@";
+      "blog" = "@";
     };
   },
-  dnsConfig ? {
+  DNSConfig ? {
     "1110x.de" = {
       records = {
         "x._domainkey" = {
@@ -36,7 +28,7 @@
         };
       };
     };
-    "1110x.com" = { records = {"blog
+    "1110x.com" = {};
     "0x1110.com" = {};
     "0x111.dev" = {};
     "0x1110.dev" = {};
@@ -78,10 +70,14 @@
   ...
 }:
 let
+  globalDefaultProvider = defaultDNSConfig.provider;
+  globalDefaultTTL = defaultDNSConfig.ttl or 600;
+  globalDefaultPriority = defaultDNSConfig.priority or 0;
   generateRecords = domain: config:
     let
-      defaultProvider = config.provider or defaultDnsConfig.provider;
-      defaultTTL = config.ttl or defaultDnsConfig.ttl;
+      defaultProvider = config.provider or globalDefaultProvider;
+      defaultTTL = config.ttl or globalDefaultTTL;
+      defaultPriority = config.priority or globalDefaultPriority;
       processRecord = name: recordSet:
         let
           processEntry = type: content:
@@ -94,10 +90,10 @@ let
                 if builtins.isString item then
                   { inherit type content; }
                 else
-                  { inherit type; } // (if item ? priority then item // { prio = item.priority; } else item)
+                  { inherit type; } // item
               ) content
             else if builtins.isAttrs content then
-              [({ inherit type; } // (if content ? priority then content // { prio = content.priority; } else content))]
+              [({ inherit type; } // content)]
             else
               [{ inherit type content; }];
           flattenedRecords = if builtins.isString recordSet
@@ -105,17 +101,24 @@ let
                              else lib.flatten (lib.mapAttrsToList processEntry recordSet);
         in
         map (r: r // {
-          inherit domain;
-          name = if name == "@" then "@" else name;
-          provider = r.provider or defaultProvider;
+          inherit domain name;
+          provider =
+            if r.provider or null != null then r.provider
+            else if defaultProvider != null then defaultProvider
+            else throw "provider is required for domain: ${toString domain}, record: ${toString r}";
           ttl = r.ttl or defaultTTL;
-        } // (if r ? priority then { prio = r.priority; } else {})) flattenedRecords;
+          priority = r.priority or defaultPriority;
+          type = lib.toUpper (
+            if r.type or null != null then r.type
+            else throw "type is required for domain: ${toString domain}, record: ${toString r}"
+          );
+        }) flattenedRecords;
       allRecords = lib.flatten (lib.mapAttrsToList processRecord (config.records or {}));
-      defaultRecords = lib.flatten (lib.mapAttrsToList processRecord defaultDnsConfig.records);
+      defaultRecords = lib.flatten (lib.mapAttrsToList processRecord defaultDNSConfig.records);
     in
     allRecords ++ defaultRecords;
 
-  allRecords = lib.flatten (lib.mapAttrsToList generateRecords dnsConfig);
+  allRecords = lib.flatten (lib.mapAttrsToList generateRecords DNSConfig);
 
   groupByProvider = lib.groupBy (r: r.provider) allRecords;
 
@@ -125,7 +128,7 @@ let
         domainRecords = acc.${r.domain} or {};
         nameRecords = domainRecords.${r.name} or {};
         typeRecords = nameRecords.${r.type} or [];
-        newRecord = removeAttrs r ["domain" "name" "type" "priority"];
+        newRecord = removeAttrs r ["domain" "name" "type"];
       in
       acc // {
         ${r.domain} = domainRecords // {
@@ -140,36 +143,47 @@ let
     structureRecords records
   ) groupByProvider;
 
+
   createCondensedRecords = records:
   let
-        flattenRecord = domain: name: type: record: index:
-          let
-            key = "${domain}_${name}_${type}_${toString index}";
-            completeRecord = removeAttrs record ["provider"] // {
-              inherit domain type;
-            } // (if name != "@" then { inherit name; } else {});
-          in
-          { ${key} = completeRecord; };
-
-        flattenDomain = domain: domainRecords:
-          lib.flatten (lib.mapAttrsToList (name: nameRecords:
-            lib.flatten (lib.mapAttrsToList (type: typeRecords:
-              lib.imap0 (index: record:
-                flattenRecord domain name type record index
-              ) typeRecords
-            ) nameRecords)
-          ) domainRecords);
-
-        flattenProvider = records:
-          lib.flatten (lib.mapAttrsToList (domain: domainRecords:
-            flattenDomain domain domainRecords
-          ) records);
+    flattenRecord = domain: name: type: record: priorityIndex: itemIndex:
+      let
+        key = "${domain}_${name}_${type}_${toString priorityIndex}_${toString itemIndex}";
+        completeRecord = removeAttrs record ["provider"] // {
+          inherit domain type;
+        } // (if name != "@" then { inherit name; } else {});
       in
-      lib.mapAttrs (provider: records:
-        lib.foldl' (acc: record: acc // record) {} (flattenProvider records)
-      ) records;
-    condensedRecords = createCondensedRecords finalStructure;
+      { ${key} = completeRecord; };
+
+    flattenDomain = domain: domainRecords:
+      lib.flatten (lib.mapAttrsToList (name: nameRecords:
+        lib.flatten (lib.mapAttrsToList (type: typeRecords:
+          let
+            sortedRecords = lib.sort (a: b: (a.priority or 0) < (b.priority or 0)) typeRecords;
+            groupedByPriority = lib.groupBy (r: toString (r.priority or 0)) sortedRecords;
+            indexedRecords = lib.mapAttrsToList (priority: group:
+              lib.imap0 (itemIndex: record:
+                flattenRecord domain name type record (lib.toInt priority) itemIndex
+              ) group
+            ) groupedByPriority;
+          in
+          lib.flatten indexedRecords
+        ) nameRecords)
+      ) domainRecords);
+
+    flattenProvider = records:
+      lib.flatten (lib.mapAttrsToList (domain: domainRecords:
+        flattenDomain domain domainRecords
+      ) records);
+    in
+    lib.mapAttrs (provider: records:
+      let
+        flatRecords = flattenProvider records;
+      in
+      lib.foldl' (acc: record: acc // record) {} flatRecords
+    ) records;
+  condensedRecords = createCondensedRecords finalStructure;
 in
 {
-  dnsConfig = finalStructure // { "@" = condensedRecords; };
+  DNSConfig = finalStructure // { "@" = condensedRecords; };
 }
