@@ -1,0 +1,2558 @@
+'@':
+  porkbun:
+    01b.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: 01b.us
+      prio: 10
+      ttl: 600
+      type: MX
+    01b.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 01b.us
+      prio: 20
+      ttl: 600
+      type: MX
+    01b.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 01b.us
+      ttl: 600
+      type: TXT
+    01b.us_blog_CNAME_0:
+      content: 01b.us
+      domain: 01b.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    01b.us_mail_CNAME_0:
+      content: www.01b.us
+      domain: 01b.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    01b.us_www_CNAME_0:
+      content: 01b.us
+      domain: 01b.us
+      name: www
+      ttl: 600
+      type: CNAME
+    0x111.dev_@_MX_0:
+      content: monday.mxroute.com
+      domain: 0x111.dev
+      prio: 10
+      ttl: 600
+      type: MX
+    0x111.dev_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 0x111.dev
+      prio: 20
+      ttl: 600
+      type: MX
+    0x111.dev_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 0x111.dev
+      ttl: 600
+      type: TXT
+    0x111.dev_blog_CNAME_0:
+      content: 0x111.dev
+      domain: 0x111.dev
+      name: blog
+      ttl: 600
+      type: CNAME
+    0x111.dev_mail_CNAME_0:
+      content: www.0x111.dev
+      domain: 0x111.dev
+      name: mail
+      ttl: 600
+      type: CNAME
+    0x111.dev_www_CNAME_0:
+      content: 0x111.dev
+      domain: 0x111.dev
+      name: www
+      ttl: 600
+      type: CNAME
+    0x1110.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: 0x1110.com
+      prio: 10
+      ttl: 600
+      type: MX
+    0x1110.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 0x1110.com
+      prio: 20
+      ttl: 600
+      type: MX
+    0x1110.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 0x1110.com
+      ttl: 600
+      type: TXT
+    0x1110.com_blog_CNAME_0:
+      content: 0x1110.com
+      domain: 0x1110.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    0x1110.com_mail_CNAME_0:
+      content: www.0x1110.com
+      domain: 0x1110.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    0x1110.com_www_CNAME_0:
+      content: 0x1110.com
+      domain: 0x1110.com
+      name: www
+      ttl: 600
+      type: CNAME
+    0x1110.dev_@_MX_0:
+      content: monday.mxroute.com
+      domain: 0x1110.dev
+      prio: 10
+      ttl: 600
+      type: MX
+    0x1110.dev_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 0x1110.dev
+      prio: 20
+      ttl: 600
+      type: MX
+    0x1110.dev_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 0x1110.dev
+      ttl: 600
+      type: TXT
+    0x1110.dev_blog_CNAME_0:
+      content: 0x1110.dev
+      domain: 0x1110.dev
+      name: blog
+      ttl: 600
+      type: CNAME
+    0x1110.dev_mail_CNAME_0:
+      content: www.0x1110.dev
+      domain: 0x1110.dev
+      name: mail
+      ttl: 600
+      type: CNAME
+    0x1110.dev_www_CNAME_0:
+      content: 0x1110.dev
+      domain: 0x1110.dev
+      name: www
+      ttl: 600
+      type: CNAME
+    1110x.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: 1110x.com
+      prio: 10
+      ttl: 600
+      type: MX
+    1110x.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 1110x.com
+      prio: 20
+      ttl: 600
+      type: MX
+    1110x.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 1110x.com
+      ttl: 600
+      type: TXT
+    1110x.com_blog_CNAME_0:
+      content: 1110x.com
+      domain: 1110x.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    1110x.com_blog_CNAME_1:
+      content: 1110x.com
+      domain: 1110x.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    1110x.com_mail_CNAME_0:
+      content: www.1110x.com
+      domain: 1110x.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    1110x.com_www_CNAME_0:
+      content: 1110x.com
+      domain: 1110x.com
+      name: www
+      ttl: 600
+      type: CNAME
+    1110x.de_@_MX_0:
+      content: monday.mxroute.com
+      domain: 1110x.de
+      prio: 10
+      ttl: 600
+      type: MX
+    1110x.de_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 1110x.de
+      prio: 20
+      ttl: 600
+      type: MX
+    1110x.de_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 1110x.de
+      ttl: 600
+      type: TXT
+    1110x.de_blog_CNAME_0:
+      content: 1110x.de
+      domain: 1110x.de
+      name: blog
+      ttl: 600
+      type: CNAME
+    1110x.de_mail_CNAME_0:
+      content: www.1110x.de
+      domain: 1110x.de
+      name: mail
+      ttl: 600
+      type: CNAME
+    1110x.de_www_CNAME_0:
+      content: 1110x.de
+      domain: 1110x.de
+      name: www
+      ttl: 600
+      type: CNAME
+    1110x.de_x._domainkey_TXT_0:
+      content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
+      domain: 1110x.de
+      name: x._domainkey
+      ttl: 3600
+      type: TXT
+    1110x.dev_@_MX_0:
+      content: monday.mxroute.com
+      domain: 1110x.dev
+      prio: 10
+      ttl: 600
+      type: MX
+    1110x.dev_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 1110x.dev
+      prio: 20
+      ttl: 600
+      type: MX
+    1110x.dev_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 1110x.dev
+      ttl: 600
+      type: TXT
+    1110x.dev_blog_CNAME_0:
+      content: 1110x.dev
+      domain: 1110x.dev
+      name: blog
+      ttl: 600
+      type: CNAME
+    1110x.dev_mail_CNAME_0:
+      content: www.1110x.dev
+      domain: 1110x.dev
+      name: mail
+      ttl: 600
+      type: CNAME
+    1110x.dev_www_CNAME_0:
+      content: 1110x.dev
+      domain: 1110x.dev
+      name: www
+      ttl: 600
+      type: CNAME
+    15b.org_@_MX_0:
+      content: monday.mxroute.com
+      domain: 15b.org
+      prio: 10
+      ttl: 600
+      type: MX
+    15b.org_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 15b.org
+      prio: 20
+      ttl: 600
+      type: MX
+    15b.org_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 15b.org
+      ttl: 600
+      type: TXT
+    15b.org_blog_CNAME_0:
+      content: 15b.org
+      domain: 15b.org
+      name: blog
+      ttl: 600
+      type: CNAME
+    15b.org_mail_CNAME_0:
+      content: www.15b.org
+      domain: 15b.org
+      name: mail
+      ttl: 600
+      type: CNAME
+    15b.org_www_CNAME_0:
+      content: 15b.org
+      domain: 15b.org
+      name: www
+      ttl: 600
+      type: CNAME
+    15b.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: 15b.us
+      prio: 10
+      ttl: 600
+      type: MX
+    15b.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 15b.us
+      prio: 20
+      ttl: 600
+      type: MX
+    15b.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 15b.us
+      ttl: 600
+      type: TXT
+    15b.us_blog_CNAME_0:
+      content: 15b.us
+      domain: 15b.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    15b.us_mail_CNAME_0:
+      content: www.15b.us
+      domain: 15b.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    15b.us_www_CNAME_0:
+      content: 15b.us
+      domain: 15b.us
+      name: www
+      ttl: 600
+      type: CNAME
+    32b.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: 32b.us
+      prio: 10
+      ttl: 600
+      type: MX
+    32b.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 32b.us
+      prio: 20
+      ttl: 600
+      type: MX
+    32b.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 32b.us
+      ttl: 600
+      type: TXT
+    32b.us_blog_CNAME_0:
+      content: 32b.us
+      domain: 32b.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    32b.us_mail_CNAME_0:
+      content: www.32b.us
+      domain: 32b.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    32b.us_www_CNAME_0:
+      content: 32b.us
+      domain: 32b.us
+      name: www
+      ttl: 600
+      type: CNAME
+    3dtropic.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: 3dtropic.com
+      prio: 10
+      ttl: 600
+      type: MX
+    3dtropic.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 3dtropic.com
+      prio: 20
+      ttl: 600
+      type: MX
+    3dtropic.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 3dtropic.com
+      ttl: 600
+      type: TXT
+    3dtropic.com_blog_CNAME_0:
+      content: 3dtropic.com
+      domain: 3dtropic.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    3dtropic.com_mail_CNAME_0:
+      content: www.3dtropic.com
+      domain: 3dtropic.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    3dtropic.com_www_CNAME_0:
+      content: 3dtropic.com
+      domain: 3dtropic.com
+      name: www
+      ttl: 600
+      type: CNAME
+    3dtropics.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: 3dtropics.com
+      prio: 10
+      ttl: 600
+      type: MX
+    3dtropics.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 3dtropics.com
+      prio: 20
+      ttl: 600
+      type: MX
+    3dtropics.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 3dtropics.com
+      ttl: 600
+      type: TXT
+    3dtropics.com_blog_CNAME_0:
+      content: 3dtropics.com
+      domain: 3dtropics.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    3dtropics.com_mail_CNAME_0:
+      content: www.3dtropics.com
+      domain: 3dtropics.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    3dtropics.com_www_CNAME_0:
+      content: 3dtropics.com
+      domain: 3dtropics.com
+      name: www
+      ttl: 600
+      type: CNAME
+    64b.org_@_MX_0:
+      content: monday.mxroute.com
+      domain: 64b.org
+      prio: 10
+      ttl: 600
+      type: MX
+    64b.org_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 64b.org
+      prio: 20
+      ttl: 600
+      type: MX
+    64b.org_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 64b.org
+      ttl: 600
+      type: TXT
+    64b.org_blog_CNAME_0:
+      content: 64b.org
+      domain: 64b.org
+      name: blog
+      ttl: 600
+      type: CNAME
+    64b.org_mail_CNAME_0:
+      content: www.64b.org
+      domain: 64b.org
+      name: mail
+      ttl: 600
+      type: CNAME
+    64b.org_www_CNAME_0:
+      content: 64b.org
+      domain: 64b.org
+      name: www
+      ttl: 600
+      type: CNAME
+    64b.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: 64b.us
+      prio: 10
+      ttl: 600
+      type: MX
+    64b.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 64b.us
+      prio: 20
+      ttl: 600
+      type: MX
+    64b.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 64b.us
+      ttl: 600
+      type: TXT
+    64b.us_blog_CNAME_0:
+      content: 64b.us
+      domain: 64b.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    64b.us_mail_CNAME_0:
+      content: www.64b.us
+      domain: 64b.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    64b.us_www_CNAME_0:
+      content: 64b.us
+      domain: 64b.us
+      name: www
+      ttl: 600
+      type: CNAME
+    69b.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: 69b.us
+      prio: 10
+      ttl: 600
+      type: MX
+    69b.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 69b.us
+      prio: 20
+      ttl: 600
+      type: MX
+    69b.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 69b.us
+      ttl: 600
+      type: TXT
+    69b.us_blog_CNAME_0:
+      content: 69b.us
+      domain: 69b.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    69b.us_mail_CNAME_0:
+      content: www.69b.us
+      domain: 69b.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    69b.us_www_CNAME_0:
+      content: 69b.us
+      domain: 69b.us
+      name: www
+      ttl: 600
+      type: CNAME
+    79b.org_@_MX_0:
+      content: monday.mxroute.com
+      domain: 79b.org
+      prio: 10
+      ttl: 600
+      type: MX
+    79b.org_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 79b.org
+      prio: 20
+      ttl: 600
+      type: MX
+    79b.org_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 79b.org
+      ttl: 600
+      type: TXT
+    79b.org_blog_CNAME_0:
+      content: 79b.org
+      domain: 79b.org
+      name: blog
+      ttl: 600
+      type: CNAME
+    79b.org_mail_CNAME_0:
+      content: www.79b.org
+      domain: 79b.org
+      name: mail
+      ttl: 600
+      type: CNAME
+    79b.org_www_CNAME_0:
+      content: 79b.org
+      domain: 79b.org
+      name: www
+      ttl: 600
+      type: CNAME
+    79b.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: 79b.us
+      prio: 10
+      ttl: 600
+      type: MX
+    79b.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: 79b.us
+      prio: 20
+      ttl: 600
+      type: MX
+    79b.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 79b.us
+      ttl: 600
+      type: TXT
+    79b.us_blog_CNAME_0:
+      content: 79b.us
+      domain: 79b.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    79b.us_mail_CNAME_0:
+      content: www.79b.us
+      domain: 79b.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    79b.us_www_CNAME_0:
+      content: 79b.us
+      domain: 79b.us
+      name: www
+      ttl: 600
+      type: CNAME
+    carbonfreezeme.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: carbonfreezeme.com
+      prio: 10
+      ttl: 600
+      type: MX
+    carbonfreezeme.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: carbonfreezeme.com
+      prio: 20
+      ttl: 600
+      type: MX
+    carbonfreezeme.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: carbonfreezeme.com
+      ttl: 600
+      type: TXT
+    carbonfreezeme.com_blog_CNAME_0:
+      content: carbonfreezeme.com
+      domain: carbonfreezeme.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    carbonfreezeme.com_mail_CNAME_0:
+      content: www.carbonfreezeme.com
+      domain: carbonfreezeme.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    carbonfreezeme.com_www_CNAME_0:
+      content: carbonfreezeme.com
+      domain: carbonfreezeme.com
+      name: www
+      ttl: 600
+      type: CNAME
+    default.computer_@_MX_0:
+      content: monday.mxroute.com
+      domain: default.computer
+      prio: 10
+      ttl: 600
+      type: MX
+    default.computer_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: default.computer
+      prio: 20
+      ttl: 600
+      type: MX
+    default.computer_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: default.computer
+      ttl: 600
+      type: TXT
+    default.computer_blog_CNAME_0:
+      content: default.computer
+      domain: default.computer
+      name: blog
+      ttl: 600
+      type: CNAME
+    default.computer_mail_CNAME_0:
+      content: www.default.computer
+      domain: default.computer
+      name: mail
+      ttl: 600
+      type: CNAME
+    default.computer_www_CNAME_0:
+      content: default.computer
+      domain: default.computer
+      name: www
+      ttl: 600
+      type: CNAME
+    default.properties_@_MX_0:
+      content: monday.mxroute.com
+      domain: default.properties
+      prio: 10
+      ttl: 600
+      type: MX
+    default.properties_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: default.properties
+      prio: 20
+      ttl: 600
+      type: MX
+    default.properties_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: default.properties
+      ttl: 600
+      type: TXT
+    default.properties_blog_CNAME_0:
+      content: default.properties
+      domain: default.properties
+      name: blog
+      ttl: 600
+      type: CNAME
+    default.properties_mail_CNAME_0:
+      content: www.default.properties
+      domain: default.properties
+      name: mail
+      ttl: 600
+      type: CNAME
+    default.properties_www_CNAME_0:
+      content: default.properties
+      domain: default.properties
+      name: www
+      ttl: 600
+      type: CNAME
+    developing-today.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: developing-today.com
+      prio: 10
+      ttl: 600
+      type: MX
+    developing-today.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: developing-today.com
+      prio: 20
+      ttl: 600
+      type: MX
+    developing-today.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: developing-today.com
+      ttl: 600
+      type: TXT
+    developing-today.com_blog_CNAME_0:
+      content: developing-today.com
+      domain: developing-today.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    developing-today.com_mail_CNAME_0:
+      content: www.developing-today.com
+      domain: developing-today.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    developing-today.com_www_CNAME_0:
+      content: developing-today.com
+      domain: developing-today.com
+      name: www
+      ttl: 600
+      type: CNAME
+    developing.today_@_MX_0:
+      content: monday.mxroute.com
+      domain: developing.today
+      prio: 10
+      ttl: 600
+      type: MX
+    developing.today_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: developing.today
+      prio: 20
+      ttl: 600
+      type: MX
+    developing.today_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: developing.today
+      ttl: 600
+      type: TXT
+    developing.today_blog_CNAME_0:
+      content: developing.today
+      domain: developing.today
+      name: blog
+      ttl: 600
+      type: CNAME
+    developing.today_mail_CNAME_0:
+      content: www.developing.today
+      domain: developing.today
+      name: mail
+      ttl: 600
+      type: CNAME
+    developing.today_www_CNAME_0:
+      content: developing.today
+      domain: developing.today
+      name: www
+      ttl: 600
+      type: CNAME
+    developingto.day_@_MX_0:
+      content: monday.mxroute.com
+      domain: developingto.day
+      prio: 10
+      ttl: 600
+      type: MX
+    developingto.day_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: developingto.day
+      prio: 20
+      ttl: 600
+      type: MX
+    developingto.day_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: developingto.day
+      ttl: 600
+      type: TXT
+    developingto.day_blog_CNAME_0:
+      content: developingto.day
+      domain: developingto.day
+      name: blog
+      ttl: 600
+      type: CNAME
+    developingto.day_mail_CNAME_0:
+      content: www.developingto.day
+      domain: developingto.day
+      name: mail
+      ttl: 600
+      type: CNAME
+    developingto.day_www_CNAME_0:
+      content: developingto.day
+      domain: developingto.day
+      name: www
+      ttl: 600
+      type: CNAME
+    eau3d.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: eau3d.com
+      prio: 10
+      ttl: 600
+      type: MX
+    eau3d.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: eau3d.com
+      prio: 20
+      ttl: 600
+      type: MX
+    eau3d.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: eau3d.com
+      ttl: 600
+      type: TXT
+    eau3d.com_blog_CNAME_0:
+      content: eau3d.com
+      domain: eau3d.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    eau3d.com_mail_CNAME_0:
+      content: www.eau3d.com
+      domain: eau3d.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    eau3d.com_www_CNAME_0:
+      content: eau3d.com
+      domain: eau3d.com
+      name: www
+      ttl: 600
+      type: CNAME
+    eau3d.dev_@_MX_0:
+      content: monday.mxroute.com
+      domain: eau3d.dev
+      prio: 10
+      ttl: 600
+      type: MX
+    eau3d.dev_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: eau3d.dev
+      prio: 20
+      ttl: 600
+      type: MX
+    eau3d.dev_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: eau3d.dev
+      ttl: 600
+      type: TXT
+    eau3d.dev_blog_CNAME_0:
+      content: eau3d.dev
+      domain: eau3d.dev
+      name: blog
+      ttl: 600
+      type: CNAME
+    eau3d.dev_mail_CNAME_0:
+      content: www.eau3d.dev
+      domain: eau3d.dev
+      name: mail
+      ttl: 600
+      type: CNAME
+    eau3d.dev_www_CNAME_0:
+      content: eau3d.dev
+      domain: eau3d.dev
+      name: www
+      ttl: 600
+      type: CNAME
+    eau3d.org_@_MX_0:
+      content: monday.mxroute.com
+      domain: eau3d.org
+      prio: 10
+      ttl: 600
+      type: MX
+    eau3d.org_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: eau3d.org
+      prio: 20
+      ttl: 600
+      type: MX
+    eau3d.org_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: eau3d.org
+      ttl: 600
+      type: TXT
+    eau3d.org_blog_CNAME_0:
+      content: eau3d.org
+      domain: eau3d.org
+      name: blog
+      ttl: 600
+      type: CNAME
+    eau3d.org_mail_CNAME_0:
+      content: www.eau3d.org
+      domain: eau3d.org
+      name: mail
+      ttl: 600
+      type: CNAME
+    eau3d.org_www_CNAME_0:
+      content: eau3d.org
+      domain: eau3d.org
+      name: www
+      ttl: 600
+      type: CNAME
+    grandnag.us_@_MX_0:
+      content: monday.mxroute.com
+      domain: grandnag.us
+      prio: 10
+      ttl: 600
+      type: MX
+    grandnag.us_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: grandnag.us
+      prio: 20
+      ttl: 600
+      type: MX
+    grandnag.us_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: grandnag.us
+      ttl: 600
+      type: TXT
+    grandnag.us_blog_CNAME_0:
+      content: grandnag.us
+      domain: grandnag.us
+      name: blog
+      ttl: 600
+      type: CNAME
+    grandnag.us_mail_CNAME_0:
+      content: www.grandnag.us
+      domain: grandnag.us
+      name: mail
+      ttl: 600
+      type: CNAME
+    grandnag.us_www_CNAME_0:
+      content: grandnag.us
+      domain: grandnag.us
+      name: www
+      ttl: 600
+      type: CNAME
+    hax.live_@_MX_0:
+      content: monday.mxroute.com
+      domain: hax.live
+      prio: 10
+      ttl: 600
+      type: MX
+    hax.live_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: hax.live
+      prio: 20
+      ttl: 600
+      type: MX
+    hax.live_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: hax.live
+      ttl: 600
+      type: TXT
+    hax.live_blog_CNAME_0:
+      content: hax.live
+      domain: hax.live
+      name: blog
+      ttl: 600
+      type: CNAME
+    hax.live_mail_CNAME_0:
+      content: www.hax.live
+      domain: hax.live
+      name: mail
+      ttl: 600
+      type: CNAME
+    hax.live_www_CNAME_0:
+      content: hax.live
+      domain: hax.live
+      name: www
+      ttl: 600
+      type: CNAME
+    l0x.dev_@_MX_0:
+      content: monday.mxroute.com
+      domain: l0x.dev
+      prio: 10
+      ttl: 600
+      type: MX
+    l0x.dev_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: l0x.dev
+      prio: 20
+      ttl: 600
+      type: MX
+    l0x.dev_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: l0x.dev
+      ttl: 600
+      type: TXT
+    l0x.dev_blog_CNAME_0:
+      content: l0x.dev
+      domain: l0x.dev
+      name: blog
+      ttl: 600
+      type: CNAME
+    l0x.dev_mail_CNAME_0:
+      content: www.l0x.dev
+      domain: l0x.dev
+      name: mail
+      ttl: 600
+      type: CNAME
+    l0x.dev_www_CNAME_0:
+      content: l0x.dev
+      domain: l0x.dev
+      name: www
+      ttl: 600
+      type: CNAME
+    lair.cloud_@_MX_0:
+      content: monday.mxroute.com
+      domain: lair.cloud
+      prio: 10
+      ttl: 600
+      type: MX
+    lair.cloud_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: lair.cloud
+      prio: 20
+      ttl: 600
+      type: MX
+    lair.cloud_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: lair.cloud
+      ttl: 600
+      type: TXT
+    lair.cloud_blog_CNAME_0:
+      content: lair.cloud
+      domain: lair.cloud
+      name: blog
+      ttl: 600
+      type: CNAME
+    lair.cloud_mail_CNAME_0:
+      content: www.lair.cloud
+      domain: lair.cloud
+      name: mail
+      ttl: 600
+      type: CNAME
+    lair.cloud_www_CNAME_0:
+      content: lair.cloud
+      domain: lair.cloud
+      name: www
+      ttl: 600
+      type: CNAME
+    o3d.dev_@_MX_0:
+      content: monday.mxroute.com
+      domain: o3d.dev
+      prio: 10
+      ttl: 600
+      type: MX
+    o3d.dev_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: o3d.dev
+      prio: 20
+      ttl: 600
+      type: MX
+    o3d.dev_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: o3d.dev
+      ttl: 600
+      type: TXT
+    o3d.dev_blog_CNAME_0:
+      content: o3d.dev
+      domain: o3d.dev
+      name: blog
+      ttl: 600
+      type: CNAME
+    o3d.dev_mail_CNAME_0:
+      content: www.o3d.dev
+      domain: o3d.dev
+      name: mail
+      ttl: 600
+      type: CNAME
+    o3d.dev_www_CNAME_0:
+      content: o3d.dev
+      domain: o3d.dev
+      name: www
+      ttl: 600
+      type: CNAME
+    printmy.pictures_@_MX_0:
+      content: monday.mxroute.com
+      domain: printmy.pictures
+      prio: 10
+      ttl: 600
+      type: MX
+    printmy.pictures_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: printmy.pictures
+      prio: 20
+      ttl: 600
+      type: MX
+    printmy.pictures_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: printmy.pictures
+      ttl: 600
+      type: TXT
+    printmy.pictures_blog_CNAME_0:
+      content: printmy.pictures
+      domain: printmy.pictures
+      name: blog
+      ttl: 600
+      type: CNAME
+    printmy.pictures_mail_CNAME_0:
+      content: www.printmy.pictures
+      domain: printmy.pictures
+      name: mail
+      ttl: 600
+      type: CNAME
+    printmy.pictures_www_CNAME_0:
+      content: printmy.pictures
+      domain: printmy.pictures
+      name: www
+      ttl: 600
+      type: CNAME
+    printmy3dmodel.com_@_MX_0:
+      content: monday.mxroute.com
+      domain: printmy3dmodel.com
+      prio: 10
+      ttl: 600
+      type: MX
+    printmy3dmodel.com_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: printmy3dmodel.com
+      prio: 20
+      ttl: 600
+      type: MX
+    printmy3dmodel.com_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: printmy3dmodel.com
+      ttl: 600
+      type: TXT
+    printmy3dmodel.com_blog_CNAME_0:
+      content: printmy3dmodel.com
+      domain: printmy3dmodel.com
+      name: blog
+      ttl: 600
+      type: CNAME
+    printmy3dmodel.com_mail_CNAME_0:
+      content: www.printmy3dmodel.com
+      domain: printmy3dmodel.com
+      name: mail
+      ttl: 600
+      type: CNAME
+    printmy3dmodel.com_www_CNAME_0:
+      content: printmy3dmodel.com
+      domain: printmy3dmodel.com
+      name: www
+      ttl: 600
+      type: CNAME
+    rom.how_@_MX_0:
+      content: monday.mxroute.com
+      domain: rom.how
+      prio: 10
+      ttl: 600
+      type: MX
+    rom.how_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: rom.how
+      prio: 20
+      ttl: 600
+      type: MX
+    rom.how_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: rom.how
+      ttl: 600
+      type: TXT
+    rom.how_blog_CNAME_0:
+      content: rom.how
+      domain: rom.how
+      name: blog
+      ttl: 600
+      type: CNAME
+    rom.how_mail_CNAME_0:
+      content: www.rom.how
+      domain: rom.how
+      name: mail
+      ttl: 600
+      type: CNAME
+    rom.how_www_CNAME_0:
+      content: rom.how
+      domain: rom.how
+      name: www
+      ttl: 600
+      type: CNAME
+    rom.rest_@_MX_0:
+      content: monday.mxroute.com
+      domain: rom.rest
+      prio: 10
+      ttl: 600
+      type: MX
+    rom.rest_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: rom.rest
+      prio: 20
+      ttl: 600
+      type: MX
+    rom.rest_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: rom.rest
+      ttl: 600
+      type: TXT
+    rom.rest_blog_CNAME_0:
+      content: rom.rest
+      domain: rom.rest
+      name: blog
+      ttl: 600
+      type: CNAME
+    rom.rest_mail_CNAME_0:
+      content: www.rom.rest
+      domain: rom.rest
+      name: mail
+      ttl: 600
+      type: CNAME
+    rom.rest_www_CNAME_0:
+      content: rom.rest
+      domain: rom.rest
+      name: www
+      ttl: 600
+      type: CNAME
+    rom.run_@_MX_0:
+      content: monday.mxroute.com
+      domain: rom.run
+      prio: 10
+      ttl: 600
+      type: MX
+    rom.run_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: rom.run
+      prio: 20
+      ttl: 600
+      type: MX
+    rom.run_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: rom.run
+      ttl: 600
+      type: TXT
+    rom.run_blog_CNAME_0:
+      content: rom.run
+      domain: rom.run
+      name: blog
+      ttl: 600
+      type: CNAME
+    rom.run_mail_CNAME_0:
+      content: www.rom.run
+      domain: rom.run
+      name: mail
+      ttl: 600
+      type: CNAME
+    rom.run_www_CNAME_0:
+      content: rom.run
+      domain: rom.run
+      name: www
+      ttl: 600
+      type: CNAME
+    s0s.pw_@_MX_0:
+      content: monday.mxroute.com
+      domain: s0s.pw
+      prio: 10
+      ttl: 600
+      type: MX
+    s0s.pw_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: s0s.pw
+      prio: 20
+      ttl: 600
+      type: MX
+    s0s.pw_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: s0s.pw
+      ttl: 600
+      type: TXT
+    s0s.pw_blog_CNAME_0:
+      content: s0s.pw
+      domain: s0s.pw
+      name: blog
+      ttl: 600
+      type: CNAME
+    s0s.pw_mail_CNAME_0:
+      content: www.s0s.pw
+      domain: s0s.pw
+      name: mail
+      ttl: 600
+      type: CNAME
+    s0s.pw_www_CNAME_0:
+      content: s0s.pw
+      domain: s0s.pw
+      name: www
+      ttl: 600
+      type: CNAME
+    security.cab_@_MX_0:
+      content: monday.mxroute.com
+      domain: security.cab
+      prio: 10
+      ttl: 600
+      type: MX
+    security.cab_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: security.cab
+      prio: 20
+      ttl: 600
+      type: MX
+    security.cab_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: security.cab
+      ttl: 600
+      type: TXT
+    security.cab_blog_CNAME_0:
+      content: security.cab
+      domain: security.cab
+      name: blog
+      ttl: 600
+      type: CNAME
+    security.cab_mail_CNAME_0:
+      content: www.security.cab
+      domain: security.cab
+      name: mail
+      ttl: 600
+      type: CNAME
+    security.cab_www_CNAME_0:
+      content: security.cab
+      domain: security.cab
+      name: www
+      ttl: 600
+      type: CNAME
+    yak.pub_@_MX_0:
+      content: monday.mxroute.com
+      domain: yak.pub
+      prio: 10
+      ttl: 600
+      type: MX
+    yak.pub_@_MX_1:
+      content: monday-relay.mxroute.com
+      domain: yak.pub
+      prio: 20
+      ttl: 600
+      type: MX
+    yak.pub_@_TXT_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: yak.pub
+      ttl: 600
+      type: TXT
+    yak.pub_blog_CNAME_0:
+      content: yak.pub
+      domain: yak.pub
+      name: blog
+      ttl: 600
+      type: CNAME
+    yak.pub_mail_CNAME_0:
+      content: www.yak.pub
+      domain: yak.pub
+      name: mail
+      ttl: 600
+      type: CNAME
+    yak.pub_www_CNAME_0:
+      content: yak.pub
+      domain: yak.pub
+      name: www
+      ttl: 600
+      type: CNAME
+porkbun:
+  01b.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 01b.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.01b.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 01b.us
+          provider: porkbun
+          ttl: 600
+  0x111.dev:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 0x111.dev
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.0x111.dev
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 0x111.dev
+          provider: porkbun
+          ttl: 600
+  0x1110.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 0x1110.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.0x1110.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 0x1110.com
+          provider: porkbun
+          ttl: 600
+  0x1110.dev:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 0x1110.dev
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.0x1110.dev
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 0x1110.dev
+          provider: porkbun
+          ttl: 600
+  1110x.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 1110x.com
+          provider: porkbun
+          ttl: 600
+        - content: 1110x.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.1110x.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 1110x.com
+          provider: porkbun
+          ttl: 600
+  1110x.de:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 1110x.de
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.1110x.de
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 1110x.de
+          provider: porkbun
+          ttl: 600
+    x._domainkey:
+      TXT:
+        - content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
+          provider: porkbun
+          ttl: 3600
+  1110x.dev:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 1110x.dev
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.1110x.dev
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 1110x.dev
+          provider: porkbun
+          ttl: 600
+  15b.org:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 15b.org
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.15b.org
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 15b.org
+          provider: porkbun
+          ttl: 600
+  15b.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 15b.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.15b.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 15b.us
+          provider: porkbun
+          ttl: 600
+  32b.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 32b.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.32b.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 32b.us
+          provider: porkbun
+          ttl: 600
+  3dtropic.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 3dtropic.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.3dtropic.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 3dtropic.com
+          provider: porkbun
+          ttl: 600
+  3dtropics.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 3dtropics.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.3dtropics.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 3dtropics.com
+          provider: porkbun
+          ttl: 600
+  64b.org:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 64b.org
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.64b.org
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 64b.org
+          provider: porkbun
+          ttl: 600
+  64b.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 64b.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.64b.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 64b.us
+          provider: porkbun
+          ttl: 600
+  69b.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 69b.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.69b.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 69b.us
+          provider: porkbun
+          ttl: 600
+  79b.org:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 79b.org
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.79b.org
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 79b.org
+          provider: porkbun
+          ttl: 600
+  79b.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: 79b.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.79b.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: 79b.us
+          provider: porkbun
+          ttl: 600
+  carbonfreezeme.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: carbonfreezeme.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.carbonfreezeme.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: carbonfreezeme.com
+          provider: porkbun
+          ttl: 600
+  default.computer:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: default.computer
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.default.computer
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: default.computer
+          provider: porkbun
+          ttl: 600
+  default.properties:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: default.properties
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.default.properties
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: default.properties
+          provider: porkbun
+          ttl: 600
+  developing-today.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: developing-today.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.developing-today.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: developing-today.com
+          provider: porkbun
+          ttl: 600
+  developing.today:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: developing.today
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.developing.today
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: developing.today
+          provider: porkbun
+          ttl: 600
+  developingto.day:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: developingto.day
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.developingto.day
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: developingto.day
+          provider: porkbun
+          ttl: 600
+  eau3d.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: eau3d.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.eau3d.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: eau3d.com
+          provider: porkbun
+          ttl: 600
+  eau3d.dev:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: eau3d.dev
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.eau3d.dev
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: eau3d.dev
+          provider: porkbun
+          ttl: 600
+  eau3d.org:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: eau3d.org
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.eau3d.org
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: eau3d.org
+          provider: porkbun
+          ttl: 600
+  grandnag.us:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: grandnag.us
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.grandnag.us
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: grandnag.us
+          provider: porkbun
+          ttl: 600
+  hax.live:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: hax.live
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.hax.live
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: hax.live
+          provider: porkbun
+          ttl: 600
+  l0x.dev:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: l0x.dev
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.l0x.dev
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: l0x.dev
+          provider: porkbun
+          ttl: 600
+  lair.cloud:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: lair.cloud
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.lair.cloud
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: lair.cloud
+          provider: porkbun
+          ttl: 600
+  o3d.dev:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: o3d.dev
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.o3d.dev
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: o3d.dev
+          provider: porkbun
+          ttl: 600
+  printmy.pictures:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: printmy.pictures
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.printmy.pictures
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: printmy.pictures
+          provider: porkbun
+          ttl: 600
+  printmy3dmodel.com:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: printmy3dmodel.com
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.printmy3dmodel.com
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: printmy3dmodel.com
+          provider: porkbun
+          ttl: 600
+  rom.how:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: rom.how
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.rom.how
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: rom.how
+          provider: porkbun
+          ttl: 600
+  rom.rest:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: rom.rest
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.rom.rest
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: rom.rest
+          provider: porkbun
+          ttl: 600
+  rom.run:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: rom.run
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.rom.run
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: rom.run
+          provider: porkbun
+          ttl: 600
+  s0s.pw:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: s0s.pw
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.s0s.pw
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: s0s.pw
+          provider: porkbun
+          ttl: 600
+  security.cab:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: security.cab
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.security.cab
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: security.cab
+          provider: porkbun
+          ttl: 600
+  yak.pub:
+    '@':
+      MX:
+        - content: monday.mxroute.com
+          prio: 10
+          provider: porkbun
+          ttl: 600
+        - content: monday-relay.mxroute.com
+          prio: 20
+          provider: porkbun
+          ttl: 600
+      TXT:
+        - content: v=spf1 include:mxlogin.com -all
+          provider: porkbun
+          ttl: 600
+    blog:
+      CNAME:
+        - content: yak.pub
+          provider: porkbun
+          ttl: 600
+    mail:
+      CNAME:
+        - content: www.yak.pub
+          provider: porkbun
+          ttl: 600
+    www:
+      CNAME:
+        - content: yak.pub
+          provider: porkbun
+          ttl: 600

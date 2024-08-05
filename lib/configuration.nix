@@ -345,6 +345,9 @@
     systemPackages =
       with pkgs;
       [
+        zed-editor
+        opentofu
+        terranix
         playerctl
         brillo
         font-manager
