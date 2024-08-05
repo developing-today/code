@@ -17,14 +17,11 @@
       };
     };
     "1110x.de" = {
-      provider = "banana"; # TODO: this should work
-      ttl = "4200"; # TODO: this should work
-      priority = "42"; # TODO: this should work
       records = {
         "x._domainkey" = {
          "TXT" = {
-           content = "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB";
-           ttl = 3600;
+            content = "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB";
+            ttl = 3600;
          };
         };
       };
@@ -71,37 +68,55 @@
   ...
 }:
 let
-  generateRecords = domain: config:
-    let
+  safeToNullableInt = value:
+    if value == null then null
+    else if builtins.isInt value then value
+    else if builtins.isString value then lib.toInt value
+    else throw "Cannot convert ${builtins.typeOf value} to integer";
+    generateRecords = domain: config:
+      let
+      replaceWithDomain = content: replaceValue:
+        if replaceValue != null
+        then builtins.replaceStrings [replaceValue] [domain] content
+        else builtins.replaceStrings ["@"] [domain] content;
       processRecord = name: recordSet:
         let
           processEntry = type: content:
+            let
+              replaceValue = recordSet.replaceWithDomain or null;
+              processContent = c:
+                if builtins.isString c
+                then replaceWithDomain c replaceValue
+                else if builtins.isAttrs c && c ? content
+                then c // { content = replaceWithDomain c.content replaceValue; }
+                else c;
+            in
             if builtins.isString recordSet then
-              [{ type = "CNAME"; content = if recordSet == "@" then domain else builtins.replaceStrings ["@"] [domain] recordSet; }]
+              [{ type = "CNAME"; content = processContent (if recordSet == "@" then domain else recordSet); }]
             else if builtins.isString content then
-              [{ inherit type content; }]
+              [{ inherit type; content = processContent content; }]
             else if builtins.isList content then
               map (item:
                 if builtins.isString item then
-                  { inherit type content; }
+                  { inherit type; content = processContent item; }
                 else
-                  { inherit type; } // item
+                  { inherit type; } // (processContent item)
               ) content
             else if builtins.isAttrs content then
-              [({ inherit type; } // content)]
+              [({ inherit type; } // (processContent content))]
             else
-              [{ inherit type content; }];
-          flattenedRecords = if builtins.isString recordSet
-                             then processEntry "CNAME" recordSet
-                             else lib.flatten (lib.mapAttrsToList processEntry recordSet);
+              [{ inherit type; content = processContent content; }];
+
+              flattenedRecords = if builtins.isString recordSet
+                                 then processEntry "CNAME" recordSet
+                                 else lib.flatten (lib.mapAttrsToList processEntry (builtins.removeAttrs recordSet ["replaceWithDomain"]));
         in
         map (r: r // {
           inherit domain name;
           type = lib.toUpper (r.type or (throw "type is required for domain: ${toString domain}, record: ${toString r}"));
-          } // (lib.optionalAttrs (config.provider or null != null) { inherit (config) provider; })
-                    // (lib.optionalAttrs (config.ttl or null != null) { inherit (config) ttl; })
-                    // (lib.optionalAttrs (config.priority or null != null) { inherit (config) priority; })
-                  ) flattenedRecords;
+          } // (lib.optionalAttrs (config.ttl or null != null) { ttl = safeToNullableInt config.ttl; })
+            // (lib.optionalAttrs (config.priority or null != null) { priority = safeToNullableInt config.priority; })
+          ) flattenedRecords;
       allRecords = lib.flatten (lib.mapAttrsToList processRecord (config.records or {}));
       defaultRecords = if domain != "@" then lib.flatten (lib.mapAttrsToList processRecord (DNSConfig."@".records or {})) else [];
     in
@@ -109,24 +124,35 @@ let
 
   allRecords = lib.flatten (lib.mapAttrsToList generateRecords (removeAttrs DNSConfig ["@"]));
 
-  groupByProvider = lib.groupBy (r: r.provider or (DNSConfig."@".provider or null)) allRecords;
+  groupByProvider = lib.groupBy (r: DNSConfig.${r.domain}.provider or DNSConfig."@".provider or null) allRecords;
 
   structureRecords = records:
-    lib.foldl' (acc: r:
-      let
-        domainRecords = acc.${r.domain} or {};
-        nameRecords = domainRecords.${r.name} or {};
-        typeRecords = nameRecords.${r.type} or [];
-        newRecord = removeAttrs r ["domain" "name" "type"];
-      in
-      acc // {
-        ${r.domain} = domainRecords // {
-          ${r.name} = nameRecords // {
-            ${r.type} = typeRecords ++ [newRecord];
+    let
+      deduplicateList = list:
+        lib.unique (lib.sort (a: b:
+          let
+            strA = builtins.toJSON a;
+            strB = builtins.toJSON b;
+          in strA < strB
+        ) list);
+
+      addRecord = acc: r:
+        let
+          domainRecords = acc.${r.domain} or {};
+          nameRecords = domainRecords.${r.name} or {};
+          typeRecords = nameRecords.${r.type} or [];
+          newRecord = removeAttrs r ["domain" "name" "type"];
+          updatedTypeRecords = deduplicateList (typeRecords ++ [newRecord]);
+        in
+        acc // {
+          ${r.domain} = domainRecords // {
+            ${r.name} = nameRecords // {
+              ${r.type} = updatedTypeRecords;
+            };
           };
         };
-      }
-    ) {} records;
+    in
+    lib.foldl' addRecord {} records;
 
   finalStructure = lib.mapAttrs (provider: records:
     structureRecords records
@@ -137,12 +163,13 @@ let
     flattenRecord = domain: name: type: record: priorityIndex: itemIndex:
       let
         key = "${domain}_${name}_${type}_${toString priorityIndex}_${toString itemIndex}";
-        provider = record.provider or (DNSConfig."@".provider or (throw "No provider specified for ${domain}"));
-        ttl = record.ttl or (DNSConfig."@".ttl or 600); # TODO: just allow empty and rely on per-provider defaults or hardcode defaults in terraform code?
-        priority = record.priority or (DNSConfig."@".priority or 0); # TODO: just allow empty and rely on per-provider defaults or hardcode defaults in terraform code?
-        completeRecord = removeAttrs record ["provider"] // {
-          inherit domain type provider ttl priority;
-        } // (if name != "@" then { inherit name; } else {});
+        ttl = safeToNullableInt (record.ttl or (DNSConfig."@".ttl or null));
+        priority = safeToNullableInt (record.priority or (DNSConfig."@".priority or null));
+        completeRecord = record // {
+          inherit domain type;
+        } // (if name != "@" then { inherit name; } else {})
+        // (if ttl != null then { ttl = ttl; } else {})
+        // (if priority != null then { priority = priority; } else {});
       in
       { ${key} = completeRecord; };
 
@@ -150,11 +177,21 @@ let
       lib.flatten (lib.mapAttrsToList (name: nameRecords:
         lib.flatten (lib.mapAttrsToList (type: typeRecords:
           let
-            sortedRecords = lib.sort (a: b: (a.priority or 0) < (b.priority or 0)) typeRecords;
+            sortedRecords = lib.sort (a: b:
+              let
+                priorityA = a.priority or 0;
+                priorityB = b.priority or 0;
+                contentA = a.content or "";
+                contentB = b.content or "";
+              in
+              if priorityA != priorityB
+              then priorityA < priorityB
+              else contentA < contentB
+            ) typeRecords;
             groupedByPriority = lib.groupBy (r: toString (r.priority or 0)) sortedRecords;
             indexedRecords = lib.mapAttrsToList (priority: group:
               lib.imap0 (itemIndex: record:
-                flattenRecord domain name type record (lib.toInt priority) itemIndex
+                flattenRecord domain name type record (safeToNullableInt priority) itemIndex
               ) group
             ) groupedByPriority;
           in
@@ -175,7 +212,29 @@ let
   ) records;
 
   condensedRecords = createCondensedRecords finalStructure;
+
+  simplifyStructure = structure:
+    lib.mapAttrs (provider: providerRecords:
+      lib.mapAttrs (domain: domainRecords:
+        lib.mapAttrs (name: nameRecords:
+          let
+            simplifiedNameRecords = lib.mapAttrs (type: typeRecords:
+              if builtins.isList typeRecords && builtins.length typeRecords == 1
+              then
+                let record = builtins.head typeRecords;
+                in if builtins.length (builtins.attrNames record) == 1 && builtins.hasAttr "content" record
+                   then record.content
+                   else record
+              else typeRecords
+            ) nameRecords;
+          in
+          if builtins.length (builtins.attrNames simplifiedNameRecords) == 1 && builtins.hasAttr "CNAME" simplifiedNameRecords
+          then simplifiedNameRecords.CNAME
+          else simplifiedNameRecords
+        ) domainRecords
+      ) providerRecords
+    ) structure;
 in
 {
-  DNSConfig = finalStructure // { "@" = condensedRecords; };
+  DNSConfig = simplifyStructure finalStructure // { "@" = condensedRecords; };
 }
