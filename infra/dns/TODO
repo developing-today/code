@@ -1,0 +1,42 @@
+- compile list of domains, list of subdomains
+- run delete all records for domain/subdomain/type for each in list until all deleted
+- go section by section applying and adding new domains with terraform
+- allow DNSConfig to be an array.
+  - current issue is that both finalStructure and condensed rely on '@' items directly
+  - need to refactor to allow for multiple DNSConfig items
+  - ideally generate each finalstructure and then merge and then generate condensed
+  - but maybe implement merge for both finalstructure and condensed
+  
+
+
+    secretapikey
+
+    Your secret API key.
+    apikey
+
+    Your API key.
+
+Response Element Descriptions
+
+    status
+
+    A status indicating whether or not the command was successfuly processed.
+
+Example
+
+URI Endpoint: https://api.porkbun.com/api/json/v3/dns/deleteByNameType/DOMAIN/TYPE/[SUBDOMAIN]
+
+URI Endpoint Example: https://api.porkbun.com/api/json/v3/dns/deleteByNameType/borseth.ink/A/www
+
+JSON Command Example
+
+{
+	"secretapikey": "YOUR_SECRET_API_KEY",
+	"apikey": "YOUR_API_KEY"
+}
+
+JSON Response Example
+
+{
+	"status": "SUCCESS"
+}
