@@ -19,7 +19,7 @@ function cleanup() {
   echo "deleting lock file"
   rm -f "$dir/.lock"
   # echo "saving tfstate"
-  # $dir/save.sh
+  # "$dir/save.sh"
   # echo "successfully saved tfstate"
   echo "done cleaning up"
 }

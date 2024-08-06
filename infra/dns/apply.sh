@@ -14,7 +14,7 @@ outPlan="${1:-"$dir/terraform.tfplan"}"
 echo "tfplan: $outPlan"
 
 echo "generating tfplan"
-$dir/plan.sh
+"$dir/plan.sh"
 echo "successfully generated tfplan"
 
 if [ -f "$dir/.lock" ]; then
@@ -27,7 +27,7 @@ function cleanup() {
   echo "deleting lock file"
   rm -f "$dir/.lock"
   echo "saving tfstate"
-  $dir/save.sh
+  "$dir/save.sh"
   echo "successfully saved tfstate"
   echo "done cleaning up"
 }

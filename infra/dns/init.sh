@@ -11,7 +11,7 @@ dir="$(dirname -- "$(readlink -f -- "$0")")"
 echo "dir: $dir"
 
 echo "loading tfstate"
-$dir/load.sh
+"$dir/load.sh"
 echo "successfully loaded tfstate"
 
 if [ -f "$dir/.lock" ]; then
@@ -24,7 +24,7 @@ function cleanup() {
   echo "deleting lock file"
   rm -f "$dir/.lock"
   # echo "saving tfstate"
-  # $dir/save.sh
+  # "$dir/save.sh"
   # echo "successfully saved tfstate"
   echo "done cleaning up"
 }
