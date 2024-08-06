@@ -25,6 +25,7 @@ echo "starting compression of nested log directories..."
 # Check if log directory exists
 if [ ! -d "$log_dir" ]; then
   echo "Log directory does not exist: $log_dir"
+  cleanup
   exit 1
 fi
 

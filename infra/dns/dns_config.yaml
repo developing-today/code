@@ -1,5 +1,19 @@
 '@':
   porkbun:
+    01b.us_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: 01b.us
+      priority: 10
+      type: MX
+    01b.us_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: 01b.us
+      priority: 20
+      type: MX
+    01b.us_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 01b.us
+      type: TXT
     0x111.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: 0x111.dev
@@ -104,6 +118,20 @@
       content: v=spf1 include:mxlogin.com -all
       domain: 15b.org
       type: TXT
+    15b.us_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: 15b.us
+      priority: 10
+      type: MX
+    15b.us_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: 15b.us
+      priority: 20
+      type: MX
+    15b.us_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 15b.us
+      type: TXT
     32b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 32b.us
@@ -117,6 +145,48 @@
     32b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 32b.us
+      type: TXT
+    3dtropic.com_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: 3dtropic.com
+      priority: 10
+      type: MX
+    3dtropic.com_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: 3dtropic.com
+      priority: 20
+      type: MX
+    3dtropic.com_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 3dtropic.com
+      type: TXT
+    3dtropics.com_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: 3dtropics.com
+      priority: 10
+      type: MX
+    3dtropics.com_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: 3dtropics.com
+      priority: 20
+      type: MX
+    3dtropics.com_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 3dtropics.com
+      type: TXT
+    64b.org_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: 64b.org
+      priority: 10
+      type: MX
+    64b.org_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: 64b.org
+      priority: 20
+      type: MX
+    64b.org_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 64b.org
       type: TXT
     64b.us_@_MX_10_0:
       content: monday.mxroute.com
@@ -146,6 +216,20 @@
       content: v=spf1 include:mxlogin.com -all
       domain: 69b.us
       type: TXT
+    79b.org_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: 79b.org
+      priority: 10
+      type: MX
+    79b.org_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: 79b.org
+      priority: 20
+      type: MX
+    79b.org_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: 79b.org
+      type: TXT
     79b.us_@_MX_10_0:
       content: monday.mxroute.com
       domain: 79b.us
@@ -159,6 +243,20 @@
     79b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 79b.us
+      type: TXT
+    carbonfreezeme.com_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: carbonfreezeme.com
+      priority: 10
+      type: MX
+    carbonfreezeme.com_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: carbonfreezeme.com
+      priority: 20
+      type: MX
+    carbonfreezeme.com_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: carbonfreezeme.com
       type: TXT
     default.computer_@_MX_10_0:
       content: monday.mxroute.com
@@ -188,6 +286,20 @@
       content: v=spf1 include:mxlogin.com -all
       domain: default.properties
       type: TXT
+    developing-today.com_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: developing-today.com
+      priority: 10
+      type: MX
+    developing-today.com_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: developing-today.com
+      priority: 20
+      type: MX
+    developing-today.com_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: developing-today.com
+      type: TXT
     developing.today_@_MX_10_0:
       content: monday.mxroute.com
       domain: developing.today
@@ -201,6 +313,62 @@
     developing.today_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developing.today
+      type: TXT
+    developingto.day_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: developingto.day
+      priority: 10
+      type: MX
+    developingto.day_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: developingto.day
+      priority: 20
+      type: MX
+    developingto.day_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: developingto.day
+      type: TXT
+    eau3d.com_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: eau3d.com
+      priority: 10
+      type: MX
+    eau3d.com_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: eau3d.com
+      priority: 20
+      type: MX
+    eau3d.com_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: eau3d.com
+      type: TXT
+    eau3d.dev_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: eau3d.dev
+      priority: 10
+      type: MX
+    eau3d.dev_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: eau3d.dev
+      priority: 20
+      type: MX
+    eau3d.dev_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: eau3d.dev
+      type: TXT
+    eau3d.org_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: eau3d.org
+      priority: 10
+      type: MX
+    eau3d.org_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: eau3d.org
+      priority: 20
+      type: MX
+    eau3d.org_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: eau3d.org
       type: TXT
     grandnag.us_@_MX_10_0:
       content: monday.mxroute.com
@@ -216,6 +384,20 @@
       content: v=spf1 include:mxlogin.com -all
       domain: grandnag.us
       type: TXT
+    hax.live_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: hax.live
+      priority: 10
+      type: MX
+    hax.live_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: hax.live
+      priority: 20
+      type: MX
+    hax.live_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: hax.live
+      type: TXT
     l0x.dev_@_MX_10_0:
       content: monday.mxroute.com
       domain: l0x.dev
@@ -229,6 +411,20 @@
     l0x.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: l0x.dev
+      type: TXT
+    lair.cloud_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: lair.cloud
+      priority: 10
+      type: MX
+    lair.cloud_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: lair.cloud
+      priority: 20
+      type: MX
+    lair.cloud_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: lair.cloud
       type: TXT
     o3d.dev_@_MX_10_0:
       content: monday.mxroute.com
@@ -257,6 +453,20 @@
     printmy.pictures_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: printmy.pictures
+      type: TXT
+    printmy3dmodel.com_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: printmy3dmodel.com
+      priority: 10
+      type: MX
+    printmy3dmodel.com_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: printmy3dmodel.com
+      priority: 20
+      type: MX
+    printmy3dmodel.com_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: printmy3dmodel.com
       type: TXT
     rom.how_@_MX_10_0:
       content: monday.mxroute.com
@@ -300,6 +510,20 @@
       content: v=spf1 include:mxlogin.com -all
       domain: rom.run
       type: TXT
+    s0s.pw_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: s0s.pw
+      priority: 10
+      type: MX
+    s0s.pw_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: s0s.pw
+      priority: 20
+      type: MX
+    s0s.pw_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: s0s.pw
+      type: TXT
     security.cab_@_MX_10_0:
       content: monday.mxroute.com
       domain: security.cab
@@ -314,7 +538,29 @@
       content: v=spf1 include:mxlogin.com -all
       domain: security.cab
       type: TXT
+    yak.pub_@_MX_10_0:
+      content: monday.mxroute.com
+      domain: yak.pub
+      priority: 10
+      type: MX
+    yak.pub_@_MX_20_0:
+      content: monday-relay.mxroute.com
+      domain: yak.pub
+      priority: 20
+      type: MX
+    yak.pub_@_TXT_0_0:
+      content: v=spf1 include:mxlogin.com -all
+      domain: yak.pub
+      type: TXT
 porkbun:
+  01b.us:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
   0x111.dev:
     '@':
       MX:
@@ -375,7 +621,39 @@ porkbun:
         - content: monday.mxroute.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+  15b.us:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
   32b.us:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  3dtropic.com:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  3dtropics.com:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  64b.org:
     '@':
       MX:
         - content: monday-relay.mxroute.com
@@ -399,7 +677,23 @@ porkbun:
         - content: monday.mxroute.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+  79b.org:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
   79b.us:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  carbonfreezeme.com:
     '@':
       MX:
         - content: monday-relay.mxroute.com
@@ -423,7 +717,47 @@ porkbun:
         - content: monday.mxroute.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+  developing-today.com:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
   developing.today:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  developingto.day:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  eau3d.com:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  eau3d.dev:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  eau3d.org:
     '@':
       MX:
         - content: monday-relay.mxroute.com
@@ -439,7 +773,23 @@ porkbun:
         - content: monday.mxroute.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+  hax.live:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
   l0x.dev:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  lair.cloud:
     '@':
       MX:
         - content: monday-relay.mxroute.com
@@ -456,6 +806,14 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   printmy.pictures:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  printmy3dmodel.com:
     '@':
       MX:
         - content: monday-relay.mxroute.com
@@ -487,7 +845,23 @@ porkbun:
         - content: monday.mxroute.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+  s0s.pw:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
   security.cab:
+    '@':
+      MX:
+        - content: monday-relay.mxroute.com
+          priority: 20
+        - content: monday.mxroute.com
+          priority: 10
+      TXT: v=spf1 include:mxlogin.com -all
+  yak.pub:
     '@':
       MX:
         - content: monday-relay.mxroute.com

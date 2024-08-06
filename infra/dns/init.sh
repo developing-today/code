@@ -2,6 +2,11 @@
 
 set -exuo pipefail
 
+if [ -n "${SKIP_INIT:-}" ]; then
+  echo "skipping tf init"
+  exit 0
+fi
+
 dir="$(dirname -- "$(readlink -f -- "$0")")"
 echo "dir: $dir"
 

@@ -2,6 +2,11 @@
 
 set -exuo pipefail
 
+if [ -n "${SKIP_PLAN:-}" ]; then
+  echo "skipping tf plan"
+  exit 0
+fi
+
 dir="$(dirname -- "$(which -- "$0" 2>/dev/null || realpath -- "$0")")"
 echo "dir: $dir"
 
