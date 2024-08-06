@@ -2,6 +2,16 @@
 
 set -exuo pipefail
 
+REFRESH_STATE="${REFRESH_STATE:-false}"
+if [ "${1:-}" == "refresh" ] || [ "${1:-}" == "--refresh" ]; then
+  REFRESH_STATE="true"
+elif [ "${1:-}" != "" ]; then
+  echo "Invalid argument: $1"
+  exit 1
+else
+  echo "No argument provided, only removing terraform.tfstate backup files"
+fi
+
 if [ -n "${SKIP_PLAN:-}" ]; then
   echo "skipping tf plan"
   exit 0
@@ -42,7 +52,15 @@ function cleanup() {
 trap cleanup EXIT
 
 echo "running terraform plan"
-tofu -chdir="$dir" plan -out="$outPlan"
+if [ "$REFRESH_STATE" == "true" ]; then
+  echo "also refreshing state"
+  tofu -chdir="$dir" plan -parallelism=1 -out="$outPlan"
+  echo "successfully planned & refreshed state"
+else
+  echo "plan only, not refreshing state"
+  tofu -chdir="$dir" plan -parallelism=1 -refresh=false -out="$outPlan"
+  echo "successfully planned"
+fi
 echo "successfully ran terraform plan"
 
 rm -f "$dir/.lock"

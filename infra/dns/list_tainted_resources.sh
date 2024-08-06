@@ -29,15 +29,19 @@ tainted_resources=$(tofu -chdir="$dir" show -json | jq -r '.values.root_module.r
 echo "tainted_resources:\n$tainted_resources"
 if [ -z "$tainted_resources" ]; then
   echo "no tainted resources found"
-  mv -f $dir/tainted_resources.json $dir/tainted_resources.$run_id.json
-  exit 0
+  if [ -f "$dir/tainted_resources.json" ]; then
+    echo "backing up tainted resources to $dir/tainted_resources.$run_id.json"
+    cp "$dir/tainted_resources.json" "$dir/tainted_resources.$run_id.json"
+    rm -f "$dir/tainted_resources.json"
+  fi
+else
+  echo "$tainted_resources" | jq -nR '[inputs]' > "$dir/tainted_resources.json"
+  echo "tainted resources written to $dir/tainted_resources.json"
+  echo "tainted_resources.json:"
+  cat "$dir/tainted_resources.json"
+  log_dir="$dir/logs/tainted_resources/$run_id"
+  mkdir -p "$log_dir"
+  echo "backing up tainted resources to $log_dir/$run_id.tainted_resources.json"
+  cp $dir/tainted_resources.json $log_dir/$run_id.tainted_resources.json
+  echo "Listing complete."
 fi
-echo "$tainted_resources" | jq -nR '[inputs]' > "$dir/tainted_resources.json"
-echo "tainted resources written to $dir/tainted_resources.json"
-echo "tainted_resources.json:"
-cat "$dir/tainted_resources.json"
-log_dir="$dir/logs/tainted_resources/$run_id"
-mkdir -p "$log_dir"
-echo "backing up tainted resources to $log_dir/$run_id.tainted_resources.json"
-cp $dir/tainted_resources.json $log_dir/$run_id.tainted_resources.json
-echo "Listing complete."
