@@ -16,12 +16,18 @@ if [ -f "$dir/.lock" ]; then
   echo "lock file exists, delete it to continue"
   exit 1
 fi
-trap 'rm -f "$dir/.lock"' EXIT
+touch "$dir/.lock"
+function cleanup() {
+  echo "cleaning up"
+  echo "deleting lock file"
+  rm -f "$dir/.lock"
+  echo "saving tfstate"
+  $dir/save.sh
+  echo "successfully saved tfstate"
+  echo "done cleaning up"
+}
+trap cleanup EXIT
 
 echo "applying tfplan"
-tofu -chdir="$dir" apply -auto-approve -input=false "$outPlan"
+tofu -chdir="$dir" apply -auto-approve -input=false -parallelism=1 "$outPlan"
 echo "successfully applied tfplan"
-
-echo "saving tfstate"
-$dir/save.sh
-echo "successfully saved tfstate"

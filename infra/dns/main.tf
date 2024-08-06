@@ -15,6 +15,7 @@ data "sops_file" "porkbun" {
 provider "porkbun" {
   api_key = data.sops_file.porkbun.data["porkbun_api_key"]
   secret_key = data.sops_file.porkbun.data["porkbun_secret_key"]
+  max_retries = 50
 }
 locals {
   dns_config = yamldecode(file("./dns_config.yaml"))["@"]

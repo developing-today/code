@@ -11,9 +11,6 @@
           ];
           "TXT" = "v=spf1 include:mxlogin.com -all";
         };
-        "www" = "@";
-        "mail" = "www.@";
-        "blog" = "@";
       };
     };
     "1110x.de" = {
@@ -47,23 +44,23 @@
     "64b.us" = {};
     "32b.us" = {};
     "15b.org" = {};
-    "3dtropics.com" = {};
-    "eau3d.org" = {};
-    "developing-today.com" = {};
-    "eau3d.dev" = {};
-    "79b.org" = {};
-    "64b.org" = {};
-    "lair.cloud" = {};
-    "s0s.pw" = {};
-    "01b.us" = {};
-    "15b.us" = {};
-    "hax.live" = {};
-    "developingto.day" = {};
-    "yak.pub" = {};
-    "printmy3dmodel.com" = {};
-    "3dtropic.com" = {};
-    "eau3d.com" = {};
-    "carbonfreezeme.com" = {};
+    # "3dtropics.com" = {};
+    # "eau3d.org" = {};
+    # "developing-today.com" = {};
+    # "eau3d.dev" = {};
+    # "79b.org" = {};
+    # "64b.org" = {};
+    # "lair.cloud" = {};
+    # "s0s.pw" = {};
+    # "01b.us" = {};
+    # "15b.us" = {};
+    # "hax.live" = {};
+    # "developingto.day" = {};
+    # "yak.pub" = {};
+    # "printmy3dmodel.com" = {};
+    # "3dtropic.com" = {};
+    # "eau3d.com" = {};
+    # "carbonfreezeme.com" = {};
   },
   ...
 }:
