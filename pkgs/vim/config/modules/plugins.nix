@@ -102,6 +102,8 @@
         jsonls = { };
         pylsp = { };
         #pyright = {};
+        nixd = { };
+        #nix-ls = { };
       };
       onAttach = ''
         -- Enable completion triggered by <c-x><c-o>
