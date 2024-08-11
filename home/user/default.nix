@@ -241,7 +241,7 @@
 
         nickel
 
-        #plasma5Packages.kdenlive
+        #plasma5Packages.kdenlive # build failures? maybe need plasma6?
         git
         git-crypt
         #gnupg

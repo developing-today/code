@@ -197,10 +197,6 @@
       stateVersion = "23.11";
       system = "x86_64-linux";
       supportedSystems = [ "x86_64-linux" ];
-      kdenlive-pkgs = import nixpkgs-stable {
-        inherit system;
-        config.allowUnfree = true;
-      };
       lib = nixpkgs.lib // home-manager.lib;
       forEachSystem = f: lib.genAttrs supportedSystems f;
       pkgsFor = forEachSystem (
@@ -225,9 +221,6 @@
           waybar.overlays.default
           # nix-topology.overlays.default
           # rust-overlay
-          (final: prev: {
-                kdenlive = kdenlive-pkgs.kdenlive;
-              })
         ];
       };
       supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
