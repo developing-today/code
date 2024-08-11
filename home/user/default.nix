@@ -241,7 +241,7 @@
 
         nickel
 
-        plasma5Packages.kdenlive
+        #plasma5Packages.kdenlive
         git
         git-crypt
         #gnupg

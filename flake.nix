@@ -3,7 +3,9 @@
   inputs = {
     # switch to flakes, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     #nixpkgs.url = "github:NixOS/nixpkgs";
-    nixpkgs.url = "github:dezren39/nixpkgs";
+    #nixpkgs.url = "github:dezren39/nixpkgs";
+    #nixpkgs.url = "github:dezren39/nixpkgs/master";
+    nixpkgs.url = "github:dezren39/nixpkgs/rev";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
@@ -14,7 +16,7 @@
     };
     home-manager = {
       url = "github:nix-community/home-manager";
-      inputs.nixpkgs.follows = "nixpkgs";
+      #inputs.nixpkgs.follows = "nixpkgs";
     };
     systems = {
       # url = "github:nix-systems/default-linux";
@@ -178,6 +180,7 @@
     {
       self,
       nixpkgs,
+      nixpkgs-stable,
       flake-utils,
       zig-overlay,
       sops-nix,
@@ -194,6 +197,10 @@
       stateVersion = "23.11";
       system = "x86_64-linux";
       supportedSystems = [ "x86_64-linux" ];
+      kdenlive-pkgs = import nixpkgs-stable {
+        inherit system;
+        config.allowUnfree = true;
+      };
       lib = nixpkgs.lib // home-manager.lib;
       forEachSystem = f: lib.genAttrs supportedSystems f;
       pkgsFor = forEachSystem (
@@ -218,6 +225,9 @@
           waybar.overlays.default
           # nix-topology.overlays.default
           # rust-overlay
+          (final: prev: {
+                kdenlive = kdenlive-pkgs.kdenlive;
+              })
         ];
       };
       supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
