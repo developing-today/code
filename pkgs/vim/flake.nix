@@ -3,8 +3,8 @@
     #nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "github:NixOS/nixpkgs/master";
-    #nixpkgs.url = "github:dezren39/nixpkgs/master";
-    nixpkgs.url = "github:dezren39/nixpkgs/rev";
+    nixpkgs.url = "github:dezren39/nixpkgs/master";
+    #nixpkgs.url = "github:dezren39/nixpkgs/rev";
 
     nixvim = {
       url = "github:nix-community/nixvim";
