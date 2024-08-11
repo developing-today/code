@@ -23,9 +23,13 @@ echo "dir: $dir"
 outPlan="${1:-"$dir/terraform.tfplan"}"
 echo "tfplan: $outPlan"
 
-echo "generating dns config"
-"$dir/generate_dns_config.sh"
-echo "successfully generated dns config"
+if [ -n "${SKIP_GENERATE:-}" ]; then
+  echo "skipping generate dns config"
+else
+  echo "generating dns config"
+  "$dir/generate_dns_config.sh"
+  echo "successfully generated dns config"
+fi
 
 echo "removing old plan"
 rm -f "$outPlan"
