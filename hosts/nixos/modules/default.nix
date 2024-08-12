@@ -33,9 +33,7 @@ let
         system.stateVersion = "23.11"; # stateVersion;
       }
       # TODO: there is a thing that gets the root flake location
-      ../../../lib/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
-      #sops-nix.nixosModules.sops
-      #./modules/sops.nix
+      ../../../hosts/common/modules/configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
       #./modules/nixos/cachix.nix
       # TODO: there is a thing that gets the root flake location
       ../../../hosts/nixos/modules/hardware-configuration
@@ -53,7 +51,7 @@ let
             #exitNode = "some-node-id";
             #exitNodeAllowLanAccess = true;
           };
-          sops.secrets.tailscale_key = {
+          sops.secrets.tailscale_key = { # TODO: distinguish between peristent and ephemeral tailscale keys (ephemeral remove from tailnet on shutdown)
             sopsFile = ../../../lib/config.enc/common/tailscale.yaml;
           };
         }
@@ -67,29 +65,8 @@ let
         { ... }:
         {
           imports = [
-            # home-manager.nixosModules.home-manager
             inputs.vim.nixosModules.x86_64-linux # .${system}
           ];
-
-          #home-manager.useUserPackages = true;
-          #home-manager.useGlobalPkgs = true;
-          #home-manager.backupFileExtension = "backup";
-          #home-manager.users.user = import ./home/user/user.nix;
-          #inherit stateVersion;
-          #pkgs = pkgsFor.x86_64-linux; # import nixpkgs {
-          #inherit system;
-          #overlays = overlays;
-
-          #*/
-          #config = {
-          #allowUnfree = true;
-          #permittedInsecurePackages = [
-          #  "electron" # le sigh
-          # "qtwebkit-5.212.0-alpha4" # ???
-          #];
-          #};
-          #};
-          # }
         }
       )
     ];

@@ -3,3 +3,4 @@ keys:
 creation_rules:
   - age: *laptop-framework
 # todo: common vs per-host vs per-user
+# separate keys for other hosts, don't share allow all hosts to decrypt certain secrets
