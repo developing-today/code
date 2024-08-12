@@ -1,12 +1,12 @@
 '@':
   porkbun:
     01b.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 01b.us
       priority: 10
       type: MX
     01b.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 01b.us
       priority: 20
       type: MX
@@ -15,12 +15,12 @@
       domain: 01b.us
       type: TXT
     0x111.dev_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 0x111.dev
       priority: 10
       type: MX
     0x111.dev_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 0x111.dev
       priority: 20
       type: MX
@@ -29,12 +29,12 @@
       domain: 0x111.dev
       type: TXT
     0x1110.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 0x1110.com
       priority: 10
       type: MX
     0x1110.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 0x1110.com
       priority: 20
       type: MX
@@ -43,12 +43,12 @@
       domain: 0x1110.com
       type: TXT
     0x1110.dev_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 0x1110.dev
       priority: 10
       type: MX
     0x1110.dev_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 0x1110.dev
       priority: 20
       type: MX
@@ -57,12 +57,12 @@
       domain: 0x1110.dev
       type: TXT
     1110x.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 1110x.com
       priority: 10
       type: MX
     1110x.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 1110x.com
       priority: 20
       type: MX
@@ -71,12 +71,12 @@
       domain: 1110x.com
       type: TXT
     1110x.de_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 1110x.de
       priority: 10
       type: MX
     1110x.de_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 1110x.de
       priority: 20
       type: MX
@@ -90,12 +90,12 @@
       name: x._domainkey
       type: TXT
     1110x.dev_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 1110x.dev
       priority: 10
       type: MX
     1110x.dev_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 1110x.dev
       priority: 20
       type: MX
@@ -104,12 +104,12 @@
       domain: 1110x.dev
       type: TXT
     15b.org_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 15b.org
       priority: 10
       type: MX
     15b.org_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 15b.org
       priority: 20
       type: MX
@@ -118,12 +118,12 @@
       domain: 15b.org
       type: TXT
     15b.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 15b.us
       priority: 10
       type: MX
     15b.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 15b.us
       priority: 20
       type: MX
@@ -132,12 +132,12 @@
       domain: 15b.us
       type: TXT
     32b.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 32b.us
       priority: 10
       type: MX
     32b.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 32b.us
       priority: 20
       type: MX
@@ -146,12 +146,12 @@
       domain: 32b.us
       type: TXT
     3dtropic.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 3dtropic.com
       priority: 10
       type: MX
     3dtropic.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 3dtropic.com
       priority: 20
       type: MX
@@ -160,12 +160,12 @@
       domain: 3dtropic.com
       type: TXT
     3dtropics.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 3dtropics.com
       priority: 10
       type: MX
     3dtropics.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 3dtropics.com
       priority: 20
       type: MX
@@ -174,12 +174,12 @@
       domain: 3dtropics.com
       type: TXT
     64b.org_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 64b.org
       priority: 10
       type: MX
     64b.org_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 64b.org
       priority: 20
       type: MX
@@ -188,12 +188,12 @@
       domain: 64b.org
       type: TXT
     64b.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 64b.us
       priority: 10
       type: MX
     64b.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 64b.us
       priority: 20
       type: MX
@@ -202,12 +202,12 @@
       domain: 64b.us
       type: TXT
     69b.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 69b.us
       priority: 10
       type: MX
     69b.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 69b.us
       priority: 20
       type: MX
@@ -216,12 +216,12 @@
       domain: 69b.us
       type: TXT
     79b.org_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 79b.org
       priority: 10
       type: MX
     79b.org_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 79b.org
       priority: 20
       type: MX
@@ -230,12 +230,12 @@
       domain: 79b.org
       type: TXT
     79b.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: 79b.us
       priority: 10
       type: MX
     79b.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: 79b.us
       priority: 20
       type: MX
@@ -244,12 +244,12 @@
       domain: 79b.us
       type: TXT
     carbonfreezeme.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: carbonfreezeme.com
       priority: 10
       type: MX
     carbonfreezeme.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: carbonfreezeme.com
       priority: 20
       type: MX
@@ -258,12 +258,12 @@
       domain: carbonfreezeme.com
       type: TXT
     default.computer_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: default.computer
       priority: 10
       type: MX
     default.computer_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: default.computer
       priority: 20
       type: MX
@@ -272,12 +272,12 @@
       domain: default.computer
       type: TXT
     default.properties_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: default.properties
       priority: 10
       type: MX
     default.properties_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: default.properties
       priority: 20
       type: MX
@@ -290,12 +290,12 @@
       domain: developing-today.com
       type: ALIAS
     developing-today.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: developing-today.com
       priority: 10
       type: MX
     developing-today.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: developing-today.com
       priority: 20
       type: MX
@@ -309,12 +309,12 @@
       name: news
       type: CNAME
     developing.today_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: developing.today
       priority: 10
       type: MX
     developing.today_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: developing.today
       priority: 20
       type: MX
@@ -323,12 +323,12 @@
       domain: developing.today
       type: TXT
     developingto.day_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: developingto.day
       priority: 10
       type: MX
     developingto.day_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: developingto.day
       priority: 20
       type: MX
@@ -337,12 +337,12 @@
       domain: developingto.day
       type: TXT
     eau3d.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: eau3d.com
       priority: 10
       type: MX
     eau3d.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: eau3d.com
       priority: 20
       type: MX
@@ -351,12 +351,12 @@
       domain: eau3d.com
       type: TXT
     eau3d.dev_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: eau3d.dev
       priority: 10
       type: MX
     eau3d.dev_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: eau3d.dev
       priority: 20
       type: MX
@@ -365,12 +365,12 @@
       domain: eau3d.dev
       type: TXT
     eau3d.org_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: eau3d.org
       priority: 10
       type: MX
     eau3d.org_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: eau3d.org
       priority: 20
       type: MX
@@ -379,12 +379,12 @@
       domain: eau3d.org
       type: TXT
     grandnag.us_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: grandnag.us
       priority: 10
       type: MX
     grandnag.us_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: grandnag.us
       priority: 20
       type: MX
@@ -393,12 +393,12 @@
       domain: grandnag.us
       type: TXT
     hax.live_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: hax.live
       priority: 10
       type: MX
     hax.live_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: hax.live
       priority: 20
       type: MX
@@ -407,12 +407,12 @@
       domain: hax.live
       type: TXT
     l0x.dev_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: l0x.dev
       priority: 10
       type: MX
     l0x.dev_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: l0x.dev
       priority: 20
       type: MX
@@ -421,12 +421,12 @@
       domain: l0x.dev
       type: TXT
     lair.cloud_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: lair.cloud
       priority: 10
       type: MX
     lair.cloud_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: lair.cloud
       priority: 20
       type: MX
@@ -435,12 +435,12 @@
       domain: lair.cloud
       type: TXT
     o3d.dev_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: o3d.dev
       priority: 10
       type: MX
     o3d.dev_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: o3d.dev
       priority: 20
       type: MX
@@ -449,12 +449,12 @@
       domain: o3d.dev
       type: TXT
     printmy.pictures_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: printmy.pictures
       priority: 10
       type: MX
     printmy.pictures_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: printmy.pictures
       priority: 20
       type: MX
@@ -463,12 +463,12 @@
       domain: printmy.pictures
       type: TXT
     printmy3dmodel.com_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: printmy3dmodel.com
       priority: 10
       type: MX
     printmy3dmodel.com_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: printmy3dmodel.com
       priority: 20
       type: MX
@@ -477,12 +477,12 @@
       domain: printmy3dmodel.com
       type: TXT
     rom.how_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: rom.how
       priority: 10
       type: MX
     rom.how_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: rom.how
       priority: 20
       type: MX
@@ -491,12 +491,12 @@
       domain: rom.how
       type: TXT
     rom.rest_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: rom.rest
       priority: 10
       type: MX
     rom.rest_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: rom.rest
       priority: 20
       type: MX
@@ -505,12 +505,12 @@
       domain: rom.rest
       type: TXT
     rom.run_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: rom.run
       priority: 10
       type: MX
     rom.run_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: rom.run
       priority: 20
       type: MX
@@ -519,12 +519,12 @@
       domain: rom.run
       type: TXT
     s0s.pw_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: s0s.pw
       priority: 10
       type: MX
     s0s.pw_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: s0s.pw
       priority: 20
       type: MX
@@ -533,12 +533,12 @@
       domain: s0s.pw
       type: TXT
     security.cab_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: security.cab
       priority: 10
       type: MX
     security.cab_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: security.cab
       priority: 20
       type: MX
@@ -547,12 +547,12 @@
       domain: security.cab
       type: TXT
     yak.pub_@_MX_10_0:
-      content: monday.mxroute.com
+      content: monday.mxrouting.com
       domain: yak.pub
       priority: 10
       type: MX
     yak.pub_@_MX_20_0:
-      content: monday-relay.mxroute.com
+      content: monday-relay.mxrouting.com
       domain: yak.pub
       priority: 20
       type: MX
@@ -564,49 +564,49 @@ porkbun:
   01b.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   0x111.dev:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   0x1110.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   0x1110.dev:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   1110x.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   1110x.de:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
     x._domainkey:
@@ -614,266 +614,266 @@ porkbun:
   1110x.dev:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   15b.org:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   15b.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   32b.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   3dtropic.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   3dtropics.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   64b.org:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   64b.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   69b.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   79b.org:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   79b.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   carbonfreezeme.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   default.computer:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   default.properties:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   developing-today.com:
     '@':
       ALIAS: news.developing-today.com
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
     news: dt.smol.pub
   developing.today:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   developingto.day:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   eau3d.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   eau3d.dev:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   eau3d.org:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   grandnag.us:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   hax.live:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   l0x.dev:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   lair.cloud:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   o3d.dev:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   printmy.pictures:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   printmy3dmodel.com:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   rom.how:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   rom.rest:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   rom.run:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   s0s.pw:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   security.cab:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   yak.pub:
     '@':
       MX:
-        - content: monday-relay.mxroute.com
+        - content: monday-relay.mxrouting.com
           priority: 20
-        - content: monday.mxroute.com
+        - content: monday.mxrouting.com
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all

@@ -7,11 +7,11 @@
         "@" = {
           "MX" = [
             {
-              content = "monday.mxroute.com";
+              content = "monday.mxrouting.com";
               priority = 10;
             }
             {
-              content = "monday-relay.mxroute.com";
+              content = "monday-relay.mxrouting.com";
               priority = 20;
             }
           ];
