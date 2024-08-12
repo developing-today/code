@@ -1,6 +1,6 @@
 {
   lib,
-  DNSConfig ? {
+  DNSConfig ? { # TODO: allow alias to work like cname for "@" and direct strings on domains
     "@" = {
       provider = "porkbun";
       records = {
@@ -189,6 +189,9 @@
     };
     "developing-today.com" = {
       records = {
+        "@" = {
+          "ALIAS" = "news.developing-today.com";
+        };
         "news" = "dt.smol.pub";
         # "x._domainkey" = {
         #   "TXT" = "TODO";

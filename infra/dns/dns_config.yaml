@@ -285,6 +285,10 @@
       content: v=spf1 include:mxlogin.com -all
       domain: default.properties
       type: TXT
+    developing-today.com_@_ALIAS_0_0:
+      content: news.developing-today.com
+      domain: developing-today.com
+      type: ALIAS
     developing-today.com_@_MX_10_0:
       content: monday.mxroute.com
       domain: developing-today.com
@@ -721,6 +725,7 @@ porkbun:
       TXT: v=spf1 include:mxlogin.com -all
   developing-today.com:
     '@':
+      ALIAS: news.developing-today.com
       MX:
         - content: monday-relay.mxroute.com
           priority: 20

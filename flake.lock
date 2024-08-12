@@ -200,7 +200,9 @@
     },
     "home-manager": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": [
+          "nixpkgs"
+        ]
       },
       "locked": {
         "lastModified": 1723015306,
@@ -339,16 +341,16 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1722185531,
-        "narHash": "sha256-veKR07psFoJjINLC8RK4DiLniGGMgF3QMlS4tb74S6k=",
-        "owner": "NixOS",
+        "lastModified": 1723362854,
+        "narHash": "sha256-ihB2ulvdX6cOLmH0+0LHcBqMLQ4wOLAcfYUrlp4WqJ8=",
+        "owner": "dezren39",
         "repo": "nixpkgs",
-        "rev": "52ec9ac3b12395ad677e8b62106f0b98c1f8569d",
+        "rev": "b17800b28ca62c271d60f894d750ba45244c6e8f",
         "type": "github"
       },
       "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable",
+        "owner": "dezren39",
+        "ref": "master",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -371,22 +373,6 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1723362854,
-        "narHash": "sha256-ihB2ulvdX6cOLmH0+0LHcBqMLQ4wOLAcfYUrlp4WqJ8=",
-        "owner": "dezren39",
-        "repo": "nixpkgs",
-        "rev": "b17800b28ca62c271d60f894d750ba45244c6e8f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "dezren39",
-        "ref": "master",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "nixpkgs_3": {
-      "locked": {
         "lastModified": 1722185531,
         "narHash": "sha256-veKR07psFoJjINLC8RK4DiLniGGMgF3QMlS4tb74S6k=",
         "owner": "NixOS",
@@ -401,7 +387,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_4": {
+    "nixpkgs_3": {
       "locked": {
         "lastModified": 1722415718,
         "narHash": "sha256-5US0/pgxbMksF92k1+eOa8arJTJiPvsdZj9Dl+vJkM4=",
@@ -524,7 +510,7 @@
         "neovim-src": "neovim-src",
         "nix-darwin": "nix-darwin",
         "nix-topology": "nix-topology",
-        "nixpkgs": "nixpkgs_2",
+        "nixpkgs": "nixpkgs",
         "nixpkgs-stable": "nixpkgs-stable",
         "nixvim": "nixvim",
         "pre-commit-hooks": "pre-commit-hooks",
@@ -707,7 +693,7 @@
     "waybar": {
       "inputs": {
         "flake-compat": "flake-compat_2",
-        "nixpkgs": "nixpkgs_3"
+        "nixpkgs": "nixpkgs_2"
       },
       "locked": {
         "lastModified": 1723015353,
@@ -726,7 +712,7 @@
     "yazi": {
       "inputs": {
         "flake-utils": "flake-utils_3",
-        "nixpkgs": "nixpkgs_4",
+        "nixpkgs": "nixpkgs_3",
         "rust-overlay": "rust-overlay"
       },
       "locked": {
