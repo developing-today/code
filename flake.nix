@@ -280,7 +280,7 @@
         # inherit inputs;
         outputs = self.outputs;
       };
-      default = import ./shell.nix { inherit pkgs; };
+      # default = import ./shell.nix { inherit pkgs; };
       # TODO: rootPath = ./.; # self.outPath # builtins.path
       #       nixosModules = import ./modules/nixos;
       #       homeManagerModules = import ./modules/home-manager;
