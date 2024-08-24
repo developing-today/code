@@ -271,7 +271,7 @@
         stateVersion
         system
         supportedSystems
-        lib
+        # lib
         #pkgs
         overlays
         ; # /\ all let vars should be added here. /\ /\
