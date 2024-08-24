@@ -235,14 +235,14 @@
           inherit # all let vars should be added here. \/ \/ (from both lets)
             pkgs
             ; # /\ all let vars should be added here. /\ /\ (from both lets)
-          devShells = rec {
-            default = import ./shell.nix { inherit pkgs; };
-          };
-          devShell = import ./shell.nix { inherit pkgs; };
-          packages = rec {
-            default = devShell;
-          };
-          defaultPackage = packages.default;
+          # devShells = rec {
+          #   default = import ./shell.nix { inherit pkgs; };
+          # };
+          # devShell = import ./shell.nix { inherit pkgs; };
+          # packages = rec {
+          #   default = devShell;
+          # };
+          # defaultPackage = packages.default;
           # apps = rec {
           #   # TODO: makeapp
           #   default = devShell;
