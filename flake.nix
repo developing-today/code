@@ -223,9 +223,7 @@
           waybar.overlays.default
           # nix-topology.overlays.default
           # rust-overlay
-          (final: prev: {
-            omnix = inputs.omnix.packages.${pkgs.system}.default;
-          })
+          (final: prev: { omnix = inputs.omnix.packages.${pkgs.system}.default; })
         ];
       };
       supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
@@ -245,10 +243,10 @@
             default = devShell;
           };
           defaultPackage = packages.default;
-          apps = rec {
-            # TODO: makeapp
-            default = devShell;
-          };
+          # apps = rec {
+          #   # TODO: makeapp
+          #   default = devShell;
+          # };
           # https://github.com/Misterio77/nix-starter-configs/blob/main/standard/flake.nix#L66
         }
       );
