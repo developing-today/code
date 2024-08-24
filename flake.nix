@@ -271,12 +271,12 @@
         stateVersion
         system
         supportedSystems
-        lib
+        # lib
         #pkgs
         overlays
         ; # /\ all let vars should be added here. /\ /\
       nixosConfigurations = (import ./hosts) {
-        inherit inputs pkgs;
+        inherit inputs pkgs lib;
         # inherit inputs;
         outputs = self.outputs;
       };
