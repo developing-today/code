@@ -345,6 +345,8 @@
     systemPackages =
       with pkgs;
       [
+        # inputs.omnix.packages.${pkgs.system}.default
+        omnix
         zed-editor
         opentofu
         terranix

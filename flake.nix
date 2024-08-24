@@ -147,6 +147,7 @@
       # inputs.flake-utils.follows = "flake-utils";
       # inputs.rust-overlay.follows = "rust-overlay";
     };
+    omnix.url = "github:juspay/omnix";
     #     hardware.url = "github:nixos/nixos-hardware";
     #     systems.url = "github:nix-systems/default-linux";
     #     hardware.url = "github:nixos/nixos-hardware";
@@ -188,6 +189,7 @@
       home-manager,
       yazi,
       waybar,
+      omnix,
       # nix-topology,
       # systems,
       ...
@@ -221,6 +223,9 @@
           waybar.overlays.default
           # nix-topology.overlays.default
           # rust-overlay
+          (final: prev: {
+            omnix = inputs.omnix.packages.${pkgs.system}.default;
+          })
         ];
       };
       supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
@@ -247,7 +252,8 @@
           # https://github.com/Misterio77/nix-starter-configs/blob/main/standard/flake.nix#L66
         }
       );
-      pkgs = supportedSystemsOutputs.x86_64-linux.pkgs;
+      # pkgs = supportedSystemsOutputs.x86_64-linux.pkgs;
+      pkgs = pkgsFor.${system};
     in
     supportedSystemsOutputs
     // rec {
@@ -272,7 +278,8 @@
         overlays
         ; # /\ all let vars should be added here. /\ /\
       nixosConfigurations = (import ./hosts) {
-        inherit inputs;
+        inherit inputs pkgs;
+        # inherit inputs;
         outputs = self.outputs;
       };
       default = import ./shell.nix { inherit pkgs; };

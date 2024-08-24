@@ -1,9 +1,9 @@
-{ inputs, outputs, ... }:
+{ inputs, outputs, pkgs, ... }:
 let
   system = outputs.system;
   stateVersion = outputs.stateVersion;
   overlays = outputs.overlays.${system};
-  pkgs = outputs.pkgs.${system};
+  # pkgs = outputs.pkgs.${system};
   homeManagerNixosModules = [
     (
       { ... }:
