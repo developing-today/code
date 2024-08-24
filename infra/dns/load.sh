@@ -7,7 +7,12 @@ if [ -n "${SKIP_LOAD:-}" ]; then
   exit 0
 fi
 
-dir="$(dirname -- "$(which -- "$0" 2>/dev/null || realpath -- "$0")")"
+script_name="$0"
+while [[ "$script_name" == -* ]]; do
+    script_name="${script_name#-}"
+done
+
+dir="$(dirname -- "$(which -- "$script_name" 2>/dev/null || realpath -- "$script_name")")"
 echo "dir: $dir"
 
 if [ -f "$dir/.lock" ]; then

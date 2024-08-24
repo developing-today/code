@@ -1,27 +1,47 @@
 #!/usr/bin/env bash
-
 set -exuo pipefail
+TF_PARALLELISM="${TF_PARALLELISM:-1}"
+echo "TF_PARALLELISM: $TF_PARALLELISM"
+echo "\$0=$0"
+script_name="$0"
+while [[ "$script_name" == -* ]]; do
+    script_name="${script_name#-}"
+done
+dir="$(dirname -- "$(which -- "$script_name" 2>/dev/null || realpath -- "$script_name")")"
+echo "dir: $dir"
 
-REFRESH_STATE="${REFRESH_STATE:-false}"
-if [ "${1:-}" == "refresh" ] || [ "${1:-}" == "--refresh" ]; then
-  REFRESH_STATE="true"
-elif [ "${1:-}" != "" ]; then
-  echo "Invalid argument: $1"
-  exit 1
-else
-  echo "No argument provided, only removing terraform.tfstate backup files"
+tfPlan=""
+REFRESH_STATE="false"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -*)
+            if [[ "$1" == "--refresh" ]]; then
+                REFRESH_STATE="true"
+            fi
+            ;;
+        *)
+            if [[ -z "$tfPlan" ]]; then
+                tfPlan="$1"
+            elif [[ "$1" == "refresh" ]]; then
+                REFRESH_STATE="true"
+            fi
+            ;;
+    esac
+    shift
+done
+
+tfPlan="${tfPlan:-"$dir/terraform.tfplan"}"
+echo "tfplan: $tfPlan"
+echo "REFRESH_STATE: $REFRESH_STATE"
+
+if [[ "$REFRESH_STATE" == "false" ]]; then
+    echo "No refresh argument provided, only removing terraform.tfstate backup files"
 fi
 
 if [ -n "${SKIP_PLAN:-}" ]; then
   echo "skipping tf plan"
   exit 0
 fi
-
-dir="$(dirname -- "$(which -- "$0" 2>/dev/null || realpath -- "$0")")"
-echo "dir: $dir"
-
-outPlan="${1:-"$dir/terraform.tfplan"}"
-echo "tfplan: $outPlan"
 
 if [ -n "${SKIP_GENERATE:-}" ]; then
   echo "skipping generate dns config"
@@ -31,8 +51,8 @@ else
   echo "successfully generated dns config"
 fi
 
-echo "removing old plan"
-rm -f "$outPlan"
+echo "removing old plan: $tfPlan"
+rm -f "$tfPlan"
 echo "successfully removed old plan"
 
 echo "running terraform init"
@@ -58,11 +78,11 @@ trap cleanup EXIT
 echo "running terraform plan"
 if [ "$REFRESH_STATE" == "true" ]; then
   echo "also refreshing state"
-  tofu -chdir="$dir" plan -parallelism=1 -out="$outPlan"
+  tofu -chdir="$dir" plan -parallelism=$TF_PARALLELISM -out="$tfPlan"
   echo "successfully planned & refreshed state"
 else
   echo "plan only, not refreshing state"
-  tofu -chdir="$dir" plan -parallelism=1 -refresh=false -out="$outPlan"
+  tofu -chdir="$dir" plan -parallelism=$TF_PARALLELISM -refresh=false -out="$tfPlan"
   echo "successfully planned"
 fi
 echo "successfully ran terraform plan"

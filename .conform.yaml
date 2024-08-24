@@ -5,8 +5,8 @@ policies:
           - build
           - unmanaged
           - nixos
-          - buck
           - repo
+          - dns
           - laptop-framework
           - nix
           - rust

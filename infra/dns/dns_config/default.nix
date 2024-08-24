@@ -7,11 +7,11 @@
         "@" = {
           "MX" = [
             {
-              content = "monday.mxrouting.com";
+              content = "monday.mxrouting.net";
               priority = 10;
             }
             {
-              content = "monday-relay.mxrouting.com";
+              content = "monday-relay.mxrouting.net";
               priority = 20;
             }
           ];
@@ -189,10 +189,14 @@
     };
     "developing-today.com" = {
       records = {
-        "@" = {
-          "ALIAS" = "news.developing-today.com";
-        };
+        #"@" = {
+        #  "ALIAS" = "news.developing-today.com";
+        #};
         "news" = "dt.smol.pub";
+        "zettel" = "developing-today.github.io";
+        "_github-pages-challenge-developing-today.zettel" = {
+          "TXT" = "cc887eecc305202ad8c44465de9d1a";
+        };
         # "x._domainkey" = {
         #   "TXT" = "TODO";
         # };

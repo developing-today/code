@@ -2,12 +2,23 @@
 
 set -exuo pipefail
 
+TF_PARALLELISM="${TF_PARALLELISM:-1}"
+echo "TF_PARALLELISM: $TF_PARALLELISM"
+
 # if [ -n "${SKIP_APPLY:-}" ]; then
 #   echo "skipping tf apply"
 #   exit 0
 # fi
 
-dir="$(dirname -- "$(which -- "$0" 2>/dev/null || realpath -- "$0")")"
+echo "\$0=$0"
+script_name="$0"
+while [[ "$script_name" == -* ]]; do
+    script_name="${script_name#-}"
+done
+
+dir="$(dirname -- "$(which -- "$script_name" 2>/dev/null || realpath -- "$script_name")")"
 echo "dir: $dir"
 
-SKIP_PLAN=1 "$dir/apply.sh"
+TF_PARALLELISM=$TF_PARALLELISM \
+  SKIP_PLAN=1 \
+  "$dir/apply.sh"

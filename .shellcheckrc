@@ -72,4 +72,6 @@ external-sources=true
 # fix:     var=hello; echo ${var}
 
 # enable:
-enable=all
+# enable=add-default-case,avoid-nullary-conditions,check-extra-masked-returns,check-set-e-suppressed,check-unassigned-uppercase,deprecate-which,quote-safe-variables,require-double-brackets,require-variable-braces
+enable: all
+disable: require-variable-braces

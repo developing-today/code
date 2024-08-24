@@ -777,6 +777,8 @@
         #fh # ffi parse failure
         charm-freeze
         charm
+        zulip
+        zulip-term
       ];
   };
   manual.manpages.enable = true;

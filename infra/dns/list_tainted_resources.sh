@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -exuo pipefail
-dir="$(dirname -- "$(readlink -f -- "$0")")"
+echo "\$0=$0"
+script_name="$0"
+while [[ "$script_name" == -* ]]; do
+    script_name="${script_name#-}"
+done
+
+dir="$(dirname -- "$(readlink -f -- "$script_name")")"
 echo "dir: $dir"
 
 echo "loading tfstate"

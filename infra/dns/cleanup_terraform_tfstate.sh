@@ -12,7 +12,13 @@ else
   echo "No argument provided, only removing terraform.tfstate backup files"
 fi
 
-dir="$(dirname -- "$(readlink -f -- "$0")")"
+echo "\$0=$0"
+script_name="$0"
+while [[ "$script_name" == -* ]]; do
+    script_name="${script_name#-}"
+done
+
+dir="$(dirname -- "$(readlink -f -- "$script_name")")"
 echo "dir: $dir"
 
 if [ -f "$dir/terraform.tfstate.backup" ]; then

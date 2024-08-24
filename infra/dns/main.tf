@@ -3,6 +3,8 @@ terraform {
   required_providers {
     porkbun = {
       source = "cullenmcdermott/porkbun"
+      # source  = "registry.terraform.io/developing-today-forks/porkbun"
+      # version = "1.2.8"
     }
     sops = {
       source = "carlpett/sops"

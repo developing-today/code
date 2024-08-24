@@ -7,7 +7,13 @@ if [ -n "${SKIP_INIT:-}" ]; then
   exit 0
 fi
 
-dir="$(dirname -- "$(readlink -f -- "$0")")"
+echo "\$0=$0"
+script_name="$0"
+while [[ "$script_name" == -* ]]; do
+    script_name="${script_name#-}"
+done
+
+dir="$(dirname -- "$(readlink -f -- "$script_name")")"
 echo "dir: $dir"
 
 echo "loading tfstate"
@@ -32,5 +38,5 @@ trap cleanup EXIT
 
 
 echo "initializing tofu..."
-tofu -chdir="$dir" init -backend-config="path=$dir/terraform.tfstate" "$@"
+tofu -chdir="$dir" init -upgrade -backend-config="path=$dir/terraform.tfstate" "$@"
 echo "tofu initialized."
