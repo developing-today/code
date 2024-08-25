@@ -347,6 +347,15 @@
       [
         # inputs.omnix.packages.${pkgs.system}.default
         omnix
+        cabal-install
+        cabal2nix
+        ghc
+        hledger
+        hledger-ui
+        hledger-web
+        hledger-iadd
+        hledger-utils
+        hledger-interest
         zed-editor
         opentofu
         terranix

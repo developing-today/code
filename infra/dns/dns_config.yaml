@@ -299,11 +299,21 @@
       content: v=spf1 include:mxlogin.com -all
       domain: developing-today.com
       type: TXT
+    developing-today.com__github-pages-challenge-developing-today.archive.zulip_TXT_0_0:
+      content: cc748fb6c3246405abb50cbdc1fa9b
+      domain: developing-today.com
+      name: _github-pages-challenge-developing-today.archive.zulip
+      type: TXT
     developing-today.com__github-pages-challenge-developing-today.zettel_TXT_0_0:
       content: cc887eecc305202ad8c44465de9d1a
       domain: developing-today.com
       name: _github-pages-challenge-developing-today.zettel
       type: TXT
+    developing-today.com_archive.zulip_CNAME_0_0:
+      content: developing-today.github.io
+      domain: developing-today.com
+      name: archive.zulip
+      type: CNAME
     developing-today.com_news_CNAME_0_0:
       content: dt.smol.pub
       domain: developing-today.com
@@ -737,8 +747,11 @@ porkbun:
         - content: monday.mxrouting.net
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+    _github-pages-challenge-developing-today.archive.zulip:
+      TXT: cc748fb6c3246405abb50cbdc1fa9b
     _github-pages-challenge-developing-today.zettel:
       TXT: cc887eecc305202ad8c44465de9d1a
+    archive.zulip: developing-today.github.io
     news: dt.smol.pub
     zettel: developing-today.github.io
   developing.today:

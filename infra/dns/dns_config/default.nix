@@ -194,8 +194,12 @@
         #};
         "news" = "dt.smol.pub";
         "zettel" = "developing-today.github.io";
+        "archive.zulip" = "developing-today.github.io";
         "_github-pages-challenge-developing-today.zettel" = {
           "TXT" = "cc887eecc305202ad8c44465de9d1a";
+        };
+        "_github-pages-challenge-developing-today.archive.zulip" = {
+          "TXT" = "cc748fb6c3246405abb50cbdc1fa9b";
         };
         # "x._domainkey" = {
         #   "TXT" = "TODO";
