@@ -205,7 +205,8 @@
         system:
         import nixpkgs {
           inherit system;
-          overlays = overlays.${system};
+          # overlays = overlays ${system};
+          overlays = overlaysFn system;
           config = {
             allowUnfree = true;
             permittedInsecurePackages = [
@@ -215,17 +216,15 @@
           };
         }
       );
-      overlays = {
-        x86_64-linux = [
-          # zig-overlay.overlays.default
-          vim.overlay.x86_64-linux # .${system}
-          yazi.overlays.default
-          waybar.overlays.default
-          # nix-topology.overlays.default
-          # rust-overlay
-          (final: prev: { omnix = inputs.omnix.packages.${pkgs.system}.default; })
-        ];
-      };
+      overlaysFn = system: [
+        # zig-overlay.overlays.default
+        vim.overlay.${system}
+        yazi.overlays.default
+        waybar.overlays.default
+        # nix-topology.overlays.default
+        # rust-overlay
+        (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
+      ];
       supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
         system:
         let # all let vars should be added to inherit below.
@@ -273,8 +272,17 @@
         supportedSystems
         # lib
         #pkgs
-        overlays
+        # overlays
         ; # /\ all let vars should be added here. /\ /\
+        overlays = builtins.listToAttrs (
+          builtins.map
+            (system: {
+              name = system;
+              value = final: prev:
+                builtins.foldl' (acc: overlay: acc // (overlay final prev)) {} (overlaysFn system);
+            })
+            supportedSystems
+        );
       nixosConfigurations = (import ./hosts) {
         inherit inputs pkgs lib;
         # inherit inputs;
