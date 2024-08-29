@@ -210,6 +210,7 @@
           config = {
             allowUnfree = true;
             permittedInsecurePackages = [
+              "olm-3.2.16"
               "electron" # le sigh
               "qtwebkit-5.212.0-alpha4" # ???
             ];

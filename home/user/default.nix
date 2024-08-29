@@ -5,6 +5,7 @@
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
+    "olm-3.2.16"
       "electron" # le sigh
       "qtwebkit-5.212.0-alpha4" # ???
     ];
@@ -21,7 +22,7 @@
     userDirs.enable = true;
 
     configFile."hypr" = {
-      source = ../../lib/hypr;
+      source = ../../lib/config/hypr;
       recursive = true;
     };
     mimeApps.defaultApplications = {
@@ -615,7 +616,9 @@
         just
         jql
         jless
-        inlyne
+        # https://github.com/Inlyne-Project/inlyne/issues/356
+        # https://github.com/NixOS/nixpkgs/issues/332957
+        # inlyne # rust 1.80
         htmlq
         gptman
         git-cliff
@@ -866,7 +869,6 @@
     zellij.enable = true;
     zoxide.enable = true;
     # zplug.enable = true;
-    fish.enable = true;
     nushell = {
       enable = true;
       environmentVariables = {
@@ -888,6 +890,7 @@
     #oils-for-unix.enable = true;
     obs-studio.enable = true;
     oh-my-posh.enable = true;
+    fish.enable = true;
     bat.enable = true;
     zsh = {
       enable = true;

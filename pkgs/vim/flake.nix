@@ -128,7 +128,7 @@
           inherit system;
           config = {
             allowUnfree = true;
-            permittedInsecurePackages = [ "electron" "qtwebkit-5.212.0-alpha4" ];
+            permittedInsecurePackages = [ "olm-3.2.16" "electron" "qtwebkit-5.212.0-alpha4" ];
           };
           overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
         };
