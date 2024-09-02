@@ -346,6 +346,10 @@
     systemPackages =
       with pkgs;
       [
+        hyprlandPlugins.hypr-dynamic-cursors
+        xorg.xcursorthemes
+        xdg-desktop-portal-hyprland
+        hyprland-protocols
         # inputs.omnix.packages.${pkgs.system}.default
         omnix
         cabal-install

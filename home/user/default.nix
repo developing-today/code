@@ -49,10 +49,18 @@
     sessionVariables = {
       EDITOR = "nvim";
     };
+    pointerCursor ={
+      package = pkgs.vanilla-dmz;
+      name = "Vanilla-DMZ";
+      gtk.enable = true;
+      size = 24;
+      x11.enable = true;
+    };
     packages =
       with pkgs;
       [ neovim ]
       ++ [
+        vanilla-dmz
         lf
         #
         git
