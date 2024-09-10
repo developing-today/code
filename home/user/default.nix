@@ -22,7 +22,7 @@
     userDirs.enable = true;
 
     configFile."hypr" = {
-      source = ../../lib/config/hypr;
+      source = ../../config/hypr;
       recursive = true;
     };
     mimeApps.defaultApplications = {

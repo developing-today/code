@@ -9,7 +9,7 @@ let
 in
 {
   users.mutableUsers = false;
-  users.users.gabriel = {
+  users.users.aUser = {
     isNormalUser = true;
     shell = pkgs.fish;
     extraGroups = ifTheyExist [

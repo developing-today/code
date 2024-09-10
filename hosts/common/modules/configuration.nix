@@ -19,7 +19,6 @@
       efi.canTouchEfiVariables = true;
     };
   };
-
   networking = {
     hostName = "nixos";
     #     hostId = "deadbeef";
@@ -64,18 +63,15 @@
     nixpkgs.overlays = [
       outputs.overlays.default
     ];
-    nixpkgs.config.allowUnfree = true;
   */
   nix = {
     # This will add each flake input as a registry
     # To make nix3 commands consistent with your flake
     registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);
-
     # This will additionally add your inputs to the system's legacy channels
     # Making legacy nix commands consistent as well, awesome!
     nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
     settings = {
-      # should make root flake nixConfig
       experimental-features = [
         "auto-allocate-uids"
         "ca-derivations"
@@ -93,47 +89,46 @@
         "recursive-nix"
         "verified-fetches"
       ];
+      trusted-users = [ "root" ];
       #       trusted-users = [ "user" ];
       use-xdg-base-directories = true;
       builders-use-substitutes = true;
-      #       substituters = [ "https://cache.nixos.org" ];
-      #       trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
-
-      trusted-users = [ "root" ];
-      #     trusted-user = "root";
       substituters = [
         # TODO: priority order
         "https://cache.nixos.org"
         "https://yazi.cachix.org"
-        #         "https://nix-community.cachix.org"
-        #         "https://nix-gaming.cachix.org"
-        #         "https://cache.m7.rs"
-        #         "https://nrdxp.cachix.org"
-        #         "https://numtide.cachix.org"
-        #         "https://colmena.cachix.org"
-        #         "https://sylvorg.cachix.org"
+        # "https://binary.cachix.org"
+        # "https://nix-community.cachix.org"
+        # "https://nix-gaming.cachix.org"
+        # "https://cache.m7.rs"
+        # "https://nrdxp.cachix.org"
+        # "https://numtide.cachix.org"
+        # "https://colmena.cachix.org"
+        # "https://sylvorg.cachix.org"
       ];
       trusted-substituters = [
         "https://cache.nixos.org"
         "https://yazi.cachix.org"
-        #         "https://nix-community.cachix.org"
-        #         "https://nix-gaming.cachix.org"
-        #         "https://cache.m7.rs"
-        #         "https://nrdxp.cachix.org"
-        #         "https://numtide.cachix.org"
-        #         "https://colmena.cachix.org"
-        #         "https://sylvorg.cachix.org"
+        # "https://binary.cachix.org"
+        # "https://nix-community.cachix.org"
+        # "https://nix-gaming.cachix.org"
+        # "https://cache.m7.rs"
+        # "https://nrdxp.cachix.org"
+        # "https://numtide.cachix.org"
+        # "https://colmena.cachix.org"
+        # "https://sylvorg.cachix.org"
       ];
       trusted-public-keys = [
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
         "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k="
-        #         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        #         "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-        #         "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-        #         "nrdxp.cachix.org-1:Fc5PSqY2Jm1TrWfm88l6cvGWwz3s93c6IOifQWnhNW4="
-        #         "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-        #         "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
-        #         "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+        # "binary.cachix.org-1:66/C28mr67KdifepXFqZc+iSQcLENlwPqoRQNnc3M4I="
+        # "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+        # "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+        # "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+        # "nrdxp.cachix.org-1:Fc5PSqY2Jm1TrWfm88l6cvGWwz3s93c6IOifQWnhNW4="
+        # "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+        # "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+        # "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
       ];
       extra-substituters = [ ];
       extra-trusted-substituters = [ ];
@@ -191,7 +186,6 @@
   };
   #sound.enable = true;
   hardware = {
-    #     bluetooth.enable = true;
     brillo.enable = false;
     pulseaudio.enable = false;
     #     nvidia = {
@@ -288,7 +282,6 @@
     #     devmon.enable = true;
     #     udisks2.enable = true;
     #     gvfs.enable = true;
-    #     blueman.enable = true;
     flatpak.enable = true;
     dbus.enable = true;
     openssh = {
@@ -459,7 +452,7 @@
         wayland
         sddm
         lightdm
-        gnome.gdm
+        gdm
         awesome
       ]
       ++ [

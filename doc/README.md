@@ -5,15 +5,15 @@ flake.nix
 -> hosts
 hosts/<host>/(<user>)
 -> home
--> lib/config.enc/<host>/(<user>)
+-> config.enc/<host>/(<user>)
 home/<user>/<host>
--> lib/config.enc/<user>/(<host>)
+-> config.enc/<user>/(<host>)
 lib/.sops.yaml
--> lib/config.enc/
--> lib/config.enc/<host>/(<user>)
--> lib/config.enc/<user>/(<host>)
-lib/config.enc/<host>/(<user>)
-lib/config.enc/<user>/(<host>)
+-> config.enc/
+-> config.enc/<host>/(<user>)
+-> config.enc/<user>/(<host>)
+config.enc/<host>/(<user>)
+config.enc/<user>/(<host>)
 
 - take apart configuration.nix
   - first make all the parts into files and imports in configuration.nix
