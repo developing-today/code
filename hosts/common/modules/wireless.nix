@@ -67,3 +67,10 @@
 
   systemd.services.wpa_supplicant.preStart = "touch /etc/wpa_supplicant.conf";
 }
+# {
+#   networking.networkmanager.enable = true;
+
+#   environment.persistence."/persist" = {
+#     directories = [ "/etc/NetworkManager/system-connections" ];
+#   };
+# }

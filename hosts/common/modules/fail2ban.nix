@@ -5,3 +5,8 @@
     bantime-increment.enable = true;
   };
 }
+# {
+#   services.fail2ban = {
+#     enable = true;
+#   };
+# }
