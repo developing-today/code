@@ -214,22 +214,8 @@
 
   users = {
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell;
-    users.user = {
-      isNormalUser = true;
-      description = "user";
-      extraGroups = [
-        "trusted-users"
-        "networkmanager"
-        "wheel"
-        "docker"
-        "video"
-        "kvm"
-        "beep"
-      ];
-      packages = with pkgs; [
-        firefox
-        kate
-      ];
+    users = {
+      user = import ../../../hosts/common/users/user { inherit pkgs; };
     };
   };
 
