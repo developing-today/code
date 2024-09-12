@@ -9,6 +9,7 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    flake-root.url = "github:srid/flake-root";
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
@@ -177,64 +178,122 @@
     #     };
   };
   #  lib.fakeSha256 and lib.fakeSha512
-  outputs =
-    {
-      self,
-      nixpkgs,
-      nixpkgs-stable,
-      flake-utils,
-      zig-overlay,
-      sops-nix,
-      vim,
-      home-manager,
-      yazi,
-      waybar,
-      omnix,
-      # nix-topology,
-      # systems,
-      ...
-    }@inputs:
-    let # all let vars should be added to inherit below.
-      inherit (self) outputs;
-      stateVersion = "23.11";
-      system = "x86_64-linux";
-      supportedSystems = [ "x86_64-linux" ];
-      lib = nixpkgs.lib // home-manager.lib;
-      forEachSystem = f: lib.genAttrs supportedSystems f;
-      pkgsFor = forEachSystem (
-        system:
-        import nixpkgs {
-          inherit system;
-          # overlays = overlays ${system};
-          overlays = overlaysFn system;
-          config = {
-            allowUnfree = true;
-            permittedInsecurePackages = [
-              "olm-3.2.16"
-              "electron" # le sigh
-              "qtwebkit-5.212.0-alpha4" # ???
+    outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
+      flake-parts.lib.mkFlake { inherit self; } {
+        imports = [
+          inputs.flake-root.flakeModule
+        ];
+        systems = [ "x86_64-linux" ];
+        perSystem = { config, self', inputs', pkgs, system, ... }: {
+          _module.args.pkgs = import nixpkgs {
+            inherit system;
+            config = {
+              allowUnfree = true;
+              permittedInsecurePackages = [
+                "olm-3.2.16"
+                "electron"
+                "qtwebkit-5.212.0-alpha4"
+              ];
+            };
+            overlays = [
+              inputs.vim.overlay.${system}
+              inputs.yazi.overlays.default
+              inputs.waybar.overlays.default
+              (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
             ];
           };
-        }
-      );
-      overlaysFn = system: [
-        # zig-overlay.overlays.default
-        vim.overlay.${system}
-        yazi.overlays.default
-        waybar.overlays.default
-        # nix-topology.overlays.default
-        # rust-overlay
-        (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
-      ];
-      supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
-        system:
-        let # all let vars should be added to inherit below.
-          pkgs = pkgsFor.${system};
-        in
-        rec {
-          inherit # all let vars should be added here. \/ \/ (from both lets)
-            pkgs
-            ; # /\ all let vars should be added here. /\ /\ (from both lets)
+
+          devShells.default = pkgs.mkShell {
+            inputsFrom = [ config.flake-root.devShell ];
+          };
+        };
+
+        flake = let
+            system = "x86_64-linux";
+            pkgs = import nixpkgs {
+              inherit system;
+              config = {
+                allowUnfree = true;
+                permittedInsecurePackages = [
+                  "olm-3.2.16"
+                  "electron"
+                  "qtwebkit-5.212.0-alpha4"
+                ];
+              };
+              overlays = [
+                inputs.vim.overlay.${system}
+                inputs.yazi.overlays.default
+                inputs.waybar.overlays.default
+                (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
+              ];
+            };
+          in {
+            nixosConfigurations = (import ./hosts) {
+              inherit inputs pkgs;
+              lib = nixpkgs.lib // inputs.home-manager.lib;
+              outputs = self;
+            };
+          };
+      };
+      # outputs =
+      #   {
+      #     self,
+      #     nixpkgs,
+      #     nixpkgs-stable,
+      #     flake-root,
+      #     flake-utils,
+      #     zig-overlay,
+      #     sops-nix,
+      #     vim,
+      #     home-manager,
+      #     yazi,
+      #     waybar,
+      #     omnix,
+      #     # nix-topology,
+      #     # systems,
+      #     ...
+      #   }@inputs:
+    # let # all let vars should be added to inherit below.
+    #   inherit (self) outputs;
+    #   stateVersion = "23.11";
+    #   system = "x86_64-linux";
+    #   supportedSystems = [ "x86_64-linux" ];
+    #   lib = nixpkgs.lib // home-manager.lib;
+    #   forEachSystem = f: lib.genAttrs supportedSystems f;
+    #   pkgsFor = forEachSystem (
+    #     system:
+    #     import nixpkgs {
+    #       inherit system;
+    #       # overlays = overlays ${system};
+    #       overlays = overlaysFn system;
+    #       config = {
+    #         allowUnfree = true;
+    #         permittedInsecurePackages = [
+    #           "olm-3.2.16"
+    #           "electron" # le sigh
+    #           "qtwebkit-5.212.0-alpha4" # ???
+    #         ];
+    #       };
+    #     }
+    #   );
+    #   overlaysFn = system: [
+    #     # zig-overlay.overlays.default
+    #     vim.overlay.${system}
+    #     yazi.overlays.default
+    #     waybar.overlays.default
+    #     # nix-topology.overlays.default
+    #     # rust-overlay
+    #     (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
+    #   ];
+    #   supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
+    #     system:
+    #     let # all let vars should be added to inherit below.
+    #       pkgs = pkgsFor.${system};
+    #     in
+    #     rec {
+    #       inherit # all let vars should be added here. \/ \/ (from both lets)
+    #         pkgs
+            # ; # /\ all let vars should be added here. /\ /\ (from both lets)
           # devShells = rec {
           #   default = import ./shell.nix { inherit pkgs; };
           # };
@@ -248,14 +307,14 @@
           #   default = devShell;
           # };
           # https://github.com/Misterio77/nix-starter-configs/blob/main/standard/flake.nix#L66
-        }
-      );
+      #   }
+      # );
       # pkgs = supportedSystemsOutputs.x86_64-linux.pkgs;
-      pkgs = pkgsFor.${system};
-    in
-    supportedSystemsOutputs
-    // rec {
-      inherit # all let vars should be added here. \/ \/
+    #   pkgs = pkgsFor.${system};
+    # in
+    # supportedSystemsOutputs
+    # // rec {
+    #   inherit # all let vars should be added here. \/ \/
         # let self = builtins.trace self.outPath { } // { outPath = ./.; }; in self #https://github.com/NixOS/nix/issues/8300#issuecomment-1537501849
         #         self
         # .\#self.inputs
@@ -268,27 +327,28 @@
         # .\#self.outputs
         # .\#self.self
         # .\#self._type
-        stateVersion
-        system
-        supportedSystems
+        # stateVersion
+        # system
+        # supportedSystems
         # lib
         #pkgs
         # overlays
-        ; # /\ all let vars should be added here. /\ /\
-        overlays = builtins.listToAttrs (
-          builtins.map
-            (system: {
-              name = system;
-              value = final: prev:
-                builtins.foldl' (acc: overlay: acc // (overlay final prev)) {} (overlaysFn system);
-            })
-            supportedSystems
-        );
-      nixosConfigurations = (import ./hosts) {
-        inherit inputs pkgs lib;
-        # inherit inputs;
-        outputs = self.outputs;
-      };
+        # ; # /\ all let vars should be added here. /\ /\
+      # overlays = builtins.listToAttrs (
+      #   builtins.map
+      #     (system: {
+      #       name = system;
+      #       value = final: prev:
+      #         builtins.foldl' (acc: overlay: acc // (overlay final prev)) {} (overlaysFn system);
+      #     })
+      #     supportedSystems
+      # );
+      # nixosConfigurations = (import "${flake-root.package}/hosts") {
+      #   inherit inputs pkgs lib;
+      #   # inherit inputs;
+      #   outputs = self.outputs;
+      # };
+      # };
       # default = import ./shell.nix { inherit pkgs; };
       # TODO: rootPath = ./.; # self.outPath # builtins.path
       #       nixosModules = import ./modules/nixos;
@@ -337,7 +397,7 @@
       #           };
       #         };
       #       */
-    };
+    # };
   # );
   nixConfig = {
     # should match nix.settings

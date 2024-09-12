@@ -6,7 +6,7 @@
   ...
 }:
 {
-  imports = [ ./sops.nix ];
+  imports = [ ../../../hosts/common/modules/sops.nix ];
   boot = {
     tmp = {
       cleanOnBoot = true;
@@ -14,7 +14,7 @@
     loader = {
       systemd-boot = {
         enable = true;
-        configurationLimit = 256;
+        configurationLimit = 512;
       };
       efi.canTouchEfiVariables = true;
     };
@@ -215,6 +215,8 @@
   users = {
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell;
     users = {
+      # TODO: maybe don't use a partial here
+      # TODO: instead pass a full path as an import
       user = import ../../../hosts/common/users/user { inherit pkgs; };
     };
   };
@@ -322,6 +324,7 @@
     # they are required for boot or login
     # have namespace conflicts i don't want to deal with in home manager
     # etc.
+    # TODO: cleanup systemPackages
     systemPackages =
       with pkgs;
       [
