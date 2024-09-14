@@ -8,7 +8,7 @@ in
   nixos = lib.nixosSystem {
     modules = lib.lists.flatten [
       (import ../common/modules/desktop { inherit inputs outputs lib system stateVersion; })
-      ../common/modules/hardware-configuration/framework-13/intel
+      ../common/modules/hardware-configuration/framework/13-inch/12th-gen-intel
     ];
     specialArgs = {
       inherit inputs outputs lib;
