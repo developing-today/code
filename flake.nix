@@ -180,48 +180,7 @@
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
       flake-parts.lib.mkFlake { inherit inputs; } {
         systems = [ "x86_64-linux" ];
-        perSystem = { config, self', inputs', pkgs, system, ... }: {
-          _module.args.pkgs = import nixpkgs {
-            inherit system;
-            config = {
-              allowUnfree = true;
-              permittedInsecurePackages = [
-                "olm-3.2.16"
-                "electron"
-                "qtwebkit-5.212.0-alpha4"
-              ];
-            };
-            overlays = [
-              inputs.vim.overlay.${system}
-              inputs.yazi.overlays.default
-              inputs.waybar.overlays.default
-              (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
-            ];
-          };
-        };
-
-        flake =
-        # let
-        #     system = "x86_64-linux";
-            # pkgs = import nixpkgs {
-            #   inherit system;
-            #   config = {
-            #     allowUnfree = true;
-            #     permittedInsecurePackages = [
-            #       "olm-3.2.16"
-            #       "electron"
-            #       "qtwebkit-5.212.0-alpha4"
-            #     ];
-            #   };
-            #   overlays = [
-            #     inputs.vim.overlay.${system}
-            #     inputs.yazi.overlays.default
-            #     inputs.waybar.overlays.default
-            #     # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
-            #   ];
-            # };
-        # in {
-        {
+        flake = {
           nixosConfigurations = (import ./hosts) {
             inherit inputs;
             lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
@@ -235,7 +194,6 @@
       #         homeConfigurations = {
       #           "user@laptop-framework" = lib.homeManagerConfiguration {
   nixConfig = {
-    # should match nix.settings
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"
@@ -253,47 +211,46 @@
       "recursive-nix"
       "verified-fetches"
     ];
+    trusted-users = [ "root" ];
+    #       trusted-users = [ "user" ];
     use-xdg-base-directories = true;
     builders-use-substitutes = true;
-    #     trusted-users = [ "root" "@wheel" ];
-    trusted-users = [ "root" ];
     substituters = [
       # TODO: priority order
-      "https://cache.nixos.org" # priority
+      "https://cache.nixos.org"
       "https://yazi.cachix.org"
-      #         "https://nix-community.cachix.org"
-      #         "https://nix-gaming.cachix.org"
-      #         "https://cache.m7.rs"
-      #         "https://nrdxp.cachix.org"
-      #         "https://numtide.cachix.org"
-      #         "https://colmena.cachix.org"
-      #         "https://sylvorg.cachix.org"
+      # "https://binary.cachix.org"
+      # "https://nix-community.cachix.org"
+      # "https://nix-gaming.cachix.org"
+      # "https://cache.m7.rs"
+      # "https://nrdxp.cachix.org"
+      # "https://numtide.cachix.org"
+      # "https://colmena.cachix.org"
+      # "https://sylvorg.cachix.org"
     ];
     trusted-substituters = [
-      "https://cache.nixos.org" # priority
+      "https://cache.nixos.org"
       "https://yazi.cachix.org"
-      #         "https://nix-community.cachix.org"
-      #         "https://nix-gaming.cachix.org"
-      #         "https://cache.m7.rs"
-      #         "https://nrdxp.cachix.org"
-      #         "https://numtide.cachix.org"
-      #         "https://colmena.cachix.org"
-      #         "https://sylvorg.cachix.org"
+      # "https://binary.cachix.org"
+      # "https://nix-community.cachix.org"
+      # "https://nix-gaming.cachix.org"
+      # "https://cache.m7.rs"
+      # "https://nrdxp.cachix.org"
+      # "https://numtide.cachix.org"
+      # "https://colmena.cachix.org"
+      # "https://sylvorg.cachix.org"
     ];
-    /*
-      extra-substituters = [ "https://yazi.cachix.org" ];
-      extra-trusted-public-keys = [ "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=" ];
-    */
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k="
-      #         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      #         "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
-      #         "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
-      #         "nrdxp.cachix.org-1:Fc5PSqY2Jm1TrWfm88l6cvGWwz3s93c6IOifQWnhNW4="
-      #         "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
-      #         "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
-      #         "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
+      # "binary.cachix.org-1:66/C28mr67KdifepXFqZc+iSQcLENlwPqoRQNnc3M4I="
+      # "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      # "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
+      # "cache.m7.rs:kszZ/NSwE/TjhOcPPQ16IuUiuRSisdiIwhKZCxguaWg="
+      # "nrdxp.cachix.org-1:Fc5PSqY2Jm1TrWfm88l6cvGWwz3s93c6IOifQWnhNW4="
+      # "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
+      # "colmena.cachix.org-1:7BzpDnjjH8ki2CT3f6GdOk7QAzPOl+1t3LvTLXqYcSg="
+      # "sylvorg.cachix.org-1:xd1jb7cDkzX+D+Wqt6TemzkJH9u9esXEFu1yaR9p8H8="
     ];
     extra-substituters = [ ];
     extra-trusted-substituters = [ ];
@@ -305,7 +262,6 @@
     keep-derivations = true; # Idem
     accept-flake-config = true;
     #     allow-dirty = false;
-    allow-dirty = true;
     #     builders-use-substitutes = true;
     fallback = true;
     log-lines = 128;
@@ -317,27 +273,21 @@
     # trace-function-calls = true;
     trace-verbose = true;
     # use-xdg-base-directories = true;
-    #     allow-dirty = false;
-    #       buildMachines = [ ];
-    #       distributedBuilds = true;
-    #       # optional, useful when the builder has a faster internet connection than yours
-    #       extraOptions = ''
-    #         builders-use-substitutes = true
-    #       '';
+    allow-dirty = true;
+
+    /*
+      buildMachines = [ ];
+      distributedBuilds = true;
+      # optional, useful when the builder has a faster internet connection than yours
+      extraOptions = ''
+        builders-use-substitutes = true
+      '';
+    */
     auto-optimise-store = true;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
     use-registries = true;
     use-cgroups = true;
-    #     };
-    #     package = pkgs.nixVersions.nix_2_23;
-    #     optimise.automatic = true;
-    # auto-optimise-store = true;
-    #     gc = {
-    #       automatic = true;
-    #       dates = "weekly";
-    #       options = "--delete-older-than 180d";
-    #     };
   };
 }
