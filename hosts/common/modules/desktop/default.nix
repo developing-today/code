@@ -4,6 +4,7 @@
   (import ../home.nix { inherit inputs pkgs stateVersion; })
   {
     system.stateVersion = stateVersion;
+    nixpkgs.overlays = outputs.overlays.${system};
   }
   (
     { ... }:

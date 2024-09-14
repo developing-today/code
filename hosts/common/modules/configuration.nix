@@ -58,12 +58,6 @@
   };
 
   time.timeZone = "America/Chicago";
-
-  /*
-    nixpkgs.overlays = [
-      outputs.overlays.default
-    ];
-  */
   nix = {
     # This will add each flake input as a registry
     # To make nix3 commands consistent with your flake
@@ -333,7 +327,7 @@
         xdg-desktop-portal-hyprland
         hyprland-protocols
         # inputs.omnix.packages.${pkgs.system}.default
-        omnix
+        # omnix
         cabal-install
         cabal2nix
         ghc

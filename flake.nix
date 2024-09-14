@@ -216,7 +216,7 @@
                 inputs.vim.overlay.${system}
                 inputs.yazi.overlays.default
                 inputs.waybar.overlays.default
-                (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
+                # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
               ];
             };
         in {
