@@ -21,3 +21,7 @@ else
   echo "tailscaled service not found or not active." # hack not needed
 fi
 sudo nixos-rebuild --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+current=$(nixos-rebuild list-generations | grep current)
+echo "$current"
+git add .
+git commit --no-verify --allow-empty -am "$current"

@@ -1,9 +1,9 @@
 { inputs, outputs, lib, pkgs, ... }:
 {
   nixos = lib.nixosSystem {
-    modules = (import ./modules) { inherit inputs outputs pkgs; };
+    modules = (import ./modules) { inherit inputs outputs lib pkgs; };
     specialArgs = {
-      inherit inputs outputs pkgs;
+      inherit inputs outputs lib pkgs;
     };
   };
 }

@@ -64,6 +64,11 @@ if [[ -f "./flake.nix" ]]; then
   fi
   echo "running nixos-rebuild switch..."
   sudo nixos-rebuild --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+
+  current=$(nixos-rebuild list-generations | grep current)
+  echo "$current"
+  git add .
+  git commit --no-verify --allow-empty -am "$current"
   #else
   #echo "not a flake: ${dir}"
 fi

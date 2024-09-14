@@ -9,7 +9,6 @@
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
-    flake-root.url = "github:srid/flake-root";
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
@@ -180,9 +179,6 @@
   #  lib.fakeSha256 and lib.fakeSha512
     outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
       flake-parts.lib.mkFlake { inherit self; } {
-        imports = [
-          inputs.flake-root.flakeModule
-        ];
         systems = [ "x86_64-linux" ];
         perSystem = { config, self', inputs', pkgs, system, ... }: {
           _module.args.pkgs = import nixpkgs {
@@ -201,10 +197,6 @@
               inputs.waybar.overlays.default
               (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
             ];
-          };
-
-          devShells.default = pkgs.mkShell {
-            inputsFrom = [ config.flake-root.devShell ];
           };
         };
 
