@@ -67,8 +67,8 @@ if [[ -f "./flake.nix" ]]; then
 
   current=$(nixos-rebuild list-generations | grep current)
   echo "$current"
-  git add .
-  git commit --no-verify --allow-empty -am "$current"
+  git commit --no-verify --allow-empty -m "$current"
+  # don't add after rebuild to prevent mismatched file content vs version
   #else
   #echo "not a flake: ${dir}"
 fi

@@ -193,7 +193,7 @@
       #     nix-topology.nixosModules.default
       #         homeConfigurations = {
       #           "user@laptop-framework" = lib.homeManagerConfiguration {
-  nixConfig = {
+  nixConfig = { # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"

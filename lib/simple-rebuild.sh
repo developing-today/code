@@ -23,5 +23,5 @@ fi
 sudo nixos-rebuild --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
 current=$(nixos-rebuild list-generations | grep current)
 echo "$current"
-git add .
-git commit --no-verify --allow-empty -am "$current"
+git commit --no-verify --allow-empty -m "$current"
+# don't add after rebuild to prevent mismatched file content vs version
