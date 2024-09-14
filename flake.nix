@@ -177,8 +177,8 @@
     #     };
   };
   #  lib.fakeSha256 and lib.fakeSha512
-    outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
-      flake-parts.lib.mkFlake { inherit self; } {
+  outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
+      flake-parts.lib.mkFlake { inherit inputs; } {
         systems = [ "x86_64-linux" ];
         perSystem = { config, self', inputs', pkgs, system, ... }: {
           _module.args.pkgs = import nixpkgs {
