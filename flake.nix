@@ -219,178 +219,19 @@
                 (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
               ];
             };
-          in {
-            nixosConfigurations = (import ./hosts) {
-              inherit inputs pkgs;
-              lib = nixpkgs.lib // inputs.home-manager.lib;
-              outputs = self;
-            };
+        in {
+          nixosConfigurations = (import ./hosts) {
+            inherit inputs pkgs;
+            lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+            outputs = self;
           };
+        };
       };
-      # outputs =
-      #   {
-      #     self,
-      #     nixpkgs,
-      #     nixpkgs-stable,
-      #     flake-root,
-      #     flake-utils,
-      #     zig-overlay,
-      #     sops-nix,
-      #     vim,
-      #     home-manager,
-      #     yazi,
-      #     waybar,
-      #     omnix,
-      #     # nix-topology,
-      #     # systems,
-      #     ...
-      #   }@inputs:
-    # let # all let vars should be added to inherit below.
-    #   inherit (self) outputs;
-    #   stateVersion = "23.11";
-    #   system = "x86_64-linux";
-    #   supportedSystems = [ "x86_64-linux" ];
-    #   lib = nixpkgs.lib // home-manager.lib;
-    #   forEachSystem = f: lib.genAttrs supportedSystems f;
-    #   pkgsFor = forEachSystem (
-    #     system:
-    #     import nixpkgs {
-    #       inherit system;
-    #       # overlays = overlays ${system};
-    #       overlays = overlaysFn system;
-    #       config = {
-    #         allowUnfree = true;
-    #         permittedInsecurePackages = [
-    #           "olm-3.2.16"
-    #           "electron" # le sigh
-    #           "qtwebkit-5.212.0-alpha4" # ???
-    #         ];
-    #       };
-    #     }
-    #   );
-    #   overlaysFn = system: [
-    #     # zig-overlay.overlays.default
-    #     vim.overlay.${system}
-    #     yazi.overlays.default
-    #     waybar.overlays.default
-    #     # nix-topology.overlays.default
-    #     # rust-overlay
-    #     (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
-    #   ];
-    #   supportedSystemsOutputs = flake-utils.lib.eachSystem supportedSystems (
-    #     system:
-    #     let # all let vars should be added to inherit below.
-    #       pkgs = pkgsFor.${system};
-    #     in
-    #     rec {
-    #       inherit # all let vars should be added here. \/ \/ (from both lets)
-    #         pkgs
-            # ; # /\ all let vars should be added here. /\ /\ (from both lets)
-          # devShells = rec {
-          #   default = import ./shell.nix { inherit pkgs; };
-          # };
-          # devShell = import ./shell.nix { inherit pkgs; };
-          # packages = rec {
-          #   default = devShell;
-          # };
-          # defaultPackage = packages.default;
-          # apps = rec {
-          #   # TODO: makeapp
-          #   default = devShell;
-          # };
-          # https://github.com/Misterio77/nix-starter-configs/blob/main/standard/flake.nix#L66
-      #   }
-      # );
-      # pkgs = supportedSystemsOutputs.x86_64-linux.pkgs;
-    #   pkgs = pkgsFor.${system};
-    # in
-    # supportedSystemsOutputs
-    # // rec {
-    #   inherit # all let vars should be added here. \/ \/
-        # let self = builtins.trace self.outPath { } // { outPath = ./.; }; in self #https://github.com/NixOS/nix/issues/8300#issuecomment-1537501849
-        #         self
-        # .\#self.inputs
-        # .\#self.lastModifiedDate
-        # .\#self.outPath
-        # .\#self.packages
-        # .\#self.sourceInfo
-        # .\#self.lastModified
-        # .\#self.narHash
-        # .\#self.outputs
-        # .\#self.self
-        # .\#self._type
-        # stateVersion
-        # system
-        # supportedSystems
-        # lib
-        #pkgs
-        # overlays
-        # ; # /\ all let vars should be added here. /\ /\
-      # overlays = builtins.listToAttrs (
-      #   builtins.map
-      #     (system: {
-      #       name = system;
-      #       value = final: prev:
-      #         builtins.foldl' (acc: overlay: acc // (overlay final prev)) {} (overlaysFn system);
-      #     })
-      #     supportedSystems
-      # );
-      # nixosConfigurations = (import "${flake-root.package}/hosts") {
-      #   inherit inputs pkgs lib;
-      #   # inherit inputs;
-      #   outputs = self.outputs;
-      # };
-      # };
-      # default = import ./shell.nix { inherit pkgs; };
       # TODO: rootPath = ./.; # self.outPath # builtins.path
-      #       nixosModules = import ./modules/nixos;
-      #       homeManagerModules = import ./modules/home-manager;
-      #       overlays = import ./overlays {inherit inputs outputs;};
-      #       hydraJobs = import ./hydra.nix {inherit inputs outputs;};
-      #       packages = forEachSystem (pkgs: import ./pkgs {inherit pkgs;});
-      #       formatter = forEachSystem (pkgs: pkgs.alejandra);
-      #       hydra
-      # https://github.com/Misterio77/nix-config
-      # https://github.com/Mic92/dotfiles
-      # deploy-rs https://github.com/serokell/deploy-rs (vs just using nixos-rebuild or ?? colmena??)
-      # knot dns
-      # what is nix.extraOptions ?
-      # add @wheel to trusted-users ??
-      #       TODO: tailscale https://guekka.github.io/nixos-server-2/
       #       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
-      #       set content addressible default for all
-      #        devShellInner = pkgs.mkShell { buildInputs = [ /*zed-fhs
-      #           devShell.${system} = devShellInner;
-      #           # Repeat this for each system where you want to build your topology.
-      #           # You can do this manually or use flake-utils.
-      #           topology.x86_64-linux = import nix-topology {
-      #             inherit pkgs; # Only this package set must include nix-topology.overlays.default
-      #             modules = [
-      #               ## Your own file to define global topology. Works in principle like a nixos module but uses different options.
-      #               #./topology.nix
-      #               # Inline module to inform topology of your existing NixOS hosts.
-      #               { nixosConfigurations = self.nixosConfigurations; }
-      #             ];
-      #           };
-      #         };
       #     nix-topology.nixosModules.default
-      #        #zed-editor = pkgs.callPackage "${nixpkgs}/pkgs/by-name/ze/zed-editor/package.nix" { };
-      #        #zed-fhs = pkgs.buildFHSUserEnv {
-      #        #  name = "zed";
-      #        #  targetPkgs = pkgs: [ zed-editor ];
-      #        #  runScript = "zed";
-      #        #};
       #         homeConfigurations = {
-      #           # Standalone HM only
       #           "user@laptop-framework" = lib.homeManagerConfiguration {
-      #             modules = [ ./home/user/user.nix ];
-      #             pkgs = pkgsFor.x86_64-linux;
-      #             extraSpecialArgs = { inherit inputs; outputs = self.outputs; };
-      #           };
-      #         };
-      #       */
-    # };
-  # );
   nixConfig = {
     # should match nix.settings
     experimental-features = [

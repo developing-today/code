@@ -1,20 +1,15 @@
-{ inputs, outputs, pkgs, ... }:
-let
-  system = outputs.system;
-  stateVersion = outputs.stateVersion;
-  overlays = outputs.overlays.${system};
-in
+{ inputs, outputs, pkgs, system, stateVersion, ... }:
 (import ../tailscale-autoconnect.nix)
 ++ [
   (import ../home.nix { inherit inputs pkgs stateVersion; })
   {
-    system.stateVersion = "23.11"; # stateVersion;
+    system.stateVersion = stateVersion;
   }
   (
     { ... }:
     {
       imports = [
-        inputs.vim.nixosModules.x86_64-linux # .${system}
+        inputs.vim.nixosModules.${system}
       ];
     }
   )
