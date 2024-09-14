@@ -1,10 +1,29 @@
-{ inputs, outputs, pkgs, system, stateVersion, ... }:
+{ inputs, outputs,  system, stateVersion, ... }:
+let
+pkgs = import inputs.nixpkgs {
+  inherit system;
+  config = {
+    allowUnfree = true;
+    permittedInsecurePackages = [
+      "olm-3.2.16"
+      "electron"
+      "qtwebkit-5.212.0-alpha4"
+    ];
+  };
+  overlays = [
+    inputs.vim.overlay.${system}
+    inputs.yazi.overlays.default
+    inputs.waybar.overlays.default
+    # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
+  ];
+};
+in
 (import ../tailscale-autoconnect.nix)
 ++ [
   (import ../home.nix { inherit inputs pkgs stateVersion; })
   {
     system.stateVersion = stateVersion;
-    nixpkgs.overlays = outputs.overlays.${system};
+    nixpkgs.overlays = pkgs.overlays;
   }
   (
     { ... }:

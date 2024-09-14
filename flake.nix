@@ -200,28 +200,30 @@
           };
         };
 
-        flake = let
-            system = "x86_64-linux";
-            pkgs = import nixpkgs {
-              inherit system;
-              config = {
-                allowUnfree = true;
-                permittedInsecurePackages = [
-                  "olm-3.2.16"
-                  "electron"
-                  "qtwebkit-5.212.0-alpha4"
-                ];
-              };
-              overlays = [
-                inputs.vim.overlay.${system}
-                inputs.yazi.overlays.default
-                inputs.waybar.overlays.default
-                # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
-              ];
-            };
-        in {
+        flake =
+        # let
+        #     system = "x86_64-linux";
+            # pkgs = import nixpkgs {
+            #   inherit system;
+            #   config = {
+            #     allowUnfree = true;
+            #     permittedInsecurePackages = [
+            #       "olm-3.2.16"
+            #       "electron"
+            #       "qtwebkit-5.212.0-alpha4"
+            #     ];
+            #   };
+            #   overlays = [
+            #     inputs.vim.overlay.${system}
+            #     inputs.yazi.overlays.default
+            #     inputs.waybar.overlays.default
+            #     # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
+            #   ];
+            # };
+        # in {
+        {
           nixosConfigurations = (import ./hosts) {
-            inherit inputs pkgs;
+            inherit inputs;
             lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
             outputs = self;
           };
