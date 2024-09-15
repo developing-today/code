@@ -11,7 +11,13 @@
       "dmask=0022"
     ];
   };
-  swapDevices = [ ];
+  swapDevices = [
+    # "/dev/disk/by-label/NIXSWAP" # TODO: Add swap partition
+    {
+      device = "/swapfile";
+      size = 1024 * 192;
+    }
+  ];
   networking.useDHCP = lib.mkDefault true;
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   boot.initrd.kernelModules = [ ];
