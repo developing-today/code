@@ -1,4 +1,8 @@
-{ lib, ... }: {
+{ lib,   modulesPath,
+... }: {
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+  ];
   fileSystems."/" = {
     device = "/dev/disk/by-label/NIXROOT";
     fsType = "ext4";
@@ -19,6 +23,7 @@
     }
   ];
   networking.useDHCP = lib.mkDefault true;
+  powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   boot.initrd.kernelModules = [ ];
   boot.extraModulePackages = [ ];
