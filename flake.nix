@@ -1,14 +1,39 @@
 {
-  description = "developing.today NixOS configuration";
+  outputs =
+    inputs@{
+      self,
+      nixpkgs,
+      flake-parts,
+      ...
+    }:
+    # TODO: rootPath = ./.; # self.outPath # builtins.path
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [ "x86_64-linux" ];
+      flake = {
+        nixosConfigurations = (import ./hosts) {
+          inherit inputs;
+          lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+          outputs = self;
+        };
+        homeConfigurations = (import ./home) {
+          inherit inputs;
+          lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+          outputs = self;
+        };
+      };
+    };
   inputs = {
-    # switch to flakes, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     #nixpkgs.url = "github:NixOS/nixpkgs";
     #nixpkgs.url = "github:dezren39/nixpkgs";
-    nixpkgs.url = "github:dezren39/nixpkgs/main";
     #nixpkgs.url = "github:dezren39/nixpkgs/rev";
-    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
+    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
+    nixpkgs.url = "github:dezren39/nixpkgs/main";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
+    # nix-topology.nixosModules.default
+    # TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
+    # lib.fakeSha256 and lib.fakeSha512
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
@@ -176,55 +201,6 @@
     #       inputs.nixpkgs.follows = "nixpkgs";
     #     };
   };
-  #  lib.fakeSha256 and lib.fakeSha512
-  outputs =
-    inputs@{
-      self,
-      nixpkgs,
-      flake-parts,
-      ...
-    }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" ];
-      flake = {
-        nixosConfigurations = (import ./hosts) {
-          inherit inputs;
-          lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
-          outputs = self;
-        };
-        # nixosConfigurations = mapAttrs (
-        #   hostname: host:
-        #   nixosSystem {
-        #     specialArgs = {
-        #       inherit inputs host;
-        #     };
-        #     modules = [
-        #       ./configurations/${hostname}-hardware.nix
-        #       ./modules/all.nix
-        #       ./configurations/${hostname}.nix
-        #     ];
-        #   }
-        # ) (import ./hosts.nix);
-        # homeConfigurations = mapAttrs (
-        #   target: cfg:
-        #   homeManagerConfiguration {
-        #     pkgs = nixpkgs.legacyPackages.${cfg.system};
-        #     extraSpecialArgs = {
-        #       inherit inputs;
-        #     };
-        #     modules = [
-        #       { home.stateVersion = cfg.stateVersion; }
-        #       ./hm-modules/all.nix
-        #       { inherit (cfg) my-nixos-hm; }
-        #     ];
-        #   }
-        # ) (import ./hm-hosts.nix);
-      };
-    };
-  # TODO: rootPath = ./.; # self.outPath # builtins.path
-  # TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
-  # nix-topology.nixosModules.default
-  # homeConfigurations = { "user@laptop-framework" = lib.homeManagerConfiguration {
   nixConfig = { # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
     experimental-features = [
       "auto-allocate-uids"
@@ -321,4 +297,5 @@
     use-registries = true;
     use-cgroups = true;
   };
+  description = "developing.today NixOS configuration";
 }

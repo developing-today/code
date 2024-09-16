@@ -28,3 +28,16 @@ in
     };
   };
 }
+# nixosConfigurations = mapAttrs (
+#   hostname: host:
+#   nixosSystem {
+#     specialArgs = {
+#       inherit inputs host;
+#     };
+#     modules = [
+#       ./configurations/${hostname}-hardware.nix
+#       ./modules/all.nix
+#       ./configurations/${hostname}.nix
+#     ];
+#   }
+# ) (import ./hosts.nix);
