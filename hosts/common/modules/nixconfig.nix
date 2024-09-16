@@ -1,4 +1,4 @@
-{
+{ # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
   experimental-features = [
     "auto-allocate-uids"
     "ca-derivations"
@@ -79,7 +79,6 @@
   trace-verbose = true;
   # use-xdg-base-directories = true;
   allow-dirty = true;
-
   /*
     buildMachines = [ ];
     distributedBuilds = true;

@@ -192,15 +192,40 @@
           lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
           outputs = self;
         };
+        # nixosConfigurations = mapAttrs (
+        #   hostname: host:
+        #   nixosSystem {
+        #     specialArgs = {
+        #       inherit inputs host;
+        #     };
+        #     modules = [
+        #       ./configurations/${hostname}-hardware.nix
+        #       ./modules/all.nix
+        #       ./configurations/${hostname}.nix
+        #     ];
+        #   }
+        # ) (import ./hosts.nix);
+        # homeConfigurations = mapAttrs (
+        #   target: cfg:
+        #   homeManagerConfiguration {
+        #     pkgs = nixpkgs.legacyPackages.${cfg.system};
+        #     extraSpecialArgs = {
+        #       inherit inputs;
+        #     };
+        #     modules = [
+        #       { home.stateVersion = cfg.stateVersion; }
+        #       ./hm-modules/all.nix
+        #       { inherit (cfg) my-nixos-hm; }
+        #     ];
+        #   }
+        # ) (import ./hm-hosts.nix);
       };
     };
   # TODO: rootPath = ./.; # self.outPath # builtins.path
-  #       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
-  #     nix-topology.nixosModules.default
-  #         homeConfigurations = {
-  #           "user@laptop-framework" = lib.homeManagerConfiguration {
-  nixConfig = {
-    # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
+  # TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
+  # nix-topology.nixosModules.default
+  # homeConfigurations = { "user@laptop-framework" = lib.homeManagerConfiguration {
+  nixConfig = { # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"
@@ -281,7 +306,6 @@
     trace-verbose = true;
     # use-xdg-base-directories = true;
     allow-dirty = true;
-
     /*
       buildMachines = [ ];
       distributedBuilds = true;
