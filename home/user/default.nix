@@ -4,7 +4,7 @@
   nixpkgs.config = {
     allowUnfree = true;
     permittedInsecurePackages = [
-    "olm-3.2.16"
+      "olm-3.2.16"
       "electron" # le sigh
       "qtwebkit-5.212.0-alpha4" # ???
     ];
@@ -203,7 +203,7 @@
     sessionVariables = {
       EDITOR = "nvim";
     };
-    pointerCursor ={
+    pointerCursor = {
       package = pkgs.vanilla-dmz;
       name = "Vanilla-DMZ";
       gtk.enable = true;
@@ -945,5 +945,5 @@
         zulip
         zulip-term
       ];
-    };
+  };
 }

@@ -81,13 +81,13 @@
       inputs.neovim-src.follows = "neovim-src";
     }; # need to actually use this
     neovim-src = {
-          url = "github:neovim/neovim";
-          flake = false;
-        };
+      url = "github:neovim/neovim";
+      flake = false;
+    };
     devshell = {
-          url = "github:numtide/devshell";
-          inputs.nixpkgs.follows = "nixpkgs";
-        };
+      url = "github:numtide/devshell";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
   outputs =
     {
@@ -128,7 +128,11 @@
           inherit system;
           config = {
             allowUnfree = true;
-            permittedInsecurePackages = [ "olm-3.2.16" "electron" "qtwebkit-5.212.0-alpha4" ];
+            permittedInsecurePackages = [
+              "olm-3.2.16"
+              "electron"
+              "qtwebkit-5.212.0-alpha4"
+            ];
           };
           overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
         };
@@ -179,7 +183,7 @@
     trusted-users = [ "root" ];
     substituters = [
       # TODO: priority order
-      "https://cache.nixos.org" #priority
+      "https://cache.nixos.org" # priority
       "https://yazi.cachix.org"
       #         "https://nix-community.cachix.org"
       #         "https://nix-gaming.cachix.org"
@@ -190,7 +194,7 @@
       #         "https://sylvorg.cachix.org"
     ];
     trusted-substituters = [
-      "https://cache.nixos.org" #priority
+      "https://cache.nixos.org" # priority
       "https://yazi.cachix.org"
       #         "https://nix-community.cachix.org"
       #         "https://nix-gaming.cachix.org"
@@ -201,8 +205,8 @@
       #         "https://sylvorg.cachix.org"
     ];
     /*
-    extra-substituters = [ "https://yazi.cachix.org" ];
-    extra-trusted-public-keys = [ "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=" ];
+      extra-substituters = [ "https://yazi.cachix.org" ];
+      extra-trusted-public-keys = [ "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k=" ];
     */
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="

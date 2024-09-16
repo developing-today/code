@@ -177,23 +177,30 @@
     #     };
   };
   #  lib.fakeSha256 and lib.fakeSha512
-  outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
-      flake-parts.lib.mkFlake { inherit inputs; } {
-        systems = [ "x86_64-linux" ];
-        flake = {
-          nixosConfigurations = (import ./hosts) {
-            inherit inputs;
-            lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
-            outputs = self;
-          };
+  outputs =
+    inputs@{
+      self,
+      nixpkgs,
+      flake-parts,
+      ...
+    }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [ "x86_64-linux" ];
+      flake = {
+        nixosConfigurations = (import ./hosts) {
+          inherit inputs;
+          lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+          outputs = self;
         };
       };
-      # TODO: rootPath = ./.; # self.outPath # builtins.path
-      #       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
-      #     nix-topology.nixosModules.default
-      #         homeConfigurations = {
-      #           "user@laptop-framework" = lib.homeManagerConfiguration {
-  nixConfig = { # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
+    };
+  # TODO: rootPath = ./.; # self.outPath # builtins.path
+  #       TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
+  #     nix-topology.nixosModules.default
+  #         homeConfigurations = {
+  #           "user@laptop-framework" = lib.homeManagerConfiguration {
+  nixConfig = {
+    # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"

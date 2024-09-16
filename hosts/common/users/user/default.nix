@@ -1,6 +1,4 @@
-{
-  pkgs
-}:
+{ pkgs }:
 {
   isNormalUser = true;
   description = "user";

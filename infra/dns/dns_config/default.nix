@@ -1,6 +1,7 @@
 {
   lib,
-  DNSConfig ? { # TODO: allow alias to work like cname for "@" and direct strings on domains
+  DNSConfig ? {
+    # TODO: allow alias to work like cname for "@" and direct strings on domains
     "@" = {
       provider = "porkbun";
       records = {

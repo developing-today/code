@@ -1,2 +1,7 @@
-{ inputs, outputs, lib, ... }: { } //
-(import ./nixos) { inherit inputs outputs lib;}
+{
+  inputs,
+  outputs,
+  lib,
+  ...
+}:
+{ } // (import ./nixos) { inherit inputs outputs lib; }

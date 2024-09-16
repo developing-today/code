@@ -1,1 +1,1 @@
-{ inputs, outputs, ... }: { } // () { inherit inputs outputs; }
+{ inputs, outputs, ... }: { }
