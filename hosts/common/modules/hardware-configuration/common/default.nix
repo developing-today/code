@@ -14,11 +14,12 @@
     ];
   };
   swapDevices = [
-    # "/dev/disk/by-label/NIXSWAP" # TODO: Add swap partition
     {
       device = "/swapfile";
       size = 1024 * 192;
     }
+    # "/dev/disk/by-label/NIXSWAP" # TODO: Add swap partition
+    # zram? zswap?
   ];
   networking.useDHCP = lib.mkDefault true;
   powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
@@ -39,4 +40,8 @@
   #     value = "1048576";
   #   }
   # ];
+  # devmon.enable = true;
+  # udisks2.enable = true;
+  # gvfs.enable = true;
+  # pkgs linux kernel
 }

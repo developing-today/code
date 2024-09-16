@@ -17,4 +17,5 @@
     "sd_mod"
   ];
   # TODO
+  # services.videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
 }

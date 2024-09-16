@@ -21,27 +21,16 @@
   };
   networking = {
     hostName = "nixos";
-    #     hostId = "deadbeef";
-    #     useDHCP = true;
-    #     wireless = {
-    #       enable = true;
-    #       wifi.backend = "iwd";
-    #       interfaces = [ ... ];
-    #       networks = {
-    #         ...
-    #       };
-    #     };
+    # hostId = "deadbeef"; # todo: needed?
+    # useDHCP = true; # shouldn't this be needed
     networkmanager = {
       enable = true;
-      #       unmanaged = [
-      #         "*" "except:type:wwan" "except:type:gsm"
-      #       ];
     };
     firewall = {
-      allowedUDPPorts = [ config.services.tailscale.port ];
+      allowedUDPPorts = [ config.services.tailscale.port ]; # needed?
     };
   };
-
+  # impermanence?
   i18n = {
     defaultLocale = "en_US.UTF-8";
     extraLocaleSettings = {
@@ -59,19 +48,15 @@
 
   time.timeZone = "America/Chicago";
   nix = {
-    # This will add each flake input as a registry
-    # To make nix3 commands consistent with your flake
-    registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);
-    # This will additionally add your inputs to the system's legacy channels
-    # Making legacy nix commands consistent as well, awesome!
-    nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
-    settings = (import ./nixconfig.nix);
+    registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);  # This will add each flake input as a registry. To make nix3 commands consistent with your flake
+    nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry; # This will additionally add your inputs to the system's legacy channels. Making legacy nix commands consistent as well, awesome!
+    settings = (import ./nixconfig.nix); # imports instead?
     package = pkgs.nixVersions.nix_2_23;
     optimise.automatic = true;
     gc = {
       automatic = true;
       dates = "weekly";
-      options = "--delete-older-than 180d";
+      options = "--delete-older-than 400d";
     };
   };
   nixpkgs.config = {
@@ -82,25 +67,10 @@
       "qtwebkit-5.212.0-alpha4" # ???
     ];
   };
-  #sound.enable = true;
+  #sound.enable = true; # not needed?
   hardware = {
     brillo.enable = false;
     pulseaudio.enable = false;
-    #     nvidia = {
-    #       # Enable modesetting for Wayland compositors (hyprland)
-    #       modesetting.enable = true;
-    #       # Use the open source version of the kernel module (for driver 515.43.04+)
-    #       open = true;
-    #       # Enable the Nvidia settings menu
-    #       nvidiaSettings = true;
-    #       # Select the appropriate driver version for your specific GPU
-    #       package = config.boot.kernelPackages.nvidiaPackages.stable;
-    #     };
-    #     opengl = { # for nvidia
-    #       enable = true;
-    #       driSupport = true;
-    #       driSupport32Bit = true;
-    #     };
   };
 
   security.rtkit.enable = true;
@@ -110,17 +80,15 @@
     docker.enable = true;
   };
 
-  users = {
-    defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell;
+  users = { # remove from here?
+    defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell; # per user?
     users = {
-      # TODO: maybe don't use a partial here
-      # TODO: instead pass a full path as an import
-      user = import ../../../hosts/common/users/user { inherit pkgs; };
+      user = import ../users/user { inherit pkgs; }; # imports
     };
   };
 
   fonts = {
-    packages = with pkgs; [
+    packages = with pkgs; [ # only desktops not servers?
       noto-fonts
       noto-fonts-cjk
       noto-fonts-emoji
@@ -129,8 +97,8 @@
       source-han-sans-japanese
       source-han-serif-japanese
       (nerdfonts.override { fonts = [ "Meslo" ]; })
-    ];
-    fontconfig = {
+    ]; # missing other fonts
+    fontconfig = { # ligatures just give me ligatures what is this
       enable = true;
       defaultFonts = {
         monospace = [ "Meslo LG M Regular Nerd Font Complete Mono" ];
@@ -146,8 +114,8 @@
     };
   };
 
-  services = {
-    tailscale.enable = true;
+  services = { # desktop only
+    tailscale.enable = true; # needed?
     printing.enable = true;
     pipewire = {
       enable = true;
@@ -161,13 +129,6 @@
       jack.enable = true;
     };
     kanata.enable = true;
-    #fwupd.enable = true; # laptop-framework # don't follow this guide you have a framework 12 intel # https://github.com/NixOS/nixos-hardware/tree/master/framework/13-inch/13th-gen-intel#getting-the-fingerprint-sensor-to-work
-    # https://knowledgebase.frame.work/ubuntu-fingerprint-troubleshooting-r1_DA0TMn
-    # TODO: pull the hardware flake for 12th gen intel
-    # nixos-hardware.nixosModules.framework-12th-gen-intel
-    #     devmon.enable = true;
-    #     udisks2.enable = true;
-    #     gvfs.enable = true;
     flatpak.enable = true;
     dbus.enable = true;
     openssh = {
@@ -187,24 +148,23 @@
       localuser = null;
     };
     displayManager = {
-      #autoLogin = { enable = true; user = "user"; };
-      defaultSession = "hyprland";
-      sddm.enable = true; # /bin/osh
-      #gdm.enable = true;
+      #autoLogin = { enable = true; user = "user"; }; # security risk?
+      defaultSession = "hyprland"; # for better or worse
+      sddm.enable = true;
+      #gdm.enable = true; # two at once bad
     };
     xserver = {
       enable = true;
-      #            libinput.enable = true;
-      desktopManager = {
-        #plasma6.enable = true;
-        #plasma5.enable = true;
+      # libinput.enable = true;
+      desktopManager = { # backup in case hyprland gets broken again
+        #plasma6.enable = true; # bloat but kinda pretty
+        #plasma5.enable = true; # bloat but kinda pretty
         gnome.enable = true;
       };
       xkb = {
         layout = "us";
         variant = "";
       };
-      # #       videoDrivers = [ "nvidia" ]; # If you are using a hybrid laptop add its iGPU manufacturer nvidia amd intel
     };
   };
   programs = {
@@ -218,158 +178,149 @@
   environment = {
     sessionVariables.NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
     variables.EDITOR = "nvim";
-    # things end up in systempackages if
-    # they are required for boot or login
+    # things should end up in systempackages if
+    # they are required for boot or login or
     # have namespace conflicts i don't want to deal with in home manager
+    # or just because
     # etc.
-    # TODO: cleanup systemPackages
     systemPackages =
       with pkgs;
       [
-        hyprlandPlugins.hypr-dynamic-cursors
-        xorg.xcursorthemes
-        xdg-desktop-portal-hyprland
-        hyprland-protocols
+        # TODO: cleanup systemPackages
+        # build
+        # charm stuff?
+        # dwm
+        # fortune
+        # gtk
         # inputs.omnix.packages.${pkgs.system}.default
         # omnix
+        # overlays # todo- move into user
+        # clang-tools_9
+        # fontmatrix
+        # grep
+        # nix-software-center
+        # zed-editor
+        # zigpkgs.master
+        alacritty-theme
+        alejandra # unused now?
+        asciinema
+        awesome
+        banner
+        bc
+        binutils
+        brillo
+        bsdgames
         cabal-install
         cabal2nix
-        ghc
-        hledger
-        hledger-ui
-        hledger-web
-        hledger-iadd
-        hledger-utils
-        hledger-interest
-        zed-editor
-        opentofu
-        terranix
-        playerctl
-        brillo
-        font-manager
-        font-awesome
-        fontpreview
-        font-awesome_5
-        #fontmatrix
-        fontforge
-        nerdfix
-        nerdfonts
-        nerdfix
-        nerd-font-patcher
-        terminus-nerdfont
-        hackgen-nf-font
-        maple-mono-NF
-        udev-gothic-nf
-        maple-mono-SC-NF
-        fira-code
-        hasklig
-        maple-mono-woff2
-        rictydiminished-with-firacode
-        maple-mono-otf
-        maple-mono-autohint
-        monoid
-        fira-code-symbols
-        grimblast
-        hyprland-monitor-attached
-        hyprcursor
-        hyprpicker
-        hyprshade
-        hyprkeys
-        hyprlock
-        hyprshot
-        hyprdim
-        lf
-        ranger
-        zathura
-        libsixel
-        lsix
-        ncdu
-        yq
-        yazi
-        kitty
-        kanata
-        kitty-img
-        kitty-themes
-        kitti3
-        kittysay
-        pixcat
-        termpdfpy
-        vimPlugins.vim-kitty-navigator
-        alacritty-theme
-        cinnamon-desktop
-        gnomeExtensions.toggle-alacritty
-        python312Packages.pycritty
-        zathura
-        #zed-editor
-        nix-output-monitor
-        nix-tree
-        nix-du
-        nix-melt
-        nix-query-tree-viewer
-        nix-visualize
-        niv
-        nh
-        nvd
-        expect # unbuffer
-        nushell
-        ncurses
-        bc
-        #grep
-        gawk
         choose
-        e2fsprogs
-        asciinema
-        # charm stuff?
-        statix
-        deadnix
-
-        oils-for-unix # todo: osh default shell?
-        # overlays # todo- move into user
-        #zigpkgs.master
-        #nix-software-center
-        alejandra # unused now?
-        neovim
-        tailscale
-        nixfmt-rfc-style
-      ]
-      ++ [
-        # dwm
-        xwayland
-        waybar
-        wayland
-        sddm
-        lightdm
-        gdm
-        awesome
-      ]
-      ++ [
-        # build
-        gcc
-        binutils
+        cinnamon-desktop
         clang
-        #clang-tools_9
-        llvmPackages.bintools
-      ]
-      ++ [
-        # gtk
+        cowsay
+        deadnix
+        e2fsprogs
+        emacsPackages.fortune-cookie
+        expect # unbuffer
+        figlet
+        fira-code
+        fira-code-symbols
+        font-awesome
+        font-awesome_5
+        font-manager
+        fontforge
+        fontpreview
+        fortune
+        gawk
+        gcc
+        gdm
+        ghc
+        gnomeExtensions.toggle-alacritty
+        grimblast
         gtk2
         gtk3
         gtk4
-      ]
-      ++ [
-        # fortune
-        bsdgames
+        hackgen-nf-font
         haskellPackages.misfortune
-        taoup
-        rPackages.fortunes
-        emacsPackages.fortune-cookie
-        fortune
+        hasklig
+        hledger
+        hledger-iadd
+        hledger-interest
+        hledger-ui
+        hledger-utils
+        hledger-web
+        hyprcursor
+        hyprdim
+        hyprkeys
+        hyprland-monitor-attached
+        hyprland-protocols
+        hyprlandPlugins.hypr-dynamic-cursors
+        hyprlock
+        hyprpicker
+        hyprshade
+        hyprshot
+        kanata
+        kitti3
+        kitty
+        kitty-img
+        kitty-themes
+        kittysay
+        lf
+        libsixel
+        lightdm
+        llvmPackages.bintools
         lolcat
-        figlet
-        cowsay
-        banner
+        lsix
+        maple-mono-NF
+        maple-mono-SC-NF
+        maple-mono-autohint
+        maple-mono-otf
+        maple-mono-woff2
+        monoid
+        ncdu
+        ncurses
+        neovim
+        nerd-font-patcher
+        nerdfix
+        nerdfix
+        nerdfonts
+        nh
+        niv
+        nix-du
+        nix-melt
+        nix-output-monitor
+        nix-query-tree-viewer
+        nix-tree
+        nix-visualize
+        nixfmt-rfc-style
+        nushell
+        nvd
+        oils-for-unix # todo: osh default shell?
+        opentofu
+        pixcat
+        playerctl
+        python312Packages.pycritty
+        rPackages.fortunes
+        ranger
+        rictydiminished-with-firacode
+        sddm
+        statix
+        tailscale
+        taoup
+        terminus-nerdfont
+        termpdfpy
+        terranix
+        udev-gothic-nf
+        vimPlugins.vim-kitty-navigator
+        waybar
+        wayland
+        xdg-desktop-portal-hyprland
+        xorg.xcursorthemes
+        xwayland
+        yazi
+        yq
+        zathura
+        zathura
+        zed-editor
       ];
-
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
 }

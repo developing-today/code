@@ -6,9 +6,7 @@
 {
   imports = [
     inputs.home-manager.nixosModules.home-manager
-    #vim.nixosModules.${system}
   ];
-
   home-manager.useUserPackages = true;
   home-manager.useGlobalPkgs = true;
   home-manager.backupFileExtension = "backup";
