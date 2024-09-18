@@ -127,7 +127,9 @@
         pkgs = import nixpkgs {
           inherit system;
           config = {
+            allowBroken = true;
             allowUnfree = true;
+            allowUnfreePredicate = _: true;
             permittedInsecurePackages = [
               "olm-3.2.16"
               "electron"

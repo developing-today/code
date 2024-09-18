@@ -60,7 +60,9 @@
     };
   };
   nixpkgs.config = {
+    allowBroken = true;
     allowUnfree = true;
+    allowUnfreePredicate = _: true;
     permittedInsecurePackages = [
       "olm-3.2.16"
       "electron" # le sigh
@@ -306,7 +308,7 @@
         tailscale
         taoup
         terminus-nerdfont
-        termpdfpy
+        # termpdfpy # 2024-09-17 ⚠ python3.12-pymupdf-1.24.8 failed with exit code 1 after ⏱ 1m55s in pythonImportsCheckPhase
         terranix
         udev-gothic-nf
         vimPlugins.vim-kitty-navigator

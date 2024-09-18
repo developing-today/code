@@ -9,7 +9,9 @@ let
   pkgs = import inputs.nixpkgs {
     inherit system;
     config = {
+      allowBroken = true;
       allowUnfree = true;
+      allowUnfreePredicate = _: true;
       permittedInsecurePackages = [
         "olm-3.2.16"
         "electron"
@@ -19,7 +21,7 @@ let
     overlays = [
       inputs.vim.overlay.${system}
       inputs.yazi.overlays.default
-      inputs.waybar.overlays.default
+      # inputs.waybar.overlays.default # ?? !! style.css
       # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
     ];
   };

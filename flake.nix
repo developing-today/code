@@ -23,12 +23,13 @@
       };
     };
   inputs = {
-    #nixpkgs.url = "github:NixOS/nixpkgs";
-    #nixpkgs.url = "github:dezren39/nixpkgs";
+    nixpkgs.url = "github:dezren39/nixpkgs";
+    # nixpkgs.url = "github:NixOS/nixpkgs";
     #nixpkgs.url = "github:dezren39/nixpkgs/rev";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
-    nixpkgs.url = "github:dezren39/nixpkgs/main";
+    #nixpkgs.url = "github:dezren39/nixpkgs/main";
+    # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     # nix-topology.nixosModules.default

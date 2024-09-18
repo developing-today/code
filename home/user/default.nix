@@ -2,7 +2,9 @@
 { pkgs, ... }:
 {
   nixpkgs.config = {
+    allowBroken = true;
     allowUnfree = true;
+    allowUnfreePredicate = _: true;
     permittedInsecurePackages = [
       "olm-3.2.16"
       "electron" # le sigh
