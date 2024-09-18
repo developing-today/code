@@ -267,7 +267,6 @@
       },
       "original": {
         "owner": "dezren39",
-        "ref": "main",
         "repo": "nixpkgs",
         "type": "github"
       }

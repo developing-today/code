@@ -23,7 +23,8 @@
       };
     };
   inputs = {
-    nixpkgs.url = "github:dezren39/nixpkgs";
+  # nixpkgs.url = "github:dezren39/nixpkgs/main";
+  nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
     #nixpkgs.url = "github:dezren39/nixpkgs/rev";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
