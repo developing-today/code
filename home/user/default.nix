@@ -108,7 +108,10 @@
     ssh.enable = true;
     starship.enable = true;
     swaylock.enable = true;
-    taskwarrior.enable = true;
+    taskwarrior = {
+      enable = true;
+      package = pkgs.taskwarrior3;
+    };
     tealdeer.enable = true;
     terminator.enable = true;
     termite.enable = true;
