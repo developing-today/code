@@ -97,7 +97,7 @@
         rust-analyzer = { };
         html = { };
         eslint = { };
-        tsserver = { };
+        ts-ls = { };
         lua-ls = { };
         jsonls = { };
         pylsp = { };
