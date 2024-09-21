@@ -1,13 +1,15 @@
+let
+  key = protocol: alias: builtins.readFile ./keys/${protocol}-${alias}.pub;
+  ssh-user = alias: key "ssh-user" alias;
+in
 {
-  user = {
+  user = rec {
     enable = true;
     name = "user"
-    # TODO TODO TODO
-    #   uid = 1001;
-    #   groups = [ "wheel" ];
-    #   keys = [ ./keys/ssh-user-alex.pub ];
-    #   email = "alex@ahbk.se";
-    #   aliases = [
-    #   ];
+    uid = 1000;
+    groups = [ "wheel" ];
+    keys = [ (ssh-user name) ];
+    email = "dsp@developing-today.com";
+    aliases = [ "drewrypope@gmail.com" ];
   }
 }

@@ -12,7 +12,7 @@ terraform {
   }
 }
 data "sops_file" "porkbun" {
-  source_file = "../../config.enc/common/porkbun.yaml"
+  source_file = "../../secrets/sops/common/porkbun.yaml"
 }
 provider "porkbun" {
   api_key = data.sops_file.porkbun.data["porkbun_api_key"]

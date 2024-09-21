@@ -13,7 +13,7 @@
       };
       sops.secrets.tailscale_key = {
         # TODO: distinguish between persistent and ephemeral tailscale keys (ephemeral remove from tailnet on shutdown)
-        sopsFile = ../../../config.enc/common/tailscale.yaml;
+        sopsFile = ../../../secrets/sops/common/tailscale.yaml;
       };
     }
   )

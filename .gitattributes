@@ -1,2 +1,2 @@
-config.enc/**.yaml diff=sopsdiffer
+secrets/sops/**.yaml diff=sopsdiffer
 nix linguist-generated=true

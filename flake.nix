@@ -15,11 +15,11 @@
           lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
           outputs = self;
         };
-        homeConfigurations = (import ./home) {
-          inherit inputs;
-          lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
-          outputs = self;
-        };
+        # homeConfigurations = (import ./home) {
+        #   inherit inputs;
+        #   lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+        #   outputs = self;
+        # };
       };
     };
   inputs = {

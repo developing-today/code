@@ -29,7 +29,7 @@ else
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
-sops_relative_path="config.enc/common/porkbun.yaml"
+sops_relative_path="secrets/sops/common/porkbun.yaml"
 sops_file="$repo_root/$sops_relative_path"
 
 if [ ! -f "$sops_file" ]; then
