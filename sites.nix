@@ -1,4 +1,4 @@
-{}
+{ }
 # {
 #   "test.esse.nu" = {
 #     enable = true;

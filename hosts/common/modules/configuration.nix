@@ -48,7 +48,7 @@
 
   time.timeZone = "America/Chicago";
   nix = {
-    registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs);  # This will add each flake input as a registry. To make nix3 commands consistent with your flake
+    registry = lib.mkForce (lib.mapAttrs (_: value: { flake = value; }) inputs); # This will add each flake input as a registry. To make nix3 commands consistent with your flake
     nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry; # This will additionally add your inputs to the system's legacy channels. Making legacy nix commands consistent as well, awesome!
     settings = (import ./nixconfig.nix); # imports instead?
     package = pkgs.nixVersions.nix_2_23;
@@ -82,7 +82,8 @@
     docker.enable = true;
   };
 
-  users = { # remove from here?
+  users = {
+    # remove from here?
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell; # per user?
     users = {
       user = import ../users/user { inherit pkgs; }; # imports
@@ -90,7 +91,8 @@
   };
 
   fonts = {
-    packages = with pkgs; [ # only desktops not servers?
+    packages = with pkgs; [
+      # only desktops not servers?
       noto-fonts
       noto-fonts-cjk
       noto-fonts-emoji
@@ -100,7 +102,8 @@
       source-han-serif-japanese
       (nerdfonts.override { fonts = [ "Meslo" ]; })
     ]; # missing other fonts
-    fontconfig = { # ligatures just give me ligatures what is this
+    fontconfig = {
+      # ligatures just give me ligatures what is this
       enable = true;
       defaultFonts = {
         monospace = [ "Meslo LG M Regular Nerd Font Complete Mono" ];
@@ -116,7 +119,8 @@
     };
   };
 
-  services = { # desktop only
+  services = {
+    # desktop only
     tailscale.enable = true; # needed?
     printing.enable = true;
     pipewire = {
@@ -158,7 +162,8 @@
     xserver = {
       enable = true;
       # libinput.enable = true;
-      desktopManager = { # backup in case hyprland gets broken again
+      desktopManager = {
+        # backup in case hyprland gets broken again
         #plasma6.enable = true; # bloat but kinda pretty
         #plasma5.enable = true; # bloat but kinda pretty
         gnome.enable = true;
@@ -185,144 +190,142 @@
     # have namespace conflicts i don't want to deal with in home manager
     # or just because
     # etc.
-    systemPackages =
-      with pkgs;
-      [
-        # TODO: cleanup systemPackages
-        # build
-        # charm stuff?
-        # dwm
-        # fortune
-        # gtk
-        # inputs.omnix.packages.${pkgs.system}.default
-        # omnix
-        # overlays # todo- move into user
-        # clang-tools_9
-        # fontmatrix
-        # grep
-        # nix-software-center
-        # zed-editor
-        # zigpkgs.master
-        alacritty-theme
-        alejandra # unused now?
-        asciinema
-        awesome
-        banner
-        bc
-        binutils
-        brillo
-        bsdgames
-        cabal-install
-        cabal2nix
-        choose
-        cinnamon-desktop
-        clang
-        cowsay
-        deadnix
-        e2fsprogs
-        emacsPackages.fortune-cookie
-        expect # unbuffer
-        figlet
-        fira-code
-        fira-code-symbols
-        font-awesome
-        font-awesome_5
-        font-manager
-        fontforge
-        fontpreview
-        fortune
-        gawk
-        gcc
-        gdm
-        ghc
-        gnomeExtensions.toggle-alacritty
-        grimblast
-        gtk2
-        gtk3
-        gtk4
-        hackgen-nf-font
-        haskellPackages.misfortune
-        hasklig
-        hledger
-        hledger-iadd
-        hledger-interest
-        hledger-ui
-        hledger-utils
-        hledger-web
-        hyprcursor
-        hyprdim
-        hyprkeys
-        hyprland-monitor-attached
-        hyprland-protocols
-        hyprlandPlugins.hypr-dynamic-cursors
-        hyprlock
-        hyprpicker
-        hyprshade
-        hyprshot
-        kanata
-        kitti3
-        kitty
-        kitty-img
-        kitty-themes
-        kittysay
-        lf
-        libsixel
-        lightdm
-        llvmPackages.bintools
-        lolcat
-        lsix
-        maple-mono-NF
-        maple-mono-SC-NF
-        maple-mono-autohint
-        maple-mono-otf
-        maple-mono-woff2
-        monoid
-        ncdu
-        ncurses
-        neovim
-        nerd-font-patcher
-        nerdfix
-        nerdfix
-        nerdfonts
-        nh
-        niv
-        nix-du
-        nix-melt
-        nix-output-monitor
-        nix-query-tree-viewer
-        nix-tree
-        nix-visualize
-        nixfmt-rfc-style
-        nushell
-        nvd
-        oils-for-unix # todo: osh default shell?
-        opentofu
-        pixcat
-        playerctl
-        python312Packages.pycritty
-        rPackages.fortunes
-        ranger
-        rictydiminished-with-firacode
-        sddm
-        statix
-        tailscale
-        taoup
-        terminus-nerdfont
-        # termpdfpy # 2024-09-17 ⚠ python3.12-pymupdf-1.24.8 failed with exit code 1 after ⏱ 1m55s in pythonImportsCheckPhase
-        terranix
-        udev-gothic-nf
-        vimPlugins.vim-kitty-navigator
-        waybar
-        wayland
-        xdg-desktop-portal-hyprland
-        xorg.xcursorthemes
-        xwayland
-        yazi
-        yq
-        zathura
-        zathura
-        zed-editor
-      ];
+    systemPackages = with pkgs; [
+      # TODO: cleanup systemPackages
+      # build
+      # charm stuff?
+      # dwm
+      # fortune
+      # gtk
+      # inputs.omnix.packages.${pkgs.system}.default
+      # omnix
+      # overlays # todo- move into user
+      # clang-tools_9
+      # fontmatrix
+      # grep
+      # nix-software-center
+      # zed-editor
+      # zigpkgs.master
+      alacritty-theme
+      alejandra # unused now?
+      asciinema
+      awesome
+      banner
+      bc
+      binutils
+      brillo
+      bsdgames
+      cabal-install
+      cabal2nix
+      choose
+      cinnamon-desktop
+      clang
+      cowsay
+      deadnix
+      e2fsprogs
+      emacsPackages.fortune-cookie
+      expect # unbuffer
+      figlet
+      fira-code
+      fira-code-symbols
+      font-awesome
+      font-awesome_5
+      font-manager
+      fontforge
+      fontpreview
+      fortune
+      gawk
+      gcc
+      gdm
+      ghc
+      gnomeExtensions.toggle-alacritty
+      grimblast
+      gtk2
+      gtk3
+      gtk4
+      hackgen-nf-font
+      haskellPackages.misfortune
+      hasklig
+      hledger
+      hledger-iadd
+      hledger-interest
+      hledger-ui
+      hledger-utils
+      hledger-web
+      hyprcursor
+      hyprdim
+      hyprkeys
+      hyprland-monitor-attached
+      hyprland-protocols
+      hyprlandPlugins.hypr-dynamic-cursors
+      hyprlock
+      hyprpicker
+      hyprshade
+      hyprshot
+      kanata
+      kitti3
+      kitty
+      kitty-img
+      kitty-themes
+      kittysay
+      lf
+      libsixel
+      lightdm
+      llvmPackages.bintools
+      lolcat
+      lsix
+      maple-mono-NF
+      maple-mono-SC-NF
+      maple-mono-autohint
+      maple-mono-otf
+      maple-mono-woff2
+      monoid
+      ncdu
+      ncurses
+      neovim
+      nerd-font-patcher
+      nerdfix
+      nerdfix
+      nerdfonts
+      nh
+      niv
+      nix-du
+      nix-melt
+      nix-output-monitor
+      nix-query-tree-viewer
+      nix-tree
+      nix-visualize
+      nixfmt-rfc-style
+      nushell
+      nvd
+      oils-for-unix # todo: osh default shell?
+      opentofu
+      pixcat
+      playerctl
+      python312Packages.pycritty
+      rPackages.fortunes
+      ranger
+      rictydiminished-with-firacode
+      sddm
+      statix
+      tailscale
+      taoup
+      terminus-nerdfont
+      # termpdfpy # 2024-09-17 ⚠ python3.12-pymupdf-1.24.8 failed with exit code 1 after ⏱ 1m55s in pythonImportsCheckPhase
+      terranix
+      udev-gothic-nf
+      vimPlugins.vim-kitty-navigator
+      waybar
+      wayland
+      xdg-desktop-portal-hyprland
+      xorg.xcursorthemes
+      xwayland
+      yazi
+      yq
+      zathura
+      zathura
+      zed-editor
+    ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
 }

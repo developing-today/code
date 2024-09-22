@@ -38,4 +38,4 @@
   # https://knowledgebase.frame.work/ubuntu-fingerprint-troubleshooting-r1_DA0TMn
   # TODO: pull the hardware flake for 12th gen intel
   # nixos-hardware.nixosModules.framework-12th-gen-intel
-  }
+}

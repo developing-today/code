@@ -5,7 +5,8 @@ let
   host-key = alias: public-key "ssh-host" alias;
   user-key = alias: public-key "ssh-user" alias;
   # nixos-host-configuration = { options ? {} }:
-  nixos-host-configuration = options: name:
+  nixos-host-configuration =
+    options: name:
     lib.attrsets.recursiveUpdate rec {
       inherit name;
       type = name;
@@ -18,13 +19,10 @@ let
     } options;
 in
 {
-  nixos = nixos-host-configuration
-  {
+  nixos = nixos-host-configuration {
     hardware = ./hosts/common/modules/hardware-configuration/framework/13-inch/12th-gen-intel;
   };
-  amd = nixos-host-configuration
-  {
+  amd = nixos-host-configuration {
     hardware = ./hosts/common/modules/hardware-configuration/framework/13-inch/7040-amd;
   };
-  # };
 }

@@ -3,7 +3,8 @@ let
   group-key = alias: public-key "ssh-group" alias;
   host-key = alias: public-key "ssh-host" alias;
   user-key = alias: public-key "ssh-user" alias;
-  nixos-user-configuration = name: options ? {}:
+  nixos-user-configuration =
+    name: options:
     lib.attrsets.recursiveUpdate rec {
       inherit name;
       enable = true;
@@ -11,7 +12,12 @@ let
       groups = [ "wheel" ];
       keys = [ (user-key name) ];
       email = "nixos-user-${name}@developing-today.com";
-      aliases = [ "hi@developing-today.com", "abuse@developing-today.com", "dmca@developing-today.com", "drewrypope@gmail.com" ];
+      aliases = [
+        "hi@developing-today.com"
+        "abuse@developing-today.com"
+        "dmca@developing-today.com"
+        "drewrypope@gmail.com"
+      ];
     } options;
 in
 {

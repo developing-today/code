@@ -1,4 +1,5 @@
-{ # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
+{
+  # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
   experimental-features = [
     "auto-allocate-uids"
     "ca-derivations"

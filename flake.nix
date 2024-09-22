@@ -9,16 +9,27 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
       flake =
-        # (inputs.nixpkgs.lib // inputs.home-manager.lib).attrsets.recursiveUpdate
-        import ./hosts {
-          inherit inputs;
+        let
           lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+        in
+        # lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
+        lib.attrsets.recursiveUpdate import ./hosts {
+          inherit inputs lib;
           outputs = self;
-        };
+        }
+      # import ./home {
+      #   inherit inputs lib;
+      #   outputs = self;
+      # }
+      # import ./pkgs {
+      #   inherit inputs lib;
+      #   outputs = self;
+      # }
+      ;
     };
   inputs = {
-  # nixpkgs.url = "github:dezren39/nixpkgs/main";
-  nixpkgs.url = "github:dezren39/nixpkgs";
+    # nixpkgs.url = "github:dezren39/nixpkgs/main";
+    nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
     #nixpkgs.url = "github:dezren39/nixpkgs/rev";
     #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
@@ -197,7 +208,8 @@
     #       inputs.nixpkgs.follows = "nixpkgs";
     #     };
   };
-  nixConfig = { # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
+  nixConfig = {
+    # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"

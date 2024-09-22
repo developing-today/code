@@ -19,8 +19,8 @@ let
       };
     };
   };
-  home-manager-user-configuration = name: options ? {}:
-    lib.attrsets.recursiveUpdate (default-home-manager-user-configuration name) options
+  home-manager-user-configuration = name: options:
+    lib.attrsets.recursiveUpdate (default-home-manager-user-configuration name) options;
 in
 rec {
   "user@default" = home-manager-user-configuration "user";
@@ -31,5 +31,5 @@ rec {
         email = "nixos-home-manager-user-${parent.name}@developing-today.com";"
       };
     };
-  }) ${user@default} ;
+  }) ${"user@default"} ;
 }

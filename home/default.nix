@@ -1,4 +1,5 @@
-{ inputs, outputs, ... }: { }
+{ inputs, outputs, ... }:
+{ }
 # homeConfigurations = mapAttrs (
 #   target: cfg:
 #   homeManagerConfiguration {
