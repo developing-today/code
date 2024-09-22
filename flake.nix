@@ -16,11 +16,9 @@
         }
       # import ./home {
       #   inherit inputs lib;
-      #   outputs = self;
       # }
       # import ./pkgs {
       #   inherit inputs lib;
-      #   outputs = self;
       # }
       ;
     };

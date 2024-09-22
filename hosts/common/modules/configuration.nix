@@ -6,7 +6,7 @@
   ...
 }:
 {
-  imports = [ ../../../hosts/common/modules/sops.nix ];
+  imports = [ "${inputs.self.outPath}/hosts/common/modules/sops.nix" ];
   boot = {
     tmp = {
       cleanOnBoot = true;
