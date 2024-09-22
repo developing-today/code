@@ -1,6 +1,6 @@
 let
   nixos-user-configuration =
-    name: options:
+    options:
     lib.attrsets.recursiveUpdate rec {
       inherit name;
       enable = true;
@@ -16,7 +16,11 @@ let
       ];
     } options;
 in
+lib.mapAttrs (
+username: user-generator:
+user-generator username
+)
 {
-  user = nixos-user-configuration "user";
+  user = nixos-user-configuration {};
 }
 # a nixos user contains a home manager user?
