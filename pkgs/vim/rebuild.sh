@@ -12,6 +12,7 @@ echo "git add ."
 git add .
 
 # Loop through each directory in config
+set +x
 for dir in "${script_dir}"/config/*; do
   if [[ -d ${dir} ]]; then
     #echo "is a dir: ${dir}"
@@ -35,6 +36,8 @@ for dir in "${script_dir}"/config/*; do
       echo "is a flake: ${dir}"
       echo "updating flake..."
       nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+      echo "git add flake.lock"
+      git add flake.lock
       echo "building flake ..."
       nix build --json --print-out-paths --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
       #nom build --json --print-out-paths --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback   --show-trace --json |
@@ -52,6 +55,7 @@ for dir in "${script_dir}"/config/*; do
   #echo "not a dir: ${dir}"
   fi
 done
+set -x
 
 echo "git add ."
 git add .
@@ -61,6 +65,8 @@ if [[ -f "./flake.nix" ]]; then
   # TODO: sometimes do update-ref instead of update
   echo "updating flake..."
   nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+  echo "git add flake.lock"
+  git add flake.lock
   # TODO: skip cachix if not setup
   echo "building flake..."
   nix build --json --print-out-paths --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json

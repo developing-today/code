@@ -14,6 +14,7 @@ echo "git add ."
 git add .
 
 # Loop through each directory in flakes
+set +x
 for dir in "${script_dir}"/pkgs/*; do
   if [[ -d ${dir} ]]; then
     if [[ ! -f "${dir}/rebuild.sh" ]] && [[ ! -f "${dir}/flake.nix" ]]; then
@@ -22,6 +23,15 @@ for dir in "${script_dir}"/pkgs/*; do
     fi
     cd "${dir}" || exit 1
     echo "entered: ${dir}"
+    # todo: update-ref instead of update sometimes
+    if [[ -f "./flake.nix" ]]; then
+      echo "is a flake: ${dir}"
+      nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+      echo "git add flake.lock"
+      git add flake.lock
+      #else
+      #echo "not a flake: ${dir}"
+    fi
     # If a rebuild --json script exists, execute it
     if [[ -f "./rebuild.sh" ]]; then
       echo "./rebuild.sh exists, running..."
@@ -30,13 +40,6 @@ for dir in "${script_dir}"/pkgs/*; do
       #else
       #echo "no ./rebuild.sh exists."
     fi
-    # todo: update-ref instead of update sometimes
-    if [[ -f "./flake.nix" ]]; then
-      echo "is a flake: ${dir}"
-      nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
-      #else
-      #echo "not a flake: ${dir}"
-    fi
     echo "exiting: ${dir}"
     cd "${script_dir}" || exit 1
     echo "entered: ${script_dir}"
@@ -44,17 +47,16 @@ for dir in "${script_dir}"/pkgs/*; do
     #echo "not a dir: ${dir}"
   fi
 done
+set -x
 
-echo "git add ."
-git add .
 # todo: update-ref instead of update sometimes
 
 if [[ -f "./flake.nix" ]]; then
   echo "is a flake: ${dir}"
   echo "updating flake..."
   nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
-  echo "git add ."
-  git add .
+  echo "git add flake.lock"
+  git add flake.lock
   if systemctl is-active --quiet tailscaled; then # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
     echo "stopping tailscaled..." # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
     sudo systemctl stop tailscaled # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
@@ -76,16 +78,16 @@ fi
 #TODO: don't do cachix if not setup
 #nom flake archive --print-build-logs --verbose --keep-going --log-format internal-json --fallback  --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
 
-for dir in "${script_dir}"/pkgs/*; do
-  if [[ -d ${dir} ]]; then
-    cd "${dir}" || exit 1
-    #if [[ -f "./rebuild.sh" ]]; then
-      #echo ""
-      #      nom flake archive --print-build-logs --verbose --keep-going --log-format internal-json --fallback  --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
-    #fi
-    cd "${script_dir}" || exit 1
-  fi
-done
+# for dir in "${script_dir}"/pkgs/*; do
+#   if [[ -d ${dir} ]]; then
+#     cd "${dir}" || exit 1
+#     #if [[ -f "./rebuild.sh" ]]; then
+#       #echo ""
+#       #      nom flake archive --print-build-logs --verbose --keep-going --log-format internal-json --fallback  --show-trace --json | jq -r '.path,(.inputs|to_entries[].value.path)' | cachix push binary # todo: make optional
+#     #fi
+#     cd "${script_dir}" || exit 1
+#   fi
+# done
 
 echo "direnv reload"
 direnv reload

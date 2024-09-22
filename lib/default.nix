@@ -3,13 +3,12 @@
   self ? builtins.getFlake "self",
 }:
 let
-  get-base-path =
+  root =
     if builtins.hasAttr "outPath" self then
       self.outPath # Flake-based setup
     else
       builtins.toString ../.; # Traditional Nix setup, resolve to project root
-  base-path = get-base-path;
-  resolve-path = path: "${base-path}/${path}";
+  resolve-path = path: "${root}/${path}";
   public-key = protocol: alias: builtins.readFile (resolve-path "keys/${protocol}-${alias}.pub");
   group-key = alias: public-key "ssh-group" alias;
   host-key = alias: public-key "ssh-host" alias;
@@ -64,7 +63,7 @@ let
 in
 lib.attrsets.recursiveUpdate lib {
   inherit
-    get-base-path
+    root
     resolve-path
     public-key
     group-key
