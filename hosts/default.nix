@@ -48,9 +48,9 @@
           # TODO: ./configurations/${hostname}.nix
           # Desktop configuration
           # TODO: profiles to select in struct, this gets imported
-          (lib.resolve-path "hosts/common/modules/desktop")
+          (lib.from-root "hosts/common/modules/desktop")
         ];
       }
-    ) (import (lib.resolve-path "nixos-hosts.nix") { inherit lib; })
+    ) (import (lib.from-root "nixos-hosts.nix") { inherit lib; })
   );
 }

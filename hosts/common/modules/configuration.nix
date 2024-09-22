@@ -270,6 +270,7 @@
       kittysay
       lf
       libsixel
+      libusb
       lightdm
       llvmPackages.bintools
       lolcat

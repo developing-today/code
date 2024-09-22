@@ -24,6 +24,7 @@ for dir in "${script_dir}"/pkgs/*; do
     cd "${dir}" || exit 1
     echo "entered: ${dir}"
     # todo: update-ref instead of update sometimes
+    # or: nix flake lock --update-input
     if [[ -f "./flake.nix" ]]; then
       echo "is a flake: ${dir}"
       nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json

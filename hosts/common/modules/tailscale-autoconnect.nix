@@ -1,6 +1,6 @@
 { config, lib, ... }:
 {
-  imports = [ (lib.resolve-path "hosts/common/modules/abstract/tailscale-autoconnect.nix") ];
+  imports = [ (lib.from-root "hosts/common/modules/abstract/tailscale-autoconnect.nix") ];
   services.tailscaleAutoconnect = {
     enable = true;
     authkeyFile = config.sops.secrets.tailscale_key.path;
@@ -11,6 +11,6 @@
   };
   sops.secrets.tailscale_key = {
     # TODO: distinguish between persistent and ephemeral tailscale keys (ephemeral remove from tailnet on shutdown)
-    sopsFile = lib.resolve-path "secrets/sops/common/tailscale.yaml";
+    sopsFile = lib.from-root "secrets/sops/common/tailscale.yaml";
   };
 }

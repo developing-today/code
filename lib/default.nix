@@ -8,8 +8,8 @@ let
       self.outPath # Flake-based setup
     else
       builtins.toString ../.; # Traditional Nix setup, resolve to project root
-  resolve-path = path: "${root}/${path}";
-  public-key = protocol: alias: builtins.readFile (resolve-path "keys/${protocol}-${alias}.pub");
+  from-root = path: "${root}/${path}";
+  public-key = protocol: alias: builtins.readFile (from-root "keys/${protocol}-${alias}.pub");
   group-key = alias: public-key "ssh-group" alias;
   host-key = alias: public-key "ssh-host" alias;
   user-key = alias: public-key "ssh-user" alias;
@@ -40,7 +40,7 @@ let
       group-key = lib.group-key name;
       email = "nixos-host-${name}@developing-today.com";
       sshKey = lib.host-key name;
-      hardware = (resolve-path "hosts/common/modules/hardware-configuration");
+      hardware = from-root "hosts/common/modules/hardware-configuration";
     } options;
   default-home-manager-user-configuration = name: rec {
     system = "x86_64-linux";
@@ -64,7 +64,7 @@ in
 lib.attrsets.recursiveUpdate lib {
   inherit
     root
-    resolve-path
+    from-root
     public-key
     group-key
     host-key
