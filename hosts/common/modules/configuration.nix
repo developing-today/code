@@ -271,6 +271,7 @@
       lf
       libsixel
       libusb
+      libusb-compat-0_1
       lightdm
       llvmPackages.bintools
       lolcat
