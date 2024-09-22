@@ -50,16 +50,7 @@
           # TODO: ./configurations/${hostname}.nix
           # Desktop configuration
           # TODO: profiles to select in struct, this gets imported
-          (import common/modules/desktop {
-            inherit
-              inputs
-              outputs
-              lib
-              hostname
-              host
-              ;
-            inherit (host) system stateVersion;
-          })
+          ./common/modules/desktop
         ];
       }
     ) (import ../nixos-hosts.nix { inherit lib; })
