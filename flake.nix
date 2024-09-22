@@ -6,22 +6,15 @@
       flake-parts,
       ...
     }:
-    # TODO: rootPath = ./.; # self.outPath # builtins.path
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
       flake =
         # (inputs.nixpkgs.lib // inputs.home-manager.lib).attrsets.recursiveUpdate
-        {} //
-        (import ./hosts){
+        import ./hosts {
           inherit inputs;
           lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
           outputs = self;
         };
-        # homeConfigurations = (import ./home) {
-        #   inherit inputs;
-        #   lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
-        #   outputs = self;
-        # };
     };
   inputs = {
   # nixpkgs.url = "github:dezren39/nixpkgs/main";

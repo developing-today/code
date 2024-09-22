@@ -1,6 +1,9 @@
 { inputs, outputs, lib, ... }:
 {
-  nixosConfigurations = (lib.mapAttrs (hostname: host:
+  nixosConfigurations = (lib.mapAttrs (hostname: host-generator:
+    let
+      host = host-generator hostname;
+    in
     lib.nixosSystem {
       specialArgs = {
         inherit inputs outputs lib hostname host;
