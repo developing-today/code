@@ -9,8 +9,10 @@
     # TODO: rootPath = ./.; # self.outPath # builtins.path
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
-      flake = {
-        nixosConfigurations = (import ./hosts) {
+      flake =
+        # (inputs.nixpkgs.lib // inputs.home-manager.lib).attrsets.recursiveUpdate
+        {} //
+        (import ./hosts){
           inherit inputs;
           lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
           outputs = self;
@@ -20,7 +22,6 @@
         #   lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
         #   outputs = self;
         # };
-      };
     };
   inputs = {
   # nixpkgs.url = "github:dezren39/nixpkgs/main";

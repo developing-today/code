@@ -17,3 +17,4 @@ in
 {
   user = nixos-user-configuration "user";
 }
+# a nixos user contains a home manager user?
