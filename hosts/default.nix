@@ -53,6 +53,6 @@
           (lib.resolve-path "hosts/common/modules/desktop")
         ];
       }
-    ) (import ../nixos-hosts.nix { inherit lib; })
+    ) (import (lib.resolve-path "nixos-hosts.nix") { inherit lib; })
   );
 }
