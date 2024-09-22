@@ -3,8 +3,8 @@
     inputs:
     let
       lib = import ./lib {
-        self = inputs.self;
         lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
+        self = inputs.self;
       };
     in
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
