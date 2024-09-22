@@ -23,7 +23,8 @@ in
   {
   # { options = {
     hardware = ./hosts/common/modules/hardware-configuration/framework/13-inch/12th-gen-intel;
-  };
+  }
+  ;
   # };
   amd = nixos-host-configuration
   # { options = {
