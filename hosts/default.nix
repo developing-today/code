@@ -50,7 +50,7 @@
           # TODO: ./configurations/${hostname}.nix
           # Desktop configuration
           # TODO: profiles to select in struct, this gets imported
-          ./common/modules/desktop
+          (lib.resolve-path "hosts/common/modules/desktop")
         ];
       }
     ) (import ../nixos-hosts.nix { inherit lib; })
