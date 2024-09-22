@@ -10,21 +10,23 @@
       systems = [ "x86_64-linux" ];
       flake =
         let
-          lib = inputs.nixpkgs.lib // inputs.home-manager.lib;
+          lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
         in
         # lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
-        lib.attrsets.recursiveUpdate import ./hosts {
+        import ./hosts {
           inherit inputs lib;
           outputs = self;
         }
-      # import ./home {
-      #   inherit inputs lib;
-      #   outputs = self;
-      # }
-      # import ./pkgs {
-      #   inherit inputs lib;
-      #   outputs = self;
-      # }
+        # (lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
+        # import ./home {
+        #   inherit inputs lib;
+        #   outputs = self;
+        # }
+        # )
+        # import ./pkgs {
+        #   inherit inputs lib;
+        #   outputs = self;
+        # }
       ;
     };
   inputs = {
