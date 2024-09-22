@@ -13,7 +13,6 @@
         # lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
         import ./hosts {
           inherit inputs lib;
-          outputs = inputs.self;
         }
       # import ./home {
       #   inherit inputs lib;

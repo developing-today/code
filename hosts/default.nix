@@ -1,6 +1,5 @@
 {
   inputs,
-  outputs,
   lib,
   ...
 }:
@@ -15,7 +14,6 @@
         specialArgs = {
           inherit
             inputs
-            outputs
             lib
             hostname
             host
