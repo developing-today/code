@@ -25,7 +25,8 @@ let
       # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
     ];
   };
-in {
+in
+{
   imports = [
     ../tailscale-autoconnect.nix
     ../home.nix
