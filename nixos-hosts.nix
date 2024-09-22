@@ -19,10 +19,16 @@ let
     } options;
 in
 {
-  nixos = nixos-host-configuration { options = {
+  nixos = nixos-host-configuration
+  {
+  # { options = {
     hardware = ./hosts/common/modules/hardware-configuration/framework/13-inch/12th-gen-intel;
-  };};
-  amd = nixos-host-configuration { options = {
+  };
+  # };
+  amd = nixos-host-configuration
+  # { options = {
+  {
     hardware = ./hosts/common/modules/hardware-configuration/framework/13-inch/7040-amd;
-  };};
+  };
+  # };
 }
