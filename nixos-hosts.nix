@@ -4,7 +4,8 @@ let
   group-key = alias: public-key "ssh-group" alias;
   host-key = alias: public-key "ssh-host" alias;
   user-key = alias: public-key "ssh-user" alias;
-  nixos-host-configuration = { options ? {} }:
+  # nixos-host-configuration = { options ? {} }:
+  nixos-host-configuration = options:
     name:
     lib.attrsets.recursiveUpdate rec {
       inherit name;
