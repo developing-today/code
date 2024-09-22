@@ -10,8 +10,8 @@
       systems = [ "x86_64-linux" ];
       flake =
         let
-          lib = import ./lib { inherit self; lib = (inputs.nixpkgs.lib.attrsets.recursiveUpdate
-            inputs.nixpkgs.lib inputs.home-manager.lib); };
+          lib = import ./lib { inherit self; lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate
+            inputs.nixpkgs.lib inputs.home-manager.lib; };
         in
         # lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
         import ./hosts {
