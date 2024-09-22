@@ -23,7 +23,7 @@ let
         "dmca@developing-today.com"
         "drewrypope@gmail.com"
       ];
-      # a nixos user contains a home manager user?
+      # a nixos user optionally contains a home manager user?
     } options;
   nixos-host-configuration =
     options: name:
@@ -35,7 +35,7 @@ let
       group-key = lib.group-key name;
       email = "nixos-host-${name}@developing-today.com";
       sshKey = lib.host-key name;
-      hardware = ./hosts/common/modules/hardware-configuration/common;
+      hardware = (resolve-path "hosts/common/modules/hardware-configuration");
     } options;
   default-home-manager-user-configuration = name: rec {
     system = "x86_64-linux";
