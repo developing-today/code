@@ -1,15 +1,15 @@
 {
   outputs =
     inputs:
+    let
+      lib = import ./lib {
+        self = inputs.self;
+        lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
+      };
+    in
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
       flake =
-        let
-          lib = import ./lib {
-            self = inputs.self;
-            lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
-          };
-        in
         # lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
         import ./hosts {
           inherit inputs lib;
