@@ -272,6 +272,9 @@
       libsixel
       libusb
       libusb-compat-0_1
+      pkg-config
+      libusb1
+      hidapi
       lightdm
       llvmPackages.bintools
       lolcat
