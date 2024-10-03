@@ -5,7 +5,7 @@
         lib = import ./lib {
           inherit inputs;
         };
-        hosts = (import (inputs.self.lib.from-root "nixos-hosts.nix") { lib = inputs.self.lib; });
+        hosts = (import ./nixos-hosts.nix { inherit inputs; });
       } // import ./hosts {
         inherit inputs;
       };
