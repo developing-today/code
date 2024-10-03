@@ -41,6 +41,7 @@ let
       email = "nixos-host-${name}@developing-today.com";
       sshKey = lib.host-key name;
       hardware = [ "" ];
+      profiles = [ ];
     } options;
   default-home-manager-user-configuration = name: rec {
     system = "x86_64-linux";

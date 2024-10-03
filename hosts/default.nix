@@ -23,36 +23,27 @@
         modules = lib.lists.flatten [
           /*
             ok so like, optional, deduped, non-existing removed
-            ./modules/
-            ./modules/abstract
-            ./modules/{host.type}
-            ./modules/{host.type}/{hostname}
-            ./modules/{hostname}
-            ./modules/{profile} for profile in host.profiles
-            ./modules/{hostname}/{profile} for profile in host.profiles
-            ./modules/{host.type}/${profile} for profile in host.profiles
-            ./modules/{host.type}/{hostname}/${profile} for profile in host.profiles
-            type*hostname*profile?
-            users/<user>
-            ++ host.modules (array or function returning array or single import?)
-            ++ host.hardware (array or function returning array or single import?)
+            ./hosts/modules
+            ./hosts/modules/${hostname}
+            ./hosts/modules/hardware-configuration
+            ./hosts/modules/hardware-configuration/${hostname}
+            ./hosts/modules/abstract
+            ./hosts/modules/{host.type}
+            ./hosts/modules/{host.type}/{hostname}
+            ./hosts/modules/{hostname}
+            ./hosts/modules/{profile} for profile in host.profiles
+            ./hosts/modules/{hostname}/{profile} for profile in host.profiles
+            ./hosts/modules/{host.type}/${profile} for profile in host.profiles
+            ./hosts/modules/{host.type}/{hostname}/${profile} for profile in host.profiles
+            ./hosts/users
+            lib.make-users host.users
           */
-          # Common modules
-          # TODO: ./modules/all.nix
-          # Hardware configuration
-          # TODO: ./configurations/${hostname}-hardware.nix
-          # Host-specific hardware configuration
-          # lib.make-hardware host.hardware
-          # lib.make-hardware host.hardware
           (lib.make-hardware host.hardware)
-          # Host-specific configuration
-          # TODO: host specific modules in host struct
-          # TODO: ./configurations/${hostname}.nix
-          # Desktop configuration
-          # TODO: profiles to select in struct, this gets imported
-          (lib.make-profiles "desktop")
-          # (lib.make-profile-paths { basePath = "hosts/common/modules"; } [ "desktop" ])
-          # (lib.from-root "hosts/common/modules/desktop")
+          # host.hardware-modules
+          (lib.make-profiles host.profiles)
+          # host.profile-modules
+          # hosts.darwin-profiles
+          # hosts.darwin-profile-modules
         ];
       }
     ) (import (lib.from-root "nixos-hosts.nix") { inherit lib; })
