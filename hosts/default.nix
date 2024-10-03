@@ -42,12 +42,15 @@
           # Hardware configuration
           # TODO: ./configurations/${hostname}-hardware.nix
           # Host-specific hardware configuration
+          # lib.make-hardware host.hardware
+          # lib.make-hardware host.hardware
           host.hardware
           # Host-specific configuration
           # TODO: host specific modules in host struct
           # TODO: ./configurations/${hostname}.nix
           # Desktop configuration
           # TODO: profiles to select in struct, this gets imported
+          # lib.make-profiles [ "desktop" ]
           (lib.from-root "hosts/common/modules/desktop")
         ];
       }

@@ -10,32 +10,19 @@
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
       flake =
-        # lib.attrsets.recursiveUpdate # todo recursiveUpdate but lists append/dedupe
         import ./hosts {
           inherit inputs lib;
         }
-      # import ./home {
-      #   inherit inputs lib;
-      # }
-      # import ./pkgs {
-      #   inherit inputs lib;
-      # }
       ;
     };
   inputs = {
-    # nixpkgs.url = "github:dezren39/nixpkgs/main";
     nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
-    #nixpkgs.url = "github:dezren39/nixpkgs/rev";
-    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.0.tar.gz"; # /nixos-unstable"; # /nixos-23.11";
-    #nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.2305.491756.tar.gz"; # /nixos-23.11";
-    #nixpkgs.url = "github:dezren39/nixpkgs/main";
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     # nix-topology.nixosModules.default
     # TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
-    # lib.fakeSha256 and lib.fakeSha512
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
@@ -51,7 +38,7 @@
       # inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils = {
-      url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; # */ # inputs.systems
+      url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz";
       inputs.systems.follows = "systems";
     };
     flake-compat = {
@@ -64,7 +51,7 @@
     };
     waybar = {
       url = "github:Alexays/Waybar";
-      #inputs.nixpkgs.follows = "nixpkgs";
+      # inputs.nixpkgs.follows = "nixpkgs";
     };
     neovim-src = {
       url = "github:neovim/neovim";
@@ -100,16 +87,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-utils.follows = "flake-utils";
-      # inputs.flake-parts.follows = "flake-parts";
     };
     nixvim = {
       url = "github:nix-community/nixvim";
-      #url = "github:developing-today-forks/nix-community_nixvim";
-      #url = "github:developing-today-forks/nixvim-flake";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
       inputs.devshell.follows = "devshell";
-      # inputs.flake-utils.follows = "flake-utils";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-parts.follows = "flake-parts";
       inputs.git-hooks.follows = "git-hooks";
@@ -126,7 +109,6 @@
     };
     vim = {
       url = "path:./pkgs/vim";
-      #url = "github:developing-today/code?dir=src/vim";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";
       inputs.systems.follows = "systems";
@@ -142,7 +124,6 @@
       inputs.devshell.follows = "devshell";
       inputs.neovim-src.follows = "neovim-src";
     };
-    #     TODO: flakehub fh
     nix-topology = {
       url = "github:oddlama/nix-topology";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -153,20 +134,14 @@
     devshell = {
       url = "github:numtide/devshell";
       inputs.nixpkgs.follows = "nixpkgs";
-      # inputs.flake-utils.follows = "flake-utils";
     };
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs-stable.follows = "nixpkgs";
-      # inputs.flake-utils.follows = "flake-utils";
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
     };
-    # rust-overlay = {
-    #   url = "github:oxalica/rust-overlay";
-    #   # follows?
-    # };
     yazi = {
       url = "github:sxyazi/yazi";
       # not following to allow using yazi cache
@@ -175,33 +150,38 @@
       # inputs.rust-overlay.follows = "rust-overlay";
     };
     omnix.url = "github:juspay/omnix";
-    #     hardware.url = "github:nixos/nixos-hardware";
-    #     systems.url = "github:nix-systems/default-linux";
-    #     hardware.url = "github:nixos/nixos-hardware";
-    #     nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice
-    #     firefox-addons = {
-    #       url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons";
-    #       inputs.nixpkgs.follows = "nixpkgs";
-    #     };
-    #     nix-gaming = {
-    #       url = "github:fufexan/nix-gaming";
-    #       inputs.nixpkgs.follows = "nixpkgs";
-    #     };
-    #     trustix = {
-    #       url = "github:nix-community/trustix";
-    #       inputs.nixpkgs.follows = "nixpkgs";
-    #     };
-    #     impermanence = {
-    #       url = "github:Nix-community/impermanence";
-    #     };
-    #     nix-inspect = {
-    #       url = "github:bluskript/nix-inspect";
-    #       inputs.nixpkgs.follows = "nixpkgs";
-    #     };
-    #     nixos-wsl = {
-    #       url = "github:nix-community/NixOS-WSL";
-    #       inputs.nixpkgs.follows = "nixpkgs";
-    #     };
+    # TODO: flakehub fh
+    # rust-overlay = {
+    #   url = "github:oxalica/rust-overlay";
+    #   # follows?
+    # };
+    # hardware.url = "github:nixos/nixos-hardware";
+    # systems.url = "github:nix-systems/default-linux";
+    # hardware.url = "github:nixos/nixos-hardware";
+    # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice
+    # firefox-addons = {
+    #   url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
+    # nix-gaming = {
+    #   url = "github:fufexan/nix-gaming";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
+    # trustix = {
+    #   url = "github:nix-community/trustix";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
+    # impermanence = {
+    #   url = "github:Nix-community/impermanence";
+    # };
+    # nix-inspect = {
+    #   url = "github:bluskript/nix-inspect";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
+    # nixos-wsl = {
+    #   url = "github:nix-community/NixOS-WSL";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
   };
   nixConfig = {
     # unfortunately can't import, but this should be equal to ./hosts/common/modules/nixconfig.nix
@@ -223,13 +203,13 @@
       "verified-fetches"
     ];
     trusted-users = [ "root" ];
-    #       trusted-users = [ "user" ];
+    # trusted-users = [ "user" ];
     use-xdg-base-directories = true;
     builders-use-substitutes = true;
     substituters = [
-      # TODO: priority order
       "https://cache.nixos.org"
       "https://yazi.cachix.org"
+      # TODO: priority order
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -272,11 +252,11 @@
     keep-outputs = true; # Nice for developers
     keep-derivations = true; # Idem
     accept-flake-config = true;
-    #     allow-dirty = false;
-    #     builders-use-substitutes = true;
+    # allow-dirty = false;
+    # builders-use-substitutes = true;
     fallback = true;
     log-lines = 128;
-    #     pure-eval = true;
+    # pure-eval = true;
     # run-diff-hook = true;
     # secret-key-files
     show-trace = true;
@@ -294,7 +274,7 @@
       '';
     */
     auto-optimise-store = true;
-    #pure-eval = true; # this should be true..
+    # pure-eval = true; # this should be true..
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
     use-registries = true;

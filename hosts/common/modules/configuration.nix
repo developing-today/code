@@ -284,6 +284,7 @@
       maple-mono-autohint
       maple-mono-otf
       maple-mono-woff2
+      minicom
       monoid
       ncdu
       ncurses
@@ -311,6 +312,7 @@
       rPackages.fortunes
       ranger
       rictydiminished-with-firacode
+      screen
       sddm
       statix
       tailscale
