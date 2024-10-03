@@ -6,6 +6,16 @@ let
       inputs.self.outPath # Flake-based setup
     else
       builtins.toString ./.; # Traditional Nix setup, resolve to project root
+  pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
+  mkEnv =
+    name: value:
+    lib.writeText "${name}.env" (lib.concatStringsSep "\n" (lib.mapAttrsToList (n: v: "${n}=${v}") value));
+  mergeAttrs =
+    f: attrs:
+    lib.foldlAttrs (
+      acc: name: value:
+      (lib.recursiveUpdate acc (f name value))
+    ) { } attrs;
   from-root = path: "${root}/${path}";
   public-key = protocol: alias: builtins.readFile (from-root "keys/${protocol}-${alias}.pub");
   group-key = alias: public-key "ssh-group" alias;
