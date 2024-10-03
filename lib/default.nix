@@ -70,11 +70,9 @@ default-home-manager-user-configuration = name: rec {
 home-manager-user-configuration =
   name: options: lib.attrsets.recursiveUpdate (default-home-manager-user-configuration name) options;
 ensure-list = x: if builtins.isList x then x else [x];
-# lib.mapAttrs (username: user-generator: user-generator username)
+# make-user = lib.mapAttrs (username: user-generator: user-generator username)
 make-paths = strings: basePath:
   map (str: basePath + "/${str}") (ensure-list strings);
-# make-paths = strings: basePath:
-#   map (str: basePath + "/${str}") (lib.toList strings);
 make-hardware-paths = {
   basePath ? from-root "hosts/common/modules/hardware-configuration"
 }: strings: make-paths (ensure-list strings) basePath;

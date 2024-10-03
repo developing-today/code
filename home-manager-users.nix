@@ -1,6 +1,6 @@
 inputs:
 let
-  lib = inputs.self.lib;
+lib = inputs.self.lib;
 in {
   "user@default" = lib.home-manager-user-configuration "user";
   "user@nixos" = (parent: lib.attrsets.recursiveUpdate parent {

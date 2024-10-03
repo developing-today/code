@@ -1,7 +1,7 @@
 inputs:
 let
-  lib = inputs.self.lib;
-  host = lib.nixos-host-configuration;
+lib = inputs.self.lib;
+host = lib.nixos-host-configuration;
 in {
   nixos = host {
     profiles = "desktop";
