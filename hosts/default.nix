@@ -1,7 +1,4 @@
-{
-  inputs,
-  ...
-}:
+inputs:
 let
   lib = inputs.self.lib;
 in

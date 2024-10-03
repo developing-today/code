@@ -2,13 +2,9 @@
   outputs =
     inputs:
       {
-        lib = import ./lib {
-          inherit inputs;
-        };
-        hosts = import ./nixos-hosts.nix { inherit inputs; };
-        nixosConfigurations = import ./hosts {
-          inherit inputs;
-        };
+        lib = import ./lib inputs;
+        hosts = import ./nixos-hosts.nix inputs;
+        nixosConfigurations = import ./hosts inputs;
       };
   inputs = {
     nixpkgs.url = "github:dezren39/nixpkgs";

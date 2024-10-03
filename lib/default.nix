@@ -1,6 +1,4 @@
-{
-  inputs
-}:
+inputs:
 let
   lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
   root =
