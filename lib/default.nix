@@ -61,15 +61,21 @@ let
   home-manager-user-configuration =
     name: options: lib.attrsets.recursiveUpdate (default-home-manager-user-configuration name) options;
   ensure-list = x: if builtins.isList x then x else [x];
+  # make-paths = strings: basePath:
+  #   map (str: basePath + "/${str}") (ensure-list strings);
   make-paths = strings: basePath:
-    map (str: basePath + "/${str}") (ensure-list strings);
+    map (str: basePath + "/${str}") (lib.toList strings);
   make-hardware-paths = {
     basePath ? from-root "hosts/common/modules/hardware-configuration"
   }: strings: make-paths (ensure-list strings) basePath;
   make-hardware = make-hardware-paths {};
+  # make-profile-paths = {
+  #   basePath ? from-root "hosts/common/modules"
+  # }: strings: make-paths (ensure-list strings) basePath;
   make-profile-paths = {
-    basePath ? from-root "hosts/common/modules"
-  }: strings: make-paths (ensure-list strings) basePath;
+      basePath ? "hosts/common/modules"
+    }: strings:
+      map (str: from-root "${basePath}/${str}") (lib.toList strings);
   make-profiles = make-profile-paths {};
 in
 lib.attrsets.recursiveUpdate lib {
