@@ -5,9 +5,10 @@
         lib = import ./lib {
           inherit inputs;
         };
-        hosts = (import ./nixos-hosts.nix { inherit inputs; });
-      } // import ./hosts {
-        inherit inputs;
+        hosts = import ./nixos-hosts.nix { inherit inputs; };
+        nixosConfigurations = import ./hosts {
+          inherit inputs;
+        };
       };
   inputs = {
     nixpkgs.url = "github:dezren39/nixpkgs";
