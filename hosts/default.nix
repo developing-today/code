@@ -1,8 +1,10 @@
 {
   inputs,
-  lib,
   ...
 }:
+let
+  lib = inputs.self.lib;
+in
 {
   nixosConfigurations = (
     lib.mapAttrs (

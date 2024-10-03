@@ -9,7 +9,6 @@
         hosts = (import (inputs.self.lib.from-root "nixos-hosts.nix") { lib = inputs.self.lib; });
       } // import ./hosts {
         inherit inputs;
-        lib = inputs.self.lib;
       };
   inputs = {
     nixpkgs.url = "github:dezren39/nixpkgs";
