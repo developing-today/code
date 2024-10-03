@@ -72,10 +72,6 @@ let
   make-profile-paths = {
     basePath ? from-root "hosts/common/modules"
   }: strings: make-paths (ensure-list strings) basePath;
-  # make-profile-paths = {
-  #     basePath ? "hosts/common/modules"
-  #   }: strings:
-  #     map (str: from-root "${basePath}/${str}") (lib.toList strings);
   make-profiles = make-profile-paths {};
 in
 lib.attrsets.recursiveUpdate lib {
