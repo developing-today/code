@@ -39,8 +39,8 @@
             lib.make-users host.users
           */
           (lib.make-hardware host.hardware)
-          # host.hardware-modules
           (lib.make-profiles host.profiles)
+          # host.hardware-modules
           # host.profile-modules
           # hosts.darwin-profiles
           # hosts.darwin-profile-modules

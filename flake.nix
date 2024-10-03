@@ -1,28 +1,18 @@
 {
   outputs =
     inputs:
-    let
-      lib = import ./lib {
-        lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
-        self = inputs.self;
+      import ./hosts {
+        inherit inputs;
+        lib = import ./lib {
+          lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
+          self = inputs.self;
+        };
       };
-    in
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" ];
-      flake =
-        import ./hosts {
-          inherit inputs lib;
-        }
-      ;
-    };
   inputs = {
-    nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
+    nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
-    # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
-    # nix-topology.nixosModules.default
-    # TODO: terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
@@ -150,7 +140,10 @@
       # inputs.rust-overlay.follows = "rust-overlay";
     };
     omnix.url = "github:juspay/omnix";
-    # TODO: flakehub fh
+    # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
+    # nix-topology.nixosModules.default
+    # terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
+    # flakehub fh
     # rust-overlay = {
     #   url = "github:oxalica/rust-overlay";
     #   # follows?
@@ -265,14 +258,12 @@
     trace-verbose = true;
     # use-xdg-base-directories = true;
     allow-dirty = true;
-    /*
-      buildMachines = [ ];
-      distributedBuilds = true;
-      # optional, useful when the builder has a faster internet connection than yours
-      extraOptions = ''
-        builders-use-substitutes = true
-      '';
-    */
+    # buildMachines = [ ];
+    # distributedBuilds = true;
+    # # optional, useful when the builder has a faster internet connection than yours
+    # extraOptions = ''
+    #   builders-use-substitutes = true
+    # '';
     auto-optimise-store = true;
     # pure-eval = true; # this should be true..
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
