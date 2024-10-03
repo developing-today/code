@@ -1,11 +1,11 @@
 {
-  lib,
-  self ? builtins.getFlake "self",
+  inputs
 }:
 let
+  lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
   root =
-    if builtins.hasAttr "outPath" self then
-      self.outPath # Flake-based setup
+    if builtins.hasAttr "outPath" inputs.self then
+      inputs.self.outPath # Flake-based setup
     else
       builtins.toString ./.; # Traditional Nix setup, resolve to project root
   from-root = path: "${root}/${path}";
@@ -77,6 +77,7 @@ let
 in
 lib.attrsets.recursiveUpdate lib {
   inherit
+    lib
     root
     from-root
     public-key

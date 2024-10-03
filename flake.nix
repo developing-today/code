@@ -3,8 +3,7 @@
     inputs:
       {
         lib = import ./lib {
-          lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
-          self = inputs.self;
+          inherit inputs;
         };
         hosts = (import (inputs.self.lib.from-root "nixos-hosts.nix") { lib = inputs.self.lib; });
       } // import ./hosts {
