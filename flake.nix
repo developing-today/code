@@ -9,10 +9,10 @@
         };
       };
   inputs = {
-    # nixpkgs.url = "github:NixOS/nixpkgs";
     nixpkgs.url = "github:dezren39/nixpkgs";
-    # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    # nixpkgs.url = "github:NixOS/nixpkgs";
+    # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
