@@ -46,6 +46,6 @@
           # hosts.darwin-profile-modules
         ];
       }
-    ) (import (lib.from-root "nixos-hosts.nix") { inherit lib; })
+    ) inputs.self.hosts
   );
 }
