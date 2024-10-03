@@ -1,11 +1,10 @@
 {
   outputs =
-    inputs:
-      rec {
-        lib = import ./lib inputs;
-        hosts = import ./hosts inputs;
-        nixosConfigurations = lib.make-nixos-configurations hosts;
-      };
+    inputs: rec {
+      lib = import ./lib inputs;
+      hosts = import ./hosts inputs;
+      nixosConfigurations = lib.make-nixos-configurations hosts;
+    };
   inputs = {
     nixpkgs.url = "github:dezren39/nixpkgs";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
