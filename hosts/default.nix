@@ -50,7 +50,8 @@
           # TODO: ./configurations/${hostname}.nix
           # Desktop configuration
           # TODO: profiles to select in struct, this gets imported
-          (lib.make-profile-paths { basePath = "hosts/common/modules"; } [ "desktop" ])
+          ((lib.make-profile-paths {}) "desktop")
+          # (lib.make-profile-paths { basePath = "hosts/common/modules"; } [ "desktop" ])
           # (lib.from-root "hosts/common/modules/desktop")
         ];
       }
