@@ -21,6 +21,7 @@ let
   group-key = alias: public-key "ssh-group" alias;
   host-key = alias: public-key "ssh-host" alias;
   user-key = alias: public-key "ssh-user" alias;
+  # lib.mapAttrs (username: user-generator: user-generator username)
   nixos-user-configuration =
     options: name:
     lib.attrsets.recursiveUpdate rec {
@@ -82,8 +83,8 @@ let
     basePath ? from-root "hosts/common/modules"
   }: strings: make-paths (ensure-list strings) basePath;
   make-profiles = make-profile-paths {};
-in
-lib.attrsets.recursiveUpdate lib {
+in let
+lib2 = lib.attrsets.recursiveUpdate lib {
   inherit
     lib
     root
@@ -102,4 +103,47 @@ lib.attrsets.recursiveUpdate lib {
     make-profile-paths
     make-profiles
     ;
+}; in lib2.attrsets.recursiveUpdate lib2 {
+    make-nixos-hosts = lib2.mapAttrs (
+        hostname: host-generator:
+        let
+          host = host-generator hostname;
+        in
+        lib2.nixosSystem {
+          specialArgs = {
+            inherit
+              inputs
+              hostname
+              host
+              ;
+            inherit (host) system stateVersion;
+            lib = lib2;
+          };
+          modules = lib2.lists.flatten [
+            /*
+              ok so like, optional, deduped, non-existing removed
+              ./hosts/modules
+              ./hosts/modules/${hostname}
+              ./hosts/modules/hardware-configuration
+              ./hosts/modules/hardware-configuration/${hostname}
+              ./hosts/modules/abstract
+              ./hosts/modules/{host.type}
+              ./hosts/modules/{host.type}/{hostname}
+              ./hosts/modules/{hostname}
+              ./hosts/modules/{profile} for profile in host.profiles
+              ./hosts/modules/{hostname}/{profile} for profile in host.profiles
+              ./hosts/modules/{host.type}/${profile} for profile in host.profiles
+              ./hosts/modules/{host.type}/{hostname}/${profile} for profile in host.profiles
+              ./hosts/users
+              lib.make-users host.users
+            */
+            (make-hardware host.hardware)
+            (make-profiles host.profiles)
+            # host.hardware-modules
+            # host.profile-modules
+            # hosts.darwin-profiles
+            # hosts.darwin-profile-modules
+          ];
+        }
+      );
 }

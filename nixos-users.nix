@@ -1,3 +1,6 @@
-lib.mapAttrs (username: user-generator: user-generator username) rec {
+inputs:
+let
+  lib = inputs.self.lib;
+in {
   user = lib.nixos-user-configuration { };
 }
