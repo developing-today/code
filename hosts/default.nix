@@ -44,7 +44,7 @@
           # Host-specific hardware configuration
           # lib.make-hardware host.hardware
           # lib.make-hardware host.hardware
-          host.hardware
+          (lib.make-hardware host.hardware)
           # Host-specific configuration
           # TODO: host specific modules in host struct
           # TODO: ./configurations/${hostname}.nix
