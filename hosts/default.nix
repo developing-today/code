@@ -5,7 +5,7 @@ in {
   nixos = host {
     profiles = "desktop";
     hardware = "framework/13-inch/12th-gen-intel";
-    # disks = "nvme0n1/2tb";
+    disks = "nvme0n1/2tb";
   };
   amd = host {
     profiles = "desktop";

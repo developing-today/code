@@ -13,6 +13,7 @@ _:
             type = "filesystem";
             format = "vfat";
             mountpoint = "/boot";
+            extraArgs = [ "-LNIXBOOT" ];
           };
         };
         root = {
@@ -21,6 +22,7 @@ _:
             type = "filesystem";
             format = "ext4";
             mountpoint = "/";
+            extraArgs = [ "-LNIXROOT" ];
           };
         };
       };
