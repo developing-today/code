@@ -63,8 +63,10 @@ else
     exit 1
 fi
 
-echo "Building ISO for hostname: $hostname"
+echo "Adding all untracked files to Git"
+git add .
 
+echo "Building ISO for hostname: $hostname"
 nix build ".#nixosConfigurations.\"unattended-installer_$hostname\".config.system.build.isoImage"
 
 if [ $? -ne 0 ]; then
