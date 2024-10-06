@@ -9,6 +9,7 @@
 }:
 {
   imports = [ "${inputs.self.outPath}/hosts/common/modules/sops.nix" ];
+  # imports = [ ../../home/common/modules/yazi.nix ];
   boot = {
     tmp = {
       cleanOnBoot = true;

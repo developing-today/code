@@ -7,22 +7,23 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 find_repo_root() {
-    local dir="$PWD"
-    while [ "$dir" != "/" ]; do
-        if [ -d "$dir/.git" ]; then
-            echo "$dir"
-            return 0
-        fi
-        dir="$(dirname "$dir")"
-    done
-    echo "Error: Not in a Git repository" >&2
-    return 1
+  local dir="$PWD"
+  while [ "$dir" != "/" ]; do
+    if [ -d "$dir/.git" ]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  echo "Error: Not in a Git repository" >&2
+  return 1
 }
 
 repo_root=$(find_repo_root)
 
 if [ $? -ne 0 ]; then
-    exit 1
+  echo "Error: Could not find repository root" >&2
+  exit 1
 fi
 
 echo "Changing to repository root: $repo_root"
@@ -30,18 +31,18 @@ cd "$repo_root"
 
 prefix=""
 if [ $# -eq 1 ]; then
-    prefix="$1_"
-    echo "Using prefix: $prefix"
+  prefix="$1_"
+  echo "Using prefix: $prefix"
 elif [ $# -gt 1 ]; then
-    echo "Error: Too many arguments. Expected 0 or 1 arguments, got $#"
-    echo "Usage: $0 [prefix]"
-    exit 1
+  echo "Error: Too many arguments. Expected 0 or 1 arguments, got: $#"
+  echo "Usage: $0 [prefix]"
+  exit 1
 fi
 
 iso_count=$(ls -1 ./result/iso/*.iso 2>/dev/null | wc -l)
 if [ "$iso_count" -ne 1 ]; then
-    echo "Error: Expected exactly one ISO file in ./result/iso/, found $iso_count"
-    exit 1
+  echo "Error: Expected exactly one ISO file in ./result/iso/, found: $iso_count"
+  exit 1
 fi
 echo "Finding ISO file in ./result/iso/"
 iso_file=$(ls ./result/iso/*.iso)
@@ -75,20 +76,22 @@ echo "Creating new ISO file name with prefix: $prefix"
 output_iso="${prefix}bootstrapped_$(basename "$iso_file")"
 echo "Output ISO: $output_iso"
 echo "Creating new ISO: $output_iso"
-# 4gb limit
-# genisoimage -o "$output_iso" -R -J -v -d -N -no-emul-boot -boot-load-size 4 -boot-info-table -b isolinux/isolinux.bin -c isolinux/boot.cat -graft-points "/bootstrap=$writable_dir/bootstrap" "$writable_dir"
 xorriso -as mkisofs \
-    -iso-level 3 \
-    -full-iso9660-filenames \
-    -volid "CUSTOM_ISO" \
-    -eltorito-boot isolinux/isolinux.bin \
-    -eltorito-catalog isolinux/boot.cat \
-    -no-emul-boot -boot-load-size 4 -boot-info-table \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -output "$output_iso" \
-    -graft-points \
-    "/bootstrap=$writable_dir/bootstrap" \
-    "$writable_dir"
+  -iso-level 3 \
+  -full-iso9660-filenames \
+  -volid "NIXOS_ISO" \
+  -eltorito-boot isolinux/isolinux.bin \
+  -eltorito-catalog isolinux/boot.cat \
+  -no-emul-boot \
+  -boot-load-size 4 \
+  -boot-info-table \
+  -eltorito-alt-boot \
+  -e boot/efi.img \
+  -no-emul-boot \
+  -isohybrid-gpt-basdat \
+  -isohybrid-mbr "$writable_dir/isolinux/isohdpfx.bin" \
+  -output "$output_iso" \
+  "$writable_dir"
 echo "Created new ISO: $output_iso"
 echo "Cleaning up temporary directories"
 rm -rf "$mount_point" "$writable_dir"
