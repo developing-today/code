@@ -88,7 +88,6 @@
     users = {
       # todo modules
       user = import ../users/user { inherit pkgs; }; # imports
-      backup = import ../users/backup { inherit pkgs config; }; # imports
       backup1 = import ../users/backup { inherit pkgs config; }; # imports
     };
   };
