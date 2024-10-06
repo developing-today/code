@@ -95,6 +95,7 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
     (inputs.unattended-installer.lib.diskoInstallerWrapper config {
       config = {
         unattendedInstaller.preInstall = ''
+        echo "preInstall starting"
         echo "Ensuring /mnt/persist exists..."
         mkdir -p /mnt/persist
         echo "Setting permissions on /mnt/persist..."
@@ -106,7 +107,7 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
         echo "Listing /mnt/persist/bootstrap"
         ls -lahR /mnt/persist/bootstrap
         echo "Done listing /mnt/persist/bootstrap"
-        echo "All Done"
+        echo "preInstall done"
         '';
       };
     })
