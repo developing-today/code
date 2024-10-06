@@ -95,12 +95,17 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
     (inputs.unattended-installer.lib.diskoInstallerWrapper config {
       config = {
         unattendedInstaller.postInstall = ''
-        echo "Copying bootstrap to /mnt..."
-        cp -r /bootstrap /mnt
-        echo "Done copying bootstrap to /mnt"
-        echo "Listing /mnt/bootstrap"
-        ls -lahR /mnt/bootstrap
-        echo "Done listing /mnt/bootstrap"
+        echo "Ensuring /mnt/persist exists..."
+        mkdir -p /mnt/persist
+        echo "Setting permissions on /mnt/persist..."
+        chown -R nixos:nixos /mnt/persist
+        chmod -R 755 /mnt/persist
+        echo "Copying bootstrap to /mnt/persist..."
+        cp -r /bootstrap /mnt/persist
+        echo "Done copying bootstrap to /mnt/persist"
+        echo "Listing /mnt/persist/bootstrap"
+        ls -lahR /mnt/persist/bootstrap
+        echo "Done listing /mnt/persist/bootstrap"
         echo "All Done"
         '';
       };
