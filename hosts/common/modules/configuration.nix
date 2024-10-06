@@ -86,6 +86,7 @@
   users = {
     # remove from here?
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell; # per user?
+    # mutableUsers = false;
     users = {
       # todo modules
       user = import ../users/user { inherit pkgs config; }; # imports
@@ -354,6 +355,7 @@
       portal
       cdrkit
       cdrtools
+      age
       ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };

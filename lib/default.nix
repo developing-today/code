@@ -91,7 +91,19 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
 (name: config:
   lib.nameValuePair
     "unattended-installer_${name}"
-    (inputs.unattended-installer.lib.diskoInstallerWrapper config { })
+    (inputs.unattended-installer.lib.diskoInstallerWrapper config {
+      config = {
+        unattendedInstaller.postInstall = ''
+        echo "Copying bootstrap to /mnt..."
+        cp -r /bootstrap /mnt
+        echo "Done copying bootstrap to /mnt"
+        echo "Listing /mnt/bootstrap"
+        ls -lahR /mnt/bootstrap
+        echo "Done listing /mnt/bootstrap"
+        echo "All Done"
+        '';
+      };
+    })
 ) configurations;
 in let
 lib2 = lib.attrsets.recursiveUpdate lib {
