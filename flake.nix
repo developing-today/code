@@ -1,10 +1,20 @@
 {
-  outputs = inputs: rec {
+  outputs = inputs:
+  let
     lib = import ./lib inputs;
     hosts = import ./hosts inputs;
-    nixosConfigurations = lib.make-nixos-configurations hosts;
+    configurations = lib.make-nixos-configurations hosts;
+    unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
+    nixosConfigurations = configurations // unattended-installer-configurations;
+  in {
+    inherit lib hosts configurations unattended-installer-configurations nixosConfigurations;
   };
   inputs = {
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer";
     nixpkgs.url = "github:dezren39/nixpkgs";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # nixpkgs.url = "github:NixOS/nixpkgs";

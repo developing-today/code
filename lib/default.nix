@@ -50,6 +50,7 @@ nixos-host-configuration =
     sshKey = lib.host-key name;
     hardware = [ "" ];
     profiles = [ ];
+    disks = [ ];
   } options;
 default-home-manager-user-configuration = name: rec {
   system = "x86_64-linux";
@@ -81,6 +82,17 @@ make-profile-paths = {
   basePath ? from-root "hosts/common/modules"
 }: strings: make-paths (ensure-list strings) basePath;
 make-profiles = make-profile-paths {};
+make-disk-paths = {
+  basePath ? from-root "hosts/common/modules/disks"
+}: strings: make-paths (ensure-list strings) basePath;
+make-disks = make-disk-paths {};
+# example-installer = unattended-installer.lib.diskoInstallerWrapper self.nixosConfigurations.example-machine { };
+make-unattended-installer-configurations = configurations: lib.mapAttrs'
+(name: config:
+  lib.nameValuePair
+    "unattended-installer_${name}"
+    (inputs.unattended-installer.lib.diskoInstallerWrapper config { })
+) configurations;
 in let
 lib2 = lib.attrsets.recursiveUpdate lib {
   inherit
@@ -95,11 +107,15 @@ lib2 = lib.attrsets.recursiveUpdate lib {
     nixos-host-configuration
     default-home-manager-user-configuration
     home-manager-user-configuration
+    ensure-list
     make-paths
     make-hardware-paths
     make-hardware
     make-profile-paths
     make-profiles
+    make-disk-paths
+    make-disks
+    make-unattended-installer-configurations
   ;
 }; in lib2.attrsets.recursiveUpdate lib2 {
   make-nixos-configurations = lib2.mapAttrs (
@@ -137,6 +153,7 @@ lib2 = lib.attrsets.recursiveUpdate lib {
         */
         (make-hardware host.hardware)
         (make-profiles host.profiles)
+        (from-root "hosts/common/modules/disks")
         # host.hardware-modules
         # host.profile-modules
         # hosts.darwin-profiles
