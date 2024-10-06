@@ -156,7 +156,7 @@
           path = "/etc/ssh/ssh_host_ed25519_key";
           type = "ed25519";
         }
-      ] ++ lib.optionals (host.bootstrap) [
+      ] ++ lib.optionals host.bootstrap [
         {
           path = "/bootstrap/ssh_host_ed25519_key";
           type = "ed25519";
