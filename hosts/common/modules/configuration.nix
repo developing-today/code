@@ -357,6 +357,7 @@
       cdrkit
       cdrtools
       age
+      libisoburn # xorriso
       ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
