@@ -119,15 +119,15 @@ lib2 = lib.attrsets.recursiveUpdate lib {
   ;
 }; in lib2.attrsets.recursiveUpdate lib2 {
   make-nixos-configurations = lib2.mapAttrs (
-    hostname: host-generator:
+    hostName: host-generator:
     let
-      host = host-generator hostname;
+      host = host-generator hostName;
     in
     lib2.nixosSystem {
       specialArgs = {
         inherit
           inputs
-          hostname
+          hostName
           host
           ;
         inherit (host) system stateVersion;
@@ -137,17 +137,17 @@ lib2 = lib.attrsets.recursiveUpdate lib {
         /*
           ok so like, optional, deduped, non-existing removed
           ./hosts/modules
-          ./hosts/modules/${hostname}
+          ./hosts/modules/${hostName}
           ./hosts/modules/hardware-configuration
-          ./hosts/modules/hardware-configuration/${hostname}
+          ./hosts/modules/hardware-configuration/${hostName}
           ./hosts/modules/abstract
           ./hosts/modules/{host.type}
-          ./hosts/modules/{host.type}/{hostname}
-          ./hosts/modules/{hostname}
+          ./hosts/modules/{host.type}/{hostName}
+          ./hosts/modules/{hostName}
           ./hosts/modules/{profile} for profile in host.profiles
-          ./hosts/modules/{hostname}/{profile} for profile in host.profiles
+          ./hosts/modules/{hostName}/{profile} for profile in host.profiles
           ./hosts/modules/{host.type}/${profile} for profile in host.profiles
-          ./hosts/modules/{host.type}/{hostname}/${profile} for profile in host.profiles
+          ./hosts/modules/{host.type}/{hostName}/${profile} for profile in host.profiles
           ./hosts/users
           lib.make-users host.users
         */

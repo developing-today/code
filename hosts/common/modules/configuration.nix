@@ -2,6 +2,7 @@
   inputs,
   config,
   lib,
+  hostName,
   pkgs,
   ...
 }:
@@ -20,7 +21,7 @@
     };
   };
   networking = {
-    hostName = "nixos";
+    inherit hostName;
     # hostId = "deadbeef"; # todo: needed?
     # useDHCP = true; # shouldn't this be needed
     networkmanager = {
@@ -151,6 +152,11 @@
       hostKeys = [
         {
           path = "/etc/ssh/ssh_host_ed25519_key";
+          type = "ed25519";
+        }
+      ] ++ lib.optionals (config.networking.hostName == "amd") [
+        {
+          path = "/bootstrap/ssh_host_ed25519_key";
           type = "ed25519";
         }
       ];
