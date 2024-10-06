@@ -341,7 +341,9 @@
       zathura
       zathura
       zed-editor
-    ];
+      magic-wormhole-rs
+      portal
+      ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
 }
