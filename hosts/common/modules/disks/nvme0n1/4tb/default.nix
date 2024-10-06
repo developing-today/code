@@ -8,7 +8,7 @@ _:
       partitions = {
         ESP = {
           type = "EF00";
-          size = "100G";
+          size = "100G"; # 32G? # 4G?
           content = {
             type = "filesystem";
             format = "vfat";
