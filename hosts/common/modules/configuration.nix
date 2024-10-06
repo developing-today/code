@@ -86,11 +86,13 @@
     # remove from here?
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell; # per user?
     users = {
+      # todo modules
       user = import ../users/user { inherit pkgs; }; # imports
       backup = import ../users/backup { inherit pkgs config; }; # imports
     };
   };
   sops.secrets."users/backup/passwordHash" = {
+    neededForUsers = true;
     sopsFile = lib.from-root "secrets/sops/users/backup/password_backup.yaml";
   };
   fonts = {
