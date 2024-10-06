@@ -51,6 +51,7 @@ nixos-host-configuration =
     hardware = [ "" ];
     profiles = [ ];
     disks = [ ];
+    bootstrap = false;
   } options;
 default-home-manager-user-configuration = name: rec {
   system = "x86_64-linux";

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+if [ "$EUID" -ne 0 ]; then
+  echo "Re-executing with sudo"
+  exec sudo "$0" "$@"
+fi
+
 find_repo_root() {
     local dir="$PWD"
     while [ "$dir" != "/" ]; do

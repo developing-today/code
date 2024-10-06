@@ -2,6 +2,11 @@
 
 set -e
 
+if [ "$EUID" -ne 0 ]; then
+  echo "Re-executing with sudo"
+  exec sudo "$0" "$@"
+fi
+
 get_script_dir() {
     SOURCE="${BASH_SOURCE[0]}"
     while [ -h "$SOURCE" ]; do

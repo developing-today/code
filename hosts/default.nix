@@ -11,5 +11,6 @@ in {
     profiles = "desktop";
     hardware = "framework/13-inch/7040-amd";
     disks = "nvme0n1/4tb";
+    bootstrap = true;
   };
 }
