@@ -94,7 +94,7 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
     "unattended-installer_${name}"
     (inputs.unattended-installer.lib.diskoInstallerWrapper config {
       config = {
-        unattendedInstaller.postInstall = ''
+        unattendedInstaller.preInstall = ''
         echo "Ensuring /mnt/persist exists..."
         mkdir -p /mnt/persist
         echo "Setting permissions on /mnt/persist..."
