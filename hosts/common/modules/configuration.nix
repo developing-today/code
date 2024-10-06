@@ -346,6 +346,8 @@
       magic-wormhole
       webwormhole
       portal
+      cdrkit
+      cdrtools
       ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
