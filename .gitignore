@@ -25,6 +25,8 @@ targets
 **/.history
 *.exe
 **/*.exe
+*.iso
+**/*.iso
 badger/*
 **/badger/
 data/*
