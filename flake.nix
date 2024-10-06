@@ -1,13 +1,11 @@
 {
   outputs = inputs:
-  let
+  rec {
     lib = import ./lib inputs;
     hosts = import ./hosts inputs;
     configurations = lib.make-nixos-configurations hosts;
     unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
     nixosConfigurations = configurations // unattended-installer-configurations;
-  in {
-    inherit lib hosts configurations unattended-installer-configurations nixosConfigurations;
   };
   inputs = {
     disko = {
