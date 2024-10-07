@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-
-set -e
+set -e #-o pipefail
 
 if [ "$EUID" -ne 0 ]; then
   echo "Re-executing with sudo"
@@ -10,11 +9,11 @@ fi
 get_script_dir() {
   SOURCE="${BASH_SOURCE[0]}"
   while [ -h "$SOURCE" ]; do
-    DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
     [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
   done
-  echo "$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+  echo "$(cd -P "$(dirname "$SOURCE")" && pwd)"
 }
 
 find_repo_root() {
@@ -43,29 +42,74 @@ cd "$repo_root"
 
 hostname=$(hostname)
 bootstrap=false
+clean=false
+flash=false
+force=false
 
-if [ "$#" -eq 0 ]; then
-  echo "No arguments provided. Using system hostname: $hostname"
-elif [ "$#" -eq 1 ]; then
-  if [ "$1" = "-bootstrap" ]; then
-    bootstrap=true
-    echo "Bootstrap flag detected. Using system hostname: $hostname"
-  else
-    hostname="$1"
-    echo "Using provided hostname: $hostname"
-  fi
-elif [ "$#" -eq 2 ] && [ "$2" = "-bootstrap" ]; then
-  hostname="$1"
-  bootstrap=true
-  echo "Using provided hostname: $hostname with bootstrap option"
-elif [ "$#" -eq 2 ] && [ "$1" = "-bootstrap" ]; then
-  hostname="$2"
-  bootstrap=true
-  echo "Using provided hostname: $hostname with bootstrap option"
+print_usage() {
+  echo "Usage: $0 [hostname] [-bootstrap] [-clean] [-flash]"
+  echo "Flags can be provided in any order."
+}
+
+process_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -bootstrap)
+        bootstrap=true
+        shift
+        ;;
+      -clean)
+        clean=true
+        shift
+        ;;
+      -flash)
+        flash=true
+        shift
+        ;;
+      -force)
+        force=true
+        shift
+        ;;
+      -*)
+        echo "Error: Unknown flag $1"
+        print_usage
+        exit 1
+        ;;
+      *)
+        if [[ -z $custom_hostname ]]; then
+          custom_hostname="$1"
+        else
+          echo "Error: Multiple hostnames provided"
+          print_usage
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
+process_args "$@"
+
+if [[ -n $custom_hostname ]]; then
+  hostname="$custom_hostname"
+  echo "Using provided hostname: $hostname"
 else
-  echo "Error: Invalid arguments."
-  echo "Usage: $0 [hostname] [-bootstrap]"
-  exit 1
+  echo "Using system hostname: $hostname"
+fi
+
+echo "Flags:"
+echo "  Bootstrap: $bootstrap"
+echo "  Clean: $clean"
+echo "  Flash: $flash"
+echo "  Force: $force"
+
+if [ "$clean" = true ]; then
+  # \/ manual confirmation step within this script to avoid accidental deletion,
+  # \/ this script always -force removes iso files when -clean flag is provided.
+  echo "Force Removing all ISO files for hostname: $hostname"
+  ./lib/remove_iso_files.sh "$hostname" -force
+  echo "Force Removing all ISO files completed successfully!"
 fi
 
 echo "Adding all untracked files to Git"
@@ -75,11 +119,11 @@ echo "Building ISO for hostname: $hostname"
 nix build .#nixosConfigurations.\"unattended-installer_$hostname\".config.system.build.isoImage
 
 if [ $? -ne 0 ]; then
-  echo "Error: Nix build failed."
+  echo "Error: Nix build ISO failed."
   exit 1
 fi
 
-echo "Nix build completed successfully."
+echo "Nix build ISO completed successfully."
 
 if [ "$bootstrap" = true ]; then
   bootstrap_script="${script_dir}/bootstrap_iso.sh"
@@ -99,3 +143,17 @@ else
 fi
 
 echo "ISO build process completed successfully!"
+
+if [ "$flash" = true ]; then
+  echo "Flashing ISO to USB drive"
+  flash_force=""
+  if [ "$force" = true ]; then
+    flash_force="-force"
+  fi
+  # \/ manual confirmation step within this script to avoid accidental flashing,
+  # \/ -force flag can be used to skip this manual confirmation step.
+  echo "Flash ISO to USB drive for hostname: $hostname"
+  echo "Flash Force: $flash_force"
+  ./lib/flash_iso_to_sda.sh "$hostname" $flash_force
+  echo "Flash ISO to USB drive completed successfully!"
+fi

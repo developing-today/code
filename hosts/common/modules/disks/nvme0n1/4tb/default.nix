@@ -1,7 +1,7 @@
 _:
 {
-  disko.devices.disk."nvm0n1" ={
-    device = "/dev/nvm0n1";
+  disko.devices.disk."nvme0n1" ={
+    device = "/dev/nvme0n1";
     type = "disk";
     content = {
       type = "gpt";
@@ -13,7 +13,7 @@ _:
             type = "filesystem";
             format = "vfat";
             mountpoint = "/boot";
-            extraArgs = [ "-LNIXBOOT" ];
+            extraArgs = [ "-nNIXBOOT" ];
           };
         };
         root = {

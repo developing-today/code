@@ -93,22 +93,20 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
   lib.nameValuePair
     "unattended-installer_${name}"
     (inputs.unattended-installer.lib.diskoInstallerWrapper config {
+      successAction = "poweroff"; # Poweroff instead of reboot
       config = {
-        unattendedInstaller.preInstall = ''
-        echo "preInstall starting"
-        echo "Ensuring /mnt/persist exists..."
-        mkdir -p /mnt/persist
-        echo "Setting permissions on /mnt/persist..."
-        chown -R nixos:nixos /mnt/persist
-        chmod -R 755 /mnt/persist
-        echo "Copying bootstrap to /mnt/persist..."
-        cp -r /bootstrap /mnt/persist
-        echo "Done copying bootstrap to /mnt/persist"
-        echo "Listing /mnt/persist/bootstrap"
-        ls -lahR /mnt/persist/bootstrap
-        echo "Done listing /mnt/persist/bootstrap"
-        echo "preInstall done"
-        '';
+        unattendedInstaller = {
+          preInstall = ''
+            echo "preInstall starting"
+            echo "Copying /iso/bootstrap to /mnt/bootstrap..."
+            cp -r /iso/bootstrap /mnt
+            echo "Done copying /iso/bootstrap to /mnt/bootstrap"
+            echo "Listing /mnt/bootstrap..."
+            ls -lahR /mnt/bootstrap
+            echo "Done listing /mnt/bootstrap"
+            echo "preInstall done"
+            '';
+        };
       };
     })
 ) configurations;
