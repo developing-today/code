@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
+set -e #-o pipefail
 
-command="poweroff"
+cleanup() {
+  echo -e "\nScript interrupted. Exiting..."
+  exit 1
+}
+trap cleanup SIGINT
+
+default_command="reboot"
+# default_command="poweroff"
+command="$default_command"
 sleep_time=30
+force=false
 
 print_usage() {
   echo "Usage: $0 [command] [-t|--time <seconds>] [-f|--force]"
@@ -32,7 +42,7 @@ process_args() {
         exit 1
         ;;
       *)
-        if [[ -z $command || $command == "poweroff" ]]; then
+        if [[ -z "$command" || "$command" == "$default_command" ]]; then
           command="$1"
         else
           echo "Error: Unexpected argument $1"
@@ -45,14 +55,14 @@ process_args() {
   done
 }
 
+echo "Processing args"
 process_args "$@"
+echo "Processed args"
 
-cleanup() {
-  echo -e "\nScript interrupted. Exiting..."
-  exit 1
-}
-
-trap cleanup SIGINT
+echo "Command:"
+echo "$command"
+echo "Sleep Seconds: $sleep_time"
+echo "Force: $force"
 
 if [ "$force" = true ]; then
   echo "Force flag detected. Executing '${command}' immediately..."
@@ -65,5 +75,5 @@ else
   done
 fi
 
-echo -e "\nExecuting '${command}'..."
+echo -e "\nExecuting '${command}'...\n"
 $command

@@ -1,3 +1,40 @@
+
+
+Use networking.wireless.environmentFile:
+
+  sops.secrets."wireless.env" = { };
+  networking.wireless.environmentFile = config.sops.secrets."wireless.env".path;
+  networking.wireless.networks = {
+    "@home_uuid@" = {
+      psk = "@home_psk@";
+    };
+  };
+
+And in your .sops.yaml:
+
+wireless.env: |
+   home_uuid=foo
+   home_psk=secret
+
+I'm doing that in my dotfiles
+
+---
+
+networking = {
+ hostName = hostname;
+ wireless.enable = true;
+ wireless.scanOnLowSignal = false;
+ wireless.networks = {
+ "${config.sops.secrets."networking/home/ssid".val}" = {
+ hidden = true;
+ psk = config.sops.secrets."networking/home/psk".val;
+ authProtocols = \["WPA-PSK"\];
+ };
+};
+
+---
+
+
 nix build .#nixosConfigurations.unattended-installer_amd.config.system.build.isoImage
 
 unattended install

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -e #-o pipefail
 
+echo ""
 echo "Script Name: $(basename "$0")"
 echo "Script: $0"
 echo "Script Real Path: $(realpath "$0"))"
@@ -198,3 +199,4 @@ sync
 echo "Done syncing all cached data to disk"
 
 echo "Script Done: $0"
+echo ""

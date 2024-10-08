@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -e #-o pipefail
 
+echo ""
 echo "Script Name: $(basename "$0")"
 echo "Script: $0"
 echo "Script Real Path: $(realpath "$0"))"
@@ -146,10 +147,13 @@ echo "Unmounting original ISO"
 sudo umount "$mount_point"
 echo "Unmounted original ISO"
 
+echo ""
+
 echo "Creating /bootstrap directory"
 mkdir -p "$writable_dir/bootstrap"
 echo "Created /bootstrap directory"
 
+echo ""
 # CUSTOM FILES START
 
 # TODO: allow custom bootstrap files to be copied
@@ -162,14 +166,15 @@ echo "Copying repository root to /bootstrap as tar.gz"
 echo "Repository root: $repo_root"
 repo_root_basename=$(basename "$repo_root")
 echo "Repository root basename: $repo_root_basename"
-output_tar="$writable_dir/bootstrap/$repo_root_basename.tar.gz"
+output_tar_file="$repo_root_basename.tar.gz"
+output_tar="$writable_dir/bootstrap/$output_tar_file"
 echo "Output tar.gz: $output_tar"
 echo "Creating tar.gz of repository root: $repo_root"
 tar -czf "$output_tar" -C "$repo_root" .
 echo "Created tar.gz of repository root: $repo_root"
 
 # CUSTOM FILES END
-
+echo ""
 # TODO remove this?
 # echo "Setting permissions 777 for /bootstrap and its contents"
 # chmod -R  "$writable_dir/bootstrap"
@@ -180,6 +185,7 @@ output_iso="${prefix}${iso_type}_$(basename "$iso_file")"
 echo "Output ISO: $output_iso"
 
 echo "Creating new ISO: $output_iso"
+echo ""
 xorriso -as mkisofs \
   -iso-level 3 \
   -full-iso9660-filenames \
@@ -205,3 +211,4 @@ echo "Cleaned up temporary directories"
 echo "Process completed successfully!"
 
 echo "Script Done: $0"
+echo ""
