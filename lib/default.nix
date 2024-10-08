@@ -87,26 +87,17 @@ make-disk-paths = {
   basePath ? from-root "hosts/common/modules/disks"
 }: strings: make-paths (ensure-list strings) basePath;
 make-disks = make-disk-paths {};
-# example-installer = unattended-installer.lib.diskoInstallerWrapper self.nixosConfigurations.example-machine { };
 make-unattended-installer-configurations = configurations: lib.mapAttrs'
 (name: config:
   lib.nameValuePair
-    "unattended-installer_${name}"
+    "unattended-installer_offline_${name}"
     (inputs.unattended-installer.lib.diskoInstallerWrapper config {
-      successAction = "poweroff"; # Poweroff instead of reboot
-      config = {
-        unattendedInstaller = {
-          preInstall = ''
-            echo "preInstall starting"
-            echo "Copying /iso/bootstrap to /mnt/bootstrap..."
-            cp -r /iso/bootstrap /mnt
-            echo "Done copying /iso/bootstrap to /mnt/bootstrap"
-            echo "Listing /mnt/bootstrap..."
-            ls -lahR /mnt/bootstrap
-            echo "Done listing /mnt/bootstrap"
-            echo "preInstall done"
-            '';
-        };
+      config.unattendedInstaller = {
+        successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+        preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+        postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+        preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+        postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
       };
     })
 ) configurations;

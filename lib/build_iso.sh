@@ -1,50 +1,18 @@
 #!/usr/bin/env bash
 set -e #-o pipefail
 
-if [ "$EUID" -ne 0 ]; then
-  echo "Re-executing with sudo"
-  exec sudo "$0" "$@"
-fi
-
-get_script_dir() {
-  SOURCE="${BASH_SOURCE[0]}"
-  while [ -h "$SOURCE" ]; do
-    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-    SOURCE="$(readlink "$SOURCE")"
-    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
-  done
-  echo "$(cd -P "$(dirname "$SOURCE")" && pwd)"
-}
-
-find_repo_root() {
-  local dir="$1"
-  while [ "$dir" != "/" ]; do
-    if [ -d "$dir/.git" ]; then
-      echo "$dir"
-      return 0
-    fi
-    dir="$(dirname "$dir")"
-  done
-  echo "Error: Not in a Git repository" >&2
-  return 1
-}
-
-script_dir=$(get_script_dir)
-repo_root=$(find_repo_root "$script_dir")
-
-if [ $? -ne 0 ]; then
-  echo "Error: Could not find repository root" >&2
-  exit 1
-fi
-
-echo "Changing to repository root: $repo_root"
-cd "$repo_root"
+echo "Script Name: $(basename "$0")"
+echo "Script: $0"
+echo "Script Real Path: $(realpath "$0"))"
+echo "Args count: $#"
+echo "Args:$(printf "\n\"%q\"" "$@")"
 
 hostname=$(hostname)
 bootstrap=false
 clean=false
 flash=false
 force=false
+iso_type="unattended-installer_offline"
 
 print_usage() {
   echo "Usage: $0 [hostname] [-bootstrap] [-clean] [-flash]"
@@ -89,7 +57,9 @@ process_args() {
   done
 }
 
+echo "Processing args"
 process_args "$@"
+echo "Processed args"
 
 if [[ -n $custom_hostname ]]; then
   hostname="$custom_hostname"
@@ -103,6 +73,51 @@ echo "  Bootstrap: $bootstrap"
 echo "  Clean: $clean"
 echo "  Flash: $flash"
 echo "  Force: $force"
+echo "  ISO Type: $iso_type"
+
+echo "Checking if running as root"
+
+if [ "$EUID" -ne 0 ]; then
+  echo "Re-executing with sudo"
+  exec sudo "$0" "$@"
+fi
+
+echo "Running as root"
+
+get_script_dir() {
+  SOURCE="${BASH_SOURCE[0]}"
+  while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+  done
+  echo "$(cd -P "$(dirname "$SOURCE")" && pwd)"
+}
+
+find_repo_root() {
+  local dir="$1"
+  while [ "$dir" != "/" ]; do
+    if [ -d "$dir/.git" ]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  echo "Error: Not in a Git repository" >&2
+  return 1
+}
+
+script_dir=$(get_script_dir)
+repo_root=$(find_repo_root "$script_dir")
+
+if [ $? -ne 0 ]; then
+  echo "Error: Could not find repository root" >&2
+  exit 1
+fi
+
+echo "Changing to repository root: $repo_root"
+cd "$repo_root"
+echo "PWD: $(pwd)"
 
 if [ "$clean" = true ]; then
   # \/ manual confirmation step within this script to avoid accidental deletion,
@@ -114,9 +129,10 @@ fi
 
 echo "Adding all untracked files to Git"
 git add .
+echo "Added all untracked files to Git"
 
 echo "Building ISO for hostname: $hostname"
-nix build .#nixosConfigurations.\"unattended-installer_$hostname\".config.system.build.isoImage
+nix build .#nixosConfigurations.\"${iso_type}_$hostname\".config.system.build.isoImage
 
 if [ $? -ne 0 ]; then
   echo "Error: Nix build ISO failed."
@@ -131,7 +147,7 @@ if [ "$bootstrap" = true ]; then
   if [ -f "$bootstrap_script" ]; then
     echo "Executing bootstrap script: $bootstrap_script"
     chmod +x "$bootstrap_script"
-    "$bootstrap_script" "$hostname"
+    "$bootstrap_script" "$hostname" # -type
 
     if [ $? -ne 0 ]; then
       echo "Error: Bootstrap script execution failed."
@@ -154,6 +170,8 @@ if [ "$flash" = true ]; then
   # \/ -force flag can be used to skip this manual confirmation step.
   echo "Flash ISO to USB drive for hostname: $hostname"
   echo "Flash Force: $flash_force"
-  ./lib/flash_iso_to_sda.sh "$hostname" $flash_force
+  ./lib/flash_iso_to_sda.sh "$hostname" $flash_force # -type
   echo "Flash ISO to USB drive completed successfully!"
 fi
+
+echo "Script Done: $0"
