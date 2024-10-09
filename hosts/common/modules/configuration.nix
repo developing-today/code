@@ -38,10 +38,13 @@
         scanOnLowSignal = false;
         environmentFile = config.sops.secrets."wireless.env".path;
         networks = {
-            "${config.sops.secrets."networking/home/ssid".val}" = {
-                hidden = true;
-                psk = config.sops.secrets."networking/home/psk".val;
-                authProtocols = \["WPA-PSK"\];
+            # "${config.sops.secrets."networking/home/ssid".val}" = {
+            #     hidden = true;
+            #     psk = config.sops.secrets."networking/home/psk".val;
+            #     authProtocols = ["WPA-PSK"];
+            # };
+            "@home_uuid@" = {
+                psk = "@home_psk@";
             };
         };
     };

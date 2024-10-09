@@ -1,3 +1,52 @@
+https://www.reddit.com/r/NixOS/comments/1fnkbj5/sops_and_wireless_credentials/
+sops.secrets.wireless = {
+  sopsFile = ../secrets.yaml;
+  neededForUsers = true;
+};
+
+networking.wireless = {
+  enable = true;
+  fallbackToWPA2 = false;
+  # Declarative
+  secretsFile = config.sops.secrets.wireless.path;
+  networks = {
+    "JVGCLARO" = {
+      pskRaw = "ext:jvgclaro";
+    };
+error:
+Failed assertions:
+- The option definition `networking.wireless.environmentFile' in `/nix/store/dzn3lfkkbiz6rr03i04g1al4m10zbh7c-source/hosts/common/modules/configuration.nix' no longer has any effect; please remove it.
+Secrets are now handled by the `networking.wireless.secretsFile` and
+`networking.wireless.networks.<name>.pskRaw` options.
+The change is motivated by a mechanism recently added by wpa_supplicant
+itself to separate secrets from configuration, making the previous
+method obsolete.
+
+The syntax of the `secretsFile` is the same as before, except the
+values are interpreted literally, unlike environment variables.
+To update, remove quotes or character escapes, if necessary, and
+apply the following changes to your configuration:
+  {
+    home.psk = "@psk_home@";          →  home.pskRaw = "ext:psk_home";
+    other.pskRaw = "@psk_other@";     →  other.pskRaw = "ext:psk_other";
+    work.auth = ''
+      eap=PEAP
+      identity="my-user@example.com"
+      password=@pass_work@            →  password=ext:pass_work
+    '';
+  }
+
+
+- You can not use networking.networkmanager with networking.wireless.
+Except if you mark some interfaces as <literal>unmanaged</literal> by NetworkManager.
+┏━ 1 Errors:
+⋮
+┃        - You can not use networking.networkmanager with networking.wireless.
+┃        Except if you mark some interfaces as <literal>unmanaged</literal> by NetworkMana…
+┣━━━
+┗━ ∑ ⚠ Exited with 1 errors reported by nix at 00:32:56 after 4s
+osh-0.22.0$
+
 https://github.com/danthegoodman1/BreakingSQLite
 https://github.com/jhvst/nix-config/blob/d3f7b0836c3f7ba34e3067964608fa8884fbc255/nixosConfigurations/starlabs/default.nix#L260
 https://github.com/thiagokokada/nix-configs/
