@@ -22,13 +22,30 @@
       efi.canTouchEfiVariables = true;
     };
   };
+  sops.secrets."wireless.env" = {
+    sopsFile = lib.from-root "secrets/sops/common/wifi/us-wi-1.yaml";
+  };
   networking = {
     inherit hostName;
     # hostId = "deadbeef"; # todo: needed?
     # useDHCP = true; # shouldn't this be needed
-    networkmanager = {
-      enable = true;
+    # networkmanager = {
+    #   enable = true;
+    # };
+    # hostName = hostname;
+    wireless = {
+        enable = true;
+        scanOnLowSignal = false;
+        environmentFile = config.sops.secrets."wireless.env".path;
+        networks = {
+            "${config.sops.secrets."networking/home/ssid".val}" = {
+                hidden = true;
+                psk = config.sops.secrets."networking/home/psk".val;
+                authProtocols = \["WPA-PSK"\];
+            };
+        };
     };
+
     firewall = {
       allowedUDPPorts = [ config.services.tailscale.port ]; # needed?
     };

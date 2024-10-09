@@ -1,4 +1,91 @@
+https://github.com/jhvst/nix-config/blob/d3f7b0836c3f7ba34e3067964608fa8884fbc255/nixosConfigurations/starlabs/default.nix#L260
+https://github.com/thiagokokada/nix-configs/
+https://kokada.dev/blog/an-unordered-list-of-things-i-miss-in-go/
+https://kokada.dev/blog/an-unordered-list-of-hidden-gems-inside-nixos/
+https://kokada.dev/blog/go-a-reasonable-good-language/
+https://github.com/golang/go/issues/21498
+https://joeduffyblog.com/2016/02/07/the-error-model/
 
+https://kokada.dev/blog/an-unordered-list-of-hidden-gems-inside-nixos/
+  networking.nftables.enable = true;
+  system.switch.enableNg
+  system.switch = {
+    enable = false;
+    enableNg = true;
+  };
+boot.initrd.systemd
+services.pipewire = {
+  enable = true;
+  alsa.enable = true;
+  pulse.enable = true;
+  # jack.enable = true;
+};
+security.rtkit.enable = true;
+networking.networkmanager.wifi.backend = "iwd"
+boot.tmp.useTmpfs = true;
+systemd.services.nix-daemon = {
+  environment.TMPDIR = "/var/tmp";
+};
+zramSwap = {
+  enable = true;
+  algorithm = "zstd"; # lz4 or zstd
+};
+  services.fstrim.enable = true;
+    boot.binfmt.emulatedSystems = [ "aarch64-linux" "riscv64-linux" ];
+    services.dbus.implementation = "broker"
+    services.irqbalance # only for slow things, not 10gbe
+
+
+    system.switch.enable{,Ng}
+
+
+
+      # Enables DHCP on each ethernet and wireless interface. In case of scripted networking
+      # (the default) this is the recommended approach. When using systemd-networkd it's
+      # still possible to use this option, but it's recommended to use it in conjunction
+      # with explicit per-interface declarations with `networking.interfaces.<interface>.useDHCP`.
+      networking.useDHCP = lib.mkDefault true;
+      # networking.interfaces.enp1s0.useDHCP = lib.mkDefault true;
+
+      https://dee.underscore.world/blog/installing-nixos-unconventionally/
+
+https://github.com/majbacka-labs/nixos.fi
+
+https://github.com/viperML/nh
+
+https://github.com/NixOS/nixpkgs/issues/111252
+
+https://garnix.io/blog/hosting-nixos
+https://github.com/garnix-io/template-jitsi
+https://github.com/garnix-io?q=template&type=all&language=&sort=
+https://github.com/garnix-io/template-ttrss?tab=readme-ov-file
+https://github.com/garnix-io/template-rss-bridge
+https://github.com/garnix-io/template-ssh-app
+https://garnix.io/docs/hosting/persistence
+https://github.com/NixOS/nixpkgs/pull/75800
+https://github.com/NixOS/nixpkgs/issues/111252
+https://github.com/NixOS/nixpkgs/pull/113716
+
+nix.gc = {
+   automatic = true;
+   randomizedDelaySec = "14m";
+   options = "--delete-older-than 30d";
+ };
+
+ # https://nixos.org/manual/nixos/stable/index.html#sec-upgrading-automatic
+ system.autoUpgrade.enable = true;
+ system.autoUpgrade.allowReboot = true;
+
+
+ # Disable root password
+ users.users.root.hashedPassword = "*";
+
+ # Disable password login
+ services.openssh.settings.PermitRootLogin = "no";
+ services.openssh.settings.PasswordAuthentication = false;
+
+
+https://github.com/Misterio77/nix-config/blob/74311ba/modules/nixos/hydra-auto-upgrade.nix#L79
 
 Use networking.wireless.environmentFile:
 
