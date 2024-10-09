@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -e #-o pipefail
 
+# use care, this is copied as a string.
+# you can't use variable inputs.
+# instead, set template variables.
+# update the module to replace the
+# template variables at build time.
+
 cleanup() {
   echo -e "\nScript interrupted. Exiting..."
   exit 1
 }
 trap cleanup SIGINT
 
-default_command="reboot"
-# default_command="poweroff"
+# default_command="reboot"
+default_command="poweroff"
 command="$default_command"
 sleep_time=30
 force=false
@@ -68,11 +74,14 @@ if [ "$force" = true ]; then
   echo "Force flag detected. Executing '${command}' immediately..."
 else
   echo "Success! Executing '${command}' in ${sleep_time} seconds..."
+  set +x
   while [ $sleep_time -gt 0 ]; do
     echo -ne "\r\033[K$sleep_time"
     sleep 1
     sleep_time=$(($sleep_time - 1))
   done
+  set -x
+  echo "Done waiting ${sleep_time} seconds."
 fi
 
 echo -e "\nExecuting '${command}'...\n"
