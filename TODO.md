@@ -1,3 +1,4 @@
+https://github.com/danthegoodman1/BreakingSQLite
 https://github.com/jhvst/nix-config/blob/d3f7b0836c3f7ba34e3067964608fa8884fbc255/nixosConfigurations/starlabs/default.nix#L260
 https://github.com/thiagokokada/nix-configs/
 https://kokada.dev/blog/an-unordered-list-of-things-i-miss-in-go/
