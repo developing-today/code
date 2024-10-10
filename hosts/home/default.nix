@@ -1,5 +1,6 @@
 {
   inputs,
+  lib,
   pkgs,
   stateVersion,
   ...
@@ -9,5 +10,5 @@
   home-manager.useUserPackages = true;
   home-manager.useGlobalPkgs = true;
   home-manager.backupFileExtension = "backup";
-  home-manager.users.user = import ../../../home/user { inherit stateVersion pkgs; };
+  home-manager.users.user = import (lib.from-root "home/user") { inherit inputs lib pkgs stateVersion; }; # todo use imports
 }

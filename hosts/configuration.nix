@@ -8,8 +8,8 @@
   ...
 }:
 {
-  imports = [ "${inputs.self.outPath}/hosts/common/modules/sops.nix" ];
-  # imports = [ ../../home/common/modules/yazi.nix ];
+  imports = [ (lib.from-root "hosts/sops") ];
+  # imports = [ ../../home/yazi.nix ];
   boot = {
     tmp = {
       cleanOnBoot = true;
@@ -22,31 +22,22 @@
       efi.canTouchEfiVariables = true;
     };
   };
-  sops.secrets."wireless.env" = {
-    sopsFile = lib.from-root "secrets/sops/common/wifi/us-wi-1.yaml";
+  sops.secrets."wireless" = {
+    sopsFile = lib.from-root "secrets/sops/common/networking/wireless/us-wi-1.yaml";
   };
   networking = {
     inherit hostName;
-    # hostId = "deadbeef"; # todo: needed?
-    # useDHCP = true; # shouldn't this be needed
-    # networkmanager = {
-    #   enable = true;
-    # };
-    # hostName = hostname;
+    # hostId = deadbeef # 8 unique hex chars
+    useDHCP = true;
+    networkmanager = {
+      enable = false;
+    };
     wireless = {
         enable = true;
-        scanOnLowSignal = false;
-        environmentFile = config.sops.secrets."wireless.env".path;
-        networks = {
-            # "${config.sops.secrets."networking/home/ssid".val}" = {
-            #     hidden = true;
-            #     psk = config.sops.secrets."networking/home/psk".val;
-            #     authProtocols = ["WPA-PSK"];
-            # };
-            "@home_uuid@" = {
-                psk = "@home_psk@";
-            };
-        };
+        scanOnLowSignal = true;
+        fallbackToWPA2 = true;
+        secretsFile = config.sops.secrets.wireless.path;
+        networks = import (lib.from-root "hosts/networking/wireless/us-wi-1");
     };
 
     firewall = {
@@ -111,8 +102,8 @@
     # mutableUsers = false;
     users = {
       # todo modules
-      user = import ../users/user { inherit pkgs config; }; # imports
-      backup = import ../users/backup { inherit pkgs config; }; # imports
+      user = import (lib.from-root "hosts/users/user") { inherit pkgs config; }; # imports
+      backup = import (lib.from-root "hosts/users/backup") { inherit pkgs config; }; # imports
     };
   };
   sops.secrets."users/backup/passwordHash" = {

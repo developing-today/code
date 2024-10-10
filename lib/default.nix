@@ -76,15 +76,15 @@ ensure-list = x: if builtins.isList x then x else [x];
 make-paths = strings: basePath:
   map (str: basePath + "/${str}") (ensure-list strings);
 make-hardware-paths = {
-  basePath ? from-root "hosts/common/modules/hardware-configuration"
+  basePath ? from-root "hosts/hardware-configuration"
 }: strings: make-paths (ensure-list strings) basePath;
 make-hardware = make-hardware-paths {};
 make-profile-paths = {
-  basePath ? from-root "hosts/common/modules"
+  basePath ? from-root "hosts"
 }: strings: make-paths (ensure-list strings) basePath;
 make-profiles = make-profile-paths {};
 make-disk-paths = {
-  basePath ? from-root "hosts/common/modules/disks"
+  basePath ? from-root "hosts/disks"
 }: strings: make-paths (ensure-list strings) basePath;
 make-disks = make-disk-paths {};
 make-unattended-installer-configurations = configurations: lib.mapAttrs'
@@ -161,7 +161,7 @@ lib2 = lib.attrsets.recursiveUpdate lib {
         */
         (make-hardware host.hardware)
         (make-profiles host.profiles)
-        (from-root "hosts/common/modules/disks")
+        (from-root "hosts/disks")
         # host.hardware-modules
         # host.profile-modules
         # hosts.darwin-profiles

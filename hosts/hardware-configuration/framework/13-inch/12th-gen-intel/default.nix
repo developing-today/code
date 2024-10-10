@@ -6,7 +6,7 @@
 }:
 {
   imports = [
-    ../../..
+    (lib.from-root "hosts/hardware-configuration")
     # NixOS/nixos-hardware
   ];
   boot.initrd.availableKernelModules = [

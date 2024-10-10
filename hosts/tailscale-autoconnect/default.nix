@@ -1,6 +1,6 @@
 { config, lib, ... }:
 {
-  imports = [ (lib.from-root "hosts/common/modules/abstract/tailscale-autoconnect.nix") ];
+  imports = [ (lib.from-root "hosts/abstract/tailscale-autoconnect") ];
   services.tailscaleAutoconnect = {
     enable = true;
     authkeyFile = config.sops.secrets.tailscale_key.path;

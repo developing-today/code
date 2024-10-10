@@ -15,7 +15,7 @@ networking.wireless = {
     };
 error:
 Failed assertions:
-- The option definition `networking.wireless.environmentFile' in `/nix/store/dzn3lfkkbiz6rr03i04g1al4m10zbh7c-source/hosts/common/modules/configuration.nix' no longer has any effect; please remove it.
+- The option definition `networking.wireless.environmentFile' in `/nix/store/dzn3lfkkbiz6rr03i04g1al4m10zbh7c-source/hosts/configuration.nix' no longer has any effect; please remove it.
 Secrets are now handled by the `networking.wireless.secretsFile` and
 `networking.wireless.networks.<name>.pskRaw` options.
 The change is motivated by a mechanism recently added by wpa_supplicant

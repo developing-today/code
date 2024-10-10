@@ -1,5 +1,5 @@
 #{ stateVersion, pkgs, ... }:
-{ pkgs, ... }:
+{ lib, pkgs, ... }: # TODO: lib.from-root, use nixos modules instead of importing this
 {
   nixpkgs.config = {
     allowBroken = true;
