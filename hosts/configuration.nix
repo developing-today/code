@@ -396,6 +396,7 @@
       cdrtools
       age
       libisoburn # xorriso
+      wpa_supplicant_gui
       ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
