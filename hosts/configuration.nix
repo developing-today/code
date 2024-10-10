@@ -40,17 +40,17 @@
         secretsFile = config.sops.secrets.wireless.path;
         networks = import (lib.from-root "hosts/networking/wireless/us-wi-1");
 
-        # # Imperative
-        # # TODO: install wpa_supplicant_gui
-        # allowAuxiliaryImperativeNetworks = true;
-        # userControlled = {
-        #   enable = true;
-        #   group = "network"; # TODO: attach network to gui users
-        # };
-        # # whats extraConfig.update_config=1 do?
-        # extraConfig = ''
-        #   update_config=1
-        # '';
+        # Imperative
+        # TODO: install wpa_supplicant_gui
+        allowAuxiliaryImperativeNetworks = true;
+        userControlled = {
+          enable = true;
+          group = "network"; # TODO: attach network to gui users
+        };
+        # whats extraConfig.update_config=1 do?
+        extraConfig = ''
+          update_config=1
+        '';
     };
 
     firewall = {
@@ -59,7 +59,7 @@
   };
   # # Ensure group exists
   # this would be for users that aren't root or sudoers or doassers or whatever
-  # users.groups.network = {};
+  users.groups.network = {};
   # TODO: check if not needed?? https://github.com/NixOS/nixpkgs/pull/305649
   # systemd.services.wpa_supplicant.preStart = "touch /etc/wpa_supplicant.conf";
 

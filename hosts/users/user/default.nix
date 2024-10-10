@@ -9,6 +9,7 @@
     "wheel"
     "docker"
     "video"
+    "network"
     "kvm"
     "beep"
   ];
