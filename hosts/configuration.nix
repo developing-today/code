@@ -58,7 +58,9 @@
     };
   };
   # # Ensure group exists
+  # this would be for users that aren't root or sudoers or doassers or whatever
   # users.groups.network = {};
+  # TODO: check if not needed?? https://github.com/NixOS/nixpkgs/pull/305649
   # systemd.services.wpa_supplicant.preStart = "touch /etc/wpa_supplicant.conf";
 
   # impermanence?
@@ -118,19 +120,22 @@
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell; # per user?
     # mutableUsers = false;
     users = {
+      root.hashedPassword = "*"; # Disable root password # Is this needed?
+
       # todo modules
       user = import (lib.from-root "hosts/users/user") { inherit pkgs config; }; # imports
       backup = import (lib.from-root "hosts/users/backup") { inherit pkgs config; }; # imports
     };
   };
-  sops.secrets."users/backup/passwordHash" = {
+  sops.secrets."users/backup/passwordHash" = { # imports
     neededForUsers = true;
     sopsFile = lib.from-root "secrets/sops/users/backup/password_backup.yaml";
   };
-  sops.secrets."users/user/passwordHash" = {
+  sops.secrets."users/user/passwordHash" = { # imports
     neededForUsers = true;
     sopsFile = lib.from-root "secrets/sops/users/user/password_user.yaml";
   };
+
   fonts = {
     packages = with pkgs; [
       # only desktops not servers?
@@ -180,6 +185,10 @@
     dbus.enable = true;
     openssh = {
       enable = true;
+      settings = {
+        PermitRootLogin = "no";
+        PasswordAuthentication = false;
+      };
       hostKeys = [
         {
           path = "/etc/ssh/ssh_host_ed25519_key";
