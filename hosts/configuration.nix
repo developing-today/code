@@ -36,14 +36,31 @@
         enable = true;
         scanOnLowSignal = true;
         fallbackToWPA2 = true;
+        # Declarative
         secretsFile = config.sops.secrets.wireless.path;
         networks = import (lib.from-root "hosts/networking/wireless/us-wi-1");
+
+        # # Imperative
+        # # TODO: install wpa_supplicant_gui
+        # allowAuxiliaryImperativeNetworks = true;
+        # userControlled = {
+        #   enable = true;
+        #   group = "network"; # TODO: attach network to gui users
+        # };
+        # # whats extraConfig.update_config=1 do?
+        # extraConfig = ''
+        #   update_config=1
+        # '';
     };
 
     firewall = {
       allowedUDPPorts = [ config.services.tailscale.port ]; # needed?
     };
   };
+  # # Ensure group exists
+  # users.groups.network = {};
+  # systemd.services.wpa_supplicant.preStart = "touch /etc/wpa_supplicant.conf";
+
   # impermanence?
   i18n = {
     defaultLocale = "en_US.UTF-8";
