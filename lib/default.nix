@@ -159,6 +159,7 @@ lib2.attrsets.recursiveUpdate lib2 {
         lib = lib2;
         /*
 {
+  config,
   inputs,
   hostName,
   host,
