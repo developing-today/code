@@ -92,12 +92,17 @@ make-unattended-installer-configurations = configurations: lib.mapAttrs'
   lib.nameValuePair
     "unattended-installer_offline_${name}"
     (inputs.unattended-installer.lib.diskoInstallerWrapper config {
-      config.unattendedInstaller = {
-        successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
-        preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
-        postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
-        preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
-        postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+      # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+      # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+      config = {
+        isoImage.squashfsCompression = "zstd -Xcompression-level 6";
+        unattendedInstaller = {
+          successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+          preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+          postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+          preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+          postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+        };
       };
     })
 ) configurations;

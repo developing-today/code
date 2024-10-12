@@ -76,7 +76,7 @@ else
   echo "Success! Executing '${command}' in ${sleep_time} seconds..."
   set +x
   while [ $sleep_time -gt 0 ]; do
-    echo -ne "\r\033[K$sleep_time"
+    echo -ne "\r\033[K$sleep_time\n"
     sleep 1
     sleep_time=$(($sleep_time - 1))
   done
@@ -85,4 +85,4 @@ else
 fi
 
 echo -e "\nExecuting '${command}'...\n"
-$command
+# $command

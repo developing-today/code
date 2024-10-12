@@ -1,5 +1,6 @@
 {
   outputs = inputs:
+  # flake-parts.lib.mkFlake
   rec {
     lib = import ./lib inputs;
     hosts = import ./hosts inputs;
@@ -8,6 +9,9 @@
     nixosConfigurations = configurations // unattended-installer-configurations;
   };
   inputs = {
+    impermanence = {
+        url = "github:Nix-community/impermanence";
+    };
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -167,9 +171,6 @@
     # trustix = {
     #   url = "github:nix-community/trustix";
     #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
-    # impermanence = {
-    #   url = "github:Nix-community/impermanence";
     # };
     # nix-inspect = {
     #   url = "github:bluskript/nix-inspect";

@@ -8,53 +8,88 @@
   ...
 }:
 {
-  imports = [ (lib.from-root "hosts/sops") ];
-  # imports = [ ../../home/yazi.nix ];
+  imports = [ (lib.from-root "hosts/sops") (lib.from-root "hosts/impermanence") ]; # home/yazi.nix
   boot = {
+    # kernelPackages = pkgs.linuxKernel.packages.linux_
+    # loader.external = {
     tmp = {
       cleanOnBoot = true;
     };
     loader = {
+      # grub = {
+      #   enable = true;
+      #   efiSupport = true;
+      #   device = "nodev";
+      #  # For installing with GRUB, mount your ESP to /boot/efi rather than /boot
+      # };
       systemd-boot = {
         enable = true;
         configurationLimit = 2048;
       };
-      efi.canTouchEfiVariables = true;
+      efi = {
+        canTouchEfiVariables = true;
+        # efiSysMountPoint = "/boot/efi";
+      };
     };
   };
   sops.secrets."wireless" = {
     sopsFile = lib.from-root "secrets/sops/common/networking/wireless/us-wi-1.yaml";
   };
+  # systemd.network.networks = let networkConfig = { DHCP = "yes"; DNSSEC = "yes"; DNSOverTLS = "yes"; DNS = [ "1.1.1.1" "1.0.0.1" ]; };
+  # boot.initrd.systemd.network.enable
+  # networking.useNetworkd
+  # systemd.networkd.enable
+  # It actually looks like there isn’t any options.systemd.networkd anyway (just options.systemd.network and boot.initrd.systemd.network), though systemd.network.networks.<name>.enable and systemd.network.netdevs.<name>.enable both refer to systemd.networkd; these docs definitely need attention.
+  # @efx: You probably just want to set systemd.network.enable = true and forget about boot.initrd.systemd.network entirely, unless you want to boot the device from another location on your network.
+  # systemd.services.systemd-udevd.restartIfChanged = false;
+  # systemd.services.tailscaled.after = ["NetworkManager-wait-online.service"]
+  # tailscale module??
+  # networking.useNetworkd = true;
+  # systemd.network.enable = true;
+  # systemd.network.wait-online.enable = false;
   networking = {
     inherit hostName;
     # hostId = deadbeef # 8 unique hex chars
+    # domain
     useDHCP = true;
+    # useNetworkd = true;
+    # dhcpcd.persistent = true;
+    enableIPv6 = true;
+    # nat
+    # https://search.nixos.org/options?channel=unstable&show=networking.supplicant&from=0&size=50&sort=relevance&type=packages&query=networking.supplicant
+    # https://nixos.wiki/wiki/Systemd-networkd
+    # systemd.network.netdevs
+    # https://discourse.nixos.org/t/imperative-declarative-wifi-networks-with-wpa-supplicant/12394/9
+    firewall = {
+      enable = true;
+      allowedUDPPorts = [ config.services.tailscale.port ]; # needed?
+      # allowedTCPPortRanges = [
+      #     { from = 4000; to = 4007; }
+      #     { from = 8000; to = 8010; }
+      # ];
+    };
     networkmanager = {
       enable = false;
+      unmanaged = [
+        "*" "except:type:wwan" "except:type:gsm"
+      ];
     };
     wireless = {
         enable = true;
+        # userControlled.enable = true;
         scanOnLowSignal = true;
         fallbackToWPA2 = true;
-        # Declarative
         secretsFile = config.sops.secrets.wireless.path;
         networks = import (lib.from-root "hosts/networking/wireless/us-wi-1");
-
-        # Imperative
-        # TODO: install wpa_supplicant_gui
-        allowAuxiliaryImperativeNetworks = true;
+        allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
         userControlled = {
           enable = true;
-          group = "network"; # TODO: attach network to gui users
+          group = "network";
         };
         # whats extraConfig.update_config=1 do?
         extraConfig = ''
           update_config=1
         '';
-    };
-
-    firewall = {
-      allowedUDPPorts = [ config.services.tailscale.port ]; # needed?
     };
   };
   # # Ensure group exists
@@ -118,7 +153,7 @@
   users = {
     # remove from here?
     defaultUserShell = pkgs.oils-for-unix; # pkgs.nushell; # oils-for-unix; #nushell; # per user?
-    # mutableUsers = false;
+    mutableUsers = false;
     users = {
       root.hashedPassword = "*"; # Disable root password # Is this needed?
 
@@ -190,13 +225,14 @@
         PasswordAuthentication = false;
       };
       hostKeys = [
+      #   {
+      #     path = "/etc/ssh/ssh_host_ed25519_key";
+      #     type = "ed25519";
+      #   }
+      # ] ++ lib.optionals host.bootstrap
+      # [
         {
-          path = "/etc/ssh/ssh_host_ed25519_key";
-          type = "ed25519";
-        }
-      ] ++ lib.optionals host.bootstrap [
-        {
-          path = "/bootstrap/ssh_host_ed25519_key";
+          path = "/nix/persist/bootstrap/ssh_host_ed25519_key";
           type = "ed25519";
         }
       ];
@@ -397,6 +433,7 @@
       age
       libisoburn # xorriso
       wpa_supplicant_gui
+      # wpa_cute # TODO: try this?
       ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };

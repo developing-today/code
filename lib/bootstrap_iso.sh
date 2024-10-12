@@ -162,16 +162,16 @@ echo "Copying /etc/ssh/ssh_host_ed25519_key to /bootstrap"
 cp /etc/ssh/ssh_host_ed25519_key "$writable_dir/bootstrap/"
 echo "Copied ssh_host_ed25519_key to /bootstrap"
 
-echo "Copying repository root to /bootstrap as tar.gz"
-echo "Repository root: $repo_root"
-repo_root_basename=$(basename "$repo_root")
-echo "Repository root basename: $repo_root_basename"
-output_tar_file="$repo_root_basename.tar.gz"
-output_tar="$writable_dir/bootstrap/$output_tar_file"
-echo "Output tar.gz: $output_tar"
-echo "Creating tar.gz of repository root: $repo_root"
-tar -czf "$output_tar" -C "$repo_root" .
-echo "Created tar.gz of repository root: $repo_root"
+# echo "Copying repository root to /bootstrap as tar.gz"
+# echo "Repository root: $repo_root"
+# repo_root_basename=$(basename "$repo_root")
+# echo "Repository root basename: $repo_root_basename"
+# output_tar_file="$repo_root_basename.tar.gz"
+# output_tar="$writable_dir/bootstrap/$output_tar_file"
+# echo "Output tar.gz: $output_tar"
+# echo "Creating tar.gz of repository root: $repo_root"
+# tar -czf "$output_tar" -C "$repo_root" .
+# echo "Created tar.gz of repository root: $repo_root"
 
 # CUSTOM FILES END
 echo ""

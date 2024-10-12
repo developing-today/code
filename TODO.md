@@ -1,14 +1,15 @@
 
 ---
 - 1tb disko
-- wpa_supplicant waybar
 - persistence
   - btrfs|zfs|tmpfs
   - sops.age.keyFile # replace default with persistence
+- secrets
+  - git secret
+- turn on branch protection
 - improve bootstrap
+  - persistence
 - ipxe
-- imperative wpa_supplicant
-  - wpa_supplicant_gui
 
 ---
 https://0xda.de/blog/2024/06/framework-and-nixos-secure-boot-day-three/
@@ -237,3 +238,79 @@ in
     fsType = "vfat";
   };
 }
+
+---
+https://aldoborrero.com/posts/2023/01/15/setting-up-my-machines-nix-style/
+boot.initrd.systemd.services.persisted-files = {
+
+---
+/
+/home
+/nix
+/persist
+
+/boot, /nix, /var/log, /home - self-explanatory
+/tmp - for large builds (so they don't get put on tmpfs), gets cleaned on reboot if you set boot.tmp.cleanOnBoot
+/var/tmp - just a good idea to not have this on tmpfs
+/var/lib/systemd - systemd stuff, not sure if necessary but definitely won't hurt, it's quite small anyway
+/etc/nixos - system config
+/var/lib/nixos - important nixos files like uid/gid map
+/etc/adjtime - something about hardware clock offset
+/etc/machine-id - needed for systemd logs and possibly other stuff
+...as well as the dirs for all the services. You probably want to add /var/db/dhcpcd and /var/db/sudo/lectured.
+
+---
+# configure impermanence
+environment.persistence."/persist" = {
+  directories = [
+    "/etc/nixos"
+  ];
+  files = [
+    "/etc/machine-id"
+    "/etc/ssh/ssh_host_ed25519_key"
+    "/etc/ssh/ssh_host_ed25519_key.pub"
+    "/etc/ssh/ssh_host_rsa_key"
+    "/etc/ssh/ssh_host_rsa_key.pub"
+};
+
+security.sudo.extraConfig = ''
+  # rollback results in sudo lectures after each reboot
+  Defaults lecture = never
+'';
+
+---
+isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+
+---
+{
+  # …
+
+  # machine-id is used by systemd for the journal, if you don't
+  # persist this file you won't be able to easily use journalctl to
+  # look at journals for previous boots.
+  environment.etc."machine-id".source
+    = "/nix/persist/etc/machine-id";
+
+
+  # if you want to run an openssh daemon, you may want to store the
+  # host keys across reboots.
+  #
+  # For this to work you will need to create the directory yourself:
+  # $ mkdir /nix/persist/etc/ssh
+  environment.etc."ssh/ssh_host_rsa_key".source
+    = "/nix/persist/etc/ssh/ssh_host_rsa_key";
+  environment.etc."ssh/ssh_host_rsa_key.pub".source
+    = "/nix/persist/etc/ssh/ssh_host_rsa_key.pub";
+  environment.etc."ssh/ssh_host_ed25519_key".source
+    = "/nix/persist/etc/ssh/ssh_host_ed25519_key";
+  environment.etc."ssh/ssh_host_ed25519_key.pub".source
+    = "/nix/persist/etc/ssh/ssh_host_ed25519_key.pub";
+
+  # …
+}
+
+---
+https://github.com/NixOS/nix/issues/1971
+https://community.frame.work/t/nixos-on-the-framework-laptop-16/46743/48
+https://xeiaso.net/blog/paranoid-nixos-2021-07-18/
+https://mt-caret.github.io/blog/posts/2020-06-29-optin-state.html

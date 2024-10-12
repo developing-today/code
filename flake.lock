@@ -369,6 +369,21 @@
         "type": "github"
       }
     },
+    "impermanence": {
+      "locked": {
+        "lastModified": 1727649413,
+        "narHash": "sha256-FA53of86DjFdeQzRDVtvgWF9o52rWK70VHGx0Y8fElQ=",
+        "owner": "Nix-community",
+        "repo": "impermanence",
+        "rev": "d0b38e550039a72aff896ee65b0918e975e6d48e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Nix-community",
+        "repo": "impermanence",
+        "type": "github"
+      }
+    },
     "inspect": {
       "flake": false,
       "locked": {
@@ -791,6 +806,7 @@
         "gitignore": "gitignore",
         "hercules-ci-effects": "hercules-ci-effects",
         "home-manager": "home-manager",
+        "impermanence": "impermanence",
         "neovim-nightly-overlay": "neovim-nightly-overlay",
         "neovim-src": "neovim-src",
         "nix-darwin": "nix-darwin",

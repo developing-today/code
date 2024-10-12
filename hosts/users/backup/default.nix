@@ -2,7 +2,7 @@
 {
   isNormalUser = true;
   hashedPasswordFile = config.sops.secrets."users/backup/passwordHash".path;
-  description = "user";
+  description = "backup";
   extraGroups = [
     "trusted-users"
     "networkmanager"

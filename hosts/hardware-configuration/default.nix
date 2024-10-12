@@ -1,14 +1,14 @@
 { lib, modulesPath, ... }:
 {
   imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
-  swapDevices = [
-    {
-      device = "/swapfile";
-      size = 1024 * 192;
-    }
-    # "/dev/disk/by-label/NIXSWAP" # TODO: Add swap partition
-    # zram? zswap?
-  ];
+  # swapDevices = [ # TODO
+  #   {
+  #     device = "/swapfile";
+  #     size = 1024 * 192;
+  #   }
+  #   # "/dev/disk/by-label/NIXSWAP" # TODO: Add swap partition
+  #   # zram? zswap?
+  # ];
   networking.useDHCP = lib.mkDefault true;
   powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

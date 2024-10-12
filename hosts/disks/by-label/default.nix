@@ -1,4 +1,4 @@
-_: # TODO: replace with something like 4tb
+_:
 {
   fileSystems = {
     "/boot" = {

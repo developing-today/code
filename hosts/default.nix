@@ -10,7 +10,7 @@ in {
   amd = host {
     profiles = "desktop";
     hardware = "framework/13-inch/7040-amd";
-    disks = "nvme0n1/4tb";
+    disks = [ "nvme0n1/4tb" "tmpfs/root" ];
     bootstrap = true;
   };
 }

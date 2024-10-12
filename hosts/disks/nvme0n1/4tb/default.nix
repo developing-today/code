@@ -7,22 +7,32 @@ _:
       type = "gpt";
       partitions = {
         ESP = {
-          type = "EF00";
+          # TODO: use grub and move kernels to /persistence/boot/efi or something
           size = "100G"; # 32G? # 4G?
+          type = "EF00";
           content = {
             type = "filesystem";
             format = "vfat";
             mountpoint = "/boot";
-            extraArgs = [ "-nNIXBOOT" ];
+            mountOptions = [ "umask=0077" ];
+            # extraArgs = [ "-nNIXBOOT" ];
           };
         };
-        root = {
-          size = "1T";
+        nix = {
+          end = "-200G";
           content = {
             type = "filesystem";
             format = "ext4";
-            mountpoint = "/";
-            extraArgs = [ "-LNIXROOT" ];
+            mountpoint = "/nix";
+            # extraArgs = [ "-LNIXROOT" ];
+          };
+        };
+        swap = {
+          size = "100%";
+          content = {
+            type = "swap";
+            discardPolicy = "both";
+            resumeDevice = true; # resume from hiberation from this device
           };
         };
       };
