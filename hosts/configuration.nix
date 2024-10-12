@@ -8,7 +8,10 @@
   ...
 }:
 {
-  imports = [ (lib.from-root "hosts/sops") (lib.from-root "hosts/impermanence") ]; # home/yazi.nix
+  imports = [
+    (lib.from-root "hosts/sops")
+    (lib.from-root "hosts/impermanence")
+  ]; # home/yazi.nix
   boot = {
     # kernelPackages = pkgs.linuxKernel.packages.linux_
     # loader.external = {
@@ -71,30 +74,32 @@
     networkmanager = {
       enable = false;
       unmanaged = [
-        "*" "except:type:wwan" "except:type:gsm"
+        "*"
+        "except:type:wwan"
+        "except:type:gsm"
       ];
     };
     wireless = {
+      enable = true;
+      # userControlled.enable = true;
+      scanOnLowSignal = true;
+      fallbackToWPA2 = true;
+      secretsFile = config.sops.secrets.wireless.path;
+      networks = import (lib.from-root "hosts/networking/wireless/us-wi-1");
+      allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
+      userControlled = {
         enable = true;
-        # userControlled.enable = true;
-        scanOnLowSignal = true;
-        fallbackToWPA2 = true;
-        secretsFile = config.sops.secrets.wireless.path;
-        networks = import (lib.from-root "hosts/networking/wireless/us-wi-1");
-        allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
-        userControlled = {
-          enable = true;
-          group = "network";
-        };
-        # whats extraConfig.update_config=1 do?
-        extraConfig = ''
-          update_config=1
-        '';
+        group = "network";
+      };
+      # whats extraConfig.update_config=1 do?
+      extraConfig = ''
+        update_config=1
+      '';
     };
   };
   # # Ensure group exists
   # this would be for users that aren't root or sudoers or doassers or whatever
-  users.groups.network = {};
+  users.groups.network = { };
   # TODO: check if not needed?? https://github.com/NixOS/nixpkgs/pull/305649
   # systemd.services.wpa_supplicant.preStart = "touch /etc/wpa_supplicant.conf";
 
@@ -162,11 +167,13 @@
       backup = import (lib.from-root "hosts/users/backup") { inherit pkgs config; }; # imports
     };
   };
-  sops.secrets."users/backup/passwordHash" = { # imports
+  sops.secrets."users/backup/passwordHash" = {
+    # imports
     neededForUsers = true;
     sopsFile = lib.from-root "secrets/sops/users/backup/password_backup.yaml";
   };
-  sops.secrets."users/user/passwordHash" = { # imports
+  sops.secrets."users/user/passwordHash" = {
+    # imports
     neededForUsers = true;
     sopsFile = lib.from-root "secrets/sops/users/user/password_user.yaml";
   };
@@ -225,12 +232,12 @@
         PasswordAuthentication = false;
       };
       hostKeys = [
-      #   {
-      #     path = "/etc/ssh/ssh_host_ed25519_key";
-      #     type = "ed25519";
-      #   }
-      # ] ++ lib.optionals host.bootstrap
-      # [
+        #   {
+        #     path = "/etc/ssh/ssh_host_ed25519_key";
+        #     type = "ed25519";
+        #   }
+        # ] ++ lib.optionals host.bootstrap
+        # [
         {
           path = "/nix/persist/bootstrap/ssh_host_ed25519_key";
           type = "ed25519";
@@ -434,7 +441,7 @@
       libisoburn # xorriso
       wpa_supplicant_gui
       # wpa_cute # TODO: try this?
-      ];
+    ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
 }

@@ -1,8 +1,10 @@
 {
   inputs,
-  outputs,
+  hostName,
+  host,
   system,
   stateVersion,
+  lib,
   ...
 }:
 let
@@ -28,11 +30,11 @@ let
 in
 {
   imports = [
-    ../tailscale-autoconnect
-    ../home
+    (lib.from-root "hosts/tailscale-autoconnect")
+    (lib.from-root "hosts/home")
     inputs.vim.nixosModules.${system}
-    ../configuration.nix # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
-    ../hyprland # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
+    (lib.from-root "hosts/configuration.nix") # TODO: take this apart # this relies on magic overlays, ? todo: remove overlays from configuration.nix? then add inline let overlay configuration right here below this moduleArrayList.
+    (lib.from-root "hosts/hyprland") # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
   ];
   system.stateVersion = stateVersion;
   nixpkgs.overlays = pkgs.overlays;

@@ -7,6 +7,5 @@
 {
   imports = [
     inputs.disko.nixosModules.disko
-  ] ++
-  lib.make-disks host.disks;
+  ] ++ lib.make-disks host.disks;
 }

@@ -1,6 +1,5 @@
-_:
-{
-  disko.devices.disk."nvme0n1" ={
+_: {
+  disko.devices.disk."nvme0n1" = {
     device = "/dev/nvme0n1";
     type = "disk";
     content = {
@@ -19,7 +18,7 @@ _:
           };
         };
         nix = {
-          end = "-200G";
+          end = "-200G"; # 200G swap for 96G ram
           content = {
             type = "filesystem";
             format = "ext4";

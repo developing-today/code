@@ -1,16 +1,17 @@
 {
-  outputs = inputs:
-  # flake-parts.lib.mkFlake
-  rec {
-    lib = import ./lib inputs;
-    hosts = import ./hosts inputs;
-    configurations = lib.make-nixos-configurations hosts;
-    unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
-    nixosConfigurations = configurations // unattended-installer-configurations;
-  };
+  outputs =
+    inputs:
+    # flake-parts.lib.mkFlake
+    rec {
+      lib = import ./lib inputs;
+      hosts = import ./hosts inputs;
+      configurations = lib.make-nixos-configurations hosts;
+      unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
+      nixosConfigurations = configurations // unattended-installer-configurations;
+    };
   inputs = {
     impermanence = {
-        url = "github:Nix-community/impermanence";
+      url = "github:Nix-community/impermanence";
     };
     disko = {
       url = "github:nix-community/disko";
