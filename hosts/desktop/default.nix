@@ -50,11 +50,21 @@ in
     ];
     files = [
       "/etc/machine-id"
-      "/etc/ssh/ssh_host_ed25519_key.pub"
+      # "/etc/ssh/ssh_host_ed25519_key.pub"
       "/etc/ssh/ssh_host_ed25519_key"
-      "/etc/ssh/ssh_host_rsa_key.pub"
-      "/etc/ssh/ssh_host_rsa_key"
+      # "/etc/ssh/ssh_host_rsa_key.pub"
+      # "/etc/ssh/ssh_host_rsa_key"
     ];
+  };
+  systemd.services.nix-daemon = {
+    environment = {
+      # Location for temporary files
+      TMPDIR = "/var/cache/nix";
+    };
+    serviceConfig = {
+      # Create /var/cache/nix automatically on Nix Daemon start
+      CacheDirectory = "nix";
+    };
   };
   boot = {
     # kernelPackages = pkgs.linuxKernel.packages.linux_
@@ -282,7 +292,7 @@ in
         # ] ++ lib.optionals host.bootstrap
         # [
         {
-          path = "/nix/persistent/bootstrap/ssh_host_ed25519_key";
+          path = "/nix/persistent/etc/ssh/ssh_host_ed25519_key";
           type = "ed25519";
         }
       ];
@@ -324,7 +334,10 @@ in
   };
   environment = {
     sessionVariables.NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
-    variables.EDITOR = "nvim";
+    variables = {
+      EDITOR = "nvim";
+      NIX_REMOTE = "daemon";
+    };
     # things should end up in systempackages if
     # they are required for boot or login or
     # have namespace conflicts i don't want to deal with in home manager
