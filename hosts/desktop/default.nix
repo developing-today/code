@@ -48,6 +48,13 @@ in
       "/root"
       "/var"
     ];
+    files = [
+      "/etc/machine-id"
+      "/etc/ssh/ssh_host_ed25519_key.pub"
+      "/etc/ssh/ssh_host_ed25519_key"
+      "/etc/ssh/ssh_host_rsa_key.pub"
+      "/etc/ssh/ssh_host_rsa_key"
+    ];
   };
   boot = {
     # kernelPackages = pkgs.linuxKernel.packages.linux_
@@ -275,7 +282,7 @@ in
         # ] ++ lib.optionals host.bootstrap
         # [
         {
-          path = "/nix/persist/bootstrap/ssh_host_ed25519_key";
+          path = "/nix/persistent/bootstrap/ssh_host_ed25519_key";
           type = "ed25519";
         }
       ];
