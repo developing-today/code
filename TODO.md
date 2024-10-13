@@ -7,6 +7,8 @@
     - use home manager?
   - sops age key from ssh key for desktop use
   - ssh key itself
+- hosts defined by hostname but maybe they should be defined by hostid?
+- users defined by username but maybe they should be defined by uid?
 - persistence
   - rename /nix/persist ? /nix/persistent? /nix/var/persistent?
   - alias home dirs

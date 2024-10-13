@@ -1,5 +1,6 @@
 { pkgs, config }:
 {
+  uid = 1337;
   isNormalUser = true;
   hashedPasswordFile = config.sops.secrets."users/user/passwordHash".path;
   description = "user";
