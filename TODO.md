@@ -1,14 +1,34 @@
-
 ---
-- 1tb disko
-- persistence
-  - btrfs|zfs|tmpfs
-  - sops.age.keyFile # replace default with persistence
 - secrets
   - git secret
+- persistence
+  - rename /nix/persist ? /nix/persistent? /nix/var/persistent?
+  - alias home dirs
+  - alias /var/tmp
+  - alias all of /var??
 - turn on branch protection
 - improve bootstrap
-  - persistence
+  - allow bootstrap vs regular
+    - bootstrap hosts as <hostname>_bootstrap
+    - rename hosts after bootstrap to <hostname>
+    - auto-update from there
+  - rekey bootstrap
+    - maybe
+      - generate new key on desktop w/admin
+      - add pk as admin keyed secret
+      - sops add key to sops.yaml
+      - rekey appropriate secrets
+      - commit and push
+      - bootstrap with specific group key instead of admin key
+    - or maybe
+      - use random /etc/ssh/ hostkey
+      - generate age key
+      - sops add key to sops.yaml
+        - how to choose where to add?
+      - replace /nix/persist/bootstrap/<key> with /etc/ssh key
+      - commit and push rekeyed secrets
+        - on conflict do what?
+      - rm original bootstrap key
 - ipxe
 
 ---
@@ -314,3 +334,102 @@ https://github.com/NixOS/nix/issues/1971
 https://community.frame.work/t/nixos-on-the-framework-laptop-16/46743/48
 https://xeiaso.net/blog/paranoid-nixos-2021-07-18/
 https://mt-caret.github.io/blog/posts/2020-06-29-optin-state.html
+
+
+---
+{
+  nix = {
+    extraOptions = ''
+      experimental-features = nix-command flakes
+      !include ${config.sops.secrets.nixAccessTokens.path}
+    '';
+  };
+
+  sops.secrets.nixAccessTokens = {
+    mode = "0440";
+    group = config.users.groups.keys.name;
+  };
+}
+https://github.com/NixOS/nix/issues/6536#issuecomment-1254858889
+https://lantian.pub/en/article/modify-computer/nixos-low-ram-vps.lantian/
+boot.kernelParams = [
+  # Disable auditing
+  "audit=0"
+  # Do not generate NIC names based on PCIe addresses (e.g. enp1s0, useless for VPS)
+  # Generate names based on orders (e.g. eth0)
+  "net.ifnames=0"
+];
+boot.initrd = {
+  compressor = "zstd";
+  compressorArgs = ["-19" "-T0"];
+  systemd.enable = true;
+};
+boot.loader.grub = {
+  enable = !config.boot.isContainer;
+  default = "saved";
+  devices = ["/dev/vda"];
+};
+
+# Manage networking with systemd-networkd
+systemd.network.enable = true;
+services.resolved.enable = false;
+networking.nameservers = [
+  "8.8.8.8"
+];
+      PermitRootLogin = lib.mkForce "prohibit-password";
+
+      boot.initrd.postDeviceCommands = lib.mkIf (!config.boot.initrd.systemd.enable) ''
+        # Set the system time from the hardware clock to work around a
+        # bug in qemu-kvm > 1.5.2 (where the VM clock is initialised
+        # to the *boot time* of the host).
+        hwclock -s
+      '';
+
+      boot.initrd.availableKernelModules = [
+        "virtio_net"
+        "virtio_pci"
+        "virtio_mmio"
+        "virtio_blk"
+        "virtio_scsi"
+      ];
+      boot.initrd.kernelModules = [
+        "virtio_balloon"
+        "virtio_console"
+        "virtio_rng"
+      ];
+
+      disko = {
+        # Do not let Disko manage fileSystems.* config for NixOS.
+        # Reason is that Disko mounts partitions by GPT partition names, which are
+        # easily overwritten with tools like fdisk. When you fail to deploy a new
+        # config in this case, the old config that comes with the disk image will
+        # not boot either.
+        enableConfig = false;
+        # Size for generated disk image. 2GB is enough for me. Adjust per your need.
+         imageSize = "2G";
+         # Path to disk. When Disko generates disk images, it actually runs a QEMU
+         # virtual machine and runs the installation steps. Whether your VPS
+         # recognizes its hard disk as "sda" or "vda" doesn't matter. We abide to
+         # Disko's QEMU VM and use "vda" here.
+         device = "/dev/vda";
+
+         nodev."/" = {
+           fsType = "tmpfs";
+           mountOptions = ["relatime" "mode=755" "nosuid" "nodev"];
+         };
+
+
+         mountpoint = "/nix";
+         mountOptions = ["compress-force=zstd" "nosuid" "nodev"];
+
+
+         # Change to sda/vda based on how your VPS recognizes its hard drive
+         cat result/main.raw | ssh root@123.45.678.90 "dd of=/dev/sda"
+
+         If your rescue environment doesn't have SSH, use the following command: (ATTENTION: NO ENCRYPTION!)
+
+         # Change to sda/vda based on how your VPS recognizes its hard drive
+         # Run this on VPS
+         nc -l 1234 | dd of=/dev/sda
+         # Run this on local computer
+         cat result/main.raw | nc 123.45.678.89 1234
