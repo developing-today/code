@@ -40,6 +40,15 @@ in
   ]; # home/yazi.nix
   system.stateVersion = stateVersion;
   nixpkgs.overlays = pkgs.overlays;
+  environment.persistence."/nix/persistent" = {
+    hideMounts = true;
+
+    directories = [
+      "/home"
+      "/root"
+      "/var"
+    ];
+  };
   boot = {
     # kernelPackages = pkgs.linuxKernel.packages.linux_
     tmp = {
