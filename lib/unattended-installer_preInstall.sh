@@ -66,20 +66,24 @@ echo "Sleep Seconds: $sleep_time"
 echo "Force: $force"
 
 echo "preInstall starting"
-echo "mkdir /mnt/nix/persist"
-mkdir -p /mnt/nix/persist
-echo "/mnt/nix/persist created"
+echo "mkdir /mnt/nix/persistent/etc/ssh"
+mkdir -p /mnt/nix/persistent/etc/ssh
+echo "/mnt/nix/persistent/etc/ssh created"
 
-echo "Copying /iso/bootstrap to /mnt/nix/persist/bootstrap..."
-cp -r /iso/bootstrap /mnt/nix/persist
-echo "Done copying /iso/bootstrap to /mnt/nix/persist/bootstrap"
+echo "Copying /iso/bootstrap to /mnt/nix/persistent/bootstrap..."
+cp -r /iso/bootstrap /mnt/nix/persistent
+echo "Done copying /iso/bootstrap to /mnt/nix/persistent/bootstrap"
 
-echo "Listing /mnt/nix/persist..."
-ls -lahR /mnt/nix/persist
-echo "Done listing /mnt/nix/persist"
+echo "Copying /mnt/nix/persistent/bootstrap/ssh* to /mnt/nix/persistent/etc/ssh..."
+cp /mnt/nix/persistent/bootstrap/ssh* /mnt/nix/persistent/etc/ssh
+echo "Done copying /mnt/nix/persistent/bootstrap/ssh* to /mnt/nix/persistent/etc/ssh"
+
+echo "Listing /mnt/nix/persistent..."
+ls -lahR /mnt/nix/persistent
+echo "Done listing /mnt/nix/persistent"
 
 # echo "Uncompressing all .tar.gz files in /mnt/bootstrap..."
-# find /mnt/nix/persist/bootstrap -name "*.tar.gz" -exec sh -c '
+# find /mnt/nix/persistent/bootstrap -name "*.tar.gz" -exec sh -c '
 #     dir=$(dirname "$1")
 #     base=$(basename "$1" .tar.gz)
 #     mkdir -p "$dir/$base"
