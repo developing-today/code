@@ -442,3 +442,4 @@ networking.nameservers = [
          nc -l 1234 | dd of=/dev/sda
          # Run this on local computer
          cat result/main.raw | nc 123.45.678.89 1234
+https://nlewo.github.io/nixos-manual-sphinx/configuration/user-mgmt.xml.html

@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup SIGINT
 
-sleep_time=30
+sleep_time=0 #30
 force=false
 
 print_usage() {
