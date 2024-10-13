@@ -71,21 +71,21 @@ echo "Listing /iso/bootstrap..."
 ls -lahR /iso/bootstrap
 echo "Done listing /iso/bootstrap"
 
-echo "mkdir /mnt/nix/persistent/etc"
-mkdir -p /mnt/nix/persistent/etc
-echo "/mnt/nix/persistent/etc created"
+echo "mkdir /mnt/nix/persistent"
+mkdir -p /mnt/nix/persistent
+echo "/mnt/nix/persistent created"
 
-echo "Copying /iso/bootstrap to /mnt/nix/persistent/bootstrap..."
+echo "Copying /iso/bootstrap into /mnt/nix/persistent..."
 cp -LRv /iso/bootstrap /mnt/nix/persistent
-echo "Done copying /iso/bootstrap to /mnt/nix/persistent/bootstrap"
+echo "Done copying /iso/bootstrap into /mnt/nix/persistent"
 
 echo "Listing /mnt/nix/persistent..."
 ls -lahR /mnt/nix/persistent
 echo "Done listing /mnt/nix/persistent"
 
-echo "Copying /mnt/nix/persistent/bootstrap/ssh* to /mnt/nix/persistent/etc/ssh..."
-cp -LRv /mnt/nix/persistent/bootstrap/ssh /mnt/nix/persistent/etc
-echo "Done copying /mnt/nix/persistent/bootstrap/ssh* to /mnt/nix/persistent/etc/ssh"
+echo "Copying /mnt/nix/persistent/bootstrap/etc into /mnt/nix/persistent..."
+cp -LRv /mnt/nix/persistent/bootstrap/etc /mnt/nix/persistent
+echo "Done copying /mnt/nix/persistent/bootstrap/etc into /mnt/nix/persistent"
 
 echo "Listing /mnt/nix/persistent..."
 ls -lahR /mnt/nix/persistent
