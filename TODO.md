@@ -1,6 +1,12 @@
 ---
+- waybar wpa_supplicant broke
 - secrets
-  - git secret
+  - github secret
+    - github module
+    - make 2 copies one for /root/auth one for /home/user/auth ?
+    - use home manager?
+  - sops age key from ssh key for desktop use
+  - ssh key itself
 - persistence
   - rename /nix/persist ? /nix/persistent? /nix/var/persistent?
   - alias home dirs
@@ -8,6 +14,7 @@
   - alias all of /var??
 - turn on branch protection
 - improve bootstrap
+  - home directory auto-permission each user
   - allow bootstrap vs regular
     - bootstrap hosts as <hostname>_bootstrap
     - rename hosts after bootstrap to <hostname>
