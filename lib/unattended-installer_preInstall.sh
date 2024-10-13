@@ -71,9 +71,19 @@ echo "Listing /iso/bootstrap..."
 ls -lahR /iso/bootstrap
 echo "Done listing /iso/bootstrap"
 
-echo "mkdir /mnt/nix/persistent"
-mkdir -p /mnt/nix/persistent
-echo "/mnt/nix/persistent created"
+echo "mkdir /mnt/nix/persistent/home/user/.config" # TODO: auto-create all user home dirs
+echo "TODO: auto-create all user home dirs"
+mkdir -p /mnt/nix/persistent/home/user/.config
+echo "TODO: auto-create all user home dirs"
+echo "/mnt/nix/persistent/home/user/.config created" # TODO: auto-create all user home dirs
+
+echo "chown -R 1000:100 /mnt/nix/persistent/home/user"
+echo "TODO: handle this better, automatically for all users"
+echo "      this assumes 1000 is 'user' and 100 is 'users'"
+chown -R 1000:100 /mnt/nix/persistent/home/user # TODO: handle this better, automatically for all users; this assumes 1000 is 'user' and 100 is 'users'
+echo "TODO: handle this better, automatically for all users"
+echo "      this assumes 1000 is 'user' and 100 is 'users'"
+echo "Done chown -R 1000:100 /mnt/nix/persistent/home/user"
 
 echo "Copying /iso/bootstrap into /mnt/nix/persistent..."
 cp -LRv /iso/bootstrap /mnt/nix/persistent
