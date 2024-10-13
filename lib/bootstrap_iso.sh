@@ -149,18 +149,22 @@ echo "Unmounted original ISO"
 
 echo ""
 
-echo "Creating /bootstrap directory"
-mkdir -p "$writable_dir/bootstrap"
-echo "Created /bootstrap directory"
+echo "Creating /bootstrap/etc directory"
+mkdir -p "$writable_dir/bootstrap/etc"
+echo "Created /bootstrap/etc directory"
 
 echo ""
 # CUSTOM FILES START
 
 # TODO: allow custom bootstrap files to be copied
 
-echo "Copying /etc/ssh/ssh_host_ed25519_key to /bootstrap"
-cp /etc/ssh/ssh_host_ed25519_key "$writable_dir/bootstrap/"
-echo "Copied ssh_host_ed25519_key to /bootstrap"
+echo "Copying /etc/ssh to /bootstrap/etc"
+cp -LRv /etc/ssh "$writable_dir/bootstrap/etc"
+echo "Copied /etc/ssh to /bootstrap/etc"
+
+echo "Listing $writable_dir/bootstrap..."
+ls -lahR "$writable_dir/bootstrap"
+echo "Done listing $writable_dir/bootstrap"
 
 # echo "Copying repository root to /bootstrap as tar.gz"
 # echo "Repository root: $repo_root"

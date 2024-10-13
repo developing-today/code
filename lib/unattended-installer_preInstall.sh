@@ -66,16 +66,25 @@ echo "Sleep Seconds: $sleep_time"
 echo "Force: $force"
 
 echo "preInstall starting"
-echo "mkdir /mnt/nix/persistent/etc/ssh"
-mkdir -p /mnt/nix/persistent/etc/ssh
-echo "/mnt/nix/persistent/etc/ssh created"
+
+echo "Listing /iso/bootstrap..."
+ls -lahR /iso/bootstrap
+echo "Done listing /iso/bootstrap"
+
+echo "mkdir /mnt/nix/persistent/etc"
+mkdir -p /mnt/nix/persistent/etc
+echo "/mnt/nix/persistent/etc created"
 
 echo "Copying /iso/bootstrap to /mnt/nix/persistent/bootstrap..."
-cp -r /iso/bootstrap /mnt/nix/persistent
+cp -LRv /iso/bootstrap /mnt/nix/persistent
 echo "Done copying /iso/bootstrap to /mnt/nix/persistent/bootstrap"
 
+echo "Listing /mnt/nix/persistent..."
+ls -lahR /mnt/nix/persistent
+echo "Done listing /mnt/nix/persistent"
+
 echo "Copying /mnt/nix/persistent/bootstrap/ssh* to /mnt/nix/persistent/etc/ssh..."
-cp /mnt/nix/persistent/bootstrap/ssh* /mnt/nix/persistent/etc/ssh
+cp -LRv /mnt/nix/persistent/bootstrap/ssh /mnt/nix/persistent/etc
 echo "Done copying /mnt/nix/persistent/bootstrap/ssh* to /mnt/nix/persistent/etc/ssh"
 
 echo "Listing /mnt/nix/persistent..."
