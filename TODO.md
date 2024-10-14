@@ -2,6 +2,9 @@
 - touchid
 - tmp
 - waybar wpa_supplicant broke
+- claude secret
+- activation zed symlink
+- zed config
 - secrets
   - github secret
     - github module
