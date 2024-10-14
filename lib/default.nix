@@ -48,14 +48,20 @@ let
       system = "x86_64-linux";
       stateVersion = "23.11";
       group-key = lib.group-key name;
+      # groups =
+      # or maybe secretGroups =
       email = "nixos-host-${name}@developing-today.com";
-      sshKey = lib.host-key name;
+      sshKey = lib.host-key name; # allow multiple ssh keys
       hardware = [ "" ];
+      # hardwareModules = [ ];
       profiles = [ ];
+      # profileModules = [ ];
       disks = [ ];
-      bootstrap = false;
+      # diskModules = [ ];
+      bootstrap = false; # TODO: make this work
+      # users # TODO: make this work host has users which have home-manager-users
     } options;
-  default-home-manager-user-configuration = name: rec {
+  default-home-manager-user-configuration = name: rec { # TODO: make this work
     system = "x86_64-linux";
     stateVersion = "23.11";
     home = rec {
@@ -94,7 +100,7 @@ let
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-disks = make-disk-paths { };
-  make-unattended-installer-configurations =
+  make-unattended-installer-configurations = # TODO: make-bootstrap-versions
     configurations:
     lib.mapAttrs' (
       name: config:

@@ -6,15 +6,17 @@ in
   nixos = host {
     profiles = "desktop";
     hardware = "framework/13-inch/12th-gen-intel";
-    disks = "by-label";
+    disks = [
+      "nvme0n1/2t"
+      "tmpfs/root"
+    ];;
   };
   amd = host {
     profiles = "desktop";
     hardware = "framework/13-inch/7040-amd";
     disks = [
-      "nvme0n1/4tb"
+      "nvme0n1/4t"
       "tmpfs/root"
     ];
-    bootstrap = true;
   };
 }

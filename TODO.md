@@ -24,6 +24,7 @@
 - improve bootstrap
   - home directory auto-permission each user
   - allow bootstrap vs regular
+    - # TODO: make-bootstrap-versions
     - bootstrap hosts as <hostname>_bootstrap
     - rename hosts after bootstrap to <hostname>
     - auto-update from there

@@ -1,3 +1,4 @@
+# TODO: add 10% unallocated space
 _: {
   disko.devices.disk."nvme0n1" = {
     device = "/dev/nvme0n1";
