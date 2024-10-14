@@ -6,6 +6,7 @@
 - activation zed symlink
 - zed config
 - secrets
+  - sops age key from ssh key for desktop use
   - github secret
     - github module
     - make 2 copies one for /root/auth one for /home/user/auth ?
