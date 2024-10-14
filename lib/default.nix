@@ -103,7 +103,7 @@ let
           # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
           # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
           config = {
-            isoImage.squashfsCompression = "zstd -Xcompression-level 6";
+            isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
             unattendedInstaller = {
               successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
               preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
