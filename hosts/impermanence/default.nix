@@ -1,10 +1,11 @@
 {
-  inputs,
   config,
-  lib,
-  host,
+  inputs,
   hostName,
-  pkgs,
+  host,
+  system,
+  stateVersion,
+  lib,
   ...
 }:
 {

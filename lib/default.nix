@@ -166,6 +166,7 @@ lib2.attrsets.recursiveUpdate lib2 {
   system,
   stateVersion,
   lib,
+  pkgs,
   ...
 }:
         */
