@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -e #-o pipefail
+
 age_key_file="$HOME/.config/sops/age/keys.txt"
 echo "age_key_file: $age_key_file"
 
