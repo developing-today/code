@@ -10,18 +10,20 @@
       nixosConfigurations = configurations // unattended-installer-configurations;
     };
   inputs = {
-    impermanence = {
-      url = "github:Nix-community/impermanence";
-    };
+    ssh-to-age.url = "github:Mic92/ssh-to-age";
+    impermanence.url = "github:Nix-community/impermanence";
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer";
-    nixpkgs.url = "github:dezren39/nixpkgs";
-    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:developing-today-forks/nixpkgs";
+    # nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
+    # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs";
+    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
+    # nixpkgs-stable.url = "github:NixOS/nixpkgs";
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";

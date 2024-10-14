@@ -18,4 +18,20 @@
       stateVersion
       ;
   }; # todo use imports
+  home-manager.users.backup = import (lib.from-root "home/backup") {
+    inherit
+      inputs
+      lib
+      pkgs
+      stateVersion
+      ;
+  }; # todo use imports
+  home-manager.users.root = import (lib.from-root "home/root") {
+    inherit
+      inputs
+      lib
+      pkgs
+      stateVersion
+      ;
+  }; # todo use imports
 }

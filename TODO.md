@@ -1,4 +1,6 @@
 ---
+- touchid
+- tmp
 - waybar wpa_supplicant broke
 - secrets
   - github secret

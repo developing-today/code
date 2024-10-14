@@ -47,6 +47,7 @@ in
       "/home"
       "/root"
       "/var"
+      "/tmp"
     ];
     files = [
       "/etc/machine-id"
@@ -219,6 +220,17 @@ in
       # todo modules
       user = import (lib.from-root "hosts/users/user") { inherit pkgs config; }; # imports
       backup = import (lib.from-root "hosts/users/backup") { inherit pkgs config; }; # imports
+      # git = {
+      #     isSystemUser = true;
+      #     group = "git";
+      #     home = "/var/lib/git-server";
+      #     createHome = true;
+      #     shell = "${pkgs.git}/bin/git-shell";
+      #     openssh.authorizedKeys.keys = [
+      #       # FIXME: Add pubkeys of authorized users
+      #       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF38sHxXn/r7KzWL1BVCqcKqmZA/V76N/y5p52UQghw7 example"
+      #     ];
+      #   };
     };
   };
   sops.secrets."users/backup/passwordHash" = {
@@ -296,6 +308,15 @@ in
           type = "ed25519";
         }
       ];
+
+        # extraConfig = ''
+        #   Match user git
+        #     AllowTcpForwarding no
+        #     AllowAgentForwarding no
+        #     PasswordAuthentication no
+        #     PermitTTY no
+        #     X11Forwarding no
+        # '';
     };
     locate = {
       enable = true;
@@ -343,7 +364,12 @@ in
     # have namespace conflicts i don't want to deal with in home manager
     # or just because
     # etc.
-    systemPackages = with pkgs; [
+    systemPackages =
+      (with inputs; [
+        ssh-to-age.packages.${pkgs.system}.default
+      ])
+      ++
+      (with pkgs; [
       # TODO: cleanup systemPackages
       # build
       # charm stuff?
@@ -496,7 +522,7 @@ in
       libisoburn # xorriso
       wpa_supplicant_gui
       # wpa_cute # TODO: try this?
-    ];
+    ]);
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
 }
