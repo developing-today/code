@@ -5,6 +5,25 @@
 - claude secret
 - activation zed symlink
 - zed config
+- remove specialArgs and use modules somehow https://discourse.nixos.org/t/import-list-in-configuration-nix-vs-import-function/11372/5
+- what is lib.composeManyExtensions and lib.makeExtensible
+-   nix = {
+      # …
+      registry = lib.mapAttrs (_: value: { flake = value; }) inputs;
+      nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
+    };
+-   nix = {
+  settings = {
+    allowed-users = [ "@wheel" ];
+    trusted-users = [ "root" "@wheel" ];
+    experimental-features = [ "nix-command" "flakes" ];
+  };
+};
+
+# Does not work without channels.
+programs.command-not-found.enable = false;
+
+users.mutableUsers = false;
 - secrets
   - sops age key from ssh key for desktop use
   - github secret
@@ -22,12 +41,20 @@
   - alias all of /var??
 - turn on branch protection
 - improve bootstrap
+  - verbose trace possibly use nom, refer to rebuild.sh
   - home directory auto-permission each user
   - allow bootstrap vs regular
     - # TODO: make-bootstrap-versions
     - bootstrap hosts as <hostname>_bootstrap
     - rename hosts after bootstrap to <hostname>
     - auto-update from there
+  - bootstrap with _bootstrap suffix hostname and configuration
+    - nixos-rebuild switch "${hostname%_bootstrap}"
+    - but why? is there a better alternative using peristent and post-install hooks to setup state?
+    - or maybe this sets up the system and then waits for user or remote machine to trigger onlining?
+    - avoiding a restart would be nice..
+    - maybe using auto-upgrade or comin to choose a different target in bootstrap config?
+  - lib.mkMerge vs lib.attrs.recursiveUpdate vs .extend()
   - rekey bootstrap
     - maybe
       - generate new key on desktop w/admin

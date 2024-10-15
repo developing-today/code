@@ -37,58 +37,21 @@ in
     (lib.from-root "hosts/hyprland") # hyprland = would use flake for hyprland master but had annoying warning about waybar? todo try again. prefer flake. the config for this is setup in homeManager for reasons. could be brought out to nixos module would probably fit better due to my agonies
     (lib.from-root "hosts/sops")
     (lib.from-root "hosts/impermanence")
+    (lib.from-root "hosts/boot")
   ]; # home/yazi.nix
   system.stateVersion = stateVersion;
-  nixpkgs.overlays = pkgs.overlays;
-  environment.persistence."/nix/persistent" = {
-    hideMounts = true;
-
-    directories = [
-      "/home"
-      "/root"
-      "/var"
-      "/tmp"
-    ];
-    files = [
-      "/etc/machine-id"
-      "/etc/ssh/ssh_host_ed25519_key"
-      # "/etc/ssh/ssh_host_ed25519_key.pub"
-      # "/etc/ssh/ssh_host_rsa_key.pub"
-      # "/etc/ssh/ssh_host_rsa_key"
-    ];
-  };
-  systemd.services.nix-daemon = {
-    environment = {
-      # Location for temporary files
-      TMPDIR = "/var/cache/nix";
-    };
-    serviceConfig = {
-      # Create /var/cache/nix automatically on Nix Daemon start
-      CacheDirectory = "nix";
-    };
-  };
-  boot = {
-    # kernelPackages = pkgs.linuxKernel.packages.linux_
-    tmp = {
-      cleanOnBoot = true;
-    };
-    loader = {
-      # grub = {
-      #   enable = true;
-      #   efiSupport = true;
-      #   device = "nodev";
-      #  # For installing with GRUB, mount your ESP to /boot/efi rather than /boot
-      # };
-      systemd-boot = {
-        enable = true;
-        configurationLimit = 2048;
-      };
-      efi = {
-        canTouchEfiVariables = true;
-        # efiSysMountPoint = "/boot/efi";
-      };
-    };
-  };
+  nixpkgs.pkgs = pkgs; # ??? Your system configures nixpkgs with an externally created instance. `nixpkgs.config` options should be passed when creating the instance instead.
+  # nixpkgs.overlays = pkgs.overlays;
+  # nixpkgs.config = {
+  #   allowBroken = true;
+  #   allowUnfree = true;
+  #   allowUnfreePredicate = _: true;
+  #   permittedInsecurePackages = [
+  #     "olm-3.2.16"
+  #     "electron" # le sigh
+  #     "qtwebkit-5.212.0-alpha4" # ???
+  #   ];
+  # };
   # systemd.network.networks = let networkConfig = { DHCP = "yes"; DNSSEC = "yes"; DNSOverTLS = "yes"; DNS = [ "1.1.1.1" "1.0.0.1" ]; };
   # boot.initrd.systemd.network.enable
   # networking.useNetworkd
@@ -186,16 +149,6 @@ in
       dates = "weekly";
       options = "--delete-older-than 400d";
     };
-  };
-  nixpkgs.config = {
-    allowBroken = true;
-    allowUnfree = true;
-    allowUnfreePredicate = _: true;
-    permittedInsecurePackages = [
-      "olm-3.2.16"
-      "electron" # le sigh
-      "qtwebkit-5.212.0-alpha4" # ???
-    ];
   };
   #sound.enable = true; # not needed?
   hardware = {

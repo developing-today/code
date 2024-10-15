@@ -13,6 +13,33 @@
     inputs.impermanence.nixosModules.impermanence
     # inputs.nixosModules.home-manager.impermanence
   ];
+  environment.persistence."/nix/persistent" = {
+    hideMounts = true;
+
+    directories = [
+      "/home"
+      "/root"
+      "/var"
+      "/tmp"
+    ];
+    files = [
+      "/etc/machine-id"
+      "/etc/ssh/ssh_host_ed25519_key"
+      # "/etc/ssh/ssh_host_ed25519_key.pub"
+      # "/etc/ssh/ssh_host_rsa_key.pub"
+      # "/etc/ssh/ssh_host_rsa_key"
+    ];
+  };
+  systemd.services.nix-daemon = {
+    environment = {
+      # Location for temporary files
+      TMPDIR = "/var/cache/nix";
+    };
+    serviceConfig = {
+      # Create /var/cache/nix automatically on Nix Daemon start
+      CacheDirectory = "nix";
+    };
+  };
 }
 # {
 #   environment.persistence."/persistent" = {
