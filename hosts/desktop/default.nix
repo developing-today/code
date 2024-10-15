@@ -6,29 +6,9 @@
   system,
   stateVersion,
   lib,
+  pkgs,
   ...
 }:
-let
-  pkgs = import inputs.nixpkgs {
-    inherit system;
-    config = {
-      allowBroken = true;
-      allowUnfree = true;
-      allowUnfreePredicate = _: true;
-      permittedInsecurePackages = [
-        "olm-3.2.16"
-        "electron"
-        "qtwebkit-5.212.0-alpha4"
-      ];
-    };
-    overlays = [
-      inputs.vim.overlay.${system}
-      inputs.yazi.overlays.default
-      # inputs.waybar.overlays.default # ?? !! style.css
-      # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
-    ];
-  };
-in
 {
   imports = [
     (lib.from-root "hosts/tailscale-autoconnect")
@@ -38,20 +18,9 @@ in
     (lib.from-root "hosts/sops")
     (lib.from-root "hosts/impermanence")
     (lib.from-root "hosts/boot")
+    (lib.from-root "hosts/nixpkgs")
   ]; # home/yazi.nix
   system.stateVersion = stateVersion;
-  nixpkgs.pkgs = pkgs; # ??? Your system configures nixpkgs with an externally created instance. `nixpkgs.config` options should be passed when creating the instance instead.
-  # nixpkgs.overlays = pkgs.overlays;
-  # nixpkgs.config = {
-  #   allowBroken = true;
-  #   allowUnfree = true;
-  #   allowUnfreePredicate = _: true;
-  #   permittedInsecurePackages = [
-  #     "olm-3.2.16"
-  #     "electron" # le sigh
-  #     "qtwebkit-5.212.0-alpha4" # ???
-  #   ];
-  # };
   # systemd.network.networks = let networkConfig = { DHCP = "yes"; DNSSEC = "yes"; DNSOverTLS = "yes"; DNS = [ "1.1.1.1" "1.0.0.1" ]; };
   # boot.initrd.systemd.network.enable
   # networking.useNetworkd
