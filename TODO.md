@@ -1,5 +1,7 @@
 ---
+- add user ipaddr mac hostid machine-id ?containerid? to commits add list of files changed and number of lines changed total and in each file
 - calculate time for rebuild and simple-rebuild
+- generate a cuid during bootstrap and put it in /nix/persistent
 - understand this https://serokell.io/blog/serokell-s-work-on-ghc-dependent-types-part-4
 - touchid
 - tmp
@@ -479,3 +481,5 @@ networking.nameservers = [
          # Run this on local computer
          cat result/main.raw | nc 123.45.678.89 1234
 https://nlewo.github.io/nixos-manual-sphinx/configuration/user-mgmt.xml.html
+https://stackoverflow.com/questions/45144662/using-imports-with-argument-given-by-lib-mkoption
+https://ryantm.github.io/nixpkgs/functions/library/lists/#function-library-lib.lists.unique
