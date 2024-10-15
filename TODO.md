@@ -1,4 +1,5 @@
 ---
+- understand this https://serokell.io/blog/serokell-s-work-on-ghc-dependent-types-part-4
 - touchid
 - tmp
 - waybar wpa_supplicant broke
