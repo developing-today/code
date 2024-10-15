@@ -9,7 +9,7 @@ in
     disks = [
       "nvme0n1/2t"
       "tmpfs/root"
-    ];;
+    ];
   };
   amd = host {
     profiles = "desktop";
