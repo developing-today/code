@@ -1,5 +1,6 @@
 # TODO: add 10% unallocated space
-_: {
+# TODO: consider if there's a better way to configure this, possibly a function that generates the module?
+{
   disko.devices.disk."nvme0n1" = {
     device = "/dev/nvme0n1";
     type = "disk";

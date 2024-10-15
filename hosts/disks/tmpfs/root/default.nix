@@ -1,4 +1,6 @@
-_: {
+# TODO: consider if there's a better way to configure this, possibly a function that generates the module?
+#       or maybe add a few 'standard' tmpfs disk sizes?
+{
   disko.devices = {
     nodev."/" = {
       fsType = "tmpfs";
