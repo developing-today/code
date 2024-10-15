@@ -14,7 +14,7 @@
     (lib.from-root "hosts/sops")
     (lib.from-root "hosts/impermanence")
     (lib.from-root "hosts/boot")
-    (lib.from-root "hosts/nixpkgs")
+    (lib.from-root "hosts/nixpkgs") # how to get this to home manager?
     (lib.from-root "hosts/system")
     (lib.from-root "hosts/networking")
     (lib.from-root "hosts/i18n")
@@ -26,7 +26,7 @@
     (lib.from-root "hosts/environment")
     (lib.from-root "hosts/programs")
     (lib.from-root "hosts/services")
-    (lib.from-root "hosts/virtualisation")
+    (lib.from-root "hosts/virtualisation") # (sic)
     (lib.from-root "hosts/security")
   ];
 }
