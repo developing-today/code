@@ -1,5 +1,5 @@
 ---
-- add user ipaddr mac hostid machine-id ?containerid? to commits add list of files changed and number of lines changed total and in each file
+- add user ipaddr mac hostid machine-id ?containerid? other info? pull flake.outputs.hosts.<hostname> and put it in commit? to commits add list of files changed and number of lines changed total and in each file
 - calculate time for rebuild and simple-rebuild
 - generate a cuid during bootstrap and put it in /nix/persistent
 - understand this https://serokell.io/blog/serokell-s-work-on-ghc-dependent-types-part-4
