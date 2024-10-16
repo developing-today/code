@@ -58,6 +58,15 @@ let
       hardware = [ "" ];
       hardware-modules = [ ];
       hardware-imports = [ ];
+      networking = "dhcp";
+      # TODO: wire networking in and allow other networking options,
+      #       allow choosing wireless ? nixos only allows one wireless interface ?
+      #       check out topology and todo-apu2.nix
+      #       allow bridging interfaces
+      #       allow nat/packet forwarding
+      #       allow firewall things
+      #       allow disable ipv6
+      #       allow dhcpd and static ip addresses
       profiles = [ ];
       profile-modules = [ ];
       profile-imports = [ ];
@@ -69,7 +78,7 @@ let
       disks = [ ];
       disk-modules = [ ];
       disk-imports = [ ];
-      bootstrap = false; # TODO: make this work
+      bootstrap = false; # TODO: make this work or delete?
       # users # TODO: make this work host has users which have home-manager-users
     } options;
   default-home-manager-user-configuration = name: rec { # TODO: make this work

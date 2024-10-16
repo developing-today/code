@@ -21,4 +21,13 @@ in
     ];
     users = [ "user" "backup" ];
   };
+  # apu2c3 = host {
+  #   profiles = ["server"];
+  #   hardware = "pcengines/apu";
+  #   disks = [
+  #     "sda1/small"
+  #     "tmpfs/root"
+  #   ];
+  #   users = [ "server" ];
+  # };
 }
