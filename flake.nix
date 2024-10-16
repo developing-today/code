@@ -1,10 +1,8 @@
 {
-  outputs =
-    inputs:
-    # flake-parts.lib.mkFlake
+  outputs = inputs: # flake-parts.lib.mkFlake
     rec {
       lib = import ./lib inputs;
-      hosts = import ./hosts inputs;
+      hosts = import ./hosts inputs; # inputs.host?
       configurations = lib.make-nixos-configurations hosts;
       unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
       nixosConfigurations = configurations // unattended-installer-configurations;
@@ -21,8 +19,8 @@
     # nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
     # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs";
-    # nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11";
-    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11";
+    # nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     # nixpkgs-stable.url = "github:NixOS/nixpkgs";
     sops-nix = {
@@ -34,24 +32,24 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    systems = {
+    systems = { # TODO: use this?
       # url = "github:nix-systems/default-linux";
       url = "github:nix-systems/default";
       # inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-utils = {
+    flake-utils = { # TODO: use this?
       url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz";
       inputs.systems.follows = "systems";
     };
-    flake-compat = {
+    flake-compat = { # TODO: use this?
       url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
       flake = false;
     };
-    gitignore = {
+    gitignore = { # TODO: use this?
       url = "github:hercules-ci/gitignore.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    waybar = {
+    waybar = { # TODO: use this?
       url = "github:Alexays/Waybar";
       # inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -59,7 +57,7 @@
       url = "github:neovim/neovim";
       flake = false;
     };
-    flake-parts = {
+    flake-parts = { # TODO: use this?
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
@@ -101,11 +99,11 @@
       inputs.treefmt-nix.follows = "treefmt-nix";
       inputs.nix-darwin.follows = "nix-darwin";
     };
-    nix-darwin = {
+    nix-darwin = { # TODO: use this?
       url = "github:lnl7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    treefmt-nix = {
+    treefmt-nix = { # TODO: use this?
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -133,54 +131,52 @@
       inputs.devshell.follows = "devshell";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
-    devshell = {
+    devshell = { # TODO: use this?
       url = "github:numtide/devshell";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    pre-commit-hooks = {
+    pre-commit-hooks = { # TODO: use this?
       url = "github:cachix/pre-commit-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs-stable.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
     };
-    yazi = {
+    yazi = { # TODO: use this?
       url = "github:sxyazi/yazi";
       # not following to allow using yazi cache
       # inputs.nixpkgs.follows = "nixpkgs";
       # inputs.flake-utils.follows = "flake-utils";
       # inputs.rust-overlay.follows = "rust-overlay";
     };
-    omnix.url = "github:juspay/omnix";
+    omnix.url = "github:juspay/omnix"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     # nix-topology.nixosModules.default
     # terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
     # flakehub fh
-    # rust-overlay = {
+    # rust-overlay = { # TODO: use this?
     #   url = "github:oxalica/rust-overlay";
     #   # follows?
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware";
-    # systems.url = "github:nix-systems/default-linux";
-    # hardware.url = "github:nixos/nixos-hardware";
-    # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice
-    # firefox-addons = {
+    # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice # TODO: use this?
+    # firefox-addons = { # TODO: use this?
     #   url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons";
     #   inputs.nixpkgs.follows = "nixpkgs";
     # };
-    # nix-gaming = {
+    # nix-gaming = { # TODO: use this?
     #   url = "github:fufexan/nix-gaming";
     #   inputs.nixpkgs.follows = "nixpkgs";
     # };
-    # trustix = {
+    # trustix = { # TODO: use this?
     #   url = "github:nix-community/trustix";
     #   inputs.nixpkgs.follows = "nixpkgs";
     # };
-    # nix-inspect = {
+    # nix-inspect = { # TODO: use this?
     #   url = "github:bluskript/nix-inspect";
     #   inputs.nixpkgs.follows = "nixpkgs";
     # };
-    # nixos-wsl = {
+    # nixos-wsl = { # TODO: use this?
     #   url = "github:nix-community/NixOS-WSL";
     #   inputs.nixpkgs.follows = "nixpkgs";
     # };
