@@ -7,7 +7,7 @@
 {
   imports = [
     (lib.from-root "hosts/hardware-configuration")
-    # NixOS/nixos-hardware
+    inputs.nixos-hardware.nixosModules.framework-12th-gen-intel
   ];
   boot.initrd.availableKernelModules = [
     "xhci_pci"

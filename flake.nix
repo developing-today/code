@@ -21,6 +21,7 @@
     # nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
     # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs";
+    # nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     # nixpkgs-stable.url = "github:NixOS/nixpkgs";
@@ -159,7 +160,7 @@
     #   url = "github:oxalica/rust-overlay";
     #   # follows?
     # };
-    # hardware.url = "github:nixos/nixos-hardware";
+    nixos-hardware.url = "github:nixos/nixos-hardware";
     # systems.url = "github:nix-systems/default-linux";
     # hardware.url = "github:nixos/nixos-hardware";
     # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice

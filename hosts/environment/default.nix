@@ -26,6 +26,10 @@
         ssh-to-age.packages.${pkgs.system}.default
       ])
       ++
+      [
+        inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch
+      ]
+      ++
       (with pkgs; [
       # TODO: cleanup systemPackages
       # build
