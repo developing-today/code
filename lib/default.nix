@@ -172,10 +172,10 @@ let
       make-disk-paths
       make-disks
       make-unattended-installer-configurations
+      make-nixos-configurations
       ;
   };
-
-  make-nixos-configurations = lib: lib.mapAttrs (
+  make-nixos-configurations = lib2.mapAttrs (
     hostName: host-generator:
     let
       host = host-generator hostName;
@@ -188,7 +188,7 @@ let
           host
           ;
         inherit (host) system stateVersion;
-        lib = lib3;
+        lib = lib2;
         /*
 {
   config,
@@ -245,9 +245,5 @@ let
       ];
     }
   );
-
-  lib3 = lib2.attrsets.recursiveUpdate lib2 {
-    make-nixos-configurations = make-nixos-configurations lib2;
-  };
 in
-lib3
+lib2
