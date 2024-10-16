@@ -11,6 +11,7 @@
 - zed config
 - remove specialArgs and use modules somehow https://discourse.nixos.org/t/import-list-in-configuration-nix-vs-import-function/11372/5
 - what is lib.composeManyExtensions and lib.makeExtensible
+- standalone home manager is broken now, fix
 -   nix = {
       # …
       registry = lib.mapAttrs (_: value: { flake = value; }) inputs;

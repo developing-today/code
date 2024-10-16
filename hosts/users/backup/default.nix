@@ -8,6 +8,7 @@
     sopsFile = lib.from-root "secrets/sops/users/backup/password_backup.yaml";
   };
   users.users.backup = {
+    # uid = auto;
     hashedPasswordFile = config.sops.secrets."users/backup/passwordHash".path;
     isNormalUser = true;
     description = "backup";
@@ -17,6 +18,7 @@
       "wheel"
       "docker"
       "video"
+      "network"
       "kvm"
       "beep"
     ];
