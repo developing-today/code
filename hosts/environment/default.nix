@@ -23,12 +23,12 @@
     # etc.
     systemPackages =
       (with inputs; [
-        ssh-to-age.packages.${pkgs.system}.default
+        ssh-to-age.packages.${system}.default
       ])
       ++
-      [
-        inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch
-      ]
+      (with inputs.nixpkgs-stable.legacyPackages.${system}; [
+        activitywatch
+      ])
       ++
       (with pkgs; [
       # TODO: cleanup systemPackages
@@ -37,7 +37,7 @@
       # dwm
       # fortune
       # gtk
-      # inputs.omnix.packages.${pkgs.system}.default
+      # inputs.omnix.packages.${system}.default
       # omnix
       # overlays # todo- move into user
       # clang-tools_9
