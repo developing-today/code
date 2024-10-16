@@ -14,3 +14,14 @@
   #   }
   # ) (import ./hm-hosts.nix);
 }
+# this except home/ in this repo is shared-config and hosts/home/ is nixos hm config
+# # shared-config.nix
+# { config, pkgs, ... }: {
+#   # Your shared configuration here
+# }
+# # NixOS configuration
+# {
+#   home-manager.users.username = import ./shared-config.nix;
+# }
+# # Standalone Home Manager configuration (home.nix)
+# import ./shared-config.nix
