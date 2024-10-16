@@ -52,6 +52,7 @@ let
       # or maybe secretGroups =
       email = "nixos-host-${name}@developing-today.com";
       sshKey = lib.host-key name; # allow multiple ssh keys
+      users = [];
       modules = [ ];
       imports = [ ];
       hardware = [ "" ];
@@ -90,7 +91,6 @@ let
   home-manager-user-configuration =
     name: options: lib.attrsets.recursiveUpdate (default-home-manager-user-configuration name) options;
   ensure-list = x: if builtins.isList x then x else [ x ];
-  # make-user = lib.mapAttrs (username: user-generator: user-generator username)
   make-paths = strings: basePath: map (str: basePath + "/${str}") (ensure-list strings);
   make-hardware-paths =
     {
@@ -98,6 +98,12 @@ let
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-hardware = make-hardware-paths { };
+  make-user-paths =
+    {
+      basePath ? from-root "hosts/users",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-users = make-user-paths { };
   make-profile-paths =
     {
       basePath ? from-root "hosts",
@@ -150,6 +156,8 @@ let
       make-paths
       make-hardware-paths
       make-hardware
+      make-user-paths
+      make-users
       make-profile-paths
       make-profiles
       make-disk-paths
@@ -203,9 +211,8 @@ lib2.attrsets.recursiveUpdate lib2 {
           ./hosts/modules/{hostName}/{profile} for profile in host.profiles
           ./hosts/modules/{host.type}/${profile} for profile in host.profiles
           ./hosts/modules/{host.type}/{hostName}/${profile} for profile in host.profiles
-          ./hosts/users
-          lib.make-users host.users
         */
+        (from-root "hosts/users")
         (ensure-list host.modules)
         (ensure-list host.imports)
         (make-hardware host.hardware) # TODO: just call this from-root "hosts/hardware-configuration" and then rely on specialargs inside it to call lib.make-hardware host.hardware

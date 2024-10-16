@@ -10,6 +10,7 @@ in
       "nvme0n1/2t"
       "tmpfs/root"
     ];
+    users = [ "user" "backup" ];
   };
   amd = host {
     profiles = "desktop";
@@ -18,5 +19,6 @@ in
       "nvme0n1/4t"
       "tmpfs/root"
     ];
+    users = [ "user" "backup" ];
   };
 }
