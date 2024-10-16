@@ -81,7 +81,7 @@ let
       bootstrap = false; # TODO: make this work or delete?
       # users # TODO: make this work host has users which have home-manager-users
     } options;
-  default-home-manager-user-configuration = name: rec { # TODO: make this work
+  default-home-manager-user-configuration = name: rec { # TODO: make this work? integrate into users?
     system = "x86_64-linux";
     stateVersion = "23.11";
     home = rec {
@@ -206,34 +206,39 @@ lib2.attrsets.recursiveUpdate lib2 {
       };
       modules = lib2.lists.flatten [
         /*
-          ok so like, optional, deduped, non-existing removed
-          ./hosts/modules
-          ./hosts/modules/all
-          ./hosts/modules/${hostName}
-          ./hosts/modules/hardware-configuration
-          ./hosts/modules/hardware-configuration/${hostName}
-          ./hosts/modules/abstract
-          ./hosts/modules/{host.type}
-          ./hosts/modules/{host.type}/{hostName}
-          ./hosts/modules/{hostName}
-          ./hosts/modules/{profile} for profile in host.profiles
-          ./hosts/modules/{hostName}/{profile} for profile in host.profiles
-          ./hosts/modules/{host.type}/${profile} for profile in host.profiles
-          ./hosts/modules/{host.type}/{hostName}/${profile} for profile in host.profiles
+          # TODO: make generic array function and use that, maybe prefix one is enough?
+          # TODO: fn to allow optionals for the auto-list below, removed before import
+          from-root "hosts/abstract" # maybe don't import all, just ones needed as needed?
+          from-root "hosts/hardware-configuration/${hostName}"
+          from-root "hosts/{host.type}"
+          from-root "hosts/{host.type}/{hostName}"
+          from-root "hosts/{host.type}/{hostName}/{profile}" for profile in host.profiles
+          from-root "hosts/{host.type}/{profile}" for profile in host.profiles
+          from-root "hosts/{host.type}/{profile}/{hostName}" for profile in host.profiles
+          from-root "hosts/{hostName}"
+          from-root "hosts/{hostName}/{host.type}"
+          from-root "hosts/{hostName}/{host.type}/{profile}" for profile in host.profiles
+          from-root "hosts/{hostName}/{profile}" for profile in host.profiles
+          from-root "hosts/{hostName}/{profile}/{host.type}" for profile in host.profiles
+          from-root "hosts/{profile}" for profile in host.profiles
+          from-root "hosts/{profile}/{host.type}" for profile in host.profiles
+          from-root "hosts/{profile}/{hostName}" for profile in host.profiles
+          from-root "hosts/{profile}/{host.type}/{hostName}" for profile in host.profiles
+          from-root "hosts/{profile}/{hostName}/{host.type}" for profile in host.profiles
         */
-        (from-root "hosts/users")
         (ensure-list host.modules)
         (ensure-list host.imports)
-        (make-hardware host.hardware) # TODO: just call this from-root "hosts/hardware-configuration" and then rely on specialargs inside it to call lib.make-hardware host.hardware
+        (make-hardware host.hardware)
         (ensure-list host.hardware-modules)
         (ensure-list host.hardware-imports)
-        (make-profiles host.profiles) # TODO: just call this from-root "hosts/profiles" and then rely on specialargs inside it to call lib.make-profiles host.profiles
+        # networking # TODO: make this work
+        (make-profiles host.profiles)
         (ensure-list host.profile-modules)
         (ensure-list host.profile-imports)
-        (from-root "hosts/disks")
+        (make-disks host.disks)
         (ensure-list host.disk-modules)
         (ensure-list host.disk-imports)
-        # make-darwin-modules host.darwin-profiles # TODO: just call this from-root "hosts/darwin/profiles" and then rely on specialargs inside it to call lib.make-darwin-profiles host.darwin-profiles
+        # (make-darwin-modules host.darwin-profiles)
         (ensure-list host.darwin-profile-modules)
         (ensure-list host.darwin-profile-imports)
         (ensure-list host.darwin-modules)
