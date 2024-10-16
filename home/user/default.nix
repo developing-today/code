@@ -44,6 +44,10 @@
       "x-scheme-handler/https" = "firefox.desktop";
     };
   };
+  services.activitywatch = {
+    enable = true;
+    package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
+  };
   manual.manpages.enable = true;
   programs = {
     waybar = import ../../home/common/programs/waybar.nix { inherit pkgs; };
@@ -990,5 +994,6 @@
         zulip
         zulip-term
       ];
+
   };
 }
