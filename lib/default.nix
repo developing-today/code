@@ -154,12 +154,12 @@ let
     lib.nixosSystem {
       specialArgs = {
         inherit
-          inputs
-          hostName
-          host
-          ;
-        inherit (host) system stateVersion;
-        lib = lib2;
+          inputs # maybe put hosts into inputs
+          hostName # maybe change hostName to host.name and hosts key is alias or hostid
+          host # maybe add host.name to host, maybe add host.id
+        ;
+        inherit (host) system stateVersion; # maybe just leave these in host?
+        lib = self;
         /*
 {
   config,
@@ -168,6 +168,7 @@ let
   host,
   system,
   stateVersion,
+  modulesPath,
   lib,
   pkgs,
   ...
@@ -216,7 +217,7 @@ let
       ];
     }
   );
-  lib2 = lib.attrsets.recursiveUpdate lib {
+  self = lib.attrsets.recursiveUpdate lib {
     inherit
       lib
       root
@@ -244,4 +245,4 @@ let
     ;
   };
 in
-lib2
+self
