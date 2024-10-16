@@ -174,14 +174,13 @@ let
       make-unattended-installer-configurations
       ;
   };
-in
-lib2.attrsets.recursiveUpdate lib2 {
-  make-nixos-configurations = lib2.mapAttrs ( # TODO: expose inner make-nixos-configurations in lib passed to specialArgs,  then here we can call the inner one prepopulated with lib.
+
+  make-nixos-configurations = lib: lib.mapAttrs (
     hostName: host-generator:
     let
       host = host-generator hostName;
     in
-    lib2.nixosSystem {
+    lib.nixosSystem {
       specialArgs = {
         inherit
           inputs
@@ -189,56 +188,20 @@ lib2.attrsets.recursiveUpdate lib2 {
           host
           ;
         inherit (host) system stateVersion;
-        lib = lib2;
-        /*
-{
-  config,
-  inputs,
-  hostName,
-  host,
-  system,
-  stateVersion,
-  lib,
-  pkgs,
-  ...
-}:
-        */
+        lib = lib3;
       };
-      modules = lib2.lists.flatten [
-        /*
-          # TODO: make generic array function and use that, maybe prefix one is enough?
-          # TODO: fn to allow optionals for the auto-list below, removed before import
-          from-root "hosts/abstract" # maybe don't import all, just ones needed as needed?
-          from-root "hosts/hardware-configuration/${hostName}"
-          from-root "hosts/{host.type}"
-          from-root "hosts/{host.type}/{hostName}"
-          from-root "hosts/{host.type}/{hostName}/{profile}" for profile in host.profiles
-          from-root "hosts/{host.type}/{profile}" for profile in host.profiles
-          from-root "hosts/{host.type}/{profile}/{hostName}" for profile in host.profiles
-          from-root "hosts/{hostName}"
-          from-root "hosts/{hostName}/{host.type}"
-          from-root "hosts/{hostName}/{host.type}/{profile}" for profile in host.profiles
-          from-root "hosts/{hostName}/{profile}" for profile in host.profiles
-          from-root "hosts/{hostName}/{profile}/{host.type}" for profile in host.profiles
-          from-root "hosts/{profile}" for profile in host.profiles
-          from-root "hosts/{profile}/{host.type}" for profile in host.profiles
-          from-root "hosts/{profile}/{hostName}" for profile in host.profiles
-          from-root "hosts/{profile}/{host.type}/{hostName}" for profile in host.profiles
-          from-root "hosts/{profile}/{hostName}/{host.type}" for profile in host.profiles
-        */
+      modules = lib.lists.flatten [
         (ensure-list host.modules)
         (ensure-list host.imports)
         (make-hardware host.hardware)
         (ensure-list host.hardware-modules)
         (ensure-list host.hardware-imports)
-        # networking # TODO: make this work
         (make-profiles host.profiles)
         (ensure-list host.profile-modules)
         (ensure-list host.profile-imports)
         (make-disks host.disks)
         (ensure-list host.disk-modules)
         (ensure-list host.disk-imports)
-        # (make-darwin-modules host.darwin-profiles)
         (ensure-list host.darwin-profile-modules)
         (ensure-list host.darwin-profile-imports)
         (ensure-list host.darwin-modules)
@@ -246,4 +209,83 @@ lib2.attrsets.recursiveUpdate lib2 {
       ];
     }
   );
-}
+
+  lib3 = lib2.attrsets.recursiveUpdate lib2 {
+    make-nixos-configurations = make-nixos-configurations lib2;
+  };
+in
+lib3
+# in
+# # let lib3 = ... lib2.attrsets.recursiveUpdate lib2 {
+# lib2.attrsets.recursiveUpdate lib2 {
+#   make-nixos-configurations = lib2.mapAttrs ( # TODO: expose inner make-nixos-configurations in lib passed to specialArgs,  then here we can call the inner one prepopulated with lib.
+#     hostName: host-generator:
+#     let
+#       host = host-generator hostName;
+#     in
+#     lib2.nixosSystem {
+#       specialArgs = {
+#         inherit
+#           inputs
+#           hostName
+#           host
+#           ;
+#         inherit (host) system stateVersion;
+#         lib = lib2;
+#         /*
+# {
+#   config,
+#   inputs,
+#   hostName,
+#   host,
+#   system,
+#   stateVersion,
+#   lib,
+#   pkgs,
+#   ...
+# }:
+#         */
+#       };
+#       modules = lib2.lists.flatten [
+#         /*
+#           # TODO: make generic array function and use that, maybe prefix one is enough?
+#           # TODO: fn to allow optionals for the auto-list below, removed before import
+#           from-root "hosts/abstract" # maybe don't import all, just ones needed as needed?
+#           from-root "hosts/hardware-configuration/${hostName}"
+#           from-root "hosts/{host.type}"
+#           from-root "hosts/{host.type}/{hostName}"
+#           from-root "hosts/{host.type}/{hostName}/{profile}" for profile in host.profiles
+#           from-root "hosts/{host.type}/{profile}" for profile in host.profiles
+#           from-root "hosts/{host.type}/{profile}/{hostName}" for profile in host.profiles
+#           from-root "hosts/{hostName}"
+#           from-root "hosts/{hostName}/{host.type}"
+#           from-root "hosts/{hostName}/{host.type}/{profile}" for profile in host.profiles
+#           from-root "hosts/{hostName}/{profile}" for profile in host.profiles
+#           from-root "hosts/{hostName}/{profile}/{host.type}" for profile in host.profiles
+#           from-root "hosts/{profile}" for profile in host.profiles
+#           from-root "hosts/{profile}/{host.type}" for profile in host.profiles
+#           from-root "hosts/{profile}/{hostName}" for profile in host.profiles
+#           from-root "hosts/{profile}/{host.type}/{hostName}" for profile in host.profiles
+#           from-root "hosts/{profile}/{hostName}/{host.type}" for profile in host.profiles
+#         */
+#         (ensure-list host.modules)
+#         (ensure-list host.imports)
+#         (make-hardware host.hardware)
+#         (ensure-list host.hardware-modules)
+#         (ensure-list host.hardware-imports)
+#         # networking # TODO: make this work
+#         (make-profiles host.profiles)
+#         (ensure-list host.profile-modules)
+#         (ensure-list host.profile-imports)
+#         (make-disks host.disks)
+#         (ensure-list host.disk-modules)
+#         (ensure-list host.disk-imports)
+#         # (make-darwin-modules host.darwin-profiles)
+#         (ensure-list host.darwin-profile-modules)
+#         (ensure-list host.darwin-profile-imports)
+#         (ensure-list host.darwin-modules)
+#         (ensure-list host.darwin-imports)
+#       ];
+#     }
+#   );
+# }
