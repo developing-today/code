@@ -132,8 +132,8 @@ let
       lib.nameValuePair "unattended-installer_offline_${name}" (
         inputs.unattended-installer.lib.diskoInstallerWrapper config {
           # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
-          # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
           config = {
+            # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
             isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
             unattendedInstaller = {
               successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
@@ -146,36 +146,7 @@ let
         }
       )
     ) configurations;
-in
-let
-  lib2 = lib.attrsets.recursiveUpdate lib {
-    inherit
-      lib
-      root
-      from-root
-      public-key
-      group-key
-      host-key
-      user-key
-      nixos-user-configuration
-      nixos-host-configuration
-      default-home-manager-user-configuration
-      home-manager-user-configuration
-      ensure-list
-      make-paths
-      make-hardware-paths
-      make-hardware
-      make-user-paths
-      make-users
-      make-profile-paths
-      make-profiles
-      make-disk-paths
-      make-disks
-      make-unattended-installer-configurations
-      make-nixos-configurations
-      ;
-  };
-  make-nixos-configurations = lib2.mapAttrs (
+  make-nixos-configurations = lib.mapAttrs (
     hostName: host-generator:
     let
       host = host-generator hostName;
@@ -203,7 +174,7 @@ let
 }:
         */
       };
-      modules = lib2.lists.flatten [
+      modules = lib.lists.flatten [
         /*
           # TODO: make generic array function and use that, maybe prefix one is enough?
           # TODO: fn to allow optionals for the auto-list below, removed before import
@@ -245,5 +216,32 @@ let
       ];
     }
   );
+  lib2 = lib.attrsets.recursiveUpdate lib {
+    inherit
+      lib
+      root
+      from-root
+      public-key
+      group-key
+      host-key
+      user-key
+      nixos-user-configuration
+      nixos-host-configuration
+      default-home-manager-user-configuration
+      home-manager-user-configuration
+      ensure-list
+      make-paths
+      make-hardware-paths
+      make-hardware
+      make-user-paths
+      make-users
+      make-profile-paths
+      make-profiles
+      make-disk-paths
+      make-disks
+      make-unattended-installer-configurations
+      make-nixos-configurations
+    ;
+  };
 in
 lib2
