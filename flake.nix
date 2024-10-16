@@ -19,8 +19,8 @@
     # nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
     # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs";
-    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11";
-    # nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    # nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11";
+    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     # nixpkgs-stable.url = "github:NixOS/nixpkgs";
     sops-nix = {
