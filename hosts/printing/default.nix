@@ -23,7 +23,9 @@
       {
         name = "Dell_1815dn";
         location = "Office";
-        deviceUri = "usb://Dell/1815dn?serial=SERIAL_NUMBER";
+        # deviceUri = "usb://Dell/1815dn?serial=SERIAL_NUMBER";
+        # direct usb://Dell/Laser%20MFP%201815?serial=CQQLCD1.........&interface=1
+        deviceUri = "usb://Dell/Laser%20MFP%201815?serial=CQQLCD1";
         model = "drv:///sample.drv/generpcl.ppd";
         ppdOptions = {
           PageSize = "A4";
