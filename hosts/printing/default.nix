@@ -13,4 +13,8 @@
   # Open firewall ports for CUPS
   networking.firewall.allowedTCPPorts = [ 631 ];
   networking.firewall.allowedUDPPorts = [ 631 ];
+  environment.systemPackages = with pkgs; [
+    usbutils
+    busybox
+  ];
 }

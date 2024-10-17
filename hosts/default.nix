@@ -13,7 +13,7 @@ in
     users = [ "user" "backup" ];
   };
   amd = host {
-    profiles = [ "desktop" "printer" ];
+    profiles = [ "desktop" "printing" ];
     hardware = "framework/13-inch/7040-amd";
     disks = [
       "nvme0n1/4t"
