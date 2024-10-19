@@ -158,7 +158,7 @@
       ddrutility
       myrescue
       ddrescueview
-      unetbootin
+      unetbootin # can't launch right now? qt platform platform plugin not found
       dd_rescue
       ventoy-full
       # ventoy
