@@ -177,7 +177,7 @@
       # https://nixos.wiki/wiki/Bootloader#From_an_installation_media
       # https://wiki.gentoo.org/wiki/LiveUSB#Linux
       pixiecore
-      # netbootxyz-efi
+      # netbootxyz-efi # WARNING: caused failed rebuild
       # netbootxyz
       # tinkerbell
       # matchbox-server
