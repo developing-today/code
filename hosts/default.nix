@@ -30,4 +30,19 @@ in
   #   ];
   #   users = [ "server" ];
   # };
+  # apu2c4
+  # apu2c4-with-wifi
+  # apu2c3-with-modem
+  # apu2c3-with-wifi
+  # apu2c3-with-modem-and-wifi
+  # pi0
+  # pi2
+  # pi3
+  # pi4
+  # pi5
+  # fire3
+  # amd-server
+  # intel-server
+  # generic profile to connect/mount data disks
+  # generic script/process to apply a different config and use that for auto-upgrade going forward
 }
