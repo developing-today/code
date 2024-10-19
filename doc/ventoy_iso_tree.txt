@@ -1,0 +1,42 @@
+.
+├── DANGEROUS_UNATTENDED_INSTALLERS_WILL_WIPE_YOUR_DRIVE
+│   └── NO_REALLY_BE_CAREFUL_THIS_WILL_DELETE_EVERYTHING_WITHOUT_ASKING
+│       ├── amd_bootstrap_unattended-installer_offline_nixos-24.11.20241014.b36c6a9-x86_64-linux.iso
+│       └── nixos_bootstrap_unattended-installer_offline_nixos-24.11.20241014.b36c6a9-x86_64-linux.iso
+├── isos.txt
+├── nixos-gnome-24.05.5809.4eb33fe664af-x86_64-linux.iso
+├── other
+│   ├── archlinux-gnome-big-n0raitor-2022.06.01-x86_64.iso
+│   ├── BookwormPup32-23.12-241006.iso
+│   ├── BookwormPup64_10.0.8.iso
+│   ├── fedora-coreos-41.20241006.1.1-live.aarch64.iso
+│   ├── fedora-coreos-41.20241006.1.1-live.x86_64.iso
+│   ├── Fedora-IoT-ostree-40-20240422.3.aarch64.iso
+│   ├── Fedora-IoT-ostree-40-20240422.3.x86_64.iso
+│   ├── Fedora-Server-dvd-aarch64-40-1.14.iso
+│   ├── Fedora-Server-dvd-aarch64-41_Beta-1.2.iso
+│   ├── Fedora-Server-dvd-x86_64-40-1.14.iso
+│   ├── Fedora-Workstation-Live-x86_64-40-1.14.iso
+│   ├── gparted-live-1.6.0-10-amd64.iso
+│   ├── nixos-minimal-24.05.5809.4eb33fe664af-aarch64-linux.iso
+│   ├── nixos-minimal-24.05.5809.4eb33fe664af-x86_64-linux.iso
+│   ├── pop-os_22.04_amd64_intel_43.iso
+│   ├── pop-os_22.04_amd64_nvidia_43.iso
+│   ├── pop-os_22.04_arm64_raspi_4.img.xz
+│   ├── S15Pup32-22.12-241006.iso
+│   ├── S15Pup64-22.12-241006.iso
+│   ├── systemrescue-10.00-amd64.iso
+│   ├── systemrescue-10.01-amd64.iso
+│   ├── systemrescue-10.02-amd64.iso
+│   ├── systemrescue-11.00-amd64.iso
+│   ├── systemrescue-11.00-amd64.iso.asc
+│   ├── systemrescue-11.01-amd64.iso
+│   ├── systemrescue-11.01-amd64.iso.asc
+│   ├── systemrescue-11.02-amd64.iso
+│   ├── ubuntu-24.04.1-desktop-amd64.iso
+│   ├── ubuntu-24.04.1-live-server-amd64.iso
+│   └── ubuntu-24.10-live-server-amd64.iso
+├── systemrescue-10.00-amd64.iso
+└── tails-amd64-6.8.1.img
+
+4 directories, 36 files

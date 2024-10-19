@@ -1,0 +1,15 @@
+{
+    "control":[
+        { "VTOY_LINUX_REMOUNT": "1" },
+        { "VTOY_MENU_TIMEOUT": "60" },
+        { "VTOY_DEFAULT_IMAGE": "VTOY_EXIT" },
+        { "VTOY_DEFAULT_MENU_MODE": "1" },
+        { "VTOY_DEFAULT_SEARCH_ROOT": "/iso" },
+        { "VTOY_SORT_CASE_SENSITIVE": "1" },
+        { "VTOY_SECONDARY_BOOT_MENU":"1" },
+        { "VTOY_SECONDARY_TIMEOUT":"5" }
+    ],
+    "theme":{
+        "gfxmode": "max"
+    }
+}
