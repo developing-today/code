@@ -158,11 +158,33 @@
       ddrutility
       myrescue
       ddrescueview
+      unetbootin
       dd_rescue
       ventoy-full
       # ventoy
       screen
       sddm
+      netboot
+      ipxe
+      # waitron
+      # https://theartofmachinery.com/2016/04/21/partitioned_live_usb.html
+      # https://www.system-rescue.org/
+      # https://discourse.nixos.org/t/how-to-add-a-rescue-option-to-bootloader/19137
+      # specialisation rescue disk
+      # specialisation live disk
+      # specialisation usb live disk
+      # https://nixos.wiki/wiki/Change_root
+      # https://nixos.wiki/wiki/Bootloader#From_an_installation_media
+      # https://wiki.gentoo.org/wiki/LiveUSB#Linux
+      pixiecore
+      # netbootxyz-efi
+      # netbootxyz
+      # tinkerbell
+      # matchbox-server
+      # terraform-providers.<provider>
+      # https://github.com/DeterminateSystems/nix-netboot-serve
+      ubootTools
+      # uboot<raspberryModel>
       statix
       syslinux
       tailscale
