@@ -89,6 +89,16 @@
       hledger
       hledger-iadd
       hledger-interest
+      usbutils
+      usbtop
+      usbrip
+      usbview
+      usbimager
+      ns-usbloader
+      woeusb
+      gparted
+      woeusb-ng
+
       hledger-ui
       hledger-utils
       hledger-web
@@ -177,6 +187,7 @@
       # https://nixos.wiki/wiki/Bootloader#From_an_installation_media
       # https://wiki.gentoo.org/wiki/LiveUSB#Linux
       pixiecore
+      # yumi # no package yet :(
       # netbootxyz-efi # WARNING: caused failed rebuild
       # netbootxyz
       # tinkerbell
