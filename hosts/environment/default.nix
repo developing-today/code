@@ -170,7 +170,7 @@
       ddrescueview
       unetbootin # can't launch right now? qt platform platform plugin not found
       dd_rescue
-      ventoy-full
+      ventoy-full # https://www.ventoy.net/en/doc_search_path.html
       # ventoy
       screen
       sddm
