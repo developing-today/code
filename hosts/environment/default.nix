@@ -152,9 +152,19 @@
       rPackages.fortunes
       ranger
       rictydiminished-with-firacode
+      rescuetime
+      ddrescue
+      magicrescue
+      ddrutility
+      myrescue
+      ddrescueview
+      dd_rescue
+      ventoy-full
+      # ventoy
       screen
       sddm
       statix
+      syslinux
       tailscale
       taoup
       terminus-nerdfont
