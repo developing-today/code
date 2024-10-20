@@ -10,9 +10,6 @@
   ...
 }:
 {
-  imports = [
-    (lib.from-root "hosts/networking/wireless")
-  ];
   networking = {
     inherit hostName;
     useDHCP = true;

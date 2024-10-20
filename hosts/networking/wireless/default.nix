@@ -10,9 +10,6 @@
   ...
 }:
 {
-  imports = [
-    (lib.from-root "hosts/networking/wireless/us-wi-1")
-  ];
   networking = {
     networkmanager = {
       enable = false;
@@ -27,7 +24,7 @@
       # userControlled.enable = true;
       scanOnLowSignal = true;
       fallbackToWPA2 = true;
-      secretsFile = config.sops.templates.wireless.path;
+      secretsFile = config.sops.templates.wireless-secrets.path;
       allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
       userControlled = {
         enable = true;
@@ -39,9 +36,6 @@
       '';
     };
   };
-  sops.templates."wireless".content = "${config.sops.placeholder."wireless_us-wi-1"}";
-  sops.templates.test_template.content = "test 123";
-  # # Ensure group exists
-  # this would be for users that aren't root or sudoers or doassers or whatever
-  users.groups.network = { };
+  sops.templates.wireless-secrets.content = host.wireless-secrets-template config;
+  users.groups.network = { }; # Ensure group exists this would be for users that aren't root or sudoers or doassers or whatever
 }

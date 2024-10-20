@@ -11,6 +11,7 @@ in
       "tmpfs/root"
     ];
     users = [ "user" "backup" ];
+    wireless = "us-wi-1";
   };
   amd = host {
     profiles = [ "desktop" "printing" ];
@@ -20,6 +21,7 @@ in
       "tmpfs/root"
     ];
     users = [ "user" "backup" ];
+    wireless = "us-wi-1";
   };
   # apu2c3 = host {
   #   profiles = ["server"];

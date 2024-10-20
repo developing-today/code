@@ -40,7 +40,14 @@ let
       ];
       # a nixos user optionally contains a home manager user?
     } options;
-  nixos-host-configuration =
+  nixos-host-configuration = options: name:
+    let
+      host = nixos-host-configuration-base options name;
+    in
+    lib.attrsets.recursiveUpdate host rec {
+      wireless-secrets-template = config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
+    };
+  nixos-host-configuration-base =
     options: name:
     lib.attrsets.recursiveUpdate rec {
       inherit name;
@@ -59,7 +66,10 @@ let
       hardware-modules = [ ];
       hardware-imports = [ ];
       networking = "dhcp";
-      # TODO: us-wi-1 module in hosts/networking/wireless/us-wi-1, make-wireless if wireless is not []
+      wireless = [];
+      wireless-modules = [ ];
+      wireless-imports = [ ];
+      wireless-secrets-template = config: "";
       # TODO: wire networking in and allow other networking options,
       #       allow choosing wireless ? nixos only allows one wireless interface ?
       #       check out topology and todo-apu2.nix
@@ -126,6 +136,13 @@ let
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-disks = make-disk-paths { };
+  make-wireless-paths =
+    {
+      basePath ? from-root "hosts/networking/wireless",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-wireless = make-wireless-paths { };
+  make-wireless-template = host: config: builtins.concatStringsSep "\n" (map (i: config.sops.placeholder."wireless_${i}") (ensure-list host.wireless));
   make-unattended-installer-configurations = # TODO: make-bootstrap-versions
     configurations:
     lib.mapAttrs' (
@@ -210,6 +227,9 @@ let
         (make-disks host.disks)
         (ensure-list host.disk-modules)
         (ensure-list host.disk-imports)
+        (make-wireless host.wireless)
+        (ensure-list host.wireless-modules)
+        (ensure-list host.wireless-imports)
         # (make-darwin-modules host.darwin-profiles)
         (ensure-list host.darwin-profile-modules)
         (ensure-list host.darwin-profile-imports)
