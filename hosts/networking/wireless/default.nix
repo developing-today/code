@@ -24,6 +24,9 @@
       # userControlled.enable = true;
       scanOnLowSignal = true;
       fallbackToWPA2 = true;
+      # TODO: separate module for secretsFile and template
+      #       so that one can enable wireless without adding a network
+      #       useful for manual configuration
       secretsFile = config.sops.templates.wireless-secrets.path;
       allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
       userControlled = {

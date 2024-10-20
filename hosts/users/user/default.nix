@@ -1,6 +1,7 @@
 { lib, pkgs, config, ... }:
 {
   imports = [
+    (lib.from-root "hosts/users")
     (lib.from-root "home/user")
   ];
   sops.secrets."users/user/passwordHash" = {

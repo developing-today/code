@@ -20,6 +20,5 @@
     (lib.from-root "hosts/system")
     (lib.from-root "hosts/tailscale-autoconnect")
     (lib.from-root "hosts/time")
-    (lib.from-root "hosts/users") # make-users in lib and then import hosts/users defaults in each user
   ];
 }

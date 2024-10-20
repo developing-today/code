@@ -1,5 +1,8 @@
 { lib, pkgs, config, ... }:
 {
+# import [
+#   (lib.from-root "hosts/users")
+# ]
 #   users.users.git = {
 #     isSystemUser = true;
 #     group = "git";

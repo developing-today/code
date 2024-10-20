@@ -142,7 +142,10 @@ let
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-wireless = make-wireless-paths { };
-  make-wireless-template = host: config: builtins.concatStringsSep "\n" (map (i: config.sops.placeholder."wireless_${i}") (ensure-list host.wireless));
+  make-wireless-template = host: config:
+    builtins.concatStringsSep "\n" (map
+        (i: config.sops.placeholder."wireless_${i}")
+        (ensure-list host.wireless));
   make-unattended-installer-configurations = # TODO: make-bootstrap-versions
     configurations:
     lib.mapAttrs' (
@@ -228,6 +231,7 @@ let
         (ensure-list host.disk-modules)
         (ensure-list host.disk-imports)
         (make-wireless host.wireless)
+        (make-users host.users)
         (ensure-list host.wireless-modules)
         (ensure-list host.wireless-imports)
         # (make-darwin-modules host.darwin-profiles)
@@ -248,6 +252,7 @@ let
       host-key
       user-key
       nixos-user-configuration
+      nixos-host-configuration-base
       nixos-host-configuration
       default-home-manager-user-configuration
       home-manager-user-configuration
@@ -261,6 +266,9 @@ let
       make-profiles
       make-disk-paths
       make-disks
+      make-wireless-paths
+      make-wireless
+      make-wireless-template
       make-unattended-installer-configurations
       make-nixos-configurations
     ;
