@@ -59,6 +59,7 @@ let
       hardware-modules = [ ];
       hardware-imports = [ ];
       networking = "dhcp";
+      # TODO: us-wi-1 module in hosts/networking/wireless/us-wi-1, make-wireless if wireless is not []
       # TODO: wire networking in and allow other networking options,
       #       allow choosing wireless ? nixos only allows one wireless interface ?
       #       check out topology and todo-apu2.nix

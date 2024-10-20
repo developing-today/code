@@ -24,7 +24,8 @@
     # nixpkgs-stable.url = "github:dezren39/nixpkgs";
     # nixpkgs-stable.url = "github:NixOS/nixpkgs";
     sops-nix = {
-      url = "github:mic92/sops-nix";
+      url = "github:developing-today-forks/sops-nix";
+      # url = "github:mic92/sops-nix";
       inputs.nixpkgs-stable.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs";
     };

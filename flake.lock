@@ -952,15 +952,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1728345710,
-        "narHash": "sha256-lpunY1+bf90ts+sA2/FgxVNIegPDKCpEoWwOPu4ITTQ=",
-        "owner": "mic92",
+        "lastModified": 1729397737,
+        "narHash": "sha256-et7k9iB5T9k2ZxXtPWByYdIs70rGqo7HF1CeVxoaj3A=",
+        "owner": "developing-today-forks",
         "repo": "sops-nix",
-        "rev": "06535d0e3d0201e6a8080dd32dbfde339b94f01b",
+        "rev": "ac3098ca0c148b38361ca929512753b90c5e8854",
         "type": "github"
       },
       "original": {
-        "owner": "mic92",
+        "owner": "developing-today-forks",
         "repo": "sops-nix",
         "type": "github"
       }

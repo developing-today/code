@@ -11,7 +11,7 @@
 }:
 {
   imports = [
-    (lib.from-root "hosts/networking/wireless/us-wi-1")
+    (lib.from-root "hosts/networking/wireless")
   ];
   networking = {
     inherit hostName;
