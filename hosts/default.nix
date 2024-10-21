@@ -1,8 +1,6 @@
 inputs:
-let
-  host = inputs.self.lib.nixos-host-configuration;
-in
-{
+let host = inputs.self.lib.nixos-host-configuration;
+in {
   nixos = host {
     profiles = "desktop";
     hardware = "framework/13-inch/12th-gen-intel";
