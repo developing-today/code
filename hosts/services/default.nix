@@ -5,7 +5,7 @@
 {
   services = {
     # desktop only
-    tailscale.enable = true; # needed?
+    tailscale.enable = true; # needed? # split this out or add to tailscale-autoconnect
     printing.enable = true;
     pipewire = {
       enable = true;
@@ -21,7 +21,7 @@
     kanata.enable = true;
     flatpak.enable = true;
     dbus.enable = true;
-    openssh = {
+    openssh = { # TODO: split-out openssh
       enable = true;
       settings = {
         PermitRootLogin = "no";
@@ -39,7 +39,7 @@
           type = "ed25519";
         }
       ];
-
+      # authorized keys
         # extraConfig = ''
         #   Match user git
         #     AllowTcpForwarding no

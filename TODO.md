@@ -1,4 +1,6 @@
 ---
+- enable non-free firmware https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/scan
+- https://discourse.nixos.org/t/use-lib-types-system-to-merge-attrsets-without-the-module-system/534/7
 - https://theartofmachinery.com/2016/04/21/partitioned_live_usb.html
 - add user ipaddr mac hostid machine-id ?containerid? other info? pull flake.outputs.hosts.<hostname> and put it in commit? to commits add list of files changed and number of lines changed total and in each file
 - calculate time for rebuild and simple-rebuild

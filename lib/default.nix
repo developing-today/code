@@ -1,3 +1,17 @@
+/*
+{
+  config,
+  inputs,
+  hostName,
+  host,
+  system,
+  stateVersion,
+  modulesPath,
+  lib,
+  pkgs,
+  ...
+}:
+*/
 inputs:
 let
   lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
@@ -51,8 +65,10 @@ let
     options: name:
     lib.attrsets.recursiveUpdate rec {
       inherit name;
-      type = name;
+      type = name; # should type allow a list of types?
+      # tags?
       system = "x86_64-linux";
+      init = from-root "hosts/init";
       stateVersion = "23.11";
       group-key = lib.group-key name;
       # groups =
@@ -146,6 +162,24 @@ let
     builtins.concatStringsSep "\n" (map
         (i: config.sops.placeholder."wireless_${i}")
         (ensure-list host.wireless));
+
+  # TODO: make-sd-card-installer-configurations
+  # TODO: make-unattended-sd-card-installer-configurations
+  # TODO: make-sd-card-image-configurations
+  # https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/sd-card
+  # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/sd-card/sd-image.nix
+  # https://myme.no/posts/2022-12-01-nixos-on-raspberrypi.html
+  # https://github.com/lucernae/nixos-pi
+  # nix build .#nixosConfigurations.rpi.config.system.build.sdImage to build the sd card image, and
+  # nix build .#nixosConfigurations.rpi.config.system.build.toplevel to build (only) the system
+
+
+  # TODO: make-netboot-installer-configurations
+  # TODO: make-unattended-netboot-installer-configurations
+  # TODO: make-netboot-image-configurations
+  # https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/netboot
+
+  # TODO: make-vm/cloud-installer-configurations
   make-unattended-installer-configurations = # TODO: make-bootstrap-versions
     configurations:
     lib.mapAttrs' (
@@ -170,7 +204,7 @@ let
   make-nixos-configurations = lib.mapAttrs (
     hostName: host-generator:
     let
-      host = host-generator hostName;
+    host = host-generator hostName;
     in
     lib.nixosSystem {
       specialArgs = {
@@ -181,65 +215,8 @@ let
         ;
         inherit (host) system stateVersion; # maybe just leave these in host?
         lib = self;
-        /*
-{
-  config,
-  inputs,
-  hostName,
-  host,
-  system,
-  stateVersion,
-  modulesPath,
-  lib,
-  pkgs,
-  ...
-}:
-        */
       };
-      modules = lib.lists.flatten [
-        /*
-          # TODO: make generic array function and use that, maybe prefix one is enough?
-          # TODO: fn to allow optionals for the auto-list below, removed before import
-          from-root "hosts/abstract" # maybe don't import all, just ones needed as needed?
-          from-root "hosts/hardware-configuration/${hostName}"
-          from-root "hosts/{host.type}"
-          from-root "hosts/{host.type}/{hostName}"
-          from-root "hosts/{host.type}/{hostName}/{profile}" for profile in host.profiles
-          from-root "hosts/{host.type}/{profile}" for profile in host.profiles
-          from-root "hosts/{host.type}/{profile}/{hostName}" for profile in host.profiles
-          from-root "hosts/{hostName}"
-          from-root "hosts/{hostName}/{host.type}"
-          from-root "hosts/{hostName}/{host.type}/{profile}" for profile in host.profiles
-          from-root "hosts/{hostName}/{profile}" for profile in host.profiles
-          from-root "hosts/{hostName}/{profile}/{host.type}" for profile in host.profiles
-          from-root "hosts/{profile}" for profile in host.profiles
-          from-root "hosts/{profile}/{host.type}" for profile in host.profiles
-          from-root "hosts/{profile}/{hostName}" for profile in host.profiles
-          from-root "hosts/{profile}/{host.type}/{hostName}" for profile in host.profiles
-          from-root "hosts/{profile}/{hostName}/{host.type}" for profile in host.profiles
-        */
-        (ensure-list host.modules)
-        (ensure-list host.imports)
-        (make-hardware host.hardware)
-        (ensure-list host.hardware-modules)
-        (ensure-list host.hardware-imports)
-        # networking # TODO: make this work
-        (make-profiles host.profiles)
-        (ensure-list host.profile-modules)
-        (ensure-list host.profile-imports)
-        (make-disks host.disks)
-        (ensure-list host.disk-modules)
-        (ensure-list host.disk-imports)
-        (make-wireless host.wireless)
-        (make-users host.users)
-        (ensure-list host.wireless-modules)
-        (ensure-list host.wireless-imports)
-        # (make-darwin-modules host.darwin-profiles)
-        (ensure-list host.darwin-profile-modules)
-        (ensure-list host.darwin-profile-imports)
-        (ensure-list host.darwin-modules)
-        (ensure-list host.darwin-imports)
-      ];
+      modules = ensure-list host.init;
     }
   );
   self = lib.attrsets.recursiveUpdate lib {
