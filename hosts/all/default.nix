@@ -9,16 +9,16 @@
   ...
 }:
 {
-  imports = [
-    (lib.from-root "hosts/boot")
-    (lib.from-root "hosts/i18n")
-    (lib.from-root "hosts/impermanence")
-    (lib.from-root "hosts/networking")
-    (lib.from-root "hosts/nix")
-    (lib.from-root "hosts/nixpkgs")
-    (lib.from-root "hosts/sops")
-    (lib.from-root "hosts/system")
-    (lib.from-root "hosts/tailscale-autoconnect")
-    (lib.from-root "hosts/time")
+  imports = with lib; [
+    (from-root "hosts/boot")
+    (from-root "hosts/i18n")
+    (from-root "hosts/impermanence")
+    (from-root "hosts/networking")
+    (from-root "hosts/nix")
+    (from-root "hosts/nixpkgs")
+    (from-root "hosts/sops")
+    (from-root "hosts/system")
+    (from-root "hosts/tailscale-autoconnect")
+    (from-root "hosts/time")
   ];
 }
