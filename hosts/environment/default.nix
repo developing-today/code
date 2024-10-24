@@ -60,6 +60,7 @@
       choose
       cinnamon-desktop
       guake
+      # python3-dbus
       clang
       cowsay
       deadnix

@@ -69,9 +69,9 @@
         borderColor = "#333333FF";
         # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
         # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
+        # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
+        # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
         extraConfig = ''
-          on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
-          on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
           [urgency=low]
           default-timeout=3000
 
