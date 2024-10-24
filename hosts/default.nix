@@ -19,8 +19,18 @@ in {
       "tmpfs/root"
     ];
     users = [ "user" "backup" ];
-    wireless = "us-wi-1";
+    wireless = [ "us-wi-1" "global-mobile-1" ];
   };
+  # amd-server = host {
+  #   profiles = [ "server" ];
+  #   hardware = "generic/amd";
+  #   disks = [
+  #     "nvme0n1/1t"
+  #     "tmpfs/root"
+  #   ];
+  #   users = [ "admin" ];
+  #   wireless = "us-wi-1";
+  # };
 }
 # apu2c3 = host {
 #   profiles = ["server"];
