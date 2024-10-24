@@ -98,7 +98,6 @@
             icon_theme = "Adwaita-dark";
             sticky_history = "yes";
             history_length = 20;
-            history = "ctrl+grave";
             # browser = "google-chrome-stable";
             # browser = "firefox";
             browser = "${config.programs.firefox.package}/bin/firefox -new-tab";
@@ -107,10 +106,10 @@
             title = "Dunst";
             class = "Dunst";
             # max_icon_size = 64;
-            max_icon_size = 32;
-          };
-          shortcuts = {
-            context = "mod4+grave";
+            max_icon_size = 128;
+            # max_icon_size = 32;
+            history = "ctrl+grave";
+            context = "grave+space";
             close = "mod4+shift+space";
           };
         };
