@@ -67,8 +67,9 @@
         format = "<b>%s</b>\\n%b";
         backgroundColor = "#303030FF";
         borderColor = "#333333FF";
+        # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
         extraConfig = ''
-          on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
+          on-button-right=exec hyprctl setprop pid:$id
           [urgency=low]
           default-timeout=3000
 
