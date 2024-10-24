@@ -62,7 +62,7 @@
           global = {
             monitor = 0;
             follow = "mouse";
-            border = 0;
+            # border = 0;
             height = 300;
             # height = 400;
             width = 240;
