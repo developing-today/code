@@ -67,8 +67,8 @@
         format = "<b>%s</b>\\n%b";
         backgroundColor = "#303030FF";
         borderColor = "#333333FF";
+        # on-button-left=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
         extraConfig = ''
-          on-button-left=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
           [urgency=low]
           default-timeout=3000
 
