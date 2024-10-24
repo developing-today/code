@@ -70,7 +70,7 @@
         # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
         # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
         extraConfig = ''
-          on-button-right=hyprctl dispatch focuswindow pid:$id
+          on-button-right=exec hyprctl dispatch focuswindow pid:$id
           [urgency=low]
           default-timeout=3000
 
