@@ -226,6 +226,9 @@
       libisoburn # xorriso
       wpa_supplicant_gui
       # wpa_cute # TODO: try this?
+      element-web
+      element-call
+      element-desktop
     ]);
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
