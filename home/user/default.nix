@@ -54,70 +54,93 @@
       udiskie = {
         enable = true;
       };
-
-      dunst = {
+      mako = {
         enable = true;
-        package = pkgs.dunst;
-        settings = {
-          global = {
-            monitor = 0;
-            follow = "mouse";
-            # border = 0;
-            # height = 300;
-            height = 360;
-            # height = 400;
-            # width = 320;
-            # width = 420;
-            # width = 480;
-            # width = 240;
-            # width = 320;
-            offset = "0x0";
-            # offset = "33x65";
-            indicate_hidden = "yes";
-            shrink = "yes";
-            # shrink = "no";
-            separator_height = 0;
-            padding = 0;
-            # padding = 32;
-            # horizontal_padding = 32;
-            horizontal_padding = 0;
-            frame_width = 0;
-            sort = "no";
-            idle_threshold = 120;
-            font = "Noto Sans";
-            line_height = 4;
-            markup = "full";
-            format = "<b>%s</b>\\n%b";
-            alignment = "left";
-            # transparency = 10;
-            transparency = 100;
-            show_age_threshold = 60;
-            word_wrap = "yes";
-            ignore_newline = "no";
-            stack_duplicates = false;
-            hide_duplicate_count = "yes";
-            show_indicators = "no";
-            # icon_position = "off";
-            icon_position = "left";
-            icon_theme = "Adwaita-dark";
-            sticky_history = "yes";
-            history_length = 20;
-            # browser = "google-chrome-stable";
-            # browser = "firefox";
-            browser = "${config.programs.firefox.package}/bin/firefox -new-tab";
-            dmenu = "${pkgs.rofi-wayland}/bin/rofi -dmenu"; # wofi? etc.
-            always_run_script = true;
-            title = "Dunst";
-            class = "Dunst";
-            # max_icon_size = 64;
-            max_icon_size = 128;
-            # max_icon_size = 32;
-            history = "ctrl+grave";
-            context = "grave+space";
-            close = "mod4+shift+space";
-          };
-        };
+        anchor = "top-right";
+        borderRadius = 5;
+        borderSize = 2;
+        padding = "20";
+        defaultTimeout = 5000;
+        layer = "top";
+        height = 100;
+        width = 300;
+        format = "<b>%s</b>\\n%b";
+        backgroundColor = "#303030FF";
+        borderColor = "#333333FF";
+        extraConfig = ''
+          [urgency=low]
+          default-timeout=3000
+
+          [urgency=high]
+          default-timeout=10000
+
+          [mode=dnd]
+          invisible=1
+        '';
       };
+      # dunst = {
+      #   enable = true;
+      #   package = pkgs.dunst;
+      #   settings = {
+      #     global = {
+      #       monitor = 0;
+      #       follow = "mouse";
+      #       # border = 0;
+      #       # height = 300;
+      #       height = 360;
+      #       # height = 400;
+      #       # width = 320;
+      #       # width = 420;
+      #       # width = 480;
+      #       # width = 240;
+      #       # width = 320;
+      #       offset = "0x0";
+      #       # offset = "33x65";
+      #       indicate_hidden = "yes";
+      #       shrink = "yes";
+      #       # shrink = "no";
+      #       separator_height = 0;
+      #       padding = 0;
+      #       # padding = 32;
+      #       # horizontal_padding = 32;
+      #       horizontal_padding = 0;
+      #       frame_width = 0;
+      #       sort = "no";
+      #       idle_threshold = 120;
+      #       font = "Noto Sans";
+      #       line_height = 4;
+      #       markup = "full";
+      #       format = "<b>%s</b>\\n%b";
+      #       alignment = "left";
+      #       # transparency = 10;
+      #       transparency = 100;
+      #       show_age_threshold = 60;
+      #       word_wrap = "yes";
+      #       ignore_newline = "no";
+      #       stack_duplicates = false;
+      #       hide_duplicate_count = "yes";
+      #       show_indicators = "no";
+      #       # icon_position = "off";
+      #       icon_position = "left";
+      #       icon_theme = "Adwaita-dark";
+      #       sticky_history = "yes";
+      #       history_length = 20;
+      #       # browser = "google-chrome-stable";
+      #       # browser = "firefox";
+      #       browser = "${config.programs.firefox.package}/bin/firefox -new-tab";
+      #       dmenu = "${pkgs.rofi-wayland}/bin/rofi -dmenu"; # wofi? etc.
+      #       always_run_script = true;
+      #       title = "Dunst";
+      #       class = "Dunst";
+      #       # max_icon_size = 64;
+      #       max_icon_size = 128;
+      #       # max_icon_size = 32;
+      #       history = "ctrl+grave";
+      #       context = "grave+space";
+      #       close = "mod4+shift+space";
+      #     };
+      #   };
+      # };
       activitywatch = {
         enable = true;
         package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
@@ -147,6 +170,34 @@
       # eww.enable = true; # config
       #eza.enable = true;
       firefox.enable = true;
+      fuzzel = {
+        enable = true;
+        settings = {
+          main = {
+            font = "Sarasa Mono SC";
+            terminal = "foot";
+            prompt = "->";
+          };
+
+          border = {
+            width = 0;
+            radius = 6;
+          };
+
+          dmenu = {
+            mode = "text";
+          };
+          # colors = {
+          #   background = "${config.color.base00}f2";
+          #   text = "${config.color.base05}ff";
+          #   match = "${config.color.base0A}ff";
+          #   selection = "${config.color.base03}ff";
+          #   selection-text = "${config.color.base05}ff";
+          #   selection-match = "${config.color.base0A}ff";
+          #   border = "${config.color.base0D}ff";
+          # };
+        };
+      };
       fzf.enable = true;
       gh.enable = true;
       # git-credential-oauth.enable = true; # can't get browser to return back
@@ -343,6 +394,7 @@
       packages =
         with pkgs;
         [
+          libnotify
           #
           #         dog
           #         felix
