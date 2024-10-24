@@ -59,6 +59,7 @@
       cabal2nix
       choose
       cinnamon-desktop
+      guake
       clang
       cowsay
       deadnix
