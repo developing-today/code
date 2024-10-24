@@ -84,7 +84,8 @@
             markup = "full";
             format = "<b>%s</b>\n%b";
             alignment = "left";
-            transparency = 50;
+            # transparency = 10;
+            transparency = 100;
             show_age_threshold = 60;
             word_wrap = "yes";
             ignore_newline = "no";
@@ -101,7 +102,8 @@
             always_run_script = true;
             title = "Dunst";
             class = "Dunst";
-            max_icon_size = 64;
+            # max_icon_size = 64;
+            max_icon_size = 32;
           };
         };
       };
