@@ -68,7 +68,7 @@
         backgroundColor = "#303030FF";
         borderColor = "#333333FF";
         extraConfig = ''
-          on-button-middle=exec makoctl menu -n "$id" dmenu -p 'Select action: '
+          on-button-left=exec makoctl menu -n "$id" dmenu -p 'Select action: '
           [urgency=low]
           default-timeout=3000
 
