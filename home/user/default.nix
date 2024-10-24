@@ -66,7 +66,8 @@
             width = 320;
             offset = "33x65";
             indicate_hidden = "yes";
-            shrink = "no";
+            shrink = "yes";
+            # shrink = "no";
             separator_height = 0;
             padding = 32;
             horizontal_padding = 32;
