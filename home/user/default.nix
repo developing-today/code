@@ -83,7 +83,7 @@
             font = "Noto Sans";
             line_height = 4;
             markup = "full";
-            format = "<b>%s</b>\n%b";
+            format = "<b>%s</b>\\n%b";
             alignment = "left";
             # transparency = 10;
             transparency = 100;
