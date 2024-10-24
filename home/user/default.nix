@@ -67,7 +67,8 @@
             height = 360;
             # height = 400;
             # width = 320;
-            width = 480;
+            # width = 420;
+            # width = 480;
             # width = 240;
             # width = 320;
             offset = "0x0";
