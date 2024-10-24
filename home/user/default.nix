@@ -65,7 +65,8 @@
             # border = 0;
             height = 300;
             # height = 400;
-            width = 240;
+            width = 320;
+            # width = 240;
             # width = 320;
             offset = "0x0";
             # offset = "33x65";
