@@ -634,8 +634,7 @@
           lua-language-server
           lxde.lxsession
           macchina
-          mako
-          mako # notification system developed by swaywm maintainer
+          # mako # notification system developed by swaywm maintainer
           mangohud
           mask
           mcfly
