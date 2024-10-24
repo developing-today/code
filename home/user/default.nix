@@ -3,6 +3,7 @@
   inputs,
   stateVersion,
   pkgs,
+  config,
   ...
 }:
 {
@@ -92,18 +93,25 @@
             stack_duplicates = false;
             hide_duplicate_count = "yes";
             show_indicators = "no";
+            # icon_position = "off";
             icon_position = "left";
             icon_theme = "Adwaita-dark";
             sticky_history = "yes";
             history_length = 20;
             history = "ctrl+grave";
             # browser = "google-chrome-stable";
-            browser = "firefox";
+            # browser = "firefox";
+            browser = "${config.programs.firefox.package}/bin/firefox -new-tab";
+            dmenu = "${pkgs.rofi-wayland}/bin/rofi -dmenu"; # wofi? etc.
             always_run_script = true;
             title = "Dunst";
             class = "Dunst";
             # max_icon_size = 64;
             max_icon_size = 32;
+          };
+          shortcuts = {
+            context = "mod4+grave";
+            close = "mod4+shift+space";
           };
         };
       };
