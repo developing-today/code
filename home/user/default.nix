@@ -72,6 +72,9 @@
         # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
         # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
         extraConfig = ''
+          [app-name="Element"]
+          on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
+
           [urgency=low]
           default-timeout=3000
 
