@@ -60,8 +60,8 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
-        # margin = "0"; #"36,0,0,0"; # outside # 36? 40?
-        margin = "36,0,0,0"; # outside # 36? 40?
+        margin = "0"; #"36,0,0,0"; # outside # 36? 40?
+        # margin = "36,0,0,0"; # outside # 36? 40?
         # .tabbrowser-tab[selected] {
         #   max-height: 24px !important;
         #   min-height: 24px !important;
@@ -84,8 +84,10 @@
         # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
         # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
         # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
+        # outside # 36? 40?12
         extraConfig = ''
-          outer-margin="36,0,0,0" # outside # 36? 40?12
+          outer-margin=36,0,0,0
+
           [app-name="Element"]
           on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
 
