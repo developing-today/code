@@ -124,7 +124,7 @@
       kittysay
       lf
       libsixel
-      libusb
+      libusb1
       libusb-compat-0_1
       pkg-config
       libusb1

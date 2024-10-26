@@ -916,11 +916,11 @@
     },
     "nixpkgs_4": {
       "locked": {
-        "lastModified": 1728880930,
-        "narHash": "sha256-QFJrN+5OgfVb+Evntdh2qCxKE1sfGDaibriPojUj85A=",
+        "lastModified": 1729929174,
+        "narHash": "sha256-SGUXtmJUZYH5EurHs2xwaCZv/E9AAx0/3uCpOLc7jqM=",
         "owner": "developing-today-forks",
         "repo": "nixpkgs",
-        "rev": "b36c6a922f96f2ab4431e8038310d294c2e5ef0a",
+        "rev": "07ebbbac8a5f14a16d392df2e0c331292051c33d",
         "type": "github"
       },
       "original": {

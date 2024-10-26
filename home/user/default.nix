@@ -587,7 +587,7 @@
           adwaita-icon-theme # default gnome cursors
           alacritty
           alacritty # gpu accelerated terminal
-          alsaLib
+          alsa-lib
           amp
           any-nix-shell
           arandr
@@ -847,7 +847,7 @@
           python3Full
           qt5.qmake
           qt5.qtwayland
-          qt5ct
+          libsForQt5.qt5ct
           qt6.qmake
           qt6.qtwayland
           qt6ct
