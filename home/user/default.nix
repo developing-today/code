@@ -60,7 +60,15 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
-        margin = "40,0,0,0"; # outside
+        margin = "36,0,0,0"; # outside # 36? 40?
+        # .tabbrowser-tab[selected] {
+        #   max-height: 24px !important;
+        #   min-height: 24px !important;
+        # }
+        # tab:not([selected="true"]) {
+        #   max-height: 24px !important;
+        #   min-height: 24px !important;
+        # }
         # maxIconSize = 256;
         maxIconSize = 512;
         ignoreTimeout = true;
