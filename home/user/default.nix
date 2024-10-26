@@ -59,9 +59,10 @@
         anchor = "top-right";
         borderRadius = 0;
         borderSize = 0;
-        padding = "0";
-        margin = "0";
-        maxIconSize = 256;
+        padding = "0"; # within
+        margin = "50,0,0,0"; # outside
+        # maxIconSize = 256;
+        maxIconSize = 512;
         ignoreTimeout = true;
         defaultTimeout = 15000;
         layer = "top";
@@ -79,7 +80,7 @@
           on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
 
           [urgency=low]
-          default-timeout=5000
+          default-timeout=10000
 
           [urgency=high]
           default-timeout=30000
