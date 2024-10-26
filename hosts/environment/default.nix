@@ -61,6 +61,8 @@
       cinnamon-desktop
       guake
       # python3-dbus
+      python312Packages.pydbus
+      python312Packages.pygobject3
       clang
       cowsay
       deadnix
