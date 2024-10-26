@@ -62,6 +62,7 @@
         padding = "0";
         margin = "0";
         maxIconSize = 256;
+        ignoreTimeout = true;
         defaultTimeout = 15000;
         layer = "top";
         height = 240;
