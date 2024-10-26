@@ -3,6 +3,7 @@
   imports = [
     (lib.from-root "hosts/users")
     (lib.from-root "home/user")
+    (lib.from-root "hosts/systemd/user")
   ];
   sops.secrets."users/user/passwordHash" = {
     neededForUsers = true;

@@ -1,4 +1,7 @@
 ---
+- mkdir -p ~/.config/oils       # for oshrc and yshrc
+- mkdir -p ~/.local/share/oils  # for osh_history
+- mainProgram = "osh"; needed? https://github.com/developing-today-forks/nixpkgs/blob/main/pkgs/by-name/oi/oils-for-unix/package.nix
 - enable non-free firmware https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/scan
 - https://discourse.nixos.org/t/use-lib-types-system-to-merge-attrsets-without-the-module-system/534/7
 - https://theartofmachinery.com/2016/04/21/partitioned_live_usb.html
