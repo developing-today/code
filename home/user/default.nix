@@ -60,7 +60,7 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
-        margin = "50,0,0,0"; # outside
+        margin = "40,0,0,0"; # outside
         # maxIconSize = 256;
         maxIconSize = 512;
         ignoreTimeout = true;
