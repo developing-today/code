@@ -60,7 +60,8 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
-        margin = "0"; #"36,0,0,0"; # outside # 36? 40?
+        # margin = "0"; #"36,0,0,0"; # outside # 36? 40?
+        margin = "36,0,0,0"; # outside # 36? 40?
         # .tabbrowser-tab[selected] {
         #   max-height: 24px !important;
         #   min-height: 24px !important;
