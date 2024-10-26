@@ -60,6 +60,8 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0";
+        margin = "0";
+        maxIconSize = 256;
         defaultTimeout = 15000;
         layer = "top";
         height = 240;
