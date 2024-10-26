@@ -57,13 +57,13 @@
       mako = {
         enable = true;
         anchor = "top-right";
-        borderRadius = 5;
-        borderSize = 2;
-        padding = "20";
-        defaultTimeout = 5000;
+        borderRadius = 0;
+        borderSize = 0;
+        padding = "0";
+        defaultTimeout = 10000;
         layer = "top";
-        height = 100;
-        width = 300;
+        height = 240;
+        width = 420;
         format = "<b>%s</b>\\n%b";
         backgroundColor = "#303030FF";
         borderColor = "#333333FF";
@@ -76,10 +76,10 @@
           on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
 
           [urgency=low]
-          default-timeout=3000
+          default-timeout=5000
 
           [urgency=high]
-          default-timeout=10000
+          default-timeout=15000
 
           [mode=dnd]
           invisible=1
