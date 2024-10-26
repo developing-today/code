@@ -84,7 +84,7 @@
         # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
         # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
         extraConfig = ''
-          outer-margin=36,0,0,0 # outside # 36? 40?
+          outer-margin="36,0,0,0" # outside # 36? 40?12
           [app-name="Element"]
           on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
 
