@@ -60,7 +60,7 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0";
-        defaultTimeout = 10000;
+        defaultTimeout = 15000;
         layer = "top";
         height = 240;
         width = 420;
@@ -79,7 +79,7 @@
           default-timeout=5000
 
           [urgency=high]
-          default-timeout=15000
+          default-timeout=30000
 
           [mode=dnd]
           invisible=1
