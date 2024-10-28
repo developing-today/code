@@ -216,7 +216,7 @@
       vimPlugins.vim-kitty-navigator
       waybar
       wayland
-      xdg-desktop-portal-hyprland
+      # xdg-desktop-portal-hyprland
       xorg.xcursorthemes
       xwayland
       yazi
