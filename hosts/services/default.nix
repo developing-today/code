@@ -20,6 +20,10 @@
     };
     kanata.enable = true;
     flatpak.enable = true;
+    # https://nixos.org/manual/nixos/stable/index.html#module-services-flatpak
+    # flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+    # flatpak update
+    #
     dbus.enable = true;
     openssh = { # TODO: split-out openssh
       enable = true;
