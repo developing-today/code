@@ -4,8 +4,12 @@
 }: {
   xdg = {
     portal = {
-      extraPortals = [ pkgs.xdg-desktop-portal-hyprland ];
-      config.common.default = "gtk";
+      extraPortals = with pkgs; [
+        xdg-desktop-portal-hyprland
+        xdg-desktop-portal-gtk
+        xdg-desktop-portal-kde
+      ];
+      config.common.default = "hyprland"; # "*";
     };
   };
 }
