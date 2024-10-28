@@ -154,6 +154,7 @@
     };
     omnix.url = "github:juspay/omnix"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
+    hyprland.url = "github:hyprwm/Hyprland";
     # nix-topology.nixosModules.default
     # terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
     # flakehub fh

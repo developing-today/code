@@ -229,6 +229,7 @@ make-nixos-configurations = lib.mapAttrs (
   host = host-generator hostName;
   in
   lib.nixosSystem {
+    system = null;
     specialArgs = {
       inherit
         inputs # maybe put hosts into inputs
