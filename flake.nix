@@ -15,6 +15,7 @@
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    arunoruto.url = "github:arunoruto/flake";
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer";
     nixpkgs.url = "github:developing-today-forks/nixpkgs";
     # nixpkgs.url = "github:dezren39/nixpkgs";

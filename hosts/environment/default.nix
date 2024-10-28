@@ -24,6 +24,9 @@
     systemPackages =
       (with inputs; [
         ssh-to-age.packages.${system}.default
+        arunoruto.packages.${system}.zen-browser
+        arunoruto.packages.${system}.candy-icons
+        # arunoruto.packages.${system}.banana-cursor
       ])
       ++
       (with inputs.nixpkgs-stable.legacyPackages.${system}; [
@@ -46,6 +49,7 @@
       # nix-software-center
       # zed-editor
       # zigpkgs.master
+      space-cadet-pinball
       alacritty-theme
       alejandra # unused now?
       asciinema
@@ -105,6 +109,7 @@
 
       hledger-ui
       hledger-utils
+      # zen-browser
       hledger-web
       hyprcursor
       hyprdim
