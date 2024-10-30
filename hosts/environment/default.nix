@@ -24,7 +24,7 @@
     systemPackages =
       (with inputs; [
         ssh-to-age.packages.${system}.default
-        arunoruto.packages.${system}.zen-browser
+        #arunoruto.packages.${system}.zen-browser
         arunoruto.packages.${system}.candy-icons
         # arunoruto.packages.${system}.banana-cursor
       ])
