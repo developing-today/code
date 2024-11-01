@@ -12,7 +12,7 @@ in {
     wireless = "us-wi-1";
   };
   amd = host {
-    profiles = [ "desktop" "printing" ];
+    profiles = [ "desktop" "printing" "services/flatpak" ];
     hardware = "framework/13-inch/7040-amd";
     disks = [
       "nvme0n1/4t"

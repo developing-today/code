@@ -8,6 +8,7 @@
       nixosConfigurations = configurations // unattended-installer-configurations;
     };
   inputs = {
+    nix-flatpak.url = "github:gmodena/nix-flatpak";
     determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/0.1";
     ssh-to-age.url = "github:Mic92/ssh-to-age";
     impermanence.url = "github:Nix-community/impermanence";
