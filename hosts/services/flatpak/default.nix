@@ -8,7 +8,7 @@
       name = "flathub-beta";
       location = "https://flathub.org/beta-repo/flathub-beta.flatpakrepo";
     }];
-    # uninstallUnmanaged = true
+    uninstallUnmanaged = true;
     update = {
       onActivation = true;
       auto = {
