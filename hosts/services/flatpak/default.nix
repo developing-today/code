@@ -18,6 +18,10 @@
     };
     packages = [
       "io.github.zen_browser.zen"
+      "dev.tchx84.Gameeky"
+      "org.gnome.World.Iotas"
+      "im.bernard.Memorado"
+      "md.obsidian.Obsidian"
     ];
   };
 }

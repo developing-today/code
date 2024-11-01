@@ -1,3 +1,21 @@
+If You refer to this SIDEBAR (collapsed) and want to expand it or collapse it with a keyboard shortcut, then
+set it in SETTINGS > KEYBOARD SHORTCUTS > go down to SIDEBAR ACTIONS > specify it at TOGGLE SIDEBAR.
+export XDG_DATA_DIRS=$XDG_DATA_DIRS:/usr/share:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share
+systemd.services.flatpak-repo = {
+  wantedBy = [ "multi-user.target" ];
+  path = [ pkgs.flatpak ];
+  script = ''
+    flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+  '';
+
+re is a workaround:
+Right click in your sidebar => compact mode => hide sidebar
+Then go to settings => keyboard shortcuts => toggle compact mode => assign a shortkey of your liking.
+This way, you'll be able to hide the sidebar, by entering compact mode.
+v
+
+ Toggle Sidebar's Width shortcut in the Other Zen Features section of the keyboard shortcuts
+
 ---
 - firefox custom css
 - add outer-margin to mako module
