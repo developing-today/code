@@ -19,7 +19,7 @@ in {
       "tmpfs/root"
     ];
     users = [ "user" "backup" ];
-    wireless = [ "us-wi-1" "global-mobile-1" "us-wi-2" ];
+    wireless = [ "us-wi-1" "global-mobile-1" "us-wi-2" "us-global-1" ];
   };
   # amd-server = host {
   #   profiles = [ "server" ];
