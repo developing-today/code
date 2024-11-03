@@ -27,6 +27,7 @@
         #arunoruto.packages.${system}.zen-browser
         arunoruto.packages.${system}.candy-icons
         # arunoruto.packages.${system}.banana-cursor
+        nix-search.packages.${system}.default
       ])
       ++
       (with inputs.nixpkgs-stable.legacyPackages.${system}; [
