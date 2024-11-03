@@ -24,10 +24,9 @@
     systemPackages =
       (with inputs; [
         ssh-to-age.packages.${system}.default
-        #arunoruto.packages.${system}.zen-browser
         arunoruto.packages.${system}.candy-icons
-        # arunoruto.packages.${system}.banana-cursor
         nix-search.packages.${system}.default
+        zen-browser.packages.${system}.default
       ])
       ++
       (with inputs.nixpkgs-stable.legacyPackages.${system}; [
