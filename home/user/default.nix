@@ -406,7 +406,13 @@
       };
       sessionVariables = {
         EDITOR = "nvim";
+        TERM = "kitty"; # "alacritty" "xterm-256color"
+        # PATH = "$HOME/bin:$PATH";
       };
+      # sessionPath = [
+      #   "$HOME/bin"
+      #   "$HOME/.local/bin"
+      # ];
       pointerCursor = {
         package = pkgs.vanilla-dmz;
         name = "Vanilla-DMZ";
