@@ -1,8 +1,4 @@
-{
-  host,
-  lib,
-  ...
-}:
+{ host, lib, ... }:
 {
   imports =
     with lib;

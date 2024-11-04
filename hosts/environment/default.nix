@@ -28,9 +28,7 @@
         nix-search.packages.${system}.default
         zen-browser.packages.${system}.default
       ])
-      ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [
-        activitywatch
-      ])
+      ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
       ++ (with pkgs; [
         # TODO: cleanup systemPackages
         # build

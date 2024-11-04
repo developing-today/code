@@ -1,8 +1,4 @@
-{
-  inputs,
-  system,
-  ...
-}:
+{ inputs, system, ... }:
 {
   nixpkgs.pkgs = import inputs.nixpkgs {
     inherit system;

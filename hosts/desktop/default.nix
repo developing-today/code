@@ -18,7 +18,5 @@
       (from-root "hosts/services")
       (from-root "hosts/virtualisation") # (sic)
     ]
-    ++ [
-      inputs.vim.nixosModules.${system}
-    ];
+    ++ [ inputs.vim.nixosModules.${system} ];
 }

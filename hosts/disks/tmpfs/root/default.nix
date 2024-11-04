@@ -2,9 +2,7 @@
 #       or maybe add a few 'standard' tmpfs disk sizes?
 { inputs, lib, ... }:
 {
-  imports = [
-    (lib.from-root "hosts/disks")
-  ];
+  imports = [ (lib.from-root "hosts/disks") ];
   disko.devices = {
     nodev."/" = {
       fsType = "tmpfs";

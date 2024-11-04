@@ -1,8 +1,4 @@
-{
-  lib,
-  inputs,
-  ...
-}:
+{ lib, inputs, ... }:
 {
   imports = [
     (lib.from-root "hosts/hardware-configuration")

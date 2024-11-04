@@ -6,9 +6,7 @@
   ...
 }:
 {
-  imports = [
-    (lib.from-root "hosts/home")
-  ];
+  imports = [ (lib.from-root "hosts/home") ];
   home-manager.users.root = {
     # TODO: ensure home manager standalone can still work
     # TODO: factor out modules into shared files
@@ -101,9 +99,7 @@
         # ];
 
         maintenance = {
-          repositories = [
-            "/home/user/code"
-          ];
+          repositories = [ "/home/user/code" ];
           timers = {
             daily = "Tue..Sun *-*-* 0:53:00";
             hourly = "*-*-* 1..23:53:00";

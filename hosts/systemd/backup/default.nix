@@ -1,6 +1,4 @@
-{
-  ...
-}:
+{ ... }:
 {
   systemd.tmpfiles.rules = [
     # oils home manager program?

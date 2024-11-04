@@ -10,9 +10,7 @@
   ...
 }:
 {
-  imports = [
-    (lib.from-root "hosts/networking")
-  ];
+  imports = [ (lib.from-root "hosts/networking") ];
   networking = {
     networkmanager = {
       enable = false;
