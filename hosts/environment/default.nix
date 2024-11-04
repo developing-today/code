@@ -46,6 +46,7 @@
         # zed-editor
         # zigpkgs.master
         socat
+        qemu
         space-cadet-pinball
         alacritty-theme
         alejandra # unused now?

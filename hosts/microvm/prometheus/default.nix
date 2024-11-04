@@ -9,6 +9,8 @@
     # hypervisor = "cloud-hypervisor";
     vcpu = 2;
     mem = 1024;
+    # console = "tty"; # or try "serial"
+    # socket = "prometheus.sock";
     interfaces = [
       {
         type = "tap";
