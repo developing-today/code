@@ -1,8 +1,14 @@
-{ config, lib, pkgs, ... }: {
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+{
   # Make the PPD file available in the Nix store
   nixpkgs.overlays = [
     (final: prev: {
-      dell1815dnPPD = final.runCommand "dell1815dn-ppd" {} ''
+      dell1815dnPPD = final.runCommand "dell1815dn-ppd" { } ''
         mkdir -p $out/share/cups/model
         cp ${(lib.from-root "hosts/printing/mfp1815ps.ppd")} $out/share/cups/model/mfp1815ps.ppd
       '';
@@ -12,7 +18,11 @@
   # Printer configuration
   services.printing = {
     enable = true;
-    drivers = [ pkgs.gutenprint pkgs.hplip pkgs.dell1815dnPPD ];
+    drivers = [
+      pkgs.gutenprint
+      pkgs.hplip
+      pkgs.dell1815dnPPD
+    ];
   };
 
   hardware.printers = {

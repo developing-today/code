@@ -1,6 +1,8 @@
 inputs:
-let host = inputs.self.lib.nixos-host-configuration;
-in {
+let
+  host = inputs.self.lib.nixos-host-configuration;
+in
+{
   nixos = host {
     profiles = "desktop";
     hardware = "framework/13-inch/12th-gen-intel";
@@ -8,18 +10,33 @@ in {
       "nvme0n1/2t"
       "tmpfs/root"
     ];
-    users = [ "user" "backup" ];
+    users = [
+      "user"
+      "backup"
+    ];
     wireless = "us-wi-1";
   };
   amd = host {
-    profiles = [ "desktop" "printing" "services/flatpak" ];
+    profiles = [
+      "desktop"
+      "printing"
+      "services/flatpak"
+    ];
     hardware = "framework/13-inch/7040-amd";
     disks = [
       "nvme0n1/4t"
       "tmpfs/root"
     ];
-    users = [ "user" "backup" ];
-    wireless = [ "us-wi-1" "global-mobile-1" "us-wi-2" "us-global-1" ];
+    users = [
+      "user"
+      "backup"
+    ];
+    wireless = [
+      "us-wi-1"
+      "global-mobile-1"
+      "us-wi-2"
+      "us-global-1"
+    ];
   };
   # amd-server = host {
   #   profiles = [ "server" ];

@@ -25,7 +25,8 @@
     # flatpak update
     #
     dbus.enable = true;
-    openssh = { # TODO: split-out openssh
+    openssh = {
+      # TODO: split-out openssh
       enable = true;
       settings = {
         PermitRootLogin = "no";
@@ -44,14 +45,14 @@
         }
       ];
       # authorized keys
-        # extraConfig = ''
-        #   Match user git
-        #     AllowTcpForwarding no
-        #     AllowAgentForwarding no
-        #     PasswordAuthentication no
-        #     PermitTTY no
-        #     X11Forwarding no
-        # '';
+      # extraConfig = ''
+      #   Match user git
+      #     AllowTcpForwarding no
+      #     AllowAgentForwarding no
+      #     PasswordAuthentication no
+      #     PermitTTY no
+      #     X11Forwarding no
+      # '';
     };
     locate = {
       enable = true;

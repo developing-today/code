@@ -1,5 +1,6 @@
 {
-  outputs = inputs: # flake-parts.lib.mkFlake
+  outputs =
+    inputs: # flake-parts.lib.mkFlake
     rec {
       lib = import ./lib inputs;
       hosts = import ./hosts inputs; # inputs.host?
@@ -39,24 +40,29 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    systems = { # TODO: use this?
+    systems = {
+      # TODO: use this?
       # url = "github:nix-systems/default-linux";
       url = "github:nix-systems/default";
       # inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-utils = { # TODO: use this?
+    flake-utils = {
+      # TODO: use this?
       url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz";
       inputs.systems.follows = "systems";
     };
-    flake-compat = { # TODO: use this?
+    flake-compat = {
+      # TODO: use this?
       url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz";
       flake = false;
     };
-    gitignore = { # TODO: use this?
+    gitignore = {
+      # TODO: use this?
       url = "github:hercules-ci/gitignore.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    waybar = { # TODO: use this?
+    waybar = {
+      # TODO: use this?
       url = "github:Alexays/Waybar";
       # inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -64,7 +70,8 @@
       url = "github:neovim/neovim";
       flake = false;
     };
-    flake-parts = { # TODO: use this?
+    flake-parts = {
+      # TODO: use this?
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
@@ -106,11 +113,13 @@
       inputs.treefmt-nix.follows = "treefmt-nix";
       inputs.nix-darwin.follows = "nix-darwin";
     };
-    nix-darwin = { # TODO: use this?
+    nix-darwin = {
+      # TODO: use this?
       url = "github:lnl7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    treefmt-nix = { # TODO: use this?
+    treefmt-nix = {
+      # TODO: use this?
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -138,18 +147,21 @@
       inputs.devshell.follows = "devshell";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
-    devshell = { # TODO: use this?
+    devshell = {
+      # TODO: use this?
       url = "github:numtide/devshell";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    pre-commit-hooks = { # TODO: use this?
+    pre-commit-hooks = {
+      # TODO: use this?
       url = "github:cachix/pre-commit-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs-stable.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
     };
-    yazi = { # TODO: use this?
+    yazi = {
+      # TODO: use this?
       url = "github:sxyazi/yazi";
       # not following to allow using yazi cache
       # inputs.nixpkgs.follows = "nixpkgs";

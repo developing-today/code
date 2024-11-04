@@ -9,7 +9,8 @@
   imports = [
     (lib.from-root "hosts/home")
   ];
-  home-manager.users.root = { # TODO: ensure home manager standalone can still work
+  home-manager.users.root = {
+    # TODO: ensure home manager standalone can still work
     # TODO: factor out modules into shared files
     nixpkgs.config = {
       allowBroken = true;
@@ -80,7 +81,7 @@
         enable = true;
         lfs.enable = true;
 
-        userName  = "Drewry Pope";
+        userName = "Drewry Pope";
         userEmail = "drewrypope@gmail.com";
         aliases = {
           ci = "commit";
@@ -110,13 +111,15 @@
           };
         };
         extraConfig = {
-              push = { autoSetupRemote = true; };
-              safe = {
-                directory = "/home/code/user";
-              };
-        #   credential.helper = "${
-        #       pkgs.git.override { withLibsecret = true; }
-        #     }/bin/git-credential-libsecret";
+          push = {
+            autoSetupRemote = true;
+          };
+          safe = {
+            directory = "/home/code/user";
+          };
+          #   credential.helper = "${
+          #       pkgs.git.override { withLibsecret = true; }
+          #     }/bin/git-credential-libsecret";
         };
       };
       gitui.enable = true;
@@ -832,7 +835,8 @@
           zsv
           zulip
           zulip-term
-        ] ++ [
+        ]
+        ++ [
           ## R
           (pkgs.rWrapper.override {
             packages = with pkgs.rPackages; [
@@ -852,6 +856,6 @@
           #  ];
           #})
         ];
-      };
+    };
   };
 }

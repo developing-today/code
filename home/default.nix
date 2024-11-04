@@ -1,4 +1,5 @@
-{ # TODO: this doesn't work as-is
+{
+  # TODO: this doesn't work as-is
   # homeConfigurations = mapAttrs (
   #   target: cfg:
   #   homeManagerConfiguration {

@@ -10,7 +10,8 @@
   imports = [
     (lib.from-root "hosts/home")
   ];
-  home-manager.users.user = { # TODO: ensure home manager standalone can still work
+  home-manager.users.user = {
+    # TODO: ensure home manager standalone can still work
     # TODO: factor out modules into shared files
     nixpkgs.config = {
       allowBroken = true;
@@ -60,7 +61,7 @@
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
-        margin = "0"; #"36,0,0,0"; # outside # 36? 40?
+        margin = "0"; # "36,0,0,0"; # outside # 36? 40?
         # margin = "36,0,0,0"; # outside # 36? 40?
         # .tabbrowser-tab[selected] {
         #   max-height: 24px !important;
@@ -228,7 +229,7 @@
         enable = true;
         lfs.enable = true;
 
-        userName  = "Drewry Pope";
+        userName = "Drewry Pope";
         userEmail = "drewrypope@gmail.com";
         aliases = {
           ci = "commit";
@@ -258,13 +259,15 @@
           };
         };
         extraConfig = {
-              push = { autoSetupRemote = true; };
-              safe = {
-                directory = "/home/code/user";
-              };
-        #   credential.helper = "${
-        #       pkgs.git.override { withLibsecret = true; }
-        #     }/bin/git-credential-libsecret";
+          push = {
+            autoSetupRemote = true;
+          };
+          safe = {
+            directory = "/home/code/user";
+          };
+          #   credential.helper = "${
+          #       pkgs.git.override { withLibsecret = true; }
+          #     }/bin/git-credential-libsecret";
         };
       };
       gitui.enable = true;
@@ -987,7 +990,8 @@
           zsv
           zulip
           zulip-term
-        ] ++ [
+        ]
+        ++ [
           ## R
           (pkgs.rWrapper.override {
             packages = with pkgs.rPackages; [
@@ -1007,6 +1011,6 @@
           #  ];
           #})
         ];
-      };
+    };
   };
 }

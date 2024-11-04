@@ -4,36 +4,38 @@
   ...
 }:
 {
-  imports = with lib; lists.flatten [
-    (ensure-list host.modules)
-    (ensure-list host.imports)
+  imports =
+    with lib;
+    lists.flatten [
+      (ensure-list host.modules)
+      (ensure-list host.imports)
 
-    (make-hardware host.hardware)
-    (ensure-list host.hardware-modules)
-    (ensure-list host.hardware-imports)
+      (make-hardware host.hardware)
+      (ensure-list host.hardware-modules)
+      (ensure-list host.hardware-imports)
 
-    (make-profiles host.profiles)
-    (ensure-list host.profile-modules)
-    (ensure-list host.profile-imports)
+      (make-profiles host.profiles)
+      (ensure-list host.profile-modules)
+      (ensure-list host.profile-imports)
 
-    (make-disks host.disks)
-    (ensure-list host.disk-modules)
-    (ensure-list host.disk-imports)
+      (make-disks host.disks)
+      (ensure-list host.disk-modules)
+      (ensure-list host.disk-imports)
 
-    (make-wireless host.wireless)
-    (ensure-list host.wireless-modules)
-    (ensure-list host.wireless-imports)
+      (make-wireless host.wireless)
+      (ensure-list host.wireless-modules)
+      (ensure-list host.wireless-imports)
 
-    (make-users host.users)
-    (ensure-list host.user-modules)
-    (ensure-list host.user-imports)
+      (make-users host.users)
+      (ensure-list host.user-modules)
+      (ensure-list host.user-imports)
 
-    # (ensure-list host.darwin-profiles) # make-darwin-profiles
-    (ensure-list host.darwin-profile-modules)
-    (ensure-list host.darwin-profile-imports)
-    (ensure-list host.darwin-modules)
-    (ensure-list host.darwin-imports)
-  ];
+      # (ensure-list host.darwin-profiles) # make-darwin-profiles
+      (ensure-list host.darwin-profile-modules)
+      (ensure-list host.darwin-profile-imports)
+      (ensure-list host.darwin-modules)
+      (ensure-list host.darwin-imports)
+    ];
 }
 /*
   # (make-darwin-modules host.darwin-profiles)

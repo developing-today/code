@@ -7,7 +7,8 @@
   stateVersion,
   lib,
   ...
-}: {
+}:
+{
   sops.secrets.github-token-root = {
     path = "/home/user/auth";
     sopsFile = lib.from-root "secrets/sops/groups/admin/github.yaml";

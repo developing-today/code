@@ -13,7 +13,8 @@
     inputs.impermanence.nixosModules.impermanence
     # inputs.nixosModules.home-manager.impermanence # home manager pulls this in?
   ];
-  environment.persistence."/nix/persistent" = { # how to handle logical groups separate from key groups? should this be in hosts/environment/persistent and then imported here?
+  environment.persistence."/nix/persistent" = {
+    # how to handle logical groups separate from key groups? should this be in hosts/environment/persistent and then imported here?
     hideMounts = true;
 
     directories = [
@@ -30,7 +31,8 @@
       # "/etc/ssh/ssh_host_rsa_key"
     ];
   };
-  systemd.services.nix-daemon = { # will this being here be an issue? should it be in hosts/nix-daemon/default.nix ? or hosts/systemd/default.nix ? or hosts/systemd/services/nix-daemon.nix ? or hosts/systemd/impermanence/default.nix ?
+  systemd.services.nix-daemon = {
+    # will this being here be an issue? should it be in hosts/nix-daemon/default.nix ? or hosts/systemd/default.nix ? or hosts/systemd/services/nix-daemon.nix ? or hosts/systemd/impermanence/default.nix ?
     environment = {
       # Location for temporary files
       TMPDIR = "/var/cache/nix";

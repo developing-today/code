@@ -1,7 +1,8 @@
 {
   pkgs,
   ...
-}: {
+}:
+{
   xdg = {
     portal = {
       extraPortals = with pkgs; [

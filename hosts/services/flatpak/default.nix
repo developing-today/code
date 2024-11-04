@@ -1,4 +1,5 @@
-{ lib, inputs, ... }: {
+{ lib, inputs, ... }:
+{
   # imports = [
   #   inputs.nix-flatpak.nixosModules.nix-flatpak
   # ];
