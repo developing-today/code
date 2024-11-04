@@ -5,15 +5,6 @@
   ...
 }: {
   microvm = {
-    # It is highly recommended to share the host's nix-store
-    # with the VMs to prevent building huge images.
-    shares = [{
-      source = "/nix/store";
-      mountPoint = "/nix/.ro-store";
-      tag = "ro-store";
-      proto = "virtiofs";
-    }];
-
     hypervisor = "cloud-hypervisor";
     vcpu = 2;
     mem = 1024;
