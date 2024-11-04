@@ -1,0 +1,70 @@
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: {
+  microvm = {
+    # It is highly recommended to share the host's nix-store
+    # with the VMs to prevent building huge images.
+    shares = [{
+      source = "/nix/store";
+      mountPoint = "/nix/.ro-store";
+      tag = "ro-store";
+      proto = "virtiofs";
+    }];
+
+    hypervisor = "cloud-hypervisor";
+    vcpu = 2;
+    mem = 1024;
+    interfaces = [
+      {
+        type = "tap";
+        id = "vm-prometheus";
+        mac = "02:22:de:ad:be:ea";
+      }
+    ];
+
+    shares = [
+      {
+        source = "/nix/store";
+        mountPoint = "/nix/.ro-store";
+        tag = "ro-store";
+        proto = "virtiofs";
+      }
+    ];
+
+    volumes = [
+      {
+        image = "prometheus-var.img";
+        mountPoint = "/var";
+        size = 8192;
+      }
+    ];
+  };
+
+  # Normal NixOS configuration past this point
+
+  systemd.network.enable = true;
+
+  systemd.network.networks."20-lan" = {
+    matchConfig.Type = "ether";
+    networkConfig = {
+      DHCP = "yes";
+      IPv6AcceptRA = true;
+    };
+  };
+
+  networking = {
+    hostName = "prometheus";
+    firewall.package = pkgs.nftables;
+    #firewall.allowedTCPPorts = [9090];
+    nftables.enable = true;
+  };
+
+  services.prometheus = {
+    enable = true;
+  };
+
+  system.stateVersion = "23.11";
+}
