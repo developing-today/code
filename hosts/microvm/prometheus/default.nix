@@ -5,7 +5,8 @@
   ...
 }: {
   microvm = {
-    hypervisor = "cloud-hypervisor";
+    hypervisor = "qemu";
+    # hypervisor = "cloud-hypervisor";
     vcpu = 2;
     mem = 1024;
     interfaces = [
