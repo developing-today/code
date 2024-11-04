@@ -45,6 +45,7 @@
         # nix-software-center
         # zed-editor
         # zigpkgs.master
+        socat
         space-cadet-pinball
         alacritty-theme
         alejandra # unused now?
