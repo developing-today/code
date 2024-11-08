@@ -226,45 +226,46 @@ let
       )
     ) configurations;
 
-    make-vm-configurations =
-        hosts:
-        make-nixos-configurations (lib.mapAttrs'
-          (name: host-generator:
-            let
-              host = host-generator name;
-            in
-            lib.nameValuePair
-              ("vm_" + name)
-              (host // { vm = true; })
-          )
-          hosts);
+  make-vm-configurations =
+    hosts:
+      lib.mapAttrs' (
+        hostName: host-generator:
+          let
+            vmName = "vm_" + hostName;
+          in
+          lib.nameValuePair
+            vmName
+            (make-nixos-from-config (
+              make-host-config vmName (
+                name: (host-generator name) // { vm = true; }
+              )
+            ))
+      )
+      hosts;
 
-    make-host-config = hostName: host-generator:
-      let
-        host = host-generator hostName;
-      in
-        {
-          inherit host hostName;
-          inherit (host) system stateVersion;
-          inherit inputs;
-          lib = self;
-        };
-
-    # Create nixos system from a final config
-    make-nixos-from-config = config:
-      lib.nixosSystem {
-        system = null;
-        specialArgs = {
-          inherit (config) inputs hostName host lib;
-          inherit (config.host) system stateVersion;
-        };
-        modules = ensure-list config.host.init;
+  make-host-config = hostName: host-generator:
+    let
+      host = host-generator hostName;
+    in
+      {
+        inherit inputs;
+        inherit host hostName; # move hostName into host?
+        inherit (host) system stateVersion; # move into host?
+        lib = self;
       };
 
-    # Original function now composed of the above two
-    make-nixos-configurations = lib.mapAttrs (
+  make-nixos-from-config = config:
+    lib.nixosSystem {
+      system = null;
+      specialArgs = {
+        inherit (config) inputs host hostName system stateVersion lib;
+      };
+      modules = ensure-list config.host.init;
+    };
+
+  make-nixos-configurations = lib.mapAttrs (
       hostName: host-generator:
-      make-nixos-from-config (make-host-config hostName host-generator)
+        make-nixos-from-config (make-host-config hostName host-generator)
     );
 
   self = lib.attrsets.recursiveUpdate lib {
