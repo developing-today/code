@@ -39,16 +39,17 @@ in
       "us-global-1"
     ];
   };
-  # amd-server = host {
-  #   profiles = [ "server" ];
-  #   hardware = "generic/amd";
-  #   disks = [
-  #     "nvme0n1/1t"
-  #     "tmpfs/root"
-  #   ];
-  #   users = [ "admin" ];
-  #   wireless = "us-wi-1";
-  # };
+  amd-server = host {
+    # profiles = [ "server" ];
+    profiles = [ "all" ];
+    # hardware = "generic/amd";
+    # disks = [
+    #   # "nvme0n1/1t"
+    #   # "tmpfs/root"
+    # ];
+    users = [ "user-for-vm" ];
+    # wireless = "us-wi-1";
+  };
 }
 # apu2c3 = host {
 #   profiles = ["server"];

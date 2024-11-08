@@ -9,10 +9,29 @@
   ...
 }:
 {
-  imports = lib.optionals (!host.vm) [
-    inputs.impermanence.nixosModules.impermanence
-    (lib.from-root "hosts/impermanence/inner")
-  ];
+  environment.persistence = lib.mkIf (!host.vm) {
+    "/nix/persistent" = {
+      hideMounts = true;
+      directories = [
+        "/home"
+        "/root"
+        "/var"
+        "/tmp"
+      ];
+      files = [
+        "/etc/ssh/ssh_host_ed25519_key"
+      ];
+    };
+  };
+
+  systemd.services.nix-daemon = lib.mkIf (!host.vm) {
+    environment = {
+      TMPDIR = "/var/cache/nix";
+    };
+    serviceConfig = {
+      CacheDirectory = "nix";
+    };
+  };
 }
 # {
 #   environment.persistence."/persistent" = {

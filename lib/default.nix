@@ -206,25 +206,25 @@ let
 
   make-unattended-installer-configurations = # TODO: make-bootstrap-versions
     configurations:
-    lib.mapAttrs' (
-      name: config:
-      lib.nameValuePair "unattended-installer_offline_${name}" (
-        inputs.unattended-installer.lib.diskoInstallerWrapper config {
-          # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
-          config = {
-            # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
-            isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
-            unattendedInstaller = {
-              successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
-              preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
-              postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
-              preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
-              postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
-            };
-          };
-        }
-      )
-    ) configurations;
+      lib.mapAttrs' (
+        name: config:
+          lib.nameValuePair "unattended-installer_offline_${name}" (
+            inputs.unattended-installer.lib.diskoInstallerWrapper config {
+              # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+              config = {
+                # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+                isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
+                unattendedInstaller = {
+                  successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+                  preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+                  postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+                  preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+                  postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+                };
+              };
+            }
+          )
+        ) configurations;
 
   make-vm-configurations =
     hosts:
