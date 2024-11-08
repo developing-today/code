@@ -5,8 +5,9 @@
       lib = import ./lib inputs;
       hosts = import ./hosts inputs; # inputs.host?
       configurations = lib.make-nixos-configurations hosts;
+      vm-configurations = lib.make-vm-configurations hosts;
       unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
-      nixosConfigurations = configurations // unattended-installer-configurations;
+      nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
     };
   inputs = {
     microvm.url = "github:astro/microvm.nix";

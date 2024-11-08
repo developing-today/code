@@ -109,6 +109,7 @@ let
       disk-modules = [ ];
       disk-imports = [ ];
       bootstrap = false; # TODO: make this work or delete?
+      vm = false;
       # users # TODO: make this work host has users which have home-manager-users
     } options;
   nixos-host-configuration =
@@ -225,25 +226,46 @@ let
       )
     ) configurations;
 
-  make-nixos-configurations = lib.mapAttrs (
-    hostName: host-generator:
-    let
-      host = host-generator hostName;
-    in
-    lib.nixosSystem {
-      system = null;
-      specialArgs = {
-        inherit
-          inputs # maybe put hosts into inputs
-          hostName # maybe change hostName to host.name and hosts key is alias or hostid
-          host # maybe add host.name to host, maybe add host.id
-          ;
-        inherit (host) system stateVersion; # maybe just leave these in host?
-        lib = self;
+    make-vm-configurations =
+        hosts:
+        make-nixos-configurations (lib.mapAttrs'
+          (name: host-generator:
+            let
+              host = host-generator name;
+            in
+            lib.nameValuePair
+              ("vm_" + name)
+              (host // { vm = true; })
+          )
+          hosts);
+
+    make-host-config = hostName: host-generator:
+      let
+        host = host-generator hostName;
+      in
+        {
+          inherit host hostName;
+          inherit (host) system stateVersion;
+          inherit inputs;
+          lib = self;
+        };
+
+    # Create nixos system from a final config
+    make-nixos-from-config = config:
+      lib.nixosSystem {
+        system = null;
+        specialArgs = {
+          inherit (config) inputs hostName host lib;
+          inherit (config.host) system stateVersion;
+        };
+        modules = ensure-list config.host.init;
       };
-      modules = ensure-list host.init;
-    }
-  );
+
+    # Original function now composed of the above two
+    make-nixos-configurations = lib.mapAttrs (
+      hostName: host-generator:
+      make-nixos-from-config (make-host-config hostName host-generator)
+    );
 
   self = lib.attrsets.recursiveUpdate lib {
     inherit
@@ -272,7 +294,10 @@ let
       make-wireless-paths
       make-wireless
       make-wireless-template
+      make-vm-configurations
       make-unattended-installer-configurations
+      make-nixos-from-config
+      make-host-config
       make-nixos-configurations
       ;
   };
