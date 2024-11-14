@@ -89,6 +89,9 @@
         builders-use-substitutes = true
       '';
     */
+    # extraOptions = ''
+    #   flake-registry = ""
+    # '';
     auto-optimise-store = true;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here

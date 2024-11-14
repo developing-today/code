@@ -1,4 +1,4 @@
-{
+rec {
   outputs =
     inputs: # flake-parts.lib.mkFlake
     rec {
@@ -207,7 +207,7 @@
     # };
   };
   nixConfig = {
-    # unfortunately can't import, but this should be equal to ./hosts/nixconfig.nix
+    # unfortunately can't import, but this should be equal to flake.nix
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"
@@ -226,13 +226,13 @@
       "verified-fetches"
     ];
     trusted-users = [ "root" ];
-    # trusted-users = [ "user" ];
+    #       trusted-users = [ "user" ];
     use-xdg-base-directories = true;
     builders-use-substitutes = true;
     substituters = [
-      "https://cache.nixos.org"
-      "https://yazi.cachix.org"
       # TODO: priority order
+      "https://cache.nixos.org"
+      # "https://yazi.cachix.org"
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -244,7 +244,7 @@
     ];
     trusted-substituters = [
       "https://cache.nixos.org"
-      "https://yazi.cachix.org"
+      # "https://yazi.cachix.org"
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -275,11 +275,11 @@
     keep-outputs = true; # Nice for developers
     keep-derivations = true; # Idem
     accept-flake-config = true;
-    # allow-dirty = false;
-    # builders-use-substitutes = true;
+    #     allow-dirty = false;
+    #     builders-use-substitutes = true;
     fallback = true;
     log-lines = 128;
-    # pure-eval = true;
+    #     pure-eval = true;
     # run-diff-hook = true;
     # secret-key-files
     show-trace = true;
@@ -288,14 +288,19 @@
     trace-verbose = true;
     # use-xdg-base-directories = true;
     allow-dirty = true;
-    # buildMachines = [ ];
-    # distributedBuilds = true;
-    # # optional, useful when the builder has a faster internet connection than yours
+    /*
+      buildMachines = [ ];
+      distributedBuilds = true;
+      # optional, useful when the builder has a faster internet connection than yours
+      extraOptions = ''
+        builders-use-substitutes = true
+      '';
+    */
     # extraOptions = ''
-    #   builders-use-substitutes = true
+    #   flake-registry = ""
     # '';
     auto-optimise-store = true;
-    # pure-eval = true; # this should be true..
+    #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
     use-registries = true;
