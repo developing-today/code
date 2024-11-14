@@ -111,7 +111,7 @@
             autoSetupRemote = true;
           };
           safe = {
-            directory = "/home/code/user";
+            directory = "*";
           };
           #   credential.helper = "${
           #       pkgs.git.override { withLibsecret = true; }
