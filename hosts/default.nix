@@ -37,6 +37,7 @@ in
       "global-mobile-1"
       "us-wi-2"
       "us-global-1"
+      "us-global-2"
     ];
   };
   amd-server = host {
