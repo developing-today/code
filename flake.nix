@@ -125,7 +125,8 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
-      url = "path:./pkgs/vim";
+      # url = "path:./pkgs/vim";
+      url = "git+file:.?dir=pkgs/vim"; # https://github.com/NixOS/nix/issues/3978#issuecomment-1661075896
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";
       inputs.systems.follows = "systems";

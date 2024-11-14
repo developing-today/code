@@ -2410,7 +2410,7 @@
       },
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-NQCYyFuYTIy2Pelf6jwe/mbbGfLsndbtXNyGafr3SPk=",
+        "narHash": "sha256-3H8G7Qv9QCxzJxH/ovyZOUZP2G7Q+WLqGbpyvbZOjG0=",
         "path": "./pkgs/vim",
         "type": "path"
       },
@@ -2504,11 +2504,11 @@
         "rust-overlay": "rust-overlay_4"
       },
       "locked": {
-        "lastModified": 1731553101,
-        "narHash": "sha256-rqhuaoJrMzjv25ID9IGloHZdDMAa3kZlqXe/onvHgU4=",
+        "lastModified": 1731559147,
+        "narHash": "sha256-meH+kMqOdsBwYmnD+t3lGBV11I1yhwdKzI0diy4+bYA=",
         "owner": "sxyazi",
         "repo": "yazi",
-        "rev": "357dc30b1d2239bc375d59754b5fa9781750df90",
+        "rev": "1522751fee8d27ec25ae4bf067aecdff4e3efcf6",
         "type": "github"
       },
       "original": {
