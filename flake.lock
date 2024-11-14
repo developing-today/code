@@ -2409,14 +2409,19 @@
         ]
       },
       "locked": {
-        "lastModified": 1,
-        "narHash": "sha256-3H8G7Qv9QCxzJxH/ovyZOUZP2G7Q+WLqGbpyvbZOjG0=",
-        "path": "./pkgs/vim",
-        "type": "path"
+        "dir": "pkgs/vim",
+        "lastModified": 1731560409,
+        "narHash": "sha256-QadP8Rdjy83wfss00JAo1jIu8OMg16u+c64KYOn6hgw=",
+        "ref": "refs/heads/main",
+        "rev": "9b0167f7a22d27e35b2fa8eff25aff94b423c75e",
+        "revCount": 1158,
+        "type": "git",
+        "url": "file:.?dir=pkgs/vim"
       },
       "original": {
-        "path": "./pkgs/vim",
-        "type": "path"
+        "dir": "pkgs/vim",
+        "type": "git",
+        "url": "file:.?dir=pkgs/vim"
       }
     },
     "wallpapers": {
@@ -2504,11 +2509,11 @@
         "rust-overlay": "rust-overlay_4"
       },
       "locked": {
-        "lastModified": 1731559147,
-        "narHash": "sha256-meH+kMqOdsBwYmnD+t3lGBV11I1yhwdKzI0diy4+bYA=",
+        "lastModified": 1731560227,
+        "narHash": "sha256-zncGNNB2jFEmPrB/nrCan/ACy41TaOWyxR4N8QZK35w=",
         "owner": "sxyazi",
         "repo": "yazi",
-        "rev": "1522751fee8d27ec25ae4bf067aecdff4e3efcf6",
+        "rev": "f2e33da1f9c057ab91bd130e1b53004762add34c",
         "type": "github"
       },
       "original": {
