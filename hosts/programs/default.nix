@@ -1,5 +1,13 @@
 {
   programs = {
+    git = {
+      enable = true;
+      config = {
+        safe.directory = [
+          "*"
+        ];
+      };
+    };
     partition-manager.enable = true;
     steam = {
       enable = true;
