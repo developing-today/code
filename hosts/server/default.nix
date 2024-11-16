@@ -53,6 +53,11 @@
 
         dns = "9.9.9.9";            # Override the DNS for this VM
         # gateway = "10.0.10.100";    # Override the default gateway for this VM
+        extraConfiguration = {
+          virtualisation = {
+            docker.enable = lib.mkForce true;
+          };
+        };
       };
     };
   };
