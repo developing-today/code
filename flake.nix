@@ -10,6 +10,7 @@ rec {
       nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
     };
   inputs = {
+    server.url = "github:developing-today-forks/server.nix/master";
     microvm.url = "github:astro/microvm.nix";
     zen-browser.url = "github:0xc000022070/zen-browser-flake";
     nix-search.url = "github:diamondburned/nix-search";
@@ -125,9 +126,10 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs";
     };
     vim = {
+      url = "github:developing-today/code?dir=pkgs/vim"; # TODO: undo this
       # url = "path:./pkgs/vim";
       # url = "path:pkgs/vim";
-      url = "git+file:.?dir=pkgs/vim"; # https://github.com/NixOS/nix/issues/3978#issuecomment-1661075896
+      # url = "git+file:.?dir=pkgs/vim"; # https://github.com/NixOS/nix/issues/3978#issuecomment-1661075896
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixvim.follows = "nixvim";
       inputs.systems.follows = "systems";
