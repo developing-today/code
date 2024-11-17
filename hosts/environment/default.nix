@@ -67,6 +67,7 @@
         python312Packages.pygobject3
         clang
         cowsay
+        talosctl
         deadnix
         e2fsprogs
         emacsPackages.fortune-cookie
