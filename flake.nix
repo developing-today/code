@@ -7,8 +7,8 @@ rec {
       configurations = lib.make-nixos-configurations hosts;
       vm-configurations = lib.make-vm-configurations hosts;
       unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
-      # nixosConfigurations = lib.recursiveUpdate configurations vm-configurations unattended-installer-configurations;
-      nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
+      nixosConfigurations = lib.merge [configurations vm-configurations unattended-installer-configurations];
+      # nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
     };
   inputs = {
     clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz";

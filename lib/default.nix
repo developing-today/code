@@ -14,7 +14,7 @@
 */
 inputs:
 let
-  lib = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs.nixpkgs.lib inputs.home-manager.lib;
+  lib = merge [inputs.nixpkgs.lib inputs.home-manager.lib];
 
   root =
     if builtins.hasAttr "outPath" inputs.self then
@@ -24,15 +24,17 @@ let
 
   pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
 
-  recursiveUpdate = lib.attrsets.recursiveUpdate;
-  # recursiveUpdate = # only outputs structs
-  #   args:
-  #     args
-  #     |> builtins.concatMap (x:
-  #       if builtins.isList x
-  #       then x
-  #       else [x])
-  #     |> builtins.foldl' lib.attrsets.recursiveUpdate {};
+  merge = array:
+    let
+      flattenDeep = x:
+        if builtins.isList x then
+          builtins.concatMap flattenDeep x
+        else
+          [x];
+    in
+      array
+      |> flattenDeep
+      |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate {};
 
   mkEnv =
     name: value:
@@ -44,7 +46,7 @@ let
     f: attrs:
     lib.foldlAttrs (
       acc: name: value:
-      (recursiveUpdate acc (f name value))
+      (merge [acc (f name value)])
     ) { } attrs;
 
   from-root = path: "${root}/${path}";
@@ -56,7 +58,7 @@ let
 
   nixos-user-configuration =
     options: name:
-    recursiveUpdate rec {
+    merge [rec {
       inherit name;
       enable = true;
       uid = 1000;
@@ -70,11 +72,11 @@ let
         "drewrypope@gmail.com"
       ];
       # a nixos user optionally contains a home manager user?
-    } options;
+    } options];
 
   nixos-host-configuration-base =
     options: name:
-    recursiveUpdate rec {
+    merge [rec {
       inherit name;
       type = name; # should type allow a list of types?
       # tags?
@@ -121,16 +123,16 @@ let
       bootstrap = false; # TODO: make this work or delete?
       vm = false;
       # users # TODO: make this work host has users which have home-manager-users
-    } options;
+    } options];
   nixos-host-configuration =
     options: name:
     let
       host = nixos-host-configuration-base options name;
     in
-    recursiveUpdate host rec {
+    merge [host rec {
       wireless-secrets-template =
         config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
-    };
+    }];
 
   default-home-manager-user-configuration = name: rec {
     # TODO: make this work? integrate into users?
@@ -150,7 +152,7 @@ let
     };
   };
   home-manager-user-configuration =
-    name: options: recursiveUpdate (default-home-manager-user-configuration name) options;
+    name: options: merge [(default-home-manager-user-configuration name) options];
 
   ensure-list = x: if builtins.isList x then x else [ x ];
 
@@ -247,7 +249,7 @@ let
             vmName
             (make-nixos-from-config (
               make-host-config vmName (
-                name: recursiveUpdate (host-generator name) { vm = true; }
+                name: merge [(host-generator name) { vm = true; }]
               )
             ))
       )
@@ -286,26 +288,26 @@ let
     ...
   }@inputs:
   let
-    enablePkgs = { ... }@args: builtins.mapAttrs (n: v: recursiveUpdate v { enable = true; }) args;
+    enablePkgs = { ... }@args: builtins.mapAttrs (n: v: merge v { enable = true; }) args;
     enablePlugins =
       attrSet:
-      if attrSet ? plugins then recursiveUpdate attrSet { plugins = enablePkgs attrSet.plugins; }
+      if attrSet ? plugins then merge attrSet { plugins = enablePkgs attrSet.plugins; }
       else attrSet;
     enableLspServers =
       attrSet:
       if attrSet ? lsp && attrSet.lsp ? servers then
-        recursiveUpdate attrSet
+        merge [attrSet
         {
-          lsp = recursiveUpdate attrSet.lsp {
+          lsp = merge attrSet.lsp {
             servers = enablePkgs attrSet.lsp.servers;
           };
-        }
+        }]
       else
         attrSet;
     enableColorschemes =
       attrSet:
       if attrSet ? colorschemes then
-        recursiveUpdate attrSet { colorschemes = enablePkgs attrSet.colorschemes; }
+        merge [attrSet { colorschemes = enablePkgs attrSet.colorschemes; }]
       else
         attrSet;
     enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
@@ -388,11 +390,11 @@ let
         });
   };
 
-  self = recursiveUpdate lib {
+  self = merge [lib {
     inherit
       lib
       root
-      recursiveUpdate
+      merge
       from-root
       public-key
       group-key
@@ -424,6 +426,6 @@ let
       make-vim
       make-clan
       ;
-  };
+  }];
 in
 self
