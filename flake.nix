@@ -7,9 +7,11 @@ rec {
       configurations = lib.make-nixos-configurations hosts;
       vm-configurations = lib.make-vm-configurations hosts;
       unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
+      # nixosConfigurations = lib.recursiveUpdate configurations vm-configurations unattended-installer-configurations;
       nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
     };
   inputs = {
+    clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz";
     server.url = "github:developing-today-forks/server.nix/master";
     microvm.url = "github:astro/microvm.nix";
     zen-browser.url = "github:0xc000022070/zen-browser-flake";
@@ -125,26 +127,6 @@ rec {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    vim = {
-      url = "github:developing-today/code?dir=pkgs/vim"; # TODO: undo this
-      # url = "path:./pkgs/vim";
-      # url = "path:pkgs/vim";
-      # url = "git+file:.?dir=pkgs/vim"; # https://github.com/NixOS/nix/issues/3978#issuecomment-1661075896
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixvim.follows = "nixvim";
-      inputs.systems.follows = "systems";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
-      inputs.neovim-nightly-overlay.follows = "neovim-nightly-overlay";
-      inputs.git-hooks.follows = "git-hooks";
-      inputs.treefmt-nix.follows = "treefmt-nix";
-      inputs.nix-darwin.follows = "nix-darwin";
-      inputs.gitignore.follows = "gitignore";
-      inputs.devshell.follows = "devshell";
-      inputs.neovim-src.follows = "neovim-src";
-    };
     nix-topology = {
       url = "github:oddlama/nix-topology";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -218,6 +200,7 @@ rec {
       "cgroups"
       "dynamic-derivations"
       "fetch-closure"
+      "fetch-tree"
       "flakes"
       "git-hashing"
       # "local-overlay-store" # look into this
@@ -225,6 +208,7 @@ rec {
       "nix-command"
       # "no-url-literals" # <- removed no-url-literals for flakehub testing
       "parse-toml-timestamps"
+      "pipe-operators"
       "read-only-local-store"
       "recursive-nix"
       "verified-fetches"

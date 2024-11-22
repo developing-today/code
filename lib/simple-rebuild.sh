@@ -20,7 +20,7 @@ if systemctl is-active --quiet tailscaled; then # this is a hack: https://github
 else
   echo "tailscaled service not found or not active." # hack not needed
 fi
-sudo nixos-rebuild --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
 current=$(nixos-rebuild list-generations | grep current)
 echo "current: $current"
 hostname=$(hostname)

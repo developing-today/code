@@ -24,6 +24,16 @@ let
 
   pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
 
+  recursiveUpdate = lib.attrsets.recursiveUpdate;
+  # recursiveUpdate = # only outputs structs
+  #   args:
+  #     args
+  #     |> builtins.concatMap (x:
+  #       if builtins.isList x
+  #       then x
+  #       else [x])
+  #     |> builtins.foldl' lib.attrsets.recursiveUpdate {};
+
   mkEnv =
     name: value:
     lib.writeText "${name}.env" (
@@ -34,7 +44,7 @@ let
     f: attrs:
     lib.foldlAttrs (
       acc: name: value:
-      (lib.recursiveUpdate acc (f name value))
+      (recursiveUpdate acc (f name value))
     ) { } attrs;
 
   from-root = path: "${root}/${path}";
@@ -46,7 +56,7 @@ let
 
   nixos-user-configuration =
     options: name:
-    lib.attrsets.recursiveUpdate rec {
+    recursiveUpdate rec {
       inherit name;
       enable = true;
       uid = 1000;
@@ -64,7 +74,7 @@ let
 
   nixos-host-configuration-base =
     options: name:
-    lib.attrsets.recursiveUpdate rec {
+    recursiveUpdate rec {
       inherit name;
       type = name; # should type allow a list of types?
       # tags?
@@ -117,7 +127,7 @@ let
     let
       host = nixos-host-configuration-base options name;
     in
-    lib.attrsets.recursiveUpdate host rec {
+    recursiveUpdate host rec {
       wireless-secrets-template =
         config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
     };
@@ -140,7 +150,7 @@ let
     };
   };
   home-manager-user-configuration =
-    name: options: lib.attrsets.recursiveUpdate (default-home-manager-user-configuration name) options;
+    name: options: recursiveUpdate (default-home-manager-user-configuration name) options;
 
   ensure-list = x: if builtins.isList x then x else [ x ];
 
@@ -237,7 +247,7 @@ let
             vmName
             (make-nixos-from-config (
               make-host-config vmName (
-                name: (host-generator name) // { vm = true; }
+                name: recursiveUpdate (host-generator name) { vm = true; }
               )
             ))
       )
@@ -268,10 +278,121 @@ let
         make-nixos-from-config (make-host-config hostName host-generator)
     );
 
-  self = lib.attrsets.recursiveUpdate lib {
+  make-vim = {
+    nixpkgs,
+    nixvim,
+    flake-utils,
+    neovim-nightly-overlay,
+    ...
+  }@inputs:
+  let
+    enablePkgs = { ... }@args: builtins.mapAttrs (n: v: recursiveUpdate v { enable = true; }) args;
+    enablePlugins =
+      attrSet:
+      if attrSet ? plugins then recursiveUpdate attrSet { plugins = enablePkgs attrSet.plugins; }
+      else attrSet;
+    enableLspServers =
+      attrSet:
+      if attrSet ? lsp && attrSet.lsp ? servers then
+        recursiveUpdate attrSet
+        {
+          lsp = recursiveUpdate attrSet.lsp {
+            servers = enablePkgs attrSet.lsp.servers;
+          };
+        }
+      else
+        attrSet;
+    enableColorschemes =
+      attrSet:
+      if attrSet ? colorschemes then
+        recursiveUpdate attrSet { colorschemes = enablePkgs attrSet.colorschemes; }
+      else
+        attrSet;
+    enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
+  in
+  flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import nixpkgs {
+        inherit system;
+        config = {
+          allowBroken = true;
+          allowUnfree = true;
+          allowUnfreePredicate = _: true;
+          permittedInsecurePackages = [
+            "olm-3.2.16"
+            "electron"
+            "qtwebkit-5.212.0-alpha4"
+          ];
+        };
+        overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
+      };
+      module = import (from-root "code/pkgs/vim/config") { inherit enableModules pkgs; };
+      neovim = nixvim.legacyPackages.${system}.makeNixvimWithModule {
+        inherit pkgs;
+        module = module;
+      };
+      nixosModules = nixvim.nixosModules.nixvim;
+      homeManagerModules = nixvim.homeManagerModules.nixvim;
+    in
+    {
+      packages = {
+        default = neovim;
+      };
+      nixosModules = nixosModules; # unsure how to overlay nightly here.
+      homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
+      overlay = final: prev: { neovim = neovim; };
+      enableModules = enableModules;
+      enableColorschemes = enableColorschemes;
+      enableLspServers = enableLspServers;
+      enablePkgs = enablePkgs;
+      enablePlugins = enablePlugins;
+    }
+  );
+
+  make-clan = let
+    # Usage see: https://docs.clan.lol
+    clan = inputs.clan-core.lib.buildClan {
+      directory = self;
+      # Ensure this is unique among all clans you want to use.
+      meta.name = "developing-today";
+
+      # Prerequisite: boot into the installer.
+      # See: https://docs.clan.lol/getting-started/installer
+      # local> mkdir -p ./machines/machine1
+      # local> Edit ./machines/<machine>/configuration.nix to your liking.
+      machines = {
+        # The name will be used as hostname by default.
+        jon = { };
+        sara = { };
+      };
+    };
+  in
+  {
+    # All machines managed by Clan.
+    inherit (clan) nixosConfigurations clanInternals;
+    # Add the Clan cli tool to the dev shell.
+    # Use "nix develop" to enter the dev shell.
+    devShells =
+      inputs.clan-core.inputs.nixpkgs.lib.genAttrs
+        [
+          "x86_64-linux"
+          "aarch64-linux"
+          "aarch64-darwin"
+          "x86_64-darwin"
+        ]
+        (system: {
+          default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {
+            packages = [ inputs.clan-core.packages.${system}.clan-cli ];
+          };
+        });
+  };
+
+  self = recursiveUpdate lib {
     inherit
       lib
       root
+      recursiveUpdate
       from-root
       public-key
       group-key
@@ -300,6 +421,8 @@ let
       make-nixos-from-config
       make-host-config
       make-nixos-configurations
+      make-vim
+      make-clan
       ;
   };
 in

@@ -1,0 +1,175 @@
+hyprpicker
+hypridle
+hyprlock
+hyprpaper
+sway-notification-blahblah
+init.defaultBranch main
+https://github.com/jim3692/server.nix
+https://nixos.wiki/wiki/NixOps/Virtualization
+https://github.com/astro/microvm.nix/issues/123
+https://github.com/astro/microvm.nix/issues/123#issuecomment-1666850392
+https://github.com/astro/microvm.nix/issues/123#issuecomment-2227358897
+https://github.com/nix-community/srvos/blob/main/nixos/common/serial.nix
+github.com/Mic92/vmsh
+{
+  nix = {
+    daemonIOSchedClass = lib.mkDefault "idle";
+    daemonCPUSchedPolicy = lib.mkDefault "idle";
+  };
+  # put the service in top-level slice
+  # so that it's lower than system and user slice overall
+  # instead of only being lower in system slice
+  systemd.services.nix-daemon.serviceConfig.Slice = "-.slice";
+  # always use the daemon, even executed  with root
+  environment.variables.NIX_REMOTE = "daemon";
+}
+Enable-cgroups nix setting causes it to create a cgroup per build. It’s relatively new. And only the version in the latest nix version (or maybe master?) has the cgroup tree in the right shape such that systemd works
+
+
+
+-------
+
+
+microvm.hypervisor	Hypervisor to use by default in microvm.declaredRunner
+microvm.vcpu	Number of Virtual CPU cores
+microvm.mem	RAM allocation in MB
+microvm.interfaces	Network interfaces
+microvm.volumes	Block device images
+microvm.shares	Shared filesystem directories
+microvm.devices	PCI/USB devices for host-to-vm passthrough
+microvm.socket	Control socket for the Hypervisor so that a MicroVM can be shutdown cleanly
+microvm.user	(qemu only) User account which Qemu will switch to when started as root
+microvm.forwardPorts	(qemu user-networking only) TCP/UDP port forwarding
+microvm.storeOnDisk	Enables the store on the boot squashfs even in the presence of a share with the host's /nix/store
+microvm.kernelParams	Like boot.kernelParams but will not end up in system.build.toplevel, saving you rebuilds
+microvm.writableStoreOverlay	Optional string of the path where all writes to /nix/store should go to.
+
+
+-------
+
+# Build this VM with nix build  ./#nixosConfigurations.vm.config.system.build.vm
+# Then run is with: ./result/bin/run-nixos-vm
+# To be able to connect with ssh enable port forwarding with:
+# QEMU_NET_OPTS="hostfwd=tcp::2222-:22" ./result/bin/run-nixos-vm
+# Then connect with ssh -p 2222 guest@localhost
+{ lib, config, pkgs, ... }:
+{
+  # Internationalisation options
+  i18n.defaultLocale = "en_US.UTF-8";
+  console.keyMap = "fr";
+
+  # Options for the screen
+  virtualisation.vmVariant = {
+    virtualisation.resolution = {
+      x = 1280;
+      y = 1024;
+    };
+    virtualisation.qemu.options = [
+      # Better display option
+      "-vga virtio"
+      "-display gtk,zoom-to-fit=false,show-cursor=on"
+      # Enable copy/paste
+      # https://www.kraxel.org/blog/2021/05/qemu-cut-paste/
+      "-chardev qemu-vdagent,id=ch1,name=vdagent,clipboard=on"
+      "-device virtio-serial-pci"
+      "-device virtserialport,chardev=ch1,id=ch1,name=com.redhat.spice.0"
+    ];
+  };
+
+  # A default user able to use sudo
+  users.users.guest = {
+    isNormalUser = true;
+    home = "/home/guest";
+    extraGroups = [ "wheel" ];
+    initialPassword = "guest";
+  };
+
+  security.sudo.wheelNeedsPassword = false;
+
+  # X configuration
+  services.xserver.enable = true;
+  services.xserver.xkb.layout = "fr";
+
+  services.displayManager.autoLogin.user = "guest";
+  services.xserver.desktopManager.xfce.enable = true;
+  services.xserver.desktopManager.xfce.enableScreensaver = false;
+
+  services.xserver.videoDrivers = [ "qxl" ];
+
+  # For copy/paste to work
+  services.spice-vdagentd.enable = true;
+
+  # Enable ssh
+  services.sshd.enable = true;
+
+  # Included packages here
+  nixpkgs.config.allowUnfree = true;
+  environment.systemPackages = with pkgs; [
+    dig
+    hey
+    httpie
+    google-chrome
+    neovim
+    wget
+    wrk
+  ];
+
+  system.stateVersion = "22.11";
+}
+
+
+-------
+
+
+{ pkgs, username, ... }:
+{
+  virtualisation = {
+    libvirtd = {
+      enable = true;
+      qemu = {
+        package = pkgs.qemu_kvm;
+        swtpm.enable = true;
+        ovmf.enable = true;
+        ovmf.packages = [ pkgs.OVMFFull.fd ];
+      };
+    };
+    spiceUSBRedirection.enable = true;
+  };
+
+  users.users.${username}.extraGroups = [ "libvirtd" ];
+
+  environment.systemPackages = with pkgs; [
+    spice
+    spice-gtk
+    spice-protocol
+    virt-viewer
+    #virtio-win
+    #win-spice
+  ];
+  programs.virt-manager.enable = true;
+
+  home-manager.users.${username} = {
+    dconf.settings = {
+      "org/virt-manager/virt-manager/connections" = {
+        autoconnect = [ "qemu:///system" ];
+        uris = [ "qemu:///system" ];
+      };
+    };
+  };
+}
+
+
+-------
+
+my-microvm = nixpkgs.lib.nixosSystem {
+  system = "x86_64-linux";
+  modules = [
+    # Include the microvm module
+    microvm.nixosModules.microvm
+    # Add more modules here
+    {
+      networking.hostName = "my-microvm";
+      microvm.hypervisor = "cloud-hypervisor";
+    }
+  ];
+};
