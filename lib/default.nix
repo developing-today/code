@@ -306,13 +306,6 @@ let
   );
 
   make-vim =
-    {
-      nixpkgs,
-      nixvim,
-      flake-utils,
-      neovim-nightly-overlay,
-      ...
-    }@inputs:
     let
       enablePkgs = { ... }@args: builtins.mapAttrs (n: v: merge v { enable = true; }) args;
       enablePlugins =
@@ -338,10 +331,10 @@ let
           attrSet;
       enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
     in
-    flake-utils.lib.eachDefaultSystem (
+    inputs.flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs {
+        pkgs = import inputs.nixpkgs {
           inherit system;
           config = {
             allowBroken = true;
@@ -356,12 +349,12 @@ let
           overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
         };
         module = import (from-root "code/pkgs/vim/config") { inherit enableModules pkgs; };
-        neovim = nixvim.legacyPackages.${system}.makeNixvimWithModule {
+        neovim = inputs.nixvim.legacyPackages.${system}.makeNixvimWithModule {
           inherit pkgs;
           module = module;
         };
-        nixosModules = nixvim.nixosModules.nixvim;
-        homeManagerModules = nixvim.homeManagerModules.nixvim;
+        nixosModules = inputs.nixvim.nixosModules.nixvim;
+        homeManagerModules = inputs.nixvim.homeManagerModules.nixvim;
       in
       {
         packages = {
@@ -378,7 +371,7 @@ let
       }
     );
 
-  make-clan =
+  make-clan = #hosts:
     let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.buildClan {
