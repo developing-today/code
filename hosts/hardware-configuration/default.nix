@@ -13,7 +13,10 @@
   powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   boot.initrd.kernelModules = [ ];
-  boot.kernelModules = [ "kvm-amd" "kvm-intel" ];
+  boot.kernelModules = [
+    "kvm-amd"
+    "kvm-intel"
+  ];
   boot.extraModulePackages = [ ];
   # security.pam.loginLimits = [
   #   {

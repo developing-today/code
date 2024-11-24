@@ -3,7 +3,8 @@
   lib,
   pkgs,
   ...
-}: {
+}:
+{
   microvm = {
     hypervisor = "qemu";
     # hypervisor = "cloud-hypervisor";

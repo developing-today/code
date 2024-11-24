@@ -1,21 +1,22 @@
 {
-config,
-pkgs,
-inputs,
+  config,
+  pkgs,
+  inputs,
   hostName,
   host,
   system,
   stateVersion,
-  lib, ...}: {
+  lib,
+  ...
+}:
+{
   imports = [
     inputs.microvm.nixosModules.host
     {
-      microvm.autostart = [
-        "prometheus"
-      ];
+      microvm.autostart = [ "prometheus" ];
       microvm.vms = {
         prometheus = {
-          pkgs = import inputs.nixpkgs {system = "x86_64-linux";};
+          pkgs = import inputs.nixpkgs { system = "x86_64-linux"; };
           specialArgs = {
             inherit
               pkgs
@@ -24,7 +25,8 @@ inputs,
               host # TODO: pass vm host here
               system
               stateVersion
-              lib;
+              lib
+              ;
           };
           config = import (lib.from-root "hosts/microvm/prometheus") {
             inherit
@@ -35,7 +37,8 @@ inputs,
               host # TODO: pass vm host here
               system
               stateVersion
-              lib;
+              lib
+              ;
           };
         };
       };

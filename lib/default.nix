@@ -14,7 +14,10 @@
 */
 inputs:
 let
-  lib = merge [inputs.nixpkgs.lib inputs.home-manager.lib];
+  lib = merge [
+    inputs.nixpkgs.lib
+    inputs.home-manager.lib
+  ];
 
   root =
     if builtins.hasAttr "outPath" inputs.self then
@@ -24,17 +27,12 @@ let
 
   pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
 
-  merge = array:
+  merge =
+    array:
     let
-      flattenDeep = x:
-        if builtins.isList x then
-          builtins.concatMap flattenDeep x
-        else
-          [x];
+      flattenDeep = x: if builtins.isList x then builtins.concatMap flattenDeep x else [ x ];
     in
-      array
-      |> flattenDeep
-      |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate {};
+    array |> flattenDeep |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { };
 
   mkEnv =
     name: value:
@@ -46,7 +44,10 @@ let
     f: attrs:
     lib.foldlAttrs (
       acc: name: value:
-      (merge [acc (f name value)])
+      (merge [
+        acc
+        (f name value)
+      ])
     ) { } attrs;
 
   from-root = path: "${root}/${path}";
@@ -58,81 +59,90 @@ let
 
   nixos-user-configuration =
     options: name:
-    merge [rec {
-      inherit name;
-      enable = true;
-      uid = 1000;
-      groups = [ "wheel" ];
-      keys = [ (lib.user-key name) ];
-      email = "nixos-user-${name}@developing-today.com";
-      aliases = [
-        "hi@developing-today.com"
-        "abuse@developing-today.com"
-        "dmca@developing-today.com"
-        "drewrypope@gmail.com"
-      ];
-      # a nixos user optionally contains a home manager user?
-    } options];
+    merge [
+      rec {
+        inherit name;
+        enable = true;
+        uid = 1000;
+        groups = [ "wheel" ];
+        keys = [ (lib.user-key name) ];
+        email = "nixos-user-${name}@developing-today.com";
+        aliases = [
+          "hi@developing-today.com"
+          "abuse@developing-today.com"
+          "dmca@developing-today.com"
+          "drewrypope@gmail.com"
+        ];
+        # a nixos user optionally contains a home manager user?
+      }
+      options
+    ];
 
   nixos-host-configuration-base =
     options: name:
-    merge [rec {
-      inherit name;
-      type = name; # should type allow a list of types?
-      # tags?
-      system = "x86_64-linux";
-      init = from-root "hosts/init";
-      stateVersion = "23.11";
-      group-key = lib.group-key name;
-      # groups =
-      # or maybe secretGroups =
-      email = "nixos-host-${name}@developing-today.com";
-      sshKey = lib.host-key name; # allow multiple ssh keys
-      users = [ ];
-      user-modules = [ ];
-      user-imports = [ ];
-      modules = [ ];
-      imports = [ ];
-      hardware = [ "" ];
-      hardware-modules = [ ];
-      hardware-imports = [ ];
-      networking = "dhcp";
-      wireless = [ ];
-      wireless-modules = [ ];
-      wireless-imports = [ ];
-      wireless-secrets-template = config: "";
-      # TODO: wire networking in and allow other networking options,
-      #       allow choosing wireless ? nixos only allows one wireless interface ?
-      #       check out topology and todo-apu2.nix
-      #       allow bridging interfaces
-      #       allow nat/packet forwarding
-      #       allow firewall things
-      #       allow disable ipv6
-      #       allow dhcpd and static ip addresses
-      profiles = [ ];
-      profile-modules = [ ];
-      profile-imports = [ ];
-      darwin-profiles = [ ];
-      darwin-profile-modules = [ ];
-      darwin-profile-imports = [ ];
-      darwin-modules = [ ];
-      darwin-imports = [ ];
-      disks = [ ];
-      disk-modules = [ ];
-      disk-imports = [ ];
-      bootstrap = false; # TODO: make this work or delete?
-      vm = false;
-      # users # TODO: make this work host has users which have home-manager-users
-    } options];
+    merge [
+      rec {
+        inherit name;
+        type = name; # should type allow a list of types?
+        # tags?
+        system = "x86_64-linux";
+        init = from-root "hosts/init";
+        stateVersion = "23.11";
+        group-key = lib.group-key name;
+        # groups =
+        # or maybe secretGroups =
+        email = "nixos-host-${name}@developing-today.com";
+        sshKey = lib.host-key name; # allow multiple ssh keys
+        users = [ ];
+        user-modules = [ ];
+        user-imports = [ ];
+        modules = [ ];
+        imports = [ ];
+        hardware = [ "" ];
+        hardware-modules = [ ];
+        hardware-imports = [ ];
+        networking = "dhcp";
+        wireless = [ ];
+        wireless-modules = [ ];
+        wireless-imports = [ ];
+        wireless-secrets-template = config: "";
+        # TODO: wire networking in and allow other networking options,
+        #       allow choosing wireless ? nixos only allows one wireless interface ?
+        #       check out topology and todo-apu2.nix
+        #       allow bridging interfaces
+        #       allow nat/packet forwarding
+        #       allow firewall things
+        #       allow disable ipv6
+        #       allow dhcpd and static ip addresses
+        profiles = [ ];
+        profile-modules = [ ];
+        profile-imports = [ ];
+        darwin-profiles = [ ];
+        darwin-profile-modules = [ ];
+        darwin-profile-imports = [ ];
+        darwin-modules = [ ];
+        darwin-imports = [ ];
+        disks = [ ];
+        disk-modules = [ ];
+        disk-imports = [ ];
+        bootstrap = false; # TODO: make this work or delete?
+        vm = false;
+        # users # TODO: make this work host has users which have home-manager-users
+      }
+      options
+    ];
   nixos-host-configuration =
     options: name:
     let
       host = nixos-host-configuration-base options name;
     in
-    merge [host rec {
-      wireless-secrets-template =
-        config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
-    }];
+    merge [
+      host
+      rec {
+        wireless-secrets-template =
+          config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
+      }
+    ];
 
   default-home-manager-user-configuration = name: rec {
     # TODO: make this work? integrate into users?
@@ -152,7 +162,11 @@ let
     };
   };
   home-manager-user-configuration =
-    name: options: merge [(default-home-manager-user-configuration name) options];
+    name: options:
+    merge [
+      (default-home-manager-user-configuration name)
+      options
+    ];
 
   ensure-list = x: if builtins.isList x then x else [ x ];
 
@@ -218,214 +232,230 @@ let
 
   make-unattended-installer-configurations = # TODO: make-bootstrap-versions
     configurations:
-      lib.mapAttrs' (
-        name: config:
-          lib.nameValuePair "unattended-installer_offline_${name}" (
-            inputs.unattended-installer.lib.diskoInstallerWrapper config {
-              # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
-              config = {
-                # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
-                isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
-                unattendedInstaller = {
-                  successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
-                  preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
-                  postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
-                  preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
-                  postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
-                };
-              };
-            }
-          )
-        ) configurations;
+    lib.mapAttrs' (
+      name: config:
+      lib.nameValuePair "unattended-installer_offline_${name}" (
+        inputs.unattended-installer.lib.diskoInstallerWrapper config {
+          # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+          config = {
+            # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+            isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
+            unattendedInstaller = {
+              successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+              preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+              postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+              preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+              postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+            };
+          };
+        }
+      )
+    ) configurations;
 
   make-vm-configurations =
     hosts:
-      lib.mapAttrs' (
-        hostName: host-generator:
-          let
-            vmName = "vm_" + hostName;
-          in
-          lib.nameValuePair
-            vmName
-            (make-nixos-from-config (
-              make-host-config vmName (
-                name: merge [(host-generator name) { vm = true; }]
-              )
-            ))
+    lib.mapAttrs' (
+      hostName: host-generator:
+      let
+        vmName = "vm_" + hostName;
+      in
+      lib.nameValuePair vmName (
+        make-nixos-from-config (
+          make-host-config vmName (
+            name:
+            merge [
+              (host-generator name)
+              { vm = true; }
+            ]
+          )
+        )
       )
-      hosts;
+    ) hosts;
 
-  make-host-config = hostName: host-generator:
+  make-host-config =
+    hostName: host-generator:
     let
       host = host-generator hostName;
     in
-      {
-        inherit inputs;
-        inherit host hostName; # move hostName into host?
-        inherit (host) system stateVersion; # move into host?
-        lib = self;
-      };
+    {
+      inherit inputs;
+      inherit host hostName; # move hostName into host?
+      inherit (host) system stateVersion; # move into host?
+      lib = self;
+    };
 
-  make-nixos-from-config = config:
+  make-nixos-from-config =
+    config:
     lib.nixosSystem {
       system = null;
       specialArgs = {
-        inherit (config) inputs host hostName system stateVersion lib;
+        inherit (config)
+          inputs
+          host
+          hostName
+          system
+          stateVersion
+          lib
+          ;
       };
       modules = ensure-list config.host.init;
     };
 
   make-nixos-configurations = lib.mapAttrs (
-      hostName: host-generator:
-        make-nixos-from-config (make-host-config hostName host-generator)
-    );
-
-  make-vim = {
-    nixpkgs,
-    nixvim,
-    flake-utils,
-    neovim-nightly-overlay,
-    ...
-  }@inputs:
-  let
-    enablePkgs = { ... }@args: builtins.mapAttrs (n: v: merge v { enable = true; }) args;
-    enablePlugins =
-      attrSet:
-      if attrSet ? plugins then merge attrSet { plugins = enablePkgs attrSet.plugins; }
-      else attrSet;
-    enableLspServers =
-      attrSet:
-      if attrSet ? lsp && attrSet.lsp ? servers then
-        merge [attrSet
-        {
-          lsp = merge attrSet.lsp {
-            servers = enablePkgs attrSet.lsp.servers;
-          };
-        }]
-      else
-        attrSet;
-    enableColorschemes =
-      attrSet:
-      if attrSet ? colorschemes then
-        merge [attrSet { colorschemes = enablePkgs attrSet.colorschemes; }]
-      else
-        attrSet;
-    enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
-  in
-  flake-utils.lib.eachDefaultSystem (
-    system:
-    let
-      pkgs = import nixpkgs {
-        inherit system;
-        config = {
-          allowBroken = true;
-          allowUnfree = true;
-          allowUnfreePredicate = _: true;
-          permittedInsecurePackages = [
-            "olm-3.2.16"
-            "electron"
-            "qtwebkit-5.212.0-alpha4"
-          ];
-        };
-        overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
-      };
-      module = import (from-root "code/pkgs/vim/config") { inherit enableModules pkgs; };
-      neovim = nixvim.legacyPackages.${system}.makeNixvimWithModule {
-        inherit pkgs;
-        module = module;
-      };
-      nixosModules = nixvim.nixosModules.nixvim;
-      homeManagerModules = nixvim.homeManagerModules.nixvim;
-    in
-    {
-      packages = {
-        default = neovim;
-      };
-      nixosModules = nixosModules; # unsure how to overlay nightly here.
-      homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
-      overlay = final: prev: { neovim = neovim; };
-      enableModules = enableModules;
-      enableColorschemes = enableColorschemes;
-      enableLspServers = enableLspServers;
-      enablePkgs = enablePkgs;
-      enablePlugins = enablePlugins;
-    }
+    hostName: host-generator: make-nixos-from-config (make-host-config hostName host-generator)
   );
 
-  make-clan = let
-    # Usage see: https://docs.clan.lol
-    clan = inputs.clan-core.lib.buildClan {
-      directory = self;
-      # Ensure this is unique among all clans you want to use.
-      meta.name = "developing-today";
-
-      # Prerequisite: boot into the installer.
-      # See: https://docs.clan.lol/getting-started/installer
-      # local> mkdir -p ./machines/machine1
-      # local> Edit ./machines/<machine>/configuration.nix to your liking.
-      machines = {
-        # The name will be used as hostname by default.
-        jon = { };
-        sara = { };
-      };
-    };
-  in
-  {
-    # All machines managed by Clan.
-    inherit (clan) nixosConfigurations clanInternals;
-    # Add the Clan cli tool to the dev shell.
-    # Use "nix develop" to enter the dev shell.
-    devShells =
-      inputs.clan-core.inputs.nixpkgs.lib.genAttrs
-        [
-          "x86_64-linux"
-          "aarch64-linux"
-          "aarch64-darwin"
-          "x86_64-darwin"
-        ]
-        (system: {
-          default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {
-            packages = [ inputs.clan-core.packages.${system}.clan-cli ];
+  make-vim =
+    {
+      nixpkgs,
+      nixvim,
+      flake-utils,
+      neovim-nightly-overlay,
+      ...
+    }@inputs:
+    let
+      enablePkgs = { ... }@args: builtins.mapAttrs (n: v: merge v { enable = true; }) args;
+      enablePlugins =
+        attrSet:
+        if attrSet ? plugins then merge attrSet { plugins = enablePkgs attrSet.plugins; } else attrSet;
+      enableLspServers =
+        attrSet:
+        if attrSet ? lsp && attrSet.lsp ? servers then
+          merge [
+            attrSet
+            { lsp = merge attrSet.lsp { servers = enablePkgs attrSet.lsp.servers; }; }
+          ]
+        else
+          attrSet;
+      enableColorschemes =
+        attrSet:
+        if attrSet ? colorschemes then
+          merge [
+            attrSet
+            { colorschemes = enablePkgs attrSet.colorschemes; }
+          ]
+        else
+          attrSet;
+      enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
+    in
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          config = {
+            allowBroken = true;
+            allowUnfree = true;
+            allowUnfreePredicate = _: true;
+            permittedInsecurePackages = [
+              "olm-3.2.16"
+              "electron"
+              "qtwebkit-5.212.0-alpha4"
+            ];
           };
-        });
-  };
+          overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
+        };
+        module = import (from-root "code/pkgs/vim/config") { inherit enableModules pkgs; };
+        neovim = nixvim.legacyPackages.${system}.makeNixvimWithModule {
+          inherit pkgs;
+          module = module;
+        };
+        nixosModules = nixvim.nixosModules.nixvim;
+        homeManagerModules = nixvim.homeManagerModules.nixvim;
+      in
+      {
+        packages = {
+          default = neovim;
+        };
+        nixosModules = nixosModules; # unsure how to overlay nightly here.
+        homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
+        overlay = final: prev: { neovim = neovim; };
+        enableModules = enableModules;
+        enableColorschemes = enableColorschemes;
+        enableLspServers = enableLspServers;
+        enablePkgs = enablePkgs;
+        enablePlugins = enablePlugins;
+      }
+    );
 
-  self = merge [lib {
-    inherit
-      lib
-      root
-      merge
-      from-root
-      public-key
-      group-key
-      host-key
-      user-key
-      nixos-user-configuration
-      nixos-host-configuration-base
-      nixos-host-configuration
-      default-home-manager-user-configuration
-      home-manager-user-configuration
-      ensure-list
-      make-paths
-      make-hardware-paths
-      make-hardware
-      make-user-paths
-      make-users
-      make-profile-paths
-      make-profiles
-      make-disk-paths
-      make-disks
-      make-wireless-paths
-      make-wireless
-      make-wireless-template
-      make-vm-configurations
-      make-unattended-installer-configurations
-      make-nixos-from-config
-      make-host-config
-      make-nixos-configurations
-      make-vim
-      make-clan
-      ;
-  }];
+  make-clan =
+    let
+      # Usage see: https://docs.clan.lol
+      clan = inputs.clan-core.lib.buildClan {
+        directory = self;
+        # Ensure this is unique among all clans you want to use.
+        meta.name = "developing-today";
+
+        # Prerequisite: boot into the installer.
+        # See: https://docs.clan.lol/getting-started/installer
+        # local> mkdir -p ./machines/machine1
+        # local> Edit ./machines/<machine>/configuration.nix to your liking.
+        machines = {
+          # The name will be used as hostname by default.
+          jon = { };
+          sara = { };
+        };
+      };
+    in
+    {
+      # All machines managed by Clan.
+      inherit (clan) nixosConfigurations clanInternals;
+      # Add the Clan cli tool to the dev shell.
+      # Use "nix develop" to enter the dev shell.
+      devShells =
+        inputs.clan-core.inputs.nixpkgs.lib.genAttrs
+          [
+            "x86_64-linux"
+            "aarch64-linux"
+            "aarch64-darwin"
+            "x86_64-darwin"
+          ]
+          (system: {
+            default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {
+              packages = [ inputs.clan-core.packages.${system}.clan-cli ];
+            };
+          });
+    };
+
+  self = merge [
+    lib
+    {
+      inherit
+        lib
+        root
+        merge
+        from-root
+        public-key
+        group-key
+        host-key
+        user-key
+        nixos-user-configuration
+        nixos-host-configuration-base
+        nixos-host-configuration
+        default-home-manager-user-configuration
+        home-manager-user-configuration
+        ensure-list
+        make-paths
+        make-hardware-paths
+        make-hardware
+        make-user-paths
+        make-users
+        make-profile-paths
+        make-profiles
+        make-disk-paths
+        make-disks
+        make-wireless-paths
+        make-wireless
+        make-wireless-template
+        make-vm-configurations
+        make-unattended-installer-configurations
+        make-nixos-from-config
+        make-host-config
+        make-nixos-configurations
+        make-vim
+        make-clan
+        ;
+    }
+  ];
 in
 self

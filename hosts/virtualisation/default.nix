@@ -2,7 +2,10 @@
   virtualisation = {
     libvirtd.enable = true;
     libvirtd.qemuRunAsRoot = true;
-    libvirtd.allowedBridges = [ "virbr0" "br0" ];
+    libvirtd.allowedBridges = [
+      "virbr0"
+      "br0"
+    ];
     docker.enable = true;
 
     # Option 1: Port forwarding

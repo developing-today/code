@@ -3,9 +3,7 @@
     git = {
       enable = true;
       config = {
-        safe.directory = [
-          "*"
-        ];
+        safe.directory = [ "*" ];
       };
     };
     partition-manager.enable = true;
