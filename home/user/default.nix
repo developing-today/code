@@ -174,8 +174,6 @@
       alacritty = import ../../home/common/programs/alacritty.nix;
       kitty = import ../../home/common/programs/kitty.nix;
       yazi = import ../../home/common/programs/yazi.nix { inherit pkgs; };
-      # neovim = import programs/nvim.nix {inherit pkgs;};
-      # nixvim.enable = true;
       abook.enable = true;
       autojump.enable = true;
 

@@ -46,6 +46,7 @@
         # zed-editor
         # zigpkgs.master
         socat
+        lshw
         qemu
         space-cadet-pinball
         alacritty-theme

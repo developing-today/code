@@ -1,3 +1,4 @@
+nh <-- nixos rebuild switch
 hardware.cpu.*.updateMicrocode
 grimm/slurp vs hyprshot
 yazi shortcut yy
@@ -25,5 +26,3 @@ users
 
 https://github.com/MatthewCroughan/nixcfg
 https://github.com/nix-community/robotnix
-
-
