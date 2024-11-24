@@ -26,4 +26,3 @@ webmail.<domain> mail.<domain>
 set catchall email
 https://monday.mxrouting.net:2222/evo/user/email/catch-all
 address hi@developing-today.com
-

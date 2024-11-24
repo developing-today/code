@@ -22,7 +22,7 @@ in
       "printing"
       "services/flatpak"
       # "microvm"
-      "server"
+      # "server"
     ];
     hardware = "framework/13-inch/7040-amd";
     disks = [

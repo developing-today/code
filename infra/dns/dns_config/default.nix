@@ -191,10 +191,16 @@
     "developing-today.com" = {
       records = {
         #"@" = {
-        #  "ALIAS" = "news.developing-today.com";
+        #  "ALIAS" = "news.developing-today.com"; # alias needs a new resource type
         #};
         "news" = "dt.smol.pub";
         "zettel" = "developing-today.github.io";
+        # "zulip" = {
+        #   "ALIAS" = "developing-today.zulipchat.com"; # alias needs a new resource type
+        # };
+        # "git" = {
+        #   "ALIAS" = "github.com/developing-today/code"; # alias needs a new resource type
+        # };
         "archive.zulip" = "developing-today.github.io";
         "_github-pages-challenge-developing-today.zettel" = {
           "TXT" = "cc887eecc305202ad8c44465de9d1a";

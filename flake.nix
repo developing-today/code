@@ -9,7 +9,8 @@ rec {
       unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
       nixosConfigurations = lib.merge [configurations vm-configurations unattended-installer-configurations];
       # nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
-    };
+      # TODO: fix vim add flake.nix parts into this lib.make-vim
+    }; # // lib.make-vim (uses flake-utils incporproate that or flake-parts, or let lib in
   inputs = {
     clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz";
     server.url = "github:developing-today-forks/server.nix/master";
