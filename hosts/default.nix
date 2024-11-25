@@ -23,6 +23,7 @@ in
       "services/flatpak"
       # "microvm"
       # "server"
+      "networking/enp195s0f3u1"
     ];
     hardware = "framework/13-inch/7040-amd";
     disks = [
