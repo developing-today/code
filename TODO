@@ -1,4 +1,6 @@
 nh <-- nixos rebuild switch
+nixd vs nil vs ???
+usbnet usb-eth
 hardware.cpu.*.updateMicrocode
 grimm/slurp vs hyprshot
 yazi shortcut yy

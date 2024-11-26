@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-nixos-rebuild --use-remote-sudo --offline switch --flake .
+nixos-rebuild --use-remote-sudo --no-net switch --flake .

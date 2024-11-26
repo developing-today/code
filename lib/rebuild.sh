@@ -66,6 +66,12 @@ if [[ -f "./flake.nix" ]]; then
     echo "tailscaled service not found or not active." # hack not needed
   fi
   echo "running nixos-rebuild switch..."
+  # --refresh
+  # --offline
+  # --no-build-nix // --fast
+  # --use-substitutes
+  # --no-net
+  # -vvvv
   nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
 
   current=$(nixos-rebuild list-generations | grep current)

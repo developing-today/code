@@ -27,7 +27,7 @@
     substituters = [
       # TODO: priority order
       "https://cache.nixos.org"
-      "https://yazi.cachix.org"
+      # "https://yazi.cachix.org"
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -39,7 +39,7 @@
     ];
     trusted-substituters = [
       "https://cache.nixos.org"
-      "https://yazi.cachix.org"
+      # "https://yazi.cachix.org"
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -51,7 +51,7 @@
     ];
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-      "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k="
+      # "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k="
       # "binary.cachix.org-1:66/C28mr67KdifepXFqZc+iSQcLENlwPqoRQNnc3M4I="
       # "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       # "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
@@ -79,6 +79,8 @@
     # secret-key-files
     show-trace = true;
     # tarball-ttl = 0;
+    # tarball-ttl = 3600;
+    tarball-ttl = 4294967295;
     # trace-function-calls = true;
     trace-verbose = true;
     # use-xdg-base-directories = true;
@@ -94,7 +96,7 @@
     # extraOptions = ''
     #   flake-registry = ""
     # '';
-    # auto-optimise-store = true;
+    auto-optimise-store = true;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
