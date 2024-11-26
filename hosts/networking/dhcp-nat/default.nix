@@ -35,6 +35,7 @@ in
 {
   boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
   networking = {
+    usePredictableInterfaceNames = true;
     firewall = {
       enable = true;
       allowedUDPPorts = [
