@@ -2,8 +2,8 @@
 let
   externalInterface = "wlp1s0";
   internalInterfaces = [
-    "enp195s0f3u1"
     "enp193s0f3u1"
+    "enp195s0f3u1"
   ];
   # Create mapping of interface to index
   interfaceIndices = builtins.listToAttrs (
