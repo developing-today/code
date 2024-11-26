@@ -11,8 +11,8 @@ let
   );
   networkBase = index: {
     prefix = "10.0.${toString index}";
-    gateway = "1";
-    dhcpStart = "2";
+    gateway = "0";
+    dhcpStart = "1";
     dhcpEnd = "254";
     prefixLength = 24;
     netmask = "255.255.255.0";
