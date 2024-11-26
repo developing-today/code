@@ -1,14 +1,14 @@
 { ... }:
 {
-  # networking.interfaces.enp195s0f3u1 = {
-  #   ipv4.addresses = [{
-  #     address = "10.0.42.1";
-  #     prefixLength = 24;
-  #   }];
-  #   # Make sure interface comes up automatically
-  #   wakeOnLan.enable = true;
-  #   useDHCP = false;
-  # };
+  networking.interfaces.enp195s0f3u1 = {
+    ipv4.addresses = [{
+      address = "10.0.42.1";
+      prefixLength = 24;
+    }];
+    # Make sure interface comes up automatically
+    wakeOnLan.enable = true;
+    useDHCP = false;
+  };
 
   # boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
 
