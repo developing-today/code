@@ -28,12 +28,12 @@ let
      useDHCP = false;
    };
  };
- makeDhcpRange = index: interface:
-   "${interface},${(networkBase index).prefix}.${(networkBase index).dhcpStart},${(networkBase index).prefix}.${(networkBase index).dhcpEnd},${(networkBase index).netmask},24h";
-   # ACTION=="add", SUBSYSTEM=="net", INTERFACE=="${interface}", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
- makeUdevRule = interface: ''
-  ACTION=="move", SUBSYSTEM=="net", INTERFACE=="${interface}", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
- '';
+makeDhcpRange = index: interface:
+  "${interface},${(networkBase index).prefix}.${(networkBase index).dhcpStart},${(networkBase index).prefix}.${(networkBase index).dhcpEnd},${(networkBase index).netmask},24h";
+  # ACTION=="add", SUBSYSTEM=="net", INTERFACE=="${interface}", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
+makeUdevRule = interface: ''
+  SUBSYSTEM=="net", ACTION=="add|move", INTERFACE=="${interface}", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
+'';
 in
 {
  boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
