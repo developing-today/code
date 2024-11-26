@@ -18,6 +18,7 @@ let
     dhcpEnd = "254";
     prefixLength = 24;
     netmask = "255.255.255.0";
+    lease = "24h";
   };
 in
 {
@@ -68,7 +69,7 @@ in
           i:
           (
             index: interface:
-            "${interface},${(networkBase index).prefix}.${(networkBase index).dhcpStart},${(networkBase index).prefix}.${(networkBase index).dhcpEnd},${(networkBase index).netmask},24h"
+            "${interface},${(networkBase index).prefix}.${(networkBase index).dhcpStart},${(networkBase index).prefix}.${(networkBase index).dhcpEnd},${(networkBase index).netmask},${(networkBase index).lease}"
           )
             i
             (builtins.elemAt internalInterfaces i)
