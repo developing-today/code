@@ -307,16 +307,35 @@ let
 
   make-vim =
     let
-      enablePkgs = { ... }@args: builtins.mapAttrs (n: v: merge [v { enable = true; }]) args;
+      enablePkgs =
+        { ... }@args:
+        builtins.mapAttrs (
+          n: v:
+          merge [
+            v
+            { enable = true; }
+          ]
+        ) args;
       enablePlugins =
         attrSet:
-        if attrSet ? plugins then merge [attrSet { plugins = enablePkgs attrSet.plugins; }] else attrSet;
+        if attrSet ? plugins then
+          merge [
+            attrSet
+            { plugins = enablePkgs attrSet.plugins; }
+          ]
+        else
+          attrSet;
       enableLspServers =
         attrSet:
         if attrSet ? lsp && attrSet.lsp ? servers then
           merge [
             attrSet
-            { lsp = merge [attrSet.lsp { servers = enablePkgs attrSet.lsp.servers; }]; }
+            {
+              lsp = merge [
+                attrSet.lsp
+                { servers = enablePkgs attrSet.lsp.servers; }
+              ];
+            }
           ]
         else
           attrSet;
@@ -371,7 +390,7 @@ let
       }
     );
 
-  make-clan = #hosts:
+  make-clan = # hosts:
     let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.buildClan {

@@ -9,7 +9,8 @@
     "nvme"
     "usb_storage"
     "sd_mod"
-     "r8152" "usbnet"
+    "r8152"
+    "usbnet"
   ];
 }
 #     nvidia = {

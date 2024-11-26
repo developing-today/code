@@ -23,7 +23,7 @@ in
       "services/flatpak"
       # "microvm"
       # "server"
-      "networking/enp195s0f3u1"
+      "networking/dhcp-nat"
     ];
     hardware = "framework/13-inch/7040-amd";
     disks = [
