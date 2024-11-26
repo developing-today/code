@@ -32,7 +32,7 @@ makeDhcpRange = index: interface:
   "${interface},${(networkBase index).prefix}.${(networkBase index).dhcpStart},${(networkBase index).prefix}.${(networkBase index).dhcpEnd},${(networkBase index).netmask},24h";
   # ACTION=="add", SUBSYSTEM=="net", INTERFACE=="${interface}", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
 makeUdevRule = interface: ''
-  SUBSYSTEM=="net", ACTION=="add|move", INTERFACE=="${interface}", RUN+="/run/current-system/sw/bin/logger 'udev rule triggered for ${interface}'", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
+  SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", RUN+="/run/current-system/sw/bin/logger 'udev rule triggered for ${interface}'", RUN+="${pkgs.systemd}/bin/systemctl restart network-addresses-${interface}.service"
 '';
 in
 {
