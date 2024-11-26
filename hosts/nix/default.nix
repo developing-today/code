@@ -16,11 +16,11 @@
     # nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry; # This will additionally add your inputs to the system's legacy channels. Making legacy nix commands consistent as well, awesome!
     # package = pkgs.nixVersions.nix_2_23;
     package = pkgs.nixVersions.git;
-    optimise.automatic = true;
-    gc = {
-      automatic = true;
-      dates = "weekly";
-      options = "--delete-older-than 400d";
-    };
+    # optimise.automatic = true;
+    # gc = {
+    #   automatic = true;
+    #   dates = "weekly";
+    #   options = "--delete-older-than 400d";
+    # };
   };
 }
