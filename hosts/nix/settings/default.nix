@@ -80,7 +80,8 @@
     show-trace = true;
     # tarball-ttl = 0;
     # tarball-ttl = 3600;
-    tarball-ttl = 4294967295;
+    tarball-ttl = 3600 * 72;
+    # tarball-ttl = 4294967295;
     # trace-function-calls = true;
     trace-verbose = true;
     # use-xdg-base-directories = true;
