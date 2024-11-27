@@ -7,7 +7,7 @@
   ...
 }:
 {
-  imports = [ (lib.from-root "hosts/home") ];
+  imports = [ (lib.from-root "nixos/home") ];
   home-manager.users.user = {
     # TODO: ensure home manager standalone can still work
     # TODO: factor out modules into shared files

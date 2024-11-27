@@ -86,7 +86,7 @@ let
         type = name; # should type allow a list of types?
         # tags?
         system = "x86_64-linux";
-        init = from-root "hosts/init";
+        init = from-root "nixos/init";
         stateVersion = "23.11";
         group-key = lib.group-key name;
         # groups =
@@ -174,35 +174,35 @@ let
 
   make-hardware-paths =
     {
-      basePath ? from-root "hosts/hardware-configuration",
+      basePath ? from-root "nixos/hardware-configuration",
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-hardware = make-hardware-paths { };
 
   make-user-paths =
     {
-      basePath ? from-root "hosts/users",
+      basePath ? from-root "nixos/users",
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-users = make-user-paths { };
 
   make-profile-paths =
     {
-      basePath ? from-root "hosts",
+      basePath ? from-root "nixos",
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-profiles = make-profile-paths { };
 
   make-disk-paths =
     {
-      basePath ? from-root "hosts/disks",
+      basePath ? from-root "nixos/disks",
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-disks = make-disk-paths { };
 
   make-wireless-paths =
     {
-      basePath ? from-root "hosts/networking/wireless",
+      basePath ? from-root "nixos/networking/wireless",
     }:
     strings: make-paths (ensure-list strings) basePath;
   make-wireless = make-wireless-paths { };

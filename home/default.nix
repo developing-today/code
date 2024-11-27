@@ -15,7 +15,7 @@
   #   }
   # ) (import ./hm-hosts.nix);
 }
-# this except home/ in this repo is shared-config and hosts/home/ is nixos hm config
+# this except home/ in this repo is shared-config and nixos/home/ is nixos hm config
 # # shared-config.nix
 # { config, pkgs, ... }: {
 #   # Your shared configuration here

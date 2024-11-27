@@ -7,7 +7,7 @@ rec {
     lib.merge [
       rec {
         inherit lib;
-        hosts = import ./hosts inputs; # inputs.host?
+        hosts = import ./nixos/hosts inputs; # inputs.host?
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
         unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
@@ -286,6 +286,7 @@ rec {
     # secret-key-files
     show-trace = true;
     # tarball-ttl = 0;
+    tarball-ttl = 259200; # 3600 * 72;
     # trace-function-calls = true;
     trace-verbose = true;
     # use-xdg-base-directories = true;
