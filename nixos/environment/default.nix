@@ -62,6 +62,8 @@
         cabal2nix
         choose
         cinnamon-desktop
+        nixd
+        nil
         guake
         # python3-dbus
         python312Packages.pydbus
