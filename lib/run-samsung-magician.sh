@@ -1,17 +1,25 @@
-#!/usr/bin/env bash
+#! /usr/bin/env nix-shell
+#! nix-shell -i bash -p bash unzip nvme-cli
+set -ex
+ISO_PREFIX="https://download.semiconductor.samsung.com/resources/software-resources/"
+ISO_FILE="Samsung_SSD_990_PRO_4B2QJXD7.iso"
+echo "Configured: $ISO_FILE -- see \`<REPO_ROOT>/lib/samsung-firmware.md\` for other models"
+ISO_URL="$ISO_PREFIX$ISO_FILE"
 echo "ensuring root"
 if [ "$EUID" -ne 0 ]; then
   echo "not root, running as root"
   sudo $0
   exit
 else
-  echo "root"
+  echo "root user, continuing as"
 fi
+nvme list
 cd $(mktemp -d)
-wget https://download.semiconductor.samsung.com/resources/software-resources/Samsung_SSD_990_PRO_4B2QJXD7.iso
+wget "$ISO_URL"
 mkdir ./iso
-mount -o loop Samsung_SSD_990_PRO_4B2QJXD7.iso ./iso
-gzip -dc iso/initrd | cpio -div --no-absolute-filenames
-nix-shell -p unzip
+mount -o loop "$ISO_FILE" ./iso
+# gzip -dc iso/initrd | cpio -div --no-absolute-filenames
+gzip -dc iso/initrd | cpio -di --no-absolute-filenames
 cd root/fumagician
 ./fumagician
+nvme list
