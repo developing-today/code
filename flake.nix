@@ -11,16 +11,15 @@ rec {
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
         unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
-        clan = lib.make-clan;
         nixosConfigurations = lib.merge [
           configurations
           vm-configurations
           unattended-installer-configurations
-          clan
         ];
         # nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
         # TODO: fix vim add flake.nix parts into this lib.make-vim
       }
+      # (lib.make-clan)
       (lib.make-vim)
     ];
   # // lib.make-vim (uses flake-utils incporproate that or flake-parts, or let lib in
