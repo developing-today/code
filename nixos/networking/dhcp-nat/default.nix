@@ -27,6 +27,7 @@ in
       DefaultTimeoutStopSec=10s
     '';
     network.wait-online.anyInterface = true; # block for no more than one interface
+    services.NetworkManager-wait-online.enable = false;
   };
   boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
   networking = {
