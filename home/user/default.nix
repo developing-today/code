@@ -406,6 +406,14 @@
         EDITOR = "nvim";
         TERM = "kitty"; # "alacritty" "xterm-256color"
         # PATH = "$HOME/bin:$PATH";
+        NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
+        NIXPKGS_ALLOW_UNFREE = "1";
+        # XDG_CACHE_HOME = "$HOME/.cache";
+        # XDG_CONFIG_DIRS = "/etc/xdg";
+        # XDG_CONFIG_HOME = "$HOME/.config";
+        # XDG_DATA_DIRS = "/usr/local/share/:/usr/share/";
+        # XDG_DATA_HOME = "$HOME/.local/share";
+        # XDG_STATE_HOME = "$HOME/.local/state";
       };
       # sessionPath = [
       #   "$HOME/bin"
