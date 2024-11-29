@@ -26,12 +26,22 @@ in
     extraConfig = ''
       DefaultTimeoutStopSec=10s
     '';
-    services = {
-      # https://github.com/NixOS/nixpkgs/issues/154737
-      # https://github.com/NixOS/nixpkgs/pull/155017/files
-      systemd-networkd-wait-online.enable = false;
-      NetworkManager-wait-online.enable = false;
-    };
+    services = lib.merge [
+      {
+        # https://github.com/NixOS/nixpkgs/issues/154737
+        # https://github.com/NixOS/nixpkgs/pull/155017/files
+        systemd-networkd-wait-online.enable = false;
+        NetworkManager-wait-online.enable = false;
+      }
+      (builtins.listToAttrs (
+        lib.lists.imap0 (idx: interface: {
+          name = "network-addresses-${interface}";
+          value = {
+            enable = false;
+          };
+        }) internalInterfaces
+      ))
+    ];
     network.wait-online = {
       timeout = 10;
       ignoredInterfaces = internalInterfaces;
