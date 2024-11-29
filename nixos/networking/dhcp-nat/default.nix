@@ -40,6 +40,10 @@ in
             enable = false;
             unitConfig = {
               Mask = false;
+              ReadWritePaths = [ "/etc/systemd/system/network-addresses-${interface}.service" ];
+            };
+            serviceConfig = {
+              RemainAfterExit = true;
             };
           };
         }) internalInterfaces
