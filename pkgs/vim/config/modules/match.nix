@@ -1,4 +1,3 @@
-{ ... }:
 {
   match.ExtraWhitespace = "\\s\\+$";
 }

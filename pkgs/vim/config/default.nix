@@ -1,4 +1,4 @@
-{ enableModules, pkgs, ... }:
+{ enableModules, ... }:
 {
   imports =
     let
@@ -6,5 +6,5 @@
         builtins.attrNames (builtins.readDir ./modules)
       );
     in
-    map (n: enableModules (import (./modules + "/${n}") { inherit pkgs; })) moduleFiles;
+    map (n: enableModules (import (./modules + "/${n}"))) moduleFiles;
 }

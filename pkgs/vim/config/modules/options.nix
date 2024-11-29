@@ -1,4 +1,3 @@
-{ ... }:
 {
   options = {
     shiftwidth = 2;

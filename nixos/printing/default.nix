@@ -45,7 +45,7 @@
   # CUPS and firewall configuration
   services.avahi = {
     enable = true;
-    nssmdns = true;
+    nssmdns4 = true;
   };
   networking.firewall.allowedTCPPorts = [ 631 ];
   networking.firewall.allowedUDPPorts = [ 631 ];

@@ -1,6 +1,5 @@
 {
   lib,
-  inputs,
   stateVersion,
   pkgs,
   ...

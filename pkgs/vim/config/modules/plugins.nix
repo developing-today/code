@@ -1,7 +1,7 @@
-{ ... }:
 {
   plugins = {
     #telescope-tabs = {};
+    web-devicons = { };
     telescope = { };
     #goto-preview = {};
     #coc = {};
@@ -13,7 +13,7 @@
     #which-key.window.winblend = 10;
     nvim-colorizer = { };
     quickmath = { };
-    surround = { };
+    vim-surround = { };
     notify = {
       level = 2;
       topDown = false;
@@ -26,7 +26,7 @@
     inc-rename = { };
     #neoscroll = {};
     nix = { };
-    lsp-format.setup.typescript = {
+    lsp-format.settings.typescript = {
       order = [ "null-ls" ];
       exclude = [
         "tsserver"
@@ -86,6 +86,7 @@
     };
     gitsigns = { };
     lualine = { };
+    web-devicons = { };
     telescope = { };
     #copilot-lua = {};
     copilot-vim = { };
@@ -94,11 +95,11 @@
         bashls = { };
         gopls = { };
         #rnix-lsp = {};
-        rust-analyzer = { };
+        rust_analyzer = { };
         html = { };
         eslint = { };
-        ts-ls = { };
-        lua-ls = { };
+        ts_ls = { };
+        lua_ls = { };
         jsonls = { };
         pylsp = { };
         #pyright = {};
@@ -157,7 +158,7 @@
     };
     nix = { };
     nvim-autopairs = { };
-    surround = { };
+    vim-surround = { };
     nvim-tree.updateFocusedFile = {
       enable = true;
     };

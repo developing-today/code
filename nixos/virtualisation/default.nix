@@ -1,7 +1,7 @@
 {
   virtualisation = {
     libvirtd.enable = true;
-    libvirtd.qemuRunAsRoot = true;
+    libvirtd.qemu.runAsRoot = true;
     libvirtd.allowedBridges = [
       "virbr0"
       "br0"

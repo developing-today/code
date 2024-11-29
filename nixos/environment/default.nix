@@ -322,7 +322,7 @@
         spotify
 
         # VR
-        immersed-vr
+        immersed
       ]);
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
