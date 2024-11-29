@@ -38,6 +38,9 @@ in
           name = "network-addresses-${interface}";
           value = {
             enable = false;
+            unitConfig = {
+              Mask = false;
+            };
           };
         }) internalInterfaces
       ))
