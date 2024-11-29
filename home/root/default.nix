@@ -49,6 +49,7 @@
     };
     manual.manpages.enable = true;
     programs = {
+      bash.enable = true;
       waybar = import ../../home/common/programs/waybar.nix { inherit pkgs; };
       alacritty = import ../../home/common/programs/alacritty.nix;
       kitty = import ../../home/common/programs/kitty.nix;
