@@ -37,13 +37,18 @@ in
         lib.lists.imap0 (idx: interface: {
           name = "network-addresses-${interface}";
           value = {
-            enable = false;
+            # enable = false;
+            enable = true;
+            wantedBy = [ ]; # Don't start on boot
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+            };
             unitConfig = {
               Mask = false;
               ReadWritePaths = [ "/etc/systemd/system/network-addresses-${interface}.service" ];
-            };
-            serviceConfig = {
-              RemainAfterExit = true;
+              RefuseManualStart = false;
+              RefuseManualStop = false;
             };
           };
         }) internalInterfaces
