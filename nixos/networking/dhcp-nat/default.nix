@@ -23,9 +23,9 @@ let
 in
 {
   systemd = {
-    # extraConfig = ''
-    #   DefaultTimeoutStopSec=10s
-    # '';
+    extraConfig = ''
+      DefaultTimeoutStopSec=10s
+    '';
     network.wait-online.anyInterface = true; # block for no more than one interface
   };
   boot.kernel.sysctl."net.ipv4.ip_forward" = 1;

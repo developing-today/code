@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 set -exuo pipefail
+
 #ulimit -n $(ulimit -Hn)
 #sudo prlimit --pid $$ --nofile=1000000:1000000
 #nix-shell -p nixVersions.nix_2_18 git cachix jq
 #cat /mnt/c/wsl/cachix.key | cachix authtoken --stdin
-# Get the directory of the script
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Git add for the script's directory
 cd "${script_dir}" || exit 1
 echo "entered: $script_dir"
+
+git_root="$(git rev-parse --show-toplevel)"
+cd "${git_root}" || exit 1
+echo "entered git root: ${git_root}"
+
 echo "git add ."
 git add .
 
-# Loop through each directory in flakes
 set +x
 for dir in "${script_dir}"/pkgs/*; do
   if [[ -d ${dir} ]]; then
