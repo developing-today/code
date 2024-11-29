@@ -6,7 +6,7 @@ rec {
     in
     lib.merge [
       rec {
-        inherit lib nixConfig;
+        inherit lib nixConfig description;
         hosts = import ./nixos/hosts inputs; # inputs.host?
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
