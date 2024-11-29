@@ -1,6 +1,6 @@
 {
   enable = true;
-  theme = "Vibrant Ink";
+  themeFile = "VibrantInk";
   font.name = "Terminess Nerd Font";
   settings = {
     clipboard_control = "write-clipboard read-clipboard write-primary read-primary";
