@@ -16,13 +16,10 @@ rec {
           vm-configurations
           unattended-installer-configurations
         ];
-        # nixosConfigurations = configurations // vm-configurations // unattended-installer-configurations;
-        # TODO: fix vim add flake.nix parts into this lib.make-vim
       }
       # (lib.make-clan)
       (lib.make-vim)
     ];
-  # // lib.make-vim (uses flake-utils incporproate that or flake-parts, or let lib in
   inputs = {
     nix-output-monitor = {
       url = "github:maralorn/nix-output-monitor";
