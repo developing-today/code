@@ -22,8 +22,16 @@ let
   };
 in
 {
+  systemd = {
+    # extraConfig = ''
+    #   DefaultTimeoutStopSec=10s
+    # '';
+    network.wait-online.anyInterface = true; # block for no more than one interface
+  };
   boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
   networking = {
+    dhcpcd.wait = "background";
+    # usePredictableInterfaceNames = false;
     usePredictableInterfaceNames = true;
     firewall = {
       enable = true;
@@ -40,6 +48,7 @@ in
       //
         (interface: {
           "${interface}" = {
+            useDHCP = false;
             ipv4.addresses = [
               {
                 address = "${(networkBase interfaceIndices.${interface}).prefix}.${
@@ -49,7 +58,6 @@ in
               }
             ];
             wakeOnLan.enable = true;
-            useDHCP = false;
           };
         })
           interface
@@ -63,6 +71,9 @@ in
   services = {
     dnsmasq = {
       enable = true;
+      # alwaysKeepRunning = true;
+      # package =
+      resolveLocalQueries = false;
       settings = {
         interface = internalInterfaces;
         dhcp-range = builtins.genList (
