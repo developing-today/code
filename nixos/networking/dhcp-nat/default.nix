@@ -26,10 +26,28 @@ in
     extraConfig = ''
       DefaultTimeoutStopSec=10s
     '';
-    network.wait-online.anyInterface = true; # block for no more than one interface
-    services.NetworkManager-wait-online.enable = false;
+    services = {
+      systemd-networkd-wait-online.enable = false;
+      NetworkManager-wait-online.enable = false;
+    };
+    network.wait-online = {
+      timeout = 10;
+      ignoredInterfaces = internalInterfaces;
+      # extraArgs = "";
+      enable = false;
+      anyInterface = true;
+    };
   };
-  boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
+  boot = {
+    initrd.systemd.network.wait-online = {
+      timeout = 10;
+      ignoredInterfaces = internalInterfaces;
+      # extraArgs
+      enable = false;
+      anyInterface = true;
+    };
+    kernel.sysctl."net.ipv4.ip_forward" = 1;
+  };
   networking = {
     dhcpcd.wait = "background";
     # usePredictableInterfaceNames = false;
