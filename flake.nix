@@ -40,9 +40,15 @@ rec {
     };
     arunoruto.url = "github:arunoruto/flake";
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer";
+
+    # nixpkgs-inner.url = "github:developing-today-forks/nixpkgs";
     nixpkgs.url = "github:developing-today-forks/nixpkgs";
     # nixpkgs.url = "github:dezren39/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs";
+    # nixpkgs = {
+    #   url = "github:numtide/nixpkgs-unfree?ref=nixos-unstable";
+    #   inputs.nixpkgs.follows = "nixpkgs-inner";
+    # };
     # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs";
     # nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
@@ -207,7 +213,6 @@ rec {
     # };
   };
   nixConfig = {
-    # allow-unfree = true;
     # unfortunately can't import, but this should be equal to flake.nix
     experimental-features = [
       "auto-allocate-uids"
