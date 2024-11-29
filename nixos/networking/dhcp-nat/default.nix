@@ -33,14 +33,14 @@ in
         systemd-networkd-wait-online.enable = false;
         NetworkManager-wait-online.enable = false;
       }
-      # (builtins.listToAttrs (
-      #   lib.lists.imap0 (idx: interface: {
-      #     name = "network-addresses-${interface}";
-      #     value = {
-      #       enable = false;
-      #     };
-      #   }) internalInterfaces
-      # ))
+      (builtins.listToAttrs (
+        lib.lists.imap0 (idx: interface: {
+          name = "network-addresses-${interface}";
+          value = {
+            enable = false;
+          };
+        }) internalInterfaces
+      ))
     ];
     network.wait-online = {
       timeout = 10;
@@ -119,8 +119,11 @@ in
         bind-dynamic = true;
       };
     };
+    # udev.extraRules = lib.concatMapStrings (interface: ''
+    #   SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_WANTS}="network-addresses-${interface}.service"
+    # '') internalInterfaces;
     udev.extraRules = lib.concatMapStrings (interface: ''
-      SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_WANTS}="network-addresses-${interface}.service"
+      SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/sys/subsystem/net/devices/${interface}", ENV{SYSTEMD_WANTS}+="network-addresses-${interface}.service", ENV{SYSTEMD_USER_WANTS}="", ENV{SYSTEMD_READY}="1"
     '') internalInterfaces;
   };
 }
