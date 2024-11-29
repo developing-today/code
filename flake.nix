@@ -207,6 +207,7 @@ rec {
     # };
   };
   nixConfig = {
+    # allow-unfree = true;
     # unfortunately can't import, but this should be equal to flake.nix
     experimental-features = [
       "auto-allocate-uids"
@@ -306,7 +307,7 @@ rec {
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
-    use-registries = true;
+    use-registries = false;
     use-cgroups = true;
   };
   description = "developing.today NixOS configuration";

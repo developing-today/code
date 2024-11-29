@@ -41,6 +41,14 @@
         # nix-software-center
         # zed-editor
         # zigpkgs.master
+        horst
+        wavemon
+        # fdd # TODO
+        # wpe # TODO
+        # we # TODO
+        httping
+        # rtv # TODO
+        # scrap # TODO
         socat
         lshw
         qemu

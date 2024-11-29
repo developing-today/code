@@ -418,6 +418,11 @@
         size = 24;
         x11.enable = true;
       };
+      file.".config/nixpkgs/config.nix".text = ''
+        {
+          allowUnfree = true;
+        }
+      '';
       packages =
         with pkgs;
         [
