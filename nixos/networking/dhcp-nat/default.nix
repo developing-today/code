@@ -22,62 +22,8 @@ let
   };
 in
 {
-  # systemd = {
-  # extraConfig = ''
-  #   DefaultTimeoutStopSec=10s
-  # '';
-  # services = lib.merge [
-  #   {
-  #     # https://github.com/NixOS/nixpkgs/issues/154737
-  #     # https://github.com/NixOS/nixpkgs/pull/155017/files
-  #     systemd-networkd-wait-online.enable = false;
-  #     NetworkManager-wait-online.enable = false;
-  #   }
-  #   (builtins.listToAttrs (
-  #     lib.lists.imap0 (idx: interface: {
-  #       name = "network-addresses-${interface}";
-  #       value = {
-  #         # enable = false;
-  #         enable = true;
-  #         wantedBy = [ ]; # Don't start on boot
-  #         serviceConfig = {
-  #           Type = "oneshot";
-  #           RemainAfterExit = true;
-  #         };
-  #         unitConfig = {
-  #           RefuseManualStart = false;
-  #           RefuseManualStop = false;
-  #         };
-  #       };
-  #     }) internalInterfaces
-  #   ))
-  # ];
-  #   network.wait-online = {
-  #     timeout = 10;
-  #     ignoredInterfaces = internalInterfaces;
-  #     # extraArgs = "";
-  #     enable = false;
-  #     anyInterface = true;
-  #   };
-  #   tmpfiles.rules = lib.flatten (
-  #     map (interface: [
-  #       "L+ /etc/systemd/system/network-addresses-${interface}.service - - - - /run/current-system/sw/etc/systemd/system/network-addresses-${interface}.service"
-  #     ]) internalInterfaces
-  #   );
-  # };
-  boot = {
-    # initrd.systemd.network.wait-online = {
-    #   timeout = 10;
-    #   ignoredInterfaces = internalInterfaces;
-    #   # extraArgs
-    #   enable = false;
-    #   anyInterface = true;
-    # };
-    kernel.sysctl."net.ipv4.ip_forward" = 1;
-  };
+  boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
   networking = {
-    # dhcpcd.wait = "background";
-    # usePredictableInterfaceNames = false;
     usePredictableInterfaceNames = true;
     firewall = {
       enable = true;
@@ -105,7 +51,6 @@ in
                   prefixLength = (networkBase interfaceIndices.${interface}).prefixLength;
                 }
               ];
-              wakeOnLan.enable = true;
             };
           })
           interface
@@ -121,8 +66,6 @@ in
   services = {
     dnsmasq = {
       enable = true;
-      # alwaysKeepRunning = true;
-      # package =
       resolveLocalQueries = false;
       settings = {
         interface = internalInterfaces;
@@ -141,8 +84,5 @@ in
     udev.extraRules = lib.concatMapStrings (interface: ''
       SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_WANTS}="network-addresses-${interface}.service"
     '') internalInterfaces;
-    # udev.extraRules = lib.concatMapStrings (interface: ''
-    #   SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/sys/subsystem/net/devices/${interface}", ENV{SYSTEMD_WANTS}+="network-addresses-${interface}.service", ENV{SYSTEMD_USER_WANTS}="", ENV{SYSTEMD_READY}="1"
-    # '') internalInterfaces;
   };
 }
