@@ -1609,21 +1609,6 @@
         "type": "github"
       }
     },
-    "nixpkgs-inner": {
-      "locked": {
-        "lastModified": 1732870904,
-        "narHash": "sha256-adEoSUgEvhu3EALownix60oZn+RFyK2IyMmaegWNaFg=",
-        "owner": "developing-today-forks",
-        "repo": "nixpkgs",
-        "rev": "3d7df7505e72968164f9f1adc637a00d99fe4a0f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "developing-today-forks",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "nixpkgs-stable": {
       "locked": {
         "lastModified": 1710695816,
@@ -1833,23 +1818,17 @@
       }
     },
     "nixpkgs_6": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs-inner"
-        ]
-      },
       "locked": {
-        "lastModified": 1732717389,
-        "narHash": "sha256-Tm6fvNAG8uF/5BEel8juVGZpuapEJIAfb8QbBV2Q3r4=",
-        "owner": "numtide",
-        "repo": "nixpkgs-unfree",
-        "rev": "14dca4a5268429e333a0537be948c856ac50e6a3",
+        "lastModified": 1732870904,
+        "narHash": "sha256-adEoSUgEvhu3EALownix60oZn+RFyK2IyMmaegWNaFg=",
+        "owner": "developing-today-forks",
+        "repo": "nixpkgs",
+        "rev": "3d7df7505e72968164f9f1adc637a00d99fe4a0f",
         "type": "github"
       },
       "original": {
-        "owner": "numtide",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs-unfree",
+        "owner": "developing-today-forks",
+        "repo": "nixpkgs",
         "type": "github"
       }
     },
@@ -2126,7 +2105,6 @@
         "nix-topology": "nix-topology",
         "nixos-hardware": "nixos-hardware_2",
         "nixpkgs": "nixpkgs_6",
-        "nixpkgs-inner": "nixpkgs-inner",
         "nixpkgs-stable": "nixpkgs-stable_4",
         "nixvim": "nixvim",
         "omnix": "omnix",
