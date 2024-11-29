@@ -27,6 +27,8 @@ in
       DefaultTimeoutStopSec=10s
     '';
     services = {
+      # https://github.com/NixOS/nixpkgs/issues/154737
+      # https://github.com/NixOS/nixpkgs/pull/155017/files
       systemd-networkd-wait-online.enable = false;
       NetworkManager-wait-online.enable = false;
     };
