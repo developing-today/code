@@ -1,11 +1,6 @@
 [
   (
-    {
-      config,
-      pkgs,
-      lib,
-      ...
-    }:
+    { pkgs, lib, ... }:
 
     let
       # There were two main sources of inspiration for this configuration:
@@ -158,7 +153,7 @@
           }:
           trust == tr
         );
-      interfaces = interfacesWhere (nw: nw.type != "disabled");
+      # interfaces = interfacesWhere (nw: nw.type != "disabled");
 
       interfacesOfType = ty: interfacesWhere (nw: nw.type == ty);
       routedInterfaces = interfacesOfType "routed";
@@ -168,7 +163,7 @@
           fromTopo =
             name:
             {
-              network,
+              # network,
               vlans ? { },
               pppoe ? { },
               ...
@@ -194,7 +189,7 @@
         in
         flatMapAttrsToList fromTopo topology;
 
-      addrsWithTrust = trust: addrsWhere (nw: nw.trust == trust);
+      # addrsWithTrust = trust: addrsWhere (nw: nw.trust == trust);
       routedAddrs = addrsWhere (nw: true);
 
       addrFirstN =
@@ -621,7 +616,11 @@
     }
   )
   (
-    { config, pkgs, ... }:
+    {
+      config,
+      # pkgs,
+      ...
+    }:
     {
       # https://xeiaso.net/blog/prometheus-grafana-loki-nixos-2020-11-20
       services.grafana = {
@@ -653,7 +652,11 @@
     }
   )
   (
-    { config, pkgs, ... }:
+    {
+      # config,
+      pkgs,
+      ...
+    }:
     {
 
       isoImage.squashfsCompression = "zstd -Xcompression-level 5";
@@ -775,22 +778,26 @@
       };
     }
 
-      {
-        boot.kernelParams = [ "console=ttyS0,115200n8" ];
-        boot.loader.grub.extraConfig = "
-    serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1
-    terminal_input serial
-    terminal_output serial
-  ";
-      }
-      inputs.nixos-hardware.nixosModules.pcengines-apu
+    #     {
+    #       boot.kernelParams = [ "console=ttyS0,115200n8" ];
+    #       boot.loader.grub.extraConfig = "
+    #   serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1
+    #   terminal_input serial
+    #   terminal_output serial
+    # ";
+    #     }
+    #     inputs.nixos-hardware.nixosModules.pcengines-apu
   )
 
   # Edit this configuration file to define what should be installed on
   # your system.  Help is available in the configuration.nix(5) man page
   # and in the NixOS manual (accessible by running ‘nixos-help’).
   (
-    { config, pkgs, ... }:
+    {
+      # config,
+      pkgs,
+      ...
+    }:
 
     let
       pw = import ./passwords.nix;
@@ -937,7 +944,7 @@
   )
   (
     {
-      config,
+      # config,
       pkgs,
       lib,
       ...
@@ -1094,7 +1101,7 @@
           }:
           trust == tr
         );
-      interfaces = interfacesWhere (nw: nw.type != "disabled");
+      # interfaces = interfacesWhere (nw: nw.type != "disabled");
 
       interfacesOfType = ty: interfacesWhere (nw: nw.type == ty);
       routedInterfaces = interfacesOfType "routed";
@@ -1104,7 +1111,7 @@
           fromTopo =
             name:
             {
-              network,
+              # network,
               vlans ? { },
               pppoe ? { },
               ...
@@ -1130,7 +1137,7 @@
         in
         flatMapAttrsToList fromTopo topology;
 
-      addrsWithTrust = trust: addrsWhere (nw: nw.trust == trust);
+      # addrsWithTrust = trust: addrsWhere (nw: nw.trust == trust);
       routedAddrs = addrsWhere (nw: true);
 
       addrFirstN =

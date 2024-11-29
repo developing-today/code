@@ -1,0 +1,1719 @@
+{
+  "extensions": {
+    "base16": {
+      "manifest": {
+        "id": "base16",
+        "name": "base16",
+        "version": "0.1.1",
+        "schema_version": 1,
+        "description": "Chris Kempson's base16 Themes",
+        "repository": "https://github.com/bswinnerton/base16-zed",
+        "authors": [
+          "Brooks Swinnerton <bswinnerton@gmail.com>",
+          "Tim Chmielecki <me@timcki.com>",
+          "Kevin Gyori <hi@gyori.me>"
+        ],
+        "lib": {
+          "kind": null,
+          "version": null
+        },
+        "themes": [
+          "themes/base16-atelier-cave-light.json",
+          "themes/base16-unikitty-dark.json",
+          "themes/base16-tokyo-city-terminal-light.json",
+          "themes/base16-gruvbox-material-light-soft.json",
+          "themes/base16-atelier-lakeside.json",
+          "themes/base16-tomorrow-night-eighties.json",
+          "themes/base16-atelier-seaside.json",
+          "themes/base16-atelier-savanna.json",
+          "themes/base16-dirtysea.json",
+          "themes/base16-darcula.json",
+          "themes/base16-papercolor-dark.json",
+          "themes/base16-atelier-estuary.json",
+          "themes/base16-tokyo-night-light.json",
+          "themes/base16-mountain.json",
+          "themes/base16-tokyo-night-terminal-light.json",
+          "themes/base16-ia-light.json",
+          "themes/base16-tokyodark-terminal.json",
+          "themes/base16-black-metal-mayhem.json",
+          "themes/base16-default-dark.json",
+          "themes/base16-equilibrium-light.json",
+          "themes/base16-gruvbox-light-medium.json",
+          "themes/base16-tokyodark.json",
+          "themes/base16-tokyo-night-storm.json",
+          "themes/base16-harmonic16-dark.json",
+          "themes/base16-atelier-dune.json",
+          "themes/base16-primer-dark.json",
+          "themes/base16-onedark.json",
+          "themes/base16-kimber.json",
+          "themes/base16-brogrammer.json",
+          "themes/base16-stella.json",
+          "themes/base16-sakura.json",
+          "themes/base16-decaf.json",
+          "themes/base16-papercolor-light.json",
+          "themes/base16-atelier-sulphurpool-light.json",
+          "themes/base16-silk-dark.json",
+          "themes/base16-brushtrees.json",
+          "themes/base16-isotope.json",
+          "themes/base16-grayscale-dark.json",
+          "themes/base16-apathy.json",
+          "themes/base16-horizon-light.json",
+          "themes/base16-woodland.json",
+          "themes/base16-railscasts.json",
+          "themes/base16-black-metal-bathory_custom.json",
+          "themes/base16-summerfruit-light.json",
+          "themes/base16-default-light.json",
+          "themes/base16-ocean_custom.json",
+          "themes/base16-humanoid-dark.json",
+          "themes/base16-vice.json",
+          "themes/base16-shades-of-purple.json",
+          "themes/base16-selenized-white.json",
+          "themes/base16-cupcake.json",
+          "themes/base16-gruvbox-light-soft.json",
+          "themes/base16-material.json",
+          "themes/base16-material-vivid.json",
+          "themes/base16-edge-dark.json",
+          "themes/base16-solarflare-light.json",
+          "themes/base16-cupertino.json",
+          "themes/base16-icy.json",
+          "themes/base16-horizon-dark.json",
+          "themes/base16-everforest.json",
+          "themes/base16-selenized-black.json",
+          "themes/base16-black-metal-marduk.json",
+          "themes/base16-material-lighter.json",
+          "themes/base16-eva.json",
+          "themes/base16-irblack.json",
+          "themes/base16-black-metal-immortal.json",
+          "themes/base16-windows-nt.json",
+          "themes/base16-synth-midnight-dark.json",
+          "themes/base16-windows-95.json",
+          "themes/base16-atelier-cave.json",
+          "themes/base16-solarflare.json",
+          "themes/base16-gruvbox-dark-pale.json",
+          "themes/base16-atelier-forest-light.json",
+          "themes/base16-equilibrium-dark.json",
+          "themes/base16-eva-dim.json",
+          "themes/base16-uwunicorn.json",
+          "themes/base16-tender.json",
+          "themes/base16-mocha.json",
+          "themes/base16-gruvbox-dark-soft.json",
+          "themes/base16-pasque.json",
+          "themes/base16-equilibrium-gray-light.json",
+          "themes/base16-classic-light.json",
+          "themes/base16-flat.json",
+          "themes/base16-materia.json",
+          "themes/base16-solarized-light.json",
+          "themes/base16-atelier-savanna-light.json",
+          "themes/base16-brewer.json",
+          "themes/base16-zenburn.json",
+          "themes/base16-atelier-heath-light.json",
+          "themes/base16-chalk.json",
+          "themes/base16-pandora.json",
+          "themes/base16-windows-nt-light.json",
+          "themes/base16-gigavolt.json",
+          "themes/base16-atlas.json",
+          "themes/base16-evenok-dark.json",
+          "themes/base16-horizon-terminal-light.json",
+          "themes/base16-summercamp.json",
+          "themes/base16-atelier-sulphurpool.json",
+          "themes/base16-windows-highcontrast.json",
+          "themes/base16-one-light.json",
+          "themes/base16-da-one-ocean.json",
+          "themes/base16-atelier-heath.json",
+          "themes/base16-heetch-light.json",
+          "themes/base16-nord.json",
+          "themes/base16-framer.json",
+          "themes/base16-tokyo-night-terminal-storm.json",
+          "themes/base16-gruvbox-material-dark-soft.json",
+          "themes/base16-pop.json",
+          "themes/base16-everforest-dark-hard.json",
+          "themes/base16-phd.json",
+          "themes/base16-apprentice.json",
+          "themes/base16-gruvbox-dark-medium.json",
+          "themes/base16-rose-pine-dawn.json",
+          "themes/base16-standardized-dark.json",
+          "themes/base16-katy.json",
+          "themes/base16-unikitty-reversible.json",
+          "themes/base16-twilight.json",
+          "themes/base16-pico.json",
+          "themes/base16-atelier-plateau.json",
+          "themes/base16-black-metal-khold.json",
+          "themes/base16-oxocarbon-dark.json",
+          "themes/base16-da-one-paper.json",
+          "themes/base16-xcode-dusk.json",
+          "themes/base16-tango.json",
+          "themes/base16-caroline.json",
+          "themes/base16-black-metal-burzum.json",
+          "themes/base16-tokyo-city-dark.json",
+          "themes/base16-selenized-dark.json",
+          "themes/base16-spacemacs.json",
+          "themes/base16-grayscale-light.json",
+          "themes/base16-codeschool.json",
+          "themes/base16-silk-light.json",
+          "themes/base16-gruvbox-material-light-medium.json",
+          "themes/base16-catppuccin-latte.json",
+          "themes/base16-zenbones.json",
+          "themes/base16-black-metal-venom.json",
+          "themes/base16-colors.json",
+          "themes/base16-darktooth.json",
+          "themes/base16-black-metal-dark-funeral.json",
+          "themes/base16-oxocarbon-light.json",
+          "themes/base16-nebula.json",
+          "themes/base16-catppuccin-macchiato.json",
+          "themes/base16-espresso.json",
+          "themes/base16-danqing-light.json",
+          "themes/base16-tube.json",
+          "themes/base16-rose-pine-moon.json",
+          "themes/base16-google-light.json",
+          "themes/base16-primer-dark-dimmed.json",
+          "themes/base16-solarized-dark.json",
+          "themes/base16-nova.json",
+          "themes/base16-purpledream.json",
+          "themes/base16-embers.json",
+          "themes/base16-marrakesh.json",
+          "themes/base16-tokyo-city-light.json",
+          "themes/base16-windows-10-light.json",
+          "themes/base16-gruber.json",
+          "themes/base16-emil.json",
+          "themes/base16-paraiso.json",
+          "themes/base16-darkmoss.json",
+          "themes/base16-horizon-terminal-dark.json",
+          "themes/base16-oceanicnext.json",
+          "themes/base16-gruvbox-dark-hard.json",
+          "themes/base16-pinky.json",
+          "themes/base16-ashes.json",
+          "themes/base16-sandcastle.json",
+          "themes/base16-3024.json",
+          "themes/base16-ayu-light.json",
+          "themes/base16-seti.json",
+          "themes/base16-snazzy.json",
+          "themes/base16-tokyo-city-terminal-dark.json",
+          "themes/base16-da-one-gray.json",
+          "themes/base16-atelier-forest.json",
+          "themes/base16-kanagawa.json",
+          "themes/base16-da-one-sea.json",
+          "themes/base16-google-dark.json",
+          "themes/base16-sagelight.json",
+          "themes/base16-ia-dark.json",
+          "themes/base16-tomorrow.json",
+          "themes/base16-outrun-dark.json",
+          "themes/base16-blueish.json",
+          "themes/base16-circus.json",
+          "themes/base16-catppuccin-frappe.json",
+          "themes/base16-vulcan.json",
+          "themes/base16-shadesmear-light.json",
+          "themes/base16-rose-pine.json",
+          "themes/base16-gruvbox-material-light-hard.json",
+          "themes/base16-atelier-plateau-light.json",
+          "themes/base16-material-palenight.json",
+          "themes/base16-still-alive.json",
+          "themes/base16-classic-dark.json",
+          "themes/base16-edge-light.json",
+          "themes/base16-gotham.json",
+          "themes/base16-synth-midnight-light.json",
+          "themes/base16-danqing.json",
+          "themes/base16-tokyo-night-terminal-dark.json",
+          "themes/base16-eighties.json",
+          "themes/base16-gruvbox-light-hard.json",
+          "themes/base16-black-metal.json",
+          "themes/base16-primer-light.json",
+          "themes/base16-catppuccin-mocha.json",
+          "themes/base16-da-one-black.json",
+          "themes/base16-fruit-soda.json",
+          "themes/base16-windows-highcontrast-light.json",
+          "themes/base16-windows-10.json",
+          "themes/base16-lime.json",
+          "themes/base16-atelier-dune-light.json",
+          "themes/base16-monokai.json",
+          "themes/base16-ayu-mirage.json",
+          "themes/base16-helios.json",
+          "themes/base16-spaceduck.json",
+          "themes/base16-eris.json",
+          "themes/base16-atelier-lakeside-light.json",
+          "themes/base16-tokyo-night-dark.json",
+          "themes/base16-blueforest.json",
+          "themes/base16-da-one-white.json",
+          "themes/base16-shadesmear-dark.json",
+          "themes/base16-hardcore.json",
+          "themes/base16-macintosh.json",
+          "themes/base16-selenized-light.json",
+          "themes/base16-hopscotch.json",
+          "themes/base16-harmonic16-light.json",
+          "themes/base16-humanoid-light.json",
+          "themes/base16-bright.json",
+          "themes/base16-tomorrow-night.json",
+          "themes/base16-atelier-seaside-light.json",
+          "themes/base16-greenscreen.json",
+          "themes/base16-gruvbox-material-dark-hard.json",
+          "themes/base16-tarot.json",
+          "themes/base16-windows-95-light.json",
+          "themes/base16-mexico-light.json",
+          "themes/base16-equilibrium-gray-dark.json",
+          "themes/base16-heetch.json",
+          "themes/base16-summerfruit-dark.json",
+          "themes/base16-atelier-estuary-light.json",
+          "themes/base16-darkviolet.json",
+          "themes/base16-mellow-purple.json",
+          "themes/base16-dracula.json",
+          "themes/base16-ayu-dark.json",
+          "themes/base16-gruvbox-material-dark-medium.json",
+          "themes/base16-bespin.json",
+          "themes/base16-qualia.json",
+          "themes/base16-unikitty-light.json",
+          "themes/base16-shapeshifter.json",
+          "themes/base16-black-metal-nile.json",
+          "themes/base16-rebecca.json",
+          "themes/base16-material-darker.json",
+          "themes/base16-github.json",
+          "themes/base16-black-metal-gorgoroth.json",
+          "themes/base16-brushtrees-dark.json",
+          "themes/base16-standardized-light.json",
+          "themes/base16-porple.json"
+        ],
+        "languages": [],
+        "grammars": {},
+        "language_servers": {},
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "git-firefly": {
+      "manifest": {
+        "id": "git-firefly",
+        "name": "Git Firefly",
+        "version": "0.0.3",
+        "schema_version": 1,
+        "description": "Provides Git Syntax Highlighting",
+        "repository": "https://github.com/d1y/git_firefly",
+        "authors": [
+          "d1y <chenhonzho@gmail.com>"
+        ],
+        "lib": {
+          "kind": null,
+          "version": null
+        },
+        "themes": [],
+        "languages": [
+          "languages/gitconfig",
+          "languages/diff",
+          "languages/gitcommit",
+          "languages/gitignore",
+          "languages/gitrebase",
+          "languages/gitattributes"
+        ],
+        "grammars": {
+          "diff": {
+            "repository": "https://github.com/the-mikedavis/tree-sitter-diff",
+            "rev": "c165725c28e69b36c5799ff0e458713a844f1aaf",
+            "path": null
+          },
+          "git_commit": {
+            "repository": "https://github.com/the-mikedavis/tree-sitter-git-commit",
+            "rev": "6f193a66e9aa872760823dff020960c6cedc37b3",
+            "path": null
+          },
+          "git_config": {
+            "repository": "https://github.com/the-mikedavis/tree-sitter-git-config",
+            "rev": "9c2a1b7894e6d9eedfe99805b829b4ecd871375e",
+            "path": null
+          },
+          "git_rebase": {
+            "repository": "https://github.com/the-mikedavis/tree-sitter-git-rebase",
+            "rev": "d8a4207ebbc47bd78bacdf48f883db58283f9fd8",
+            "path": null
+          },
+          "gitattributes": {
+            "repository": "https://github.com/tree-sitter-grammars/tree-sitter-gitattributes",
+            "rev": "41940e199ba5763abea1d21b4f717014b45f01ea",
+            "path": null
+          },
+          "gitignore": {
+            "repository": "https://github.com/shunsambongi/tree-sitter-gitignore",
+            "rev": "f4685bf11ac466dd278449bcfe5fd014e94aa504",
+            "path": null
+          }
+        },
+        "language_servers": {},
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "golangci-lint": {
+      "manifest": {
+        "id": "golangci-lint",
+        "name": "Golangci-Lint",
+        "version": "0.1.0",
+        "schema_version": 1,
+        "description": "Golangci Lint support.",
+        "repository": "https://github.com/j4ng5y/zed_golangci_lint",
+        "authors": [
+          "Jordan Gregory <jordan@j4ng5y.dev>"
+        ],
+        "lib": {
+          "kind": "Rust",
+          "version": "0.0.6"
+        },
+        "themes": [],
+        "languages": [],
+        "grammars": {},
+        "language_servers": {
+          "golangci-lint": {
+            "language": "Golangci Lint",
+            "languages": [],
+            "language_ids": {},
+            "code_action_kinds": null
+          }
+        },
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "html": {
+      "manifest": {
+        "id": "html",
+        "name": "HTML",
+        "version": "0.1.4",
+        "schema_version": 1,
+        "description": "HTML support.",
+        "repository": "https://github.com/zed-industries/zed",
+        "authors": [
+          "Isaac Clayton <slightknack@gmail.com>"
+        ],
+        "lib": {
+          "kind": "Rust",
+          "version": "0.1.0"
+        },
+        "themes": [],
+        "languages": [
+          "languages/html"
+        ],
+        "grammars": {
+          "html": {
+            "repository": "https://github.com/tree-sitter/tree-sitter-html",
+            "rev": "bfa075d83c6b97cd48440b3829ab8d24a2319809",
+            "path": null
+          }
+        },
+        "language_servers": {
+          "vscode-html-language-server": {
+            "language": "HTML",
+            "languages": [],
+            "language_ids": {
+              "CSS": "css",
+              "HTML": "html"
+            },
+            "code_action_kinds": null
+          }
+        },
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "log": {
+      "manifest": {
+        "id": "log",
+        "name": "LOG",
+        "version": "0.0.6",
+        "schema_version": 1,
+        "description": "Syntax highlighting for log files.",
+        "repository": "https://github.com/nervenes/zed-log",
+        "authors": [
+          "nervenes",
+          "notpeter",
+          "d1y"
+        ],
+        "lib": {
+          "kind": null,
+          "version": null
+        },
+        "themes": [],
+        "languages": [
+          "languages/log"
+        ],
+        "grammars": {
+          "log": {
+            "repository": "https://github.com/Tudyx/tree-sitter-log",
+            "rev": "62cfe307e942af3417171243b599cc7deac5eab9",
+            "path": null
+          }
+        },
+        "language_servers": {},
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "lua": {
+      "manifest": {
+        "id": "lua",
+        "name": "Lua",
+        "version": "0.1.0",
+        "schema_version": 1,
+        "description": "Lua support.",
+        "repository": "https://github.com/zed-industries/zed",
+        "authors": [
+          "Max Brunsfeld <max@zed.dev>"
+        ],
+        "lib": {
+          "kind": "Rust",
+          "version": "0.1.0"
+        },
+        "themes": [],
+        "languages": [
+          "languages/lua"
+        ],
+        "grammars": {
+          "lua": {
+            "repository": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
+            "rev": "a24dab177e58c9c6832f96b9a73102a0cfbced4a",
+            "path": null
+          }
+        },
+        "language_servers": {
+          "lua-language-server": {
+            "language": "Lua",
+            "languages": [],
+            "language_ids": {},
+            "code_action_kinds": null
+          }
+        },
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "nickel": {
+      "manifest": {
+        "id": "nickel",
+        "name": "Nickel",
+        "version": "0.0.1",
+        "schema_version": 1,
+        "description": "Support for the Nickel configuration language.",
+        "repository": "https://github.com/norpadon/zed-nickel-extension",
+        "authors": [
+          "Artur Chakhvadze <norpadon@gmail.com>"
+        ],
+        "lib": {
+          "kind": null,
+          "version": null
+        },
+        "themes": [],
+        "languages": [
+          "languages/nickel"
+        ],
+        "grammars": {
+          "nickel": {
+            "repository": "https://github.com/nickel-lang/tree-sitter-nickel",
+            "rev": "88d836a24b3b11c8720874a1a9286b8ae838d30a",
+            "path": null
+          }
+        },
+        "language_servers": {
+          "nls": {
+            "language": "Nickel",
+            "languages": [],
+            "language_ids": {},
+            "code_action_kinds": null
+          }
+        },
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    },
+    "nix": {
+      "manifest": {
+        "id": "nix",
+        "name": "Nix",
+        "version": "0.1.1",
+        "schema_version": 1,
+        "description": "Nix support.",
+        "repository": "https://github.com/zed-extensions/nix",
+        "authors": [
+          "Hasit Mistry <hasitnm@gmail.com>"
+        ],
+        "lib": {
+          "kind": "Rust",
+          "version": "0.1.0"
+        },
+        "themes": [],
+        "languages": [
+          "languages/nix"
+        ],
+        "grammars": {
+          "nix": {
+            "repository": "https://github.com/nix-community/tree-sitter-nix",
+            "rev": "b3cda619248e7dd0f216088bd152f59ce0bbe488",
+            "path": null
+          }
+        },
+        "language_servers": {
+          "nil": {
+            "language": "Nix",
+            "languages": [],
+            "language_ids": {},
+            "code_action_kinds": null
+          },
+          "nixd": {
+            "language": "Nix",
+            "languages": [],
+            "language_ids": {},
+            "code_action_kinds": null
+          }
+        },
+        "slash_commands": {},
+        "indexed_docs_providers": {},
+        "snippets": null
+      },
+      "dev": false
+    }
+  },
+  "themes": {
+    "Base16 3024": {
+      "extension": "base16",
+      "path": "themes/base16-3024.json"
+    },
+    "Base16 Apathy": {
+      "extension": "base16",
+      "path": "themes/base16-apathy.json"
+    },
+    "Base16 Apprentice": {
+      "extension": "base16",
+      "path": "themes/base16-apprentice.json"
+    },
+    "Base16 Ashes": {
+      "extension": "base16",
+      "path": "themes/base16-ashes.json"
+    },
+    "Base16 Atelier Cave": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-cave.json"
+    },
+    "Base16 Atelier Cave Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-cave-light.json"
+    },
+    "Base16 Atelier Dune": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-dune.json"
+    },
+    "Base16 Atelier Dune Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-dune-light.json"
+    },
+    "Base16 Atelier Estuary": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-estuary.json"
+    },
+    "Base16 Atelier Estuary Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-estuary-light.json"
+    },
+    "Base16 Atelier Forest": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-forest.json"
+    },
+    "Base16 Atelier Forest Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-forest-light.json"
+    },
+    "Base16 Atelier Heath": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-heath.json"
+    },
+    "Base16 Atelier Heath Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-heath-light.json"
+    },
+    "Base16 Atelier Lakeside": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-lakeside.json"
+    },
+    "Base16 Atelier Lakeside Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-lakeside-light.json"
+    },
+    "Base16 Atelier Plateau": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-plateau.json"
+    },
+    "Base16 Atelier Plateau Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-plateau-light.json"
+    },
+    "Base16 Atelier Savanna": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-savanna.json"
+    },
+    "Base16 Atelier Savanna Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-savanna-light.json"
+    },
+    "Base16 Atelier Seaside": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-seaside.json"
+    },
+    "Base16 Atelier Seaside Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-seaside-light.json"
+    },
+    "Base16 Atelier Sulphurpool": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-sulphurpool.json"
+    },
+    "Base16 Atelier Sulphurpool Light": {
+      "extension": "base16",
+      "path": "themes/base16-atelier-sulphurpool-light.json"
+    },
+    "Base16 Atlas": {
+      "extension": "base16",
+      "path": "themes/base16-atlas.json"
+    },
+    "Base16 Ayu Dark": {
+      "extension": "base16",
+      "path": "themes/base16-ayu-dark.json"
+    },
+    "Base16 Ayu Light": {
+      "extension": "base16",
+      "path": "themes/base16-ayu-light.json"
+    },
+    "Base16 Ayu Mirage": {
+      "extension": "base16",
+      "path": "themes/base16-ayu-mirage.json"
+    },
+    "Base16 Bespin": {
+      "extension": "base16",
+      "path": "themes/base16-bespin.json"
+    },
+    "Base16 Black Metal": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal.json"
+    },
+    "Base16 Black Metal (Bathory) Dark": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-bathory_custom.json"
+    },
+    "Base16 Black Metal (Burzum)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-burzum.json"
+    },
+    "Base16 Black Metal (Dark Funeral)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-dark-funeral.json"
+    },
+    "Base16 Black Metal (Gorgoroth)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-gorgoroth.json"
+    },
+    "Base16 Black Metal (Immortal)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-immortal.json"
+    },
+    "Base16 Black Metal (Khold)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-khold.json"
+    },
+    "Base16 Black Metal (Marduk)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-marduk.json"
+    },
+    "Base16 Black Metal (Mayhem)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-mayhem.json"
+    },
+    "Base16 Black Metal (Nile)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-nile.json"
+    },
+    "Base16 Black Metal (Venom)": {
+      "extension": "base16",
+      "path": "themes/base16-black-metal-venom.json"
+    },
+    "Base16 Blue Forest": {
+      "extension": "base16",
+      "path": "themes/base16-blueforest.json"
+    },
+    "Base16 Blueish": {
+      "extension": "base16",
+      "path": "themes/base16-blueish.json"
+    },
+    "Base16 Brewer": {
+      "extension": "base16",
+      "path": "themes/base16-brewer.json"
+    },
+    "Base16 Bright": {
+      "extension": "base16",
+      "path": "themes/base16-bright.json"
+    },
+    "Base16 Brogrammer": {
+      "extension": "base16",
+      "path": "themes/base16-brogrammer.json"
+    },
+    "Base16 Brush Trees": {
+      "extension": "base16",
+      "path": "themes/base16-brushtrees.json"
+    },
+    "Base16 Brush Trees Dark": {
+      "extension": "base16",
+      "path": "themes/base16-brushtrees-dark.json"
+    },
+    "Base16 Catppuccin Frappe": {
+      "extension": "base16",
+      "path": "themes/base16-catppuccin-frappe.json"
+    },
+    "Base16 Catppuccin Latte": {
+      "extension": "base16",
+      "path": "themes/base16-catppuccin-latte.json"
+    },
+    "Base16 Catppuccin Macchiato": {
+      "extension": "base16",
+      "path": "themes/base16-catppuccin-macchiato.json"
+    },
+    "Base16 Catppuccin Mocha": {
+      "extension": "base16",
+      "path": "themes/base16-catppuccin-mocha.json"
+    },
+    "Base16 Chalk": {
+      "extension": "base16",
+      "path": "themes/base16-chalk.json"
+    },
+    "Base16 Circus": {
+      "extension": "base16",
+      "path": "themes/base16-circus.json"
+    },
+    "Base16 Classic Dark": {
+      "extension": "base16",
+      "path": "themes/base16-classic-dark.json"
+    },
+    "Base16 Classic Light": {
+      "extension": "base16",
+      "path": "themes/base16-classic-light.json"
+    },
+    "Base16 Codeschool": {
+      "extension": "base16",
+      "path": "themes/base16-codeschool.json"
+    },
+    "Base16 Colors": {
+      "extension": "base16",
+      "path": "themes/base16-colors.json"
+    },
+    "Base16 Cupcake": {
+      "extension": "base16",
+      "path": "themes/base16-cupcake.json"
+    },
+    "Base16 Cupertino": {
+      "extension": "base16",
+      "path": "themes/base16-cupertino.json"
+    },
+    "Base16 Da One Black": {
+      "extension": "base16",
+      "path": "themes/base16-da-one-black.json"
+    },
+    "Base16 Da One Gray": {
+      "extension": "base16",
+      "path": "themes/base16-da-one-gray.json"
+    },
+    "Base16 Da One Ocean": {
+      "extension": "base16",
+      "path": "themes/base16-da-one-ocean.json"
+    },
+    "Base16 Da One Paper": {
+      "extension": "base16",
+      "path": "themes/base16-da-one-paper.json"
+    },
+    "Base16 Da One Sea": {
+      "extension": "base16",
+      "path": "themes/base16-da-one-sea.json"
+    },
+    "Base16 Da One White": {
+      "extension": "base16",
+      "path": "themes/base16-da-one-white.json"
+    },
+    "Base16 DanQing": {
+      "extension": "base16",
+      "path": "themes/base16-danqing.json"
+    },
+    "Base16 DanQing Light": {
+      "extension": "base16",
+      "path": "themes/base16-danqing-light.json"
+    },
+    "Base16 Darcula": {
+      "extension": "base16",
+      "path": "themes/base16-darcula.json"
+    },
+    "Base16 Dark Violet": {
+      "extension": "base16",
+      "path": "themes/base16-darkviolet.json"
+    },
+    "Base16 Darktooth": {
+      "extension": "base16",
+      "path": "themes/base16-darktooth.json"
+    },
+    "Base16 Decaf": {
+      "extension": "base16",
+      "path": "themes/base16-decaf.json"
+    },
+    "Base16 Default Dark": {
+      "extension": "base16",
+      "path": "themes/base16-default-dark.json"
+    },
+    "Base16 Default Light": {
+      "extension": "base16",
+      "path": "themes/base16-default-light.json"
+    },
+    "Base16 Dracula": {
+      "extension": "base16",
+      "path": "themes/base16-dracula.json"
+    },
+    "Base16 Edge Dark": {
+      "extension": "base16",
+      "path": "themes/base16-edge-dark.json"
+    },
+    "Base16 Edge Light": {
+      "extension": "base16",
+      "path": "themes/base16-edge-light.json"
+    },
+    "Base16 Eighties": {
+      "extension": "base16",
+      "path": "themes/base16-eighties.json"
+    },
+    "Base16 Embers": {
+      "extension": "base16",
+      "path": "themes/base16-embers.json"
+    },
+    "Base16 Equilibrium Dark": {
+      "extension": "base16",
+      "path": "themes/base16-equilibrium-dark.json"
+    },
+    "Base16 Equilibrium Gray Dark": {
+      "extension": "base16",
+      "path": "themes/base16-equilibrium-gray-dark.json"
+    },
+    "Base16 Equilibrium Gray Light": {
+      "extension": "base16",
+      "path": "themes/base16-equilibrium-gray-light.json"
+    },
+    "Base16 Equilibrium Light": {
+      "extension": "base16",
+      "path": "themes/base16-equilibrium-light.json"
+    },
+    "Base16 Espresso": {
+      "extension": "base16",
+      "path": "themes/base16-espresso.json"
+    },
+    "Base16 Eva": {
+      "extension": "base16",
+      "path": "themes/base16-eva.json"
+    },
+    "Base16 Eva Dim": {
+      "extension": "base16",
+      "path": "themes/base16-eva-dim.json"
+    },
+    "Base16 Evenok Dark": {
+      "extension": "base16",
+      "path": "themes/base16-evenok-dark.json"
+    },
+    "Base16 Everforest": {
+      "extension": "base16",
+      "path": "themes/base16-everforest.json"
+    },
+    "Base16 Everforest Dark Hard": {
+      "extension": "base16",
+      "path": "themes/base16-everforest-dark-hard.json"
+    },
+    "Base16 Flat": {
+      "extension": "base16",
+      "path": "themes/base16-flat.json"
+    },
+    "Base16 Framer": {
+      "extension": "base16",
+      "path": "themes/base16-framer.json"
+    },
+    "Base16 Fruit Soda": {
+      "extension": "base16",
+      "path": "themes/base16-fruit-soda.json"
+    },
+    "Base16 Gigavolt": {
+      "extension": "base16",
+      "path": "themes/base16-gigavolt.json"
+    },
+    "Base16 Github": {
+      "extension": "base16",
+      "path": "themes/base16-github.json"
+    },
+    "Base16 Google Dark": {
+      "extension": "base16",
+      "path": "themes/base16-google-dark.json"
+    },
+    "Base16 Google Light": {
+      "extension": "base16",
+      "path": "themes/base16-google-light.json"
+    },
+    "Base16 Gotham": {
+      "extension": "base16",
+      "path": "themes/base16-gotham.json"
+    },
+    "Base16 Grayscale Dark": {
+      "extension": "base16",
+      "path": "themes/base16-grayscale-dark.json"
+    },
+    "Base16 Grayscale Light": {
+      "extension": "base16",
+      "path": "themes/base16-grayscale-light.json"
+    },
+    "Base16 Green Screen": {
+      "extension": "base16",
+      "path": "themes/base16-greenscreen.json"
+    },
+    "Base16 Gruber": {
+      "extension": "base16",
+      "path": "themes/base16-gruber.json"
+    },
+    "Base16 Gruvbox Material Dark, Hard": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-material-dark-hard.json"
+    },
+    "Base16 Gruvbox Material Dark, Medium": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-material-dark-medium.json"
+    },
+    "Base16 Gruvbox Material Dark, Soft": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-material-dark-soft.json"
+    },
+    "Base16 Gruvbox Material Light, Hard": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-material-light-hard.json"
+    },
+    "Base16 Gruvbox Material Light, Medium": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-material-light-medium.json"
+    },
+    "Base16 Gruvbox Material Light, Soft": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-material-light-soft.json"
+    },
+    "Base16 Gruvbox dark, hard": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-dark-hard.json"
+    },
+    "Base16 Gruvbox dark, medium": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-dark-medium.json"
+    },
+    "Base16 Gruvbox dark, pale": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-dark-pale.json"
+    },
+    "Base16 Gruvbox dark, soft": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-dark-soft.json"
+    },
+    "Base16 Gruvbox light, hard": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-light-hard.json"
+    },
+    "Base16 Gruvbox light, medium": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-light-medium.json"
+    },
+    "Base16 Gruvbox light, soft": {
+      "extension": "base16",
+      "path": "themes/base16-gruvbox-light-soft.json"
+    },
+    "Base16 Hardcore": {
+      "extension": "base16",
+      "path": "themes/base16-hardcore.json"
+    },
+    "Base16 Harmonic16 Dark": {
+      "extension": "base16",
+      "path": "themes/base16-harmonic16-dark.json"
+    },
+    "Base16 Harmonic16 Light": {
+      "extension": "base16",
+      "path": "themes/base16-harmonic16-light.json"
+    },
+    "Base16 Heetch Dark": {
+      "extension": "base16",
+      "path": "themes/base16-heetch.json"
+    },
+    "Base16 Heetch Light": {
+      "extension": "base16",
+      "path": "themes/base16-heetch-light.json"
+    },
+    "Base16 Helios": {
+      "extension": "base16",
+      "path": "themes/base16-helios.json"
+    },
+    "Base16 Hopscotch": {
+      "extension": "base16",
+      "path": "themes/base16-hopscotch.json"
+    },
+    "Base16 Horizon Dark": {
+      "extension": "base16",
+      "path": "themes/base16-horizon-dark.json"
+    },
+    "Base16 Horizon Light": {
+      "extension": "base16",
+      "path": "themes/base16-horizon-light.json"
+    },
+    "Base16 Horizon Terminal Dark": {
+      "extension": "base16",
+      "path": "themes/base16-horizon-terminal-dark.json"
+    },
+    "Base16 Horizon Terminal Light": {
+      "extension": "base16",
+      "path": "themes/base16-horizon-terminal-light.json"
+    },
+    "Base16 Humanoid dark": {
+      "extension": "base16",
+      "path": "themes/base16-humanoid-dark.json"
+    },
+    "Base16 Humanoid light": {
+      "extension": "base16",
+      "path": "themes/base16-humanoid-light.json"
+    },
+    "Base16 IR Black": {
+      "extension": "base16",
+      "path": "themes/base16-irblack.json"
+    },
+    "Base16 Icy Dark": {
+      "extension": "base16",
+      "path": "themes/base16-icy.json"
+    },
+    "Base16 Isotope": {
+      "extension": "base16",
+      "path": "themes/base16-isotope.json"
+    },
+    "Base16 Kanagawa": {
+      "extension": "base16",
+      "path": "themes/base16-kanagawa.json"
+    },
+    "Base16 Katy": {
+      "extension": "base16",
+      "path": "themes/base16-katy.json"
+    },
+    "Base16 Kimber": {
+      "extension": "base16",
+      "path": "themes/base16-kimber.json"
+    },
+    "Base16 London Tube": {
+      "extension": "base16",
+      "path": "themes/base16-tube.json"
+    },
+    "Base16 Macintosh": {
+      "extension": "base16",
+      "path": "themes/base16-macintosh.json"
+    },
+    "Base16 Marrakesh": {
+      "extension": "base16",
+      "path": "themes/base16-marrakesh.json"
+    },
+    "Base16 Materia": {
+      "extension": "base16",
+      "path": "themes/base16-materia.json"
+    },
+    "Base16 Material": {
+      "extension": "base16",
+      "path": "themes/base16-material.json"
+    },
+    "Base16 Material Darker": {
+      "extension": "base16",
+      "path": "themes/base16-material-darker.json"
+    },
+    "Base16 Material Lighter": {
+      "extension": "base16",
+      "path": "themes/base16-material-lighter.json"
+    },
+    "Base16 Material Palenight": {
+      "extension": "base16",
+      "path": "themes/base16-material-palenight.json"
+    },
+    "Base16 Material Vivid": {
+      "extension": "base16",
+      "path": "themes/base16-material-vivid.json"
+    },
+    "Base16 Mellow Purple": {
+      "extension": "base16",
+      "path": "themes/base16-mellow-purple.json"
+    },
+    "Base16 Mexico Light": {
+      "extension": "base16",
+      "path": "themes/base16-mexico-light.json"
+    },
+    "Base16 Mocha": {
+      "extension": "base16",
+      "path": "themes/base16-mocha.json"
+    },
+    "Base16 Monokai": {
+      "extension": "base16",
+      "path": "themes/base16-monokai.json"
+    },
+    "Base16 Mountain": {
+      "extension": "base16",
+      "path": "themes/base16-mountain.json"
+    },
+    "Base16 Nebula": {
+      "extension": "base16",
+      "path": "themes/base16-nebula.json"
+    },
+    "Base16 Nord": {
+      "extension": "base16",
+      "path": "themes/base16-nord.json"
+    },
+    "Base16 Nova": {
+      "extension": "base16",
+      "path": "themes/base16-nova.json"
+    },
+    "Base16 Ocean": {
+      "extension": "base16",
+      "path": "themes/base16-ocean_custom.json"
+    },
+    "Base16 OceanicNext": {
+      "extension": "base16",
+      "path": "themes/base16-oceanicnext.json"
+    },
+    "Base16 One Light": {
+      "extension": "base16",
+      "path": "themes/base16-one-light.json"
+    },
+    "Base16 OneDark": {
+      "extension": "base16",
+      "path": "themes/base16-onedark.json"
+    },
+    "Base16 Outrun Dark": {
+      "extension": "base16",
+      "path": "themes/base16-outrun-dark.json"
+    },
+    "Base16 Oxocarbon Dark": {
+      "extension": "base16",
+      "path": "themes/base16-oxocarbon-dark.json"
+    },
+    "Base16 Oxocarbon Light": {
+      "extension": "base16",
+      "path": "themes/base16-oxocarbon-light.json"
+    },
+    "Base16 PaperColor Dark": {
+      "extension": "base16",
+      "path": "themes/base16-papercolor-dark.json"
+    },
+    "Base16 PaperColor Light": {
+      "extension": "base16",
+      "path": "themes/base16-papercolor-light.json"
+    },
+    "Base16 Paraiso": {
+      "extension": "base16",
+      "path": "themes/base16-paraiso.json"
+    },
+    "Base16 Pasque": {
+      "extension": "base16",
+      "path": "themes/base16-pasque.json"
+    },
+    "Base16 PhD": {
+      "extension": "base16",
+      "path": "themes/base16-phd.json"
+    },
+    "Base16 Pico": {
+      "extension": "base16",
+      "path": "themes/base16-pico.json"
+    },
+    "Base16 Pop": {
+      "extension": "base16",
+      "path": "themes/base16-pop.json"
+    },
+    "Base16 Porple": {
+      "extension": "base16",
+      "path": "themes/base16-porple.json"
+    },
+    "Base16 Primer Dark": {
+      "extension": "base16",
+      "path": "themes/base16-primer-dark.json"
+    },
+    "Base16 Primer Dark Dimmed": {
+      "extension": "base16",
+      "path": "themes/base16-primer-dark-dimmed.json"
+    },
+    "Base16 Primer Light": {
+      "extension": "base16",
+      "path": "themes/base16-primer-light.json"
+    },
+    "Base16 Purpledream": {
+      "extension": "base16",
+      "path": "themes/base16-purpledream.json"
+    },
+    "Base16 Qualia": {
+      "extension": "base16",
+      "path": "themes/base16-qualia.json"
+    },
+    "Base16 Railscasts": {
+      "extension": "base16",
+      "path": "themes/base16-railscasts.json"
+    },
+    "Base16 Rebecca": {
+      "extension": "base16",
+      "path": "themes/base16-rebecca.json"
+    },
+    "Base16 Rosé Pine": {
+      "extension": "base16",
+      "path": "themes/base16-rose-pine.json"
+    },
+    "Base16 Rosé Pine Dawn": {
+      "extension": "base16",
+      "path": "themes/base16-rose-pine-dawn.json"
+    },
+    "Base16 Rosé Pine Moon": {
+      "extension": "base16",
+      "path": "themes/base16-rose-pine-moon.json"
+    },
+    "Base16 Sagelight": {
+      "extension": "base16",
+      "path": "themes/base16-sagelight.json"
+    },
+    "Base16 Sakura": {
+      "extension": "base16",
+      "path": "themes/base16-sakura.json"
+    },
+    "Base16 Sandcastle": {
+      "extension": "base16",
+      "path": "themes/base16-sandcastle.json"
+    },
+    "Base16 Seti UI": {
+      "extension": "base16",
+      "path": "themes/base16-seti.json"
+    },
+    "Base16 ShadeSmear Dark": {
+      "extension": "base16",
+      "path": "themes/base16-shadesmear-dark.json"
+    },
+    "Base16 ShadeSmear Light": {
+      "extension": "base16",
+      "path": "themes/base16-shadesmear-light.json"
+    },
+    "Base16 Shades of Purple": {
+      "extension": "base16",
+      "path": "themes/base16-shades-of-purple.json"
+    },
+    "Base16 Shapeshifter": {
+      "extension": "base16",
+      "path": "themes/base16-shapeshifter.json"
+    },
+    "Base16 Silk Dark": {
+      "extension": "base16",
+      "path": "themes/base16-silk-dark.json"
+    },
+    "Base16 Silk Light": {
+      "extension": "base16",
+      "path": "themes/base16-silk-light.json"
+    },
+    "Base16 Snazzy": {
+      "extension": "base16",
+      "path": "themes/base16-snazzy.json"
+    },
+    "Base16 Solar Flare": {
+      "extension": "base16",
+      "path": "themes/base16-solarflare.json"
+    },
+    "Base16 Solar Flare Light": {
+      "extension": "base16",
+      "path": "themes/base16-solarflare-light.json"
+    },
+    "Base16 Solarized Dark": {
+      "extension": "base16",
+      "path": "themes/base16-solarized-dark.json"
+    },
+    "Base16 Solarized Light": {
+      "extension": "base16",
+      "path": "themes/base16-solarized-light.json"
+    },
+    "Base16 Spaceduck": {
+      "extension": "base16",
+      "path": "themes/base16-spaceduck.json"
+    },
+    "Base16 Spacemacs": {
+      "extension": "base16",
+      "path": "themes/base16-spacemacs.json"
+    },
+    "Base16 Stella": {
+      "extension": "base16",
+      "path": "themes/base16-stella.json"
+    },
+    "Base16 Still Alive": {
+      "extension": "base16",
+      "path": "themes/base16-still-alive.json"
+    },
+    "Base16 Summerfruit Dark": {
+      "extension": "base16",
+      "path": "themes/base16-summerfruit-dark.json"
+    },
+    "Base16 Summerfruit Light": {
+      "extension": "base16",
+      "path": "themes/base16-summerfruit-light.json"
+    },
+    "Base16 Synth Midnight Terminal Dark": {
+      "extension": "base16",
+      "path": "themes/base16-synth-midnight-dark.json"
+    },
+    "Base16 Synth Midnight Terminal Light": {
+      "extension": "base16",
+      "path": "themes/base16-synth-midnight-light.json"
+    },
+    "Base16 Tango": {
+      "extension": "base16",
+      "path": "themes/base16-tango.json"
+    },
+    "Base16 Tokyo City Dark": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-city-dark.json"
+    },
+    "Base16 Tokyo City Light": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-city-light.json"
+    },
+    "Base16 Tokyo City Terminal Dark": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-city-terminal-dark.json"
+    },
+    "Base16 Tokyo City Terminal Light": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-city-terminal-light.json"
+    },
+    "Base16 Tokyo Night Dark": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-night-dark.json"
+    },
+    "Base16 Tokyo Night Light": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-night-light.json"
+    },
+    "Base16 Tokyo Night Storm": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-night-storm.json"
+    },
+    "Base16 Tokyo Night Terminal Dark": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-night-terminal-dark.json"
+    },
+    "Base16 Tokyo Night Terminal Light": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-night-terminal-light.json"
+    },
+    "Base16 Tokyo Night Terminal Storm": {
+      "extension": "base16",
+      "path": "themes/base16-tokyo-night-terminal-storm.json"
+    },
+    "Base16 Tokyodark": {
+      "extension": "base16",
+      "path": "themes/base16-tokyodark.json"
+    },
+    "Base16 Tokyodark Terminal": {
+      "extension": "base16",
+      "path": "themes/base16-tokyodark-terminal.json"
+    },
+    "Base16 Tomorrow": {
+      "extension": "base16",
+      "path": "themes/base16-tomorrow.json"
+    },
+    "Base16 Tomorrow Night": {
+      "extension": "base16",
+      "path": "themes/base16-tomorrow-night.json"
+    },
+    "Base16 Tomorrow Night Eighties": {
+      "extension": "base16",
+      "path": "themes/base16-tomorrow-night-eighties.json"
+    },
+    "Base16 Twilight": {
+      "extension": "base16",
+      "path": "themes/base16-twilight.json"
+    },
+    "Base16 Unikitty Dark": {
+      "extension": "base16",
+      "path": "themes/base16-unikitty-dark.json"
+    },
+    "Base16 Unikitty Light": {
+      "extension": "base16",
+      "path": "themes/base16-unikitty-light.json"
+    },
+    "Base16 Unikitty Reversible": {
+      "extension": "base16",
+      "path": "themes/base16-unikitty-reversible.json"
+    },
+    "Base16 UwUnicorn": {
+      "extension": "base16",
+      "path": "themes/base16-uwunicorn.json"
+    },
+    "Base16 Windows 10": {
+      "extension": "base16",
+      "path": "themes/base16-windows-10.json"
+    },
+    "Base16 Windows 10 Light": {
+      "extension": "base16",
+      "path": "themes/base16-windows-10-light.json"
+    },
+    "Base16 Windows 95": {
+      "extension": "base16",
+      "path": "themes/base16-windows-95.json"
+    },
+    "Base16 Windows 95 Light": {
+      "extension": "base16",
+      "path": "themes/base16-windows-95-light.json"
+    },
+    "Base16 Windows High Contrast": {
+      "extension": "base16",
+      "path": "themes/base16-windows-highcontrast.json"
+    },
+    "Base16 Windows High Contrast Light": {
+      "extension": "base16",
+      "path": "themes/base16-windows-highcontrast-light.json"
+    },
+    "Base16 Windows NT": {
+      "extension": "base16",
+      "path": "themes/base16-windows-nt.json"
+    },
+    "Base16 Windows NT Light": {
+      "extension": "base16",
+      "path": "themes/base16-windows-nt-light.json"
+    },
+    "Base16 Woodland": {
+      "extension": "base16",
+      "path": "themes/base16-woodland.json"
+    },
+    "Base16 XCode Dusk": {
+      "extension": "base16",
+      "path": "themes/base16-xcode-dusk.json"
+    },
+    "Base16 Zenbones": {
+      "extension": "base16",
+      "path": "themes/base16-zenbones.json"
+    },
+    "Base16 Zenburn": {
+      "extension": "base16",
+      "path": "themes/base16-zenburn.json"
+    },
+    "Base16 caroline": {
+      "extension": "base16",
+      "path": "themes/base16-caroline.json"
+    },
+    "Base16 darkmoss": {
+      "extension": "base16",
+      "path": "themes/base16-darkmoss.json"
+    },
+    "Base16 dirtysea": {
+      "extension": "base16",
+      "path": "themes/base16-dirtysea.json"
+    },
+    "Base16 emil": {
+      "extension": "base16",
+      "path": "themes/base16-emil.json"
+    },
+    "Base16 eris": {
+      "extension": "base16",
+      "path": "themes/base16-eris.json"
+    },
+    "Base16 iA Dark": {
+      "extension": "base16",
+      "path": "themes/base16-ia-dark.json"
+    },
+    "Base16 iA Light": {
+      "extension": "base16",
+      "path": "themes/base16-ia-light.json"
+    },
+    "Base16 lime": {
+      "extension": "base16",
+      "path": "themes/base16-lime.json"
+    },
+    "Base16 pandora": {
+      "extension": "base16",
+      "path": "themes/base16-pandora.json"
+    },
+    "Base16 pinky": {
+      "extension": "base16",
+      "path": "themes/base16-pinky.json"
+    },
+    "Base16 selenized-black": {
+      "extension": "base16",
+      "path": "themes/base16-selenized-black.json"
+    },
+    "Base16 selenized-dark": {
+      "extension": "base16",
+      "path": "themes/base16-selenized-dark.json"
+    },
+    "Base16 selenized-light": {
+      "extension": "base16",
+      "path": "themes/base16-selenized-light.json"
+    },
+    "Base16 selenized-white": {
+      "extension": "base16",
+      "path": "themes/base16-selenized-white.json"
+    },
+    "Base16 standardized-dark": {
+      "extension": "base16",
+      "path": "themes/base16-standardized-dark.json"
+    },
+    "Base16 standardized-light": {
+      "extension": "base16",
+      "path": "themes/base16-standardized-light.json"
+    },
+    "Base16 summercamp": {
+      "extension": "base16",
+      "path": "themes/base16-summercamp.json"
+    },
+    "Base16 tarot": {
+      "extension": "base16",
+      "path": "themes/base16-tarot.json"
+    },
+    "Base16 tender": {
+      "extension": "base16",
+      "path": "themes/base16-tender.json"
+    },
+    "Base16 vice": {
+      "extension": "base16",
+      "path": "themes/base16-vice.json"
+    },
+    "Base16 vulcan": {
+      "extension": "base16",
+      "path": "themes/base16-vulcan.json"
+    }
+  },
+  "languages": {
+    "Diff": {
+      "extension": "git-firefly",
+      "path": "languages/diff",
+      "matcher": {
+        "path_suffixes": [
+          "diff"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "diff"
+    },
+    "Git Attributes": {
+      "extension": "git-firefly",
+      "path": "languages/gitattributes",
+      "matcher": {
+        "path_suffixes": [
+          ".gitattributes"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "gitattributes"
+    },
+    "Git Commit": {
+      "extension": "git-firefly",
+      "path": "languages/gitcommit",
+      "matcher": {
+        "path_suffixes": [
+          "TAG_EDITMSG",
+          "MERGE_MSG",
+          "COMMIT_EDITMSG",
+          "NOTES_EDITMSG",
+          "EDIT_DESCRIPTION"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "git_commit"
+    },
+    "Git Config": {
+      "extension": "git-firefly",
+      "path": "languages/gitconfig",
+      "matcher": {
+        "path_suffixes": [
+          ".gitconfig",
+          ".gitmodules"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "git_config"
+    },
+    "Git Ignore": {
+      "extension": "git-firefly",
+      "path": "languages/gitignore",
+      "matcher": {
+        "path_suffixes": [
+          ".gitignore",
+          ".dockerignore"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "gitignore"
+    },
+    "Git Rebase": {
+      "extension": "git-firefly",
+      "path": "languages/gitrebase",
+      "matcher": {
+        "path_suffixes": [
+          "git-rebase-todo"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "git_rebase"
+    },
+    "HTML": {
+      "extension": "html",
+      "path": "languages/html",
+      "matcher": {
+        "path_suffixes": [
+          "html",
+          "htm",
+          "shtml"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "html"
+    },
+    "LOG": {
+      "extension": "log",
+      "path": "languages/log",
+      "matcher": {
+        "path_suffixes": [
+          "log"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "log"
+    },
+    "Lua": {
+      "extension": "lua",
+      "path": "languages/lua",
+      "matcher": {
+        "path_suffixes": [
+          "lua"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "lua"
+    },
+    "Nickel": {
+      "extension": "nickel",
+      "path": "languages/nickel",
+      "matcher": {
+        "path_suffixes": [
+          "ncl"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "nickel"
+    },
+    "Nix": {
+      "extension": "nix",
+      "path": "languages/nix",
+      "matcher": {
+        "path_suffixes": [
+          "nix"
+        ],
+        "first_line_pattern": null
+      },
+      "grammar": "nix"
+    }
+  }
+}

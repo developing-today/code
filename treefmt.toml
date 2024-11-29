@@ -7,7 +7,7 @@
 #command = "alejandra"
 #includes = ["*.nix"]
 [formatter.nixfmt]
-command = "nixfmt"
+command = "nixfmt -s -v"
 includes = ["*.nix"]
 
 # todo make options etc

@@ -1,9 +1,4 @@
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+{ config, pkgs, ... }:
 let
   cliphist-rofi-img = pkgs.writeShellScript "cliphist-rofi-img" ''
     tmp_dir="/tmp/cliphist"

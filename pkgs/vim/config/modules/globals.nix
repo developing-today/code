@@ -1,3 +1,1 @@
-{
-  globals.mapleader = " ";
-}
+{ globals.mapleader = " "; }
