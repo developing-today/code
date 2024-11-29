@@ -1819,11 +1819,11 @@
     },
     "nixpkgs_6": {
       "locked": {
-        "lastModified": 1731547115,
-        "narHash": "sha256-v96m1+w9K3QQHe0HoQvaUPVL3FNSoi32xA3rFMqWMhY=",
+        "lastModified": 1732870904,
+        "narHash": "sha256-adEoSUgEvhu3EALownix60oZn+RFyK2IyMmaegWNaFg=",
         "owner": "developing-today-forks",
         "repo": "nixpkgs",
-        "rev": "116eed8580cefb3a9ebc4d5c9877f36a9626d067",
+        "rev": "3d7df7505e72968164f9f1adc637a00d99fe4a0f",
         "type": "github"
       },
       "original": {
