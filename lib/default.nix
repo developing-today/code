@@ -2,12 +2,12 @@
   {
     config,
     inputs,
-    hostName,
     host,
+    hostName,
     system,
     stateVersion,
-    modulesPath,
     lib,
+    modulesPath,
     pkgs,
     ...
   }:

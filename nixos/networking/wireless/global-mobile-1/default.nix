@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}:
+{ lib, ... }:
 {
   imports = [ (lib.from-root "nixos/networking/wireless") ];
   networking.wireless.networks."OnePlus 6".pskRaw = "ext:oneplus6";

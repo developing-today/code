@@ -6,7 +6,7 @@ rec {
     in
     lib.merge [
       rec {
-        inherit lib;
+        inherit lib nixConfig;
         hosts = import ./nixos/hosts inputs; # inputs.host?
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
@@ -24,6 +24,10 @@ rec {
     ];
   # // lib.make-vim (uses flake-utils incporproate that or flake-parts, or let lib in
   inputs = {
+    nix-output-monitor = {
+      url = "github:maralorn/nix-output-monitor";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz";
     server.url = "github:developing-today-forks/server.nix/master";
     microvm.url = "github:astro/microvm.nix";
@@ -233,7 +237,7 @@ rec {
     substituters = [
       # TODO: priority order
       "https://cache.nixos.org"
-      # "https://yazi.cachix.org"
+      "https://yazi.cachix.org"
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -245,7 +249,7 @@ rec {
     ];
     trusted-substituters = [
       "https://cache.nixos.org"
-      # "https://yazi.cachix.org"
+      "https://yazi.cachix.org"
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"

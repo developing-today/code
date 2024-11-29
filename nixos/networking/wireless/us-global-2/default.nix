@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}:
+{ lib, ... }:
 {
   imports = [ (lib.from-root "nixos/networking/wireless") ];
   networking.wireless.networks."IHG ONE REWARDS Free WI-FI".authProtocols = [ "NONE" ];

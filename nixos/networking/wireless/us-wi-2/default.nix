@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}:
+{ lib, ... }:
 {
   imports = [ (lib.from-root "nixos/networking/wireless") ];
   networking.wireless.networks."TDS417".pskRaw = "ext:TDS417";

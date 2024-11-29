@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}:
+{ lib, ... }:
 {
   imports = [ (lib.from-root "nixos/networking/wireless") ];
   networking.wireless.networks."I win again, Lews Therin.".pskRaw = "ext:iwinagainlewstherin";

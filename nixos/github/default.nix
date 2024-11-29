@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}:
+{ lib, ... }:
 {
   sops.secrets.github-token-root = {
     path = "/home/user/auth";

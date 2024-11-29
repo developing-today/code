@@ -1,8 +1,4 @@
-{
-  lib,
-  pkgs,
-  ...
-}:
+{ lib, pkgs, ... }:
 {
   # Make the PPD file available in the Nix store
   nixpkgs.overlays = [

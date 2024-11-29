@@ -1,8 +1,4 @@
-{
-  config,
-  hostName,
-  ...
-}:
+{ config, hostName, ... }:
 {
   networking = {
     inherit hostName;
