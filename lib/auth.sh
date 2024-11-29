@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-DEFAULT_BUILD_SCRIPT="./rebuild.sh"
+DEFAULT_BUILD_SCRIPT="./lib/rebuild.sh"
 AUTH_FILE="$HOME/auth"
 usage() {
     echo "Usage: $0 [--auth auth_file] command [args...]"

@@ -1,14 +1,4 @@
 {
-  config,
-  inputs,
-  hostName,
-  host,
-  system,
-  stateVersion,
-  lib,
-  ...
-}:
-{
   boot = {
     # kernelPackages = pkgs.linuxKernel.packages.linux_
     tmp = {

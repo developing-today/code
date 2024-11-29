@@ -1,1 +1,1 @@
-./lib/offline.sh
+./lib/auth-rebuild-offline.sh

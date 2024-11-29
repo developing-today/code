@@ -1,1 +1,1 @@
-lib/auth.sh
+./lib/auth-rebuild.sh
