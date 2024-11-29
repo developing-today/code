@@ -1,4 +1,4 @@
-_: {
+{
   fileSystems = {
     "/boot" = {
       device = "/dev/disk/by-label/NIXBOOT";

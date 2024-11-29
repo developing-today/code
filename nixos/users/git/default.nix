@@ -1,10 +1,4 @@
 {
-  lib,
-  pkgs,
-  config,
-  ...
-}:
-{
   # import [
   #   (lib.from-root "nixos/users")
   # ]

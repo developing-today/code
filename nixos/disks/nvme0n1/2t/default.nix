@@ -1,6 +1,6 @@
 # TODO: add 10% unallocated space
 # TODO: consider if there's a better way to configure this, possibly a function that generates the module?
-{ inputs, lib, ... }:
+{ lib, ... }:
 {
   imports = [ (lib.from-root "nixos/disks") ];
   disko.devices.disk."nvme0n1" = {

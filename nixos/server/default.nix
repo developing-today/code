@@ -1,13 +1,7 @@
 {
-  config,
   inputs,
   hostName,
-  host,
-  system,
-  stateVersion,
-  modulesPath,
   lib,
-  pkgs,
   ...
 }:
 {
