@@ -138,24 +138,24 @@ let
     in
     merge [
       host
-      rec {
+      {
         wireless-secrets-template =
           config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
       }
     ];
 
-  default-home-manager-user-configuration = name: rec {
+  default-home-manager-user-configuration = name: {
     # TODO: make this work? integrate into users?
     system = "x86_64-linux";
     stateVersion = "23.11";
-    home = rec {
+    home = {
       ide = rec {
         inherit name;
         enable = true;
         email = "home-manager-user-${name}@developing-today.com";
       };
       shell.enable = true;
-      user = rec {
+      user = {
         inherit name;
         enable = true;
       };
@@ -441,6 +441,9 @@ let
         group-key
         host-key
         user-key
+        pick
+        mkEnv
+        mergeAttrs
         nixos-user-configuration
         nixos-host-configuration-base
         nixos-host-configuration
