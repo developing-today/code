@@ -19,7 +19,7 @@ in
   amd = host {
     profiles = [
       "desktop"
-      "printing"
+      # "printing"
       "services/flatpak"
       # "microvm"
       # "server"
