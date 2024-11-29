@@ -56,6 +56,11 @@ in
       enable = false;
       anyInterface = true;
     };
+    tmpfiles.rules = lib.flatten (
+      map (interface: [
+        "L+ /etc/systemd/system/network-addresses-${interface}.service - - - - /run/current-system/sw/etc/systemd/system/network-addresses-${interface}.service"
+      ]) internalInterfaces
+    );
   };
   boot = {
     initrd.systemd.network.wait-online = {
