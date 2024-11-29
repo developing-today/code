@@ -33,14 +33,14 @@ in
         systemd-networkd-wait-online.enable = false;
         NetworkManager-wait-online.enable = false;
       }
-      (builtins.listToAttrs (
-        lib.lists.imap0 (idx: interface: {
-          name = "network-addresses-${interface}";
-          value = {
-            enable = false;
-          };
-        }) internalInterfaces
-      ))
+      # (builtins.listToAttrs (
+      #   lib.lists.imap0 (idx: interface: {
+      #     name = "network-addresses-${interface}";
+      #     value = {
+      #       enable = false;
+      #     };
+      #   }) internalInterfaces
+      # ))
     ];
     network.wait-online = {
       timeout = 10;
