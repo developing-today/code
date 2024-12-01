@@ -395,7 +395,6 @@ let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.buildClan {
         directory = self;
-        # Ensure this is unique among all clans you want to use.
         meta.name = "developing-today";
 
         # Prerequisite: boot into the installer.

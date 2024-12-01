@@ -313,7 +313,7 @@ rec {
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
-    use-registries = false;
+    use-registries = true; # clan and others rely on flake registry
     use-cgroups = true;
   };
   description = "developing.today NixOS configuration";
