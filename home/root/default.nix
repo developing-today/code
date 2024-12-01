@@ -28,7 +28,10 @@
     };
     xdg = {
       enable = true;
-      userDirs.enable = true;
+      userDirs = {
+        enable = true;
+        createDirectories = true;
+      };
 
       configFile."hypr" = {
         source = ../../config/hypr;

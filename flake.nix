@@ -21,6 +21,7 @@ rec {
       (lib.make-vim)
     ];
   inputs = {
+    affinity-nix.url = "github:mrshmllow/affinity-nix";
     nix-output-monitor = {
       url = "github:maralorn/nix-output-monitor";
       inputs.nixpkgs.follows = "nixpkgs";
