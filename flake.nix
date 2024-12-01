@@ -12,6 +12,7 @@ rec {
         vm-configurations = lib.make-vm-configurations hosts;
         unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
         nixosConfigurations = lib.merge [
+          (lib.make-clan).nixosConfigurations
           configurations
           vm-configurations
           unattended-installer-configurations

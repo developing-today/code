@@ -404,7 +404,7 @@ let
     let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.buildClan {
-        directory = self;
+        directory = inputs.self;
         meta.name = "devtoday";
         # meta.name = "developing-today";
 
