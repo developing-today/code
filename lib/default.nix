@@ -31,6 +31,16 @@ let
     array:
     let
       flattenDeep = x: if builtins.isList x then builtins.concatMap flattenDeep x else [ x ];
+      # mergeWithConcat = a: b:
+      #   let
+      #     merge = path: l: r:
+      #       if builtins.isList l && builtins.isList r
+      #       then l ++ r
+      #       else if builtins.isAttrs l && builtins.isAttrs r
+      #       then inputs.nixpkgs.lib.attrsets.recursiveUpdateWith (merge (path + ".")) l r
+      #       else r;
+      #   in merge "" a b;
+
     in
     array |> flattenDeep |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { };
 
@@ -395,7 +405,8 @@ let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.buildClan {
         directory = self;
-        meta.name = "developing-today";
+        meta.name = "devtoday";
+        # meta.name = "developing-today";
 
         # Prerequisite: boot into the installer.
         # See: https://docs.clan.lol/getting-started/installer
@@ -410,7 +421,7 @@ let
     in
     {
       # All machines managed by Clan.
-      inherit (clan) clanInternals; # nixosConfigurations clanInternals;
+      inherit (clan) clanInternals nixosConfigurations; # nixosConfigurations clanInternals;
       # Add the Clan cli tool to the dev shell.
       # Use "nix develop" to enter the dev shell.
       devShells =

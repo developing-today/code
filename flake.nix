@@ -4,7 +4,7 @@ rec {
     let
       lib = import ./lib inputs;
     in
-    lib.merge [
+    (lib.merge [
       rec {
         inherit lib nixConfig description;
         hosts = import ./nixos/hosts inputs; # inputs.host?
@@ -17,9 +17,9 @@ rec {
           unattended-installer-configurations
         ];
       }
-      (lib.make-clan)
       (lib.make-vim)
-    ];
+    ]);
+  # // (lib.make-clan);
   inputs = {
     affinity-nix.url = "github:mrshmllow/affinity-nix";
     nix-output-monitor = {

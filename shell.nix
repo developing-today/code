@@ -19,7 +19,7 @@ pkgs.mkShell {
           pydbus
           dbus-python
           pygobject3
-          gbulb
+          # gbulb
           dbus-python
           # python312Packages.pydbus
           # python312Packages.pygobject3
