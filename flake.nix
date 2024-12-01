@@ -17,22 +17,22 @@ rec {
           unattended-installer-configurations
         ];
       }
-      # (lib.make-clan)
-      (inputs.clan-core.lib.buildClan {
-        directory = inputs.self;
-        # Ensure this is unique among all clans you want to use.
-        meta.name = "developing-today";
+      (lib.make-clan)
+      # (inputs.clan-core.lib.buildClan {
+      #   directory = inputs.self;
+      #   # Ensure this is unique among all clans you want to use.
+      #   meta.name = "developing-today";
 
-        # Prerequisite: boot into the installer.
-        # See: https://docs.clan.lol/getting-started/installer
-        # local> mkdir -p ./machines/machine1
-        # local> Edit ./machines/<machine>/configuration.nix to your liking.
-        machines = {
-          # The name will be used as hostname by default.
-          # jon = { };
-          # sara = { };
-        };
-      })
+      #   # Prerequisite: boot into the installer.
+      #   # See: https://docs.clan.lol/getting-started/installer
+      #   # local> mkdir -p ./machines/machine1
+      #   # local> Edit ./machines/<machine>/configuration.nix to your liking.
+      #   machines = {
+      #     # The name will be used as hostname by default.
+      #     # jon = { };
+      #     # sara = { };
+      #   };
+      # })
       (lib.make-vim)
     ];
   inputs = {

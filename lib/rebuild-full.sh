@@ -31,7 +31,7 @@ for dir in "${script_dir}"/pkgs/*; do
     # or: nix flake lock --update-input
     if [[ -f "./flake.nix" ]]; then
       echo "is a flake: ${dir}"
-      nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+      nix flake update --refresh --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
       echo "git add flake.lock"
       git add flake.lock
       #else
@@ -59,7 +59,7 @@ set -x
 if [[ -f "./flake.nix" ]]; then
   echo "is a flake: ${dir}"
   echo "updating flake..."
-  nix flake update --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+  nix flake update --refresh --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
   echo "git add flake.lock"
   git add flake.lock
   if systemctl is-active --quiet tailscaled; then # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
