@@ -291,7 +291,7 @@ let
       inherit inputs;
       inherit host hostName; # move hostName into host?
       inherit (host) system stateVersion; # move into host?
-      lib = self;
+      lib = _self;
     };
 
   make-nixos-from-config =
@@ -439,7 +439,7 @@ let
           });
     };
 
-  self = merge [
+  _self = merge [
     lib
     {
       inherit
@@ -483,4 +483,4 @@ let
     }
   ];
 in
-self
+_self
