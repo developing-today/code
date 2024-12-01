@@ -405,9 +405,7 @@ let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.buildClan {
         directory = inputs.self;
-        meta.name = "devtoday";
-        # meta.name = "developing-today";
-
+        meta.name = "developing-today";
         # Prerequisite: boot into the installer.
         # See: https://docs.clan.lol/getting-started/installer
         # local> mkdir -p ./machines/machine1
@@ -420,17 +418,14 @@ let
       };
     in
     {
-      # All machines managed by Clan.
-      inherit (clan) clanInternals nixosConfigurations; # nixosConfigurations clanInternals;
-      # Add the Clan cli tool to the dev shell.
-      # Use "nix develop" to enter the dev shell.
+      inherit (clan) nixosConfigurations clanInternals;
       devShells =
         inputs.clan-core.inputs.nixpkgs.lib.genAttrs
           [
             "x86_64-linux"
-            # "aarch64-linux"
-            # "aarch64-darwin"
-            # "x86_64-darwin"
+            "aarch64-linux"
+            "aarch64-darwin"
+            "x86_64-darwin"
           ]
           (system: {
             default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {
