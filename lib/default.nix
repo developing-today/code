@@ -404,8 +404,8 @@ let
         # local> Edit ./machines/<machine>/configuration.nix to your liking.
         machines = {
           # The name will be used as hostname by default.
-          jon = { };
-          sara = { };
+          # jon = { };
+          # sara = { };
         };
       };
     in
@@ -418,9 +418,9 @@ let
         inputs.clan-core.inputs.nixpkgs.lib.genAttrs
           [
             "x86_64-linux"
-            "aarch64-linux"
-            "aarch64-darwin"
-            "x86_64-darwin"
+            # "aarch64-linux"
+            # "aarch64-darwin"
+            # "x86_64-darwin"
           ]
           (system: {
             default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {
