@@ -18,8 +18,10 @@ rec {
         ];
       }
       (lib.make-vim)
-    ]);
-  # // (lib.make-clan);
+    ])
+    // {
+      clanInternals = (lib.make-clan).clanInternals;
+    };
   inputs = {
     affinity-nix.url = "github:mrshmllow/affinity-nix";
     nix-output-monitor = {
