@@ -29,7 +29,6 @@
       (with inputs; [
         nix-output-monitor.packages.${system}.default
         ssh-to-age.packages.${system}.default
-        arunoruto.packages.${system}.candy-icons
         nix-search.packages.${system}.default
         zen-browser.packages.${system}.default
         affinity-nix.packages.${system}.photo
