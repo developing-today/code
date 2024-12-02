@@ -81,8 +81,8 @@ in
         bind-dynamic = true;
       };
     };
-    # udev.extraRules = lib.concatMapStrings (interface: ''
-    #   SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_WANTS}="network-addresses-${interface}.service"
-    # '') internalInterfaces;
+    udev.extraRules = lib.concatMapStrings (interface: ''
+      SUBSYSTEM=="net", ACTION=="add|move", NAME=="${interface}", TAG+="systemd", ENV{SYSTEMD_WANTS}="network-addresses-${interface}.service"
+    '') internalInterfaces;
   };
 }
