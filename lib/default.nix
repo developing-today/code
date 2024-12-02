@@ -412,8 +412,8 @@ let
         # local> Edit ./machines/<machine>/configuration.nix to your liking.
         machines = {
           # The name will be used as hostname by default.
-          jon = { };
-          sara = { };
+          user = { };
+          # sara = { };
         };
       };
     in
