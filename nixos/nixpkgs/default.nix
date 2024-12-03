@@ -13,7 +13,7 @@
       ];
     };
     overlays = [
-      inputs.self.overlay.${system}
+      inputs.self.vimOverlay.${system}
       inputs.yazi.overlays.default
       # inputs.waybar.overlays.default # ?? !! style.css
       # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })

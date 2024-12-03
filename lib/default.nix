@@ -391,7 +391,7 @@ let
         };
         nixosModules = nixosModules; # unsure how to overlay nightly here.
         homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
-        overlay = final: prev: { neovim = neovim; };
+        vimOverlay = final: prev: { neovim = neovim; };
         enableModules = enableModules;
         enableColorschemes = enableColorschemes;
         enableLspServers = enableLspServers;
