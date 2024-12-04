@@ -8,6 +8,12 @@
     ../../modules/gnome.nix
   ];
 
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+    "ca-derivations"
+  ];
+
   # This is your user login name.
   users.users.user.name = "user";
 
