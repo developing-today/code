@@ -1,5 +1,7 @@
-.
-├── nixos-gnome-24.05.5809.4eb33fe664af-x86_64-linux.iso
+iso
+├── gparted-live-1.6.0-10-amd64.iso
+├── nixos-gnome-24.11.710905.a0f3e10d9435-x86_64-linux.iso
+├── nixos-minimal-24.11.710905.a0f3e10d9435-x86_64-linux.iso
 ├── other
 │   ├── archlinux-gnome-big-n0raitor-2022.06.01-x86_64.iso
 │   ├── BookwormPup32-23.12-241006.iso
@@ -12,6 +14,11 @@
 │   ├── DietPi_RPi-ARMv6-Bookworm.img.xz
 │   ├── DietPi_RPi-ARMv7-Bookworm.img.xz
 │   ├── DietPi_RPi-ARMv8-Bookworm.img.xz
+│   ├── FD13BNS.iso
+│   ├── FD13-BonusCD.zip
+│   ├── FD13BOOT.img
+│   ├── FD13-LiveCD.zip
+│   ├── FD13LIVE.iso
 │   ├── fedora-coreos-41.20241006.1.1-live.aarch64.iso
 │   ├── fedora-coreos-41.20241006.1.1-live.x86_64.iso
 │   ├── Fedora-IoT-ostree-40-20240422.3.aarch64.iso
@@ -20,9 +27,13 @@
 │   ├── Fedora-Server-dvd-aarch64-41_Beta-1.2.iso
 │   ├── Fedora-Server-dvd-x86_64-40-1.14.iso
 │   ├── Fedora-Workstation-Live-x86_64-40-1.14.iso
-│   ├── gparted-live-1.6.0-10-amd64.iso
+│   ├── nixos-gnome-24.05.5809.4eb33fe664af-x86_64-linux.iso
+│   ├── nixos-gnome-24.11.710905.a0f3e10d9435-aarch64-linux.iso
 │   ├── nixos-minimal-24.05.5809.4eb33fe664af-aarch64-linux.iso
 │   ├── nixos-minimal-24.05.5809.4eb33fe664af-x86_64-linux.iso
+│   ├── nixos-minimal-24.11.710905.a0f3e10d9435-aarch64-linux.iso
+│   ├── nixos-plasma6-24.11.710905.a0f3e10d9435-aarch64-linux.iso
+│   ├── nixos-plasma6-24.11.710905.a0f3e10d9435-x86_64-linux.iso
 │   ├── pop-os_22.04_amd64_intel_43.iso
 │   ├── pop-os_22.04_amd64_nvidia_43.iso
 │   ├── pop-os_22.04_arm64_raspi_4.img.xz
@@ -36,17 +47,15 @@
 │   ├── systemrescue-11.01-amd64.iso
 │   ├── systemrescue-11.01-amd64.iso.asc
 │   ├── systemrescue-11.02-amd64.iso
+│   ├── systemrescue-11.03-amd64.iso
 │   ├── ubuntu-24.04.1-desktop-amd64.iso
 │   ├── ubuntu-24.04.1-live-server-amd64.iso
 │   ├── ubuntu-24.10-desktop-amd64.iso
 │   └── ubuntu-24.10-live-server-amd64.iso
-├── systemrescue-10.00-amd64.iso
+├── systemrescue-10.02-amd64.iso
 ├── tails-amd64-6.8.1.img
-├── the danger zone
-│   └── DANGEROUS_UNATTENDED_INSTALLERS_WILL_WIPE_YOUR_DRIVE
-│       └── NO_REALLY_BE_CAREFUL_THIS_WILL_DELETE_EVERYTHING_WITHOUT_ASKING
-│           ├── amd_bootstrap_unattended-installer_offline_nixos-24.11.20241014.b36c6a9-x86_64-linux.iso
-│           └── nixos_bootstrap_unattended-installer_offline_nixos-24.11.20241014.b36c6a9-x86_64-linux.iso
-└── ventoy_iso_tree.txt
+└── the danger zone
+    └── DANGEROUS_UNATTENDED_INSTALLERS_WILL_WIPE_YOUR_DRIVE
+        └── NO_REALLY_BE_CAREFUL_THIS_WILL_DELETE_EVERYTHING_WITHOUT_ASKING
 
-5 directories, 45 files
+5 directories, 54 files

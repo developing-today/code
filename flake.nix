@@ -214,7 +214,6 @@ rec {
     # };
   };
   nixConfig = {
-    # unfortunately can't import, but this should be equal to flake.nix
     experimental-features = [
       "auto-allocate-uids"
       "ca-derivations"
