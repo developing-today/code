@@ -109,6 +109,11 @@ in
       ];
       authKeyFile = cfg.authkeyFile;
       useRoutingFeatures = if cfg.advertiseExitNode then "both" else "client"; # both or server?
+      # services.tailscale.interfaceName = "userspace-networking";
+      # networking.nftables.enable = true;
+      # $ sudo tailscale cert ${MACHINE_NAME}.${TAILNET_NAME}
+      # Enabling systemd-resolved https://nixos.wiki/wiki/Systemd-resolved
+      # https://github.com/tailscale/tailscale/issues/4254
     };
   };
 }
