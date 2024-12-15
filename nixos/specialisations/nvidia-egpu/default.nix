@@ -25,13 +25,13 @@
         open = false;
         nvidiaSettings = true;
         package = config.boot.kernelPackages.nvidiaPackages.stable;
-        prime = {
-          sync.enable = true;
-          # reverseSync.enable = true;
-          allowExternalGpu = true;
-          amdgpuBusId = "PCI:12:0:0";
-          nvidiaBusId = "PCI:100:0:0";
-        };
+        # prime = {
+        #   sync.enable = true;
+        #   # reverseSync.enable = true;
+        #   allowExternalGpu = true;
+        # amdgpuBusId = "PCI:12:0:0";
+        # nvidiaBusId = "PCI:100:0:0";
+        # };
       };
     };
   };
