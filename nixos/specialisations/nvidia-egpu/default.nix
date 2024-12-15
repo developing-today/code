@@ -1,7 +1,14 @@
 { config, ... }:
 {
   specialisation = {
-    egpu.configuration = {
+    nvidia-egpu.configuration = {
+      boot.initrd.kernelModules = [
+        "nvidia"
+        "nvidia_modeset"
+        "nvidia_drm"
+        "nvidia_uvm"
+        "i915"
+      ];
       system.nixos.tags = [ "nvidia-egpu" ];
       hardware.graphics = {
         enable = true;
@@ -29,7 +36,7 @@
         powerManagement.finegrained = false;
         open = false;
         nvidiaSettings = true;
-        package = config.boot.kernelPackages.nvidiaPackages.stable;
+        package = config.boot.kernelPackages.nvidiaPackages.beta;
         prime = {
           sync.enable = true;
           # reverseSync.enable = true;
