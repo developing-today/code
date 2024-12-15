@@ -70,6 +70,7 @@ in
       wantedBy = [ "multi-user.target" ];
       serviceConfig.Type = "oneshot";
       script = with pkgs; ''
+        set -x # -ex?
         # wait for tailscaled to settle
         sleep 2
         # check if we are already authenticated to tailscale
