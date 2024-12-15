@@ -41,8 +41,8 @@
           sync.enable = true;
           # reverseSync.enable = true;
           allowExternalGpu = true;
-          amdgpuBusId = "PCI:12:0:0";
-          nvidiaBusId = "PCI:193:0:0";
+          amdgpuBusId = "PCI:193:0:0";
+          nvidiaBusId = "PCI:12:0:0";
         };
 
       };
