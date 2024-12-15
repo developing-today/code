@@ -60,7 +60,10 @@
     displayManager = {
       #autoLogin = { enable = true; user = "user"; }; # security risk?
       defaultSession = "hyprland"; # for better or worse
-      sddm.enable = true;
+      sddm = {
+        enable = true;
+        wayland.enable = true;
+      };
       #gdm.enable = true; # two at once bad
     };
     xserver = {
