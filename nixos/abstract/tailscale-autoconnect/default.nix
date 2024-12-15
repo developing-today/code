@@ -35,6 +35,11 @@ in
       default = false;
       description = "Whether to allow LAN access to this node";
     };
+    acceptRoutes = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Whether to accept routes from other nodes";
+    };
   };
   config = mkIf cfg.enable {
     assertions = [
@@ -85,7 +90,8 @@ in
           ${lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}"} \
           ${lib.optionalString cfg.advertiseExitNode "--advertise-exit-node"} \
           ${lib.optionalString (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"} \
-          ${lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access"}
+          ${lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access"} \
+          ${lib.optionalString cfg.acceptRoutes "--accept-routes"}
       '';
     };
     networking.firewall = {
@@ -94,7 +100,15 @@ in
     };
     services.tailscale = {
       enable = true;
-      useRoutingFeatures = if cfg.advertiseExitNode then "server" else "client";
+      extraUpFlags = [
+        (lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}")
+        (lib.optionalString cfg.advertiseExitNode "--advertise-exit-node")
+        (lib.optionalString (cfg.exitNode != "") "--exit-node=${cfg.exitNode}")
+        (lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access")
+        (lib.optionalString cfg.acceptRoutes "--accept-routes")
+      ];
+      authKeyFile = cfg.authkeyFile;
+      useRoutingFeatures = if cfg.advertiseExitNode then "both" else "client"; # both or server?
     };
   };
 }
