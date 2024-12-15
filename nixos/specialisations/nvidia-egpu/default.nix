@@ -1,22 +1,19 @@
-{ config, ... }:
+{ pkgs, config, ... }:
 {
   specialisation = {
     nvidia-egpu.configuration = {
       boot.initrd.kernelModules = [
         "nvidia"
-        "nvidia_modeset"
-        "nvidia_drm"
-        "nvidia_uvm"
         "i915"
+        "nvidia_modeset"
+        # "nvidia_uvm"
+        "nvidia_drm"
       ];
       system.nixos.tags = [ "nvidia-egpu" ];
       hardware.graphics = {
         enable = true;
-      };
-      hardware.opengl = {
-        enable = true;
-        # driSupport = true;
-        driSupport32Bit = true;
+        enable32Bit = true;
+        extraPackages = with pkgs; [ vaapiVdpau ];
       };
       # hardware.opengl = {
       #   enable = true;
@@ -41,13 +38,19 @@
         powerManagement.finegrained = false;
         open = false;
         nvidiaSettings = true;
-        package = config.boot.kernelPackages.nvidiaPackages.beta;
+        package = config.boot.kernelPackages.nvidiaPackages.latest;
+        nvidiaPersistenced = true;
         prime = {
-          sync.enable = true;
+          # sync.enable = true;
           # reverseSync.enable = true;
           allowExternalGpu = true;
           amdgpuBusId = "PCI:193:0:0";
           nvidiaBusId = "PCI:12:0:0";
+
+          # offload = {
+          #   enable = true;
+          #   enableOffloadCmd = true;
+          # };
         };
 
       };
