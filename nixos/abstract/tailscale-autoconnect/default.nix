@@ -61,11 +61,11 @@ in
       # make sure tailscale is running before trying to connect to tailscale
       after = [
         "network-pre.target"
-        "tailscale.service"
+        "tailscaled.service"
       ];
       wants = [
         "network-pre.target"
-        "tailscale.service"
+        "tailscaled.service"
       ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig.Type = "oneshot";
@@ -77,7 +77,13 @@ in
         # if status is not null, then we are already authenticated
         echo "tailscale status: $status"
         if [ "$status" != "NeedsLogin" ]; then
-            exit 0
+          ${coreutils}/bin/timeout 10 ${tailscale}/bin/tailscale up \
+            ${lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}"} \
+            ${lib.optionalString cfg.advertiseExitNode "--advertise-exit-node"} \
+            ${lib.optionalString (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"} \
+            ${lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access"} \
+            ${lib.optionalString cfg.acceptRoutes "--accept-routes"}
+          exit 0
         fi
         # otherwise authenticate with tailscale
         # timeout after 10 seconds to avoid hanging the boot process
