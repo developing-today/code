@@ -24,6 +24,7 @@ in
       # "microvm"
       # "server"
       "networking/dhcp-nat"
+      "specialisations/nvidia-egpu"
     ];
     hardware = "framework/13-inch/7040-amd";
     disks = [

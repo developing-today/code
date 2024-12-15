@@ -23,7 +23,7 @@ tailscale up --advertise-routes=10.10.0.0/16 --accept-routes --advertise-exit-no
 - ```
 # done
 opkg install nano # - for editing text files through ssh
-opkg install htop # - for pretty colors #  export TERM=xterm
+opkg install htop # - for pretty colors #  export TERM=xterm # https://github.com/kovidgoyal/kitty/issues/1613
 opkg install iperf3 # - useful to confirm network wifi performance
 opkg install lsof
 opkg install tmux
