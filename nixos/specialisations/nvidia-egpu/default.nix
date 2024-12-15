@@ -74,16 +74,17 @@
         # pf
         nvidiaPersistenced = true;
         prime = {
-          # sync.enable = true;
-          # reverseSync.enable = true;
-          allowExternalGpu = true;
+          #   # sync.enable = true;
+          #   reverseSync.enable = true;
+          #   allowExternalGpu = true;
           amdgpuBusId = "PCI:193:0:0";
-          nvidiaBusId = "PCI:12:0:0";
+          #   nvidiaBusId = "PCI:12:0:0";
+          nvidiaBusId = "PCI:5:0:0";
 
-          # offload = {
-          #   enable = true;
-          #   enableOffloadCmd = true;
-          # };
+          #   # offload = {
+          #   #   enable = true;
+          #   #   enableOffloadCmd = true;
+          #   # };
         };
 
       };
