@@ -7,17 +7,17 @@
 {
   specialisation = {
     nvidia-egpu.configuration = {
-      boot.kernelParams = [ "module_blacklist=amdgpu" ];
+      # boot.kernelParams = [ "module_blacklist=amdgpu" ];
       hardware.graphics.enable = true;
-      services.xserver.videoDrivers = [ "nvidia" ];
-      hardware.nvidia.open = false;
+      # services.xserver.videoDrivers = [ "nvidia" ];
+      # hardware.nvidia.open = false;
 
-      hardware.nvidia.prime = {
-        reverseSync.enable = true;
-        # ./lib/pci-to-int.sh
-        amdgpuBusId = "PCI:193:0:0";
-        nvidiaBusId = "PCI:100:0:0";
-      };
+      # hardware.nvidia.prime = {
+      #   reverseSync.enable = true;
+      #   # ./lib/pci-to-int.sh
+      #   amdgpuBusId = "PCI:193:0:0";
+      #   nvidiaBusId = "PCI:100:0:0";
+      # };
     };
   };
 }
