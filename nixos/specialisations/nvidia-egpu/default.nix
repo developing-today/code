@@ -7,6 +7,7 @@
 {
   specialisation = {
     nvidia-egpu.configuration = {
+      boot.kernelParams = [ "module_blacklist=amdgpu" ];
       hardware.graphics.enable = true;
       services.xserver.videoDrivers = [ "nvidia" ];
       hardware.nvidia.open = false;
