@@ -20,7 +20,8 @@ rec {
       (lib.make-vim)
       (lib.make-clan)
     ];
-  inputs = {
+    inputs = {
+    nixos-facter-modules.url = "github:numtide/nixos-facter-modules";
     affinity-nix.url = "github:mrshmllow/affinity-nix";
     nix-output-monitor = {
       url = "github:maralorn/nix-output-monitor";

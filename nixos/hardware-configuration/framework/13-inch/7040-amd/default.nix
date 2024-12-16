@@ -3,6 +3,8 @@
   imports = [
     (lib.from-root "nixos/hardware-configuration")
     inputs.nixos-hardware.nixosModules.framework-13-7040-amd
+    inputs.nixos-facter-modules.nixosModules.facter
+    { config.facter.reportPath = ./facter-nvidia.json; }
   ];
   boot.initrd.availableKernelModules = [
     "xhci_pci"
