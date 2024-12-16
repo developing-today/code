@@ -11,7 +11,8 @@
       hardware.graphics.enable = true;
 
       services.xserver.videoDrivers = [ "nvidia" ];
-      hardware.nvidia.open = true; # Set to false for proprietary drivers
+#       hardware.nvidia.open = true; # Set to false for proprietary drivers
+      hardware.nvidia.open = false;
       # imports = [ inputs.nixos-hardware.nixosModules.common-gpu-nvidia ];
       # # boot.kernelPackages = pkgs.linuxPackages_6_1; # EOL 2026 | 2033 CIP # https://github.com/133760D/Nix-nvidia-configuration/blob/main/boot_kernel.nix
       # # boot.initrd.kernelModules = [
