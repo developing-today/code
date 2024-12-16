@@ -1602,6 +1602,21 @@
         "type": "github"
       }
     },
+    "nixos-facter-modules_3": {
+      "locked": {
+        "lastModified": 1732288619,
+        "narHash": "sha256-zSQ2cR+NRJfHUVfkv+O6Wi53wXfzX8KHiO8fRfnvc0M=",
+        "owner": "numtide",
+        "repo": "nixos-facter-modules",
+        "rev": "862648589993a96480c2255197a28feea712f68f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "nixos-facter-modules",
+        "type": "github"
+      }
+    },
     "nixos-hardware": {
       "locked": {
         "lastModified": 1732483221,
@@ -2159,6 +2174,7 @@
         "nix-output-monitor": "nix-output-monitor",
         "nix-search": "nix-search",
         "nix-topology": "nix-topology",
+        "nixos-facter-modules": "nixos-facter-modules_3",
         "nixos-hardware": "nixos-hardware_2",
         "nixpkgs": "nixpkgs_7",
         "nixpkgs-stable": "nixpkgs-stable_4",
