@@ -60,15 +60,17 @@
     displayManager = {
       #autoLogin = { enable = true; user = "user"; }; # security risk?
       defaultSession = "hyprland"; # for better or worse
-      # sddm = {
-      #   enable = true;
-      #   wayland.enable = true;
-      # };
+      sddm = {
+        enable = true;
+        wayland.enable = true;
+        autoNumlock = true;
+        enableHidpi = true;
+      };
     };
     xserver = {
       enable = true;
       # libinput.enable = true;
-      displayManager.gdm.enable = true;
+      # displayManager.gdm.enable = true;
       desktopManager = {
         # backup in case hyprland gets broken again
         #plasma6.enable = true; # bloat but kinda pretty
