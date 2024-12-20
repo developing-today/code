@@ -180,7 +180,7 @@ rec {
     omnix.url = "github:juspay/omnix?shallow=1"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
     hypr-dynamic-cursors = {
-      url = "github:VirtCode/hypr-dynamic-cursors";
+      url = "github:VirtCode/hypr-dynamic-cursors?shallow=1";
       inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
     };
     hyprland = {
