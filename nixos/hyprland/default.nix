@@ -5,8 +5,11 @@ in
 {
   hardware.opengl = {
     package = pkgs-hyprland.mesa.drivers;
-    driSupport32Bit = true;
     package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
+  };
+  hardware.graphics = {
+    enable = true;
+    enable32Bit = true;
   };
   programs.hyprland = {
     enable = true;
