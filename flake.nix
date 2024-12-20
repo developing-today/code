@@ -20,7 +20,7 @@ rec {
       (lib.make-vim)
       (lib.make-clan)
     ];
-    inputs = {
+  inputs = {
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules?shallow=1";
     affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f?shallow=1"; # need 2.5.7 before can update
     nix-output-monitor = {
@@ -179,10 +179,20 @@ rec {
     };
     omnix.url = "github:juspay/omnix?shallow=1"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
+    hypr-dynamic-cursors = {
+      url = "github:VirtCode/hypr-dynamic-cursors";
+      inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
+    };
     hyprland = {
       url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
       # url = "github:hyprwm/Hyprland";
       inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
+      inputs.hyprcursor.follows = "hyprcursor";
+    };
+    hyprcursor = {
+      url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.systems.follows = "systems";
     };
     # nix-topology.nixosModules.default
     # terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng

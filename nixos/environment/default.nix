@@ -133,7 +133,7 @@
         hyprkeys
         hyprland-monitor-attached
         hyprland-protocols
-        hyprlandPlugins.hypr-dynamic-cursors
+        inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors
         hyprlock
         hyprpicker
         hyprshade
