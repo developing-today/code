@@ -1,13 +1,4 @@
-{
-  config,
-  inputs,
-  hostName,
-  host,
-  system,
-  stateVersion,
-  lib,
-  ...
-}:
+{ host, lib, ... }:
 {
   environment.persistence = lib.mkIf (!host.vm) {
     "/nix/persistent" = {

@@ -8,8 +8,8 @@ in
     (
       parent:
       lib.attrsets.recursiveUpdate parent {
-        home = rec {
-          ide = rec {
+        home = {
+          ide = {
             email = "nixos-home-manager-user-${parent.name}@developing-today.com";
           };
         };

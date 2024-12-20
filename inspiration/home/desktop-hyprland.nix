@@ -11,7 +11,7 @@ let
     name = getHostname n;
     value = v.config.colorscheme.rawColorscheme.colors.${config.colorscheme.mode};
   }) outputs.homeConfigurations;
-  rgb = color: "rgb(${lib.removePrefix "#" color})";
+  # rgb = color: "rgb(${lib.removePrefix "#" color})";
   rgba = color: alpha: "rgba(${lib.removePrefix "#" color}${alpha})";
 in
 {

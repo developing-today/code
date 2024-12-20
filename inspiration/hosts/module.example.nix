@@ -1,10 +1,10 @@
-{ config, pkgs, ... }:
+{ lib, ... }:
 {
   imports = [ ];
   disabledModules = [ "./helloWorld.nix" ];
   options = {
     # optionName = mkEnableOption "this cool module";
-    optionName = mkOption {
+    optionName = lib.mkOption {
       type = lib.types.bool;
       default = false;
       example = true;

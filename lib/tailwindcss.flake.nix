@@ -6,7 +6,7 @@
   };
 
   outputs =
-    { self, nixpkgs }:
+    { nixpkgs }:
     {
       defaultPackage.x86_64-linux =
         with import nixpkgs { system = "x86_64-linux"; };

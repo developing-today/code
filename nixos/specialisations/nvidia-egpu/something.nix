@@ -1,11 +1,17 @@
-boot = {
-    kernelParams =
-      [ "acpi_rev_override" "mem_sleep_default=deep" "intel_iommu=igfx_off" "nvidia-drm.modeset=1" ];
+{ pkgs, config, ... }:
+{
+  boot = {
+    kernelParams = [
+      "acpi_rev_override"
+      "mem_sleep_default=deep"
+      "intel_iommu=igfx_off"
+      "nvidia-drm.modeset=1"
+    ];
     kernelPackages = pkgs.linuxPackages_5_4;
     extraModulePackages = [ config.boot.kernelPackages.nvidia_x11 ];
   };
 
-# Enable the X11 windowing system.
+  # Enable the X11 windowing system.
   services.xserver.enable = true;
 
   # Enable the KDE Desktop Environment.
@@ -54,3 +60,4 @@ boot = {
     # Bus ID of the Intel GPU. You can find it using lspci, either under 3D or VGA
     intelBusId = "PCI:0:2:0";
   };
+}
