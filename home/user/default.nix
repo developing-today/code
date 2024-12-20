@@ -8,6 +8,10 @@
 {
   imports = [ (lib.from-root "nixos/home") ];
   home-manager.users.user = {
+    wayland.windowManager.hyprland = {
+      enable = true;
+      plugins = [ inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors ];
+    };
     # TODO: ensure home manager standalone can still work
     # TODO: factor out modules into shared files
     nixpkgs.config = {
