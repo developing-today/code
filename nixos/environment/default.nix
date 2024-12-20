@@ -168,7 +168,7 @@
         nerd-font-patcher
         nerdfix
         nerdfix
-        nerdfonts
+        #nerdfonts
         nh
         niv
         nix-du
@@ -226,7 +226,7 @@
         syslinux
         tailscale
         taoup
-        terminus-nerdfont
+        #terminus-nerdfont
         # termpdfpy # 2024-09-17 ⚠ python3.12-pymupdf-1.24.8 failed with exit code 1 after ⏱ 1m55s in pythonImportsCheckPhase
         terranix
         udev-gothic-nf

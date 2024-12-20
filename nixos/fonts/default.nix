@@ -10,8 +10,8 @@
       source-han-sans
       source-han-sans-japanese
       source-han-serif-japanese
-      (nerdfonts.override { fonts = [ "Meslo" ]; })
-    ]; # missing other fonts
+      ] ++ builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts)
+    ; # missing other fonts
     fontconfig = {
       # ligatures just give me ligatures what is this
       enable = true;

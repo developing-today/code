@@ -11,7 +11,7 @@
     illuminate = { };
     fugitive = { };
     #which-key.window.winblend = 10;
-    nvim-colorizer = { };
+    colorizer = { };
     quickmath = { };
     vim-surround = { };
     notify = {

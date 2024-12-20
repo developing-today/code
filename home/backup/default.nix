@@ -762,7 +762,7 @@
           synergy
           systeroid
           tealdeer # ya tldr
-          terminus-nerdfont
+          #terminus-nerdfont
           thefuck
           tidy-viewer
           tidyp
@@ -815,7 +815,7 @@
           xh
           xorg.libX11
           xorg.libXcursor
-          xournal
+          xournalpp # xournal
           xsv
           yad
           yarn
