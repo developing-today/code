@@ -3,13 +3,11 @@ let
   pkgs-hyprland = inputs.hyprland.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system};
 in
 {
-  hardware.opengl = {
-    package = pkgs-hyprland.mesa.drivers;
-    package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
-  };
   hardware.graphics = {
     enable = true;
     enable32Bit = true;
+    package = pkgs-hyprland.mesa.drivers;
+    package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
   };
   programs.hyprland = {
     enable = true;
