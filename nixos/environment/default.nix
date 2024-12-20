@@ -27,6 +27,7 @@
     # etc.
     systemPackages =
       (with inputs; [
+        rose-pine-hyprcursor.packages.${pkgs.system}.default
         nix-output-monitor.packages.${system}.default
         ssh-to-age.packages.${system}.default
         nix-search.packages.${system}.default
@@ -54,6 +55,8 @@
         # zigpkgs.master
         horst
         wavemon
+        nordzy-icon-theme
+        nordzy-cursor-theme
         # fdd # TODO
         # wpe # TODO
         # we # TODO
