@@ -21,7 +21,7 @@ rec {
       (lib.make-clan)
     ];
   inputs = {
-    rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor";
+    rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor?shallow=1";
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules?shallow=1";
     affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f?shallow=1"; # need 2.5.7 before can update
     nix-output-monitor = {
