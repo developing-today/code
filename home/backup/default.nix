@@ -37,7 +37,7 @@
       userDirs.enable = true;
 
       configFile."hypr" = {
-        source = ../../config/hypr;
+        source = lib.from-root "config/hypr";
         recursive = true;
       };
       mimeApps.defaultApplications = {
@@ -55,10 +55,10 @@
     };
     manual.manpages.enable = true;
     programs = {
-      waybar = import ../../home/common/programs/waybar.nix { inherit pkgs; };
-      alacritty = import ../../home/common/programs/alacritty.nix;
-      kitty = import ../../home/common/programs/kitty.nix;
-      yazi = import ../../home/common/programs/yazi.nix { inherit pkgs; };
+      waybar = import (lib.from-root "home/common/programs/waybar.nix") { inherit pkgs; };
+      alacritty = import (lib.from-root "home/common/programs/alacritty.nix");
+      kitty = import (lib.from-root "home/common/programs/kitty.nix");
+      yazi = import (lib.from-root "home/common/programs/yazi.nix") { inherit pkgs; };
       # neovim = import programs/nvim.nix {inherit pkgs;};
       # nixvim.enable = true;
       abook.enable = true;
