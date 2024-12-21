@@ -1,1 +1,0 @@
-sops --decrypt 01b.us.enc | base64 -d | tar xzf -

@@ -1,3 +1,5 @@
 *.yaml
 01b.us*
-+01b.us.enc
+!01b.us.enc
+!01b.us-*.sh
+!01b.us_*.sh
