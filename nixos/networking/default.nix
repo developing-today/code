@@ -8,6 +8,7 @@
       enable = true;
       allowedUDPPorts = [ config.services.tailscale.port ]; # needed? # put into tailscale-autoconnect?
     };
+    # networkmanager.appendNameservers = [ "10.10.0.1" ];
   };
 }
 # hostId = deadbeef # 8 unique hex chars

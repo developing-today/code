@@ -1,0 +1,15 @@
+- vip
+  - https://10.10.0.42:6443
+  - static
+- controllers
+  - a1
+    - 10.10.2.185
+    - static
+  - a2
+    - 10.10.30.13
+    - static
+  - b1
+    - 10.10.4.114
+    - static
+- workers
+  - ??
