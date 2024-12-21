@@ -53,6 +53,8 @@
         # nix-software-center
         # zed-editor
         # zigpkgs.master
+        solaar
+        gnomeExtensions.solaar-extension
         horst
         wavemon
         nordzy-icon-theme
