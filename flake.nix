@@ -21,6 +21,12 @@ rec {
       (lib.make-clan)
     ];
   inputs = {
+    solaar = {
+      url = "https://flakehub.com/f/Svenum/Solaar-Flake/*.tar.gz"; # For latest stable version
+      #url = "https://flakehub.com/f/Svenum/Solaar-Flake/0.1.1.tar.gz" # uncomment line for solaar version 1.1.13
+      #url = "github:Svenum/Solaar-Flake/main"; # Uncomment line for latest unstable version
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor?shallow=1";
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules?shallow=1";
     affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f?shallow=1"; # need 2.5.7 before can update
