@@ -57,6 +57,19 @@
         gnomeExtensions.solaar-extension
         logitech-udev-rules
         horst
+        kubectl
+        kubectl-tree
+        kubectl-ktop
+        kubectl-df-pv
+        kubectl-doctor
+        kubectl-explore
+        kubectl-example
+        kubectl-view-allocations
+        kubectl-view-secret
+        kubectl-graph
+        kubectl-gadget
+        kubectl-images
+        kubectl-node-shell
         wavemon
         nordzy-icon-theme
         nordzy-cursor-theme
