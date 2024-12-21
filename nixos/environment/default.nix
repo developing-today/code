@@ -55,6 +55,7 @@
         # zigpkgs.master
         solaar
         gnomeExtensions.solaar-extension
+        logitech-udev-rules
         horst
         wavemon
         nordzy-icon-theme
