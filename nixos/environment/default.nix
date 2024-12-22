@@ -54,6 +54,9 @@
         # nix-software-center
         # zed-editor
         # zigpkgs.master
+        argo
+        argocd
+        argocd-autopilot
         solaar
         gnomeExtensions.solaar-extension
         logitech-udev-rules
