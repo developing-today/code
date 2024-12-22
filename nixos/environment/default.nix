@@ -35,6 +35,7 @@
         affinity-nix.packages.${system}.photo
         affinity-nix.packages.${system}.publisher
         affinity-nix.packages.${system}.designer
+        hyprland-qtutils.packages.${system}.hyprland-qtutils
       ])
       ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
       ++ (with pkgs; [
