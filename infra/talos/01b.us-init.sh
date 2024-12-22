@@ -3,7 +3,6 @@ if [ -d 01b.us ]; then
   echo "01b.us directory already exists"
   exit 1
 fi
-echo "*.yaml" >> .gitignore
 echo "01b.us*" >> .gitignore
 echo "!01b.us.enc" >> .gitignore
 echo "!01b.us-*.sh" >> .gitignore

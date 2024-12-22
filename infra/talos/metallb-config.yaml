@@ -1,0 +1,25 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: first-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    # reserved for static ip
+    # - 10.10.0.0 - 10.10.1.255
+
+    # reserved for gateway dhcp (main edge router)
+    # - 10.10.2.0 - 10.10.31.255
+
+    # reserved for 01b.us cluster load balancers
+    - 10.10.32.0-10.10.63.254
+
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - first-pool
