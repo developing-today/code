@@ -1,2 +1,4 @@
+talosconfig*
+kubeconfig*
 secret*
 !secrets.enc

@@ -32,7 +32,7 @@ rec {
       #url = "github:Svenum/Solaar-Flake/main"; # Uncomment line for latest unstable version
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # "git+https://github.com/NixOS/nixpkgs?shallow=1&ref=nixpkgs-unstable";
+    # TODO: ?? use git instead of github ?? "git+https://github.com/NixOS/nixpkgs?shallow=1&ref=nixpkgs-unstable";
     rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor?shallow=1";
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules?shallow=1";
     affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f?shallow=1"; # need 2.5.7 before can update
