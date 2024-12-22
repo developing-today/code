@@ -14,10 +14,20 @@
       content: v=spf1 include:mxlogin.com -all
       domain: 01b.us
       type: TXT
-    01b.us_vip_A_0_0:
-      content: 10.10.0.42
+    01b.us_control_A_0_0:
+      content: 10.10.15.105
       domain: 01b.us
-      name: vip
+      name: control
+      type: A
+    01b.us_control_A_0_1:
+      content: 10.10.4.92
+      domain: 01b.us
+      name: control
+      type: A
+    01b.us_control_A_0_2:
+      content: 10.10.8.188
+      domain: 01b.us
+      name: control
       type: A
     0x111.dev_@_MX_10_0:
       content: monday.mxrouting.net
@@ -590,8 +600,11 @@ porkbun:
         - content: monday.mxrouting.net
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
-    vip:
-      A: 10.10.0.42
+    control:
+      A:
+        - content: 10.10.15.105
+        - content: 10.10.4.92
+        - content: 10.10.8.188
   0x111.dev:
     '@':
       MX:
