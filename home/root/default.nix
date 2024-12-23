@@ -119,6 +119,11 @@
           push = {
             autoSetupRemote = true;
           };
+          pull = {
+            rebase = true;
+            # rebase = false;
+            # ff = "only";
+          };
           safe = {
             directory = "*";
           };
