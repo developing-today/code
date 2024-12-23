@@ -227,6 +227,7 @@
       gh.enable = true;
       # git-credential-oauth.enable = true; # can't get browser to return back
       git = {
+        # TODO: global config
         enable = true;
         lfs.enable = true;
 
