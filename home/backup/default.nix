@@ -3,6 +3,7 @@
   inputs,
   stateVersion,
   pkgs,
+  system,
   ...
 }:
 {
@@ -53,14 +54,142 @@
         "x-scheme-handler/https" = "firefox.desktop";
       };
     };
+    services = {
+      udiskie = {
+        enable = true;
+      };
+      mako = {
+        enable = true;
+        anchor = "top-right";
+        borderRadius = 0;
+        borderSize = 0;
+        padding = "0"; # within
+        margin = "0"; # "36,0,0,0"; # outside # 36? 40?
+        # margin = "36,0,0,0"; # outside # 36? 40?
+        # .tabbrowser-tab[selected] {
+        #   max-height: 24px !important;
+        #   min-height: 24px !important;
+        # }
+        # tab:not([selected="true"]) {
+        #   max-height: 24px !important;
+        #   min-height: 24px !important;
+        # }
+        # maxIconSize = 256;
+        maxIconSize = 512;
+        ignoreTimeout = true;
+        defaultTimeout = 15000;
+        layer = "top";
+        height = 240;
+        width = 420;
+        format = "<b>%s</b>\\n%b";
+        backgroundColor = "#303030FF";
+        borderColor = "#333333FF";
+        # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
+        # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
+        # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
+        # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
+        # outside # 36? 40?12
+        extraConfig = ''
+          outer-margin=36,0,0,0
+
+          [app-name="Element"]
+          on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
+
+          [urgency=low]
+          default-timeout=10000
+
+          [urgency=high]
+          default-timeout=30000
+
+          [mode=dnd]
+          invisible=1
+        '';
+      };
+      # dunst = {
+      #   enable = true;
+      #   package = pkgs.dunst;
+      #   settings = {
+      #     global = {
+      #       monitor = 0;
+      #       follow = "mouse";
+      #       # border = 0;
+      #       # height = 300;
+      #       height = 360;
+      #       # height = 400;
+      #       # width = 320;
+      #       # width = 420;
+      #       # width = 480;
+      #       # width = 240;
+      #       # width = 320;
+      #       offset = "0x0";
+      #       # offset = "33x65";
+      #       indicate_hidden = "yes";
+      #       shrink = "yes";
+      #       # shrink = "no";
+      #       separator_height = 0;
+      #       padding = 0;
+      #       # padding = 32;
+      #       # horizontal_padding = 32;
+      #       horizontal_padding = 0;
+      #       frame_width = 0;
+      #       sort = "no";
+      #       idle_threshold = 120;
+      #       font = "Noto Sans";
+      #       line_height = 4;
+      #       markup = "full";
+      #       format = "<b>%s</b>\\n%b";
+      #       alignment = "left";
+      #       # transparency = 10;
+      #       transparency = 100;
+      #       show_age_threshold = 60;
+      #       word_wrap = "yes";
+      #       ignore_newline = "no";
+      #       stack_duplicates = false;
+      #       hide_duplicate_count = "yes";
+      #       show_indicators = "no";
+      #       # icon_position = "off";
+      #       icon_position = "left";
+      #       icon_theme = "Adwaita-dark";
+      #       sticky_history = "yes";
+      #       history_length = 20;
+      #       # browser = "google-chrome-stable";
+      #       # browser = "firefox";
+      #       browser = "${config.programs.firefox.package}/bin/firefox -new-tab";
+      #       dmenu = "${pkgs.rofi-wayland}/bin/rofi -dmenu"; # wofi? etc.
+      #       always_run_script = true;
+      #       title = "Dunst";
+      #       class = "Dunst";
+      #       # max_icon_size = 64;
+      #       max_icon_size = 128;
+      #       # max_icon_size = 32;
+      #       history = "ctrl+grave";
+      #       context = "grave+space";
+      #       close = "mod4+shift+space";
+      #     };
+      #   };
+      # };
+      activitywatch = {
+        enable = true;
+        package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
+      };
+    };
     manual.manpages.enable = true;
     programs = {
+      ghostty = {
+        enable = true;
+        package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
+        settings = {
+          # ghostty +list-themes
+          theme = "synthwave";
+          window-decoration = false;
+          # TODO: hide tabs or make smaller or both
+        };
+      };
+      bash.enable = true;
       waybar = import (lib.from-root "home/common/programs/waybar.nix") { inherit pkgs; };
       alacritty = import (lib.from-root "home/common/programs/alacritty.nix");
       kitty = import (lib.from-root "home/common/programs/kitty.nix");
       yazi = import (lib.from-root "home/common/programs/yazi.nix") { inherit pkgs; };
-      # neovim = import programs/nvim.nix {inherit pkgs;};
-      # nixvim.enable = true;
       abook.enable = true;
       autojump.enable = true;
 
@@ -77,6 +206,34 @@
       # eww.enable = true; # config
       #eza.enable = true;
       firefox.enable = true;
+      fuzzel = {
+        enable = true;
+        settings = {
+          main = {
+            font = "Sarasa Mono SC";
+            terminal = "foot";
+            prompt = "->";
+          };
+
+          border = {
+            width = 0;
+            radius = 6;
+          };
+
+          dmenu = {
+            mode = "text";
+          };
+          # colors = {
+          #   background = "${config.color.base00}f2";
+          #   text = "${config.color.base05}ff";
+          #   match = "${config.color.base0A}ff";
+          #   selection = "${config.color.base03}ff";
+          #   selection-text = "${config.color.base05}ff";
+          #   selection-match = "${config.color.base0A}ff";
+          #   border = "${config.color.base0D}ff";
+          # };
+        };
+      };
       fzf.enable = true;
       gh.enable = true;
       # git-credential-oauth.enable = true; # can't get browser to return back
@@ -270,7 +427,21 @@
       };
       sessionVariables = {
         EDITOR = "nvim";
+        TERM = "kitty"; # "alacritty" "xterm-256color"
+        # PATH = "$HOME/bin:$PATH";
+        NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
+        NIXPKGS_ALLOW_UNFREE = "1";
+        # XDG_CACHE_HOME = "$HOME/.cache";
+        # XDG_CONFIG_DIRS = "/etc/xdg";
+        # XDG_CONFIG_HOME = "$HOME/.config";
+        # XDG_DATA_DIRS = "/usr/local/share/:/usr/share/";
+        # XDG_DATA_HOME = "$HOME/.local/share";
+        # XDG_STATE_HOME = "$HOME/.local/state";
       };
+      # sessionPath = [
+      #   "$HOME/bin"
+      #   "$HOME/.local/bin"
+      # ];
       pointerCursor = {
         package = pkgs.vanilla-dmz;
         name = "Vanilla-DMZ";
@@ -278,9 +449,15 @@
         size = 24;
         x11.enable = true;
       };
+      file.".config/nixpkgs/config.nix".text = ''
+        {
+          allowUnfree = true;
+        }
+      '';
       packages =
         with pkgs;
         [
+          libnotify
           #
           #         dog
           #         felix

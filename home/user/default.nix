@@ -182,6 +182,7 @@
           # ghostty +list-themes
           theme = "synthwave";
           window-decoration = false;
+          # TODO: hide tabs or make smaller or both
         };
       };
       bash.enable = true;
