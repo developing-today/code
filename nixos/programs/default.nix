@@ -1,3 +1,4 @@
+{ inputs, system, ... }:
 {
   programs = {
     # bash.enable = true;

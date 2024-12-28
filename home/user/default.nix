@@ -3,6 +3,7 @@
   inputs,
   stateVersion,
   pkgs,
+  system,
   ...
 }:
 {
@@ -174,6 +175,15 @@
     };
     manual.manpages.enable = true;
     programs = {
+      ghostty = {
+        enable = true;
+        package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
+        settings = {
+          # ghostty +list-themes
+          theme = "synthwave";
+          window-decoration = false;
+        };
+      };
       bash.enable = true;
       waybar = import (lib.from-root "home/common/programs/waybar.nix") { inherit pkgs; };
       alacritty = import (lib.from-root "home/common/programs/alacritty.nix");

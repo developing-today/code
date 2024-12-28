@@ -77,8 +77,10 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
-      url = "github:nix-community/home-manager?shallow=1";
-      inputs.nixpkgs.follows = "nixpkgs";
+      url = "github:developing-today-forks/home-manager?shallow=1";
+      # url = "github:nix-community/home-manager?shallow=1";
+      # inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgs-master";
     };
     systems = {
       # TODO: use this?

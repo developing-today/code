@@ -1111,19 +1111,19 @@
     "home-manager_3": {
       "inputs": {
         "nixpkgs": [
-          "nixpkgs"
+          "nixpkgs-master"
         ]
       },
       "locked": {
-        "lastModified": 1734622215,
-        "narHash": "sha256-OOfI0XhSJGHblfdNDhfnn8QnZxng63rWk9eeJ2tCbiI=",
-        "owner": "nix-community",
+        "lastModified": 1735358787,
+        "narHash": "sha256-Y4g4OL6MUGESwPD2JtkwFIOryzkUec+IA1yCMhGPvXI=",
+        "owner": "developing-today-forks",
         "repo": "home-manager",
-        "rev": "1395379a7a36e40f2a76e7b9936cc52950baa1be",
+        "rev": "3a8a20fd2e45351ef87a6d789eab142ab9293bc5",
         "type": "github"
       },
       "original": {
-        "owner": "nix-community",
+        "owner": "developing-today-forks",
         "repo": "home-manager",
         "type": "github"
       }
