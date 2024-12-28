@@ -104,8 +104,8 @@
           "4" = "<C-4>";
         };
         # tmuxGotoTerminal = { TODO };
-        navPrev = "<leader>j";
-        navNext = "<leader>k";
+        navPrev = "<C-a>";
+        navNext = "<C-s>";
         navFile = {
           "1" = "<C-j>";
           "2" = "<C-k>";
