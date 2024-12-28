@@ -75,40 +75,45 @@
     lspkind = { };
     treesitter = { };
     harpoon = {
-      # marks
-      # termCommands
-      # enable
-      # package
-    # saveOnToggle = true;
-    # saveOnChange = true;
-    # enterOnSendcmd = false;
-    # tmuxAutocloseWindows = false;
-    # excludedFiletypes = TODO
-    # markBranch = false;
-    # projects = TODO
-    menu = {
-      width = 65;
-      height = 20;
-      # borderChars = # TODO
-    };
+      enable = true;
+      saveOnToggle = true;
+      saveOnChange = true;
+      enterOnSendcmd = false;
+      tmuxAutocloseWindows = false;
+      markBranch = false;
+      # package = TODO
+      # marks = TODO
+      # termCommands = TODO
+      # excludedFiletypes = TODO
+      # projects = TODO
+      menu = {
+        width = 60;
+        height = 20;
+        # borderChars = # TODO
+      };
       keymapsSilent = true;
       enableTelescope = true;
       keymaps = {
-      # cmdToggleQuickMenu
-      # navNext
-      # navPrev
-      # gotoTerminal = {};
-      # tmuxGotoTerminal = {};
-      addFile = "<leader>a";
-      toggleQuickMenu = "<leader>s";
-      navFile = {
-        "1" = "<C-j>";
-        "2" = "<C-k>";
-        "3" = "<C-l>";
-        "4" = "<C-m>";
+        addFile = "<leader>a";
+        toggleQuickMenu = "<leader>s";
+        cmdToggleQuickMenu = "<leader>d";
+        gotoTerminal = {
+          "1" = "<C-1>";
+          "2" = "<C-2>";
+          "3" = "<C-3>";
+          "4" = "<C-4>";
+        };
+        # tmuxGotoTerminal = { TODO };
+        navPrev = "<leader>j";
+        navNext = "<leader>k";
+        navFile = {
+          "1" = "<C-j>";
+          "2" = "<C-k>";
+          "3" = "<C-l>";
+          "4" = "<C-m>";
+        };
       };
     };
-  };
     gitsigns = { };
     lualine = { };
     web-devicons = { };
