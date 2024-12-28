@@ -32,12 +32,17 @@
         ssh-to-age.packages.${system}.default
         nix-search.packages.${system}.default
         zen-browser.packages.${system}.default
-        affinity-nix.packages.${system}.photo
-        affinity-nix.packages.${system}.publisher
-        affinity-nix.packages.${system}.designer
         hyprland-qtutils.packages.${system}.hyprland-qtutils
+        clan-core.packages.${system}.clan-cli
+      ])
+      ++ (with inputs.affinity-nix.packages.${system}; [
+        photo
+        publisher
+        designer
       ])
       ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
+      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [ ghostty ])
+      # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
       ++ (with pkgs; [
         # TODO: cleanup systemPackages
         # build
@@ -218,7 +223,7 @@
         myrescue
         ddrescueview
         unetbootin # can't launch right now? qt platform platform plugin not found
-        dd_rescue
+        # dd_rescue
         ventoy-full # https://www.ventoy.net/en/doc_search_path.html
         # ventoy
         screen

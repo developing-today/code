@@ -14,13 +14,17 @@ talosctl gen config --with-secrets ./secrets/secrets.yaml secrets https://10.10.
 ./save-secrets.sh
 cd secrets
 export TALOSCONFIG=talosconfig
-talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.8.188
-talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.15.105
-talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.4.92
+talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.8.188 # a1
+# talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.4.92 # a2 # stopped
+talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.15.105 # b1
+talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.24.137 # c1
 talosctl bootstrap --endpoints 10.10.8.188 --nodes 10.10.8.188
+# talosctl -n 10.10.24.137 service etcd # c1
+# talosctl -n 10.10.8.188 etcd member list
+# talosctl etcd remove-member d0ad514b939e5565
 
 # is this right?
-talosctl config endpoint 10.10.0.42 10.10.8.188 10.10.15.105 10.10.4.92
+talosctl config endpoint 10.10.0.42 10.10.8.188 10.10.15.105 10.10.24.137
 
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.18.178
 
@@ -31,14 +35,22 @@ talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.164
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.8.0
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.20.128
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.18.43
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.31.114 # a2
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.16.105 # a5
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.136 # b7
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.60 # c2
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.4.141 # c3
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.22.204 # c4
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.15.10 # c5
 
 # is this right?
-talosctl config node 10.10.0.42 10.10.8.188 10.10.15.105 10.10.4.92 10.10.18.178 10.10.18.43 10.10.21.108 10.10.14.112 10.10.24.164 10.10.8.0 10.10.20.128 10.10.18.43
+talosctl config node 10.10.0.42 10.10.8.188 10.10.15.105 10.10.4.92 10.10.18.178 10.10.18.43 10.10.21.108 10.10.14.112 10.10.24.164 10.10.8.0 10.10.20.128 10.10.18.43 10.10.31.114 10.10.16.105 10.10.24.136 10.10.24.60 10.10.4.141 10.10.22.204 10.10.15.10
 # talosctl config node 10.10.0.42
 
-# talosctl get members
+# talosctl get members.8.188 10.10.15.105 10.10.4.
 # talosctl get nodestatus
 talosctl get volumestatus
+s
 talosctl get machinestatus
 # talosctl get service
 talosctl get memorystats
