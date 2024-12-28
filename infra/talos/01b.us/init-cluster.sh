@@ -4,10 +4,10 @@ if [ -d secrets ]; then
   echo "secrets directory already exists"
   exit 1
 fi
-echo "talosconfig*" >> .gitignore
-echo "kubeconfig*" >> .gitignore
-echo "secrets*" >> .gitignore
-echo "!secrets.enc" >> .gitignore
+echo "talosconfig*" >>.gitignore
+echo "kubeconfig*" >>.gitignore
+echo "secrets*" >>.gitignore
+echo "!secrets.enc" >>.gitignore
 mkdir -p secrets
 talosctl gen secrets -o ./secrets/secrets.yaml
 talosctl gen config --with-secrets ./secrets/secrets.yaml secrets https://10.10.0.42:6443 -o secrets
@@ -38,10 +38,10 @@ talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.18.43
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.31.114 # a2
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.16.105 # a5
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.136 # b7
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.60 # c2
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.4.141 # c3
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.60  # c2
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.4.141  # c3
 talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.22.204 # c4
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.15.10 # c5
+talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.15.10  # c5
 
 # is this right?
 talosctl config node 10.10.0.42 10.10.8.188 10.10.15.105 10.10.4.92 10.10.18.178 10.10.18.43 10.10.21.108 10.10.14.112 10.10.24.164 10.10.8.0 10.10.20.128 10.10.18.43 10.10.31.114 10.10.16.105 10.10.24.136 10.10.24.60 10.10.4.141 10.10.22.204 10.10.15.10
@@ -82,7 +82,7 @@ kubectl get nodes -o wide
 kubectl get deployments
 kubectl get pods
 
-kubectl create deployment hello-world --image=kicbase/echo-server:1.0   --dry-run=client -o yaml | kubectl apply -f -
+kubectl create deployment hello-world --image=kicbase/echo-server:1.0 --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl get service hello-world
 kubectl describe deployment hello-world
@@ -119,8 +119,8 @@ echo "EXTERNAL_IP for hello-world is: $EXTERNAL_IP"
 PORTS=$(kubectl get service hello-world -o jsonpath='{.spec.ports[*].port}')
 echo "PORTS for hello-world are: $PORTS"
 for port in $PORTS; do
-    echo "Curling $EXTERNAL_IP:$port"
-    curl $EXTERNAL_IP:$port
+  echo "Curling $EXTERNAL_IP:$port"
+  curl $EXTERNAL_IP:$port
 done
 
 cd ..
