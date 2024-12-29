@@ -37,6 +37,7 @@ in
     ];
     wireless = [
       "us-wi-1"
+      "us-mn-1"
       "global-mobile-1"
       "us-wi-2"
       "us-global-1"
