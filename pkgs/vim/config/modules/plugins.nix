@@ -104,14 +104,16 @@
           "4" = "<C-4>";
         };
         # tmuxGotoTerminal = { TODO };
-        navPrev = "<C-Up>";
-        navNext = "<C-Down>";
+        #navPrev = "<C-Up>";
+        #navNext = "<C-Down>";
+        navPrev = "<M-a>";
+        navNext = "<M-s>";
         navFile = {
           "1" = "<C-j>";
           "2" = "<C-k>";
           "3" = "<C-l>";
           "4" = "<C-m>";
-        };
+};
       };
     };
     gitsigns = { };
