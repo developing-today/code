@@ -60,7 +60,8 @@
       };
       mako = {
         enable = true;
-        anchor = "top-right";
+        # anchor = "top-right";
+        anchor = "center-right";
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
