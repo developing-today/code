@@ -2,8 +2,17 @@
   inputs,
   system,
   pkgs,
+  lib,
   ...
 }:
+let
+  my-kubernetes-helm = pkgs.wrapHelm pkgs.kubernetes-helm {
+    plugins = builtins.attrValues (
+      lib.filterAttrs (name: _: lib.hasPrefix "helm-" name) pkgs.kubernetes-helmPlugins
+    );
+  };
+  my-helmfile = pkgs.helmfile-wrapped.override { inherit (my-kubernetes-helm) pluginsDir; };
+in
 {
   environment = {
     sessionVariables = {
@@ -43,6 +52,10 @@
       ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
       ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [ ghostty ])
       # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
+      ++ [
+        my-helmfile
+        my-kubernetes-helm
+      ]
       ++ (with pkgs; [
         # TODO: cleanup systemPackages
         # build
@@ -81,12 +94,40 @@
         kubectl-node-shell
         helm
         helm-ls
-        helmfile
+        # helmfile
+        # kubernetes-helm-wrapped
+        # helmfile-wrapped
         helmsman
         helmsman
         helm-docs
         helm-dashboard
         helm-docs
+        kustomize-sops
+        kustomize
+        kubernetes-code-generator
+        kubernetes-controller-tools
+        # kubernetes-helm-wrapped
+        # kubernetes-helmPlugins
+        kubernetes-kcp
+        kubernetes-metrics-server
+        kubernetes-polaris
+        kubernetes
+        kubecolor
+        k3sup
+        k3s
+        k3d
+        prometheus
+        prometheus-alertmanager
+        grafana
+        grafana-loki
+        grafana-image-renderer
+        grafana-reporter
+        grafana-alloy
+        grafana-agent
+        opentelemetry-collector
+        tempo
+        temporal
+        mimir
         wavemon
         nordzy-icon-theme
         nordzy-cursor-theme
