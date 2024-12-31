@@ -9,6 +9,7 @@
 {
   imports = [ (lib.from-root "nixos/home") ];
   home-manager.users.backup = {
+    # TODO: merge over default user
     wayland.windowManager.hyprland = {
       enable = true;
       plugins = [ inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors ];

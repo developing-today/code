@@ -9,6 +9,7 @@
 {
   imports = [ (lib.from-root "nixos/home") ];
   home-manager.users.root = {
+    # TODO: merge over default user
     wayland.windowManager.hyprland = {
       enable = true;
       plugins = [ inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors ];
@@ -60,7 +61,8 @@
       };
       mako = {
         enable = true;
-        anchor = "top-right";
+        # anchor = "top-right";
+        anchor = "center-right";
         borderRadius = 0;
         borderSize = 0;
         padding = "0"; # within
