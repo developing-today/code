@@ -2,7 +2,7 @@
   "assistant": {
     "default_model": {
       "provider": "anthropic",
-      "model": "claude-3-5-sonnet-20240620"
+      "model": "claude-3-5-sonnet-latest"
     },
     "version": "2"
   },
@@ -49,15 +49,18 @@
     }
   },
   "project_panel": {
-    "default_width": 200,
+    "default_width": 180,
     "dock": "right",
-    "file_icons": false,
+    "file_icons": true,
     "folder_icons": false,
-    "git_status": false,
-    "indent_size": 0
+    "git_status": true,
+    "indent_size": 1,
+    "indent_guides": {
+      "show": "never"
+    }
   },
   "tabs": {
-    "file_icons": false,
+    "file_icons": true,
     "git_status": true
   }
 }
