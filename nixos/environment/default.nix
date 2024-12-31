@@ -79,6 +79,14 @@
         kubectl-gadget
         kubectl-images
         kubectl-node-shell
+        helm
+        helm-ls
+        helmfile
+        helmsman
+        helmsman
+        helm-docs
+        helm-dashboard
+        helm-docs
         wavemon
         nordzy-icon-theme
         nordzy-cursor-theme
