@@ -1,0 +1,8 @@
+apiVersion: v2
+name: apisix-gitops
+description: Helm chart for deploying APISIX using Argo CD
+version: 0.1.0
+dependencies:
+  - name: apisix
+    version: "*"
+    repository: https://charts.apiseven.com

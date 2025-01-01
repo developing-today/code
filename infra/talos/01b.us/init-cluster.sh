@@ -12,12 +12,11 @@ mkdir -p secrets
 talosctl gen secrets -o ./secrets/secrets.yaml
 talosctl gen config --with-secrets ./secrets/secrets.yaml secrets https://10.10.0.42:6443 -o secrets
 ./save-secrets.sh
-cd secrets
-export TALOSCONFIG=talosconfig
-talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.8.188 # a1
-# talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.4.92 # a2 # stopped
-talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.15.105 # b1
-talosctl apply-config --insecure --file "./controlplane.yaml" --nodes 10.10.24.137 # c1
+export TALOSCONFIG=secrets/talosconfig
+talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.8.188 # a1
+# talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.4.92 # a2 # stopped
+talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.15.105 # b1
+talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.24.137 # c1
 talosctl bootstrap --endpoints 10.10.8.188 --nodes 10.10.8.188
 # talosctl -n 10.10.24.137 service etcd # c1
 # talosctl -n 10.10.8.188 etcd member list
@@ -26,22 +25,22 @@ talosctl bootstrap --endpoints 10.10.8.188 --nodes 10.10.8.188
 # is this right?
 talosctl config endpoint 10.10.0.42 10.10.8.188 10.10.15.105 10.10.24.137
 
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.18.178
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.18.178
 
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.18.43
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.21.108
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.14.112
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.164
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.8.0
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.20.128
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.18.43
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.31.114 # a2
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.16.105 # a5
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.136 # b7
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.24.60  # c2
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.4.141  # c3
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.22.204 # c4
-talosctl apply-config --insecure --file "./worker.yaml" --nodes 10.10.15.10  # c5
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.18.43
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.21.108
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.14.112
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.24.164
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.8.0
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.20.128
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.18.43
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.31.114 # a2
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.16.105 # a5
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.24.136 # b7
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.24.60  # c2
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.4.141  # c3
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.22.204 # c4
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.15.10  # c5
 
 # is this right?
 talosctl config node 10.10.0.42 10.10.8.188 10.10.15.105 10.10.4.92 10.10.18.178 10.10.18.43 10.10.21.108 10.10.14.112 10.10.24.164 10.10.8.0 10.10.20.128 10.10.18.43 10.10.31.114 10.10.16.105 10.10.24.136 10.10.24.60 10.10.4.141 10.10.22.204 10.10.15.10
@@ -72,10 +71,10 @@ talosctl get hostname
 
 talosctl etcd status -n 10.10.8.188,10.10.15.105,10.10.4.92 # workers expected to fail
 
-talosctl kubeconfig ./kubeconfig -n 10.10.0.42
+talosctl kubeconfig ./secrets/kubeconfig -n 10.10.0.42
 # talosctl kubeconfig -n 10.10.0.42
 
-export KUBECONFIG=kubeconfig
+export KUBECONFIG=secrets/kubeconfig
 
 kubectl get nodes
 kubectl get nodes -o wide
@@ -99,7 +98,7 @@ kubectl get nodes -o wide
 
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
 kubectl -n metallb-system get pods
-kubectl apply -f ../kubernetes/infrastructure/networking/metallb/config.yaml
+kubectl apply -f ../secrets/kubernetes/infrastructure/networking/metallb/config.yaml
 
 kubectl get nodes
 kubectl get nodes -o wide
@@ -123,5 +122,4 @@ for port in $PORTS; do
   curl $EXTERNAL_IP:$port
 done
 
-cd ..
 ./save-secrets.sh

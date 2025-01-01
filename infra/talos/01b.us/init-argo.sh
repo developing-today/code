@@ -1,23 +1,21 @@
 #!/usr/bin/env bash
 
-set -e
+set -ex
 
-echo '+ export GIT_TOKEN="$(cat $HOME/auth)" # <redacted>'
-export GIT_TOKEN="$(cat $HOME/auth)"
-
-set -x
-
-export GIT_REPO=https://github.com/developing-today/code
-
-export KUBECONFIG=secrets/kubeconfig
+. ./load-env.sh
 
 argocd-autopilot repo bootstrap
 
-argocd-autopilot app create hello-world --app github.com/argoproj-labs/argocd-autopilot/examples/demo-app/ -p testing --wait-timeout 2m
+GITHUB_REPO="https://github.com/argoproj-labs/argocd-autopilot"
+ARGO_APP="hello-world"
+ARGO_APP_PATH="examples/demo-app/"
+ARGO_PROJECT="testing"
+# argocd-autopilot app create hello-world --app github.com/argoproj-labs/argocd-autopilot/examples/demo-app/ -p testing --wait-timeout 2m
+. ./init-app.sh
 
 argocd cluster add "admin@01b.us"
 
-# maybe this should be
+# maybe this should be different, a yaml file or something
 kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
 
 kubectl config set-context --current --namespace=argocd
