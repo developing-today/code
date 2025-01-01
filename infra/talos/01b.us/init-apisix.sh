@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 set -ex
 
 . ./load-env.sh
@@ -10,7 +9,7 @@ else
   echo "ARGO_APP=$ARGO_APP"
 fi
 if [[ -z "$ARGO_APP_PATH" ]]; then
-  ARGO_APP_PATH="app/apisix"
+  ARGO_APP_PATH="apps/apisix"
 else
   echo "ARGO_APP_PATH=$ARGO_APP_PATH"
 fi
@@ -19,4 +18,6 @@ if [[ -z "$ARGO_PROJECT" ]]; then
 else
   echo "ARGO_PROJECT=$ARGO_PROJECT"
 fi
+
+# helm repo add apisix https://charts.apiseven.com && helm repo update && helm upgrade --install apisix apisix/apisix --create-namespace  --namespace apisix --set dashboard.enabled=true --set ingress-controller.enabled=true --set ingress-controller.config.apisix.serviceNamespace=apisix
 . ./init-app.sh
