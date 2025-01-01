@@ -1,0 +1,13 @@
+{
+  "appName": "apisix",
+  "userGivenName": "apisix",
+  "destNamespace": "default",
+  "destServer": "https://kubernetes.default.svc",
+  "srcPath": "app/apisix",
+  "srcRepoURL": "https://github.com/developing-today/code.git",
+  "srcTargetRevision": "",
+  "labels": null,
+  "annotations": null,
+  "exclude": "",
+  "include": ""
+}
