@@ -1,11 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
 resources:
   - namespace.yaml
-
 namespace: MUST_BE_SET
-
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
@@ -17,3 +14,5 @@ helmCharts:
         enabled: true
       ingress-controller:
         enabled: true
+configurations:
+  - configuration.yaml
