@@ -7,11 +7,12 @@ spec:
   project: default
   source:
     repoURL: https://github.com/developing-today/code
-    path: manifest/apisix
+    path: manifests/apisix
     targetRevision: HEAD
     helm:
       valueFiles:
         - values.yaml
+        - testing/values.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: testing-apisix
