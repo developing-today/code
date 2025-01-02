@@ -35,4 +35,14 @@ else
   echo "ARGO_WAIT_TIMEOUT=$ARGO_WAIT_TIMEOUT"
 fi
 
-argocd-autopilot app create "$ARGO_APP" --app "$GIT_REPO/$ARGO_APP_PATH" -p "$ARGO_PROJECT" --wait-timeout "$ARGO_WAIT_TIMEOUT"
+# argocd login 10.10.32.1 --insecure
+
+# argocd-autopilot app create "$ARGO_APP" --app "$GIT_REPO/$ARGO_APP_PATH" -p "$ARGO_PROJECT" --wait-timeout "$ARGO_WAIT_TIMEOUT"
+argocd app create "$ARGO_APP" \
+  --repo "$GIT_REPO" \
+  --path "$ARGO_APP_PATH" \
+  --project "$ARGO_PROJECT" \
+  --sync-policy auto \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace default
+  # --timeout "$ARGO_WAIT_TIMEOUT" \

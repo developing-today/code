@@ -6,12 +6,12 @@ set -ex
 
 argocd-autopilot repo bootstrap
 
-GITHUB_REPO="https://github.com/argoproj-labs/argocd-autopilot"
-ARGO_APP="hello-world"
-ARGO_APP_PATH="examples/demo-app/"
-ARGO_PROJECT="testing"
-# argocd-autopilot app create hello-world --app github.com/argoproj-labs/argocd-autopilot/examples/demo-app/ -p testing --wait-timeout 2m
-. ./init-app.sh
+# GITHUB_REPO="https://github.com/argoproj-labs/argocd-autopilot"
+# ARGO_APP="hello-world"
+# ARGO_APP_PATH="examples/demo-app/"
+# ARGO_PROJECT="testing"
+# . ./init-app.sh
+argocd-autopilot app create hello-world --app github.com/argoproj-labs/argocd-autopilot/examples/demo-app/ -p testing --wait-timeout 2m
 
 argocd cluster add "admin@01b.us"
 
