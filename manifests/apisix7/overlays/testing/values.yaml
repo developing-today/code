@@ -2,4 +2,4 @@ apisix:
   ingress-controller:
     config:
       apisix:
-        serviceNamespace: testing-apisix
+        serviceNamespace: testing

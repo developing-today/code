@@ -1,14 +1,14 @@
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: testing-apisix
+  name: testing
   namespace: argocd
 spec:
   description: "Project for APISIX testing"
   sourceRepos:
     - https://github.com/developing-today/code
   destinations:
-    - namespace: testing-apisix
+    - namespace: testing
       server: https://kubernetes.default.svc
     - namespace: argocd
       server: https://kubernetes.default.svc
@@ -18,4 +18,4 @@ spec:
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"
-# kubectl apply -f testing-apisix-project.yaml
+# kubectl apply -f testing-project.yaml

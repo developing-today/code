@@ -4,7 +4,7 @@ metadata:
   name: apisix
   namespace: argocd
 spec:
-  project: testing-apisix
+  project: testing
   source:
     repoURL: https://github.com/developing-today/code
     path: manifests/apisix
@@ -15,7 +15,7 @@ spec:
         - overlays/testing/values.yaml
   destination:
     server: https://kubernetes.default.svc
-    namespace: testing-apisix
+    namespace: testing
   syncPolicy:
     automated:
       prune: true
