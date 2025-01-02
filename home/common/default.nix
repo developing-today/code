@@ -303,8 +303,8 @@
           autoSetupRemote = true;
         };
         pull = {
-          rebase = true;
-          # rebase = false;
+          # rebase = true;
+          rebase = false;
           # ff = "only";
         };
         safe = {

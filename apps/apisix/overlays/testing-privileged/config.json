@@ -1,9 +1,9 @@
 {
   "appName": "apisix",
   "userGivenName": "apisix",
-  "destNamespace": "testing",
+  "destNamespace": "testing-privileged",
   "destServer": "https://kubernetes.default.svc",
-  "srcPath": "apps/apisix/overlays/testing",
+  "srcPath": "apps/apisix/overlays/testing-privileged",
   "srcRepoURL": "https://github.com/developing-today/code.git",
   "srcTargetRevision": "",
   "labels": null,

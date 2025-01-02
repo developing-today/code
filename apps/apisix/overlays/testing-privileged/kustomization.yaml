@@ -1,11 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: testing
+namespace: testing-privileged
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
     version: 1.x.x
     releaseName: apisix
+    namespace: testing-privileged
     includeCRDs: true
     valuesInline:
       dashboard:
@@ -14,6 +15,6 @@ helmCharts:
         enabled: true
         config:
           apisix:
-            serviceNamespace: testing
+            serviceNamespace: testing-privileged
       global:
-        namespace: testing
+        namespace: testing-privileged

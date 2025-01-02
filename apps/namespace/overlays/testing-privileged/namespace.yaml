@@ -4,3 +4,4 @@ metadata:
   name: testing-privileged
   labels:
     environment: testing
+    pod-security.kubernetes.io/enforce: privileged # https://www.talos.dev/v1.9/kubernetes-guides/configuration/pod-security/
