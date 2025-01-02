@@ -9,7 +9,7 @@ else
   echo "ARGO_APP=$ARGO_APP"
 fi
 if [[ -z "$ARGO_APP_PATH" ]]; then
-  ARGO_APP_PATH="apps/apisix"
+  ARGO_APP_PATH="manifests/apisix"
 else
   echo "ARGO_APP_PATH=$ARGO_APP_PATH"
 fi
