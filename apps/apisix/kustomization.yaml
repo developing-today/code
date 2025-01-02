@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+
+helmCharts:
+  - name: apisix
+    repo: https://charts.apiseven.com
+    version: 1.x.x
+    releaseName: apisix
+    includeCRDs: true
+    valuesInline:
+      dashboard:
+        enabled: true
+      ingress-controller:
+        enabled: true
+
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+
+namespace: MUST_BE_SET
