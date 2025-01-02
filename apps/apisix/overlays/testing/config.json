@@ -1,9 +1,9 @@
 {
-  "appName": "hello-world",
-  "userGivenName": "hello-world",
+  "appName": "apisix",
+  "userGivenName": "apisix",
   "destNamespace": "default",
   "destServer": "https://kubernetes.default.svc",
-  "srcPath": "apps/hello-world/overlays/testing",
+  "srcPath": "apps/apisix/overlays/testing",
   "srcRepoURL": "https://github.com/developing-today/code.git",
   "srcTargetRevision": "",
   "labels": null,
