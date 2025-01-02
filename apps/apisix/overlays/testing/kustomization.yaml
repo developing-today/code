@@ -11,7 +11,7 @@ helmCharts:
     version: 1.x.x
     releaseName: apisix
     includeCRDs: true
-    valuesFile: ../../base/helm-values.yaml
+    valuesFile: helm-values.yaml
     valuesInline:
       ingress-controller:
         config:
