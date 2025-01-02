@@ -4,7 +4,7 @@ set -ex
 . ./load-env.sh
 
 if [[ -z "$ARGO_APP" ]]; then
-  ARGO_APP="apisix"
+  ARGO_APP="apisix-helm"
 else
   echo "ARGO_APP=$ARGO_APP"
 fi
