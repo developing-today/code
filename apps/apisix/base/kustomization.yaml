@@ -3,16 +3,3 @@ kind: Kustomization
 resources:
   - namespace.yaml
 namespace: MUST_BE_SET
-helmCharts:
-  - name: apisix
-    repo: https://charts.apiseven.com
-    version: 1.x.x
-    releaseName: apisix
-    includeCRDs: true
-    valuesInline:
-      dashboard:
-        enabled: true
-      ingress-controller:
-        enabled: true
-configurations:
-  - configuration.yaml

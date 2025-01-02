@@ -3,12 +3,15 @@ kind: Kustomization
 resources:
   - ../../base
 namespace: testing-apisix
+patches:
+  - path: namespace-patch.yaml
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
     version: 1.x.x
     releaseName: apisix
     includeCRDs: true
+    valuesFile: ../../base/helm-values.yaml
     valuesInline:
       ingress-controller:
         config:
