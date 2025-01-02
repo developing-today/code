@@ -4,7 +4,7 @@ metadata:
   name: apisix
   namespace: argocd
 spec:
-  project: default
+  project: testing-apisix
   source:
     repoURL: https://github.com/developing-today/code
     path: manifests/apisix
@@ -22,3 +22,4 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+# kubectl apply -f apisix-app.yaml -n argocd

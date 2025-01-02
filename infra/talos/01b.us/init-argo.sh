@@ -11,6 +11,22 @@ argocd-autopilot repo bootstrap
 # ARGO_APP_PATH="examples/demo-app/"
 # ARGO_PROJECT="testing"
 # . ./init-app.sh
+
+# argocd-autopilot project create testing
+# argocd-autopilot project create test1
+# argocd-autopilot project create test
+# argocd-autopilot project create infra-dev
+# argocd-autopilot project create infra-development
+# argocd-autopilot project create infra-prod
+# argocd-autopilot project create infra-production
+# argocd-autopilot project create dev
+# argocd-autopilot project create development
+# argocd-autopilot project create qa
+# argocd-autopilot project create stage
+# argocd-autopilot project create staging
+# argocd-autopilot project create prod
+# argocd-autopilot project create production
+
 argocd-autopilot app create hello-world --app github.com/argoproj-labs/argocd-autopilot/examples/demo-app/ -p testing --wait-timeout 2m
 
 argocd cluster add "admin@01b.us"
