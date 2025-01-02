@@ -27,6 +27,8 @@ argocd-autopilot repo bootstrap
 # argocd-autopilot project create prod
 # argocd-autopilot project create production
 
+# argocd-autopilot project create testing-privileged
+
 argocd-autopilot app create hello-world --app github.com/argoproj-labs/argocd-autopilot/examples/demo-app/ -p testing --wait-timeout 2m
 
 argocd cluster add "admin@01b.us"
