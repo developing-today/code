@@ -94,6 +94,8 @@ in
         kubectl-node-shell
         helm
         helm-ls
+        k6
+        krew
         # helmfile
         # kubernetes-helm-wrapped
         # helmfile-wrapped
