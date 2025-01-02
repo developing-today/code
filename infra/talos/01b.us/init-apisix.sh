@@ -14,7 +14,8 @@ else
   echo "ARGO_APP_PATH=$ARGO_APP_PATH"
 fi
 if [[ -z "$ARGO_PROJECT" ]]; then
-  ARGO_PROJECT="testing"
+  # ARGO_PROJECT="testing"
+  ARGO_PROJECT="default"
 else
   echo "ARGO_PROJECT=$ARGO_PROJECT"
 fi
