@@ -12,7 +12,7 @@ spec:
     helm:
       valueFiles:
         - values.yaml
-        - testing/values.yaml
+        - overlays/testing/values.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: testing-apisix
