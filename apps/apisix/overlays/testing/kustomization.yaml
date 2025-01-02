@@ -1,8 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources:
-  - namespace.yaml
-namespace: testing-apisix
+namespace: testing
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
@@ -16,6 +14,6 @@ helmCharts:
         enabled: true
         config:
           apisix:
-            serviceNamespace: testing-apisix
+            serviceNamespace: testing
       global:
-        namespace: testing-apisix
+        namespace: testing
