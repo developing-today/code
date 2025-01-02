@@ -3,6 +3,6 @@ kind: Namespace
 metadata:
   name: testing-apisix
   labels:
-    environment: testing
+    environment: testing-apisix
     app.kubernetes.io/name: apisix
-    app.kubernetes.io/instance: testing
+    app.kubernetes.io/instance: testing-apisix
