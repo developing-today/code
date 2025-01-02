@@ -1,8 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: MUST_BE_SET
-  $patch: replace
+  name: testing-apisix
   labels:
     environment: testing
     app.kubernetes.io/name: apisix

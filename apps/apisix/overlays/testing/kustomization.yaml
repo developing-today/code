@@ -1,19 +1,18 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources:
-  - ../../base
+  - namespace.yaml
 namespace: testing-apisix
-patches:
-  - path: namespace-patch.yaml
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
     version: 1.x.x
     releaseName: apisix
     includeCRDs: true
-    valuesFile: helm-values.yaml
     valuesInline:
+      dashboard:
+        enabled: true
       ingress-controller:
+        enabled: true
         config:
           apisix:
             serviceNamespace: testing-apisix
