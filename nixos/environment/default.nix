@@ -83,6 +83,7 @@ in
         kubectl-tree
         kubectl-ktop
         kubectl-df-pv
+        kubectl-neat
         kubectl-doctor
         kubectl-explore
         kubectl-example
