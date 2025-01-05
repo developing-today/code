@@ -53,6 +53,9 @@ talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.30
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.9.213 # b7
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.31.127 # b8
 
+# talosctl reboot
+# TODO: https://tailscale.com/kb/1185/kubernetes
+#
 # is this right?
 
 talosctl config node 10.10.0.42 10.10.8.188 10.10.12.69 10.10.24.137 10.10.18.43 10.10.21.108 10.10.18.43 10.10.31.114 10.10.16.105 10.10.24.60 10.10.4.141 10.10.22.204 10.10.15.10 10.10.25.241 10.10.8.199 10.10.3.175 10.10.27.240 10.10.30.37 10.10.9.213 10.10.31.127
@@ -66,9 +69,7 @@ talosctl config node 10.10.0.42 10.10.8.188 10.10.12.69 10.10.24.137 10.10.18.43
 # 10.10.20.128 \
 # 10.10.24.136 \
 
-# talosctl config node 10.10.0.42
-
-# talosctl get members.8.188 10.10.12.69 10.10.4.
+# talosctl get members 10.10.8.188 10.10.12.69 10.10.24.137
 # talosctl get nodestatus
 talosctl get volumestatus
 s
@@ -90,7 +91,7 @@ talosctl get nodetaintspec
 # talosctl get info
 # talosctl get identity
 talosctl get hostname
-
+# talosctl -n 10.10.8.188 get mc -o yaml
 talosctl etcd status -n 10.10.8.188,10.10.12.69,10.10.24.137
 
 talosctl kubeconfig ./secrets/kubeconfig -n 10.10.0.42
@@ -118,6 +119,7 @@ kubectl get service hello-world
 
 kubectl get nodes -o wide
 
+# TODO: make an argo app
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
 kubectl -n metallb-system get pods
 kubectl apply -f ../secrets/kubernetes/infrastructure/networking/metallb/config.yaml
