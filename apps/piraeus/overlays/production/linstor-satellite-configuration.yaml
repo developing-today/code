@@ -5,6 +5,7 @@ metadata:
 spec:
   podTemplate:
     spec:
+      hostNetwork: true
       initContainers:
         - name: drbd-shutdown-guard
           $patch: delete
