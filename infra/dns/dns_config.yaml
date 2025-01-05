@@ -49,6 +49,29 @@
       domain: 01b.us
       name: linstor
       type: A
+    01b.us_linstor_LINSTOR-CONTROLLER_0_0:
+      A:
+        - 10.10.6.85
+        - 10.10.22.46
+        - 10.10.17.129
+      domain: 01b.us
+      name: linstor
+      type: LINSTOR-CONTROLLER
+    01b.us_storage_A_0_0:
+      content: 10.10.17.129
+      domain: 01b.us
+      name: storage
+      type: A
+    01b.us_storage_A_0_1:
+      content: 10.10.22.46
+      domain: 01b.us
+      name: storage
+      type: A
+    01b.us_storage_A_0_2:
+      content: 10.10.6.85
+      domain: 01b.us
+      name: storage
+      type: A
     0x111.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 0x111.dev
@@ -627,6 +650,16 @@ porkbun:
         - content: 10.10.24.137
         - content: 10.10.8.188
     linstor:
+      A:
+        - content: 10.10.17.129
+        - content: 10.10.22.46
+        - content: 10.10.6.85
+      LINSTOR-CONTROLLER:
+        A:
+          - 10.10.6.85
+          - 10.10.22.46
+          - 10.10.17.129
+    storage:
       A:
         - content: 10.10.17.129
         - content: 10.10.22.46

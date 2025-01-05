@@ -7,6 +7,6 @@ metadata:
 # spec: {}
 spec:
   externalController:
-    url: http://linstor-controller.example.com:3370
+    url: http://linstor.01b.us:3370
 # kubectl wait pod --for=condition=Ready -n production-piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
 # kubectl -n production-piraeus-datastore exec deploy/linstor-controller -- linstor node list
