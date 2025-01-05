@@ -3,5 +3,5 @@ kind: Kustomization
 namespace: piraeus-datastore
 resources:
   - https://github.com/piraeusdatastore/piraeus-operator//config/default?ref=v2.7.1
-  - linstor-cluster.yaml
-  - linstor-satellite-configuration.yaml
+  - linstor-cluster.yaml # should this be after linstor-satellite-configuration?
+  - linstor-satellite-configuration.yaml # should this be before linstor-cluster?

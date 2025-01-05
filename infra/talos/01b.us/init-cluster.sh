@@ -147,3 +147,7 @@ for port in $PORTS; do
 done
 
 ./save-secrets.sh
+
+# linstor r list
+# linstor advise r
+# linstor resource-group list

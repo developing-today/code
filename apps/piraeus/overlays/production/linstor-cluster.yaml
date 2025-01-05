@@ -4,6 +4,9 @@ kind: LinstorCluster
 metadata:
   name: linstorcluster
   # namespace: production-piraeus-datastore
-spec: {}
+# spec: {}
+spec:
+  externalController:
+    url: http://linstor-controller.example.com:3370
 # kubectl wait pod --for=condition=Ready -n production-piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
 # kubectl -n production-piraeus-datastore exec deploy/linstor-controller -- linstor node list

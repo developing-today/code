@@ -15,19 +15,39 @@
       domain: 01b.us
       type: TXT
     01b.us_control_A_0_0:
-      content: 10.10.15.105
+      content: 10.10.0.42
       domain: 01b.us
       name: control
       type: A
     01b.us_control_A_0_1:
-      content: 10.10.4.92
+      content: 10.10.12.69
       domain: 01b.us
       name: control
       type: A
     01b.us_control_A_0_2:
+      content: 10.10.24.137
+      domain: 01b.us
+      name: control
+      type: A
+    01b.us_control_A_0_3:
       content: 10.10.8.188
       domain: 01b.us
       name: control
+      type: A
+    01b.us_linstor_A_0_0:
+      content: 10.10.17.129
+      domain: 01b.us
+      name: linstor
+      type: A
+    01b.us_linstor_A_0_1:
+      content: 10.10.22.46
+      domain: 01b.us
+      name: linstor
+      type: A
+    01b.us_linstor_A_0_2:
+      content: 10.10.6.85
+      domain: 01b.us
+      name: linstor
       type: A
     0x111.dev_@_MX_10_0:
       content: monday.mxrouting.net
@@ -602,9 +622,15 @@ porkbun:
       TXT: v=spf1 include:mxlogin.com -all
     control:
       A:
-        - content: 10.10.15.105
-        - content: 10.10.4.92
+        - content: 10.10.0.42
+        - content: 10.10.12.69
+        - content: 10.10.24.137
         - content: 10.10.8.188
+    linstor:
+      A:
+        - content: 10.10.17.129
+        - content: 10.10.22.46
+        - content: 10.10.6.85
   0x111.dev:
     '@':
       MX:
