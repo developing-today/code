@@ -1,7 +1,7 @@
 {
   "appName": "piraeus",
   "userGivenName": "piraeus",
-  "destNamespace": "production",
+  "destNamespace": "production-piraeus-datastore",
   "destServer": "https://kubernetes.default.svc",
   "srcPath": "apps/piraeus/overlays/production",
   "srcRepoURL": "https://github.com/developing-today/code.git",
