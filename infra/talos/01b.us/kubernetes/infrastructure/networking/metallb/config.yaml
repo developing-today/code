@@ -4,7 +4,7 @@ metadata:
   name: first-pool
   namespace: metallb-system
 spec:
-  addresses:
+  addresses: # https://www.calculator.net/ip-subnet-calculator.html
     # reserved for gateway static ip (main edge router from: 10.10.0.0/16)
     # - 10.10.0.0 - 10.10.1.255
 
@@ -19,6 +19,9 @@ spec:
 
     # reserved for kubernetes: 10.244.0.0/16
     # - 10.244.0.0 - 10.244.255.255
+
+    # reserved for tailscale cgnat vpn addresses: (from: 100.64.0.0/10) (from the 100.64.0.0/10 subnet (100.64.0.0 through 100.127.255.255)
+    # - 100.64.0.1 - 100.79.255.254
 
 ---
 apiVersion: metallb.io/v1beta1
