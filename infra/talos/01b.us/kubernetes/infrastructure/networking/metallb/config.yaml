@@ -5,14 +5,20 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-    # reserved for static ip
+    # reserved for gateway static ip (main edge router from: 10.10.0.0/16)
     # - 10.10.0.0 - 10.10.1.255
 
-    # reserved for gateway dhcp (main edge router)
+    # reserved for gateway dhcp (main edge router from: 10.10.0.0/16)
     # - 10.10.2.0 - 10.10.31.255
 
-    # reserved for 01b.us cluster load balancers
+    # reserved for 01b.us cluster load balancers (no subnet? essentially a separate dhcp under main edge router from 10.10.0.0/16)
     - 10.10.32.0-10.10.63.254
+
+    # reserved for kubernetes: 10.96.0.0/12
+    # - 10.96.0.0 - 10.111.255.255
+
+    # reserved for kubernetes: 10.244.0.0/16
+    # - 10.244.0.0 - 10.244.255.255
 
 ---
 apiVersion: metallb.io/v1beta1
