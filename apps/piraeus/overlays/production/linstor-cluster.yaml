@@ -2,5 +2,7 @@ apiVersion: piraeus.io/v1
 kind: LinstorCluster
 namespace: production-piraeus-datastore
 metadata:
-  name: linstorcluster
+  name: linstorcluster-1
 spec: {}
+# kubectl wait pod --for=condition=Ready -n production-piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
+# kubectl -n production-piraeus-datastore exec deploy/linstor-controller -- linstor node list
