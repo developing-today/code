@@ -6,5 +6,4 @@ resources:
   - linstor-cluster.yaml # should this be after linstor-satellite-configuration?
   - linstor-satellite-configuration.yaml # should this be before linstor-cluster?
   - class-medium-nvme.yaml
-  - pv-medium-nvme-test.yaml
   - pvc-medium-nvme-test.yaml
