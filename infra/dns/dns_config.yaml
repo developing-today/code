@@ -4,635 +4,868 @@
       content: monday.mxrouting.net
       domain: 01b.us
       priority: 10
+      ttl: 300
       type: MX
     01b.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 01b.us
       priority: 20
+      ttl: 300
       type: MX
     01b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 01b.us
+      ttl: 300
       type: TXT
+    01b.us_argo.internal_A_0_0:
+      content: 10.10.32.1
+      domain: 01b.us
+      name: argo.internal
+      ttl: 300
+      type: A
+    01b.us_argo_A_0_0:
+      content: 10.10.32.1
+      domain: 01b.us
+      name: argo
+      ttl: 300
+      type: A
+    01b.us_control.internal_A_0_0:
+      content: 10.10.0.42
+      domain: 01b.us
+      name: control.internal
+      ttl: 300
+      type: A
+    01b.us_control.internal_A_0_1:
+      content: 10.10.12.69
+      domain: 01b.us
+      name: control.internal
+      ttl: 300
+      type: A
+    01b.us_control.internal_A_0_2:
+      content: 10.10.24.137
+      domain: 01b.us
+      name: control.internal
+      ttl: 300
+      type: A
+    01b.us_control.internal_A_0_3:
+      content: 10.10.8.188
+      domain: 01b.us
+      name: control.internal
+      ttl: 300
+      type: A
     01b.us_control_A_0_0:
       content: 10.10.0.42
       domain: 01b.us
       name: control
+      ttl: 300
       type: A
     01b.us_control_A_0_1:
       content: 10.10.12.69
       domain: 01b.us
       name: control
+      ttl: 300
       type: A
     01b.us_control_A_0_2:
       content: 10.10.24.137
       domain: 01b.us
       name: control
+      ttl: 300
       type: A
     01b.us_control_A_0_3:
       content: 10.10.8.188
       domain: 01b.us
       name: control
+      ttl: 300
+      type: A
+    01b.us_linstor-controller.internal_A_0_0:
+      content: 10.10.17.129
+      domain: 01b.us
+      name: linstor-controller.internal
+      ttl: 300
+      type: A
+    01b.us_linstor-controller.internal_A_0_1:
+      content: 10.10.22.46
+      domain: 01b.us
+      name: linstor-controller.internal
+      ttl: 300
+      type: A
+    01b.us_linstor-controller.internal_A_0_2:
+      content: 10.10.6.85
+      domain: 01b.us
+      name: linstor-controller.internal
+      ttl: 300
+      type: A
+    01b.us_linstor-controller_A_0_0:
+      content: 10.10.17.129
+      domain: 01b.us
+      name: linstor-controller
+      ttl: 300
+      type: A
+    01b.us_linstor-controller_A_0_1:
+      content: 10.10.22.46
+      domain: 01b.us
+      name: linstor-controller
+      ttl: 300
+      type: A
+    01b.us_linstor-controller_A_0_2:
+      content: 10.10.6.85
+      domain: 01b.us
+      name: linstor-controller
+      ttl: 300
+      type: A
+    01b.us_linstor.internal_A_0_0:
+      content: 10.10.17.129
+      domain: 01b.us
+      name: linstor.internal
+      ttl: 300
+      type: A
+    01b.us_linstor.internal_A_0_1:
+      content: 10.10.22.46
+      domain: 01b.us
+      name: linstor.internal
+      ttl: 300
+      type: A
+    01b.us_linstor.internal_A_0_2:
+      content: 10.10.6.85
+      domain: 01b.us
+      name: linstor.internal
+      ttl: 300
       type: A
     01b.us_linstor_A_0_0:
       content: 10.10.17.129
       domain: 01b.us
       name: linstor
+      ttl: 300
       type: A
     01b.us_linstor_A_0_1:
       content: 10.10.22.46
       domain: 01b.us
       name: linstor
+      ttl: 300
       type: A
     01b.us_linstor_A_0_2:
       content: 10.10.6.85
       domain: 01b.us
       name: linstor
+      ttl: 300
       type: A
-    01b.us_linstor_LINSTOR-CONTROLLER_0_0:
-      A:
-        - 10.10.6.85
-        - 10.10.22.46
-        - 10.10.17.129
+    01b.us_storage.internal_A_0_0:
+      content: 10.10.17.129
       domain: 01b.us
-      name: linstor
-      type: LINSTOR-CONTROLLER
+      name: storage.internal
+      ttl: 300
+      type: A
+    01b.us_storage.internal_A_0_1:
+      content: 10.10.22.46
+      domain: 01b.us
+      name: storage.internal
+      ttl: 300
+      type: A
+    01b.us_storage.internal_A_0_2:
+      content: 10.10.6.85
+      domain: 01b.us
+      name: storage.internal
+      ttl: 300
+      type: A
     01b.us_storage_A_0_0:
       content: 10.10.17.129
       domain: 01b.us
       name: storage
+      ttl: 300
       type: A
     01b.us_storage_A_0_1:
       content: 10.10.22.46
       domain: 01b.us
       name: storage
+      ttl: 300
       type: A
     01b.us_storage_A_0_2:
       content: 10.10.6.85
       domain: 01b.us
       name: storage
+      ttl: 300
       type: A
     0x111.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 0x111.dev
       priority: 10
+      ttl: 300
       type: MX
     0x111.dev_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 0x111.dev
       priority: 20
+      ttl: 300
       type: MX
     0x111.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 0x111.dev
+      ttl: 300
       type: TXT
     0x1110.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 0x1110.com
       priority: 10
+      ttl: 300
       type: MX
     0x1110.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 0x1110.com
       priority: 20
+      ttl: 300
       type: MX
     0x1110.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 0x1110.com
+      ttl: 300
       type: TXT
     0x1110.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 0x1110.dev
       priority: 10
+      ttl: 300
       type: MX
     0x1110.dev_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 0x1110.dev
       priority: 20
+      ttl: 300
       type: MX
     0x1110.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 0x1110.dev
+      ttl: 300
       type: TXT
     1110x.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 1110x.com
       priority: 10
+      ttl: 300
       type: MX
     1110x.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 1110x.com
       priority: 20
+      ttl: 300
       type: MX
     1110x.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 1110x.com
+      ttl: 300
       type: TXT
     1110x.de_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 1110x.de
       priority: 10
+      ttl: 300
       type: MX
     1110x.de_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 1110x.de
       priority: 20
+      ttl: 300
       type: MX
     1110x.de_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 1110x.de
+      ttl: 300
       type: TXT
     1110x.de_x._domainkey_TXT_0_0:
       content: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
       domain: 1110x.de
       name: x._domainkey
+      ttl: 300
       type: TXT
     1110x.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 1110x.dev
       priority: 10
+      ttl: 300
       type: MX
     1110x.dev_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 1110x.dev
       priority: 20
+      ttl: 300
       type: MX
     1110x.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 1110x.dev
+      ttl: 300
       type: TXT
     15b.org_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 15b.org
       priority: 10
+      ttl: 300
       type: MX
     15b.org_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 15b.org
       priority: 20
+      ttl: 300
       type: MX
     15b.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 15b.org
+      ttl: 300
       type: TXT
     15b.us_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 15b.us
       priority: 10
+      ttl: 300
       type: MX
     15b.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 15b.us
       priority: 20
+      ttl: 300
       type: MX
     15b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 15b.us
+      ttl: 300
       type: TXT
     32b.us_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 32b.us
       priority: 10
+      ttl: 300
       type: MX
     32b.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 32b.us
       priority: 20
+      ttl: 300
       type: MX
     32b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 32b.us
+      ttl: 300
       type: TXT
     3dtropic.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 3dtropic.com
       priority: 10
+      ttl: 300
       type: MX
     3dtropic.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 3dtropic.com
       priority: 20
+      ttl: 300
       type: MX
     3dtropic.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 3dtropic.com
+      ttl: 300
       type: TXT
     3dtropics.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 3dtropics.com
       priority: 10
+      ttl: 300
       type: MX
     3dtropics.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 3dtropics.com
       priority: 20
+      ttl: 300
       type: MX
     3dtropics.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 3dtropics.com
+      ttl: 300
       type: TXT
     64b.org_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 64b.org
       priority: 10
+      ttl: 300
       type: MX
     64b.org_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 64b.org
       priority: 20
+      ttl: 300
       type: MX
     64b.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 64b.org
+      ttl: 300
       type: TXT
     64b.us_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 64b.us
       priority: 10
+      ttl: 300
       type: MX
     64b.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 64b.us
       priority: 20
+      ttl: 300
       type: MX
     64b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 64b.us
+      ttl: 300
       type: TXT
     69b.us_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 69b.us
       priority: 10
+      ttl: 300
       type: MX
     69b.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 69b.us
       priority: 20
+      ttl: 300
       type: MX
     69b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 69b.us
+      ttl: 300
       type: TXT
     79b.org_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 79b.org
       priority: 10
+      ttl: 300
       type: MX
     79b.org_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 79b.org
       priority: 20
+      ttl: 300
       type: MX
     79b.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 79b.org
+      ttl: 300
       type: TXT
     79b.us_@_MX_10_0:
       content: monday.mxrouting.net
       domain: 79b.us
       priority: 10
+      ttl: 300
       type: MX
     79b.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: 79b.us
       priority: 20
+      ttl: 300
       type: MX
     79b.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: 79b.us
+      ttl: 300
       type: TXT
     carbonfreezeme.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: carbonfreezeme.com
       priority: 10
+      ttl: 300
       type: MX
     carbonfreezeme.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: carbonfreezeme.com
       priority: 20
+      ttl: 300
       type: MX
     carbonfreezeme.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: carbonfreezeme.com
+      ttl: 300
       type: TXT
     default.computer_@_MX_10_0:
       content: monday.mxrouting.net
       domain: default.computer
       priority: 10
+      ttl: 300
       type: MX
     default.computer_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: default.computer
       priority: 20
+      ttl: 300
       type: MX
     default.computer_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: default.computer
+      ttl: 300
       type: TXT
     default.properties_@_MX_10_0:
       content: monday.mxrouting.net
       domain: default.properties
       priority: 10
+      ttl: 300
       type: MX
     default.properties_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: default.properties
       priority: 20
+      ttl: 300
       type: MX
     default.properties_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: default.properties
+      ttl: 300
       type: TXT
     developing-today.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: developing-today.com
       priority: 10
+      ttl: 300
       type: MX
     developing-today.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: developing-today.com
       priority: 20
+      ttl: 300
       type: MX
     developing-today.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developing-today.com
+      ttl: 300
       type: TXT
     developing-today.com__github-pages-challenge-developing-today.archive.zulip_TXT_0_0:
       content: cc748fb6c3246405abb50cbdc1fa9b
       domain: developing-today.com
       name: _github-pages-challenge-developing-today.archive.zulip
+      ttl: 300
       type: TXT
     developing-today.com__github-pages-challenge-developing-today.zettel_TXT_0_0:
       content: cc887eecc305202ad8c44465de9d1a
       domain: developing-today.com
       name: _github-pages-challenge-developing-today.zettel
+      ttl: 300
       type: TXT
     developing-today.com_archive.zulip_CNAME_0_0:
       content: developing-today.github.io
       domain: developing-today.com
       name: archive.zulip
+      ttl: 300
       type: CNAME
     developing-today.com_news_CNAME_0_0:
       content: dt.smol.pub
       domain: developing-today.com
       name: news
+      ttl: 300
       type: CNAME
     developing-today.com_zettel_CNAME_0_0:
       content: developing-today.github.io
       domain: developing-today.com
       name: zettel
+      ttl: 300
       type: CNAME
     developing.today_@_MX_10_0:
       content: monday.mxrouting.net
       domain: developing.today
       priority: 10
+      ttl: 300
       type: MX
     developing.today_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: developing.today
       priority: 20
+      ttl: 300
       type: MX
     developing.today_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developing.today
+      ttl: 300
       type: TXT
     developingto.day_@_MX_10_0:
       content: monday.mxrouting.net
       domain: developingto.day
       priority: 10
+      ttl: 300
       type: MX
     developingto.day_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: developingto.day
       priority: 20
+      ttl: 300
       type: MX
     developingto.day_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: developingto.day
+      ttl: 300
       type: TXT
     eau3d.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: eau3d.com
       priority: 10
+      ttl: 300
       type: MX
     eau3d.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: eau3d.com
       priority: 20
+      ttl: 300
       type: MX
     eau3d.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: eau3d.com
+      ttl: 300
       type: TXT
     eau3d.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: eau3d.dev
       priority: 10
+      ttl: 300
       type: MX
     eau3d.dev_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: eau3d.dev
       priority: 20
+      ttl: 300
       type: MX
     eau3d.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: eau3d.dev
+      ttl: 300
       type: TXT
     eau3d.org_@_MX_10_0:
       content: monday.mxrouting.net
       domain: eau3d.org
       priority: 10
+      ttl: 300
       type: MX
     eau3d.org_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: eau3d.org
       priority: 20
+      ttl: 300
       type: MX
     eau3d.org_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: eau3d.org
+      ttl: 300
       type: TXT
     grandnag.us_@_MX_10_0:
       content: monday.mxrouting.net
       domain: grandnag.us
       priority: 10
+      ttl: 300
       type: MX
     grandnag.us_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: grandnag.us
       priority: 20
+      ttl: 300
       type: MX
     grandnag.us_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: grandnag.us
+      ttl: 300
       type: TXT
     hax.live_@_MX_10_0:
       content: monday.mxrouting.net
       domain: hax.live
       priority: 10
+      ttl: 300
       type: MX
     hax.live_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: hax.live
       priority: 20
+      ttl: 300
       type: MX
     hax.live_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: hax.live
+      ttl: 300
       type: TXT
     l0x.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: l0x.dev
       priority: 10
+      ttl: 300
       type: MX
     l0x.dev_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: l0x.dev
       priority: 20
+      ttl: 300
       type: MX
     l0x.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: l0x.dev
+      ttl: 300
       type: TXT
     lair.cloud_@_MX_10_0:
       content: monday.mxrouting.net
       domain: lair.cloud
       priority: 10
+      ttl: 300
       type: MX
     lair.cloud_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: lair.cloud
       priority: 20
+      ttl: 300
       type: MX
     lair.cloud_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: lair.cloud
+      ttl: 300
       type: TXT
     o3d.dev_@_MX_10_0:
       content: monday.mxrouting.net
       domain: o3d.dev
       priority: 10
+      ttl: 300
       type: MX
     o3d.dev_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: o3d.dev
       priority: 20
+      ttl: 300
       type: MX
     o3d.dev_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: o3d.dev
+      ttl: 300
       type: TXT
     printmy.pictures_@_MX_10_0:
       content: monday.mxrouting.net
       domain: printmy.pictures
       priority: 10
+      ttl: 300
       type: MX
     printmy.pictures_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: printmy.pictures
       priority: 20
+      ttl: 300
       type: MX
     printmy.pictures_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: printmy.pictures
+      ttl: 300
       type: TXT
     printmy3dmodel.com_@_MX_10_0:
       content: monday.mxrouting.net
       domain: printmy3dmodel.com
       priority: 10
+      ttl: 300
       type: MX
     printmy3dmodel.com_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: printmy3dmodel.com
       priority: 20
+      ttl: 300
       type: MX
     printmy3dmodel.com_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: printmy3dmodel.com
+      ttl: 300
       type: TXT
     rom.how_@_MX_10_0:
       content: monday.mxrouting.net
       domain: rom.how
       priority: 10
+      ttl: 300
       type: MX
     rom.how_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: rom.how
       priority: 20
+      ttl: 300
       type: MX
     rom.how_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: rom.how
+      ttl: 300
       type: TXT
     rom.rest_@_MX_10_0:
       content: monday.mxrouting.net
       domain: rom.rest
       priority: 10
+      ttl: 300
       type: MX
     rom.rest_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: rom.rest
       priority: 20
+      ttl: 300
       type: MX
     rom.rest_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: rom.rest
+      ttl: 300
       type: TXT
     rom.run_@_MX_10_0:
       content: monday.mxrouting.net
       domain: rom.run
       priority: 10
+      ttl: 300
       type: MX
     rom.run_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: rom.run
       priority: 20
+      ttl: 300
       type: MX
     rom.run_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: rom.run
+      ttl: 300
       type: TXT
     s0s.pw_@_MX_10_0:
       content: monday.mxrouting.net
       domain: s0s.pw
       priority: 10
+      ttl: 300
       type: MX
     s0s.pw_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: s0s.pw
       priority: 20
+      ttl: 300
       type: MX
     s0s.pw_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: s0s.pw
+      ttl: 300
       type: TXT
     security.cab_@_MX_10_0:
       content: monday.mxrouting.net
       domain: security.cab
       priority: 10
+      ttl: 300
       type: MX
     security.cab_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: security.cab
       priority: 20
+      ttl: 300
       type: MX
     security.cab_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: security.cab
+      ttl: 300
       type: TXT
     yak.pub_@_MX_10_0:
       content: monday.mxrouting.net
       domain: yak.pub
       priority: 10
+      ttl: 300
       type: MX
     yak.pub_@_MX_20_0:
       content: monday-relay.mxrouting.net
       domain: yak.pub
       priority: 20
+      ttl: 300
       type: MX
     yak.pub_@_TXT_0_0:
       content: v=spf1 include:mxlogin.com -all
       domain: yak.pub
+      ttl: 300
       type: TXT
 porkbun:
   01b.us:
@@ -643,7 +876,17 @@ porkbun:
         - content: monday.mxrouting.net
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
+    argo:
+      A: 10.10.32.1
+    argo.internal:
+      A: 10.10.32.1
     control:
+      A:
+        - content: 10.10.0.42
+        - content: 10.10.12.69
+        - content: 10.10.24.137
+        - content: 10.10.8.188
+    control.internal:
       A:
         - content: 10.10.0.42
         - content: 10.10.12.69
@@ -654,12 +897,27 @@ porkbun:
         - content: 10.10.17.129
         - content: 10.10.22.46
         - content: 10.10.6.85
-      LINSTOR-CONTROLLER:
-        A:
-          - 10.10.6.85
-          - 10.10.22.46
-          - 10.10.17.129
+    linstor-controller:
+      A:
+        - content: 10.10.17.129
+        - content: 10.10.22.46
+        - content: 10.10.6.85
+    linstor-controller.internal:
+      A:
+        - content: 10.10.17.129
+        - content: 10.10.22.46
+        - content: 10.10.6.85
+    linstor.internal:
+      A:
+        - content: 10.10.17.129
+        - content: 10.10.22.46
+        - content: 10.10.6.85
     storage:
+      A:
+        - content: 10.10.17.129
+        - content: 10.10.22.46
+        - content: 10.10.6.85
+    storage.internal:
       A:
         - content: 10.10.17.129
         - content: 10.10.22.46
