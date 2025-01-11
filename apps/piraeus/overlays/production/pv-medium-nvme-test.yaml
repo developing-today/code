@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: drbd-medium-nvme-test
+spec:
+  capacity:
+    storage: 20gib
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: piraeus-storage
+  csi:
+    driver: io.piraeus.csi
+    volumeHandle: xcp-volume-b7dcc5f7-43ea-4d72-b9df-19dd4a1a0548

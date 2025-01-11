@@ -1,0 +1,7 @@
+apiVersion: piraeus.io/v1
+kind: DRBDNode
+metadata:
+  name: medium-nvme
+spec:
+  resource: xcp-volume-b7dcc5f7-43ea-4d72-b9df-19dd4a1a0548
+  hostNetwork: true
