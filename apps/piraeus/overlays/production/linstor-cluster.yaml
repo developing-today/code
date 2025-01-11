@@ -8,5 +8,17 @@ metadata:
 spec:
   externalController:
     url: http://linstor.01b.us:3370
-# kubectl wait pod --for=condition=Ready -n production-piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
-# kubectl -n production-piraeus-datastore exec deploy/linstor-controller -- linstor node list
+  # kubectl wait pod --for=condition=Ready -n production-piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
+  # kubectl -n production-piraeus-datastore exec deploy/linstor-controller -- linstor node list
+
+  satellites:
+    image:
+      repository: quay.io/piraeusdatastore/piraeus-server
+      tag: v1.29.0
+    drbdReactorImage:
+      repository: quay.io/piraeusdatastore/drbd-reactor
+      tag: v1.6.0
+  controller:
+    controllerImage:
+      repository: quay.io/piraeusdatastore/piraeus-server
+      tag: v1.29.0

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+# set -e
 
 # TODO: accept --force to overwrite existing env vars
 
