@@ -1,12 +1,11 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: drbd-medium-nvme-test
+  name: medium-nvme-test-claim
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 20G
-  volumeName: drbd-medium-nvme-test
-  storageClassName: piraeus-storage
+      storage: 500Gi
+  storageClassName: linstor-medium-nvme
