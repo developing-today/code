@@ -4,7 +4,7 @@ metadata:
   name: drbd-medium-nvme-test
 spec:
   capacity:
-    storage: 20gib
+    storage: 20G
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
