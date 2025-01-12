@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: linstor-medium-nvme-immediate
+  name: linstor-medium-nvme
 provisioner: io.piraeus.csi
 parameters:
   linstor.csi.linbit.com/storagePool: "xcp-sr-linstor_group_thin_device"
