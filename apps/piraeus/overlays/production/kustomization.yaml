@@ -6,4 +6,5 @@ resources:
   - linstor-cluster.yaml
   - linstor-satellite-configuration.yaml
   - class-medium-nvme.yaml
-  - pvc-medium-nvme-test.yaml
+  - class-medium-nvme-immediate.yaml
+  - pvc-medium-nvme-immediate-test.yaml
