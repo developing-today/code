@@ -15,9 +15,9 @@ spec:
     image:
       repository: quay.io/piraeusdatastore/piraeus-server
       tag: v1.29.0
-    drbdReactorImage:
-      repository: quay.io/piraeusdatastore/drbd-reactor
-      tag: v1.6.0
+    # drbdReactorImage:
+    #   repository: quay.io/piraeusdatastore/drbd-reactor
+    #   tag: v1.6.0
   controller:
     controllerImage:
       repository: quay.io/piraeusdatastore/piraeus-server
