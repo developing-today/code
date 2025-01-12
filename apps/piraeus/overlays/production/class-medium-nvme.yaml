@@ -8,7 +8,6 @@ parameters:
   linstor.csi.linbit.com/replicas: "2"
   linstor.csi.linbit.com/replicasOnDifferent: "node"
   linstor.csi.linbit.com/disklessOnRemaining: "true"
-  linstor.csi.linbit.com/storagePoolName: "linstor_group/thin_device"
   linstor.csi.linbit.com/provisioningType: "thin"
 allowVolumeExpansion: true
 reclaimPolicy: Delete
