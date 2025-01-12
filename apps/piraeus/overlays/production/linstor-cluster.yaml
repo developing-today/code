@@ -1,24 +1,17 @@
 apiVersion: piraeus.io/v1
 kind: LinstorCluster
-# namespace: production-piraeus-datastore
 metadata:
   name: linstorcluster
-  # namespace: production-piraeus-datastore
-# spec: {}
 spec:
+  nodeAffinity: {}
   externalController:
     url: http://linstor.01b.us:3370
-  # kubectl wait pod --for=condition=Ready -n production-piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
-  # kubectl -n production-piraeus-datastore exec deploy/linstor-controller -- linstor node list
-
   satellites:
     image:
       repository: quay.io/piraeusdatastore/piraeus-server
       tag: v1.29.0
-    # drbdReactorImage:
-    #   repository: quay.io/piraeusdatastore/drbd-reactor
-    #   tag: v1.6.0
-  controller:
-    controllerImage:
-      repository: quay.io/piraeusdatastore/piraeus-server
-      tag: v1.29.0
+    drbdReactorImage:
+      repository: quay.io/piraeusdatastore/drbd-reactor
+      tag: v1.6.0
+# kubectl wait pod --for=condition=Ready -n piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
+# kubectl -n piraeus-datastore exec deploy/linstor-controller -- linstor node list
