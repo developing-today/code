@@ -4,7 +4,9 @@ metadata:
   name: linstorcluster
   namespace: piraeus-operator
 spec:
-  controllerEndpoint: "linstor.01b.us:3370"
+  # controllerEndpoint: "linstor.01b.us:3370"
+  externalController:
+    url: http://linstor.01b.us:3370
 # apiVersion: piraeus.io/v1
 # kind: LinstorCluster
 # metadata:
