@@ -3,7 +3,6 @@ kind: LinstorCluster
 metadata:
   name: linstorcluster
 spec:
-  nodeAffinity: {}
   externalController:
     url: http://linstor.01b.us:3370
   satellites:
