@@ -2,8 +2,15 @@ apiVersion: piraeus.io/v1
 kind: LinstorCluster
 metadata:
   name: linstorcluster
+  namespace: piraeus-operator
 spec:
-  externalController:
-    url: http://linstor.01b.us:3370
-# kubectl wait pod --for=condition=Ready -n piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
-# kubectl -n piraeus-datastore exec deploy/linstor-controller -- linstor node list
+  controllerEndpoint: "linstor.01b.us:3370"
+# apiVersion: piraeus.io/v1
+# kind: LinstorCluster
+# metadata:
+#   name: linstorcluster
+# spec:
+#   externalController:
+#     url: http://linstor.01b.us:3370
+# # kubectl wait pod --for=condition=Ready -n piraeus-datastore -l app.kubernetes.io/name=piraeus-datastore
+# # kubectl -n piraeus-datastore exec deploy/linstor-controller -- linstor node list
