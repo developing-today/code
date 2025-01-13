@@ -2,7 +2,7 @@ apiVersion: piraeus.io/v1
 kind: LinstorCluster
 metadata:
   name: linstorcluster
-  namespace: piraeus-operator
+  namespace: piraeus-datastore
 spec:
   # controllerEndpoint: "linstor.01b.us:3370"
   externalController:
