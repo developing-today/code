@@ -37,7 +37,6 @@ talosctl config endpoint 10.10.0.42 10.10.8.188 10.10.12.69 10.10.24.137
 
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.18.43
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.21.108
-talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.18.43
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.31.114 # a2
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.16.105 # a5
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.24.60  # c2

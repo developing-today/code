@@ -5,7 +5,6 @@ talosctl apply-config --file "./secrets/controlplane.yaml" --nodes 10.10.12.69 #
 talosctl apply-config --file "./secrets/controlplane.yaml" --nodes 10.10.24.137 # c1
 talosctl apply-config --file "./secrets/worker.yaml" --nodes 10.10.18.43
 talosctl apply-config --file "./secrets/worker.yaml" --nodes 10.10.21.108
-talosctl apply-config --file "./secrets/worker.yaml" --nodes 10.10.18.43
 talosctl apply-config --file "./secrets/worker.yaml" --nodes 10.10.31.114 # a2
 talosctl apply-config --file "./secrets/worker.yaml" --nodes 10.10.16.105 # a5
 talosctl apply-config --file "./secrets/worker.yaml" --nodes 10.10.24.60  # c2
