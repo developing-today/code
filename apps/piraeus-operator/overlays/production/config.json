@@ -1,9 +1,9 @@
 {
-  "appName": "piraeus",
-  "userGivenName": "piraeus",
+  "appName": "piraeus-operator",
+  "userGivenName": "piraeus-operator",
   "destNamespace": "piraeus-datastore",
   "destServer": "https://kubernetes.default.svc",
-  "srcPath": "apps/piraeus/overlays/production",
+  "srcPath": "apps/piraeus-operator/overlays/production",
   "srcRepoURL": "https://github.com/developing-today/code.git",
   "srcTargetRevision": "",
   "labels": null,
