@@ -5,10 +5,9 @@ metadata:
 provisioner: linstor.csi.linbit.com # io.piraeus.csi
 parameters:
   linstor.csi.linbit.com/storagePool: "xcp-sr-linstor_group_thin_device"
-  linstor.csi.linbit.com/replicas: "2"
+  linstor.csi.linbit.com/autoPlace: "2"
   linstor.csi.linbit.com/replicasOnDifferent: "node"
   linstor.csi.linbit.com/disklessOnRemaining: "true"
-  linstor.csi.linbit.com/provisioningType: "thin"
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
