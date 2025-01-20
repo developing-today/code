@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: linstor-nvme_nand-avg_latency-low_throughput-medium_capacity-wait-delete
+  name: linstor-external-01b-nvme_nand-avg_latency-low_throughput-medium_capacity-wait-delete
   namespace: piraeus-datastore-external-01b
 provisioner: linstor.csi.linbit.com
 parameters:
