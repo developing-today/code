@@ -2,6 +2,7 @@ apiVersion: piraeus.io/v1
 kind: LinstorSatelliteConfiguration
 metadata:
   name: talos-loader
+  namespace: piraeus-datastore-external-01b
 spec:
   podTemplate:
     spec:

@@ -32,3 +32,8 @@
       - 2*2 medium-2.0-nvme   (m.2 2.0TB - hp fx900 pro)
         - nvme_nand-medium_latency-medium_throughput-medium_capacity
           - TODO
+
+```
+kubectl get pv
+kubectl patch pv TODO_PV_NAME_HERE -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+```

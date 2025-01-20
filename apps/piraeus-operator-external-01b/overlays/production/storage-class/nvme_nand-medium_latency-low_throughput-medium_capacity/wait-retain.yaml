@@ -1,7 +1,8 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: linstor-nvme_nand-avg_latency-low_throughput-medium_capacity-immediate-retain
+  name: linstor-nvme_nand-avg_latency-low_throughput-medium_capacity-wait-retain
+  namespace: piraeus-datastore-external-01b
 provisioner: linstor.csi.linbit.com
 parameters:
   # csi.storage.k8s.io/fstype: xfs
@@ -13,4 +14,4 @@ parameters:
   linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
 allowVolumeExpansion: true
 reclaimPolicy: Retain
-volumeBindingMode: Immediate
+volumeBindingMode: WaitForFirstConsumer
