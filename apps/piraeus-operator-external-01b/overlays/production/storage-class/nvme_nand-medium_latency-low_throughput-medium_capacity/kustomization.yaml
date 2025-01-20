@@ -4,5 +4,5 @@ namespace: piraeus-datastore-external-01b
 resources:
   - immediate-delete.yaml
   - immediate-retain.yaml
-  - wait-delet.yaml
+  - wait-delete.yaml
   - wait-retain.yaml
