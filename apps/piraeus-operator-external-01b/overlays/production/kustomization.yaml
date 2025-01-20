@@ -3,7 +3,6 @@ kind: Kustomization
 namespace: piraeus-datastore-external-01b
 resources:
   - https://github.com/piraeusdatastore/piraeus-operator//config/default?ref=v2.6.0
-  - "*"
   - linstor-cluster/*
   - linstor-satellite-configuration/*
   - storage-class/*/*
