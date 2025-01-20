@@ -4,6 +4,7 @@ metadata:
   name: linstor-medium-nvme
 provisioner: linstor.csi.linbit.com
 parameters:
+  storageclass.kubernetes.io/is-default-class: "true"
   # csi.storage.k8s.io/fstype: xfs
   linstor.csi.linbit.com/autoPlace: "2"
   linstor.csi.linbit.com/storagePool: "xcp-sr-linstor_group_thin_device"
@@ -12,5 +13,5 @@ parameters:
   linstor.csi.linbit.com/disklessOnRemaining: "true"
   linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
 allowVolumeExpansion: true
-reclaimPolicy: Delete
+reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
