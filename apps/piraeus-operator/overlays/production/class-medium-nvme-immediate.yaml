@@ -2,14 +2,18 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: linstor-medium-nvme-immediate
-provisioner: io.piraeus.csi
+provisioner: linstor.csi.linbit.com # io.piraeus.csi
 parameters:
+  # csi.storage.k8s.io/fstype: xfs
+  linstor.csi.linbit.com/autoPlace: "2"
+  # linstor.csi.linbit.com/placementCount: "2"
+  # linstor.csi.linbit.com/resourceGroup: "xcp-sr-linstor_group_thin_device"
   linstor.csi.linbit.com/storagePool: "xcp-sr-linstor_group_thin_device"
-  linstor.csi.linbit.com/resourceGroup: "xcp-sr-linstor_group_thin_device"
-  linstor.csi.linbit.com/replicas: "2"
+  linstor.csi.linbit.com/disklessStoragePool: "DfltDisklessStorPool"
+  # linstor.csi.linbit.com/placementPolicy:
   linstor.csi.linbit.com/replicasOnDifferent: "node"
   linstor.csi.linbit.com/disklessOnRemaining: "true"
-  linstor.csi.linbit.com/provisioningType: "thin"
+  linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
