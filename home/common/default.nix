@@ -204,6 +204,13 @@
   };
   manual.manpages.enable = true;
   programs = {
+    # zen-browser = {
+    #   enable = true;
+    #   # package = inputs.zen-browser.packages.${system}.default;
+    #   policies = {
+    #     BlockAboutConfig = true;
+    #   };
+    # };
     atuin = {
       enable = true;
       settings = {
@@ -243,7 +250,12 @@
     emacs.enable = true;
     # eww.enable = true; # config
     #eza.enable = true;
-    firefox.enable = true;
+    firefox = {
+      enable = true;
+      policies = {
+        BlockAboutConfig = true;
+      };
+    };
     fuzzel = {
       enable = true;
       settings = {

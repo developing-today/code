@@ -25,6 +25,13 @@ rec {
       url = "github:hyprwm/hyprland-qtutils";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.systems.follows = "systems";
+      inputs.hyprland-qt-support.follows = "hyprland-qt-support";
+    };
+    hyprland-qt-support = {
+      url = "github:hyprwm/hyprland-qt-support";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.systems.follows = "systems";
+      inputs.hyprlang.follows = "hyprlang";
     };
     solaar = {
       url = "https://flakehub.com/f/Svenum/Solaar-Flake/*.tar.gz"; # For latest stable version
@@ -134,7 +141,6 @@ rec {
     git-hooks = {
       url = "github:cachix/git-hooks.nix?shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs-stable.follows = "nixpkgs";
       inputs.gitignore.follows = "gitignore";
       inputs.flake-compat.follows = "flake-compat";
     };
@@ -181,9 +187,13 @@ rec {
       # TODO: use this?
       url = "github:cachix/pre-commit-hooks.nix?shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs-stable.follows = "nixpkgs";
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
+    };
+    hyprlang = {
+      url = "github:hyprwm/hyprlang";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.systems.follows = "systems";
     };
     yazi = {
       # TODO: use this?
@@ -204,9 +214,11 @@ rec {
       # url = "github:hyprwm/Hyprland";
       inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
       inputs.hyprcursor.follows = "hyprcursor";
+      inputs.hyprlang.follows = "hyprlang";
     };
     hyprcursor = {
-      url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
+      # url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
+      url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.systems.follows = "systems";
     };

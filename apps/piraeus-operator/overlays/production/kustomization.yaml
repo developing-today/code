@@ -21,7 +21,7 @@ resources:
 #     - m.2 nvme 1TB (Inland) nvme-PCIe_SSD_23051610002029
 # - linstor/drbd/extra drives
 #   - host*drives type
-#     - 2*1 optane-nvme (u.2 1.5TB - Intel Optane DC P4800X Series 1.5TB PCIe NVMe 2.5in U.2 SSD SSDPE21K015TA)
-#     - 3*1 medium-nvme (m.2 2TB - samsung 980 pro)
-#     - 2*1 fast-nvme (m.2 1TB - samsung 990 pro)
-#     - 2*2 fast-nvme (m.2 2TB - hp fx900 pro)
+#     - 2*1 optane-1.5-nvme (u.2 1.5TB - Intel Optane DC P4800X Series 1.5TB PCIe NVMe 2.5in U.2 SSD SSDPE21K015TA)
+#     - 3*1 medium-2.0-nvme (m.2 2.0TB - samsung 980 pro)
+#     - 2*1 fast-1.0-nvme   (m.2 1.0TB - samsung 990 pro)
+#     - 2*2 fast-2.0-nvme   (m.2 2.0TB - hp fx900 pro)
