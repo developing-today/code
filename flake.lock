@@ -1377,21 +1377,22 @@
     },
     "hyprland-qt-support": {
       "inputs": {
+        "hyprlang": [
+          "hyprlang"
+        ],
         "nixpkgs": [
-          "hyprland-qtutils",
           "nixpkgs"
         ],
         "systems": [
-          "hyprland-qtutils",
           "systems"
         ]
       },
       "locked": {
-        "lastModified": 1736376766,
-        "narHash": "sha256-tZG+mkJJzqoi/gH8nN6P/yY1/PEYtom9+2WdYKKv5YM=",
+        "lastModified": 1736557207,
+        "narHash": "sha256-hJfvV+8fOU8d1BBgG6KZDcsRYh7lBcNgZDbNUh1+VxU=",
         "owner": "hyprwm",
         "repo": "hyprland-qt-support",
-        "rev": "0ecf224f213497c45b12c4dc7bdc2c2edd0e3084",
+        "rev": "767e884cda77bea293982c2116333308930d7800",
         "type": "github"
       },
       "original": {
@@ -1431,7 +1432,9 @@
     },
     "hyprland-qtutils_2": {
       "inputs": {
-        "hyprland-qt-support": "hyprland-qt-support",
+        "hyprland-qt-support": [
+          "hyprland-qt-support"
+        ],
         "hyprutils": "hyprutils_3",
         "nixpkgs": [
           "nixpkgs"
@@ -2700,6 +2703,7 @@
         "hypr-dynamic-cursors": "hypr-dynamic-cursors",
         "hyprcursor": "hyprcursor",
         "hyprland": "hyprland",
+        "hyprland-qt-support": "hyprland-qt-support",
         "hyprland-qtutils": "hyprland-qtutils_2",
         "hyprlang": "hyprlang_2",
         "impermanence": "impermanence",
