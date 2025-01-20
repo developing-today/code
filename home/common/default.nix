@@ -204,6 +204,15 @@
   };
   manual.manpages.enable = true;
   programs = {
+    atuin = {
+      enable = true;
+      settings = {
+        auto_sync = true;
+        sync_frequency = "1m";
+        sync_address = "https://api.atuin.sh";
+        search_mode = "prefix";
+      };
+    };
     ghostty = {
       enable = true;
       package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;

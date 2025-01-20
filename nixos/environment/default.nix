@@ -80,6 +80,8 @@ in
         gnomeExtensions.solaar-extension
         logitech-udev-rules
         horst
+        smartmontools
+        nvme-cli
         kubectl
         kubectl-tree
         kubectl-ktop

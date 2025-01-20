@@ -1,0 +1,702 @@
+[23:17 xcp-ng-zwkrcejc ~]# date
+Sun Jan 19 23:17:22 CST 2025
+[23:17 xcp-ng-zwkrcejc ~]# yum install -y nvme-cli smartmontools
+Loaded plugins: fastestmirror
+Loading mirror speeds from cached hostfile
+Excluding mirror: updates.xcp-ng.org
+ * xcp-ng-base: mirrors.xcp-ng.org
+Excluding mirror: updates.xcp-ng.org
+ * xcp-ng-updates: mirrors.xcp-ng.org
+Package nvme-cli-1.16-6.xcpng8.3.x86_64 already installed and latest version
+Package 1:smartmontools-7.0-2.el7.x86_64 already installed and latest version
+Nothing to do
+[23:17 xcp-ng-zwkrcejc ~]# lsblk
+NAME                                                              MAJ:MIN  RM   SIZE RO TYPE MOUNTPOINT
+nvme0n1                                                           259:0     0 931.5G  0 disk
+nvme3n1                                                           259:3     0   1.4T  0 disk
+tdg                                                               254:6     0    20G  0 disk
+tde                                                               254:4     0 136.6M  1 disk
+tdc                                                               254:2     0    20G  0 disk
+nvme2n1                                                           259:2     0   3.7T  0 disk
+tda                                                               254:0     0    20G  0 disk
+nvme5n1                                                           259:5     0 953.9G  0 disk
+├─nvme5n1p4                                                       259:9     0   512M  0 part /boot/efi
+├─nvme5n1p2                                                       259:7     0    18G  0 part
+├─nvme5n1p5                                                       259:10    0     4G  0 part /var/log
+├─nvme5n1p3                                                       259:8     0 912.4G  0 part
+│ └─XSLocalEXT--58ba1915--b098--76ca--3eb2--a510f4ddb7f6-58ba1915--b098--76ca--3eb2--a510f4ddb7f6
+                                                                  253:0     0 912.4G  0 lvm  /run/sr-mount/58ba1915-b098-76ca-3eb2-a510f4ddb7f6
+├─nvme5n1p1                                                       259:6     0    18G  0 part /
+└─nvme5n1p6                                                       259:11    0     1G  0 part [SWAP]
+tdf                                                               254:5     0    20G  0 disk
+nvme1n1                                                           259:1     0   3.7T  0 disk
+tdd                                                               254:3     0    20G  0 disk
+nvme4n1                                                           259:4     0   1.8T  0 disk
+├─linstor_group-thin_device_tmeta                                 253:1     0   120M  0 lvm
+│ └─linstor_group-thin_device-tpool                               253:3     0   1.8T  0 lvm
+│   ├─linstor_group-xcp--volume--b7dcc5f7--43ea--4d72--b9df--19dd4a1a0548_00000
+                                                                  253:6     0    20G  0 lvm
+│   │ └─drbd1001                                                  147:1001  0    20G  0 disk
+│   ├─linstor_group-thin_device                                   253:4     0   1.8T  0 lvm
+│   ├─linstor_group-pvc--29d142ca--d56b--43a8--a483--768e734c9f81_00000
+                                                                  253:7     0 500.1G  0 lvm
+│   │ └─drbd1002                                                  147:1002  0   500G  0 disk
+│   └─linstor_group-xcp--persistent--database_00000               253:5     0     1G  0 lvm
+│     └─drbd1000                                                  147:1000  0     1G  0 disk /var/lib/linstor
+└─linstor_group-thin_device_tdata                                 253:2     0   1.8T  0 lvm
+  └─linstor_group-thin_device-tpool                               253:3     0   1.8T  0 lvm
+    ├─linstor_group-xcp--volume--b7dcc5f7--43ea--4d72--b9df--19dd4a1a0548_00000
+                                                                  253:6     0    20G  0 lvm
+    │ └─drbd1001                                                  147:1001  0    20G  0 disk
+    ├─linstor_group-thin_device                                   253:4     0   1.8T  0 lvm
+    ├─linstor_group-pvc--29d142ca--d56b--43a8--a483--768e734c9f81_00000
+                                                                  253:7     0 500.1G  0 lvm
+    │ └─drbd1002                                                  147:1002  0   500G  0 disk
+    └─linstor_group-xcp--persistent--database_00000               253:5     0     1G  0 lvm
+      └─drbd1000                                                  147:1000  0     1G  0 disk /var/lib/linstor
+tdb                                                               254:1     0    20G  0 disk
+[23:17 xcp-ng-zwkrcejc ~]# lsblk -o name,size,fstype,label,model,serial,mountpoint
+NAME                                  SIZE FSTYPE      LABEL       MODEL                     SERIAL         MOUNTPOINT
+nvme0n1                             931.5G                         Samsung SSD 990 PRO 1TB   S73VNJ0W916215
+nvme3n1                               1.4T                         INTEL SSDPE21K015TA       PHKE923600JA1P
+tdg                                    20G
+tde                                 136.6M
+tdc                                    20G
+nvme2n1                               3.7T                         HP SSD FX900 Pro 4TB      HBSE6345010046
+tda                                    20G
+nvme5n1                             953.9G                         Inland TN320 NVMe SSD     IB23AK0001P005
+├─nvme5n1p4                           512M vfat        BOOT-FFKXIH                                          /boot/efi
+├─nvme5n1p2                            18G
+├─nvme5n1p5                             4G ext3        logs-ffkxih                                          /var/log
+├─nvme5n1p3                         912.4G LVM2_member
+│ └─XSLocalEXT--58ba1915--b098--76ca--3eb2--a510f4ddb7f6-58ba1915--b098--76ca--3eb2--a510f4ddb7f6
+                                    912.4G ext4                                                             /run/sr-mount/58ba1915-b098-76ca-3e
+├─nvme5n1p1                            18G ext3        root-ffkxih                                          /
+└─nvme5n1p6                             1G swap        swap-ffkxih                                          [SWAP]
+tdf                                    20G
+nvme1n1                               3.7T                         HP SSD FX900 Pro 4TB      HBSE6345010046
+tdd                                    20G
+nvme4n1                               1.8T LVM2_member             Samsung SSD 980 PRO 2TB   S6B0NU0W926803
+├─linstor_group-thin_device_tmeta     120M
+│ └─linstor_group-thin_device-tpool   1.8T
+│   ├─linstor_group-xcp--volume--b7dcc5f7--43ea--4d72--b9df--19dd4a1a0548_00000
+                                       20G
+│   │ └─drbd1001                       20G
+│   ├─linstor_group-thin_device       1.8T
+│   ├─linstor_group-pvc--29d142ca--d56b--43a8--a483--768e734c9f81_00000
+                                    500.1G ext4
+│   │ └─drbd1002                      500G
+│   └─linstor_group-xcp--persistent--database_00000
+                                        1G ext4
+│     └─drbd1000                        1G                                                                  /var/lib/linstor
+└─linstor_group-thin_device_tdata     1.8T
+  └─linstor_group-thin_device-tpool   1.8T
+    ├─linstor_group-xcp--volume--b7dcc5f7--43ea--4d72--b9df--19dd4a1a0548_00000
+                                       20G
+    │ └─drbd1001                       20G
+    ├─linstor_group-thin_device       1.8T
+    ├─linstor_group-pvc--29d142ca--d56b--43a8--a483--768e734c9f81_00000
+                                    500.1G ext4
+    │ └─drbd1002                      500G
+    └─linstor_group-xcp--persistent--database_00000
+                                        1G ext4
+      └─drbd1000                        1G                                                                  /var/lib/linstor
+tdb                                    20G
+[23:17 xcp-ng-zwkrcejc ~]# ls -la /dev/disk/by-uuid
+total 0
+drwxr-xr-x 2 root root 180 Jan 19 23:06 .
+drwxr-xr-x 7 root root 140 Jan  2 11:43 ..
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 58b9738c-d79a-467c-9ffa-925fe6d3e2d8 -> ../../dm-0
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 7969ebee-8e53-4410-8f85-2dd788881c7d -> ../../nvme5n1p1
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 DD2C-FAB2 -> ../../nvme5n1p4
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 f00c9ce5-8dc2-4891-bd7d-db8c6188b6aa -> ../../nvme5n1p5
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 f33bd628-0074-4b2b-831d-cc74f587d115 -> ../../dm-7
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 f6531913-94e1-41a8-b7c6-b4a300efd114 -> ../../nvme5n1p6
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 fd195a80-eee6-4745-87bd-88b2ab3fd3ad -> ../../dm-5
+[23:17 xcp-ng-zwkrcejc ~]# ls -la /dev/disk/by-id
+total 0
+drwxr-xr-x 2 root root 680 Jan 19 21:32 .
+drwxr-xr-x 7 root root 140 Jan  2 11:43 ..
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-name-linstor_group-pvc--29d142ca--d56b--43a8--a483--768e734c9f81_00000 -> ../../dm-7
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-name-linstor_group-xcp--persistent--database_00000 -> ../../dm-5
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-name-linstor_group-xcp--volume--b7dcc5f7--43ea--4d72--b9df--19dd4a1a0548_00000 -> ../../dm-6
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-name-XSLocalEXT--58ba1915--b098--76ca--3eb2--a510f4ddb7f6-58ba1915--b098--76ca--3eb2--a510f4ddb7f6 -> ../../dm-0
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-uuid-LVM-rfQTpwdPt4VeHBe8GqOMv2bWlJILyW1YdcOikGFKkFe0QeGR5SDbhRnE4N7VMUbx -> ../../dm-0
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-uuid-LVM-V6kPT0TjKjtQ9CGd0kpb49xr15JcOSTMb5dJeAXVKEZNGC9dfhQEa9hF4S9egnky -> ../../dm-6
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-uuid-LVM-V6kPT0TjKjtQ9CGd0kpb49xr15JcOSTMEwcVdvarekPFMfvMHh396s3LiNLa70U5 -> ../../dm-7
+lrwxrwxrwx 1 root root  10 Jan 19 23:06 dm-uuid-LVM-V6kPT0TjKjtQ9CGd0kpb49xr15JcOSTMkXzd6BS7ZuZi4DLdSTzvSIc7QmY3j05Q -> ../../dm-5
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-eui.00000000000000004868340000000000 -> ../../nvme5n1
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-eui.00000000000000004868340000000000-part1 -> ../../nvme5n1p1
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-eui.00000000000000004868340000000000-part2 -> ../../nvme5n1p2
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-eui.00000000000000004868340000000000-part3 -> ../../nvme5n1p3
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-eui.00000000000000004868340000000000-part4 -> ../../nvme5n1p4
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-eui.00000000000000004868340000000000-part5 -> ../../nvme5n1p5
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-eui.00000000000000004868340000000000-part6 -> ../../nvme5n1p6
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-eui.0000000000000000a843973450100464 -> ../../nvme2n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-eui.0000000000000000a843973450100466 -> ../../nvme1n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-eui.002538493142b961 -> ../../nvme0n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-eui.002538b931a13637 -> ../../nvme4n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-HP_SSD_FX900_Pro_4TB_HBSE63450100464 -> ../../nvme2n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-HP_SSD_FX900_Pro_4TB_HBSE63450100466 -> ../../nvme1n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505 -> ../../nvme5n1
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505-part1 -> ../../nvme5n1p1
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505-part2 -> ../../nvme5n1p2
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505-part3 -> ../../nvme5n1p3
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505-part4 -> ../../nvme5n1p4
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505-part5 -> ../../nvme5n1p5
+lrwxrwxrwx 1 root root  15 Jan 19 23:06 nvme-Inland_TN320_NVMe_SSD_IB23AK0001P00505-part6 -> ../../nvme5n1p6
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-INTEL_SSDPE21K015TA_PHKE923600JA1P5CGN -> ../../nvme3n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-nvme.8086-50484b453932333630304a4131503543474e-494e54454c20535344504532314b3031355441-00000001 -> ../../nvme3n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-Samsung_SSD_980_PRO_2TB_S6B0NU0W926803N -> ../../nvme4n1
+lrwxrwxrwx 1 root root  13 Jan 19 23:06 nvme-Samsung_SSD_990_PRO_1TB_S73VNJ0W916215E -> ../../nvme0n1
+[23:17 xcp-ng-zwkrcejc ~]# devices=$(lsblk -d -o NAME -n | grep -E '^(sd|nvme|hd)')
+[23:17 xcp-ng-zwkrcejc ~]#
+[23:17 xcp-ng-zwkrcejc ~]# for dev in $devices; do
+>     echo "=== Device: /dev/$dev ==="
+>     smartctl -x "/dev/$dev"
+>
+>     if [[ $dev == nvme* ]]; then
+>         echo "=== NVMe Specific Info ==="
+>         # nvme id-ctrl "/dev/$dev"
+>         nvme smart-log "/dev/$dev"
+>         # nvme error-log "/dev/$dev"
+>     fi
+>     echo ""
+> done
+=== Device: /dev/nvme0n1 ===
+smartctl 7.0 2018-12-30 r4883 [x86_64-linux-4.19.0+1] (local build)
+Copyright (C) 2002-18, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       Samsung SSD 990 PRO 1TB
+Serial Number:                      S73VNJ0W916215E
+Firmware Version:                   3B2QJXD7
+PCI Vendor/Subsystem ID:            0x144d
+IEEE OUI Identifier:                0x002538
+Total NVM Capacity:                 1,000,204,886,016 [1.00 TB]
+Unallocated NVM Capacity:           0
+Controller ID:                      1
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          1,000,204,886,016 [1.00 TB]
+Namespace 1 Utilization:            0
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            002538 493142b961
+Local Time is:                      Sun Jan 19 23:17:23 2025 CST
+Firmware Updates (0x16):            3 Slots, no Reset required
+Optional Admin Commands (0x0017):   Security Format Frmw_DL Self_Test
+Optional NVM Commands (0x0055):     Comp DS_Mngmt Sav/Sel_Feat Timestmp
+Maximum Data Transfer Size:         512 Pages
+Warning  Comp. Temp. Threshold:     82 Celsius
+Critical Comp. Temp. Threshold:     85 Celsius
+
+Supported Power States
+St Op     Max   Active     Idle   RL RT WL WT  Ent_Lat  Ex_Lat
+ 0 +     9.39W       -        -    0  0  0  0        0       0
+ 1 +     9.39W       -        -    1  1  1  1        0     200
+ 2 +     9.39W       -        -    2  2  2  2        0    1000
+ 3 -   0.0400W       -        -    3  3  3  3     2000    1200
+ 4 -   0.0050W       -        -    4  4  4  4      500    9500
+
+Supported LBA Sizes (NSID 0x1)
+Id Fmt  Data  Metadt  Rel_Perf
+ 0 +     512       0         0
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x00
+Temperature:                        24 Celsius
+Available Spare:                    100%
+Available Spare Threshold:          10%
+Percentage Used:                    0%
+Data Units Read:                    71,753 [36.7 GB]
+Data Units Written:                 0
+Host Read Commands:                 286,241
+Host Write Commands:                0
+Controller Busy Time:               5
+Power Cycles:                       10
+Power On Hours:                     245
+Unsafe Shutdowns:                   6
+Media and Data Integrity Errors:    0
+Error Information Log Entries:      0
+Warning  Comp. Temperature Time:    0
+Critical Comp. Temperature Time:    0
+Temperature Sensor 1:               24 Celsius
+Temperature Sensor 2:               27 Celsius
+
+Error Information (NVMe Log 0x01, max 64 entries)
+No Errors Logged
+
+=== NVMe Specific Info ===
+Smart Log for NVME device:nvme0n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 24 C (297 Kelvin)
+available_spare                         : 100%
+available_spare_threshold               : 10%
+percentage_used                         : 0%
+endurance group critical warning summary: 0
+data_units_read                         : 71,753
+data_units_written                      : 0
+host_read_commands                      : 286,241
+host_write_commands                     : 0
+controller_busy_time                    : 5
+power_cycles                            : 10
+power_on_hours                          : 245
+unsafe_shutdowns                        : 6
+media_errors                            : 0
+num_err_log_entries                     : 0
+Warning Temperature Time                : 0
+Critical Composite Temperature Time     : 0
+Temperature Sensor 1           : 24 C (297 Kelvin)
+Temperature Sensor 2           : 27 C (300 Kelvin)
+Thermal Management T1 Trans Count       : 0
+Thermal Management T2 Trans Count       : 0
+Thermal Management T1 Total Time        : 0
+Thermal Management T2 Total Time        : 0
+
+=== Device: /dev/nvme3n1 ===
+smartctl 7.0 2018-12-30 r4883 [x86_64-linux-4.19.0+1] (local build)
+Copyright (C) 2002-18, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       INTEL SSDPE21K015TA
+Serial Number:                      PHKE923600JA1P5CGN
+Firmware Version:                   E2010435
+PCI Vendor/Subsystem ID:            0x8086
+IEEE OUI Identifier:                0x5cd2e4
+Controller ID:                      0
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          1,500,301,910,016 [1.50 TB]
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            5cd2e4 17a4ea0100
+Local Time is:                      Sun Jan 19 23:17:23 2025 CST
+Firmware Updates (0x02):            1 Slot
+Optional Admin Commands (0x0007):   Security Format Frmw_DL
+Optional NVM Commands (0x0006):     Wr_Unc DS_Mngmt
+Maximum Data Transfer Size:         32 Pages
+
+Supported Power States
+St Op     Max   Active     Idle   RL RT WL WT  Ent_Lat  Ex_Lat
+ 0 +    20.00W       -        -    0  0  0  0        0       0
+
+Supported LBA Sizes (NSID 0x1)
+Id Fmt  Data  Metadt  Rel_Perf
+ 0 +     512       0         2
+ 1 -     512       8         2
+ 2 -     512      16         2
+ 3 -    4096       0         0
+ 4 -    4096       8         0
+ 5 -    4096      64         0
+ 6 -    4096     128         0
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x00
+Temperature:                        21 Celsius
+Available Spare:                    100%
+Available Spare Threshold:          0%
+Percentage Used:                    0%
+Data Units Read:                    129,460 [66.2 GB]
+Data Units Written:                 19,055,009 [9.75 TB]
+Host Read Commands:                 2,055,217
+Host Write Commands:                100,790,039
+Controller Busy Time:               72
+Power Cycles:                       55
+Power On Hours:                     19,309
+Unsafe Shutdowns:                   29
+Media and Data Integrity Errors:    0
+Error Information Log Entries:      0
+
+Error Information (NVMe Log 0x01, max 64 entries)
+No Errors Logged
+
+=== NVMe Specific Info ===
+Smart Log for NVME device:nvme3n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 21 C (294 Kelvin)
+available_spare                         : 100%
+available_spare_threshold               : 0%
+percentage_used                         : 0%
+endurance group critical warning summary: 0
+data_units_read                         : 129,460
+data_units_written                      : 19,055,009
+host_read_commands                      : 2,055,217
+host_write_commands                     : 100,790,039
+controller_busy_time                    : 72
+power_cycles                            : 55
+power_on_hours                          : 19,309
+unsafe_shutdowns                        : 29
+media_errors                            : 0
+num_err_log_entries                     : 0
+Warning Temperature Time                : 0
+Critical Composite Temperature Time     : 0
+Thermal Management T1 Trans Count       : 0
+Thermal Management T2 Trans Count       : 0
+Thermal Management T1 Total Time        : 0
+Thermal Management T2 Total Time        : 0
+
+=== Device: /dev/nvme2n1 ===
+smartctl 7.0 2018-12-30 r4883 [x86_64-linux-4.19.0+1] (local build)
+Copyright (C) 2002-18, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       HP SSD FX900 Pro 4TB
+Serial Number:                      HBSE63450100464
+Firmware Version:                   3.A.J.CR
+PCI Vendor/Subsystem ID:            0x1dbe
+IEEE OUI Identifier:                0xa84397
+Total NVM Capacity:                 4,096,805,658,624 [4.09 TB]
+Unallocated NVM Capacity:           0
+Controller ID:                      0
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          4,096,805,658,624 [4.09 TB]
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            a84397 3450100464
+Local Time is:                      Sun Jan 19 23:17:23 2025 CST
+Firmware Updates (0x0e):            7 Slots
+Optional Admin Commands (0x0017):   Security Format Frmw_DL Self_Test
+Optional NVM Commands (0x0014):     DS_Mngmt Sav/Sel_Feat
+Maximum Data Transfer Size:         512 Pages
+Warning  Comp. Temp. Threshold:     120 Celsius
+Critical Comp. Temp. Threshold:     130 Celsius
+
+Supported Power States
+St Op     Max   Active     Idle   RL RT WL WT  Ent_Lat  Ex_Lat
+ 0 +     3.50W       -        -    0  0  0  0        5       5
+ 1 +     3.30W       -        -    1  1  1  1       50     100
+ 2 +     3.10W       -        -    2  2  2  2       50     200
+ 3 -   0.1500W       -        -    3  3  3  3      500    5000
+ 4 -   0.0080W       -        -    4  4  4  4     2000   85000
+
+Supported LBA Sizes (NSID 0x1)
+Id Fmt  Data  Metadt  Rel_Perf
+ 0 +     512       0         0
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x00
+Temperature:                        23 Celsius
+Available Spare:                    100%
+Available Spare Threshold:          25%
+Percentage Used:                    0%
+Data Units Read:                    71,746 [36.7 GB]
+Data Units Written:                 0
+Host Read Commands:                 280,518
+Host Write Commands:                0
+Controller Busy Time:               0
+Power Cycles:                       6
+Power On Hours:                     511
+Unsafe Shutdowns:                   4
+Media and Data Integrity Errors:    0
+Error Information Log Entries:      0
+Warning  Comp. Temperature Time:    0
+Critical Comp. Temperature Time:    0
+Temperature Sensor 1:               33 Celsius
+Temperature Sensor 2:               23 Celsius
+
+Error Information (NVMe Log 0x01, max 64 entries)
+No Errors Logged
+
+=== NVMe Specific Info ===
+Smart Log for NVME device:nvme2n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 23 C (296 Kelvin)
+available_spare                         : 100%
+available_spare_threshold               : 25%
+percentage_used                         : 0%
+endurance group critical warning summary: 0
+data_units_read                         : 71,746
+data_units_written                      : 0
+host_read_commands                      : 280,518
+host_write_commands                     : 0
+controller_busy_time                    : 0
+power_cycles                            : 6
+power_on_hours                          : 511
+unsafe_shutdowns                        : 4
+media_errors                            : 0
+num_err_log_entries                     : 0
+Warning Temperature Time                : 0
+Critical Composite Temperature Time     : 0
+Temperature Sensor 1           : 33 C (306 Kelvin)
+Temperature Sensor 2           : 23 C (296 Kelvin)
+Thermal Management T1 Trans Count       : 0
+Thermal Management T2 Trans Count       : 0
+Thermal Management T1 Total Time        : 0
+Thermal Management T2 Total Time        : 0
+
+=== Device: /dev/nvme5n1 ===
+smartctl 7.0 2018-12-30 r4883 [x86_64-linux-4.19.0+1] (local build)
+Copyright (C) 2002-18, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       Inland TN320 NVMe SSD
+Serial Number:                      IB23AK0001P00505
+Firmware Version:                   V0926A3
+PCI Vendor/Subsystem ID:            0x126f
+IEEE OUI Identifier:                0x486834
+Controller ID:                      1
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          1,024,209,543,168 [1.02 TB]
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            486834 0000000000
+Local Time is:                      Sun Jan 19 23:17:23 2025 CST
+Firmware Updates (0x12):            1 Slot, no Reset required
+Optional Admin Commands (0x0017):   Security Format Frmw_DL Self_Test
+Optional NVM Commands (0x0015):     Comp DS_Mngmt Sav/Sel_Feat
+Maximum Data Transfer Size:         64 Pages
+Warning  Comp. Temp. Threshold:     83 Celsius
+Critical Comp. Temp. Threshold:     85 Celsius
+
+Supported Power States
+St Op     Max   Active     Idle   RL RT WL WT  Ent_Lat  Ex_Lat
+ 0 +     6.00W       -        -    0  0  0  0    15000       0
+ 1 +     3.00W       -        -    1  1  1  1    15000       0
+ 2 +     1.50W       -        -    2  2  2  2    15000       0
+ 3 -   0.0450W       -        -    3  3  3  3    15000   15000
+ 4 -   0.0040W       -        -    4  4  4  4    25000   25000
+
+Supported LBA Sizes (NSID 0x1)
+Id Fmt  Data  Metadt  Rel_Perf
+ 0 +     512       0         0
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x00
+Temperature:                        28 Celsius
+Available Spare:                    100%
+Available Spare Threshold:          10%
+Percentage Used:                    0%
+Data Units Read:                    635,273 [325 GB]
+Data Units Written:                 921,690 [471 GB]
+Host Read Commands:                 3,239,887
+Host Write Commands:                62,430,672
+Controller Busy Time:               14,695
+Power Cycles:                       8
+Power On Hours:                     594
+Unsafe Shutdowns:                   6
+Media and Data Integrity Errors:    0
+Error Information Log Entries:      0
+Warning  Comp. Temperature Time:    0
+Critical Comp. Temperature Time:    0
+
+Error Information (NVMe Log 0x01, max 64 entries)
+No Errors Logged
+
+=== NVMe Specific Info ===
+Smart Log for NVME device:nvme5n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 28 C (301 Kelvin)
+available_spare                         : 100%
+available_spare_threshold               : 10%
+percentage_used                         : 0%
+endurance group critical warning summary: 0
+data_units_read                         : 635,273
+data_units_written                      : 921,690
+host_read_commands                      : 3,239,887
+host_write_commands                     : 62,430,672
+controller_busy_time                    : 14,695
+power_cycles                            : 8
+power_on_hours                          : 594
+unsafe_shutdowns                        : 6
+media_errors                            : 0
+num_err_log_entries                     : 0
+Warning Temperature Time                : 0
+Critical Composite Temperature Time     : 0
+Thermal Management T1 Trans Count       : 0
+Thermal Management T2 Trans Count       : 0
+Thermal Management T1 Total Time        : 0
+Thermal Management T2 Total Time        : 0
+
+=== Device: /dev/nvme1n1 ===
+smartctl 7.0 2018-12-30 r4883 [x86_64-linux-4.19.0+1] (local build)
+Copyright (C) 2002-18, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       HP SSD FX900 Pro 4TB
+Serial Number:                      HBSE63450100466
+Firmware Version:                   3.A.J.CR
+PCI Vendor/Subsystem ID:            0x1dbe
+IEEE OUI Identifier:                0xa84397
+Total NVM Capacity:                 4,096,805,658,624 [4.09 TB]
+Unallocated NVM Capacity:           0
+Controller ID:                      0
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          4,096,805,658,624 [4.09 TB]
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            a84397 3450100466
+Local Time is:                      Sun Jan 19 23:17:23 2025 CST
+Firmware Updates (0x0e):            7 Slots
+Optional Admin Commands (0x0017):   Security Format Frmw_DL Self_Test
+Optional NVM Commands (0x0014):     DS_Mngmt Sav/Sel_Feat
+Maximum Data Transfer Size:         512 Pages
+Warning  Comp. Temp. Threshold:     120 Celsius
+Critical Comp. Temp. Threshold:     130 Celsius
+
+Supported Power States
+St Op     Max   Active     Idle   RL RT WL WT  Ent_Lat  Ex_Lat
+ 0 +     3.50W       -        -    0  0  0  0        5       5
+ 1 +     3.30W       -        -    1  1  1  1       50     100
+ 2 +     3.10W       -        -    2  2  2  2       50     200
+ 3 -   0.1500W       -        -    3  3  3  3      500    5000
+ 4 -   0.0080W       -        -    4  4  4  4     2000   85000
+
+Supported LBA Sizes (NSID 0x1)
+Id Fmt  Data  Metadt  Rel_Perf
+ 0 +     512       0         0
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x00
+Temperature:                        24 Celsius
+Available Spare:                    100%
+Available Spare Threshold:          25%
+Percentage Used:                    0%
+Data Units Read:                    71,746 [36.7 GB]
+Data Units Written:                 0
+Host Read Commands:                 280,518
+Host Write Commands:                0
+Controller Busy Time:               0
+Power Cycles:                       6
+Power On Hours:                     511
+Unsafe Shutdowns:                   4
+Media and Data Integrity Errors:    0
+Error Information Log Entries:      0
+Warning  Comp. Temperature Time:    0
+Critical Comp. Temperature Time:    0
+Temperature Sensor 1:               35 Celsius
+Temperature Sensor 2:               24 Celsius
+
+Error Information (NVMe Log 0x01, max 64 entries)
+No Errors Logged
+
+=== NVMe Specific Info ===
+Smart Log for NVME device:nvme1n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 24 C (297 Kelvin)
+available_spare                         : 100%
+available_spare_threshold               : 25%
+percentage_used                         : 0%
+endurance group critical warning summary: 0
+data_units_read                         : 71,746
+data_units_written                      : 0
+host_read_commands                      : 280,518
+host_write_commands                     : 0
+controller_busy_time                    : 0
+power_cycles                            : 6
+power_on_hours                          : 511
+unsafe_shutdowns                        : 4
+media_errors                            : 0
+num_err_log_entries                     : 0
+Warning Temperature Time                : 0
+Critical Composite Temperature Time     : 0
+Temperature Sensor 1           : 35 C (308 Kelvin)
+Temperature Sensor 2           : 24 C (297 Kelvin)
+Thermal Management T1 Trans Count       : 0
+Thermal Management T2 Trans Count       : 0
+Thermal Management T1 Total Time        : 0
+Thermal Management T2 Total Time        : 0
+
+=== Device: /dev/nvme4n1 ===
+smartctl 7.0 2018-12-30 r4883 [x86_64-linux-4.19.0+1] (local build)
+Copyright (C) 2002-18, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       Samsung SSD 980 PRO 2TB
+Serial Number:                      S6B0NU0W926803N
+Firmware Version:                   5B2QGXA7
+PCI Vendor/Subsystem ID:            0x144d
+IEEE OUI Identifier:                0x002538
+Total NVM Capacity:                 2,000,398,934,016 [2.00 TB]
+Unallocated NVM Capacity:           0
+Controller ID:                      6
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          2,000,398,934,016 [2.00 TB]
+Namespace 1 Utilization:            1,545,293,824 [1.54 GB]
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            002538 b931a13637
+Local Time is:                      Sun Jan 19 23:17:23 2025 CST
+Firmware Updates (0x16):            3 Slots, no Reset required
+Optional Admin Commands (0x0017):   Security Format Frmw_DL Self_Test
+Optional NVM Commands (0x0057):     Comp Wr_Unc DS_Mngmt Sav/Sel_Feat Timestmp
+Maximum Data Transfer Size:         128 Pages
+Warning  Comp. Temp. Threshold:     82 Celsius
+Critical Comp. Temp. Threshold:     85 Celsius
+
+Supported Power States
+St Op     Max   Active     Idle   RL RT WL WT  Ent_Lat  Ex_Lat
+ 0 +     8.49W       -        -    0  0  0  0        0       0
+ 1 +     4.48W       -        -    1  1  1  1        0     200
+ 2 +     3.18W       -        -    2  2  2  2        0    1000
+ 3 -   0.0400W       -        -    3  3  3  3     2000    1200
+ 4 -   0.0050W       -        -    4  4  4  4      500    9500
+
+Supported LBA Sizes (NSID 0x1)
+Id Fmt  Data  Metadt  Rel_Perf
+ 0 +     512       0         0
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x00
+Temperature:                        23 Celsius
+Available Spare:                    100%
+Available Spare Threshold:          10%
+Percentage Used:                    0%
+Data Units Read:                    552,481 [282 GB]
+Data Units Written:                 5,547 [2.84 GB]
+Host Read Commands:                 2,186,447
+Host Write Commands:                19,448
+Controller Busy Time:               11
+Power Cycles:                       7
+Power On Hours:                     251
+Unsafe Shutdowns:                   4
+Media and Data Integrity Errors:    0
+Error Information Log Entries:      0
+Warning  Comp. Temperature Time:    0
+Critical Comp. Temperature Time:    0
+Temperature Sensor 1:               23 Celsius
+Temperature Sensor 2:               29 Celsius
+
+Error Information (NVMe Log 0x01, max 64 entries)
+No Errors Logged
+
+=== NVMe Specific Info ===
+Smart Log for NVME device:nvme4n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 23 C (296 Kelvin)
+available_spare                         : 100%
+available_spare_threshold               : 10%
+percentage_used                         : 0%
+endurance group critical warning summary: 0
+data_units_read                         : 552,481
+data_units_written                      : 5,547
+host_read_commands                      : 2,186,447
+host_write_commands                     : 19,448
+controller_busy_time                    : 11
+power_cycles                            : 7
+power_on_hours                          : 251
+unsafe_shutdowns                        : 4
+media_errors                            : 0
+num_err_log_entries                     : 0
+Warning Temperature Time                : 0
+Critical Composite Temperature Time     : 0
+Temperature Sensor 1           : 23 C (296 Kelvin)
+Temperature Sensor 2           : 29 C (302 Kelvin)
+Thermal Management T1 Trans Count       : 0
+Thermal Management T2 Trans Count       : 0
+Thermal Management T1 Total Time        : 0
+Thermal Management T2 Total Time        : 0
+
+[23:17 xcp-ng-zwkrcejc ~]# date
+Sun Jan 19 23:17:23 CST 2025
+[23:17 xcp-ng-zwkrcejc ~]#
