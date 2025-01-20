@@ -1,11 +1,10 @@
 apiVersion: piraeus.io/v1
 kind: LinstorSatelliteConfiguration
 metadata:
-  name: talos-loader-override
+  name: talos-loader
 spec:
   podTemplate:
     spec:
-      hostNetwork: true
       initContainers:
         - name: drbd-shutdown-guard
           $patch: delete

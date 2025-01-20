@@ -1,0 +1,8 @@
+apiVersion: piraeus.io/v1
+kind: LinstorCluster
+metadata:
+  name: external-01b
+  namespace: piraeus-datastore
+spec:
+  externalController:
+    url: http://linstor.01b.us:3370
