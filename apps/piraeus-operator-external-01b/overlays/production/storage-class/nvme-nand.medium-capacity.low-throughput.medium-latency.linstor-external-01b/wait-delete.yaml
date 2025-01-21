@@ -1,10 +1,11 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: linstor-external-01b-nvme_nand-avg_latency-low_throughput-medium_capacity-immediate-delete
+  name: wait.delete.nvme-nand.medium-capacity.low-throughput.medium-latency.linstor-external-01b
   namespace: piraeus-datastore-external-01b
 provisioner: linstor.csi.linbit.com
 parameters:
+  storageclass.kubernetes.io/is-default-class: "true"
   # csi.storage.k8s.io/fstype: xfs
   linstor.csi.linbit.com/autoPlace: "2"
   linstor.csi.linbit.com/storagePool: "xcp-sr-linstor_group_thin_device"
@@ -14,4 +15,4 @@ parameters:
   linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
 allowVolumeExpansion: true
 reclaimPolicy: Delete
-volumeBindingMode: Immediate
+volumeBindingMode: WaitForFirstConsumer
