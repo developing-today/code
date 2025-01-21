@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: piraeus-datastore-external-01b
+patches:
+  - patch: |-
+      - op: add
+        path: /spec/versions/0/additionalPrinterColumns/0/priority
+        value: 0
+    target:
+      kind: CustomResourceDefinition
+      name: apisixglobalrules.apisix.apache.org
+  - patch: |-
+      - op: add
+        path: /spec/versions/0/additionalPrinterColumns/0/priority
+        value: 0
+    target:
+      kind: CustomResourceDefinition
+      name: apisixpluginconfigs.apisix.apache.org
+  - patch: |-
+      - op: add
+        path: /spec/versions/0/additionalPrinterColumns/0/priority
+        value: 0
+    target:
+      kind: CustomResourceDefinition
+      name: apisixroutes.apisix.apache.org

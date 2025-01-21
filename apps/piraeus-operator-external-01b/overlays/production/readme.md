@@ -11,6 +11,7 @@
   - burst.nvme.linstor-external-01b/
   - sustain.nvme.linstor-external-01b/
   - optane.nvme.linstor-external-01b/
+- immediate.delete.performance.nvme-ssd-mix.linstor-external-01b
 - 01b.us
   - boot drives
     - zwkrcejc
@@ -22,16 +23,16 @@
   - linstor/drbd/extra drives
     - host*drives type
       - 2*1 optane-1.5-nvme (u.2 1.5TB - Intel Optane DC P4800X Series 1.5TB PCIe NVMe 2.5in U.2 SSD SSDPE21K015TA)
-        - nvme_optane-medium_latency-medium_throughput-low_capacity
+        - optane.nvme.linstor-external-01b
           - TODO
       - 3*1 medium-2.0-nvme (m.2 2.0TB - samsung 980 pro)
-        - nvme_nand-medium_latency-low_throughput-medium_capacity
+        - basic.nvme.linstor-external-01b
           - CREATED: storage-pool: xcp-sr-linstor_group_thin_device
       - 2*1 medium-1.0-nvme   (m.2 1.0TB - samsung 990 pro)
-        - nvme_nand-medium_latency-medium_throughput-low_capacity
+        - burst.nvme.linstor-external-01b
           - TODO
       - 2*2 medium-4.0-nvme   (m.2 4.0TB - hp fx900 pro)
-        - nvme_nand-medium_latency-medium_throughput-medium_capacity
+        - sustain.nvme.linstor-external-01b
           - TODO
 
 ```

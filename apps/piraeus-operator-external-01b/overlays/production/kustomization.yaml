@@ -6,3 +6,5 @@ resources:
   - linstor-cluster/
   - linstor-satellite-configuration/
   - storage-class/
+patches:
+  - path: patches/crd-priority.yaml
