@@ -3,9 +3,10 @@ kind: StorageClass
 metadata:
   name: wait.delete.basic.nvme.linstor-external-01b
   namespace: piraeus-datastore-external-01b
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
 provisioner: linstor.csi.linbit.com
 parameters:
-  storageclass.kubernetes.io/is-default-class: "true"
   # csi.storage.k8s.io/fstype: xfs
   linstor.csi.linbit.com/autoPlace: "2"
   linstor.csi.linbit.com/storagePool: "xcp-sr-linstor_group_thin_device"
