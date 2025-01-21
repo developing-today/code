@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: immediate.retain.nvme_nand.medium_capacity.medium_throughput.low_latency.linstor-external-01b
+  name: immediate.retain.basic.nvme.linstor-external-01b
   namespace: piraeus-datastore-external-01b
 provisioner: linstor.csi.linbit.com
 parameters:

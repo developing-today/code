@@ -1,15 +1,16 @@
 - type: nvme_optane / nvme_nand / sata_ssd / sata_mixed / sata_hdd
   - general type of storage drive
-- latency: low_latency / medium_latency / high_latency
-  - latency compared to other drives of the same type
-- throughput: ultra_low_throughput / low_throughput / medium_throughput / high_throughput / ultra_high_throughput / max_throughput
-  - throughput compared to other drives of the same type
-  - by-type: consumer_or_lower, prosumer/medium_enterprise, above_medium_enterprise, max_performance_for_form_factor
+- tier: basic / standard / premium / ultra
+  - general tier of storage drive
 - capacity: ultra_low_capacity / low_capacity / medium_capacity / high_capacity / ultra_high_capacity / max_capacity
-  - max capacity per persistent volume
+  - max capacity per persistent volume low/medium/high
   - nvme: less_than_2, 2_to_4, more_than_4
   - hdd: less_than_12, 12_to_24, more_than_24
-
+- linstor
+  - basic.nvme.linstor-external-01b/
+  - burst.nvme.linstor-external-01b/
+  - sustain.nvme.linstor-external-01b/
+  - optane.nvme.linstor-external-01b/
 - 01b.us
   - boot drives
     - zwkrcejc
@@ -29,7 +30,7 @@
       - 2*1 medium-1.0-nvme   (m.2 1.0TB - samsung 990 pro)
         - nvme_nand-medium_latency-medium_throughput-low_capacity
           - TODO
-      - 2*2 medium-2.0-nvme   (m.2 2.0TB - hp fx900 pro)
+      - 2*2 medium-4.0-nvme   (m.2 4.0TB - hp fx900 pro)
         - nvme_nand-medium_latency-medium_throughput-medium_capacity
           - TODO
 

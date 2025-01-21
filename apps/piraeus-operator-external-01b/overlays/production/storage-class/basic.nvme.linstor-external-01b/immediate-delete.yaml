@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: wait.retain.nvme-nand.medium-capacity.low-throughput.medium-latency.linstor-external-01b
+  name: immediate.delete.basic.nvme.linstor-external-01b
   namespace: piraeus-datastore-external-01b
 provisioner: linstor.csi.linbit.com
 parameters:
@@ -13,5 +13,5 @@ parameters:
   linstor.csi.linbit.com/disklessOnRemaining: "true"
   linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
 allowVolumeExpansion: true
-reclaimPolicy: Retain
-volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
