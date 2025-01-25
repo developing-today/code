@@ -219,6 +219,10 @@
         sync_address = "https://api.atuin.sh";
         search_mode = "prefix";
       };
+      flags = [
+        "--disable-up-arrow"
+        # "--disable-ctrl-r"
+      ];
     };
     ghostty = {
       enable = true;
