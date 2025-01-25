@@ -44,6 +44,12 @@ let
     in
     array |> flattenDeep |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { };
 
+  matrix =
+    spec: f:
+    builtins.map (combo: f (lib.genAttrs (builtins.attrNames spec) (name: combo.${name}))) (
+      lib.cartesianProduct (lib.genAttrs (builtins.attrNames spec) (name: spec.${name}))
+    );
+
   mkEnv =
     name: value:
     lib.writeText "${name}.env" (
@@ -436,6 +442,7 @@ let
         lib
         root
         merge
+        matrix
         from-root
         public-key
         group-key
