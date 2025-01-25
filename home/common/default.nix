@@ -211,19 +211,19 @@
     #     BlockAboutConfig = true;
     #   };
     # };
-    atuin = {
-      enable = true;
-      settings = {
-        auto_sync = true;
-        sync_frequency = "1m";
-        sync_address = "https://api.atuin.sh";
-        search_mode = "prefix";
-      };
-      flags = [
-        "--disable-up-arrow"
-        # "--disable-ctrl-r"
-      ];
-    };
+    # atuin = {
+    #   enable = true;
+    #   settings = {
+    #     auto_sync = true;
+    #     sync_frequency = "1m";
+    #     sync_address = "https://api.atuin.sh";
+    #     search_mode = "prefix";
+    #   };
+    #   flags = [
+    #     "--disable-up-arrow"
+    #     # "--disable-ctrl-r"
+    #   ];
+    # };
     ghostty = {
       enable = true;
       package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
