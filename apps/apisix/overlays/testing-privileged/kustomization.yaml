@@ -15,6 +15,9 @@ helmCharts:
         enabled: true
       gateway:
         type: LoadBalancer
+        annotations:
+          metallb.universe.tf/address-pool: first-pool
+        externalTrafficPolicy: Local
       ingress-controller:
         enabled: true
         config:
