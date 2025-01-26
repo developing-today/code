@@ -18,5 +18,12 @@ helmCharts:
             serviceNamespace: testing-privileged
       global:
         namespace: testing-privileged
-patches:
-  - path: ignore-additional-printer-columns-patch.yaml
+
+  # https://github.com/argoproj-labs/argocd-autopilot/issues/631
+  # https://github.com/apache/apisix-helm-chart/issues/531
+  # https://github.com/apache/apisix-helm-chart/pull/797
+  # ignoreDifferences:
+  #   - group: apiextensions.k8s.io
+  #     kind: CustomResourceDefinition
+  #     jqPathExpressions:
+  #       - '.spec.versions[].additionalPrinterColumns[]'
