@@ -1,23 +1,33 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: testing-privileged
+namespace: testing-privileged &namespace
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
     version: 2.x.x
     releaseName: apisix
-    namespace: testing-privileged
+    namespace: *namespace
     includeCRDs: true
+    # ??
+    # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v0.5.0/standard-install.yaml
     valuesInline:
       dashboard:
         enabled: true
+      gateway:
+        type: LoadBalancer
       ingress-controller:
         enabled: true
         config:
+          ingressPublishService: testing-privileged/apisix-gateway
+          # ingressPublishService: testing-privileged/apisix-ingress
+          # ingressPublishService: testing-privileged/ingress
+          update-status:
           apisix:
-            serviceNamespace: testing-privileged
+            serviceNamespace: *namespace
+            kubernetes:
+              enableGatewayAPI: true
       global:
-        namespace: testing-privileged
+        namespace: *namespace
 
   # https://github.com/argoproj-labs/argocd-autopilot/issues/631
   # https://github.com/apache/apisix-helm-chart/issues/531
