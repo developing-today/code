@@ -32,6 +32,15 @@ helmCharts:
       global:
         namespace: *namespace
 
+patchesStrategicMerge:
+  - |-
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: apisix-gateway
+      namespace: testing-privileged
+    spec:
+      type: LoadBalancer
   # https://github.com/argoproj-labs/argocd-autopilot/issues/631
   # https://github.com/apache/apisix-helm-chart/issues/531
   # https://github.com/apache/apisix-helm-chart/pull/797
