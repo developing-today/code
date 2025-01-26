@@ -18,3 +18,5 @@ helmCharts:
             serviceNamespace: testing-privileged
       global:
         namespace: testing-privileged
+patches:
+  - path: ignore-additional-printer-columns-patch.yaml
