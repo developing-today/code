@@ -13,32 +13,39 @@ helmCharts:
     valuesInline:
       dashboard:
         enabled: true
+      apisix:
+        enabled: true
+        admin:
+          allow:
+            ipList:
+              - 0.0.0.0/0
       gateway:
         type: LoadBalancer
-        tls:
-          enabled: false
         annotations:
           metallb.universe.tf/address-pool: first-pool
+        ports:
+          - port: 80
+            targetPort: 9080
+            protocol: TCP
+            name: http
         externalTrafficPolicy: Local
       ingress-controller:
         enabled: true
         config:
           gateway:
             enabled: true
-            name: apisix-gateway
-            gatewayAPIVersion: v1beta1
+            instanceName: *namespace
+            gatewayClassName: apisix
+            controllerName: "gateway.apisix.apache.org/gateway-controller"
           kubernetes:
-            watchNamespace: "*"
             enableGatewayAPI: true
+            watchNamespaces: ["argocd", *namespace]
+            ingressPublishService: "testing-privileged/apisix-gateway"
           apisix:
-            defaultLabelFields:
-              - app.kubernetes.io/name
-              - app.kubernetes.io/version
+            adminAPIVersion: v3
             serviceNamespace: *namespace
             serviceName: apisix-admin
-            adminAPIVersion: v3
-      global:
-        namespace: *namespace
+            adminKey: edd1c9f0985e76a2
 patches:
   - patch: |
       apiVersion: v1
