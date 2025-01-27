@@ -4,7 +4,7 @@ metadata:
   name: argocd-route
   namespace: testing-privileged
   labels:
-    app.kubernetes.io/instance: production-argocd-gateway
+    app.kubernetes.io/instance: testing-privileged-argocd-gateway
     app.kubernetes.io/name: argocd-gateway
     app.kubernetes.io/part-of: argocd
 spec:
