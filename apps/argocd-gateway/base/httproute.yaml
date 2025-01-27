@@ -6,6 +6,7 @@ spec:
   parentRefs:
     - name: argocd-gateway
       sectionName: http
+      namespace: argocd
   rules:
     - matches:
         - path:
