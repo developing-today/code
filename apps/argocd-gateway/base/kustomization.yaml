@@ -6,10 +6,10 @@ resources:
   - httproute.yaml
 
 patches:
-  - |-
-    apiVersion: v1
-    kind: Service
-    metadata:
-      name: argocd-server
-    spec:
-      type: ClusterIP
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: argocd-server
+      spec:
+        type: ClusterIP
