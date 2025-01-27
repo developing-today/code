@@ -1,12 +1,8 @@
-# kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: &namespace testing-privileged
-
 resources:
-  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
   - gatewayclass.yaml
-
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
@@ -24,18 +20,24 @@ helmCharts:
         externalTrafficPolicy: Local
       ingress-controller:
         enabled: true
+        name: ingress-controller
+        image:
+          repository: apache/apisix-ingress-controller
+          tag: 1.8.0
+        deployment:
+          replicas: 1
         config:
-          ingressPublishService: testing-privileged/apisix-gateway
-          gateway:
-            enabled: true
-            gatewayAPIVersion: v1beta1
+          apisix:
+            serviceName: apisix-admin
+            serviceNamespace: *namespace
+            adminAPIVersion: v3
           kubernetes:
             enableGatewayAPI: true
-          apisix:
-            serviceNamespace: *namespace
+            gatewayAPIVersion: v1beta1
+            watchNamespace: "*"
+            ingressPublishService: testing-privileged/apisix-gateway
       global:
         namespace: *namespace
-
 patches:
   - patch: |
       apiVersion: v1
