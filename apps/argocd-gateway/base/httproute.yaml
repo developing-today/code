@@ -1,21 +1,27 @@
-apiVersion: gateway.networking.k8s.io/v1beta1
+apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: argocd-route
   namespace: testing-privileged
+  labels:
+    app.kubernetes.io/instance: production-argocd-gateway
+    app.kubernetes.io/name: argocd-gateway
+    app.kubernetes.io/part-of: argocd
 spec:
   parentRefs:
-    - name: argocd-gateway
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: argocd-gateway
       namespace: testing-privileged
   rules:
-    - matches:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: argocd-server
+          namespace: argocd
+          port: 80
+          weight: 1
+      matches:
         - path:
             type: PathPrefix
             value: /argo
-        - path:
-            type: PathPrefix
-            value: /argo/
-      backendRefs:
-        - name: argocd-server
-          kind: Service
-          port: 80
