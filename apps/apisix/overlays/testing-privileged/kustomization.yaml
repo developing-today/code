@@ -34,18 +34,16 @@ helmCharts:
         config:
           gateway:
             enabled: true
-            instanceName: *namespace
-            gatewayClassName: apisix
-            controllerName: "gateway.apisix.apache.org/gateway-controller"
+            instance_name: *namespace
+            gateway_class_name: apisix
+            controller_name: "gateway.apisix.apache.org/gateway-controller"
           kubernetes:
-            enableGatewayAPI: true
-            watchNamespaces: ["argocd", *namespace]
-            ingressPublishService: "testing-privileged/apisix-gateway"
+            enable_gateway_api: true
+            ingress_publish_service: "testing-privileged/apisix-gateway"
           apisix:
             adminAPIVersion: v3
             serviceNamespace: *namespace
             serviceName: apisix-admin
-            # adminKey: edd1c9f0985e76a2
 patches:
   - patch: |
       apiVersion: v1
