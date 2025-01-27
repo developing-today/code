@@ -45,7 +45,7 @@ helmCharts:
             adminAPIVersion: v3
             serviceNamespace: *namespace
             serviceName: apisix-admin
-            adminKey: edd1c9f0985e76a2
+            # adminKey: edd1c9f0985e76a2
 patches:
   - patch: |
       apiVersion: v1
