@@ -20,6 +20,8 @@ helmCharts:
             ipList:
               - 0.0.0.0/0
       gateway:
+        enabled: true
+        instance_name: *namespace
         type: LoadBalancer
         annotations:
           metallb.universe.tf/address-pool: first-pool
