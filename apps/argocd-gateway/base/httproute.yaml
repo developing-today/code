@@ -15,3 +15,17 @@ spec:
       backendRefs:
         - name: argocd-server
           port: 80
+          kind: Service
+          namespace: argocd
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+        - path:
+            type: PathPrefix
+            value: /oauth2
+      backendRefs:
+        - name: argocd-server
+          port: 443
+          kind: Service
+          namespace: argocd
