@@ -15,27 +15,28 @@ helmCharts:
         enabled: true
       gateway:
         type: LoadBalancer
+        tls:
+          enabled: false
         annotations:
           metallb.universe.tf/address-pool: first-pool
         externalTrafficPolicy: Local
       ingress-controller:
         enabled: true
-        name: ingress-controller
-        image:
-          repository: apache/apisix-ingress-controller
-          tag: 1.8.0
-        deployment:
-          replicas: 1
         config:
-          apisix:
-            serviceName: apisix-admin
-            serviceNamespace: *namespace
-            adminAPIVersion: v3
-          kubernetes:
-            enableGatewayAPI: true
+          gateway:
+            enabled: true
+            name: apisix-gateway
             gatewayAPIVersion: v1beta1
+          kubernetes:
             watchNamespace: "*"
-            ingressPublishService: testing-privileged/apisix-gateway
+            enableGatewayAPI: true
+          apisix:
+            defaultLabelFields:
+              - app.kubernetes.io/name
+              - app.kubernetes.io/version
+            serviceNamespace: *namespace
+            serviceName: apisix-admin
+            adminAPIVersion: v3
       global:
         namespace: *namespace
 patches:
