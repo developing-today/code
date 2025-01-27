@@ -1,9 +1,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+namespace: argocd
+
 resources:
   - gateway.yaml
   - httproute.yaml
+
+commonLabels:
+  app.kubernetes.io/name: argocd-gateway
+  app.kubernetes.io/part-of: argocd
 
 patches:
   - patch: |

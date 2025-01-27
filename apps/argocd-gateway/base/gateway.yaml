@@ -2,12 +2,10 @@ apiVersion: gateway.networking.k8s.io/v1beta1
 kind: Gateway
 metadata:
   name: argocd-gateway
-  namespace: argocd
 spec:
   gatewayClassName: apisix
   listeners:
     - name: http
-      hostname: "argocd.local"
       protocol: HTTP
       port: 80
       allowedRoutes:
