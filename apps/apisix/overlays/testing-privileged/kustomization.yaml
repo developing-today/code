@@ -1,8 +1,12 @@
+# kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: &namespace testing-privileged
+
 resources:
   - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+  - gatewayclass.yaml
+
 helmCharts:
   - name: apisix
     repo: https://charts.apiseven.com
@@ -10,8 +14,6 @@ helmCharts:
     releaseName: apisix
     namespace: *namespace
     includeCRDs: true
-    # ??
-    # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v0.5.0/standard-install.yaml
     valuesInline:
       dashboard:
         enabled: true
@@ -24,25 +26,28 @@ helmCharts:
         enabled: true
         config:
           ingressPublishService: testing-privileged/apisix-gateway
-          # ingressPublishService: testing-privileged/apisix-ingress
-          # ingressPublishService: testing-privileged/ingress
-          update-status:
+          gateway:
+            enabled: true
+            gatewayAPIVersion: v1beta1
+          kubernetes:
+            enableGatewayAPI: true
           apisix:
             serviceNamespace: *namespace
-            kubernetes:
-              enableGatewayAPI: true
       global:
         namespace: *namespace
 
-patchesStrategicMerge:
-  - |-
-    apiVersion: v1
-    kind: Service
-    metadata:
+patches:
+  - patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: apisix-gateway
+        namespace: testing-privileged
+      spec:
+        type: LoadBalancer
+    target:
+      kind: Service
       name: apisix-gateway
-      namespace: testing-privileged
-    spec:
-      type: LoadBalancer
   # https://github.com/argoproj-labs/argocd-autopilot/issues/631
   # https://github.com/apache/apisix-helm-chart/issues/531
   # https://github.com/apache/apisix-helm-chart/pull/797
