@@ -72,6 +72,7 @@ in
         # nix-software-center
         # zed-editor
         # zigpkgs.master
+        code-cursor
         gamemode
         argo
         argocd
