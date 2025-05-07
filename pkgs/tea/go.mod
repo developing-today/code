@@ -5,7 +5,7 @@ go 1.21.3
 require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/log v0.3.1
-	github.com/charmbracelet/ssh v0.0.0-20230822194956-1a051f898e09
+	github.com/charmbracelet/ssh 383d50896132
 	github.com/charmbracelet/wish v1.2.0
 	github.com/muesli/termenv v0.15.2
 )
