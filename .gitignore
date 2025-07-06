@@ -1,3 +1,9 @@
+main
+*.so
+*.rh
+**/*.so
+**/*.rh
+**/main
 tags
 .use_watchman
 **/.use_watchman
