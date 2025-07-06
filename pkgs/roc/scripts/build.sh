@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2086,SC2154
 set -exuo pipefail
-
+echo "$0 $*"
 usage() {
   echo "usage: $0 [--platform p] [--app a] [--static] [--skip-run]"
   exit 1
@@ -48,7 +48,7 @@ if [[ $# -gt 1 ]]; then
       fi
       application=$1
       shift
-      if [ "$#" -lt 2 ]; then
+      if [ "$#" -lt 1 ]; then
         break
       fi
       platform=$1
