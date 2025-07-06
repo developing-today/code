@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../main.roc" }
+app [main] { pf: platform "../../../platforms/go/main.roc" }
 
 # Can segfault on some Ubuntu 20.04 CI machines, see #164.
 main : Str
