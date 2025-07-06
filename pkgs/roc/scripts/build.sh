@@ -34,7 +34,6 @@ while true; do
   --help) usage ;;
   --)
     shift
-    break
     ;;
   # *) usage ;;
   *)
