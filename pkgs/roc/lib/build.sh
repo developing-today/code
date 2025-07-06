@@ -7,7 +7,7 @@ usage() {
   exit 1
 }
 trap 'echo aborted; exit 1' INT ERR
-platform=${PLATFORM:-go}
+platform=${PLATFORM:-go-cli}
 application=${APPLICATION:-hello}
 static=0
 skip_run=0
@@ -57,7 +57,7 @@ if [[ $# -gt 1 ]]; then
     esac
   done
 fi
-platform=${platform:-go}
+platform=${platform:-go-cli}
 application=${application:-hello}
 platform_path=${PLATFORM_PATH:-platforms/${platform}}
 app_path=${APPLICATION_PATH:-applications/${application}/${platform}}

@@ -1,5 +1,5 @@
 app [main] {
-  pf: platform "../../../platforms/go/main.roc"
+  pf: platform "../../../platforms/go-cli/main.roc"
 }
 import Lib.Display exposing [str, matrix]
 main : Str
