@@ -14,7 +14,7 @@ skip_run=0
 
 eval set -- "$(getopt -o "" --long platform:,app:,static,skip-run,help -- "$@")"
 while true; do
-  case $1 in
+  case ${1:---} in
   --platform)
     platform=$2
     shift 2
@@ -34,7 +34,7 @@ while true; do
   --help) usage ;;
   --)
     shift
-    # break
+    break
     ;;
   # *) usage ;;
   *)
