@@ -13,42 +13,51 @@ static=0
 skip_run=0
 
 eval set -- "$(getopt -o "" --long platform:,app:,static,skip-run,help -- "$@")"
-while true; do
-  case ${1:---} in
-  --platform)
-    platform=$2
-    shift 2
-    ;;
-  --app)
-    application=$2
-    shift 2
-    ;;
-  --static)
-    static=1
-    shift
-    ;;
-  --skip-run)
-    skip_run=1
-    shift
-    ;;
-  --help) usage ;;
-  --)
-    shift
-    ;;
-  # *) usage ;;
-  *)
-    if [ -z "$1" ]; then
-      usage
-    fi
-    application=$1
-    if [ "$#" -lt 2 ]; then
+if [[ $# -gt 1 ]]; then
+  while true; do
+    case ${1:""} in
+    --platform)
+      platform=$2
+      shift 2
+      ;;
+    --application)
+      application=$2
+      shift 2
+      ;;
+    --app)
+      application=$2
+      shift 2
+      ;;
+    --static)
+      static=1
+      shift
+      ;;
+    --skip-run)
+      skip_run=1
+      shift
+      ;;
+    --help) usage ;;
+    --)
+      shift
+      # break
+      ;;
+    # *) usage ;;
+    *)
+      if [ -z "$1" ]; then
+        usage
+      fi
+      application=$1
+      shift
+      if [ "$#" -lt 2 ]; then
+        break
+      fi
+      platform=$1
+      shift
       break
-    fi
-    platform=$1
-    break
-    ;;
-  esac
-done
+      ;;
+    esac
+  done
+fi
 platform=${platform:-go}
 application=${application:-hello}
 
