@@ -1,5 +1,6 @@
-app [main] { pf: platform "../../../platforms/go/main.roc" }
-
-# Can segfault on some Ubuntu 20.04 CI machines, see #164.
+app [main] {
+  pf: platform "../../../platforms/go/main.roc"
+}
+import Lib.Hello as Hello
 main : Str
-main = "Roc <3 Go!\n"
+main = Hello.str

@@ -3,9 +3,9 @@ package main
 /*
 #cgo LDFLAGS: -L. -lapp
 #include "./host.h"
+#include <stdint.h>
 */
 import "C"
-
 import (
 	"fmt"
 	"os"
@@ -67,4 +67,11 @@ func roc_dbg(loc *C.struct_RocStr, msg *C.struct_RocStr, src *C.struct_RocStr) {
 	} else {
 		fmt.Fprintf(os.Stderr, "[%s] {%s} = {%s}\n", locStr, srcStr, msgStr)
 	}
+}
+
+//export roc_panic
+func roc_panic(msg *C.char, length C.uint64_t, tag C.uint64_t) {
+	b := C.GoBytes(unsafe.Pointer(msg), C.int(length))
+	fmt.Fprintf(os.Stderr, "roc panic (tag %d): %s\n", uint64(tag), string(b))
+	os.Exit(1)
 }

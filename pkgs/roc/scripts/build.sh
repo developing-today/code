@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2086,SC2154
-set -euo pipefail
+set -exuo pipefail
 
 usage() {
   echo "usage: $0 [--platform p] [--app a] [--static] [--skip-run]"
@@ -48,11 +48,18 @@ app_path=${APPLICATION_PATH:-applications/${application}/${platform}}
     echo "missing dirs: $platform_path or $app_path"
     exit 1
   }
-
+if [ -z "$platform_path/Lib" ]; then
+  ln -s ../../lib "$platform_path/Lib"
+fi
+if [ -z "$app_path/Lib" ]; then
+  ln -s ../../../lib "$app_path/Lib"
+fi
 app_main=$app_path/main.roc
 app_lib=$app_path/libapp.so
+rm -f "$app_lib" 2>/dev/null || true
 host_main=$platform_path/main.roc
 host_bin=$platform_path/dynhost
+rm -f "$host_bin" 2>/dev/null || true
 
 trap 'echo aborted; exit 1' INT ERR
 
