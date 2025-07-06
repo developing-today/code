@@ -34,11 +34,24 @@ while true; do
   --help) usage ;;
   --)
     shift
+    # break
+    ;;
+  # *) usage ;;
+  *)
+    if [ -z "$1" ]; then
+      usage
+    fi
+    application=$1
+    if [ "$#" -lt 2 ]; then
+      break
+    fi
+    platform=$1
     break
     ;;
-  *) usage ;;
   esac
 done
+platform=${platform:-go}
+application=${application:-hello}
 
 platform_path=${PLATFORM_PATH:-platforms/${platform}}
 app_path=${APPLICATION_PATH:-applications/${application}/${platform}}
@@ -48,10 +61,10 @@ app_path=${APPLICATION_PATH:-applications/${application}/${platform}}
     echo "missing dirs: $platform_path or $app_path"
     exit 1
   }
-if [ -z "$platform_path/Lib" ]; then
+if [ ! -d "$platform_path/Lib" ]; then
   ln -s ../../lib "$platform_path/Lib"
 fi
-if [ -z "$app_path/Lib" ]; then
+if [ ! -d "$app_path/Lib" ]; then
   ln -s ../../../lib "$app_path/Lib"
 fi
 app_main=$app_path/main.roc
