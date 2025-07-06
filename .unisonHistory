@@ -1,0 +1,28 @@
+exit
+dir
+square
+ls lib/base
+ls lib/base/
+ls lib/base/.
+ls lib/base
+ls lib
+ls
+ls lib.base.data.List
+add
+l
+switch unison/main
+switch]
+projects
+?
+pwd
+dir
+?
+ls
+cd ..
+ls
+ls lib
+ls
+project.create unison
+help
+cd code
+ls

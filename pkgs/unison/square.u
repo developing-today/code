@@ -1,0 +1,4 @@
+square : Nat -> Nat
+square x =
+  use Nat *
+  x * x

@@ -1,0 +1,4 @@
+inc : Nat -> Nat
+inc x =
+  use Nat +
+  x + 1

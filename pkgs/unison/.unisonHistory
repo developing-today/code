@@ -1,0 +1,40 @@
+view square
+> square 3
+?
+joyous-toad
+projects
+exit
+ucm
+uit
+?
+3 inv
+> inc 2
+inc 1
+add inc
+inc x = x + 1
+run main.u
+?
+loadrun
+load
+:square 2
+: square 2
+>: square 2
+> square 2
+|>
+>|
+square 2.0
+view square
+?
+find square
+find
+add
+square 2
+square
+square 2
+add square
+square 2
+load square.u
+add
+ui
+project.create
+projects.create
