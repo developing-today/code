@@ -44,6 +44,7 @@ in
         hyprland-qtutils.packages.${system}.hyprland-qtutils
         clan-core.packages.${system}.clan-cli
       ])
+      ++ (with inputs.roc.packages.${system}; [ cli ])
       ++ (with inputs.affinity-nix.packages.${system}; [
         photo
         publisher
@@ -72,6 +73,8 @@ in
         # nix-software-center
         # zed-editor
         # zigpkgs.master
+        unison-ucm
+        # unison-fsmonitor
         code-cursor
         gamemode
         argo

@@ -113,7 +113,7 @@
           "2" = "<C-k>";
           "3" = "<C-l>";
           "4" = "<C-m>";
-};
+        };
       };
     };
     gitsigns = { };
@@ -136,7 +136,9 @@
         pylsp = { };
         #pyright = {};
         nixd = { };
-        #nix-ls = { };
+        #nix-ls = { }
+        unison = { };
+        #zig = { };
       };
       onAttach = ''
         -- Enable completion triggered by <c-x><c-o>
@@ -194,5 +196,6 @@
     nvim-tree.updateFocusedFile = {
       enable = true;
     };
+    zig = { };
   };
 }

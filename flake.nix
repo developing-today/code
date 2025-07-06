@@ -21,6 +21,13 @@ rec {
       (lib.make-clan)
     ];
   inputs = {
+    roc = {
+      url = "github:roc-lang/roc?shallow=1";
+      inputs.nixpkgs.follows = "nixpkgs";
+      # inputs.rust-overlay.follows = "rust-overlay";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.flake-compat.follows = "flake-compat";
+    };
     hyprland-qtutils = {
       url = "github:hyprwm/hyprland-qtutils";
       inputs.nixpkgs.follows = "nixpkgs";

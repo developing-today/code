@@ -1067,6 +1067,7 @@
         zee
         zellij
         zellij # tmux
+        zig
         zip
         zlib
         zoom-us
