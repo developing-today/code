@@ -3,4 +3,4 @@ app [main] {
 }
 import Lib.Display exposing [str, matrix]
 main : Str
-main = str (matrix [261, 23])
+main = str(matrix [261, 23])
