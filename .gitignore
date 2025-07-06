@@ -1,4 +1,6 @@
 main
+dynhost
+**/dynhost
 *.so
 *.rh
 **/*.so
