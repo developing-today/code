@@ -1,5 +1,5 @@
 app [main!] {
-    pf: platform "../../../platforms/rust-basic-cli/platform/main.roc",
+    pf: platform "./Platform/main.roc",
     lib: "./Lib/main.roc",
 }
 import lib.Hello
