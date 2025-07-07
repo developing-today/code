@@ -61,6 +61,7 @@ platform=${platform:-go-basic-cli}
 application=${application:-hello}
 platform_path=${PLATFORM_PATH:-./platforms/${platform}}
 app_path=${APPLICATION_PATH:-./applications/${application}/${platform}}
+app_lib=$app_path/libapp.so
 if [[ ! -d $app_path ]]; then
   echo "missing dir: $app_path"
   exit 1
@@ -69,43 +70,41 @@ if [ ! -d "$app_path/Lib" ]; then
   ln -s ../../../lib "$app_path/Lib"
 fi
 app_main=$app_path/main.roc
-app_lib=$app_path/libapp.so
 rm -f "$app_lib" 2>/dev/null || true
 roc build --lib "$app_main" --output "$app_lib"
-abs_app_dir=$(realpath "$app_path")
-rel_app_dir="../applications/${application}/${platform}"
 if [[ -d "$platform_path" ]]; then
-  if [ ! -d "$platform_path/Lib" ]; then
-    ln -s ../../lib "$platform_path/Lib"
+  platform_roc_path="$platform_path"
+  if [[ -d "$platform_path/platform" ]]; then
+    platform_roc_path="$platform_path/platform"
   fi
-  host_main=$platform_path/main.roc
-  host_bin=$platform_path/dynhost
-  nix_file="$platform_path/flake.nix"
-  roc_build_file="$platform_path/build.roc"
-  rm -f "$host_bin" 2>/dev/null || true
+  if [ ! -d "$platform_roc_path/Lib" ]; then
+
+    ln -s ../../../lib "$platform_roc_path/Lib"
+  fi
+  host_main=$platform_roc_path/main.roc
+  abs_app_dir=$(realpath "$app_path")
+  rel_app_dir="../applications/${application}/${platform}"
   pushd "$platform_path" >/dev/null
-  if [[ -f "$nix_file" ]]; then
-    if ! command -v nix >/dev/null; then
-      echo "nix is not installed, skipping nix build"
-    else
-      if eval "nix eval --json .#devShell.x86_64-linux >/dev/null 2>&1"; then
-        nix develop
-      else
-        echo "nix flake is not compatible with this system, skipping nix build"
-      fi
+  host_bin=$platform_path/dynhost
+  roc_build_file="build.roc"
+  if [[ -e "$roc_build_file" ]]; then
+    # nix_file="flake.nix"
+    # if [[ -f "$nix_file" ]] && command -v nix && eval "nix eval --json .#devShell.x86_64-linux >/dev/null 2>&1"; then
+    #   nix develop --command "roc \"$roc_build_file\""
+    # else
+    roc "$roc_build_file"
+    # fi
+    if [ -d "target/release" ]; then
+      host_bin="$platform_path/target/release/host"
     fi
-  fi
-  if [[ -f "$roc_build_file" ]]; then
-    roc build.roc
-  else
-    if [[ $platform_path == *go-* ]] || [[ $platform_path == *-go ]]; then
-      # TODO: build.roc?
-      export CGO_LDFLAGS="-L${abs_app_dir} -Wl,-rpath,'\$ORIGIN/${rel_app_dir}'"
-      ldflags=()
-      ((static)) && ldflags=(-ldflags "-extldflags=-static")
-      go build -buildmode=pie "${ldflags[@]}" -o "$(basename "$host_bin")"
-      unset CGO_LDFLAGS
-    fi
+  elif [[ $platform_path == *go-* ]] || [[ $platform_path == *-go ]]; then
+    # TODO: build.roc?
+    rm -f "$host_bin" 2>/dev/null || true
+    export CGO_LDFLAGS="-L${abs_app_dir} -Wl,-rpath,'\$ORIGIN/${rel_app_dir}'"
+    ldflags=()
+    ((static)) && ldflags=(-ldflags "-extldflags=-static")
+    go build -buildmode=pie "${ldflags[@]}" -o "$(basename "$host_bin")"
+    unset CGO_LDFLAGS
   fi
   popd >/dev/null
   roc preprocess-host "$host_bin" "$host_main" "$app_lib"

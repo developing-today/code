@@ -4,5 +4,5 @@ set -exuo pipefail
 ./hello roc-lang_rust-basic-cli
 ./hello go-basic-cli
 ./display go-basic-cli
-./hello rust-ratatui-cli
+./hello rust-basic-cli
 echo "Done"

@@ -1,5 +1,5 @@
 app [main] {
-  pf: platform "../../../platforms/ratatui-cli/main.roc"
+    pf: platform "../../../platforms/ratatui-cli/main.roc",
 }
 import Lib.Hello as Hello
 main : Str
