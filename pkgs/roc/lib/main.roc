@@ -1,5 +1,5 @@
 package [
-  Display,
-  Hello,
-  Square
+    Display,
+    Hello,
+    Square,
 ] {}

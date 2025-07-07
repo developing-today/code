@@ -1,6 +1,7 @@
 app [main] {
     pf: platform "../../../platforms/go-basic-cli/main.roc",
+    lib: "./Lib/main.roc",
 }
-import Lib.Hello as Hello
+import lib.Hello
 main : Str
-main = Hello.str
+main = Hello.str "Go"
