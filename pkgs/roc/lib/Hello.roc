@@ -1,5 +1,5 @@
 module [str]
-import Lib.Square exposing [f64]
+import Square exposing [f64]
 num : F64
 num = 8192.0125
 str : Str

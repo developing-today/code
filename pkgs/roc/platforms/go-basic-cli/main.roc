@@ -1,4 +1,4 @@
-platform "go-cli"
+platform "go-basic-cli"
     requires {} { main : Str }
     exposes []
     packages {}

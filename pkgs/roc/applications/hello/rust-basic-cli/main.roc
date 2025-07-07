@@ -1,12 +1,11 @@
 app [main!] {
     pf: platform "../../../platforms/rust-basic-cli/platform/main.roc",
+    lib: "../../../lib/main.roc"
 }
-## import Lib.Hello as Hello
-## main : Str
-## main = Hello.str
-
+import lib.Hello
 import pf.Stdout
 main! : {} => Result {} _
 main! = |{}|
-    Stdout.line!("Roc loves Rust")?
+    Stdout.line!(Hello.str)?
+    Stdout.line!("Roc ❤️  Rust")?
     Ok({})
