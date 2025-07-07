@@ -1070,6 +1070,7 @@
         zig
         zip
         zlib
+        zls
         zoom-us
         zoxide
         zstd

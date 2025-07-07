@@ -7,7 +7,7 @@ usage() {
   exit 1
 }
 trap 'echo aborted; exit 1' INT ERR
-platform=${PLATFORM:-go-basic-cli}
+platform=${PLATFORM:-go-cli}
 application=${APPLICATION:-hello}
 static=0
 skip_run=0
@@ -57,10 +57,10 @@ if [[ $# -gt 1 ]]; then
     esac
   done
 fi
-platform=${platform:-go-basic-cli}
+platform=${platform:-go-cli}
 application=${application:-hello}
-platform_path=${PLATFORM_PATH:-./platforms/${platform}}
-app_path=${APPLICATION_PATH:-./applications/${application}/${platform}}
+platform_path=${PLATFORM_PATH:-platforms/${platform}}
+app_path=${APPLICATION_PATH:-applications/${application}/${platform}}
 if [[ ! -d $app_path ]]; then
   echo "missing dir: $app_path"
   exit 1
@@ -80,34 +80,14 @@ if [[ -d "$platform_path" ]]; then
   fi
   host_main=$platform_path/main.roc
   host_bin=$platform_path/dynhost
-  nix_file="$platform_path/flake.nix"
-  roc_build_file="$platform_path/build.roc"
   rm -f "$host_bin" 2>/dev/null || true
   pushd "$platform_path" >/dev/null
-  if [[ -f "$nix_file" ]]; then
-    if ! command -v nix >/dev/null; then
-      echo "nix is not installed, skipping nix build"
-    else
-      if eval "nix eval --json .#devShell.x86_64-linux >/dev/null 2>&1"; then
-        nix develop
-      else
-        echo "nix flake is not compatible with this system, skipping nix build"
-      fi
-    fi
-  fi
-  if [[ -f "$roc_build_file" ]]; then
-    roc build.roc
-  else
-    if [[ $platform_path == *go-* ]] || [[ $platform_path == *-go ]]; then
-      # TODO: build.roc?
-      export CGO_LDFLAGS="-L${abs_app_dir} -Wl,-rpath,'\$ORIGIN/${rel_app_dir}'"
-      ldflags=()
-      ((static)) && ldflags=(-ldflags "-extldflags=-static")
-      go build -buildmode=pie "${ldflags[@]}" -o "$(basename "$host_bin")"
-      unset CGO_LDFLAGS
-    fi
-  fi
+  export CGO_LDFLAGS="-L${abs_app_dir} -Wl,-rpath,'\$ORIGIN/${rel_app_dir}'"
+  ldflags=()
+  ((static)) && ldflags=(-ldflags "-extldflags=-static")
+  go build -buildmode=pie "${ldflags[@]}" -o "$(basename "$host_bin")"
   popd >/dev/null
+  unset CGO_LDFLAGS
   roc preprocess-host "$host_bin" "$host_main" "$app_lib"
 fi
 ((skip_run)) || roc "$app_main"
