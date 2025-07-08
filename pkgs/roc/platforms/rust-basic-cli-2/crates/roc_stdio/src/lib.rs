@@ -110,3 +110,11 @@ pub fn stderr_write_bytes(bytes: &RocList<u8>) -> RocResult<(), roc_io_error::IO
         .map_err(|io_err| io_err.into())
         .into()
 }
+
+// CUSTOM
+
+/// hello! : Str => Result Str IOErr
+pub fn hello(line: &RocStr) -> RocResult<RocStr, roc_io_error::IOErr> {
+    let greeting = format!("Hello, {}!", line.as_str());
+    RocResult::ok(RocStr::from(greeting.as_str()))
+}

@@ -307,6 +307,7 @@ pub fn init() {
         roc_fx_stdout_line as _,
         roc_fx_stdout_write as _,
         roc_fx_stdout_write_bytes as _,
+        roc_fx_hello as _,
         roc_fx_stderr_line as _,
         roc_fx_stderr_write as _,
         roc_fx_stderr_write_bytes as _,
@@ -446,6 +447,11 @@ pub extern "C" fn roc_fx_stdout_write(text: &RocStr) -> RocResult<(), roc_io_err
 #[no_mangle]
 pub extern "C" fn roc_fx_stdout_write_bytes(bytes: &RocList<u8>) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stdout_write_bytes(bytes)
+}
+
+#[no_mangle]
+pub extern "C" fn roc_fx_hello(name: &RocStr) -> RocResult<RocStr, roc_io_error::IOErr> {
+    roc_stdio::hello(name)
 }
 
 #[no_mangle]
@@ -658,7 +664,7 @@ async fn async_send_request(request: hyper::Request<http_body_util::Full<Bytes>>
 
     let client: Client<_, http_body_util::Full<Bytes>> =
         Client::builder(TokioExecutor::new()).build(https);
-        
+
     let response_res = client.request(request).await;
 
     match response_res {

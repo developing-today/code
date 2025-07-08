@@ -72,9 +72,15 @@ if [[ -d "$platform_path/platform" ]]; then
   platform_roc_path="$platform_path/platform"
 fi
 if [[ -d "$platform_path" ]] && [[ ! -d "$app_path/Platform" ]]; then
+  if [[ -L "$app_path/Platform" ]]; then
+    unlink "$app_path/Platform"
+  fi
   ln -s "../../../$platform_roc_path" "$app_path/Platform"
 fi
 if [[ ! -d "$app_path/Lib" ]]; then
+  if [[ -L "$app_path/Lib" ]]; then
+    unlink "$app_path/Lib"
+  fi
   ln -s ../../../lib "$app_path/Lib"
 fi
 app_lib="$app_path/libapp.so"
@@ -84,6 +90,9 @@ app_main="$app_path/main.roc"
 roc build --lib "$app_main" --output "$app_lib"
 if [[ -d "$platform_path" ]]; then
   if [[ ! -d "$platform_roc_path/Lib" ]]; then
+    if [[ -L "$platform_roc_path/Lib" ]]; then
+      unlink "$platform_roc_path/Lib"
+    fi
     ln -s ../../../lib "$platform_roc_path/Lib"
   fi
   abs_app_dir="$(realpath "$app_path")"

@@ -149,4 +149,4 @@ exe_path! : {} => Result (List U8) {}
 set_cwd! : List U8 => Result {} {}
 
 # CUSTOM
-hello! : Str => Str
+hello! : Str => Result Str InternalIOErr.IOErrFromHost

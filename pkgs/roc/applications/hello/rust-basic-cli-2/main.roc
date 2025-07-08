@@ -4,11 +4,12 @@ app [main!] {
 }
 import lib.Hello
 import pf.Stdout
+import pf.Arg
 language = "Rust"
 user = "User"
-main! : {} => Result {} _
-main! = |{}|
+main! : List Arg.Arg => Result {} [Exit I32 Str]_
+main! = |_|
     Stdout.line!(Hello.str language)?
     Stdout.line!(Str.join_with(["Roc ❤️", language], "  "))?
-    Stdout.hello!(user)?
+    Stdout.line!(Stdout.hello!(user)?)?
     Ok({})

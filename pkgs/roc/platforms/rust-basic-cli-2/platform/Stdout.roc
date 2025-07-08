@@ -74,6 +74,7 @@ write_bytes! = |bytes|
     |> Result.map_err(handle_err)
 
 # CUSTOM
-hello! : Str => Str
-hello! = |name|
-    Host.hello!(name)
+hello! : Str => Result Str [StdoutErr IOErr]
+hello! = |str|
+    Host.hello!(str)
+    |> Result.map_err(handle_err)
