@@ -13,7 +13,9 @@ DEFAULT_APPLICATION="hello"
 application="${APPLICATION:-$DEFAULT_APPLICATION}"
 static=0
 skip_run=0
-eval set -- "$(getopt -o "" --long platform:,app:,static,skip-run,help -- "$@")"
+linker="default" # default: surgical, options: surgical, legacy
+legacy=default
+eval set -- "$(getopt -o "" --long platform:,app:,static,skip-run,help,legacy,surgical,linker: -- "$@")"
 if [[ $# -gt 1 ]]; then
   while true; do
     case ${1:""} in
@@ -37,6 +39,18 @@ if [[ $# -gt 1 ]]; then
       skip_run=1
       shift
       ;;
+    --linker)
+      linker="$2"
+      shift 2
+      ;;
+    --surgical)
+      linker="surgical"
+      shift
+      ;;
+    --legacy)
+      linker="legacy"
+      shift
+      ;;
     --help) usage ;;
     --)
       shift
@@ -58,6 +72,12 @@ if [[ $# -gt 1 ]]; then
       ;;
     esac
   done
+fi
+if [[ "$linker" = "default" ]]; then
+  linker="legacy"
+fi
+if [[ ! -z "$linker" ]]; then
+  linker="--linker=$linker"
 fi
 platform="${platform:-$DEFAULT_PLATFORM}"
 application="${application:-$DEFAULT_APPLICATION}"
@@ -87,7 +107,7 @@ app_lib="$app_path/libapp.so"
 rm -f "$app_lib" 2>/dev/null || true
 app_main="$app_path/main.roc"
 # --linker=legacy
-roc build --lib "$app_main" --output "$app_lib"
+roc build $linker --lib "$app_main" --output "$app_lib"
 if [[ -d "$platform_path" ]]; then
   if [[ ! -d "$platform_roc_path/Lib" ]]; then
     if [[ -L "$platform_roc_path/Lib" ]]; then
@@ -107,10 +127,10 @@ if [[ -d "$platform_path" ]]; then
     # nix_file="./flake.nix"
     # if [[ -f "$nix_file" ]] && command -v nix && eval "nix eval --json .#devShell.x86_64-linux >/dev/null 2>&1"; then
     # --linker=legacy
-    #   nix develop --command "roc \"$roc_build_file\""
+    #   nix develop --command "roc $linker \"$roc_build_file\""
     # else
     # --linker=legacy
-    roc "$roc_build_file"
+    roc $linker "$roc_build_file"
     # fi
     if [[ -d "target/release" ]]; then
       host_bin="$platform_path/target/release/host"
@@ -131,4 +151,4 @@ if [[ -d "$platform_path" ]]; then
   roc preprocess-host "$host_bin" "$host_main" "$app_lib"
 fi
 # --linker=legacy
-((skip_run)) || roc "$app_main"
+((skip_run)) || roc $linker "$app_main"
