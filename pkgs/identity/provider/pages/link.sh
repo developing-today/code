@@ -3,7 +3,7 @@ if [[ $REQUEST_METHOD != "POST" ]]; then
   echo "Invalid request method = $REQUEST_METHOD" >&2
   return $(status_code 405)
 else
-  set -ex
+  set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   echo "OPEN" >&2
   if [[ -z $INIT_URL ]]; then
     echo "Init URL not found" >&2
@@ -37,7 +37,7 @@ else
     INIT_PATH="$CHARM_DATA_DIR/$INIT_SCRIPT_NAME"
     cat <<EOF >"$INIT_PATH"
 #!/usr/bin/env bash
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 output() {
 REPO_ROOT=\$(git rev-parse --show-toplevel)
 # CHARM_DATA_DIR="\$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm kv list @$RANDOM_ID
@@ -117,7 +117,7 @@ EOF
       ((elapsed_time += wait_interval))
       echo "Waiting for link code = $LINK_CODE_PATH - Elapsed time = $elapsed_time" >&2
     done
-    set -x
+    set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
     if [[ $elapsed_time -ge $max_wait ]]; then
       echo "Link code not found = $LINK_CODE_PATH" >&2
       return $(status_code 405)

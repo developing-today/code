@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # must be bash because we source a bashrc file
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 INIT_PATH="./.init.$(date +%s)"
 LOG_PATH="$INIT_PATH.log"
 if [ -n "$1" ]; then
@@ -46,7 +46,7 @@ if [ -z "$NO_INSTALL" ] || [ "$NO_INSTALL" == "0" ]; then
   set +e
   /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
   /boot/dietpi/dietpi-software install 188       # go (git by dependency)
-  set -e
+  set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   if [ -f /etc/bash.bashrc ]; then
     echo "Sourcing /etc/bash.bashrc"
     source /etc/bash.bashrc
@@ -132,7 +132,7 @@ while :; do
 
   sleep 2
 done
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 echo "Obtaining charm link"
 
 response=$(curl -sL "$CHARM_LINK_URL" --data-urlencode "keys=$(CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" ./identity charm keys --simple | tr '\n' ',' | sed 's/,$//')")
@@ -141,7 +141,7 @@ if [ "$LAST_EXIT_CODE" -ne 0 ]; then
   echo "Failed to obtain charm link"
   exit 1
 fi
-set -e
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 if [ -n "$response" ]; then
   extracted_value=$(echo "$response" | sed -n 's/.*HTTP\/1\.1 200 \(.*\)\r.*/\1/p')
 
@@ -153,7 +153,7 @@ else
   echo "Failed to obtain charm link"
   exit 1
 fi
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 CHARM_LINK=$extracted_value
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm fs rm "charm:dt/identity/init/init" 2>/dev/null || true # is this wrong?
 CHARM_DATA_DIR="$REPO_ROOT/sources/identity/data/charm/consumer" $REPO_ROOT/sources/identity/identity charm link -d "$CHARM_LINK"

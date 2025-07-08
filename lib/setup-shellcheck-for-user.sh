@@ -12,7 +12,7 @@ restore_shell_options() {
 }
 trap restore_shell_options EXIT
 
-set -euo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 create_symlink_for_shellcheckrc() {
     local user home_dir target_file source_file

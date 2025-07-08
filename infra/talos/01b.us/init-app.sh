@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 # TODO: accept --argo-app and --argo-app-path and --argo-project and --argo-wait-timeout to overwrite existing env vars
 

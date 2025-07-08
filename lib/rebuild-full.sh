@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -exuo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 #ulimit -n $(ulimit -Hn)
 #sudo prlimit --pid $$ --nofile=1000000:1000000
@@ -52,7 +52,7 @@ for dir in "${script_dir}"/pkgs/*; do
     #echo "not a dir: ${dir}"
   fi
 done
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 # todo: update-ref instead of update sometimes
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 if [ -d secrets ]; then
   echo "secrets directory already exists"
   exit 1

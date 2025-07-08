@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 set -eo pipefail
 
 if ! [ -x "$(command -v psql)" ]; then
@@ -27,8 +27,7 @@ DB_PORT="${POSTGRES_PORT:=5432}"
 DB_HOST="${POSTGRES_HOST:=localhost}"
 
 # Allow to skip Docker if a dockerized Postgres database is already running
-if [[ -z "${SKIP_DOCKER}" ]]
-then
+if [[ -z "${SKIP_DOCKER}" ]]; then
   # if a postgres container is running, print instructions to kill it and exit
   RUNNING_POSTGRES_CONTAINER=$(docker ps --filter 'name=postgres' --format '{{.ID}}')
   if [[ -n $RUNNING_POSTGRES_CONTAINER ]]; then
@@ -38,14 +37,14 @@ then
   fi
   # Launch postgres using Docker
   docker run \
-      -e POSTGRES_USER=${DB_USER} \
-      -e POSTGRES_PASSWORD=${DB_PASSWORD} \
-      -e POSTGRES_DB=${DB_NAME} \
-      -p "${DB_PORT}":5432 \
-      -d \
-      --name "postgres_$(date '+%s')" \
-      postgres -N 1000
-      # ^ Increased maximum number of connections for testing purposes
+    -e POSTGRES_USER=${DB_USER} \
+    -e POSTGRES_PASSWORD=${DB_PASSWORD} \
+    -e POSTGRES_DB=${DB_NAME} \
+    -p "${DB_PORT}":5432 \
+    -d \
+    --name "postgres_$(date '+%s')" \
+    postgres -N 1000
+  # ^ Increased maximum number of connections for testing purposes
 fi
 
 # Keep pinging Postgres until it's ready to accept commands

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -exuo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 if [ -n "${SKIP_LOAD:-}" ]; then
   echo "skipping tfstate load"

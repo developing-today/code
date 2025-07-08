@@ -41,7 +41,7 @@ in
           curl = "${lib.getExe pkgs.curl}";
         in
         ''
-          set -e
+          set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
           # Wait for couchdb to start. Try at most 5 times.
           for i in $(seq 1 5); do

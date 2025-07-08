@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-set -e
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 echo "+ . ~/.turso.auth"
 # shellcheck disable=SC1090
 . ~/.turso.auth
 echo "<REDACTED>"
 
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 npx --yes expose-wsl@latest
 

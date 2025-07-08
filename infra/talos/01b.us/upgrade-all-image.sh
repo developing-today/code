@@ -1,4 +1,4 @@
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 talosctl upgrade --image factory.talos.dev/installer/21c55fcf357cbda853e9f91a1fa5fedf72701b1d7e8bcefe24e9cb60b58892d9:v1.9.1 --nodes 10.10.8.188 # a1 # controlplane
 # talosctl upgrade --image factory.talos.dev/installer/21c55fcf357cbda853e9f91a1fa5fedf72701b1d7e8bcefe24e9cb60b58892d9:v1.9.1 --nodes 10.10.12.69 # b1 # controlplane

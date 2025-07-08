@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 
-# set -e
+# set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 # TODO: accept --force to overwrite existing env vars
 
 if [[ $- == *x* ]]; then
-    ORIGINAL_TRACE=1
+  ORIGINAL_TRACE=1
 else
-    ORIGINAL_TRACE=0
+  ORIGINAL_TRACE=0
 fi
 
 function cleanup() {
   if [ "$ORIGINAL_TRACE" -eq 1 ]; then
-      set -x
+    set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   else
-      set +x
+    set +x
   fi
 }
 trap cleanup EXIT
@@ -33,7 +33,7 @@ if [[ -z "$GIT_TOKEN" ]]; then
   echo 'GIT_TOKEN is empty'
   exit 1
 fi
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 if [[ -z "$GIT_REPO" ]]; then
   export GIT_REPO=https://github.com/developing-today/code
 else

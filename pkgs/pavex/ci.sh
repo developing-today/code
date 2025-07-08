@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Check that the first argument is not empty
 if [ -z "$1" ]; then

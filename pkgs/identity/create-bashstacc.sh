@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 # Define variables
 BASE_URL="https://github.com/cgsdev0/bash-stack/releases/latest/download"

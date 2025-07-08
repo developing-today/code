@@ -1,4 +1,4 @@
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 talosctl apply-config --file "./secrets/controlplane.yaml" --nodes 10.10.8.188  # a1
 talosctl apply-config --file "./secrets/controlplane.yaml" --nodes 10.10.12.69  # b1

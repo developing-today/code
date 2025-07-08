@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Enable exit on error and pipefail to handle errors in piped commands
-set -euo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 # Set the repository and branch
 REPO="github.com/developing-today-forks/charm"

@@ -10,7 +10,7 @@ restore_shell_options() {
 }
 trap restore_shell_options EXIT
 
-set -euo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 create_xinitrc() {
   local user home_dir target_file

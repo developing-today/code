@@ -57,7 +57,7 @@
 #   printf "%s\n" "trap done: restoring shell options"
 # }
 # trap restore_shell_options EXIT
-# set -euo pipefail
+# set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 # # DONE restore shell options if you change them
 
 printf "%s\n" "start: export-lib script"

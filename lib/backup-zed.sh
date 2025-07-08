@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-set -exuo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}" || exit 1
 echo "entered: $script_dir"

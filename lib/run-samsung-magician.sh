@@ -1,6 +1,6 @@
 #! /usr/bin/env nix-shell
 #! nix-shell -i bash -p bash unzip nvme-cli
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 ISO_PREFIX="https://download.semiconductor.samsung.com/resources/software-resources/"
 ISO_FILE="Samsung_SSD_990_PRO_4B2QJXD7.iso"
 echo "Configured: $ISO_FILE -- see \`<REPO_ROOT>/lib/samsung-firmware.md\` for other models"

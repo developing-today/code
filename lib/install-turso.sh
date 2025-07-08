@@ -7,33 +7,39 @@
 
 # This script is for installing the latest version of Turso CLI on your machine.
 
-set -e
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 # Terminal ANSI escape codes.
 reset="\033[0m"
 bright_blue="${reset}\033[34;1m"
 
 probe_arch() {
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64) ARCH="x86_64"  ;;
-        aarch64) ARCH="arm64" ;;
-        arm64) ARCH="arm64" ;;
-        *) printf "Architecture ${ARCH} is not supported by this installation script\n"; exit 1 ;;
-    esac
+  ARCH=$(uname -m)
+  case $ARCH in
+  x86_64) ARCH="x86_64" ;;
+  aarch64) ARCH="arm64" ;;
+  arm64) ARCH="arm64" ;;
+  *)
+    printf "Architecture ${ARCH} is not supported by this installation script\n"
+    exit 1
+    ;;
+  esac
 }
 
 probe_os() {
-    OS=$(uname -s)
-    case $OS in
-        Darwin) OS="Darwin" ;;
-        Linux) OS="Linux" ;;
-        *) printf "Operating system ${OS} is not supported by this installation script\n"; exit 1 ;;
-    esac
+  OS=$(uname -s)
+  case $OS in
+  Darwin) OS="Darwin" ;;
+  Linux) OS="Linux" ;;
+  *)
+    printf "Operating system ${OS} is not supported by this installation script\n"
+    exit 1
+    ;;
+  esac
 }
 
 print_logo() {
-    printf "${bright_blue}
+  printf "${bright_blue}
                  .:                                 .:
   .\$\$.   \$\$:   .\$\$\$:                                \$\$\$^    \$\$:   ~\$^
   .\$\$\$!:\$\$\$  .\$\$\$\$~                                 .\$\$\$\$^  !\$\$~^\$\$\$~
@@ -111,14 +117,14 @@ detect_profile() {
 }
 
 update_profile() {
-   PROFILE_FILE=$(detect_profile)
-   if ! grep -q "\.turso" $PROFILE_FILE; then
-      printf "\n${bright_blue}Updating profile ${reset}$PROFILE_FILE\n"
-      printf "\n# Turso\nexport PATH=\"$INSTALL_DIRECTORY:\$PATH\"\n" >> $PROFILE_FILE
-      printf "\nTurso will be available when you open a new terminal.\n"
-      printf "If you want to make Turso available in this terminal, please run:\n"
-      printf "\nsource $PROFILE_FILE\n"
-   fi
+  PROFILE_FILE=$(detect_profile)
+  if ! grep -q "\.turso" $PROFILE_FILE; then
+    printf "\n${bright_blue}Updating profile ${reset}$PROFILE_FILE\n"
+    printf "\n# Turso\nexport PATH=\"$INSTALL_DIRECTORY:\$PATH\"\n" >>$PROFILE_FILE
+    printf "\nTurso will be available when you open a new terminal.\n"
+    printf "If you want to make Turso available in this terminal, please run:\n"
+    printf "\nsource $PROFILE_FILE\n"
+  fi
 }
 
 printf "\nWelcome to the Turso installer!\n"

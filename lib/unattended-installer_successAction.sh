@@ -80,7 +80,7 @@ else
     sleep 1
     sleep_time=$(($sleep_time - 1))
   done
-  set -x
+  set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   echo "Done waiting ${sleep_time} seconds."
 fi
 

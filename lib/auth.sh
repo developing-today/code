@@ -33,10 +33,10 @@ if [ ! -f "$AUTH_FILE" ]; then
     echo "Error: Authentication file $AUTH_FILE not found"
     exit 1
 fi
-set -exuo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 ulimit -n "$(ulimit -Hn)"
 sudo prlimit --pid $$ --nofile=1000000:1000000
 # shellcheck disable=SC2312
 set +x
 sudo NIX_CONFIG="access-tokens = github.com=$(sudo cat "$AUTH_FILE")" "$@"
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail

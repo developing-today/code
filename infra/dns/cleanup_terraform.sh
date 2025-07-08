@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -exuo pipefail
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 
 RM_ALL_TFSTATE_FILES=false
 if [ "${1:-}" == "all" ] || [ "${1:-}" == "--all" ]; then

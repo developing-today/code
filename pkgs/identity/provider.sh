@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -ex
+set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 exec 3>&1 4>&2
 trap 'exec 2>&4 1>&3' 0 1 2 3
 random() {
@@ -7,7 +7,7 @@ random() {
   dd if=/dev/urandom bs=1 count="${1:-16}" 2>/dev/null | xxd -p | tr -d '[:space:]'
 }
 RANDOM_ID=$(
-  set -e
+  set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   random 16
 )
 # shellcheck disable=SC2312
@@ -62,7 +62,7 @@ if [[ -z ${TURSO_AUTH_TOKEN} ]]; then
   exit 1
 fi
 echo "+ set -x"
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 if [[ -n $6 ]]; then
   CHARM_LINK_URL=$6
 fi
@@ -92,7 +92,7 @@ set +x
 echo '+ <redacted> echo "TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN}"'
 echo "TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN}" >>.env
 echo "+ set -x"
-set -x
+set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 echo "Configure .env complete"
 
 if [[ ! -f ./identity ]]; then
