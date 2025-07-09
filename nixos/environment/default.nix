@@ -75,6 +75,14 @@ in
         # zigpkgs.master
         unison-ucm
         # unison-fsmonitor
+        arduino
+        arduino-cli
+        arduino-core
+        arduino-create-agent
+        arduino-ide
+        arduino-language-server
+        arduino-mk
+        arduinoOTA
         code-cursor
         gamemode
         argo
