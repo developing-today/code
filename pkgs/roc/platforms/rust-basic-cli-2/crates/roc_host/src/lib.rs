@@ -1,8 +1,3 @@
-//! Implementation of the host.
-//! The host contains code that calls the Roc main function and provides the
-//! Roc app with functions to allocate memory and execute effects such as
-//! writing to stdio or making HTTP requests.
-
 use core::ffi::c_void;
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -12,7 +7,6 @@ use roc_io_error::IOErr;
 use roc_std::{RocBox, RocList, RocResult, RocStr};
 use std::time::Duration;
 use tokio::runtime::Runtime;
-
 thread_local! {
    static TOKIO_RUNTIME: Runtime = tokio::runtime::Builder::new_current_thread()
        .enable_io()
@@ -20,18 +14,10 @@ thread_local! {
        .build()
        .unwrap();
 }
-
-/// # Safety
-///
-/// This function is unsafe.
 #[no_mangle]
 pub unsafe extern "C" fn roc_alloc(size: usize, _alignment: u32) -> *mut c_void {
     libc::malloc(size)
 }
-
-/// # Safety
-///
-/// This function is unsafe.
 #[no_mangle]
 pub unsafe extern "C" fn roc_realloc(
     c_ptr: *mut c_void,
@@ -41,10 +27,6 @@ pub unsafe extern "C" fn roc_realloc(
 ) -> *mut c_void {
     libc::realloc(c_ptr, new_size)
 }
-
-/// # Safety
-///
-/// This function is unsafe.
 #[no_mangle]
 pub unsafe extern "C" fn roc_dealloc(c_ptr: *mut c_void, _alignment: u32) {
     let heap = roc_file::heap();
@@ -57,8 +39,6 @@ pub unsafe extern "C" fn roc_dealloc(c_ptr: *mut c_void, _alignment: u32) {
         heap.dealloc(c_ptr);
         return;
     }
-    // !! If you make any changes to this function, you may also need to update roc_dealloc in
-    // https://github.com/roc-lang/basic-webserver
     let heap = roc_sqlite::heap();
     if heap.in_range(c_ptr) {
         heap.dealloc(c_ptr);
@@ -66,44 +46,32 @@ pub unsafe extern "C" fn roc_dealloc(c_ptr: *mut c_void, _alignment: u32) {
     }
     libc::free(c_ptr)
 }
-
-/// # Safety
-///
-/// This function is unsafe.
 #[no_mangle]
 pub unsafe extern "C" fn roc_panic(msg: &RocStr, tag_id: u32) {
     _ = crossterm::terminal::disable_raw_mode();
     match tag_id {
         0 => {
             eprintln!("Roc crashed with:\n\n\t{}\n", msg.as_str());
-
             print_backtrace();
             std::process::exit(1);
         }
         1 => {
             eprintln!("The program crashed with:\n\n\t{}\n", msg.as_str());
-
             print_backtrace();
             std::process::exit(1);
         }
         _ => todo!(),
     }
 }
-
-/// # Safety
-///
-/// This function is unsafe.
 #[no_mangle]
 pub unsafe extern "C" fn roc_dbg(loc: &RocStr, msg: &RocStr, src: &RocStr) {
     eprintln!("[{}] {} = {}", loc, src, msg);
 }
-
 #[repr(C)]
 pub struct Variable {
     pub name: RocStr,
     pub value: RocStr,
 }
-
 impl roc_std::RocRefcounted for Variable {
     fn inc(&mut self) {
         self.name.inc();
@@ -117,14 +85,6 @@ impl roc_std::RocRefcounted for Variable {
         true
     }
 }
-
-/// This is not currently used but has been included for a future upgrade to roc
-/// to help with debugging and prevent a breaking change for users
-/// refer to <https://github.com/roc-lang/roc/issues/6930>
-///
-/// # Safety
-///
-/// This function is unsafe.
 #[no_mangle]
 pub unsafe extern "C" fn roc_expect_failed(
     loc: &RocStr,
@@ -133,7 +93,6 @@ pub unsafe extern "C" fn roc_expect_failed(
 ) {
     eprintln!("\nExpectation failed at {}:", loc.as_str());
     eprintln!("\nExpression:\n\t{}\n", src.as_str());
-
     if !variables.is_empty() {
         eprintln!("With values:");
         for var in variables.iter() {
@@ -141,22 +100,13 @@ pub unsafe extern "C" fn roc_expect_failed(
         }
         eprintln!();
     }
-
     std::process::exit(1);
 }
-
-/// # Safety
-///
-/// This function is unsafe.
 #[cfg(unix)]
 #[no_mangle]
 pub unsafe extern "C" fn roc_getppid() -> libc::pid_t {
     libc::getppid()
 }
-
-/// # Safety
-///
-/// This function should be called with a valid addr pointer.
 #[cfg(unix)]
 #[no_mangle]
 pub unsafe extern "C" fn roc_mmap(
@@ -169,10 +119,6 @@ pub unsafe extern "C" fn roc_mmap(
 ) -> *mut libc::c_void {
     libc::mmap(addr, len, prot, flags, fd, offset)
 }
-
-/// # Safety
-///
-/// This function should be called with a valid name pointer.
 #[cfg(unix)]
 #[no_mangle]
 pub unsafe extern "C" fn roc_shm_open(
@@ -182,12 +128,9 @@ pub unsafe extern "C" fn roc_shm_open(
 ) -> libc::c_int {
     libc::shm_open(name, oflag, mode as libc::c_uint)
 }
-
 fn print_backtrace() {
     eprintln!("Here is the call stack that led to the crash:\n");
-
     let mut entries = Vec::new();
-
     #[derive(Default)]
     struct Entry {
         pub fn_name: String,
@@ -195,25 +138,20 @@ fn print_backtrace() {
         pub line: Option<u32>,
         pub col: Option<u32>,
     }
-
     backtrace::trace(|frame| {
         backtrace::resolve_frame(frame, |symbol| {
             if let Some(fn_name) = symbol.name() {
                 let fn_name = fn_name.to_string();
-
                 if should_show_in_backtrace(&fn_name) {
                     let mut entry = Entry {
                         fn_name: format_fn_name(&fn_name),
                         ..Default::default()
                     };
-
                     if let Some(path) = symbol.filename() {
                         entry.filename = Some(path.to_string_lossy().into_owned());
                     };
-
                     entry.line = symbol.lineno();
                     entry.col = symbol.colno();
-
                     entries.push(entry);
                 }
             } else {
@@ -223,36 +161,26 @@ fn print_backtrace() {
                 });
             }
         });
-
-        true // keep going to the next frame
+        true
     });
-
     for entry in entries {
         eprintln!("\t{}", entry.fn_name);
-
         if let Some(filename) = entry.filename {
             eprintln!("\t\t{filename}");
         }
     }
-
     eprintln!("\nOptimizations can make this list inaccurate! If it looks wrong, try running without `--optimize` and with `--linker=legacy`\n");
 }
-
 fn should_show_in_backtrace(fn_name: &str) -> bool {
     let is_from_rust = fn_name.contains("::");
     let is_host_fn = fn_name.starts_with("roc_panic")
         || fn_name.starts_with("_roc__")
         || fn_name.starts_with("rust_main")
         || fn_name == "_main";
-
     !is_from_rust && !is_host_fn
 }
-
 fn format_fn_name(fn_name: &str) -> String {
-    // e.g. convert "_Num_sub_a0c29024d3ec6e3a16e414af99885fbb44fa6182331a70ab4ca0886f93bad5"
-    // to ["Num", "sub", "a0c29024d3ec6e3a16e414af99885fbb44fa6182331a70ab4ca0886f93bad5"]
     let mut pieces_iter = fn_name.split('_');
-
     if let (_, Some(module_name), Some(name)) =
         (pieces_iter.next(), pieces_iter.next(), pieces_iter.next())
     {
@@ -261,34 +189,23 @@ fn format_fn_name(fn_name: &str) -> String {
         "???".to_string()
     }
 }
-
 fn display_roc_fn(module_name: &str, fn_name: &str) -> String {
     let module_name = if module_name == "#UserApp" {
         "app"
     } else {
         module_name
     };
-
     let fn_name = if fn_name.parse::<u64>().is_ok() {
         "(anonymous function)"
     } else {
         fn_name
     };
-
     format!("\u{001B}[36m{module_name}\u{001B}[39m.{fn_name}")
 }
-
-/// # Safety
-///
-/// This function should be provided a valid dst pointer.
 #[no_mangle]
 pub unsafe extern "C" fn roc_memset(dst: *mut c_void, c: i32, n: usize) -> *mut c_void {
     libc::memset(dst, c, n)
 }
-
-// Protect our functions from the vicious GC.
-// This is specifically a problem with static compilation and musl.
-// TODO: remove all of this when we switch to effect interpreter.
 pub fn init() {
     let funcs: &[*const extern "C" fn()] = &[
         roc_alloc as _,
@@ -366,119 +283,92 @@ pub fn init() {
         std::mem::forget(std::hint::black_box(unix_funcs));
     }
 }
-
 #[no_mangle]
 pub extern "C" fn rust_main(args: RocList<ArgToAndFromHost>) -> i32 {
     init();
-
     extern "C" {
         #[link_name = "roc__main_for_host_1_exposed_generic"]
         pub fn roc_main_for_host_caller(
             exit_code: &mut i32,
             args: *const RocList<ArgToAndFromHost>,
         );
-
         #[link_name = "roc__main_for_host_1_exposed_size"]
         pub fn roc_main__for_host_size() -> usize;
     }
-
     let exit_code: i32 = unsafe {
         let mut exit_code: i32 = -1;
         let args = args;
         roc_main_for_host_caller(&mut exit_code, &args);
-
         debug_assert_eq!(std::mem::size_of_val(&exit_code), roc_main__for_host_size());
-
-        // roc now owns the args so prevent the args from being
-        // dropped by rust and causing a double free
         std::mem::forget(args);
-
         exit_code
     };
-
     exit_code
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_env_dict() -> RocList<(RocStr, RocStr)> {
     roc_env::env_dict()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_env_var(roc_str: &RocStr) -> RocResult<RocStr, ()> {
     roc_env::env_var(roc_str)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_set_cwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
     roc_env::set_cwd(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_exe_path() -> RocResult<RocList<u8>, ()> {
     roc_env::exe_path()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stdin_line() -> RocResult<RocStr, roc_io_error::IOErr> {
     roc_stdio::stdin_line()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stdin_bytes() -> RocResult<RocList<u8>, roc_io_error::IOErr> {
     roc_stdio::stdin_bytes()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stdin_read_to_end() -> RocResult<RocList<u8>, roc_io_error::IOErr> {
     roc_stdio::stdin_read_to_end()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stdout_line(line: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stdout_line(line)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stdout_write(text: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stdout_write(text)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stdout_write_bytes(bytes: &RocList<u8>) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stdout_write_bytes(bytes)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_hello(name: &RocStr) -> RocResult<RocStr, roc_io_error::IOErr> {
     roc_stdio::hello(name)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stderr_line(line: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stderr_line(line)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stderr_write(text: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stderr_write(text)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_stderr_write_bytes(bytes: &RocList<u8>) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stderr_write_bytes(bytes)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tty_mode_canonical() {
     crossterm::terminal::disable_raw_mode().expect("failed to disable raw mode");
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tty_mode_raw() {
     crossterm::terminal::enable_raw_mode().expect("failed to enable raw mode");
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_write_utf8(
     roc_path: &RocList<u8>,
@@ -486,7 +376,6 @@ pub extern "C" fn roc_fx_file_write_utf8(
 ) -> RocResult<(), IOErr> {
     roc_file::file_write_utf8(roc_path, roc_str)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_write_bytes(
     roc_path: &RocList<u8>,
@@ -494,21 +383,18 @@ pub extern "C" fn roc_fx_file_write_bytes(
 ) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::file_write_bytes(roc_path, roc_bytes)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_path_type(
     roc_path: &RocList<u8>,
 ) -> RocResult<roc_file::InternalPathType, roc_io_error::IOErr> {
     roc_file::path_type(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_read_bytes(
     roc_path: &RocList<u8>,
 ) -> RocResult<RocList<u8>, roc_io_error::IOErr> {
     roc_file::file_read_bytes(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_reader(
     roc_path: &RocList<u8>,
@@ -516,73 +402,62 @@ pub extern "C" fn roc_fx_file_reader(
 ) -> RocResult<RocBox<()>, roc_io_error::IOErr> {
     roc_file::file_reader(roc_path, size)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_read_line(
     data: RocBox<()>,
 ) -> RocResult<RocList<u8>, roc_io_error::IOErr> {
     roc_file::file_read_line(data)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_delete(roc_path: &RocList<u8>) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::file_delete(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_size_in_bytes(
     roc_path: &RocList<u8>,
 ) -> RocResult<u64, roc_io_error::IOErr> {
     roc_file::file_size_in_bytes(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_is_executable(
     roc_path: &RocList<u8>,
 ) -> RocResult<bool, roc_io_error::IOErr> {
     roc_file::file_is_executable(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_is_readable(
     roc_path: &RocList<u8>,
 ) -> RocResult<bool, roc_io_error::IOErr> {
     roc_file::file_is_readable(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_is_writable(
     roc_path: &RocList<u8>,
 ) -> RocResult<bool, roc_io_error::IOErr> {
     roc_file::file_is_writable(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_time_accessed(
     roc_path: &RocList<u8>,
 ) -> RocResult<roc_std::U128, roc_io_error::IOErr> {
     roc_file::file_time_accessed(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_time_modified(
     roc_path: &RocList<u8>,
 ) -> RocResult<roc_std::U128, roc_io_error::IOErr> {
     roc_file::file_time_modified(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_time_created(
     roc_path: &RocList<u8>,
 ) -> RocResult<roc_std::U128, roc_io_error::IOErr> {
     roc_file::file_time_created(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_exists(roc_path: &RocList<u8>) -> RocResult<bool, roc_io_error::IOErr> {
     roc_file::file_exists(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_file_rename(
     from_path: &RocList<u8>,
@@ -590,29 +465,24 @@ pub extern "C" fn roc_fx_file_rename(
 ) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::file_rename(from_path, to_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_cwd() -> RocResult<RocList<u8>, ()> {
     roc_env::cwd()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_posix_time() -> roc_std::U128 {
     roc_env::posix_time()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_sleep_millis(milliseconds: u64) {
     roc_env::sleep_millis(milliseconds);
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_dir_list(
     roc_path: &RocList<u8>,
 ) -> RocResult<RocList<RocList<u8>>, roc_io_error::IOErr> {
     roc_file::dir_list(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_send_request(
     roc_request: &roc_http::RequestToAndFromHost,
@@ -622,7 +492,6 @@ pub extern "C" fn roc_fx_send_request(
             Ok(r) => r,
             Err(err) => return err.into(),
         };
-
         match roc_request.has_timeout() {
             Some(time_limit) => rt
                 .block_on(async {
@@ -641,11 +510,9 @@ pub extern "C" fn roc_fx_send_request(
         }
     })
 }
-
 async fn async_send_request(request: hyper::Request<http_body_util::Full<Bytes>>) -> roc_http::ResponseToAndFromHost {
     use hyper_util::client::legacy::Client;
     use hyper_rustls::HttpsConnectorBuilder;
-
     let https = match HttpsConnectorBuilder::new()
         .with_native_roots()
     {
@@ -661,29 +528,21 @@ async fn async_send_request(request: hyper::Request<http_body_util::Full<Bytes>>
             };
         }
     };
-
     let client: Client<_, http_body_util::Full<Bytes>> =
         Client::builder(TokioExecutor::new()).build(https);
-
     let response_res = client.request(request).await;
-
     match response_res {
         Ok(response) => {
             let status = response.status();
-
             let headers = RocList::from_iter(response.headers().iter().map(|(name, value)| {
                 roc_http::Header::new(name.as_str(), value.to_str().unwrap_or_default())
             }));
-
             let status = status.as_u16();
-
             let bytes_res =
                 response.into_body().collect().await.map(|collected| collected.to_bytes());
-
             match bytes_res {
                 Ok(bytes) => {
                     let body: RocList<u8> = RocList::from_iter(bytes);
-
                     roc_http::ResponseToAndFromHost {
                         body,
                         status,
@@ -700,10 +559,6 @@ async fn async_send_request(request: hyper::Request<http_body_util::Full<Bytes>>
             }
         }
         Err(err) => {
-            // TODO match on the error type to provide more specific responses with appropriate status codes
-            /*use std::error::Error;
-            let err_source_opt = err.source();*/
-
             roc_http::ResponseToAndFromHost {
                 status: 500,
                 headers: RocList::empty(),
@@ -712,12 +567,10 @@ async fn async_send_request(request: hyper::Request<http_body_util::Full<Bytes>>
         }
     }
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tcp_connect(host: &RocStr, port: u16) -> RocResult<RocBox<()>, RocStr> {
     roc_http::tcp_connect(host, port)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tcp_read_up_to(
     stream: RocBox<()>,
@@ -725,7 +578,6 @@ pub extern "C" fn roc_fx_tcp_read_up_to(
 ) -> RocResult<RocList<u8>, RocStr> {
     roc_http::tcp_read_up_to(stream, bytes_to_read)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tcp_read_exactly(
     stream: RocBox<()>,
@@ -733,7 +585,6 @@ pub extern "C" fn roc_fx_tcp_read_exactly(
 ) -> RocResult<RocList<u8>, RocStr> {
     roc_http::tcp_read_exactly(stream, bytes_to_read)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tcp_read_until(
     stream: RocBox<()>,
@@ -741,52 +592,44 @@ pub extern "C" fn roc_fx_tcp_read_until(
 ) -> RocResult<RocList<u8>, RocStr> {
     roc_http::tcp_read_until(stream, byte)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_tcp_write(stream: RocBox<()>, msg: &RocList<u8>) -> RocResult<(), RocStr> {
     roc_http::tcp_write(stream, msg)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_command_status(
     roc_cmd: &roc_command::Command,
 ) -> RocResult<i32, roc_io_error::IOErr> {
     roc_command::command_status(roc_cmd)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_command_output(
     roc_cmd: &roc_command::Command,
 ) -> roc_command::OutputFromHost {
     roc_command::command_output(roc_cmd)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_dir_create(roc_path: &RocList<u8>) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::dir_create(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_dir_create_all(
     roc_path: &RocList<u8>,
 ) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::dir_create_all(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_dir_delete_empty(
     roc_path: &RocList<u8>,
 ) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::dir_delete_empty(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_dir_delete_all(
     roc_path: &RocList<u8>,
 ) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::dir_delete_all(roc_path)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_hard_link(
     path_original: &RocList<u8>,
@@ -794,27 +637,22 @@ pub extern "C" fn roc_fx_hard_link(
 ) -> RocResult<(), roc_io_error::IOErr> {
     roc_file::hard_link(path_original, path_link)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_current_arch_os() -> roc_env::ReturnArchOS {
     roc_env::current_arch_os()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_temp_dir() -> RocList<u8> {
     roc_env::temp_dir()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_get_locale() -> RocResult<RocStr, ()> {
     roc_env::get_locale()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_get_locales() -> RocList<RocStr> {
     roc_env::get_locales()
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_sqlite_bind(
     stmt: RocBox<()>,
@@ -822,7 +660,6 @@ pub extern "C" fn roc_fx_sqlite_bind(
 ) -> RocResult<(), roc_sqlite::SqliteError> {
     roc_sqlite::bind(stmt, bindings)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_sqlite_prepare(
     db_path: &roc_std::RocStr,
@@ -830,12 +667,10 @@ pub extern "C" fn roc_fx_sqlite_prepare(
 ) -> roc_std::RocResult<RocBox<()>, roc_sqlite::SqliteError> {
     roc_sqlite::prepare(db_path, query)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_sqlite_columns(stmt: RocBox<()>) -> RocList<RocStr> {
     roc_sqlite::columns(stmt)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_sqlite_column_value(
     stmt: RocBox<()>,
@@ -843,15 +678,12 @@ pub extern "C" fn roc_fx_sqlite_column_value(
 ) -> RocResult<roc_sqlite::SqliteValue, roc_sqlite::SqliteError> {
     roc_sqlite::column_value(stmt, i)
 }
-
 #[no_mangle]
 pub extern "C" fn roc_fx_sqlite_step(
     stmt: RocBox<()>,
 ) -> RocResult<roc_sqlite::SqliteState, roc_sqlite::SqliteError> {
     roc_sqlite::step(stmt)
 }
-
-/// Resets a prepared statement back to its initial state, ready to be re-executed.
 #[no_mangle]
 pub extern "C" fn roc_fx_sqlite_reset(stmt: RocBox<()>) -> RocResult<(), roc_sqlite::SqliteError> {
     roc_sqlite::reset(stmt)
