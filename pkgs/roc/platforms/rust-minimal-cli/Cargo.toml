@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/roc_command",
     "crates/roc_env",
     "crates/roc_host",
     "crates/roc_host_lib",
@@ -27,7 +26,6 @@ strip = "debuginfo"
 [workspace.dependencies]
 roc_std = { git = "https://github.com/roc-lang/roc.git" }
 roc_std_heap = { git = "https://github.com/roc-lang/roc.git" }
-roc_command = { path = "crates/roc_command" }
 roc_env = { path = "crates/roc_env" }
 roc_host = { path = "crates/roc_host" }
 roc_io_error = { path = "crates/roc_io_error" }
