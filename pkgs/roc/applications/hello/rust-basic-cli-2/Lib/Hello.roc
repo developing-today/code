@@ -1,6 +1,5 @@
 module [str]
 import Square exposing [f64]
-num : F64
 num = 8192.0125
 str = |language|
     """
