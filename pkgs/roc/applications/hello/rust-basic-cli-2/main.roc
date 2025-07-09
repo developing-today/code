@@ -12,5 +12,4 @@ main! = |_|
     Stdout.line!(Hello.str language)?
     Stdout.line!(Str.join_with(["Roc ❤️", language], "  "))?
     Stdout.line!(Stdout.hello!(user)?)?
-    # Stdout.write!("Hi")?
     Ok({})
