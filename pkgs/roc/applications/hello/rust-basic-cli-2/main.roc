@@ -2,14 +2,14 @@ app [main!] {
     pf: platform "./Platform/main.roc",
     lib: "./Lib/main.roc",
 }
-import lib.Hello
-import pf.Stdout
-import pf.Arg
+import lib.Hello exposing [str]
+hello : Str -> Str
+hello = str
+import pf.Stdout exposing [line!, hello!]
 language = "Rust"
 user = "User"
-main! : List Arg.Arg => Result {} [Exit I32 Str]_
 main! = |_|
-    Stdout.line!(Hello.str language)?
-    Stdout.line!(Str.join_with(["Roc ❤️", language], "  "))?
-    Stdout.line!(Stdout.hello!(user)?)?
+    line!(hello language)?
+    line!(Str.join_with(["Roc ❤️", language], "  "))?
+    line!(hello!(user)?)?
     Ok({})
