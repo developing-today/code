@@ -8,6 +8,6 @@ language = "Rust"
 user = "User"
 main! = |_|
     line!(hello language)?
-    line!("Roc ❤️ ${language}")?
+    line!("Roc ❤️  ${language}")?
     line!(hello!(user)?)?
     Ok({})
