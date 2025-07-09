@@ -101,8 +101,9 @@ is_function_unused! = |module_name, function_name|
 
                 Err (PathErr NotFound) ->
                     err_s("Error: Directory '${search_dir}' does not exist in ${Path.display(cwd)}")
+
                 Err err ->
-                    err_s("Error checking directory '${search_dir}': ${Inspect.to_str(err)}")
+                    err_s("Error checking directory '${search_dir}': ${Inspect.to_str(err)}"),
     )?
 
     # Check if ripgrep is installed
@@ -111,9 +112,10 @@ is_function_unused! = |module_name, function_name|
 
     when rg_check_output.status is
         Ok(0) ->
-                unused_in_dir =
-                    search_dirs
-                    |> List.map_try!( |search_dir|
+            unused_in_dir =
+                search_dirs
+                |> List.map_try!(
+                    |search_dir|
                         # Skip searching if directory doesn't exist
                         dir_exists = File.is_dir!(search_dir)?
                         if !dir_exists then
@@ -131,16 +133,15 @@ is_function_unused! = |module_name, function_name|
                             # ripgrep returns status 0 if matches were found, 1 if no matches
                             when status_res is
                                 Ok(0) -> Ok(Bool.false) # Function is used (not unused)
-                                _ -> Ok(Bool.true)
-                    )?
+                                _ -> Ok(Bool.true),
+                )?
 
-                unused_in_dir
-                |> List.walk!(Bool.true, |state, is_unused_res| state && is_unused_res)
-                |> Ok
+            unused_in_dir
+            |> List.walk!(Bool.true, |state, is_unused_res| state and is_unused_res)
+            |> Ok
+
         _ ->
             err_s("Error: ripgrep (rg) is not installed or not available in PATH. Please install ripgrep to use this script. Full output: ${Inspect.to_str(rg_check_output)}")
-
-
 
 process_module! : Str => Result { module_name : Str, exposed_functions : List Str } _
 process_module! = |module_name|

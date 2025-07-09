@@ -27,5 +27,3 @@ file_write_read! = |file_name|
 
     Stdout.line!("I read the file back. Its contents are: \"${contents}\"")
 
-
-

@@ -9,7 +9,7 @@ main! : List Arg => Result {} _
 main! = |_args|
     # Test basic time operations
     test_time_conversion!({})?
-    
+
     # Test time delta operations
     test_time_delta!({})?
 

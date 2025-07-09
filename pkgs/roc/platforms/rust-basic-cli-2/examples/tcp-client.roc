@@ -38,14 +38,12 @@ tick! = |tcp_stream|
 
     Stdout.line!("< ${in_msg}")
 
-
 loop! : state, (state => Result [Step state, Done done] err) => Result done err
 loop! = |state, fn!|
     when fn!(state) is
         Err(err) -> Err(err)
         Ok(Done(done)) -> Ok(done)
         Ok(Step(next)) -> loop!(next, fn!)
-
 
 handle_err! : []_ => Result {} _
 handle_err! = |error|

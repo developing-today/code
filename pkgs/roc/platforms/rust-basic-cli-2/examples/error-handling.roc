@@ -25,6 +25,5 @@ main! = |_args|
                     FileReadErr(_, io_err) -> "Error: failed to read file ${file_name} with error:\n\t${Inspect.to_str(io_err)}"
                     FileReadUtf8Err(_, io_err) -> "Error: file ${file_name} contains invalid UTF-8:\n\t${Inspect.to_str(io_err)}"
 
-            
             Stderr.line!(err_msg)?
             Err(Exit(1, "")) # non-zero exit code to indicate failure

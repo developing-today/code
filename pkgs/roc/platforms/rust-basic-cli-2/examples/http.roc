@@ -10,7 +10,7 @@ import pf.Arg exposing [Arg]
 
 # Demo of all basic-cli Http functions
 
-# To run this example: 
+# To run this example:
 # ```
 # nix develop
 # cd basic-cli/ci/rust_http_server
@@ -38,7 +38,7 @@ main! = |_args|
     { foo } = Http.get!("http://localhost:8000", Json.utf8)?
     # If you want to see an example of the server side, see basic-cli/ci/rust_http_server/src/main.rs
 
-    Stdout.line!("The json I received was: { foo: \"$(foo)\" }\n")?
+    Stdout.line!("The json I received was: { foo: \"${foo}\" }\n")?
 
     # # Getting a Response record
     #   -------------------------
@@ -60,7 +60,7 @@ main! = |_args|
 
     # # Using default_request and providing a header
     #   --------------------------------------------
-    
+
     response_2 =
         Http.default_request
         |> &uri "https://www.example.com"

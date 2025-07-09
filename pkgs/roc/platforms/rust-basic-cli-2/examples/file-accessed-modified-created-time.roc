@@ -20,12 +20,11 @@ main! = |_args|
 
     time_created = Utc.to_iso_8601(File.time_created!(file)?)
 
-
     Stdout.line!(
         """
         ${file} file time metadata:
             Modified: ${Inspect.to_str(time_modified)}
             Accessed: ${Inspect.to_str(time_accessed)}
             Created: ${Inspect.to_str(time_created)}
-        """
+        """,
     )

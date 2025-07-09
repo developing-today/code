@@ -40,7 +40,6 @@ main! = |_args|
             Stdout.line!("\tid: ${id}, task: ${task}, status: ${Inspect.to_str(status)}"),
     )
 
-
 Todo : { id : Str, status : TodoStatus, task : Str }
 
 query_todos_by_status! : Str, Str => Result (List Todo) (Sqlite.SqlDecodeErr _)

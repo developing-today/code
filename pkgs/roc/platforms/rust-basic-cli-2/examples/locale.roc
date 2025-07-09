@@ -10,7 +10,7 @@ import pf.Locale
 
 main! : List Arg => Result {} _
 main! = |_args|
-    
+
     locale_str = Locale.get!({})?
     Stdout.line!("The most preferred locale for this system or application: ${locale_str}")?
 

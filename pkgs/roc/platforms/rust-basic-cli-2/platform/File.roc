@@ -168,7 +168,6 @@ read_utf8! : Str => Result Str [FileReadErr Path IOErr, FileReadUtf8Err Path _]
 read_utf8! = |path_str|
     Path.read_utf8!(Path.from_str(path_str))
 
-
 ## Creates a new [hard link](https://en.wikipedia.org/wiki/Hard_link) on the filesystem.
 ##
 ## The link path will be a link pointing to the original path.
@@ -347,7 +346,7 @@ read_line! = |@Reader({ reader, path })|
     |> Result.map_err(|err| FileReadErr(path, InternalIOErr.handle_err(err)))
 
 ## Returns the size of a file in bytes.
-## 
+##
 ## This uses [rust's std::fs::Metadata::len](https://doc.rust-lang.org/std/fs/struct.Metadata.html#method.len).
 size_in_bytes! : Str => Result U64 [PathErr IOErr]
 size_in_bytes! = |path_str|

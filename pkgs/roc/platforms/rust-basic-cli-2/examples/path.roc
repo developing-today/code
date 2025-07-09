@@ -24,5 +24,5 @@ main! = |_args|
         is_dir: ${Inspect.to_str(b)}
         is_sym_link: ${Inspect.to_str(c)}
         type: ${Inspect.to_str(d)}
-        """
+        """,
     )

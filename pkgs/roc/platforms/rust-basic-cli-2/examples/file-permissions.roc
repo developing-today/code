@@ -22,5 +22,5 @@ main! = |_args|
             Executable: ${Inspect.to_str(is_executable)}
             Readable: ${Inspect.to_str(is_readable)}
             Writable: ${Inspect.to_str(is_writable)}
-        """
+        """,
     )

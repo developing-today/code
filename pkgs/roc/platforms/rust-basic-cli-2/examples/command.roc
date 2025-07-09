@@ -4,7 +4,7 @@ import pf.Stdout
 import pf.Cmd
 import pf.Arg exposing [Arg]
 
-# Different ways to run commands like you do in a terminal. 
+# Different ways to run commands like you do in a terminal.
 
 # To run this example: check the README.md in this folder
 

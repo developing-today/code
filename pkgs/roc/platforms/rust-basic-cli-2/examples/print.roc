@@ -10,7 +10,7 @@ import pf.Arg exposing [Arg]
 
 main! : List Arg => Result {} _
 main! = |_args|
-    
+
     # # Print a string to stdout
     Stdout.line!("Hello, world!")?
 
@@ -26,6 +26,6 @@ main! = |_args|
     # # Print a list to stdout
     ["Foo", "Bar", "Baz"]
     |> List.for_each_try!(|str| Stdout.line!(str))
-    
-    # Use List.map! if you want to apply an effectful function that returns something.
-    # Use List.map_try! if you want to apply an effectful function that returns a Result.
+
+# Use List.map! if you want to apply an effectful function that returns something.
+# Use List.map_try! if you want to apply an effectful function that returns a Result.

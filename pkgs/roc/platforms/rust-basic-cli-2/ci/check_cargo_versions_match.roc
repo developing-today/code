@@ -49,11 +49,11 @@ main! = |_args|
         if List.is_empty(mismatches) then
             Stdout.line!("✓ All shared dependencies have matching versions")
         else
-            all_mistmatches_str = 
+            all_mistmatches_str =
                 mismatches
                 |> List.map(
                     |{ dep_name, root_version, ci_version }|
-                        "  ${dep_name}: ${root_cargo_path} has '${root_version}', ${ci_cargo_path} has '${ci_version}'"
+                        "  ${dep_name}: ${root_cargo_path} has '${root_version}', ${ci_cargo_path} has '${ci_version}'",
                 )
                 |> Str.join_with("\n")
 
@@ -96,7 +96,7 @@ find_version_mismatches = |root_deps, ci_deps|
                         state # Versions match, no mismatch
 
                 Err _ ->
-                    state # Dependency not found in CI file, not a shared dependency
+                    state, # Dependency not found in CI file, not a shared dependency
     )
 
 # test extract_dependencies
@@ -117,7 +117,7 @@ expect
 
     output == expected
 
-extract_dependencies : Str -> (List { name : Str, version : Str })
+extract_dependencies : Str -> List { name : Str, version : Str }
 extract_dependencies = |toml_content|
     lines = Str.split_on(toml_content, "\n")
 
@@ -131,12 +131,12 @@ extract_dependencies = |toml_content|
             is_dep_section = Str.contains(trimmed_line, "dependencies]")
 
             # Check if we're entering a different section (starts with [ but not a dependency section)
-            is_other_section = 
-                Str.starts_with(trimmed_line, "[") 
-                && !is_dep_section 
-                && !Str.is_empty(trimmed_line)
+            is_other_section =
+                Str.starts_with(trimmed_line, "[")
+                and !is_dep_section
+                and !Str.is_empty(trimmed_line)
 
-            new_in_dep_section = 
+            new_in_dep_section =
                 if is_dep_section then
                     Bool.true
                 else if is_other_section then
@@ -144,7 +144,7 @@ extract_dependencies = |toml_content|
                 else
                     state.in_dep_section
 
-            if state.in_dep_section && !Str.is_empty(trimmed_line) && !Str.starts_with(trimmed_line, "[") then
+            if state.in_dep_section and !Str.is_empty(trimmed_line) and !Str.starts_with(trimmed_line, "[") then
                 # Parse dependency line
                 when parse_dependency_line(trimmed_line) is
                     Ok dep ->
@@ -154,11 +154,10 @@ extract_dependencies = |toml_content|
                         # Skip lines that don't parse as dependencies (like comments)
                         { state & in_dep_section: new_in_dep_section }
             else
-                { state & in_dep_section: new_in_dep_section }
+                { state & in_dep_section: new_in_dep_section },
     )
 
     final_state.deps
-
 
 # test parse_dependency_line
 expect
@@ -171,7 +170,7 @@ parse_dependency_line = |line|
     trimmed = Str.trim(line)
 
     # Skip comments and empty lines
-    if Str.starts_with(trimmed, "#") || Str.is_empty(trimmed) then
+    if Str.starts_with(trimmed, "#") or Str.is_empty(trimmed) then
         err_s("I expected a dependency line like 'dep = \"1.0\"', but got '${trimmed}'.")
     else
         { before: name_part, after: value_part } = Str.split_first(trimmed, "=") ? |_| err_s("I expected a `=` in this line: '${trimmed}'")
@@ -179,7 +178,7 @@ parse_dependency_line = |line|
         dep_name = Str.trim(name_part)
         trimmed_value = Str.trim(value_part)
 
-        version = 
+        version =
             if Str.starts_with(trimmed_value, "\"") then
                 # Simple version string like "1.0"
                 extract_quoted_string(trimmed_value)?
@@ -199,18 +198,17 @@ expect
 
 extract_quoted_string : Str -> Result Str _
 extract_quoted_string = |str|
-    if Str.starts_with(str, "\"") && Str.ends_with(str, "\"") then
+    if Str.starts_with(str, "\"") and Str.ends_with(str, "\"") then
         # Remove first and last character (the quotes)
-        inner = 
+        inner =
             str
             |> Str.to_utf8
             |> List.drop_first(1)
             |> List.drop_last(1)
-        
+
         Str.from_utf8(inner)
     else
         err_s("String is not properly quoted: ${str}")
-
 
 # test extract_version_from_table
 expect
@@ -222,12 +220,12 @@ extract_version_from_table : Str -> Result Str _
 extract_version_from_table = |table_str|
     # Find "version = " in the table
     { after } = Str.split_first(table_str, "version") ? |_| err_s("Could not find substring 'version' in table: ${table_str}")
-    
+
     # Look for the equals sign
     trimmed_after = Str.trim(after)
-    
+
     if Str.starts_with(trimmed_after, "=") then
-        value_part = 
+        value_part =
             trimmed_after
             |> Str.to_utf8
             |> List.drop_first(1)
@@ -264,7 +262,7 @@ expect
     ]
 
     output == expected
-    
+
 expect
     input =
         """
@@ -295,7 +293,7 @@ expect
     input1 = "serde = \"1.0\""
     output1 = parse_dependency_line(input1)
     output1 == Ok({ name: "serde", version: "1.0" })
-    
+
 expect
     input3 = "clap = { version = \"4.0\" }"
     output3 = parse_dependency_line(input3)

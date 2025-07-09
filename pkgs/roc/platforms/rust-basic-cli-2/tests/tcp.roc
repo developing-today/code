@@ -12,7 +12,7 @@ main! = |_args|
         Note: These tests require a TCP server running on localhost:8085
         You can start one with: ncat -e `which cat` -l 8085
 
-        """
+        """,
     )?
 
     Stdout.line!("Testing Tcp.connect!:")?
@@ -21,11 +21,10 @@ main! = |_args|
             Stdout.line!("✓ Successfully connected to localhost:8085")?
             test_tcp_functions!(stream)?
             Stdout.line!("\nAll tests executed.")
-        
+
         Err(connect_err) ->
             err_str = Tcp.connect_err_to_str(connect_err)
             Err(Exit(1, "✗ Failed to connect: ${err_str}"))
-
 
 test_tcp_functions! : Tcp.Stream => Result {} _
 test_tcp_functions! = |stream|
@@ -41,11 +40,11 @@ test_tcp_functions! = |stream|
 
 
         Testing Tcp.write_utf8!:
-        """
+        """,
     )?
     test_message = "Test message from Roc!\n"
     Tcp.write_utf8!(stream, test_message)?
-    
+
     reply_msg_utf8 = Tcp.read_line!(stream)?
     Stdout.line!(
         """
@@ -53,7 +52,7 @@ test_tcp_functions! = |stream|
 
 
         Testing Tcp.read_up_to!:
-        """
+        """,
     )?
 
     do_not_read_bytes = [100, 111, 32, 110, 111, 116, 32, 114, 101, 97, 100, 32, 112, 97, 115, 116, 32, 109, 101, 65] # "do not read past meA" in bytes
@@ -68,7 +67,7 @@ test_tcp_functions! = |stream|
 
 
         Testing Tcp.read_exactly!:
-        """
+        """,
     )?
     Tcp.write_utf8!(stream, "BC")?
 
@@ -81,7 +80,7 @@ test_tcp_functions! = |stream|
 
 
         Testing Tcp.read_until!:
-        """
+        """,
     )?
     Tcp.write_utf8!(stream, "Line1\nLine2\n")?
 
