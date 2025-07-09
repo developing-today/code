@@ -1,10 +1,10 @@
-module [str]
-import Square exposing [f64]
+module [hello]
+import Square exposing [square]
 num = 8192.0125
-str = |language|
+hello = |language|
     """
     Roc loves ${language}
-    ${Num.to_str(num)}^2=${Num.to_str(f64(num))}
+    ${Num.to_str(num)}^2=${Num.to_str(square(num))}
     This is a Roc application running on ${language}.
     It imports a Roc module and calls a function from it.
     """

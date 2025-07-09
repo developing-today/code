@@ -3,8 +3,7 @@ app [main!] {
     lib: "./Lib/main.roc",
 }
 import pf.Stdout exposing [line!, hello!]
-import lib.Hello exposing [str]
-hello = str
+import lib.Hello exposing [hello]
 language = "Rust"
 user = "User"
 main! = |_|
