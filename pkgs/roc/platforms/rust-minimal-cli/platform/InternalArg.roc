@@ -1,4 +1,4 @@
-module [ArgToAndFromHost, to_os_raw]
+module [to_os_raw]
 ArgToAndFromHost := {
     type : [Unix, Windows],
     unix : List U8,
