@@ -3,7 +3,6 @@ app [main!] {
     lib: "./Lib/main.roc",
 }
 import lib.Hello exposing [str]
-hello : Str -> Str
 hello = str
 import pf.Stdout exposing [line!, hello!]
 language = "Rust"
