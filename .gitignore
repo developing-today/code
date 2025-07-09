@@ -8,6 +8,8 @@ dynhost
 **/*.so
 *.rh
 **/*.rh
+#*.rm
+#**/*.rm
 main
 **/main
 tags

@@ -1,3 +1,3 @@
 app [main!] { pf: platform "main.roc" }
-main! = |_args|
+main! = |_|
     Err(JustAStub)
