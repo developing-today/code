@@ -1,18 +1,12 @@
-platform "cli"
-    requires {} { main! : List Arg.Arg => Result {} [Exit I32 Str]_ }
-    exposes [
-        Arg,
-        Stderr,
-        Stdout,
-        InternalArg,
-    ]
+platform "rust-minimal-cli"
+    requires {} { main! : _ => _ }
+    exposes []
     packages {}
     imports []
     provides [main_for_host!]
 import Arg
 import Stderr
 import InternalArg
-main_for_host! : List InternalArg.ArgToAndFromHost => I32
 main_for_host! = |raw_args|
     args =
         raw_args

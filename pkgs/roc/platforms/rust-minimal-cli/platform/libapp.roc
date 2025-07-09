@@ -1,3 +1,2 @@
 app [main!] { pf: platform "main.roc" }
-main! = |_|
-    Err(JustAStub)
+main! = |_| Err(JustAStub)

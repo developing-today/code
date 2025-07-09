@@ -1,4 +1,4 @@
-platform "rust-basic-cli"
+platform "rust-basic-cli-template"
     requires {} { main! : {} => Result {} [Exit I32 Str]_ }
     exposes [Stdout]
     packages {}
