@@ -1,6 +1,7 @@
 use core::ffi::c_void;
 use roc_env::arg::ArgToAndFromHost;
 use roc_std::{RocList, RocResult, RocStr};
+use std::io::Write;
 use tokio::runtime::Runtime;
 thread_local! {
    static TOKIO_RUNTIME: Runtime = tokio::runtime::Builder::new_current_thread()
@@ -194,6 +195,7 @@ pub fn init() {
         roc_panic as _,
         roc_dbg as _,
         roc_memset as _,
+        roc_fx_log as _,
         roc_fx_stdout_line as _,
         roc_fx_hello as _,
     ];
@@ -228,6 +230,19 @@ pub extern "C" fn rust_main(args: RocList<ArgToAndFromHost>) -> i32 {
     };
     exit_code
 }
+#[no_mangle]
+pub extern "C" fn roc_fx_log(line: &RocStr) {
+    let stdout = std::io::stdout();
+
+    let mut handle = stdout.lock();
+
+    handle
+        .write_all(line.as_bytes())
+        .and_then(|()| handle.write_all("\n".as_bytes()))
+        .and_then(|()| handle.flush())
+        .unwrap();
+}
+
 #[no_mangle]
 pub extern "C" fn roc_fx_stdout_line(line: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stdout_line(line)

@@ -1,6 +1,6 @@
-module [str, matrix]
-str : List (List Str) -> Str
-str = |lines|
+module [to_str, matrix]
+to_str : List (List Str) -> Str
+to_str = |lines|
     lines
     |> List.map (|ws| Str.join_with(ws, "\t"))
     |> Str.join_with("\n")

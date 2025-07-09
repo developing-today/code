@@ -2,11 +2,10 @@ app [main!] {
     pf: platform "./Platform/main.roc",
     lib: "./Lib/main.roc",
 }
-import lib.Hello
-import pf.Stdout
+import lib.Hello exposing [hello]
+import pf.Stdout exposing [line!]
 language = "Rust"
-main! : {} => Result {} _
-main! = |{}|
-    Stdout.line!(Hello.str language)?
-    Stdout.line!(Str.join_with(["Roc ❤️", language], "  "))?
+main! = |_|
+    line!(hello language)?
+    line!("Roc ❤️  ${language}")?
     Ok({})

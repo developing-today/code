@@ -1,0 +1,4 @@
+hosted [
+    log!,
+]
+log! : Str => {}
