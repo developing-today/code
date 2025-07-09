@@ -2,7 +2,6 @@ module [
     EnvFormat,
     format,
 ]
-
 EnvFormat := {} implements [
         DecoderFormatting {
             u8: env_u8,
@@ -25,10 +24,8 @@ EnvFormat := {} implements [
             tuple: env_tuple,
         },
     ]
-
 format : {} -> EnvFormat
 format = |{}| @EnvFormat({})
-
 decode_bytes_to_num = |bytes, transformer|
     when Str.from_utf8(bytes) is
         Ok(s) ->
@@ -37,7 +34,6 @@ decode_bytes_to_num = |bytes, transformer|
                 Err(_) -> { result: Err(TooShort), rest: bytes }
 
         Err(_) -> { result: Err(TooShort), rest: bytes }
-
 env_u8 = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.to_u8))
 env_u16 = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.to_u16))
 env_u32 = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.to_u32))
@@ -51,7 +47,6 @@ env_i128 = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.
 env_f32 = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.to_f32))
 env_f64 = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.to_f64))
 env_dec = Decode.custom(|bytes, @EnvFormat({})| decode_bytes_to_num(bytes, Str.to_dec))
-
 env_bool = Decode.custom(
     |bytes, @EnvFormat({})|
         when Str.from_utf8(bytes) is
@@ -59,14 +54,12 @@ env_bool = Decode.custom(
             Ok("false") -> { result: Ok(Bool.false), rest: [] }
             _ -> { result: Err(TooShort), rest: bytes },
 )
-
 env_string = Decode.custom(
     |bytes, @EnvFormat({})|
         when Str.from_utf8(bytes) is
             Ok(s) -> { result: Ok(s), rest: [] }
             Err(_) -> { result: Err(TooShort), rest: bytes },
 )
-
 env_list = |decode_elem|
     Decode.custom(
         |bytes, @EnvFormat({})|
@@ -83,7 +76,6 @@ env_list = |decode_elem|
 
                         Err(NotFound) ->
                             { to_parse: all_bytes, remainder: None }
-
                 when Decode.decode_with(to_parse, decode_elem, @EnvFormat({})) is
                     { result, rest } ->
                         when result is
@@ -93,13 +85,11 @@ env_list = |decode_elem|
                                     None -> Done(List.append(accum, val))
 
                             Err(e) -> Errored(e, rest)
-
             when decode_elems(bytes, []) is
                 Errored(e, rest) -> { result: Err(e), rest }
                 Done(vals) ->
                     { result: Ok(vals), rest: [] },
     )
-
 # TODO: we must currently annotate the arrows here so that the lambda sets are
 # exercised, and the solver can find an ambient lambda set for the
 # specialization.
@@ -109,7 +99,6 @@ env_record = |_initial_state, _step_field, _finalizer|
         |bytes, @EnvFormat({})|
             { result: Err(TooShort), rest: bytes },
     )
-
 # TODO: we must currently annotate the arrows here so that the lambda sets are
 # exercised, and the solver can find an ambient lambda set for the
 # specialization.

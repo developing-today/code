@@ -1,10 +1,14 @@
-main
+build
+**/build
 dynhost
 **/dynhost
+*.a
+**/*.a
 *.so
-*.rh
 **/*.so
+*.rh
 **/*.rh
+main
 **/main
 tags
 .use_watchman
