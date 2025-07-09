@@ -31,33 +31,6 @@ pub fn env_var(roc_str: &RocStr) -> RocResult<RocStr, ()> {
     }
 }
 
-pub fn cwd() -> RocResult<RocList<u8>, ()> {
-    // TODO instead, call getcwd on UNIX and GetCurrentDirectory on Windows
-    match std::env::current_dir() {
-        Ok(path_buf) => RocResult::ok(roc_file::os_str_to_roc_path(
-            path_buf.into_os_string().as_os_str(),
-        )),
-        Err(_) => {
-            // Default to empty path
-            RocResult::ok(RocList::empty())
-        }
-    }
-}
-
-pub fn set_cwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
-    match std::env::set_current_dir(roc_file::path_from_roc_path(roc_path)) {
-        Ok(()) => RocResult::ok(()),
-        Err(_) => RocResult::err(()),
-    }
-}
-
-pub fn exe_path() -> RocResult<RocList<u8>, ()> {
-    match std::env::current_exe() {
-        Ok(path_buf) => RocResult::ok(roc_file::os_str_to_roc_path(path_buf.as_path().as_os_str())),
-        Err(_) => RocResult::err(()),
-    }
-}
-
 pub fn get_locale() -> RocResult<RocStr, ()> {
     sys_locale::get_locale().map_or_else(
         || RocResult::err(()),

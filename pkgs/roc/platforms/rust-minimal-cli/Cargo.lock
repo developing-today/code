@@ -509,19 +509,8 @@ dependencies = [
 name = "roc_env"
 version = "0.0.1"
 dependencies = [
- "roc_file",
  "roc_std",
  "sys-locale",
-]
-
-[[package]]
-name = "roc_file"
-version = "0.0.1"
-dependencies = [
- "memchr",
- "roc_io_error",
- "roc_std",
- "roc_std_heap",
 ]
 
 [[package]]
@@ -540,8 +529,6 @@ dependencies = [
  "memmap2",
  "roc_command",
  "roc_env",
- "roc_file",
- "roc_http",
  "roc_io_error",
  "roc_std",
  "roc_std_heap",
@@ -557,22 +544,6 @@ dependencies = [
  "roc_env",
  "roc_host",
  "roc_std",
-]
-
-[[package]]
-name = "roc_http"
-version = "0.0.1"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "memchr",
- "roc_file",
- "roc_io_error",
- "roc_std",
- "roc_std_heap",
- "tokio",
 ]
 
 [[package]]
