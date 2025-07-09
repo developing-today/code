@@ -194,18 +194,8 @@ pub fn init() {
         roc_panic as _,
         roc_dbg as _,
         roc_memset as _,
-        roc_fx_stdin_line as _,
-        roc_fx_stdin_bytes as _,
-        roc_fx_stdin_read_to_end as _,
         roc_fx_stdout_line as _,
-        roc_fx_stdout_write as _,
-        roc_fx_stdout_write_bytes as _,
         roc_fx_hello as _,
-        roc_fx_stderr_line as _,
-        roc_fx_stderr_write as _,
-        roc_fx_stderr_write_bytes as _,
-        roc_fx_tty_mode_canonical as _,
-        roc_fx_tty_mode_raw as _,
     ];
     #[allow(forgetting_references)]
     std::mem::forget(std::hint::black_box(funcs));
@@ -239,54 +229,10 @@ pub extern "C" fn rust_main(args: RocList<ArgToAndFromHost>) -> i32 {
     exit_code
 }
 #[no_mangle]
-pub extern "C" fn roc_fx_stdin_line() -> RocResult<RocStr, roc_io_error::IOErr> {
-    roc_stdio::stdin_line()
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_stdin_bytes() -> RocResult<RocList<u8>, roc_io_error::IOErr> {
-    roc_stdio::stdin_bytes()
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_stdin_read_to_end() -> RocResult<RocList<u8>, roc_io_error::IOErr> {
-    roc_stdio::stdin_read_to_end()
-}
-#[no_mangle]
 pub extern "C" fn roc_fx_stdout_line(line: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
     roc_stdio::stdout_line(line)
 }
 #[no_mangle]
-pub extern "C" fn roc_fx_stdout_write(text: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
-    roc_stdio::stdout_write(text)
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_stdout_write_bytes(
-    bytes: &RocList<u8>,
-) -> RocResult<(), roc_io_error::IOErr> {
-    roc_stdio::stdout_write_bytes(bytes)
-}
-#[no_mangle]
 pub extern "C" fn roc_fx_hello(name: &RocStr) -> RocResult<RocStr, roc_io_error::IOErr> {
     roc_stdio::hello(name)
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_stderr_line(line: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
-    roc_stdio::stderr_line(line)
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_stderr_write(text: &RocStr) -> RocResult<(), roc_io_error::IOErr> {
-    roc_stdio::stderr_write(text)
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_stderr_write_bytes(
-    bytes: &RocList<u8>,
-) -> RocResult<(), roc_io_error::IOErr> {
-    roc_stdio::stderr_write_bytes(bytes)
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_tty_mode_canonical() {
-    crossterm::terminal::disable_raw_mode().expect("failed to disable raw mode");
-}
-#[no_mangle]
-pub extern "C" fn roc_fx_tty_mode_raw() {
-    crossterm::terminal::enable_raw_mode().expect("failed to enable raw mode");
 }
