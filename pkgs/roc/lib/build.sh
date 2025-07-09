@@ -13,8 +13,9 @@ DEFAULT_APPLICATION="hello"
 application="${APPLICATION:-$DEFAULT_APPLICATION}"
 static=0
 skip_run=0
-linker="default" # default: surgical, options: surgical, legacy
-legacy=default
+linker="${LINKER:-default}" # default: surgical, options: surgical, legacy
+legacy="default"
+surgical="default"
 eval set -- "$(getopt -o "" --long platform:,app:,static,skip-run,help,legacy,surgical,linker: -- "$@")"
 if [[ $# -gt 1 ]]; then
   while true; do
@@ -74,10 +75,10 @@ if [[ $# -gt 1 ]]; then
   done
 fi
 if [[ "$linker" = "default" ]]; then
-  linker="legacy"
+  linker="surgical"
 fi
 if [[ ! -z "$linker" ]]; then
-  linker="--linker=$linker"
+  linker="--linker $linker"
 fi
 platform="${platform:-$DEFAULT_PLATFORM}"
 application="${application:-$DEFAULT_APPLICATION}"

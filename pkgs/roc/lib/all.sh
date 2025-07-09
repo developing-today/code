@@ -5,5 +5,5 @@ set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo
 ./display go-basic-cli
 ./hello rust-basic-cli-template
 ./hello rust-basic-cli
-./hello rust-basic-cli-2
+LINKER=legacy ./hello rust-basic-cli-2
 echo "Done"
