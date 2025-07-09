@@ -75,6 +75,7 @@ in
         # zigpkgs.master
         unison-ucm
         # unison-fsmonitor
+        simple-http-server
         arduino
         arduino-cli
         arduino-core
