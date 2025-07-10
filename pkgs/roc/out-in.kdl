@@ -1,0 +1,28 @@
+"string interpolation" {
+  out "$(foo)"
+  in "${bar}"
+}
+interfaces {
+  out "abilities - TODO"
+  in "where clauses static dispatch"
+}
+"calling  functions" {
+  out #"""
+  f x.y() |> z \z, y -> {{}}
+  """#
+  in  """
+  .everything(42).is(a).method(|_|_)
+  """
+}
+"lambda/function syntax" {
+  out #"""
+  \lambda - TODO
+  """#
+  in #"""
+  |x|x*x
+  """#
+}
+language {
+  out rust
+  in zig
+}
