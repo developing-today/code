@@ -1,3 +1,4 @@
+// https://kdl-play.danini.dev
 "string interpolation" {
   out "$(foo)"
   in "${bar}"
