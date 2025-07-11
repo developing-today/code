@@ -185,6 +185,27 @@ in
         deadnix
         e2fsprogs
         emacsPackages.fortune-cookie
+
+        # fancycat
+        # xorg.libX11
+        # xorg.libXcursor
+        # xorg.libXi
+        # xorg.libXinerama
+        # xorg.libXrandr
+        # alsa-lib
+        # emscripten
+        # libGL
+        # libsixel
+        # libxkbcommon
+        # lsix
+        # mesa.drivers
+        # rust
+        # simple-http-server
+        # timg
+        tiny
+        tmux
+        wayland
+        zig # For Web support, used to build roc wasm static library
         expect # unbuffer
         figlet
         fira-code
