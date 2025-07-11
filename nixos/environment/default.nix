@@ -193,7 +193,7 @@ in
         # xorg.libXinerama
         # xorg.libXrandr
         # alsa-lib
-        # emscripten
+        emscripten
         # libGL
         # libsixel
         # libxkbcommon
