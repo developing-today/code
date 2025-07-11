@@ -187,12 +187,12 @@ in
         emacsPackages.fortune-cookie
 
         # fancycat
-        # xorg.libX11
-        # xorg.libXcursor
-        # xorg.libXi
-        # xorg.libXinerama
-        # xorg.libXrandr
-        # alsa-lib
+        xorg.libX11
+        xorg.libXcursor
+        xorg.libXi
+        xorg.libXinerama
+        xorg.libXrandr
+        alsa-lib
         emscripten
         # libGL
         # libsixel
