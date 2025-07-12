@@ -74,6 +74,7 @@ in
         # zed-editor
         # zigpkgs.master
         unison-ucm
+        brotli
         # unison-fsmonitor
         simple-http-server
         arduino

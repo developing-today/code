@@ -6,13 +6,13 @@ in
   hardware.graphics = {
     enable = true;
     enable32Bit = true;
-    package = pkgs-hyprland.mesa.drivers;
-    package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
+    # package = pkgs-hyprland.mesa.drivers;
+    # package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
   };
-  hardware.opengl.extraPackages = [
-    pkgs-hyprland.mesa.drivers
-    # pkgs-hyprland.pkgsi686Linux.mesa.drivers
-  ];
+  # hardware.opengl.extraPackages = [
+  # pkgs-hyprland.mesa.drivers
+  # pkgs-hyprland.pkgsi686Linux.mesa.drivers
+  # ];
   programs.hyprland = {
     enable = true;
     package = inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland;
