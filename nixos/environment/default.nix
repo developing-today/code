@@ -44,6 +44,7 @@ in
         hyprland-qtutils.packages.${system}.hyprland-qtutils
         clan-core.packages.${system}.clan-cli
       ])
+      ++ (with inputs.nixgl.packages.${system}; [ nixVulkanIntel ])
       ++ (with inputs.roc.packages.${system}; [ full ])
       ++ (with inputs.affinity-nix.packages.${system}; [
         photo

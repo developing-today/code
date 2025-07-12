@@ -2048,6 +2048,29 @@
         "type": "github"
       }
     },
+    "nixgl": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1752054764,
+        "narHash": "sha256-Ob/HuUhANoDs+nvYqyTKrkcPXf4ZgXoqMTQoCK0RFgQ=",
+        "owner": "nix-community",
+        "repo": "nixGL",
+        "rev": "a8e1ce7d49a149ed70df676785b07f63288f53c5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "nixGL",
+        "type": "github"
+      }
+    },
     "nixos-facter-modules": {
       "locked": {
         "lastModified": 1736931726,
@@ -2742,6 +2765,7 @@
         "nix-output-monitor": "nix-output-monitor",
         "nix-search": "nix-search",
         "nix-topology": "nix-topology",
+        "nixgl": "nixgl",
         "nixos-facter-modules": "nixos-facter-modules_3",
         "nixos-hardware": "nixos-hardware_2",
         "nixpkgs": "nixpkgs_9",

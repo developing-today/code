@@ -21,6 +21,11 @@ rec {
       (lib.make-clan)
     ];
   inputs = {
+    nixgl = {
+      url = "github:nix-community/nixGL";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
     roc = {
       url = "github:roc-lang/roc?shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
