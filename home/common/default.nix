@@ -90,7 +90,8 @@
     mako = {
       enable = true;
       # anchor = "top-right";
-      anchor = "center-right";
+      # anchor = "center-right";
+      anchor = "bottom-right";
       borderRadius = 0;
       borderSize = 0;
       padding = "0"; # within
