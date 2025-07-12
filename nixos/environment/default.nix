@@ -200,9 +200,12 @@ in
         # libxkbcommon
         # lsix
         # mesa.drivers
-        # rust
+        cargo
+        rustc
+        rustup
         # simple-http-server
         # timg
+        timg
         tiny
         tmux
         wayland
