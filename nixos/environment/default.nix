@@ -194,7 +194,7 @@ in
         xorg.libXinerama
         xorg.libXrandr
         alsa-lib
-        emscripten
+        # emscripten
         # libGL
         # libsixel
         # libxkbcommon
@@ -204,7 +204,6 @@ in
         rustc
         rustup
         # simple-http-server
-        # timg
         timg
         tiny
         tmux
