@@ -15,7 +15,7 @@ http = { version = "0.2", optional = true }
 leptos = { version = "0.4", features = ["nightly"] }
 leptos_meta = { version = "0.4", features = ["nightly"] }
 leptos_actix = { version = "0.4", optional = true }
-leptos_router = { version = "0.4", features = ["nightly"] }
+leptos_router = { version = "0.8", features = ["nightly"] }
 wasm-bindgen = "=0.2.87"
 # libsql = "0.1.5"
 # libsql-client = "0.31.8"
