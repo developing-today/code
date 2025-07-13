@@ -604,14 +604,62 @@ func GetSelected(m *model) []string {
 func Banner(config *configuration.SshServerConfiguration) func(ctx ssh.Context) string {
 	return func(ctx ssh.Context) string {
 		/*
-			todo: clean this up,
-			make a middleware huh? to get tos accepted,
-			tos version in database put tos signatures in db,
-			select tos from db cache on launch
-			use tosService for both banner and huh form middleware,
-			allowed license types / select-box
-			license type in db
-			license compatibility
+						todo: clean this up,
+						make a middleware huh? to get tos accepted,
+						tos version in database put tos signatures in db,
+						select tos from db cache on launch
+						use tosService for both banner and huh form middleware,
+						allowed license types / select-box
+						license type in db
+						license compatibility
+
+						---
+						Make sure to read https://makertube.net/about/instance/team before requesting an account.
+
+			We expect users on MakerTube to adhere to the following rules:
+
+			    Only content may be uploaded that was created by the user and the user is the owner of the copyright.
+			    No content condoning or advocating for the oppression of members of marginalized groups, or general discrimination of groups based on characteristics like gender, race, disabilities, nationality, education, religion etc.
+			    No harassment, stalking, mobbing, dead-naming, misgendering, contacting users who have made it clear they do not wish to be contacted.
+			    No videos containing violence, sexually explicit content, death or abuse in whatever form.
+			    Obviously: no content that is illegal in Germany, no actions intended to damage this instance (performance, reputation, security).
+			    No right or alt-right bullshit, Nazi content or conspiracy narratives.
+			    No automated accounts (unless approved by the moderators).
+			    Please respect common sense in terms of the usage of the platform, size and amount of videos that you upload. This helps to keep the instance accessible for others as well.
+
+			Breaking these rules can get you kicked off the instance instantly without prior warning.
+
+			Please report behavior that bothers you or breaks the rules. Use the report function for specific content that undermines the rules.
+
+			Clarification: Videos marked as Public can be seen by everyone. If you don’t like that please mark them as Private.
+
+			Privacy
+
+			The following user-related data is stored to ensure the operation of the system:
+
+			    Username
+			    Password
+			    E-Mail address
+			    IP address
+			    Video data
+			    Channels
+			    Watch history (enabled by default)
+			    Playlists
+			    Subscriptions and followers
+			    Comments
+			    Live chat messages
+
+			Watching videos on the instance may reveal your IP address to others because of the nature of the service (P2P).
+
+			# CC BY-SA, or Creative Commons Attribution-ShareAlike, is a Creative Commons license that allows others to distribute, remix, adapt, and build upon your work, even commercially, as long as they credit you and license their new creations under the identical terms. It's essentially a "copyleft" license, meaning that adaptations must be shared under the same license
+			# https://makertube.net/signup accessed by Drewry Pope at 2025-07-12
+			The rules are licensed under CC-BY-SA by makertube.net
+			The rules are licensed under CC-BY-SA by developing.today LLC & contributors to the project.
+
+			Why do you want to join MakerTube?
+			I am at least 16 years old and agree to the Terms of MakerTube
+
+						---
 		*/
 		return `
 Welcome to the ssh server! ("The Service")

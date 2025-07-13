@@ -27,3 +27,13 @@ language {
   out rust
   in zig
 }
+
+// Add a return Keyword #7104
+// Add an if-return Guard Syntax #7105
+// Improve Error Handling Ergonomics #7086
+// Simplify Types with .. Spread Syntax #7091
+// Remove wildcard * type variables #7451
+// Add new ... ellipsis keyword #7440
+// snake_case, PNC, and new lambda syntax here? (e
+// https://github.com/roc-lang/roc/issues/7106
+// With Roc's new compiler we will support "overloading of functions"
