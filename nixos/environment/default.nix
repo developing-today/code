@@ -60,6 +60,7 @@ in
       ++ (with pkgs; [
         musl
         fish
+        tcl
         nushell
         ripgrep
         fd
