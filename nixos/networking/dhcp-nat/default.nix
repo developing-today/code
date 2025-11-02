@@ -42,7 +42,7 @@ in
           (interface: {
             "${interface}" = {
               useDHCP = false;
-              neededForBoot = false;
+              #neededForBoot = false; # TODO: re-enable after working hm # https://github.com/NixOS/nixpkgs/pull/360092
               ipv4.addresses = [
                 {
                   address = "${(networkBase interfaceIndices.${interface}).prefix}.${
