@@ -76,7 +76,9 @@ rec {
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer?shallow=1";
 
     # nixpkgs-inner.url = "github:developing-today-forks/nixpkgs?shallow=1";
-    nixpkgs.url = "github:developing-today-forks/nixpkgs?shallow=1";
+    #nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable?shallow=1";
+    nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+    #nixpkgs.url = "github:developing-today-forks/nixpkgs?shallow=1";
     # nixpkgs.url = "github:dezren39/nixpkgs?shallow=1";
     nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable?shallow=1";
