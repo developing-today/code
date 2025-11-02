@@ -6,6 +6,13 @@
     inputs.nixos-facter-modules.nixosModules.facter
     { config.facter.reportPath = ./facter-nvidia.json; }
   ];
+      hardware.framework.enableKmod = false;
+      boot = {
+        kernelModules = [ "cros_ec" "cros_ec_lpcs" ];
+       # extraModulePackages = [
+       #     boot.kernelPackages.framework-laptop-kmod
+       # ];
+      };
   boot.initrd.availableKernelModules = [
     "xhci_pci"
     "nvme"
