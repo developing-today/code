@@ -116,7 +116,7 @@ in
         arduino
         arduino-cli
         arduino-core
-        arduino-create-agent
+        #arduino-create-agent # fish-completions as usual
         arduino-ide
         arduino-language-server
         arduino-mk
@@ -437,7 +437,7 @@ in
         gimp
         vlc
         wineWowPackages.stable
-        fontconfig
+        #fontconfig
         font-manager
 
         # Printers and drivers

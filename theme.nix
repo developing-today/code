@@ -1,9 +1,9 @@
 {
-  fonts = {
-    monospace = "Source Code Pro";
-    serif = "Merriweather";
-    sans-serif = "Roboto";
-  };
+  #fonts = {
+  #  monospace = "Source Code Pro";
+  #  serif = "Merriweather";
+  #  sans-serif = "Roboto";
+  #};
 
   colors = rec {
     base00 = black-900;

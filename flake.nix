@@ -28,7 +28,7 @@ rec {
     };
     roc = {
       url = "github:roc-lang/roc?shallow=1";
-      inputs.nixpkgs.follows = "nixpkgs";
+      #inputs.nixpkgs.follows = "nixpkgs"; # https://roc.zulipchat.com/#narrow/channel/231634-beginners/topic/roc.20nix.20flake/near/553273845
       # inputs.rust-overlay.follows = "rust-overlay";
       inputs.flake-utils.follows = "flake-utils";
       inputs.flake-compat.follows = "flake-compat";

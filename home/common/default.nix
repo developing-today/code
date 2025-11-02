@@ -265,7 +265,7 @@
       enable = true;
       settings = {
         main = {
-          font = "Sarasa Mono SC";
+          #font = "Sarasa Mono SC";
           terminal = "foot";
           prompt = "->";
         };
@@ -787,7 +787,7 @@
         flameshot
         flatpak
         fnm
-        fontconfig
+        #fontconfig
         fontfinder
         freetype
         fselect
