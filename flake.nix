@@ -232,7 +232,7 @@ rec {
     };
     hyprland = {
       #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
-      url = "git+https://github.com/hyprwm/Hyprland/v0.49.0?submodules=1&shallow=1";
+      url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
       # url = "github:hyprwm/Hyprland";
       inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
       inputs.hyprcursor.follows = "hyprcursor";
