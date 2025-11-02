@@ -27,7 +27,8 @@ in
   };
 
   # TODO: upstream that
-  systemd.services.calibre-server.serviceConfig.ExecStart = lib.mkForce "${pkgs.calibre}/bin/calibre-server ${library} --enable-auth";
+  systemd.services.calibre-server.serviceConfig.ExecStart =
+    lib.mkForce "${pkgs.calibre}/bin/calibre-server ${library} --enable-auth";
 
   environment.persistence."/persist" = {
     directories = [

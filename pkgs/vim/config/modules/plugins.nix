@@ -76,45 +76,45 @@
     treesitter = { };
     harpoon = {
       enable = true;
-      saveOnToggle = true;
-      saveOnChange = true;
-      enterOnSendcmd = false;
-      tmuxAutocloseWindows = false;
-      markBranch = false;
+      #saveOnToggle = true;
+      #saveOnChange = true;
+      #enterOnSendcmd = false;
+      #tmuxAutocloseWindows = false;
+      #markBranch = false;
       # package = TODO
       # marks = TODO
       # termCommands = TODO
       # excludedFiletypes = TODO
       # projects = TODO
-      menu = {
-        width = 60;
-        height = 20;
-        # borderChars = # TODO
-      };
-      keymapsSilent = true;
-      enableTelescope = true;
-      keymaps = {
-        addFile = "<leader>a";
-        toggleQuickMenu = "<leader>s";
-        cmdToggleQuickMenu = "<leader>d";
-        gotoTerminal = {
-          "1" = "<C-1>";
-          "2" = "<C-2>";
-          "3" = "<C-3>";
-          "4" = "<C-4>";
-        };
-        # tmuxGotoTerminal = { TODO };
-        #navPrev = "<C-Up>";
-        #navNext = "<C-Down>";
-        navPrev = "<M-a>";
-        navNext = "<M-s>";
-        navFile = {
-          "1" = "<C-j>";
-          "2" = "<C-k>";
-          "3" = "<C-l>";
-          "4" = "<C-m>";
-        };
-      };
+      #menu = {
+      #  width = 60;
+      #  height = 20;
+      # borderChars = # TODO
+      #};
+      #keymapsSilent = true;
+      #enableTelescope = true;
+      #keymaps = {
+      #  addFile = "<leader>a";
+      #  toggleQuickMenu = "<leader>s";
+      #  cmdToggleQuickMenu = "<leader>d";
+      #  gotoTerminal = {
+      #    "1" = "<C-1>";
+      #    "2" = "<C-2>";
+      #    "3" = "<C-3>";
+      #    "4" = "<C-4>";
+      #  };
+      # tmuxGotoTerminal = { TODO };
+      #navPrev = "<C-Up>";
+      #navNext = "<C-Down>";
+      #  navPrev = "<M-a>";
+      #  navNext = "<M-s>";
+      #  navFile = {
+      #    "1" = "<C-j>";
+      #    "2" = "<C-k>";
+      #    "3" = "<C-l>";
+      #    "4" = "<C-m>";
+      #  };
+      #};
     };
     gitsigns = { };
     lualine = { };

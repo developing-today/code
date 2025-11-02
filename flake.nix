@@ -76,9 +76,10 @@ rec {
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer?shallow=1";
 
     # nixpkgs-inner.url = "github:developing-today-forks/nixpkgs?shallow=1";
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable?shallow=1";
-    #nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+    #nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable?shallow=1";
     #nixpkgs.url = "github:developing-today-forks/nixpkgs?shallow=1";
+    nixpkgs.url = "github:developing-today-forks/nixpkgs/e5fcba7ae622ed9f40c214a0d61e0bcf8f49b32";
+    #nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     # nixpkgs.url = "github:dezren39/nixpkgs?shallow=1";
     nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable?shallow=1";
@@ -98,8 +99,8 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
-      url = "github:developing-today-forks/home-manager?shallow=1";
-      # url = "github:nix-community/home-manager?shallow=1";
+      #url = "github:developing-today-forks/home-manager?shallow=1";
+      url = "github:nix-community/home-manager?shallow=1";
       # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-master";
     };
@@ -370,3 +371,7 @@ rec {
   };
   description = "developing.today NixOS configuration";
 }
+
+#TODO:
+# make optional https://git.clan.lol/clan/clan-core/src/branch/main/flake.nix#L115
+# make private/local https://git.clan.lol/clan/clan-core/src/branch/main/flake.nix#L53

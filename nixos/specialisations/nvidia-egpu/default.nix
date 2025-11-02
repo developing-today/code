@@ -17,7 +17,8 @@ in
   # ];
   environment.systemPackages = [
     nvidia-offload
-    pkgs.glxinfo
+    #pkgs.glxinfo
+    pkgs.mesa-demos
   ];
   services.xserver.videoDrivers = [ "nvidia" ];
   boot = {

@@ -185,7 +185,7 @@
     #       # browser = "google-chrome-stable";
     #       # browser = "firefox";
     #       browser = "${config.programs.firefox.package}/bin/firefox -new-tab";
-    #       dmenu = "${pkgs.rofi-wayland}/bin/rofi -dmenu"; # wofi? etc.
+    #       dmenu = "${pkgs.rofi}/bin/rofi -dmenu"; # wofi? etc.
     #       always_run_script = true;
     #       title = "Dunst";
     #       class = "Dunst";
@@ -708,11 +708,11 @@
         bat
         bat # cat
         beam.packages.erlang.elixir-ls
-        beam.packages.erlang.erlang-ls
+        erlang-language-platform # erlang-ls # https://github.com/NixOS/nixpkgs/pull/448119
         beep
         bemenu # wayland clone of dmenu
         bingrep
-        bitwarden
+        #bitwarden
         bitwarden-cli
         bitwarden-desktop
         bitwarden-menu
@@ -756,16 +756,16 @@
         difftastic
         direnv
         discord
-        diskonaut
+        # diskonaut # https://github.com/NixOS/nixpkgs/pull/376644
         dmenu
         dnsutils
         docker-compose
         dogdns # dns for dogs
-        dolphin
+        kdePackages.dolphin
         dprint
         dracula-theme # gtk theme
         drill
-        du-dust
+        dust
         dua
         dunst
         dwm
@@ -800,7 +800,7 @@
         git-absorb
         git-cliff
         git-crypt
-        gitAndTools.diff-so-fancy
+        diff-so-fancy
         github-desktop
         gitui
         glib
@@ -837,7 +837,7 @@
         imagemagick
         intel-gpu-tools
         ion
-        ipfs
+        kubo #ipfs
         jack2
         jetbrains-mono
         jless
@@ -861,22 +861,24 @@
         lemmeknow
         less
         lf
-        lfs
+        dysk #lfs
+        git-lfs
         libnotify
-        libsForQt5.polkit-kde-agent
+        #libsForQt5.polkit-kde-agent
+        kdePackages.polkit-kde-agent-1
         libsForQt5.qt5.qtwayland
-        libsForQt5.yakuake
+        kdePackages.yakuake
         libtool
         libva-utils
         libverto
-        licensor
+        #licensor # https://github.com/NixOS/nixpkgs/issues/141368
         light
         lld
         lmms
-        loc
+        #loc
         lsd
         lua-language-server
-        lxde.lxsession
+        lxsession
         macchina
         # mako # notification system developed by swaywm maintainer
         mangohud
@@ -908,14 +910,14 @@
         nodePackages.bash-language-server
         nodePackages.eslint
         nodePackages.prettier
-        nodePackages.prettier-plugin-toml
+        #nodePackages.prettier-plugin-toml
         nodePackages.typescript
         nodePackages.typescript-language-server
         nodePackages.vercel
         nodePackages.vscode-langservers-extracted
         nodePackages.wrangler
         nodejs
-        nodejs-18_x
+        #nodejs-18_x
         nomacs
         nomino
         nsh
@@ -952,24 +954,25 @@
         pulseaudio
         pv
         pwgen
-        python3Full
+        python3
+        #python3Full
         qt5.qmake
         qt5.qtwayland
         libsForQt5.qt5ct
         qt6.qmake
         qt6.qtwayland
-        qt6ct
+        qt6Packages.qt6ct
         qtractor
         racer
         ranger # midnight commander / file manager
-        rargs
+        # rargs # https://github.com/NixOS/nixpkgs/issues/141368
         rbw
         restic
         ripgrep
         rmtrash # ctrl + z for rm
         rnr
         rofi-rbw
-        rofi-wayland
+        rofi#-wayland
         rufo
         runiq
         rust-analyzer
@@ -1007,7 +1010,7 @@
         systeroid
         tealdeer # ya tldr
         #terminus-nerdfont
-        thefuck
+        pay-respects#thefuck
         tidy-viewer
         tidyp
         tig # command line git
@@ -1060,7 +1063,7 @@
         xorg.libX11
         xorg.libXcursor
         xournalpp # xournal
-        xsv
+        #xsv # https://github.com/NixOS/nixpkgs/issues/141368
         yad
         yarn
         ydotool

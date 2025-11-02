@@ -41,7 +41,7 @@ in
   ];
   programs.git = {
     enable = true;
-    package = pkgs.gitAndTools.gitFull;
+    package = pkgs.gitFull;
     aliases = {
       p = "pull --ff-only";
       ff = "merge --ff-only";

@@ -1,17 +1,20 @@
 { pkgs, ... }:
 {
   fonts = {
-    packages = with pkgs; [
-      # only desktops not servers?
-      noto-fonts
-      noto-fonts-cjk-sans
-      noto-fonts-emoji
-      font-awesome
-      source-han-sans
-      source-han-sans-japanese
-      source-han-serif-japanese
-      ] ++ builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts)
-    ; # missing other fonts
+    packages =
+      with pkgs;
+      [
+        # only desktops not servers?
+        noto-fonts
+        noto-fonts-cjk-sans
+        noto-fonts-color-emoji
+        font-awesome
+        #source-han-sans-japanese
+        source-han-sans
+        source-han-serif
+        #source-han-serif-japanese
+      ]
+      ++ builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts); # missing other fonts
     fontconfig = {
       # ligatures just give me ligatures what is this
       enable = true;

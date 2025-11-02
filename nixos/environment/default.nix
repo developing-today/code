@@ -70,7 +70,7 @@ in
         xh
         zellij
         gitui
-        du-dust
+        dust
         dua
         starship
         yazi
@@ -91,7 +91,7 @@ in
         presenterm
         kondo
         # bob-nvim
-        rtx
+        mise#rtx
         espanso
 
         # TODO: cleanup systemPackages
@@ -123,7 +123,7 @@ in
         arduinoOTA
         code-cursor
         gamemode
-        argo
+        argo-workflows
         argocd
         argocd-autopilot
         solaar
@@ -179,7 +179,7 @@ in
         grafana-image-renderer
         grafana-reporter
         grafana-alloy
-        grafana-agent
+        #grafana-agent
         opentelemetry-collector
         tempo
         temporal
@@ -221,7 +221,7 @@ in
         talosctl
         deadnix
         e2fsprogs
-        emacsPackages.fortune-cookie
+        emacs.pkgs.fortune-cookie
 
         # fancycat
         xorg.libX11
@@ -311,11 +311,15 @@ in
         llvmPackages.bintools
         lolcat
         lsix
-        maple-mono-NF
-        maple-mono-SC-NF
-        maple-mono-autohint
-        maple-mono-otf
-        maple-mono-woff2
+        maple-mono.NF
+        #maple-mono.SC-NF
+        maple-mono.Normal-OTF
+        maple-mono.Normal-TTF-AutoHint
+        maple-mono.Normal-TTF
+        maple-mono.Normal-Woff2
+        maple-mono.Normal-NF
+        maple-mono.Normal-Variable
+        maple-mono.variable
         minicom
         monoid
         ncdu
@@ -352,10 +356,16 @@ in
         ddrescueview
         unetbootin # can't launch right now? qt platform platform plugin not found
         # dd_rescue
-        ventoy-full # https://www.ventoy.net/en/doc_search_path.html
+        #ventoy-full # https://www.ventoy.net/en/doc_search_path.html
+        #  Known issues:
+#        - Ventoy uses binary blobs which can't be trusted to be free of malware or compliant to their licenses.
+#       https://github.com/NixOS/nixpkgs/issues/404663
+#       See the following Issues for context:
+#       https://github.com/ventoy/Ventoy/issues/2795
+#       https://github.com/ventoy/Ventoy/issues/3224
         # ventoy
         screen
-        sddm
+        #sddm
         netboot
         ipxe
         # waitron
@@ -449,7 +459,7 @@ in
         #tdesktop # telegram desktop
 
         # Testing and development tools
-        beekeeper-studio
+        #beekeeper-studio # electron 31 eol
         cypress # Functional testing framework using headless chrome
         chromedriver
         direnv

@@ -45,12 +45,12 @@ in
         }
       ]
       ++
-      # Mute mic
-      (afterLockTimeout {
-        timeout = 10;
-        command = "${pactl} set-source-mute @DEFAULT_SOURCE@ yes";
-        resumeCommand = "${pactl} set-source-mute @DEFAULT_SOURCE@ no";
-      })
+        # Mute mic
+        (afterLockTimeout {
+          timeout = 10;
+          command = "${pactl} set-source-mute @DEFAULT_SOURCE@ yes";
+          resumeCommand = "${pactl} set-source-mute @DEFAULT_SOURCE@ no";
+        })
       ++
         # Turn off RGB
         (lib.optionals config.services.rgbdaemon.enable (afterLockTimeout {

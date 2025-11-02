@@ -63,7 +63,7 @@
       enable = true;
       package = pkgs.plocate;
       interval = "hourly";
-      localuser = null;
+      #localuser = null;
     };
     displayManager = {
       #autoLogin = { enable = true; user = "user"; }; # security risk?

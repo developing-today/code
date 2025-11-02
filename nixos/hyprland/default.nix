@@ -8,7 +8,7 @@ in
     enable32Bit = true;
     # package = pkgs-hyprland.mesa.drivers;
     # package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
-    extraPackages = [ pkgs.mesa.drivers ];
+    extraPackages = [ pkgs.mesa ];
   };
   # hardware.opengl.extraPackages = [
   # pkgs-hyprland.mesa.drivers
