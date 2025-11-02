@@ -72,7 +72,7 @@ rec {
       url = "github:nix-community/disko?shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    arunoruto.url = "github:arunoruto/flake?shallow=1";
+    #arunoruto.url = "github:arunoruto/flake?shallow=1";
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer?shallow=1";
 
     # nixpkgs-inner.url = "github:developing-today-forks/nixpkgs?shallow=1";
