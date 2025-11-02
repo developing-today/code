@@ -874,7 +874,7 @@
         #licensor # https://github.com/NixOS/nixpkgs/issues/141368
         light
         lld
-        lmms
+        #lmms # https://github.com/NixOS/nixpkgs/issues/450908 # https://github.com/NixOS/nixpkgs/pull/377643
         #loc
         lsd
         lua-language-server
