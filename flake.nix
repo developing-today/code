@@ -231,7 +231,8 @@ rec {
       inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
     };
     hyprland = {
-      url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
+      #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
+      url = "git+https://github.com/hyprwm/Hyprland/v0.49.0?submodules=1&shallow=1";
       # url = "github:hyprwm/Hyprland";
       inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
       inputs.hyprcursor.follows = "hyprcursor";
