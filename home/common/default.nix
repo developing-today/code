@@ -425,7 +425,7 @@
     #oils-for-unix.enable = true;
     obs-studio.enable = true;
     oh-my-posh.enable = true;
-    fish.enable = true;
+    #fish.enable = true;
     bat.enable = true;
     zsh = {
       enable = true;
@@ -924,7 +924,7 @@
         nurl
         nwg-displays
         nwg-dock-hyprland
-        oh-my-fish
+        #oh-my-fish
         openconnect
         openssl
         ormolu

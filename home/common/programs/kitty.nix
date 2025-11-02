@@ -1,7 +1,7 @@
 {
   enable = true;
   themeFile = "VibrantInk"; # matches file here except without ".conf": https://github.com/kovidgoyal/kitty-themes/tree/master/themes
-  font.name = "Terminess Nerd Font";
+  #font.name = "Terminess Nerd Font";
   settings = {
     clipboard_control = "write-clipboard read-clipboard write-primary read-primary";
     confirm_os_window_close = -0;

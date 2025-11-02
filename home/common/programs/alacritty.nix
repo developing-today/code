@@ -14,9 +14,9 @@
       history = 10000;
     };
 
-    font = {
-      size = 12;
-    };
+    #font = {
+    #  size = 12;
+    #};
 
     mouse = {
       bindings = [
