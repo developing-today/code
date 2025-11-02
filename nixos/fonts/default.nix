@@ -1,6 +1,6 @@
 { pkgs, ... }:
 {
-  #fonts = {
+  fonts = {
   #  packages =
   #    with pkgs;
   #    [
@@ -15,6 +15,7 @@
         #source-han-serif-japanese
   #    ]
   #    ++ builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts); # missing other fonts
+    fontconfig = { enable = false; };
     #fontconfig = {
     #  # ligatures just give me ligatures what is this
     #  enable = true;
@@ -30,5 +31,5 @@
     #    ];
     #  };
     #};
-  #};
+  };
 }

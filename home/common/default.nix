@@ -237,8 +237,8 @@
     };
     bash.enable = true;
     waybar = import (lib.from-root "home/common/programs/waybar.nix") { inherit pkgs; };
-    alacritty = import (lib.from-root "home/common/programs/alacritty.nix");
-    kitty = import (lib.from-root "home/common/programs/kitty.nix");
+    #alacritty = import (lib.from-root "home/common/programs/alacritty.nix");
+    #kitty = import (lib.from-root "home/common/programs/kitty.nix");
     yazi = import (lib.from-root "home/common/programs/yazi.nix") { inherit pkgs; };
     abook.enable = true;
     autojump.enable = true;
@@ -411,7 +411,7 @@
         ELECTRON_OZONE_PLATFORM_HINT = "auto";
         EDITOR = "nvim";
         VISUAL = "nvim";
-        TERM = "kitty"; # alacritty";
+        #TERM = "kitty"; # alacritty";
       };
       shellAliases = {
         #switch = "sudo nixos-rebuild switch";
@@ -427,19 +427,19 @@
     oh-my-posh.enable = true;
     #fish.enable = true;
     bat.enable = true;
-    zsh = {
-      enable = true;
-      oh-my-zsh = {
-        enable = true;
-        plugins = [
-          "git"
-          "python"
-          "docker"
-          "fzf"
-        ];
-        theme = "dpoggi";
-      };
-    };
+    #zsh = {
+    #  enable = true;
+    #  oh-my-zsh = {
+    #    enable = true;
+    #    plugins = [
+    #      "git"
+    #      "python"
+    #      "docker"
+    #      "fzf"
+    #    ];
+    #    theme = "dpoggi";
+    #  };
+    #};
     htop = {
       enable = true;
       settings = {
@@ -482,7 +482,7 @@
     };
     sessionVariables = {
       EDITOR = "nvim";
-      TERM = "kitty"; # "alacritty" "xterm-256color"
+      #TERM = "kitty"; # "alacritty" "xterm-256color"
       # PATH = "$HOME/bin:$PATH";
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
       NIXPKGS_ALLOW_UNFREE = "1";
@@ -693,8 +693,8 @@
         acpi
         acpitool
         adwaita-icon-theme # default gnome cursors
-        alacritty
-        alacritty # gpu accelerated terminal
+        #alacritty
+        #alacritty # gpu accelerated terminal
         alsa-lib
         amp
         any-nix-shell
@@ -850,7 +850,7 @@
         kibi
         kickoff
         killall
-        kitty
+        #kitty
         kondo
         krabby
         lagrange
