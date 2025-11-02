@@ -171,7 +171,8 @@ rec {
       inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
-      url = "github:nix-community/nixvim?shallow=1";
+      #url = "github:nix-community/nixvim?shallow=1";
+      url = "github:nix-community/nixos-25.05?shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
       inputs.devshell.follows = "devshell";
