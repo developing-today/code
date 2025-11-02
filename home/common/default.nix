@@ -839,7 +839,7 @@
         ion
         kubo #ipfs
         jack2
-        jetbrains-mono
+        #jetbrains-mono
         jless
         jq
         jql

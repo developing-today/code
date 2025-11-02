@@ -264,7 +264,7 @@ in
         gtk2
         gtk3
         gtk4
-        hackgen-nf-font
+        #hackgen-nf-font
         haskellPackages.misfortune
         hasklig
         hledger
@@ -311,15 +311,15 @@ in
         llvmPackages.bintools
         lolcat
         lsix
-        maple-mono.NF
-        #maple-mono.SC-NF
-        maple-mono.Normal-OTF
-        maple-mono.Normal-TTF-AutoHint
-        maple-mono.Normal-TTF
-        maple-mono.Normal-Woff2
-        maple-mono.Normal-NF
-        maple-mono.Normal-Variable
-        maple-mono.variable
+        #maple-mono.NF
+        ##maple-mono.SC-NF
+        #maple-mono.Normal-OTF
+        #maple-mono.Normal-TTF-AutoHint
+        #maple-mono.Normal-TTF
+        #maple-mono.Normal-Woff2
+        #maple-mono.Normal-NF
+        #maple-mono.Normal-Variable
+        #maple-mono.variable
         minicom
         monoid
         ncdu
