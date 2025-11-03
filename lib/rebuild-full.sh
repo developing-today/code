@@ -78,7 +78,13 @@ if [[ -f "./flake.nix" ]]; then
   # -vvvv
   nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
 
+  set +e
   current=$(nixos-rebuild list-generations | grep current)
+  set -e
+  if [[ -z "$current" ]]; then
+    echo "Could not find current, possibly using nixos-25.11, seeking first Current tab = true"
+    current="$(nixos-rebuild list-generations --json | jq -r 'to_entries[] | select(.value.current == true) | "\(.value.generation)"')"
+  fi
   echo "current: $current"
   hostname=$(hostname)
   echo "hostname: $hostname"
