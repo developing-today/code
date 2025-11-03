@@ -35,7 +35,7 @@ rec {
     };
     hyprland-qtutils = {
       url = "github:hyprwm/hyprland-qtutils";
-      inputs.nixpkgs.follows = "hyprland" #nixpkgs";
+      inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
       inputs.systems.follows = "systems";
       inputs.hyprland-qt-support.follows = "hyprland-qt-support";
     };
@@ -213,7 +213,7 @@ rec {
     };
     hyprlang = {
       url = "github:hyprwm/hyprlang";
-      inputs.nixpkgs.follows = "hyprland" #nixpkgs";
+      inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
       inputs.systems.follows = "systems";
     };
     yazi = {
