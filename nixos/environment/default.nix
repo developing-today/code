@@ -41,7 +41,7 @@ in
         ssh-to-age.packages.${system}.default
         nix-search.packages.${system}.default
         zen-browser.packages.${system}.default
-        hyprland-qtutils.packages.${system}.hyprland-qtutils
+        #hyprland-qtutils.packages.${system}.hyprland-qtutils
         clan-core.packages.${system}.clan-cli
       ])
       ++ (with inputs.roc.packages.${system}; [ full ])
