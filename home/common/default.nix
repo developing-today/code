@@ -911,11 +911,11 @@
         nodePackages.eslint
         nodePackages.prettier
         #nodePackages.prettier-plugin-toml
-        nodePackages.typescript
-        nodePackages.typescript-language-server
-        nodePackages.vercel
-        nodePackages.vscode-langservers-extracted
-        nodePackages.wrangler
+        #nodePackages.typescript
+        #nodePackages.typescript-language-server
+        #nodePackages.vercel
+        #nodePackages.vscode-langservers-extracted
+        #nodePackages.wrangler
         nodejs
         #nodejs-18_x
         nomacs
