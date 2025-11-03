@@ -36,7 +36,7 @@ in
     # etc.
     systemPackages =
       (with inputs; [
-        rose-pine-hyprcursor.packages.${pkgs.system}.default
+        #rose-pine-hyprcursor.packages.${pkgs.system}.default
         nix-output-monitor.packages.${system}.default
         ssh-to-age.packages.${system}.default
         nix-search.packages.${system}.default
