@@ -5,13 +5,14 @@
 //! ## Usage
 //!
 //!     cargo run --example echo --features=examples
+
 use iroh::{
     Endpoint, EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use n0_snafu::Result;
-use n0_snafu::error::ResultExt;
+use n0_snafu::{Result, ResultExt};
+
 /// Each protocol is identified by its ALPN string.
 ///
 /// The ALPN, or application-layer protocol negotiation, is exchanged in the connection handshake,
