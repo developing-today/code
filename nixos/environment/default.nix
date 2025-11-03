@@ -289,7 +289,7 @@ in
         hyprkeys
         hyprland-monitor-attached
         hyprland-protocols
-        inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors
+        #inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors
         hyprlock
         hyprpicker
         hyprshade
