@@ -31,7 +31,7 @@ fi
 # --use-substitutes
 # --no-net
 # -vvvv
-#nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
 set +e
 current=$(nixos-rebuild list-generations | grep current)
 set -e
