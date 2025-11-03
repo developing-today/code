@@ -230,7 +230,7 @@
       package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
       settings = {
         # ghostty +list-themes
-        theme = "synthwave";
+        theme = "Synthwave";
         window-decoration = false;
         # TODO: hide tabs or make smaller or both
       };
