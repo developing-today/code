@@ -79,17 +79,19 @@ rec {
     #nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable?shallow=1";
     #nixpkgs.url = "github:developing-today-forks/nixpkgs?shallow=1";
     #nixpkgs.url = "github:developing-today-forks/nixpkgs/e5fcba7ae622ed9f40c214a0d61e0bcf8f49b32";
-    nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+#    nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     #nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11?shallow=1";
     # nixpkgs.url = "github:dezren39/nixpkgs?shallow=1";
     # nixpkgs = {
-    nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
-   # nixpkgs-master.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
+    #nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
+   nixpkgs-master.url = "github:NixOS/nixpkgs/nixos-25.11?shallow=1";
     #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable?shallow=1";
     #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.11?shallow=1";
     #   url = "github:numtide/nixpkgs-unfree?ref=nixos-unstable?shallow=1";
     #nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
-    nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+    #nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     #   inputs.nixpkgs.follows = "nixpkgs-inner";
     # };
     # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs?shallow=1";
@@ -97,7 +99,8 @@ rec {
     # nixpkgs-stable.url = "github:dezren39/nixpkgs?shallow=1";
     # nixpkgs-stable.url = "github:NixOS/nixpkgs?shallow=1";
     #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05?shallow=1";
-    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.05?shallow=1";
+    #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.05?shallow=1";
+    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.11?shallow=1";
     sops-nix = {
       url = "github:developing-today-forks/sops-nix?shallow=1";
       # url = "github:mic92/sops-nix";
@@ -107,8 +110,9 @@ rec {
     home-manager = {
       #url = "github:developing-today-forks/home-manager?shallow=1";
       # inputs.nixpkgs.follows = "nixpkgs";
-      url = "github:nix-community/home-manager?shallow=1";
+      #url = "github:nix-community/home-manager?shallow=1";
       #url = "github:nix-community/home-manager/release-25.05?shallow=1";
+      url = "github:nix-community/home-manager/release-25.11?shallow=1";
       inputs.nixpkgs.follows = "nixpkgs-master";
     };
     systems = {
