@@ -707,7 +707,7 @@
         bacon
         bat
         bat # cat
-        beam.packages.erlang.elixir-ls
+        #beam.packages.erlang.elixir-ls
         erlang-language-platform # erlang-ls # https://github.com/NixOS/nixpkgs/pull/448119
         beep
         bemenu # wayland clone of dmenu
@@ -749,7 +749,7 @@
         coreutils
         cpufetch
         curl
-        dart
+        #dart
         dash
         delta # better diff
         deno
