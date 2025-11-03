@@ -111,8 +111,8 @@ rec {
     home-manager = {
       #url = "github:developing-today-forks/home-manager?shallow=1";
       # inputs.nixpkgs.follows = "nixpkgs";
-      url = "github:nix-community/home-manager?shallow=1";
-      #url = "github:nix-community/home-manager/release-25.05?shallow=1";
+      #url = "github:nix-community/home-manager?shallow=1";
+      url = "github:nix-community/home-manager/release-25.05?shallow=1";
       #url = "github:nix-community/home-manager/release-25.11?shallow=1";
       #inputs.nixpkgs.follows = "nixpkgs-master";
     };
