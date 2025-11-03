@@ -916,7 +916,7 @@
         #nodePackages.vercel
         #nodePackages.vscode-langservers-extracted
         #nodePackages.wrangler
-        nodejs
+        #nodejs
         #nodejs-18_x
         nomacs
         nomino
