@@ -83,12 +83,12 @@ rec {
     #nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
     # nixpkgs.url = "github:dezren39/nixpkgs?shallow=1";
     # nixpkgs = {
-    #nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
+    nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
    # nixpkgs-master.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
     #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable?shallow=1";
     #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
     #   url = "github:numtide/nixpkgs-unfree?ref=nixos-unstable?shallow=1";
-    nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+    #nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     #   inputs.nixpkgs.follows = "nixpkgs-inner";
     # };
@@ -109,7 +109,7 @@ rec {
       # inputs.nixpkgs.follows = "nixpkgs";
       url = "github:nix-community/home-manager?shallow=1";
       #url = "github:nix-community/home-manager/release-25.05?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs-master";
+      inputs.nixpkgs.follows = "nixpkgs-master";
     };
     systems = {
       # TODO: use this?
