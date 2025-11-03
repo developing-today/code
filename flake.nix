@@ -33,18 +33,18 @@ rec {
       inputs.flake-utils.follows = "flake-utils";
       inputs.flake-compat.follows = "flake-compat";
     };
-    hyprland-qtutils = {
-      url = "github:hyprwm/hyprland-qtutils";
-      inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
-      inputs.systems.follows = "systems";
-      inputs.hyprland-qt-support.follows = "hyprland-qt-support";
-    };
-    hyprland-qt-support = {
-      url = "github:hyprwm/hyprland-qt-support";
-      inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
-      inputs.systems.follows = "systems";
-      inputs.hyprlang.follows = "hyprlang";
-    };
+    #hyprland-qtutils = {
+   #   url = "github:hyprwm/hyprland-qtutils";
+   #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
+   #   inputs.systems.follows = "systems";
+   #   inputs.hyprland-qt-support.follows = "hyprland-qt-support";
+   # };
+   # hyprland-qt-support = {
+   #   url = "github:hyprwm/hyprland-qt-support";
+   #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
+   #   inputs.systems.follows = "systems";
+   #   inputs.hyprlang.follows = "hyprlang";
+   # };
     solaar = {
       url = "https://flakehub.com/f/Svenum/Solaar-Flake/*.tar.gz"; # For latest stable version
       #url = "https://flakehub.com/f/Svenum/Solaar-Flake/0.1.1.tar.gz" # uncomment line for solaar version 1.1.13
@@ -52,7 +52,7 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # TODO: ?? use git instead of github ?? "git+https://github.com/NixOS/nixpkgs?shallow=1&ref=nixpkgs-unstable";
-    rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor?shallow=1";
+    #rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor?shallow=1";
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules?shallow=1";
     affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f?shallow=1"; # need 2.5.7 before can update
     nix-output-monitor = {
@@ -211,11 +211,11 @@ rec {
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
     };
-    hyprlang = {
-      url = "github:hyprwm/hyprlang";
-      inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
-      inputs.systems.follows = "systems";
-    };
+   # hyprlang = {
+   #   url = "github:hyprwm/hyprlang";
+   #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
+   #   inputs.systems.follows = "systems";
+   # };
     yazi = {
       # TODO: use this?
       url = "github:sxyazi/yazi?shallow=1";
@@ -226,24 +226,24 @@ rec {
     };
     omnix.url = "github:juspay/omnix?shallow=1"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
-    hypr-dynamic-cursors = {
-      url = "github:VirtCode/hypr-dynamic-cursors?shallow=1";
-      inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
-    };
-    hyprland = {
+   # hypr-dynamic-cursors = {
+   #   url = "github:VirtCode/hypr-dynamic-cursors?shallow=1";
+   #   inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
+   # };
+    #hyprland = {
       #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
-      url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
+      #url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
       # url = "github:hyprwm/Hyprland";
       #inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
-      inputs.hyprcursor.follows = "hyprcursor";
-      inputs.hyprlang.follows = "hyprlang";
-    };
-    hyprcursor = {
+   #   inputs.hyprcursor.follows = "hyprcursor";
+    #  inputs.hyprlang.follows = "hyprlang";
+    #};
+  #  hyprcursor = {
       # url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
-      url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.systems.follows = "systems";
-    };
+   #   url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
+     # inputs.nixpkgs.follows = "nixpkgs";
+    #  inputs.systems.follows = "systems";
+    #};
     # nix-topology.nixosModules.default
     # terraform-nix-ng https://www.haskellforall.com/2023/01/terraform-nixos-ng-modern-terraform.html https://github.com/Gabriella439/terraform-nixos-ng
     # flakehub fh
