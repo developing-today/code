@@ -35,13 +35,13 @@ rec {
     };
     hyprland-qtutils = {
       url = "github:hyprwm/hyprland-qtutils";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "hyprland" #nixpkgs";
       inputs.systems.follows = "systems";
       inputs.hyprland-qt-support.follows = "hyprland-qt-support";
     };
     hyprland-qt-support = {
       url = "github:hyprwm/hyprland-qt-support";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
       inputs.systems.follows = "systems";
       inputs.hyprlang.follows = "hyprlang";
     };
@@ -213,7 +213,7 @@ rec {
     };
     hyprlang = {
       url = "github:hyprwm/hyprlang";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "hyprland" #nixpkgs";
       inputs.systems.follows = "systems";
     };
     yazi = {
@@ -234,7 +234,7 @@ rec {
       #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
       url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
       # url = "github:hyprwm/Hyprland";
-      inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
+      #inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
       inputs.hyprcursor.follows = "hyprcursor";
       inputs.hyprlang.follows = "hyprlang";
     };
