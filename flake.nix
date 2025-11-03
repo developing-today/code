@@ -79,8 +79,8 @@ rec {
     #nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable?shallow=1";
     #nixpkgs.url = "github:developing-today-forks/nixpkgs?shallow=1";
     #nixpkgs.url = "github:developing-today-forks/nixpkgs/e5fcba7ae622ed9f40c214a0d61e0bcf8f49b32";
-    #nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
+    nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+    #nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
     # nixpkgs.url = "github:dezren39/nixpkgs?shallow=1";
     # nixpkgs = {
     #nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
