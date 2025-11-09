@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iroh = "0.94.0"
+anyhow = "1.0.100"
+iroh = "0.95.1"
+iroh-blobs = "0.97.0"
+iroh-docs = "0.95.0"
+iroh-gossip = "0.95.0"
 n0-snafu = "0.2.2"
 tokio = { version = "1.48.0", features = ["full"] }
 

@@ -831,6 +831,7 @@
         hyperfine
         hyprdim
         hyprland-autoname-workspaces
+        wl-gammactl
         hyprland-per-window-layout
         hyprland-protocols
         hyprpaper
