@@ -1,37 +1,91 @@
+use std::path::PathBuf;
 use iroh::{protocol::Router, Endpoint};
-use iroh_blobs::{BlobsProtocol, store::mem::MemStore, ALPN as BLOBS_ALPN};
-use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
-use iroh_gossip::{net::Gossip, ALPN as GOSSIP_ALPN};
+use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
+use iroh_gossip::{net::Gossip};
+use iroh_docs::{protocol::Docs};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // create an iroh endpoint that includes the standard discovery mechanisms
-    // we've built at number0
-    let endpoint = Endpoint::builder().bind().await?;
-
-    // build the blobs protocol
-    let blobs = MemStore::default();
-
-    // build the gossip protocol
+    let endpoint = Endpoint::bind().await?;
+    let store = MemStore::new();
+    let blobs = BlobsProtocol::new(&store, None);
     let gossip = Gossip::builder().spawn(endpoint.clone());
-
-    // build the docs protocol
     let docs = Docs::memory()
         .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
         .await?;
+    // Grab all passed in arguments, the first one is the binary itself, so we skip it.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Convert to &str, so we can pattern-match easily:
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    // create a router builder, we will add the
-    // protocols to this builder and then spawn
-    // the router
-    let builder = Router::builder(endpoint.clone());
+    match arg_refs.as_slice() {
+        ["send", filename] => {
+            let filename: PathBuf = filename.parse()?;
+            let abs_path = std::path::absolute(&filename)?;
 
-    // setup router
-    let _router = builder
-        .accept(BLOBS_ALPN, BlobsProtocol::new(&blobs, None))
-        .accept(GOSSIP_ALPN, gossip)
-        .accept(DOCS_ALPN, docs)
-        .spawn();
+            println!("Hashing file.");
 
-    // do fun stuff with docs!
+            // When we import a blob, we get back a "tag" that refers to said blob in the store
+            // and allows us to control when/if it gets garbage-collected
+            let tag = store.blobs().add_path(abs_path).await?;
+
+            let node_id = endpoint.id();
+            let ticket = BlobTicket::new(node_id.into(), tag.hash, tag.format);
+
+            println!("File hashed. Fetch this file by running:");
+            println!(
+                "cargo run --example transfer -- receive {ticket} {}",
+                filename.display()
+            );
+
+            let router = Router::builder(endpoint)
+                .accept(iroh_blobs::ALPN, blobs)
+               .accept(iroh_gossip::ALPN, gossip)
+               .accept(iroh_docs::ALPN, docs)
+               .spawn();
+            tokio::signal::ctrl_c().await?;
+
+            // Gracefully shut down the node
+            println!("Shutting down.");
+            router.shutdown().await?;
+        }
+        ["receive", ticket, filename] => {
+            let filename: PathBuf = filename.parse()?;
+            let abs_path = std::path::absolute(filename)?;
+            let ticket: BlobTicket = ticket.parse()?;
+
+            // For receiving files, we create a "downloader" that allows us to fetch files
+            // from other nodes via iroh connections
+            let downloader = store.downloader(&endpoint);
+
+            println!("Starting download.");
+
+            downloader
+                .download(ticket.hash(), Some(ticket.addr().id))
+                .await?;
+
+            println!("Finished download.");
+            println!("Copying to destination.");
+
+            store.blobs().export(ticket.hash(), abs_path).await?;
+
+            println!("Finished copying.");
+
+            // Gracefully shut down the node
+            println!("Shutting down.");
+            endpoint.close().await;
+        }
+        _ => {
+            println!("Couldn't parse command line arguments: {args:?}");
+            println!("Usage:");
+            println!("    # to send:");
+            println!("    cargo run --example transfer -- send [FILE]");
+            println!("    # this will print a ticket.");
+            println!();
+            println!("    # to receive:");
+            println!("    cargo run --example transfer -- receive [TICKET] [FILE]");
+        }
+    }
+
     Ok(())
 }
