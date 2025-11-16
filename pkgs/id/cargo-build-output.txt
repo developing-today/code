@@ -10,22 +10,16 @@ iroh v0.95.1
     └── id v0.1.0 (/home/user/code/pkgs/id)
 + cargo build
    Compiling id v0.1.0 (/home/user/code/pkgs/id)
-error[E0432]: unresolved import `iroh_base::node_id`
- --> src/main.rs:3:16
-  |
-3 | use iroh_base::node_id::NodeId;
-  |                ^^^^^^^ could not find `node_id` in `iroh_base`
-
 error[E0425]: cannot find function `open` in module `fs`
-   --> src/main.rs:117:32
+   --> src/main.rs:116:32
     |
-117 |             let fs_store = fs::open(fs::Config {
+116 |             let fs_store = fs::open(fs::Config {
     |                                ^^^^ not found in `fs`
 
 error[E0422]: cannot find struct, variant or union type `Config` in module `fs`
-   --> src/main.rs:117:41
+   --> src/main.rs:116:41
     |
-117 |             let fs_store = fs::open(fs::Config {
+116 |             let fs_store = fs::open(fs::Config {
     |                                         ^^^^^^ not found in `fs`
     |
 help: consider importing this struct
@@ -34,27 +28,43 @@ help: consider importing this struct
     |
 help: if you import `Config`, refer to it directly
     |
-117 -             let fs_store = fs::open(fs::Config {
-117 +             let fs_store = fs::open(Config {
+116 -             let fs_store = fs::open(fs::Config {
+116 +             let fs_store = fs::open(Config {
     |
 
 error[E0425]: cannot find function `create` in module `mem`
-   --> src/main.rs:178:34
+   --> src/main.rs:175:34
     |
-178 |             let mem_store = mem::create();
+175 |             let mem_store = mem::create();
     |                                  ^^^^^^ not found in `mem`
 
 error[E0425]: cannot find function `create` in module `mem`
-   --> src/main.rs:215:34
+   --> src/main.rs:212:34
     |
-215 |             let mem_store = mem::create();
+212 |             let mem_store = mem::create();
     |                                  ^^^^^^ not found in `mem`
+
+error[E0603]: type alias `EndpointId` is private
+  --> src/main.rs:2:44
+   |
+2  | use iroh::endpoint::{Connection, Endpoint, EndpointId, RecvStream, SecretKey, SendStream};
+   |                                            ^^^^^^^^^^ private type alias
+   |
+note: the type alias `EndpointId` is defined here
+  --> /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-0.95.1/src/endpoint.rs:19:31
+   |
+19 | use iroh_base::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
+   |                               ^^^^^^^^^^
+help: import `EndpointId` directly
+   |
+2  | use iroh::endpoint::{Connection, Endpoint, iroh_base::key::EndpointId, RecvStream, SecretKey, SendStream};
+   |                                            ++++++++++++++++
 
 error[E0603]: struct `SecretKey` is private
-  --> src/main.rs:2:56
+  --> src/main.rs:2:68
    |
-2  | use iroh::endpoint::{Connection, Endpoint, RecvStream, SecretKey, SendStream};
-   |                                                        ^^^^^^^^^ private struct
+2  | use iroh::endpoint::{Connection, Endpoint, EndpointId, RecvStream, SecretKey, SendStream};
+   |                                                                    ^^^^^^^^^ private struct
    |
 note: the struct `SecretKey` is defined here
   --> /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-0.95.1/src/endpoint.rs:19:53
@@ -63,13 +73,13 @@ note: the struct `SecretKey` is defined here
    |                                                     ^^^^^^^^^
 help: import `SecretKey` directly
    |
-2  | use iroh::endpoint::{Connection, Endpoint, RecvStream, iroh_base::key::SecretKey, SendStream};
-   |                                                        ++++++++++++++++
+2  | use iroh::endpoint::{Connection, Endpoint, EndpointId, RecvStream, iroh_base::key::SecretKey, SendStream};
+   |                                                                    ++++++++++++++++
 
 warning: variable does not need to be mutable
-  --> src/main.rs:73:5
+  --> src/main.rs:72:5
    |
-73 |     mut conn: Connection,
+72 |     mut conn: Connection,
    |     ----^^^^
    |     |
    |     help: remove this `mut`
@@ -77,44 +87,44 @@ warning: variable does not need to be mutable
    = note: `#[warn(unused_mut)]` on by default
 
 error[E0599]: no function or associated item named `new` found for struct `Blobs` in the current scope
-   --> src/main.rs:123:32
+   --> src/main.rs:122:32
     |
-123 |             let blobs = Blobs::new(fs_store);
+122 |             let blobs = Blobs::new(fs_store);
     |                                ^^^ function or associated item not found in `Blobs`
 
 error[E0599]: no method named `protocol` found for struct `iroh::endpoint::Incoming` in the current scope
-   --> src/main.rs:133:45
+   --> src/main.rs:132:45
     |
-133 |                         let alpn = incoming.protocol();
+132 |                         let alpn = incoming.protocol();
     |                                             ^^^^^^^^ method not found in `iroh::endpoint::Incoming`
 
 error[E0599]: no method named `into_connection` found for enum `Result` in the current scope
-   --> src/main.rs:138:43
+   --> src/main.rs:137:49
     |
-138 | ...                   match acc.into_connection() {
-    |                                 ^^^^^^^^^^^^^^^ method not found in `Result<Accepting, iroh::endpoint::ConnectionError>`
+137 | ...                   match accepting.into_connection() {
+    |                                       ^^^^^^^^^^^^^^^ method not found in `Result<Accepting, iroh::endpoint::ConnectionError>`
 
 error[E0599]: no function or associated item named `new` found for struct `Blobs` in the current scope
-   --> src/main.rs:179:32
+   --> src/main.rs:176:32
     |
-179 |             let blobs = Blobs::new(mem_store);
+176 |             let blobs = Blobs::new(mem_store);
     |                                ^^^ function or associated item not found in `Blobs`
 
 error[E0599]: no function or associated item named `new` found for struct `Blobs` in the current scope
-   --> src/main.rs:216:32
+   --> src/main.rs:213:32
     |
-216 |             let blobs = Blobs::new(mem_store);
+213 |             let blobs = Blobs::new(mem_store);
     |                                ^^^ function or associated item not found in `Blobs`
 
 warning: unused import: `io::AsyncWriteExt`
-  --> src/main.rs:11:24
+  --> src/main.rs:10:24
    |
-11 | use tokio::{fs as afs, io::AsyncWriteExt, sync::Mutex};
+10 | use tokio::{fs as afs, io::AsyncWriteExt, sync::Mutex};
    |                        ^^^^^^^^^^^^^^^^^
    |
    = note: `#[warn(unused_imports)]` on by default
 
-Some errors have detailed explanations: E0422, E0425, E0432, E0599, E0603.
+Some errors have detailed explanations: E0422, E0425, E0599, E0603.
 For more information about an error, try `rustc --explain E0422`.
 warning: `id` (bin "id") generated 2 warnings
 error: could not compile `id` (bin "id") due to 11 previous errors; 2 warnings emitted
