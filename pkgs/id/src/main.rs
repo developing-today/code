@@ -1,6 +1,5 @@
 use anyhow::{bail, Context, Result};
-use iroh::endpoint::{Connection, Endpoint, RecvStream, SecretKey, SendStream};
-use iroh_base::node_id::NodeId;
+use iroh::endpoint::{Connection, Endpoint, EndpointId, RecvStream, SecretKey, SendStream};
 use iroh_blobs::{
     api::blobs::Blobs,
     store::{fs, mem},
@@ -102,17 +101,17 @@ async fn main() -> Result<()> {
     let args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let key = load_or_create_keypair(KEY_FILE).await?;
-    let node_id = NodeId::from_public(key.public());
-    let node_id_str = node_id.to_string();
 
     match args.as_slice() {
         ["serve"] => {
-            info!("serve: {}", node_id_str);
             let endpoint = Endpoint::builder()
                 .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
                 .secret_key(key.clone())
                 .bind()
                 .await?;
+
+            let my_id: EndpointId = endpoint.id();
+            info!("serve: {}", my_id);
 
             let fs_store = fs::open(fs::Config {
                 path: PathBuf::from(BLOB_DIR),
@@ -134,12 +133,10 @@ async fn main() -> Result<()> {
                         if alpn == META_ALPN {
                             let m = manifest.clone();
                             tokio::spawn(async move {
-                                let acc = incoming.accept();
-                                match acc.into_connection() {
+                                let accepting = incoming.accept();
+                                match accepting.into_connection() {
                                     Ok(conn) => {
-                                        if let Err(e) =
-                                            handle_meta(conn, m, MANIFEST_FILE).await
-                                        {
+                                        if let Err(e) = handle_meta(conn, m, MANIFEST_FILE).await {
                                             error!("meta: {}", e);
                                         }
                                     }
@@ -160,8 +157,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        ["put", server_node_id, path] => {
-            let server_node_id: NodeId = server_node_id.parse()?;
+        ["put", server_id, path] => {
+            let server_id: EndpointId = server_id.parse()?;
             let path = PathBuf::from(path);
             let filename = path
                 .file_name()
@@ -181,7 +178,7 @@ async fn main() -> Result<()> {
             let data = afs::read(&path).await?;
             let hash = blobs.add_bytes(data, BlobFormat::Raw).await?;
 
-            let mut conn = endpoint.connect(server_node_id, META_ALPN).await?;
+            let mut conn = endpoint.connect(server_id, META_ALPN).await?;
             let (mut send, mut recv) = conn.open_bi().await?;
             let req_buf = postcard::to_allocvec(&MetaRequest::Put { filename, hash })?;
             write_all(&mut send, &req_buf).await?;
@@ -189,7 +186,7 @@ async fn main() -> Result<()> {
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
             match resp {
                 MetaResponse::Put { success: true } => {
-                    blobs.upload(hash, &[server_node_id]).await?;
+                    blobs.upload(hash, &[server_id]).await?;
                     Ok(())
                 }
                 MetaResponse::Put { success: false } => bail!("server rejected"),
@@ -197,8 +194,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        ["get", server_node_id, path] => {
-            let server_node_id: NodeId = server_node_id.parse()?;
+        ["get", server_id, path] => {
+            let server_id: EndpointId = server_id.parse()?;
             let path = PathBuf::from(path);
             let filename = path
                 .file_name()
@@ -215,7 +212,7 @@ async fn main() -> Result<()> {
             let mem_store = mem::create();
             let blobs = Blobs::new(mem_store);
 
-            let mut conn = endpoint.connect(server_node_id, META_ALPN).await?;
+            let mut conn = endpoint.connect(server_id, META_ALPN).await?;
             let (mut send, mut recv) = conn.open_bi().await?;
             let req_buf = postcard::to_allocvec(&MetaRequest::Get { filename })?;
             write_all(&mut send, &req_buf).await?;
@@ -227,13 +224,13 @@ async fn main() -> Result<()> {
                 _ => bail!("unexpected response"),
             };
 
-            blobs.download(hash, &[server_node_id]).await?;
+            blobs.download(hash, &[server_id]).await?;
             blobs.export(hash, path).await?;
             Ok(())
         }
 
         _ => {
-            eprintln!("usage:\n  <bin> serve\n  <bin> put <NODE_ID> <FILE>\n  <bin> get <NODE_ID> <FILE>");
+            eprintln!("usage:\n  <bin> serve\n  <bin> put <ENDPOINT_ID> <FILE>\n  <bin> get <ENDPOINT_ID> <FILE>");
             std::process::exit(1);
         }
     }
