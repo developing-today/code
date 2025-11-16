@@ -1,69 +1,240 @@
-use std::path::PathBuf;
-use iroh::{protocol::Router, Endpoint};
-use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
-use iroh_gossip::{net::Gossip};
-use iroh_docs::{protocol::Docs};
+use anyhow::{bail, Context, Result};
+use iroh::endpoint::{Connection, Endpoint, RecvStream, SecretKey, SendStream};
+use iroh_base::node_id::NodeId;
+use iroh_blobs::{
+    api::blobs::Blobs,
+    store::{fs, mem},
+    BlobFormat, Hash, ALPN as BLOBS_ALPN,
+};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use tokio::{fs as afs, io::AsyncWriteExt, sync::Mutex};
+use tracing::{error, info};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let endpoint = Endpoint::bind().await?;
-    let store = MemStore::new();
-    let blobs = BlobsProtocol::new(&store, None);
-    let gossip = Gossip::builder().spawn(endpoint.clone());
-    let docs = Docs::memory()
-        .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
-        .await?;
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+const KEY_FILE: &str = ".iroh-key";
+const BLOB_DIR: &str = ".iroh-blobs";
+const MANIFEST_FILE: &str = ".iroh-manifest";
+const META_ALPN: &[u8] = b"/iroh-meta/1";
 
-    match arg_refs.as_slice() {
-        ["send", filename] => {
-            let filename: PathBuf = filename.parse()?;
-            let abs_path = std::path::absolute(&filename)?;
-            let tag = store.blobs().add_path(abs_path).await?;
-            let node_id = endpoint.id();
-            let ticket = BlobTicket::new(node_id.into(), tag.hash, tag.format);
+#[derive(Debug, Serialize, Deserialize)]
+enum MetaRequest {
+    Put { filename: String, hash: Hash },
+    Get { filename: String },
+}
 
-            println!(
-                "<binary> receive {ticket} {}",
-                filename.display()
-            );
+#[derive(Debug, Serialize, Deserialize)]
+enum MetaResponse {
+    Put { success: bool },
+    Get { hash: Option<Hash> },
+}
 
-            let router = Router::builder(endpoint)
-                .accept(iroh_blobs::ALPN, blobs)
-               .accept(iroh_gossip::ALPN, gossip)
-               .accept(iroh_docs::ALPN, docs)
-               .spawn();
-            tokio::signal::ctrl_c().await?;
-            router.shutdown().await?;
+async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
+    match afs::read(path).await {
+        Ok(bytes) => {
+            let bytes: [u8; 32] =
+                bytes.try_into().map_err(|_| anyhow::anyhow!("invalid key length"))?;
+            Ok(SecretKey::from(bytes))
         }
-        ["receive", ticket, filename] => {
-            let filename: PathBuf = filename.parse()?;
-            let abs_path = std::path::absolute(filename)?;
-            let ticket: BlobTicket = ticket.parse()?;
-            let downloader = store.downloader(&endpoint);
-
-            println!("Starting download.");
-
-            downloader
-                .download(ticket.hash(), Some(ticket.addr().id))
-                .await?;
-
-            println!("Finished download.");
-            println!("Copying to destination.");
-
-            store.blobs().export(ticket.hash(), abs_path).await?;
-
-            println!("Finished copying.");
-            println!("Shutting down.");
-
-            endpoint.close().await;
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let key = SecretKey::generate();
+            afs::write(path, key.to_bytes()).await?;
+            Ok(key)
         }
-        _ => {
-            println!("Couldn't parse command line arguments: {args:?}");
-            println!("Usage:");
-            println!("    TODO");
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn load_manifest(path: &str) -> Result<HashMap<String, Hash>> {
+    match afs::read(path).await {
+        Ok(data) => postcard::from_bytes(&data).context("decode manifest"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn save_manifest(path: &str, manifest: &HashMap<String, Hash>) -> Result<()> {
+    let data = postcard::to_allocvec(manifest)?;
+    afs::write(path, data).await?;
+    Ok(())
+}
+
+async fn read_postcard(recv: &mut RecvStream, limit: usize) -> Result<Vec<u8>> {
+    let buf = recv.read_to_end(limit).await?;
+    Ok(buf)
+}
+
+async fn write_all(send: &mut SendStream, bytes: &[u8]) -> Result<()> {
+    send.write_all(bytes).await?;
+    send.finish()?;
+    Ok(())
+}
+
+async fn handle_meta(
+    mut conn: Connection,
+    manifest: Arc<Mutex<HashMap<String, Hash>>>,
+    manifest_path: &'static str,
+) -> Result<()> {
+    let (mut send, mut recv) = conn.accept_bi().await?;
+    let req_buf = read_postcard(&mut recv, 64 * 1024).await?;
+    let req: MetaRequest = postcard::from_bytes(&req_buf)?;
+    match req {
+        MetaRequest::Put { filename, hash } => {
+            let mut m = manifest.lock().await;
+            m.insert(filename, hash);
+            save_manifest(manifest_path, &m).await?;
+            let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })?;
+            write_all(&mut send, &resp).await?;
+        }
+        MetaRequest::Get { filename } => {
+            let m = manifest.lock().await;
+            let hash = m.get(&filename).copied();
+            let resp = postcard::to_allocvec(&MetaResponse::Get { hash })?;
+            write_all(&mut send, &resp).await?;
         }
     }
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt().init();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let key = load_or_create_keypair(KEY_FILE).await?;
+    let node_id = NodeId::from_public(key.public());
+    let node_id_str = node_id.to_string();
+
+    match args.as_slice() {
+        ["serve"] => {
+            info!("serve: {}", node_id_str);
+            let endpoint = Endpoint::builder()
+                .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
+                .secret_key(key.clone())
+                .bind()
+                .await?;
+
+            let fs_store = fs::open(fs::Config {
+                path: PathBuf::from(BLOB_DIR),
+                create: true,
+                ..Default::default()
+            })
+            .await?;
+            let blobs = Blobs::new(fs_store);
+
+            let manifest = Arc::new(Mutex::new(
+                load_manifest(MANIFEST_FILE).await.context("load manifest")?,
+            ));
+
+            loop {
+                match endpoint.accept().await {
+                    None => break,
+                    Some(incoming) => {
+                        let alpn = incoming.protocol();
+                        if alpn == META_ALPN {
+                            let m = manifest.clone();
+                            tokio::spawn(async move {
+                                let acc = incoming.accept();
+                                match acc.into_connection() {
+                                    Ok(conn) => {
+                                        if let Err(e) =
+                                            handle_meta(conn, m, MANIFEST_FILE).await
+                                        {
+                                            error!("meta: {}", e);
+                                        }
+                                    }
+                                    Err(e) => error!("meta accept: {}", e),
+                                }
+                            });
+                        } else if alpn == BLOBS_ALPN {
+                            let b = blobs.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = b.handle_incoming(incoming).await {
+                                    error!("blobs: {}", e);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        ["put", server_node_id, path] => {
+            let server_node_id: NodeId = server_node_id.parse()?;
+            let path = PathBuf::from(path);
+            let filename = path
+                .file_name()
+                .context("invalid filename")?
+                .to_string_lossy()
+                .to_string();
+
+            let endpoint = Endpoint::builder()
+                .secret_key(key.clone())
+                .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
+                .bind()
+                .await?;
+
+            let mem_store = mem::create();
+            let blobs = Blobs::new(mem_store);
+
+            let data = afs::read(&path).await?;
+            let hash = blobs.add_bytes(data, BlobFormat::Raw).await?;
+
+            let mut conn = endpoint.connect(server_node_id, META_ALPN).await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
+            let req_buf = postcard::to_allocvec(&MetaRequest::Put { filename, hash })?;
+            write_all(&mut send, &req_buf).await?;
+            let resp_buf = read_postcard(&mut recv, 64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            match resp {
+                MetaResponse::Put { success: true } => {
+                    blobs.upload(hash, &[server_node_id]).await?;
+                    Ok(())
+                }
+                MetaResponse::Put { success: false } => bail!("server rejected"),
+                _ => bail!("unexpected response"),
+            }
+        }
+
+        ["get", server_node_id, path] => {
+            let server_node_id: NodeId = server_node_id.parse()?;
+            let path = PathBuf::from(path);
+            let filename = path
+                .file_name()
+                .context("invalid filename")?
+                .to_string_lossy()
+                .to_string();
+
+            let endpoint = Endpoint::builder()
+                .secret_key(key.clone())
+                .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
+                .bind()
+                .await?;
+
+            let mem_store = mem::create();
+            let blobs = Blobs::new(mem_store);
+
+            let mut conn = endpoint.connect(server_node_id, META_ALPN).await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
+            let req_buf = postcard::to_allocvec(&MetaRequest::Get { filename })?;
+            write_all(&mut send, &req_buf).await?;
+            let resp_buf = read_postcard(&mut recv, 64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let hash = match resp {
+                MetaResponse::Get { hash: Some(h) } => h,
+                MetaResponse::Get { hash: None } => bail!("file not found"),
+                _ => bail!("unexpected response"),
+            };
+
+            blobs.download(hash, &[server_node_id]).await?;
+            blobs.export(hash, path).await?;
+            Ok(())
+        }
+
+        _ => {
+            eprintln!("usage:\n  <bin> serve\n  <bin> put <NODE_ID> <FILE>\n  <bin> get <NODE_ID> <FILE>");
+            std::process::exit(1);
+        }
+    }
 }
