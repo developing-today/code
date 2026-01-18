@@ -34,17 +34,17 @@ rec {
       inputs.flake-compat.follows = "flake-compat";
     };
     #hyprland-qtutils = {
-   #   url = "github:hyprwm/hyprland-qtutils";
-   #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
-   #   inputs.systems.follows = "systems";
-   #   inputs.hyprland-qt-support.follows = "hyprland-qt-support";
-   # };
-   # hyprland-qt-support = {
-   #   url = "github:hyprwm/hyprland-qt-support";
-   #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
-   #   inputs.systems.follows = "systems";
-   #   inputs.hyprlang.follows = "hyprlang";
-   # };
+    #   url = "github:hyprwm/hyprland-qtutils";
+    #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
+    #   inputs.systems.follows = "systems";
+    #   inputs.hyprland-qt-support.follows = "hyprland-qt-support";
+    # };
+    # hyprland-qt-support = {
+    #   url = "github:hyprwm/hyprland-qt-support";
+    #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
+    #   inputs.systems.follows = "systems";
+    #   inputs.hyprlang.follows = "hyprlang";
+    # };
     solaar = {
       url = "https://flakehub.com/f/Svenum/Solaar-Flake/*.tar.gz"; # For latest stable version
       #url = "https://flakehub.com/f/Svenum/Solaar-Flake/0.1.1.tar.gz" # uncomment line for solaar version 1.1.13
@@ -85,13 +85,13 @@ rec {
     # nixpkgs.url = "github:dezren39/nixpkgs?shallow=1";
     # nixpkgs = {
     #nixpkgs-master.url = "github:NixOS/nixpkgs/master?shallow=1";
-   #nixpkgs-master.url = "github:NixOS/nixpkgs/nixos-25.11?shallow=1";
-    #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable?shallow=1";
+    #nixpkgs-master.url = "github:NixOS/nixpkgs/nixos-25.11?shallow=1";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable?shallow=1";
     #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.05?shallow=1";
     #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.11?shallow=1";
     #   url = "github:numtide/nixpkgs-unfree?ref=nixos-unstable?shallow=1";
     nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
-    nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
+    # nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     nixpkgs-stable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable?shallow=1";
     #   inputs.nixpkgs.follows = "nixpkgs-inner";
     # };
@@ -218,11 +218,11 @@ rec {
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
     };
-   # hyprlang = {
-   #   url = "github:hyprwm/hyprlang";
-   #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
-   #   inputs.systems.follows = "systems";
-   # };
+    # hyprlang = {
+    #   url = "github:hyprwm/hyprlang";
+    #   inputs.nixpkgs.follows = "hyprland"; #nixpkgs";
+    #   inputs.systems.follows = "systems";
+    # };
     yazi = {
       # TODO: use this?
       url = "github:sxyazi/yazi?shallow=1";
@@ -233,22 +233,22 @@ rec {
     };
     omnix.url = "github:juspay/omnix?shallow=1"; # TODO: use this?
     # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
-   # hypr-dynamic-cursors = {
-   #   url = "github:VirtCode/hypr-dynamic-cursors?shallow=1";
-   #   inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
-   # };
+    # hypr-dynamic-cursors = {
+    #   url = "github:VirtCode/hypr-dynamic-cursors?shallow=1";
+    #   inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
+    # };
     #hyprland = {
-      #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
-      #url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
-      # url = "github:hyprwm/Hyprland";
-      #inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
-   #   inputs.hyprcursor.follows = "hyprcursor";
+    #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
+    #url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
+    # url = "github:hyprwm/Hyprland";
+    #inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
+    #   inputs.hyprcursor.follows = "hyprcursor";
     #  inputs.hyprlang.follows = "hyprlang";
     #};
-  #  hyprcursor = {
-      # url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
-   #   url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
-     # inputs.nixpkgs.follows = "nixpkgs";
+    #  hyprcursor = {
+    # url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
+    #   url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
+    # inputs.nixpkgs.follows = "nixpkgs";
     #  inputs.systems.follows = "systems";
     #};
     # nix-topology.nixosModules.default
