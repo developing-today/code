@@ -265,6 +265,7 @@ in
         gdm
         ghc
         github-copilot-cli
+        opencode
         gnomeExtensions.toggle-alacritty
         grimblast
         gtk2
