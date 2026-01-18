@@ -31,6 +31,7 @@
       "libvirtd"
       "qemu"
       "qemu-libvirtd"
+      "adbusers" # For Android phone connectivity
     ];
     packages = with pkgs; [
       firefox

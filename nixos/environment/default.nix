@@ -261,6 +261,7 @@ in
         usbutils # for lsusb
         libmtp
         simple-mtpfs # or jmtpfs, go-mtpfs, etc.
+        android-tools # adb, fastboot
         gawk
         gcc
         gdm
