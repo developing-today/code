@@ -22,8 +22,18 @@
       "networkmanager"
       "video"
       "input"
+      "adbusers"
     ];
     uid = 1000;
     openssh.authorizedKeys.keys = config.users.users.root.openssh.authorizedKeys.keys;
   };
+
+  # Enable Android/ADB and MTP support
+  programs.adb.enable = true;
+  services.udisks2.enable = true;
+  programs.gvfs.enable = true;
+  environment.systemPackages = with config.nixpkgs; [
+    mtpfs
+    jmtpfs
+  ];
 }
