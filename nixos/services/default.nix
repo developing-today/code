@@ -3,6 +3,7 @@
   imports = [ inputs.solaar.nixosModules.default ];
   services = {
     # desktop only
+    gvfs.enable = true;
     solaar = {
       enable = true; # Enable the service
       package = pkgs.solaar; # The package to use

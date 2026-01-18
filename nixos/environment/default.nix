@@ -91,7 +91,7 @@ in
         presenterm
         kondo
         # bob-nvim
-        mise#rtx
+        mise # rtx
         espanso
 
         # TODO: cleanup systemPackages
@@ -256,8 +256,10 @@ in
         fontpreview
         fortune
         jmtpfs
-         go-mtpfs
-         usbutils  # for lsusb
+        go-mtpfs
+        usbutils # for lsusb
+        libmtp
+        simple-mtpfs # or jmtpfs, go-mtpfs, etc.
         gawk
         gcc
         gdm
@@ -361,11 +363,11 @@ in
         # dd_rescue
         #ventoy-full # https://www.ventoy.net/en/doc_search_path.html
         #  Known issues:
-#        - Ventoy uses binary blobs which can't be trusted to be free of malware or compliant to their licenses.
-#       https://github.com/NixOS/nixpkgs/issues/404663
-#       See the following Issues for context:
-#       https://github.com/ventoy/Ventoy/issues/2795
-#       https://github.com/ventoy/Ventoy/issues/3224
+        #        - Ventoy uses binary blobs which can't be trusted to be free of malware or compliant to their licenses.
+        #       https://github.com/NixOS/nixpkgs/issues/404663
+        #       See the following Issues for context:
+        #       https://github.com/ventoy/Ventoy/issues/2795
+        #       https://github.com/ventoy/Ventoy/issues/3224
         # ventoy
         screen
         #sddm
