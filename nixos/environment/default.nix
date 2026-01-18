@@ -51,6 +51,7 @@ in
         designer
       ])
       ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
+      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ opencode ])
       ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [ ghostty ])
       # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
       ++ [
@@ -265,7 +266,6 @@ in
         gdm
         ghc
         github-copilot-cli
-        opencode
         gnomeExtensions.toggle-alacritty
         grimblast
         gtk2
