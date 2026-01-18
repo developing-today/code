@@ -1,18 +1,21 @@
-use anyhow::{bail, Context, Result};
-use iroh::endpoint::{Connection, Endpoint, EndpointId, RecvStream, SecretKey, SendStream};
+use anyhow::{anyhow, bail, Context, Result};
+use iroh::{
+    discovery::pkarr::PkarrResolver,
+    endpoint::{Connection, Endpoint},
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
+use iroh_base::{EndpointId, SecretKey};
 use iroh_blobs::{
-    api::blobs::Blobs,
+    api::{blobs::AddBytesOptions, Store},
     store::{fs, mem},
-    BlobFormat, Hash, ALPN as BLOBS_ALPN,
+    BlobFormat, Hash, BlobsProtocol, ALPN as BLOBS_ALPN,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use tokio::{fs as afs, io::AsyncWriteExt, sync::Mutex};
+use std::{path::PathBuf, sync::Arc};
+use tokio::{fs as afs, io::AsyncWriteExt};
 use tracing::{error, info};
 
 const KEY_FILE: &str = ".iroh-key";
-const BLOB_DIR: &str = ".iroh-blobs";
-const MANIFEST_FILE: &str = ".iroh-manifest";
 const META_ALPN: &[u8] = b"/iroh-meta/1";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,11 +30,77 @@ enum MetaResponse {
     Get { hash: Option<Hash> },
 }
 
+#[derive(Clone)]
+struct MetaProtocol {
+    store: Store,
+}
+
+impl MetaProtocol {
+    fn new(store: &Store) -> Arc<Self> {
+        Arc::new(Self { store: store.clone() })
+    }
+}
+
+impl ProtocolHandler for MetaProtocol {
+    async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
+        let (mut send, mut recv) = conn.accept_bi().await?;
+        let buf = recv.read_to_end(64 * 1024).await.map_err(AcceptError::from_err)?;
+        let req: MetaRequest =
+            postcard::from_bytes(&buf).map_err(|e| AcceptError::from_err(anyhow!(e)))?;
+        match req {
+            MetaRequest::Put { filename, hash } => {
+                self.store
+                    .tags()
+                    .set(&filename, hash)
+                    .await
+                    .map_err(AcceptError::from_err)?;
+                let resp =
+                    postcard::to_allocvec(&MetaResponse::Put { success: true }).map_err(|e| {
+                        AcceptError::from_err(anyhow!(e))
+                    })?;
+                send.write_all(&resp)
+                    .await
+                    .map_err(AcceptError::from_err)?;
+                send.finish()?;
+            }
+            MetaRequest::Get { filename } => {
+                let mut found: Option<Hash> = None;
+                // prefer direct lookup if available
+                if let Ok(Some(tag)) = self.store.tags().get(&filename).await {
+                    found = Some(tag.hash);
+                } else {
+                    // fallback scan if direct get not supported
+                    if let Ok(mut list) = self.store.tags().list().await {
+                        while let Some(item) = list.next().await {
+                            let item = item.map_err(AcceptError::from_err)?;
+                            if item.name.as_str() == filename {
+                                found = Some(item.hash);
+                                break;
+                            }
+                        }
+                    }
+                }
+                let resp =
+                    postcard::to_allocvec(&MetaResponse::Get { hash: found }).map_err(|e| {
+                        AcceptError::from_err(anyhow!(e))
+                    })?;
+                send.write_all(&resp)
+                    .await
+                    .map_err(AcceptError::from_err)?;
+                send.finish()?;
+            }
+        }
+        conn.closed().await;
+        Ok(())
+    }
+}
+
 async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
     match afs::read(path).await {
         Ok(bytes) => {
-            let bytes: [u8; 32] =
-                bytes.try_into().map_err(|_| anyhow::anyhow!("invalid key length"))?;
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| anyhow!("invalid key length"))?;
             Ok(SecretKey::from(bytes))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -43,55 +112,10 @@ async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
     }
 }
 
-async fn load_manifest(path: &str) -> Result<HashMap<String, Hash>> {
-    match afs::read(path).await {
-        Ok(data) => postcard::from_bytes(&data).context("decode manifest"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-async fn save_manifest(path: &str, manifest: &HashMap<String, Hash>) -> Result<()> {
-    let data = postcard::to_allocvec(manifest)?;
-    afs::write(path, data).await?;
-    Ok(())
-}
-
-async fn read_postcard(recv: &mut RecvStream, limit: usize) -> Result<Vec<u8>> {
-    let buf = recv.read_to_end(limit).await?;
+async fn read_postcard(conn: &mut Connection, limit: usize) -> Result<Vec<u8>> {
+    let (_s, mut r) = conn.open_bi().await?;
+    let buf = r.read_to_end(limit).await?;
     Ok(buf)
-}
-
-async fn write_all(send: &mut SendStream, bytes: &[u8]) -> Result<()> {
-    send.write_all(bytes).await?;
-    send.finish()?;
-    Ok(())
-}
-
-async fn handle_meta(
-    mut conn: Connection,
-    manifest: Arc<Mutex<HashMap<String, Hash>>>,
-    manifest_path: &'static str,
-) -> Result<()> {
-    let (mut send, mut recv) = conn.accept_bi().await?;
-    let req_buf = read_postcard(&mut recv, 64 * 1024).await?;
-    let req: MetaRequest = postcard::from_bytes(&req_buf)?;
-    match req {
-        MetaRequest::Put { filename, hash } => {
-            let mut m = manifest.lock().await;
-            m.insert(filename, hash);
-            save_manifest(manifest_path, &m).await?;
-            let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })?;
-            write_all(&mut send, &resp).await?;
-        }
-        MetaRequest::Get { filename } => {
-            let m = manifest.lock().await;
-            let hash = m.get(&filename).copied();
-            let resp = postcard::to_allocvec(&MetaResponse::Get { hash })?;
-            write_all(&mut send, &resp).await?;
-        }
-    }
-    Ok(())
 }
 
 #[tokio::main]
@@ -101,64 +125,33 @@ async fn main() -> Result<()> {
     let args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let key = load_or_create_keypair(KEY_FILE).await?;
+    let node_id: EndpointId = key.public().into();
+    let node_id_str = node_id.to_string();
 
     match args.as_slice() {
         ["serve"] => {
-            let endpoint = Endpoint::builder()
-                .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
-                .secret_key(key.clone())
-                .bind()
-                .await?;
+            info!("serve: {}", node_id_str);
+            let endpoint = Endpoint::builder().secret_key(key.clone()).bind().await?;
 
-            let my_id: EndpointId = endpoint.id();
-            info!("serve: {}", my_id);
+            let store = mem::MemStore::new();
+            let meta = MetaProtocol::new(&store);
+            let blobs = BlobsProtocol::new(&store, None);
 
-            let fs_store = fs::open(fs::Config {
-                path: PathBuf::from(BLOB_DIR),
-                create: true,
-                ..Default::default()
-            })
-            .await?;
-            let blobs = Blobs::new(fs_store);
+            let router = Router::builder(endpoint)
+                .accept(META_ALPN, meta)
+                .accept(BLOBS_ALPN, blobs)
+                .spawn();
 
-            let manifest = Arc::new(Mutex::new(
-                load_manifest(MANIFEST_FILE).await.context("load manifest")?,
-            ));
+            println!("node: {}", router.endpoint().id());
 
-            loop {
-                match endpoint.accept().await {
-                    None => break,
-                    Some(incoming) => {
-                        let alpn = incoming.protocol();
-                        if alpn == META_ALPN {
-                            let m = manifest.clone();
-                            tokio::spawn(async move {
-                                let accepting = incoming.accept();
-                                match accepting.into_connection() {
-                                    Ok(conn) => {
-                                        if let Err(e) = handle_meta(conn, m, MANIFEST_FILE).await {
-                                            error!("meta: {}", e);
-                                        }
-                                    }
-                                    Err(e) => error!("meta accept: {}", e),
-                                }
-                            });
-                        } else if alpn == BLOBS_ALPN {
-                            let b = blobs.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = b.handle_incoming(incoming).await {
-                                    error!("blobs: {}", e);
-                                }
-                            });
-                        }
-                    }
-                }
-            }
+            tokio::signal::ctrl_c().await?;
+            router.shutdown().await?;
+            store.shutdown().await?;
             Ok(())
         }
 
-        ["put", server_id, path] => {
-            let server_id: EndpointId = server_id.parse()?;
+        ["put", server_node_id, path] => {
+            let server_node_id: EndpointId = server_node_id.parse()?;
             let path = PathBuf::from(path);
             let filename = path
                 .file_name()
@@ -166,27 +159,38 @@ async fn main() -> Result<()> {
                 .to_string_lossy()
                 .to_string();
 
-            let endpoint = Endpoint::builder()
+            let endpoint = Endpoint::empty_builder(iroh::RelayMode::Default)
+                .discovery(PkarrResolver::n0_dns())
                 .secret_key(key.clone())
-                .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
                 .bind()
                 .await?;
 
-            let mem_store = mem::create();
-            let blobs = Blobs::new(mem_store);
-
+            let store = mem::MemStore::new();
             let data = afs::read(&path).await?;
-            let hash = blobs.add_bytes(data, BlobFormat::Raw).await?;
+            let added = store
+                .add_bytes_with_opts(AddBytesOptions {
+                    data: data.into(),
+                    format: BlobFormat::Raw,
+                })
+                .await?;
+            let hash = added.hash;
 
-            let mut conn = endpoint.connect(server_id, META_ALPN).await?;
-            let (mut send, mut recv) = conn.open_bi().await?;
-            let req_buf = postcard::to_allocvec(&MetaRequest::Put { filename, hash })?;
-            write_all(&mut send, &req_buf).await?;
-            let resp_buf = read_postcard(&mut recv, 64 * 1024).await?;
+            let mut meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Put { filename, hash })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            meta_conn.close(0u32.into(), b"done");
+
             match resp {
                 MetaResponse::Put { success: true } => {
-                    blobs.upload(hash, &[server_id]).await?;
+                    let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+                    store.remote().push(blobs_conn.clone(), hash).await?;
+                    blobs_conn.close(0u32.into(), b"done");
+                    endpoint.close().await;
+                    store.shutdown().await?;
                     Ok(())
                 }
                 MetaResponse::Put { success: false } => bail!("server rejected"),
@@ -194,8 +198,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        ["get", server_id, path] => {
-            let server_id: EndpointId = server_id.parse()?;
+        ["get", server_node_id, path] => {
+            let server_node_id: EndpointId = server_node_id.parse()?;
             let path = PathBuf::from(path);
             let filename = path
                 .file_name()
@@ -203,34 +207,43 @@ async fn main() -> Result<()> {
                 .to_string_lossy()
                 .to_string();
 
-            let endpoint = Endpoint::builder()
+            let endpoint = Endpoint::empty_builder(iroh::RelayMode::Default)
+                .discovery(PkarrResolver::n0_dns())
                 .secret_key(key.clone())
-                .alpns(vec![META_ALPN.to_vec(), BLOBS_ALPN.to_vec()])
                 .bind()
                 .await?;
 
-            let mem_store = mem::create();
-            let blobs = Blobs::new(mem_store);
+            let store = mem::MemStore::new();
 
-            let mut conn = endpoint.connect(server_id, META_ALPN).await?;
-            let (mut send, mut recv) = conn.open_bi().await?;
-            let req_buf = postcard::to_allocvec(&MetaRequest::Get { filename })?;
-            write_all(&mut send, &req_buf).await?;
-            let resp_buf = read_postcard(&mut recv, 64 * 1024).await?;
+            let mut meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Get { filename })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            meta_conn.close(0u32.into(), b"done");
+
             let hash = match resp {
                 MetaResponse::Get { hash: Some(h) } => h,
                 MetaResponse::Get { hash: None } => bail!("file not found"),
                 _ => bail!("unexpected response"),
             };
 
-            blobs.download(hash, &[server_id]).await?;
-            blobs.export(hash, path).await?;
+            let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+            store.remote().fetch(blobs_conn.clone(), hash).await?;
+            blobs_conn.close(0u32.into(), b"done");
+
+            store.blobs().export(hash, path).await?;
+            endpoint.close().await;
+            store.shutdown().await?;
             Ok(())
         }
 
         _ => {
-            eprintln!("usage:\n  <bin> serve\n  <bin> put <ENDPOINT_ID> <FILE>\n  <bin> get <ENDPOINT_ID> <FILE>");
+            eprintln!(
+                "usage:\n  <bin> serve\n  <bin> put <NODE_ID> <FILE>\n  <bin> get <NODE_ID> <FILE>"
+            );
             std::process::exit(1);
         }
     }
