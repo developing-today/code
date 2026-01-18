@@ -255,6 +255,9 @@ in
         fontforge
         fontpreview
         fortune
+        jmtpfs
+         go-mtpfs
+         usbutils  # for lsusb
         gawk
         gcc
         gdm
