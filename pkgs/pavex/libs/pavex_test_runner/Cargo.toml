@@ -12,7 +12,7 @@ anyhow = "1.0.59"
 ahash = "0.8"
 console = "0.15.1"
 fs-err = "2.7.0"
-libtest-mimic = "0.6.0"
+libtest-mimic = "0.8.0"
 serde = { version = "1.0.141", features = ["derive"] }
 similar = { version = "2.2.0", features = ["inline"] }
 textwrap = "0.16.0"
