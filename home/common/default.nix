@@ -387,10 +387,16 @@
     #ripgrep.enable = true;
     rtorrent.enable = true;
     # sagemath.enable = true; # oh my god 1 hour + build times and then it usually fails. if it's cached you're fine but on unstable it is just not always cached. even worse against master branch
-    ssh = {
-      enable = true;
-      enableDefaultConfig = true;
-    };
+    # ssh = {
+    #   enable = true;
+    #   enableDefaultConfig = true;
+      # evaluation warning: user profile: You have set either `nixpkgs.config` or `nixpkgs.overlays` while using `home-manager.useGlobalPkgs`.
+      #                     This will soon not be possible. Please remove all `nixpkgs` options when using `home-manager.useGlobalPkgs`.
+      # evaluation warning: user profile: `programs.ssh` default values will be removed in the future.
+      #                     Consider setting `programs.ssh.enableDefaultConfig` to false,
+      #                     and manually set the default values you want to keep at
+      #                     `programs.ssh.matchBlocks."*"`.
+    # };
     starship.enable = true;
     swaylock.enable = true;
     taskwarrior = {
