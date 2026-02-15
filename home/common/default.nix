@@ -308,6 +308,25 @@
           co = "checkout";
           s = "status";
         };
+
+        # extraConfig = {
+          push = {
+            autoSetupRemote = true;
+          };
+          pull = {
+            # rebase = true;
+            rebase = false;
+            # ff = "only";
+          };
+          safe = {
+            directory = "*";
+          };
+          help.autocorrect = "immediate";
+          init.defaultBranch = "main";
+          #   credential.helper = "${
+          #       pkgs.git.override { withLibsecret = true; }
+          #     }/bin/git-credential-libsecret";
+        # };
       };
       # signing.signByDefault = true;
       # gitCliff
@@ -328,24 +347,6 @@
           hourly = "*-*-* 1..23:53:00";
           weekly = "Mon 0:53:00";
         };
-      };
-      extraConfig = {
-        push = {
-          autoSetupRemote = true;
-        };
-        pull = {
-          # rebase = true;
-          rebase = false;
-          # ff = "only";
-        };
-        safe = {
-          directory = "*";
-        };
-        help.autocorrect = "immediate";
-        init.defaultBranch = "main";
-        #   credential.helper = "${
-        #       pkgs.git.override { withLibsecret = true; }
-        #     }/bin/git-credential-libsecret";
       };
     };
     gitui.enable = true;
