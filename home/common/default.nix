@@ -89,6 +89,7 @@
     };
     mako = {
       enable = true;
+      settings = {
       # anchor = "top-right";
       # anchor = "center-right";
       anchor = "bottom-right";
@@ -134,6 +135,7 @@
  #       [mode=dnd]
   #      invisible=1
    #   '';
+      };
     };
     # dunst = {
     #   enable = true;
