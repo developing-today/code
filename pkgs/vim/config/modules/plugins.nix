@@ -19,10 +19,8 @@
       topDown = false;
       maxWidth = 400;
     };
-    dap.extensions = {
       dap-ui.enable = true;
       dap-virtual-text.enable = true;
-    };
     inc-rename = { };
     #neoscroll = {};
     nix = { };
