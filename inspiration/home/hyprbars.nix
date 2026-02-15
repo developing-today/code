@@ -21,11 +21,9 @@ let
     }).overrideAttrs
       (old: {
         # Yeet the initialization notification (I hate it)
-        postPatch =
-          (old.postPatch or "")
-          + ''
-            ${lib.getExe pkgs.gnused} -i '/Initialized successfully/d' main.cpp
-          '';
+        postPatch = (old.postPatch or "") + ''
+          ${lib.getExe pkgs.gnused} -i '/Initialized successfully/d' main.cpp
+        '';
       });
 in
 {
@@ -61,20 +59,19 @@ in
           ];
       };
 
-      windowrulev2 =
-        [
-          "plugin:hyprbars:bar_color ${rgba config.colorscheme.colors.primary "ee"}, focus:1"
-          "plugin:hyprbars:title_color ${rgb config.colorscheme.colors.on_primary}, focus:1"
-        ]
-        ++ (lib.flatten (
-          lib.mapAttrsToList (name: colors: [
-            "plugin:hyprbars:bar_color ${rgba colors.primary_container "dd"}, title:^(\\[${name}\\])"
-            "plugin:hyprbars:title_color ${rgb colors.on_primary_container}, title:^(\\[${name}\\])"
+      windowrulev2 = [
+        "plugin:hyprbars:bar_color ${rgba config.colorscheme.colors.primary "ee"}, focus:1"
+        "plugin:hyprbars:title_color ${rgb config.colorscheme.colors.on_primary}, focus:1"
+      ]
+      ++ (lib.flatten (
+        lib.mapAttrsToList (name: colors: [
+          "plugin:hyprbars:bar_color ${rgba colors.primary_container "dd"}, title:^(\\[${name}\\])"
+          "plugin:hyprbars:title_color ${rgb colors.on_primary_container}, title:^(\\[${name}\\])"
 
-            "plugin:hyprbars:bar_color ${rgba colors.primary "ee"}, title:^(\\[${name}\\]), focus:1"
-            "plugin:hyprbars:title_color ${rgb colors.on_primary}, title:^(\\[${name}\\]), focus:1"
-          ]) remoteColorschemes
-        ));
+          "plugin:hyprbars:bar_color ${rgba colors.primary "ee"}, title:^(\\[${name}\\]), focus:1"
+          "plugin:hyprbars:title_color ${rgb colors.on_primary}, title:^(\\[${name}\\]), focus:1"
+        ]) remoteColorschemes
+      ));
     };
   };
 }

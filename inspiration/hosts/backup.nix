@@ -78,33 +78,32 @@ in
 {
   services.borgmatic = {
     enable = true;
-    configurations =
-      {
-        "default" = baseConfig // {
-          repositories = [
-            # TODO: investigate why the NAS crashes
-            /*
-              {
-                label = "samba-${config.networking.hostName}";
-                path = "/samba/borg/${config.networking.hostName}";
-              }
-            */
+    configurations = {
+      "default" = baseConfig // {
+        repositories = [
+          # TODO: investigate why the NAS crashes
+          /*
             {
-              label = "ssh-${config.networking.hostName}";
-              path = "ssh://guekka-backup@domino.zdimension.fr/./${config.networking.hostName}";
+              label = "samba-${config.networking.hostName}";
+              path = "/samba/borg/${config.networking.hostName}";
             }
-          ];
-          source_directories = [
-            "/persist"
-            "/home"
-          ];
+          */
+          {
+            label = "ssh-${config.networking.hostName}";
+            path = "ssh://guekka-backup@domino.zdimension.fr/./${config.networking.hostName}";
+          }
+        ];
+        source_directories = [
+          "/persist"
+          "/home"
+        ];
 
-          encryption_passcommand = "${pkgs.coreutils}/bin/cat ${
-            config.sops.secrets."${config.networking.hostName}-borgbackup-passphrase".path
-          }";
-        };
-      }
-      //
+        encryption_passcommand = "${pkgs.coreutils}/bin/cat ${
+          config.sops.secrets."${config.networking.hostName}-borgbackup-passphrase".path
+        }";
+      };
+    }
+    //
       # TODO: maybe move this to a separate file
       lib.optionalAttrs (config.networking.hostName == "horus") {
         "shared" = baseConfig // {

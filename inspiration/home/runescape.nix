@@ -7,12 +7,12 @@ let
     buildCommand =
       (oa.buildCommand or "")
       +
-        # bash
-        ''
-          wrapProgram "$out/bin/RuneScape" \
-            --set PULSE_LATENCY_MSEC ${toString pulse_latency} \
-            --run 'echo $PULSE_LATENCY_MSEC'
-        '';
+      # bash
+      ''
+        wrapProgram "$out/bin/RuneScape" \
+          --set PULSE_LATENCY_MSEC ${toString pulse_latency} \
+          --run 'echo $PULSE_LATENCY_MSEC'
+      '';
   });
 in
 {

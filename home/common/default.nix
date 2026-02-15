@@ -90,51 +90,51 @@
     mako = {
       enable = true;
       settings = {
-      # anchor = "top-right";
-      # anchor = "center-right";
-      anchor = "bottom-right";
-      borderRadius = 0;
-      borderSize = 0;
-      padding = "0"; # within
-      margin = "0"; # "36,0,0,0"; # outside # 36? 40?
-      # margin = "36,0,0,0"; # outside # 36? 40?
-      # .tabbrowser-tab[selected] {
-      #   max-height: 24px !important;
-      #   min-height: 24px !important;
-      # }
-      # tab:not([selected="true"]) {
-      #   max-height: 24px !important;
-      #   min-height: 24px !important;
-      # }
-      # maxIconSize = 256;
-      maxIconSize = 512;
-      ignoreTimeout = true;
-      defaultTimeout = 15000;
-      layer = "top";
-      height = 240;
-      width = 420;
-      format = "<b>%s</b>\\n%b";
-      backgroundColor = "#303030FF";
-      borderColor = "#333333FF";
-      # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
-      # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
-      # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
-      # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
-      # outside # 36? 40?12
-      # outer-margin=36,0,0,0
-      #extraConfig = ''
-      #  [app-name="Element"]
-      #  on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
-#
- #       [urgency=low]
-  #      default-timeout=10000
-#
- #       [urgency=high]
-  #      default-timeout=30000
-#
- #       [mode=dnd]
-  #      invisible=1
-   #   '';
+        # anchor = "top-right";
+        # anchor = "center-right";
+        anchor = "bottom-right";
+        borderRadius = 0;
+        borderSize = 0;
+        padding = "0"; # within
+        margin = "0"; # "36,0,0,0"; # outside # 36? 40?
+        # margin = "36,0,0,0"; # outside # 36? 40?
+        # .tabbrowser-tab[selected] {
+        #   max-height: 24px !important;
+        #   min-height: 24px !important;
+        # }
+        # tab:not([selected="true"]) {
+        #   max-height: 24px !important;
+        #   min-height: 24px !important;
+        # }
+        # maxIconSize = 256;
+        maxIconSize = 512;
+        ignoreTimeout = true;
+        defaultTimeout = 15000;
+        layer = "top";
+        height = 240;
+        width = 420;
+        format = "<b>%s</b>\\n%b";
+        backgroundColor = "#303030FF";
+        borderColor = "#333333FF";
+        # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
+        # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
+        # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
+        # on-button-right=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
+        # outside # 36? 40?12
+        # outer-margin=36,0,0,0
+        #extraConfig = ''
+        #  [app-name="Element"]
+        #  on-button-left=exec bash -c 'hyprctl dispatch workspace $(hyprctl -j clients | jq -r ".[] | select (.class == \"Element\") | .workspace.id")' _
+        #
+        #       [urgency=low]
+        #      default-timeout=10000
+        #
+        #       [urgency=high]
+        #      default-timeout=30000
+        #
+        #       [mode=dnd]
+        #      invisible=1
+        #   '';
       };
     };
     # dunst = {
@@ -299,15 +299,15 @@
       enable = true;
       lfs.enable = true;
       settings = {
-      user = {
-        name = "Drewry Pope";
-      email = "drewrypope@gmail.com";
-      };
-      aliases = {
-        ci = "commit";
-        co = "checkout";
-        s = "status";
-      };
+        user = {
+          name = "Drewry Pope";
+          email = "drewrypope@gmail.com";
+        };
+        aliases = {
+          ci = "commit";
+          co = "checkout";
+          s = "status";
+        };
       };
       # signing.signByDefault = true;
       # gitCliff
@@ -843,7 +843,7 @@
         imagemagick
         intel-gpu-tools
         ion
-        kubo #ipfs
+        kubo # ipfs
         jack2
         #jetbrains-mono
         jless
@@ -867,7 +867,7 @@
         lemmeknow
         less
         lf
-        dysk #lfs
+        dysk # lfs
         git-lfs
         libnotify
         #libsForQt5.polkit-kde-agent
@@ -978,7 +978,7 @@
         rmtrash # ctrl + z for rm
         rnr
         rofi-rbw
-        rofi#-wayland
+        rofi # -wayland
         rufo
         runiq
         rust-analyzer
@@ -1016,7 +1016,7 @@
         systeroid
         tealdeer # ya tldr
         #terminus-nerdfont
-        pay-respects#thefuck
+        pay-respects # thefuck
         tidy-viewer
         tidyp
         tig # command line git

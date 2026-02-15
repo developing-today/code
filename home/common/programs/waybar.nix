@@ -37,19 +37,18 @@
         "hyprland/submap"
       ];
       modules-center = [ "hyprland/window" ];
-      modules-right =
-        [
-          "pulseaudio"
-          #           "network"
-          "cpu"
-          "memory"
-          # "temperature"
-        ]
-        ++ [ "battery" ]
-        ++ [
-          "clock"
-          "tray"
-        ];
+      modules-right = [
+        "pulseaudio"
+        #           "network"
+        "cpu"
+        "memory"
+        # "temperature"
+      ]
+      ++ [ "battery" ]
+      ++ [
+        "clock"
+        "tray"
+      ];
       battery = {
         format = "{capacity}%{icon}";
         format-alt = "{time}{icon}";

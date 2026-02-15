@@ -257,7 +257,8 @@
                       };
                       linkConfig = {
                         Name = name;
-                      } // (if mtu == null then { } else { MTUBytes = mtu; });
+                      }
+                      // (if mtu == null then { } else { MTUBytes = mtu; });
                     };
                   }
                 ];
@@ -1205,7 +1206,8 @@
                       };
                       linkConfig = {
                         Name = name;
-                      } // (if mtu == null then { } else { MTUBytes = mtu; });
+                      }
+                      // (if mtu == null then { } else { MTUBytes = mtu; });
                     };
                   }
                 ];

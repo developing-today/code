@@ -35,7 +35,8 @@
 
         Service = {
           ExecStart = "${pkgs.aw-server-rust}/bin/aw-server";
-        } // baseSettings;
+        }
+        // baseSettings;
 
         Install.WantedBy = [ "activitywatch.target" ];
       };
@@ -49,7 +50,8 @@
 
         Service = {
           ExecStart = "${pkgs.awatcher}/bin/awatcher";
-        } // baseSettings;
+        }
+        // baseSettings;
 
         Install.WantedBy = [ "activitywatch.target" ];
       };

@@ -32,7 +32,8 @@
     DeviceAllow = [
       "/dev/net/tun rw"
       "/dev/net/tap rw"
-    ] ++ lib.optionals config.virtualisation.libvirtd.enable [ "/dev/kvm" ];
+    ]
+    ++ lib.optionals config.virtualisation.libvirtd.enable [ "/dev/kvm" ];
     UMask = lib.mkForce "0022";
   };
 

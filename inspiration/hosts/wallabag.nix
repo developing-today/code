@@ -241,7 +241,8 @@ in
         User = cfg.user;
         Restart = "always";
         RuntimeMaxSec = "10m"; # wallabag stops working every now and then. This "fixes" it
-      } // wallabagServiceConfig;
+      }
+      // wallabagServiceConfig;
       preStart = ''
         mkdir -p "${cfg.dataDir}/data/db"
       '';

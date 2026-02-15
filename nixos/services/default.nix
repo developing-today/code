@@ -76,16 +76,18 @@
         enableHidpi = true;
       };
     };
+    desktopManager = {
+      gnome = {
+        # backup in case hyprland gets broken again
+        #plasma6.enable = true; # bloat but kinda pretty
+        #plasma5.enable = true; # bloat but kinda pretty
+        enable = true;
+      };
+    };
     xserver = {
       enable = true;
       # libinput.enable = true;
       # displayManager.gdm.enable = true;
-      desktopManager = {
-        # backup in case hyprland gets broken again
-        #plasma6.enable = true; # bloat but kinda pretty
-        #plasma5.enable = true; # bloat but kinda pretty
-        gnome.enable = true;
-      };
       xkb = {
         layout = "us";
         variant = "";

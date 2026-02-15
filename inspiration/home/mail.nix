@@ -68,7 +68,8 @@ in
         msmtp.enable = true;
         smtp.host = "mail.m7.rs";
         userName = address;
-      } // common;
+      }
+      // common;
 
       college = rec {
         address = "g.fontes@usp.br";
@@ -77,7 +78,8 @@ in
         msmtp.enable = true;
         smtp.host = "smtp.gmail.com";
         userName = address;
-      } // common;
+      }
+      // common;
     };
   };
 
