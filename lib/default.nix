@@ -409,7 +409,7 @@ let
   make-clan = # hosts:
     let
       # Usage see: https://docs.clan.lol
-      clan = inputs.clan-core.lib.buildClan {
+      clan = inputs.clan-core.lib.clan {
         self = inputs.self;
         meta.name = "developing-today";
         # Prerequisite: boot into the installer.
@@ -424,7 +424,8 @@ let
       };
     in
     {
-      inherit (clan) nixosConfigurations clanInternals;
+      inherit (clan.config) nixosConfigurations clanInternals;
+      clan = clan.config;
       devShells =
         inputs.clan-core.inputs.nixpkgs.lib.genAttrs
           [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
