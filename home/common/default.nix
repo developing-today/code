@@ -298,13 +298,16 @@
       # TODO: global config
       enable = true;
       lfs.enable = true;
-
-      userName = "Drewry Pope";
-      userEmail = "drewrypope@gmail.com";
+      settings = {
+      user = {
+        name = "Drewry Pope";
+      email = "drewrypope@gmail.com";
+      };
       aliases = {
         ci = "commit";
         co = "checkout";
         s = "status";
+      };
       };
       # signing.signByDefault = true;
       # gitCliff
