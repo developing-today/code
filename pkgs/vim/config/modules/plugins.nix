@@ -15,12 +15,14 @@
     quickmath = { };
     vim-surround = { };
     notify = {
-      level = 2;
-      topDown = false;
-      maxWidth = 400;
+      settings = {
+        level = 2;
+        top_down = false;
+        max_eidth = 400;
+      };
     };
-      dap-ui.enable = true;
-      dap-virtual-text.enable = true;
+    dap-ui.enable = true;
+    dap-virtual-text.enable = true;
     inc-rename = { };
     #neoscroll = {};
     nix = { };
@@ -191,8 +193,12 @@
     nix = { };
     nvim-autopairs = { };
     vim-surround = { };
-    nvim-tree.updateFocusedFile = {
-      enable = true;
+    nvim-tree = {
+      settings = {
+        update_focused_file = {
+          enable = true;
+        };
+      };
     };
     zig = { };
   };
