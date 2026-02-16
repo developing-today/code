@@ -59,6 +59,7 @@ in
         my-kubernetes-helm
       ]
       ++ (with pkgs; [
+        framework-tool
         musl
         fish
         tcl

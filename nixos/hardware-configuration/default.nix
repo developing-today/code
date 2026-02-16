@@ -19,9 +19,10 @@
   boot.extraModulePackages = [ ];
   powerManagement.powertop.enable = true;
   powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
-  # services.power-profiles-daemon.enable = false;
+  programs.gamemode.enable = true;
   services.power-profiles-daemon.enable = true;
   services.thermald.enable = true;
+  # services.power-profiles-daemon.enable = false;
   # services.auto-cpufreq.enable = true;
   # services.auto-cpufreq.settings = {
   #   battery = {
@@ -46,7 +47,6 @@
   #     CPU_ENERGY_PERF_POLICY_ON_BAT = "power";
   #   };
   # };
-  programs.gamemode.enable = true;
   # security.pam.loginLimits = [
   #   {
   #     domain = "@wheel";
