@@ -17,6 +17,7 @@
     "kvm-intel"
   ];
   boot.extraModulePackages = [ ];
+  powerManagement.enable = true;
   powerManagement.powertop.enable = true;
   powerManagement.cpuFreqGovernor = lib.mkDefault "performance";
   programs.gamemode.enable = true;
