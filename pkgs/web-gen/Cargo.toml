@@ -13,7 +13,7 @@ futures = "0.3.28"
 irust = "1.70.0"
 js-sys = "0.3.64"
 leptos = { version = "0.4.5", features = ["csr", "nightly"] }
-leptos_router = "0.4.5"
+leptos_router = "0.8.0"
 rand = "0.8.5"
 serde = { version = "1.0.174", features = ["derive"] }
 sqlx = "0.7.1"
