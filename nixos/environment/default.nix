@@ -59,6 +59,9 @@ in
         my-kubernetes-helm
       ]
       ++ (with pkgs; [
+        rclone
+        rclone-browser
+        rclone-ui
         framework-tool
         musl
         fish
