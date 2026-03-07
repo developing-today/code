@@ -1669,6 +1669,7 @@ dependencies = [
  "anyhow",
  "distributed-topic-tracker",
  "ed25519-dalek",
+ "futures-lite",
  "iroh",
  "iroh-base",
  "iroh-blobs",

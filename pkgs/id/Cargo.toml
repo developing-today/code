@@ -6,6 +6,7 @@ edition = "2024"
 anyhow = "1"
 distributed-topic-tracker = { git = "https://github.com/rustonbsd/distributed-topic-tracker" }
 ed25519-dalek = { version = "3.0.0-pre.1", features = ["rand_core"] }
+futures-lite = "2"
 iroh = "0.95"
 iroh-base = "0.95"
 iroh-blobs = "0.97"
