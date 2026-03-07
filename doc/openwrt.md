@@ -7,10 +7,20 @@
 # (advertise lan through tailscale as a route,)
 # (don't want to lockout rest of lan from ssh,)
 # (at least for now.)
-opkg install tailscale
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+apk update
+apk upgrade
+apk add luci-app-attendedsysupgrade
+uci set attendedsysupgrade.client.login_check_for_upgrades='1'
+apk update
+apk add python3-pip
+pip install speedtest-cli
+<!--speedtest-cli-->
+apk add luci-app-sqm
+apk add tailscale
 # these packages aren't enough but pretend they do something,
 # ipv6 etc dont work and you need to manually add fw rules anyways
-opkg install iptables-nft kmod-ipt-conntrack kmod-ipt-conntrack-extra kmod-ipt-conntrack-label kmod-nft-nat
+apk add iptables-nft kmod-ipt-conntrack kmod-ipt-conntrack-extra kmod-ipt-conntrack-label kmod-nft-nat
 tailscale up
 # open link
 tailscale status
@@ -22,32 +32,32 @@ tailscale up --advertise-routes=10.10.0.0/16 --accept-routes --advertise-exit-no
 ```
 - ```
 # done
-opkg install nano # - for editing text files through ssh
-opkg install htop # - for pretty colors #  export TERM=xterm # https://github.com/kovidgoyal/kitty/issues/1613
-opkg install iperf3 # - useful to confirm network wifi performance
-opkg install lsof
-opkg install tmux
-opkg install tcpdump # debug
-opkg install wget
-opkg install mtr # debug
-opkg install htop # system info
-opkg install curl
+apk add nano # - for editing text files through ssh
+apk add htop # - for pretty colors #  export TERM=xterm # https://github.com/kovidgoyal/kitty/issues/1613
+apk add iperf3 # - useful to confirm network wifi performance
+apk add lsof
+apk add tmux
+apk add tcpdump # debug
+apk add wget
+apk add mtr # debug
+apk add htop # system info
+apk add curl
 # consider
-opkg install luci-app-attendedsysupgrade
-opkg install luci-app-sqm # (cake ftw)
-opkg install luci-app-simple-adblock # (if not done elsewhere)
-opkg install luci-app-ddns # (if dynamic IP)
-opkg install luci-app-statistics # (graphs of bandwidth, cpu etc.)
-opkg install luci-app-advanced-reboot # (if your router is partitioned)
-opkg install luci-app-nlbwmon # (monthly breakdown of bandwidth per client / protocol)
-opkg install ethtool # check the NIC info
-opkg install knot-dig # DNS tool
-opkg install stress # to test the system stability
-opkg install avahi-nodbus # (mdns across vlans)
-opkg install kmod-usb-net-rndis # (tethering support)
-opkg install adblock
-opkg install doh
-opkg install netdata
+apk add luci-app-attendedsysupgrade
+apk add luci-app-sqm # (cake ftw)
+apk add luci-app-simple-adblock # (if not done elsewhere)
+apk add luci-app-ddns # (if dynamic IP)
+apk add luci-app-statistics # (graphs of bandwidth, cpu etc.)
+apk add luci-app-advanced-reboot # (if your router is partitioned)
+apk add luci-app-nlbwmon # (monthly breakdown of bandwidth per client / protocol)
+apk add ethtool # check the NIC info
+apk add knot-dig # DNS tool
+apk add stress # to test the system stability
+apk add avahi-nodbus # (mdns across vlans)
+apk add kmod-usb-net-rndis # (tethering support)
+apk add adblock
+apk add doh
+apk add netdata
 # nah
 ```
   - https://www.reddit.com/r/openwrt/comments/ygq14h/must_have_packages_discussion/
