@@ -1,20 +1,22 @@
 use anyhow::{Context, Result, anyhow, bail};
 use futures_lite::StreamExt;
 use iroh::{
-    discovery::dns::DnsDiscovery,
+    address_lookup::{DnsAddressLookup, PkarrPublisher},
     endpoint::{Connection, Endpoint, RelayMode},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_base::{EndpointId, SecretKey};
+use iroh_base::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobFormat, BlobsProtocol, Hash,
     api::{Store, blobs::AddBytesOptions},
     protocol::{ChunkRanges, ChunkRangesSeq, PushRequest},
     store::{fs::FsStore, mem::MemStore},
 };
+use rustyline::{DefaultEditor, error::ReadlineError};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
 };
@@ -56,61 +58,69 @@ impl MetaProtocol {
 
 impl ProtocolHandler for MetaProtocol {
     async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
-        let (mut send, mut recv) = conn.accept_bi().await?;
-        let buf = recv
-            .read_to_end(64 * 1024)
-            .await
-            .map_err(AcceptError::from_err)?;
-        let req: MetaRequest = postcard::from_bytes(&buf).map_err(AcceptError::from_err)?;
-        match req {
-            MetaRequest::Put { filename, hash } => {
-                self.store
-                    .tags()
-                    .set(&filename, hash)
-                    .await
-                    .map_err(AcceptError::from_err)?;
-                let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })
-                    .map_err(AcceptError::from_err)?;
-                send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                send.finish()?;
-            }
-            MetaRequest::Get { filename } => {
-                let mut found: Option<Hash> = None;
-                if let Ok(Some(tag)) = self.store.tags().get(&filename).await {
-                    found = Some(tag.hash);
-                } else {
-                    if let Ok(mut list) = self.store.tags().list().await {
-                        while let Some(item) = list.next().await {
-                            let item = item.map_err(AcceptError::from_err)?;
-                            if item.name.as_ref() == filename.as_bytes() {
-                                found = Some(item.hash);
-                                break;
+        // Handle multiple requests per connection
+        loop {
+            let (mut send, mut recv) = match conn.accept_bi().await {
+                Ok(streams) => streams,
+                Err(_) => break, // Connection closed
+            };
+            let buf = match recv.read_to_end(64 * 1024).await {
+                Ok(buf) => buf,
+                Err(_) => break,
+            };
+            let req: MetaRequest = match postcard::from_bytes(&buf) {
+                Ok(req) => req,
+                Err(_) => break,
+            };
+            match req {
+                MetaRequest::Put { filename, hash } => {
+                    self.store
+                        .tags()
+                        .set(&filename, hash)
+                        .await
+                        .map_err(AcceptError::from_err)?;
+                    let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::Get { filename } => {
+                    let mut found: Option<Hash> = None;
+                    if let Ok(Some(tag)) = self.store.tags().get(&filename).await {
+                        found = Some(tag.hash);
+                    } else {
+                        if let Ok(mut list) = self.store.tags().list().await {
+                            while let Some(item) = list.next().await {
+                                let item = item.map_err(AcceptError::from_err)?;
+                                if item.name.as_ref() == filename.as_bytes() {
+                                    found = Some(item.hash);
+                                    break;
+                                }
                             }
                         }
                     }
+                    let resp = postcard::to_allocvec(&MetaResponse::Get { hash: found })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
                 }
-                let resp = postcard::to_allocvec(&MetaResponse::Get { hash: found })
-                    .map_err(AcceptError::from_err)?;
-                send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                send.finish()?;
-            }
-            MetaRequest::List => {
-                let mut items = Vec::new();
-                if let Ok(mut list) = self.store.tags().list().await {
-                    while let Some(item) = list.next().await {
-                        if let Ok(item) = item {
-                            let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
-                            items.push((item.hash, name));
+                MetaRequest::List => {
+                    let mut items = Vec::new();
+                    if let Ok(mut list) = self.store.tags().list().await {
+                        while let Some(item) = list.next().await {
+                            if let Ok(item) = item {
+                                let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
+                                items.push((item.hash, name));
+                            }
                         }
                     }
+                    let resp = postcard::to_allocvec(&MetaResponse::List { items })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
                 }
-                let resp = postcard::to_allocvec(&MetaResponse::List { items })
-                    .map_err(AcceptError::from_err)?;
-                send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                send.finish()?;
             }
         }
-        conn.closed().await;
         Ok(())
     }
 }
@@ -193,18 +203,59 @@ async fn read_input(input: &str) -> Result<Vec<u8>> {
     }
 }
 
-/// Check if serve is running by reading the lock file
-async fn get_serve_node_id() -> Option<EndpointId> {
-    if let Ok(contents) = afs::read_to_string(SERVE_LOCK).await {
-        contents.trim().parse().ok()
-    } else {
-        None
+/// Info about a running serve instance
+struct ServeInfo {
+    node_id: EndpointId,
+    addrs: Vec<SocketAddr>,
+}
+
+/// Check if serve is running by reading the lock file and verifying the PID
+async fn get_serve_info() -> Option<ServeInfo> {
+    let contents = afs::read_to_string(SERVE_LOCK).await.ok()?;
+    let mut lines = contents.lines();
+    let node_id_str = lines.next()?;
+    let pid_str = lines.next()?;
+    let pid: u32 = pid_str.parse().ok()?;
+
+    // Check if process is still alive
+    if !is_process_alive(pid) {
+        // Stale lock file - remove it
+        let _ = afs::remove_file(SERVE_LOCK).await;
+        return None;
+    }
+
+    let node_id: EndpointId = node_id_str.parse().ok()?;
+
+    // Parse socket addresses (remaining lines)
+    let addrs: Vec<SocketAddr> = lines.filter_map(|line| line.parse().ok()).collect();
+
+    Some(ServeInfo { node_id, addrs })
+}
+
+/// Check if a process with the given PID is still running
+fn is_process_alive(pid: u32) -> bool {
+    // On Unix, sending signal 0 checks if process exists without actually sending a signal
+    #[cfg(unix)]
+    {
+        // kill -0 checks existence without sending a signal
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, just assume it's alive if we have a PID
+        let _ = pid;
+        true
     }
 }
 
-/// Create serve lock file with node ID
-async fn create_serve_lock(node_id: &EndpointId) -> Result<()> {
-    afs::write(SERVE_LOCK, node_id.to_string()).await?;
+/// Create serve lock file with node ID, PID, and socket addresses
+async fn create_serve_lock(node_id: &EndpointId, addrs: &[SocketAddr]) -> Result<()> {
+    let pid = std::process::id();
+    let mut contents = format!("{}\n{}", node_id, pid);
+    for addr in addrs {
+        contents.push_str(&format!("\n{}", addr));
+    }
+    afs::write(SERVE_LOCK, contents).await?;
     Ok(())
 }
 
@@ -214,10 +265,428 @@ async fn remove_serve_lock() -> Result<()> {
     Ok(())
 }
 
+/// Create a client endpoint configured to connect to the local serve
+async fn create_local_client_endpoint(serve_info: &ServeInfo) -> Result<(Endpoint, EndpointAddr)> {
+    let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
+    let endpoint = Endpoint::builder()
+        .secret_key(client_key)
+        .relay_mode(RelayMode::Disabled)
+        .bind()
+        .await?;
+
+    // Build EndpointAddr with known socket addresses to bypass DNS discovery
+    // Prefer IPv4 localhost for reliability on systems with IPv6 issues
+    let addrs: Vec<_> = serve_info
+        .addrs
+        .iter()
+        .filter(|addr| addr.is_ipv4())
+        .map(|addr| TransportAddr::Ip(*addr))
+        .collect();
+
+    // Fall back to all addresses if no IPv4 found
+    let addrs = if addrs.is_empty() {
+        serve_info
+            .addrs
+            .iter()
+            .map(|addr| TransportAddr::Ip(*addr))
+            .collect()
+    } else {
+        addrs
+    };
+
+    let endpoint_addr = EndpointAddr::from_parts(serve_info.node_id, addrs);
+
+    Ok((endpoint, endpoint_addr))
+}
+
+/// REPL context - holds either remote connections or local store access
+struct ReplContext {
+    inner: ReplContextInner,
+}
+
+enum ReplContextInner {
+    /// Connected to a running serve instance
+    Remote {
+        endpoint: Endpoint,
+        endpoint_addr: EndpointAddr,
+        meta_conn: Option<Connection>,
+        blobs_conn: Option<Connection>,
+        store: StoreType,
+    },
+    /// Direct local store access (no serve running)
+    Local { store: StoreType },
+}
+
+impl ReplContext {
+    async fn new() -> Result<Self> {
+        if let Some(serve_info) = get_serve_info().await {
+            let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+            // Use ephemeral store for remote mode (just for blob transfers)
+            let store = open_store(true).await?;
+            Ok(ReplContext {
+                inner: ReplContextInner::Remote {
+                    endpoint,
+                    endpoint_addr,
+                    meta_conn: None,
+                    blobs_conn: None,
+                    store,
+                },
+            })
+        } else {
+            let store = open_store(false).await?;
+            Ok(ReplContext {
+                inner: ReplContextInner::Local { store },
+            })
+        }
+    }
+
+    fn mode_str(&self) -> &'static str {
+        match &self.inner {
+            ReplContextInner::Remote { .. } => "remote",
+            ReplContextInner::Local { .. } => "local",
+        }
+    }
+
+    /// Get or create meta connection
+    async fn meta_conn(&mut self) -> Result<&Connection> {
+        match &mut self.inner {
+            ReplContextInner::Remote {
+                endpoint,
+                endpoint_addr,
+                meta_conn,
+                ..
+            } => {
+                // Check if existing connection is still valid
+                if let Some(conn) = meta_conn.as_ref() {
+                    if conn.close_reason().is_none() {
+                        return Ok(meta_conn.as_ref().unwrap());
+                    }
+                }
+                // Create new connection
+                let conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
+                *meta_conn = Some(conn);
+                Ok(meta_conn.as_ref().unwrap())
+            }
+            ReplContextInner::Local { .. } => bail!("meta_conn called in local mode"),
+        }
+    }
+
+    /// Get or create blobs connection
+    async fn blobs_conn(&mut self) -> Result<&Connection> {
+        match &mut self.inner {
+            ReplContextInner::Remote {
+                endpoint,
+                endpoint_addr,
+                blobs_conn,
+                ..
+            } => {
+                // Check if existing connection is still valid
+                if let Some(conn) = blobs_conn.as_ref() {
+                    if conn.close_reason().is_none() {
+                        return Ok(blobs_conn.as_ref().unwrap());
+                    }
+                }
+                // Create new connection
+                let conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+                *blobs_conn = Some(conn);
+                Ok(blobs_conn.as_ref().unwrap())
+            }
+            ReplContextInner::Local { .. } => bail!("blobs_conn called in local mode"),
+        }
+    }
+
+    async fn list(&mut self) -> Result<()> {
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::List)?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(1024 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::List { items } => {
+                    if items.is_empty() {
+                        println!("(no files stored)");
+                    } else {
+                        for (hash, name) in items {
+                            println!("{}\t{}", hash, name);
+                        }
+                    }
+                }
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            let mut list = store_handle.tags().list().await?;
+            let mut count = 0;
+            while let Some(item) = list.next().await {
+                let item = item?;
+                let name = String::from_utf8_lossy(item.name.as_ref());
+                println!("{}\t{}", item.hash, name);
+                count += 1;
+            }
+            if count == 0 {
+                println!("(no files stored)");
+            }
+        }
+        Ok(())
+    }
+
+    async fn put(&mut self, path: &str, name: Option<&str>) -> Result<()> {
+        let (data, filename) = if path == "-" {
+            let name = name.ok_or_else(|| anyhow!("stdin requires a name: put - <NAME>"))?;
+            let mut data = Vec::new();
+            std::io::stdin().read_to_end(&mut data)?;
+            (data, name.to_string())
+        } else {
+            let path_buf = PathBuf::from(path);
+            let data = afs::read(&path_buf).await?;
+            let filename = name
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| path_buf.file_name().unwrap().to_string_lossy().to_string());
+            (data, filename)
+        };
+
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            // Add to local ephemeral store first
+            let hash = {
+                let store_handle = match &self.inner {
+                    ReplContextInner::Remote { store, .. } => store.as_store(),
+                    _ => unreachable!(),
+                };
+                let result = store_handle
+                    .add_bytes_with_opts(AddBytesOptions {
+                        data: data.into(),
+                        format: BlobFormat::Raw,
+                    })
+                    .await?;
+                result.hash
+            };
+
+            // Request server to accept
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Put {
+                filename: filename.clone(),
+                hash,
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::Put { success: true } => {
+                    // Push blob to serve
+                    let blobs_conn = self.blobs_conn().await?.clone();
+                    let store_handle = match &self.inner {
+                        ReplContextInner::Remote { store, .. } => store.as_store(),
+                        _ => unreachable!(),
+                    };
+                    let push_request =
+                        PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
+                    store_handle
+                        .remote()
+                        .execute_push(blobs_conn, push_request)
+                        .await?;
+                    println!("stored: {} -> {}", filename, hash);
+                }
+                MetaResponse::Put { success: false } => bail!("server rejected"),
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            let result = store_handle
+                .add_bytes_with_opts(AddBytesOptions {
+                    data: data.into(),
+                    format: BlobFormat::Raw,
+                })
+                .await?;
+            store_handle.tags().set(&filename, result.hash).await?;
+            println!("stored: {} -> {}", filename, result.hash);
+        }
+        Ok(())
+    }
+
+    async fn get(&mut self, name: &str, output: Option<&str>) -> Result<()> {
+        let output = output.unwrap_or(name);
+
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            // Get hash from serve
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Get {
+                filename: name.to_string(),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::Get { hash: Some(hash) } => {
+                    // Fetch blob from serve
+                    let blobs_conn = self.blobs_conn().await?.clone();
+                    let store_handle = match &self.inner {
+                        ReplContextInner::Remote { store, .. } => store.as_store(),
+                        _ => unreachable!(),
+                    };
+                    store_handle.remote().fetch(blobs_conn, hash).await?;
+                    export_blob(&store_handle, hash, output).await?;
+                }
+                MetaResponse::Get { hash: None } => bail!("not found: {}", name),
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            let tag = store_handle
+                .tags()
+                .get(name)
+                .await?
+                .ok_or_else(|| anyhow!("not found: {}", name))?;
+            export_blob(&store_handle, tag.hash, output).await?;
+        }
+        Ok(())
+    }
+
+    async fn gethash(&mut self, hash_str: &str, output: &str) -> Result<()> {
+        let hash: Hash = hash_str.parse().context("invalid hash")?;
+
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            let blobs_conn = self.blobs_conn().await?.clone();
+            let store_handle = match &self.inner {
+                ReplContextInner::Remote { store, .. } => store.as_store(),
+                _ => unreachable!(),
+            };
+            store_handle.remote().fetch(blobs_conn, hash).await?;
+            export_blob(&store_handle, hash, output).await?;
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            export_blob(&store_handle, hash, output).await?;
+        }
+        Ok(())
+    }
+
+    async fn shutdown(self) -> Result<()> {
+        match self.inner {
+            ReplContextInner::Remote {
+                meta_conn,
+                blobs_conn,
+                store,
+                ..
+            } => {
+                if let Some(conn) = meta_conn {
+                    conn.close(0u32.into(), b"done");
+                }
+                if let Some(conn) = blobs_conn {
+                    conn.close(0u32.into(), b"done");
+                }
+                store.shutdown().await?;
+            }
+            ReplContextInner::Local { store } => {
+                store.shutdown().await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn run_repl() -> Result<()> {
+    let mut ctx = ReplContext::new().await?;
+    println!("id repl ({})", ctx.mode_str());
+    println!("commands: list, put, get, cat, gethash, help, quit");
+
+    let mut rl = DefaultEditor::new()?;
+
+    loop {
+        match rl.readline("> ") {
+            Ok(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let _ = rl.add_history_entry(line);
+
+                // Shell escape: !command
+                if let Some(cmd) = line.strip_prefix('!') {
+                    let cmd = cmd.trim();
+                    if !cmd.is_empty() {
+                        let status = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+                        match status {
+                            Ok(s) if !s.success() => {
+                                if let Some(code) = s.code() {
+                                    println!("exit: {}", code);
+                                }
+                            }
+                            Err(e) => println!("error: {}", e),
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                let result = match parts.as_slice() {
+                    ["quit"] | ["exit"] | ["q"] => break,
+                    ["help"] | ["?"] => {
+                        println!("commands:");
+                        println!("  list                   - List all stored files");
+                        println!(
+                            "  put <FILE> [NAME]      - Store file (NAME defaults to filename)"
+                        );
+                        println!(
+                            "  get <NAME> [OUTPUT]    - Retrieve file (OUTPUT defaults to NAME, - for stdout)"
+                        );
+                        println!("  cat <NAME>             - Print file to stdout");
+                        println!("  gethash <HASH> <OUTPUT> - Retrieve by hash (- for stdout)");
+                        println!("  !<cmd>                 - Run shell command");
+                        println!("  help                   - Show this help");
+                        println!("  quit                   - Exit repl");
+                        Ok(())
+                    }
+                    ["list"] | ["ls"] => ctx.list().await,
+                    ["put", path] => ctx.put(path, None).await,
+                    ["put", path, name] => ctx.put(path, Some(name)).await,
+                    ["get", name] => ctx.get(name, None).await,
+                    ["get", name, output] => ctx.get(name, Some(output)).await,
+                    ["cat", name] => ctx.get(name, Some("-")).await,
+                    ["gethash", hash, output] => ctx.gethash(hash, output).await,
+                    _ => {
+                        println!("unknown command: {}", line);
+                        println!("type 'help' for available commands");
+                        Ok(())
+                    }
+                };
+
+                if let Err(e) = result {
+                    println!("error: {}", e);
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("^C");
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                break;
+            }
+            Err(e) => {
+                println!("readline error: {}", e);
+                break;
+            }
+        }
+    }
+
+    ctx.shutdown().await?;
+    Ok(())
+}
+
 fn print_usage() {
     eprintln!(
         r#"usage:
   id serve [--ephemeral] [--no-relay]      Start server (accepts put/get from peers)
+  id repl                                  Interactive REPL (auto-detects local/remote)
   id put <FILE>                            Store file (works with serve running)
   id put - <NAME>                          Store from stdin with given name
   id put <NODE_ID> <FILE> [--no-relay]     Upload file to remote node
@@ -233,7 +702,7 @@ Options:
   --no-relay     Disable relay servers (direct connections only)
 
 Notes:
-  - put/get/list work while serve is running (connects via network)
+  - put/get/list/repl work while serve is running (connects via network)
   - Use - for stdin (put) or stdout (get)"#
     );
 }
@@ -260,6 +729,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
+        ["repl"] => run_repl().await,
+
         ["serve"] => {
             info!("serve: {}", node_id);
             let store = open_store(ephemeral).await?;
@@ -267,7 +738,8 @@ async fn main() -> Result<()> {
 
             let mut builder = Endpoint::builder()
                 .secret_key(key.clone())
-                .discovery(DnsDiscovery::n0_dns());
+                .address_lookup(PkarrPublisher::n0_dns())
+                .address_lookup(DnsAddressLookup::n0_dns());
             if no_relay {
                 builder = builder.relay_mode(RelayMode::Disabled);
             }
@@ -282,7 +754,21 @@ async fn main() -> Result<()> {
                 .spawn();
 
             let serve_node_id = router.endpoint().id();
-            create_serve_lock(&serve_node_id).await?;
+            let bound_addrs = router.endpoint().bound_sockets();
+            // Convert wildcard addresses (0.0.0.0, [::]) to localhost for client connections
+            let local_addrs: Vec<SocketAddr> = bound_addrs
+                .iter()
+                .map(|addr| match addr {
+                    SocketAddr::V4(v4) if v4.ip().is_unspecified() => {
+                        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), v4.port())
+                    }
+                    SocketAddr::V6(v6) if v6.ip().is_unspecified() => {
+                        SocketAddr::new(Ipv6Addr::LOCALHOST.into(), v6.port())
+                    }
+                    other => *other,
+                })
+                .collect();
+            create_serve_lock(&serve_node_id, &local_addrs).await?;
 
             println!("node: {}", serve_node_id);
             if ephemeral {
@@ -314,7 +800,7 @@ async fn main() -> Result<()> {
                 .to_string();
             let data = afs::read(&path).await?;
 
-            if let Some(server_node_id) = get_serve_node_id().await {
+            if let Some(serve_info) = get_serve_info().await {
                 // Serve is running - use remote protocol
                 let store = open_store(true).await?;
                 let store_handle = store.as_store();
@@ -327,15 +813,9 @@ async fn main() -> Result<()> {
                     .await?;
                 let hash = added.hash;
 
-                let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-                let endpoint = Endpoint::builder()
-                    .secret_key(client_key)
-                    .discovery(DnsDiscovery::n0_dns())
-                    .relay_mode(RelayMode::Disabled)
-                    .bind()
-                    .await?;
+                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-                let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+                let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
                 let (mut send, mut recv) = meta_conn.open_bi().await?;
                 let req = postcard::to_allocvec(&MetaRequest::Put {
                     filename: filename.clone(),
@@ -349,7 +829,8 @@ async fn main() -> Result<()> {
 
                 match resp {
                     MetaResponse::Put { success: true } => {
-                        let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+                        let blobs_conn =
+                            endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                         let push_request = PushRequest::new(
                             hash,
                             ChunkRangesSeq::from_ranges([ChunkRanges::all()]),
@@ -360,7 +841,6 @@ async fn main() -> Result<()> {
                             .await?;
                         blobs_conn.close(0u32.into(), b"done");
                         eprintln!("stored: {} -> {}", filename, hash);
-                        endpoint.close().await;
                         store.shutdown().await?;
                         Ok(())
                     }
@@ -390,7 +870,7 @@ async fn main() -> Result<()> {
             // Local put from stdin with name
             let data = read_input("-").await?;
 
-            if let Some(server_node_id) = get_serve_node_id().await {
+            if let Some(serve_info) = get_serve_info().await {
                 // Serve is running - use remote protocol
                 let store = open_store(true).await?;
                 let store_handle = store.as_store();
@@ -403,15 +883,9 @@ async fn main() -> Result<()> {
                     .await?;
                 let hash = added.hash;
 
-                let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-                let endpoint = Endpoint::builder()
-                    .secret_key(client_key)
-                    .discovery(DnsDiscovery::n0_dns())
-                    .relay_mode(RelayMode::Disabled)
-                    .bind()
-                    .await?;
+                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-                let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+                let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
                 let (mut send, mut recv) = meta_conn.open_bi().await?;
                 let req = postcard::to_allocvec(&MetaRequest::Put {
                     filename: name.to_string(),
@@ -425,7 +899,8 @@ async fn main() -> Result<()> {
 
                 match resp {
                     MetaResponse::Put { success: true } => {
-                        let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+                        let blobs_conn =
+                            endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                         let push_request = PushRequest::new(
                             hash,
                             ChunkRangesSeq::from_ranges([ChunkRanges::all()]),
@@ -436,7 +911,6 @@ async fn main() -> Result<()> {
                             .await?;
                         blobs_conn.close(0u32.into(), b"done");
                         eprintln!("stored: {} -> {}", name, hash);
-                        endpoint.close().await;
                         store.shutdown().await?;
                         Ok(())
                     }
@@ -489,7 +963,8 @@ async fn main() -> Result<()> {
             let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
             let mut builder = Endpoint::builder()
                 .secret_key(client_key)
-                .discovery(DnsDiscovery::n0_dns());
+                .address_lookup(PkarrPublisher::n0_dns())
+                .address_lookup(DnsAddressLookup::n0_dns());
             if no_relay {
                 builder = builder.relay_mode(RelayMode::Disabled);
             }
@@ -518,7 +993,6 @@ async fn main() -> Result<()> {
                         .await?;
                     blobs_conn.close(0u32.into(), b"done");
                     println!("uploaded: {} -> {}", filename, hash);
-                    endpoint.close().await;
                     store.shutdown().await?;
                     Ok(())
                 }
@@ -546,7 +1020,8 @@ async fn main() -> Result<()> {
             let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
             let mut builder = Endpoint::builder()
                 .secret_key(client_key)
-                .discovery(DnsDiscovery::n0_dns());
+                .address_lookup(PkarrPublisher::n0_dns())
+                .address_lookup(DnsAddressLookup::n0_dns());
             if no_relay {
                 builder = builder.relay_mode(RelayMode::Disabled);
             }
@@ -575,7 +1050,6 @@ async fn main() -> Result<()> {
                         .await?;
                     blobs_conn.close(0u32.into(), b"done");
                     eprintln!("uploaded: {} -> {}", name, hash);
-                    endpoint.close().await;
                     store.shutdown().await?;
                     Ok(())
                 }
@@ -586,20 +1060,14 @@ async fn main() -> Result<()> {
 
         ["get", name] => {
             // Local get by name - check if serve is running
-            if let Some(server_node_id) = get_serve_node_id().await {
+            if let Some(serve_info) = get_serve_info().await {
                 // Serve is running - use remote protocol
                 let store = open_store(true).await?;
                 let store_handle = store.as_store();
 
-                let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-                let endpoint = Endpoint::builder()
-                    .secret_key(client_key)
-                    .discovery(DnsDiscovery::n0_dns())
-                    .relay_mode(RelayMode::Disabled)
-                    .bind()
-                    .await?;
+                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-                let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+                let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
                 let (mut send, mut recv) = meta_conn.open_bi().await?;
                 let req = postcard::to_allocvec(&MetaRequest::Get {
                     filename: name.to_string(),
@@ -616,7 +1084,7 @@ async fn main() -> Result<()> {
                     _ => bail!("unexpected response"),
                 };
 
-                let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+                let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                 store_handle
                     .remote()
                     .fetch(blobs_conn.clone(), hash)
@@ -624,7 +1092,6 @@ async fn main() -> Result<()> {
                 blobs_conn.close(0u32.into(), b"done");
 
                 export_blob(&store_handle, hash, name).await?;
-                endpoint.close().await;
                 store.shutdown().await?;
                 Ok(())
             } else {
@@ -660,7 +1127,8 @@ async fn main() -> Result<()> {
                 let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
                 let mut builder = Endpoint::builder()
                     .secret_key(client_key)
-                    .discovery(DnsDiscovery::n0_dns());
+                    .address_lookup(PkarrPublisher::n0_dns())
+                    .address_lookup(DnsAddressLookup::n0_dns());
                 if no_relay {
                     builder = builder.relay_mode(RelayMode::Disabled);
                 }
@@ -691,7 +1159,6 @@ async fn main() -> Result<()> {
                 blobs_conn.close(0u32.into(), b"done");
 
                 export_blob(&store_handle, hash, name).await?;
-                endpoint.close().await;
                 store.shutdown().await?;
                 Ok(())
             } else {
@@ -699,20 +1166,15 @@ async fn main() -> Result<()> {
                 let name = *first;
                 let output = *second;
 
-                if let Some(server_node_id) = get_serve_node_id().await {
+                if let Some(serve_info) = get_serve_info().await {
                     // Serve is running - use remote protocol
                     let store = open_store(true).await?;
                     let store_handle = store.as_store();
 
-                    let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-                    let endpoint = Endpoint::builder()
-                        .secret_key(client_key)
-                        .discovery(DnsDiscovery::n0_dns())
-                        .relay_mode(RelayMode::Disabled)
-                        .bind()
-                        .await?;
+                    let (endpoint, endpoint_addr) =
+                        create_local_client_endpoint(&serve_info).await?;
 
-                    let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+                    let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
                     let (mut send, mut recv) = meta_conn.open_bi().await?;
                     let req = postcard::to_allocvec(&MetaRequest::Get {
                         filename: name.to_string(),
@@ -729,7 +1191,7 @@ async fn main() -> Result<()> {
                         _ => bail!("unexpected response"),
                     };
 
-                    let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+                    let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                     store_handle
                         .remote()
                         .fetch(blobs_conn.clone(), hash)
@@ -737,7 +1199,6 @@ async fn main() -> Result<()> {
                     blobs_conn.close(0u32.into(), b"done");
 
                     export_blob(&store_handle, hash, output).await?;
-                    endpoint.close().await;
                     store.shutdown().await?;
                     Ok(())
                 } else {
@@ -768,7 +1229,8 @@ async fn main() -> Result<()> {
             let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
             let mut builder = Endpoint::builder()
                 .secret_key(client_key)
-                .discovery(DnsDiscovery::n0_dns());
+                .address_lookup(PkarrPublisher::n0_dns())
+                .address_lookup(DnsAddressLookup::n0_dns());
             if no_relay {
                 builder = builder.relay_mode(RelayMode::Disabled);
             }
@@ -799,23 +1261,16 @@ async fn main() -> Result<()> {
             blobs_conn.close(0u32.into(), b"done");
 
             export_blob(&store_handle, hash, output).await?;
-            endpoint.close().await;
             store.shutdown().await?;
             Ok(())
         }
 
         ["list"] => {
-            if let Some(server_node_id) = get_serve_node_id().await {
+            if let Some(serve_info) = get_serve_info().await {
                 // Serve is running - use remote protocol
-                let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-                let endpoint = Endpoint::builder()
-                    .secret_key(client_key)
-                    .discovery(DnsDiscovery::n0_dns())
-                    .relay_mode(RelayMode::Disabled)
-                    .bind()
-                    .await?;
+                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-                let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+                let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
                 let (mut send, mut recv) = meta_conn.open_bi().await?;
                 let req = postcard::to_allocvec(&MetaRequest::List)?;
                 send.write_all(&req).await?;
@@ -836,7 +1291,6 @@ async fn main() -> Result<()> {
                     }
                     _ => bail!("unexpected response"),
                 }
-                endpoint.close().await;
                 Ok(())
             } else {
                 let store = open_store(false).await?;
@@ -862,20 +1316,14 @@ async fn main() -> Result<()> {
             // Get by hash: gethash <HASH> <OUTPUT>
             let hash: Hash = hash_str.parse().context("invalid hash")?;
 
-            if let Some(server_node_id) = get_serve_node_id().await {
+            if let Some(serve_info) = get_serve_info().await {
                 // Serve is running - fetch from serve
                 let store = open_store(true).await?;
                 let store_handle = store.as_store();
 
-                let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-                let endpoint = Endpoint::builder()
-                    .secret_key(client_key)
-                    .discovery(DnsDiscovery::n0_dns())
-                    .relay_mode(RelayMode::Disabled)
-                    .bind()
-                    .await?;
+                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-                let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+                let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                 store_handle
                     .remote()
                     .fetch(blobs_conn.clone(), hash)
@@ -883,7 +1331,6 @@ async fn main() -> Result<()> {
                 blobs_conn.close(0u32.into(), b"done");
 
                 export_blob(&store_handle, hash, output).await?;
-                endpoint.close().await;
                 store.shutdown().await?;
                 Ok(())
             } else {
