@@ -34,6 +34,9 @@ enum MetaRequest {
     Put { filename: String, hash: Hash },
     Get { filename: String },
     List,
+    Delete { filename: String },
+    Rename { from: String, to: String },
+    Copy { from: String, to: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,6 +44,9 @@ enum MetaResponse {
     Put { success: bool },
     Get { hash: Option<Hash> },
     List { items: Vec<(Hash, String)> },
+    Delete { success: bool },
+    Rename { success: bool },
+    Copy { success: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +121,40 @@ impl ProtocolHandler for MetaProtocol {
                         }
                     }
                     let resp = postcard::to_allocvec(&MetaResponse::List { items })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::Delete { filename } => {
+                    let success = self.store.tags().delete(&filename).await.is_ok();
+                    let resp = postcard::to_allocvec(&MetaResponse::Delete { success })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::Rename { from, to } => {
+                    let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
+                        let hash = tag.hash;
+                        if self.store.tags().set(&to, hash).await.is_ok() {
+                            self.store.tags().delete(&from).await.is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::Rename { success })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::Copy { from, to } => {
+                    let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
+                        self.store.tags().set(&to, tag.hash).await.is_ok()
+                    } else {
+                        false
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::Copy { success })
                         .map_err(AcceptError::from_err)?;
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
                     send.finish()?;
@@ -569,6 +609,94 @@ impl ReplContext {
         Ok(())
     }
 
+    async fn delete(&mut self, name: &str) -> Result<()> {
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Delete {
+                filename: name.to_string(),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::Delete { success: true } => println!("deleted: {}", name),
+                MetaResponse::Delete { success: false } => bail!("not found: {}", name),
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            store_handle.tags().delete(name).await?;
+            println!("deleted: {}", name);
+        }
+        Ok(())
+    }
+
+    async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Rename {
+                from: from.to_string(),
+                to: to.to_string(),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::Rename { success: true } => println!("renamed: {} -> {}", from, to),
+                MetaResponse::Rename { success: false } => bail!("not found: {}", from),
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            let tag = store_handle
+                .tags()
+                .get(from)
+                .await?
+                .ok_or_else(|| anyhow!("not found: {}", from))?;
+            store_handle.tags().set(to, tag.hash).await?;
+            store_handle.tags().delete(from).await?;
+            println!("renamed: {} -> {}", from, to);
+        }
+        Ok(())
+    }
+
+    async fn copy(&mut self, from: &str, to: &str) -> Result<()> {
+        if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Copy {
+                from: from.to_string(),
+                to: to.to_string(),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::Copy { success: true } => println!("copied: {} -> {}", from, to),
+                MetaResponse::Copy { success: false } => bail!("not found: {}", from),
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            let tag = store_handle
+                .tags()
+                .get(from)
+                .await?
+                .ok_or_else(|| anyhow!("not found: {}", from))?;
+            store_handle.tags().set(to, tag.hash).await?;
+            println!("copied: {} -> {}", from, to);
+        }
+        Ok(())
+    }
+
     async fn shutdown(self) -> Result<()> {
         match self.inner {
             ReplContextInner::Remote {
@@ -641,6 +769,9 @@ async fn run_repl() -> Result<()> {
                         );
                         println!("  cat <NAME>             - Print file to stdout");
                         println!("  gethash <HASH> <OUTPUT> - Retrieve by hash (- for stdout)");
+                        println!("  delete <NAME>          - Delete a file (alias: rm)");
+                        println!("  rename <FROM> <TO>     - Rename a file");
+                        println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
                         println!("  !<cmd>                 - Run shell command");
                         println!("  help                   - Show this help");
                         println!("  quit                   - Exit repl");
@@ -653,6 +784,9 @@ async fn run_repl() -> Result<()> {
                     ["get", name, output] => ctx.get(name, Some(output)).await,
                     ["cat", name] => ctx.get(name, Some("-")).await,
                     ["gethash", hash, output] => ctx.gethash(hash, output).await,
+                    ["delete", name] | ["rm", name] => ctx.delete(name).await,
+                    ["rename", from, to] => ctx.rename(from, to).await,
+                    ["copy", from, to] | ["cp", from, to] => ctx.copy(from, to).await,
                     _ => {
                         println!("unknown command: {}", line);
                         println!("type 'help' for available commands");
