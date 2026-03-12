@@ -29,6 +29,21 @@ const STORE_PATH: &str = ".iroh-store";
 const SERVE_LOCK: &str = ".iroh-serve.lock";
 const META_ALPN: &[u8] = b"/iroh-meta/1";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum MatchKind {
+    Exact,    // Best: exact match
+    Prefix,   // Good: starts with query
+    Contains, // Okay: contains query
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FindMatch {
+    hash: Hash,
+    name: String,
+    kind: MatchKind,
+    is_hash_match: bool, // true if matched against hash, false if matched against name
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 enum MetaRequest {
     Put { filename: String, hash: Hash },
@@ -37,6 +52,7 @@ enum MetaRequest {
     Delete { filename: String },
     Rename { from: String, to: String },
     Copy { from: String, to: String },
+    Find { query: String, prefer_name: bool },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +63,7 @@ enum MetaResponse {
     Delete { success: bool },
     Rename { success: bool },
     Copy { success: bool },
+    Find { matches: Vec<FindMatch> },
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +76,18 @@ impl MetaProtocol {
         Arc::new(Self {
             store: store.clone(),
         })
+    }
+
+    fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
+        if haystack == needle {
+            Some(MatchKind::Exact)
+        } else if haystack.starts_with(needle) {
+            Some(MatchKind::Prefix)
+        } else if haystack.contains(needle) {
+            Some(MatchKind::Contains)
+        } else {
+            None
+        }
     }
 }
 
@@ -155,6 +184,61 @@ impl ProtocolHandler for MetaProtocol {
                         false
                     };
                     let resp = postcard::to_allocvec(&MetaResponse::Copy { success })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::Find { query, prefer_name } => {
+                    let mut matches = Vec::new();
+                    let query_lower = query.to_lowercase();
+
+                    if let Ok(mut list) = self.store.tags().list().await {
+                        while let Some(item) = list.next().await {
+                            if let Ok(item) = item {
+                                let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
+                                let hash_str = item.hash.to_string();
+                                let name_lower = name.to_lowercase();
+
+                                // Check name matches
+                                if let Some(kind) = Self::match_kind(&name_lower, &query_lower) {
+                                    matches.push(FindMatch {
+                                        hash: item.hash,
+                                        name: name.clone(),
+                                        kind,
+                                        is_hash_match: false,
+                                    });
+                                }
+                                // Check hash matches (only if no name match or query looks like a hash)
+                                else if let Some(kind) = Self::match_kind(&hash_str, &query_lower)
+                                {
+                                    matches.push(FindMatch {
+                                        hash: item.hash,
+                                        name,
+                                        kind,
+                                        is_hash_match: true,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Sort: by match kind first, then by preference (hash vs name)
+                    matches.sort_by(|a, b| {
+                        match a.kind.cmp(&b.kind) {
+                            std::cmp::Ordering::Equal => {
+                                // If prefer_name, name matches come first (is_hash_match=false < true)
+                                // If prefer_hash (default), hash matches come first (is_hash_match=true < false)
+                                if prefer_name {
+                                    a.is_hash_match.cmp(&b.is_hash_match)
+                                } else {
+                                    b.is_hash_match.cmp(&a.is_hash_match)
+                                }
+                            }
+                            other => other,
+                        }
+                    });
+
+                    let resp = postcard::to_allocvec(&MetaResponse::Find { matches })
                         .map_err(AcceptError::from_err)?;
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
                     send.finish()?;
@@ -697,6 +781,89 @@ impl ReplContext {
         Ok(())
     }
 
+    async fn find(&mut self, query: &str, prefer_name: bool) -> Result<Vec<FindMatch>> {
+        let matches = if matches!(&self.inner, ReplContextInner::Remote { .. }) {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::Find {
+                query: query.to_string(),
+                prefer_name,
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+            match resp {
+                MetaResponse::Find { matches } => matches,
+                _ => bail!("unexpected response"),
+            }
+        } else if let ReplContextInner::Local { store } = &self.inner {
+            let store_handle = store.as_store();
+            let mut matches = Vec::new();
+            let query_lower = query.to_lowercase();
+
+            if let Ok(mut list) = store_handle.tags().list().await {
+                while let Some(item) = list.next().await {
+                    if let Ok(item) = item {
+                        let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
+                        let hash_str = item.hash.to_string();
+                        let name_lower = name.to_lowercase();
+
+                        // Check name matches
+                        if let Some(kind) = Self::match_kind(&name_lower, &query_lower) {
+                            matches.push(FindMatch {
+                                hash: item.hash,
+                                name: name.clone(),
+                                kind,
+                                is_hash_match: false,
+                            });
+                        }
+                        // Check hash matches
+                        else if let Some(kind) = Self::match_kind(&hash_str, &query_lower) {
+                            matches.push(FindMatch {
+                                hash: item.hash,
+                                name,
+                                kind,
+                                is_hash_match: true,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Sort by match kind, then by preference
+            matches.sort_by(|a, b| match a.kind.cmp(&b.kind) {
+                std::cmp::Ordering::Equal => {
+                    if prefer_name {
+                        a.is_hash_match.cmp(&b.is_hash_match)
+                    } else {
+                        b.is_hash_match.cmp(&a.is_hash_match)
+                    }
+                }
+                other => other,
+            });
+
+            matches
+        } else {
+            Vec::new()
+        };
+
+        Ok(matches)
+    }
+
+    fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
+        if haystack == needle {
+            Some(MatchKind::Exact)
+        } else if haystack.starts_with(needle) {
+            Some(MatchKind::Prefix)
+        } else if haystack.contains(needle) {
+            Some(MatchKind::Contains)
+        } else {
+            None
+        }
+    }
+
     async fn shutdown(self) -> Result<()> {
         match self.inner {
             ReplContextInner::Remote {
@@ -772,6 +939,12 @@ async fn run_repl() -> Result<()> {
                         println!("  delete <NAME>          - Delete a file (alias: rm)");
                         println!("  rename <FROM> <TO>     - Rename a file");
                         println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
+                        println!(
+                            "  find <QUERY> [--name]  - Find files (exact/prefix/contains match)"
+                        );
+                        println!(
+                            "  search <QUERY> [--name] - List all matches (no selection prompt)"
+                        );
                         println!("  !<cmd>                 - Run shell command");
                         println!("  help                   - Show this help");
                         println!("  quit                   - Exit repl");
@@ -787,6 +960,92 @@ async fn run_repl() -> Result<()> {
                     ["delete", name] | ["rm", name] => ctx.delete(name).await,
                     ["rename", from, to] => ctx.rename(from, to).await,
                     ["copy", from, to] | ["cp", from, to] => ctx.copy(from, to).await,
+                    ["find", query, rest @ ..] => {
+                        let prefer_name = rest.contains(&"--name");
+                        match ctx.find(query, prefer_name).await {
+                            Ok(matches) if matches.is_empty() => {
+                                println!("no matches found for: {}", query);
+                                Ok(())
+                            }
+                            Ok(matches) if matches.len() == 1 => {
+                                let m = &matches[0];
+                                let kind_str = match m.kind {
+                                    MatchKind::Exact => "exact",
+                                    MatchKind::Prefix => "prefix",
+                                    MatchKind::Contains => "contains",
+                                };
+                                let match_type = if m.is_hash_match { "hash" } else { "name" };
+                                println!("{}\t{}", m.hash, m.name);
+                                println!("({} {} match)", kind_str, match_type);
+                                Ok(())
+                            }
+                            Ok(matches) => {
+                                println!("found {} matches:", matches.len());
+                                for (i, m) in matches.iter().enumerate() {
+                                    let kind_str = match m.kind {
+                                        MatchKind::Exact => "exact",
+                                        MatchKind::Prefix => "prefix",
+                                        MatchKind::Contains => "contains",
+                                    };
+                                    let match_type = if m.is_hash_match { "hash" } else { "name" };
+                                    println!(
+                                        "  [{}] {}\t{} ({} {})",
+                                        i + 1,
+                                        m.hash,
+                                        m.name,
+                                        kind_str,
+                                        match_type
+                                    );
+                                }
+                                println!("select [1-{}] or press enter to cancel:", matches.len());
+                                match rl.readline("? ") {
+                                    Ok(sel) => {
+                                        let sel = sel.trim();
+                                        if sel.is_empty() {
+                                            println!("cancelled");
+                                        } else if let Ok(n) = sel.parse::<usize>() {
+                                            if n >= 1 && n <= matches.len() {
+                                                let m = &matches[n - 1];
+                                                println!("selected: {}\t{}", m.hash, m.name);
+                                            } else {
+                                                println!("invalid selection");
+                                            }
+                                        } else {
+                                            println!("invalid selection");
+                                        }
+                                    }
+                                    _ => println!("cancelled"),
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    ["search", query, rest @ ..] => {
+                        let prefer_name = rest.contains(&"--name");
+                        match ctx.find(query, prefer_name).await {
+                            Ok(matches) if matches.is_empty() => {
+                                println!("no matches found for: {}", query);
+                                Ok(())
+                            }
+                            Ok(matches) => {
+                                for m in &matches {
+                                    let kind_str = match m.kind {
+                                        MatchKind::Exact => "exact",
+                                        MatchKind::Prefix => "prefix",
+                                        MatchKind::Contains => "contains",
+                                    };
+                                    let match_type = if m.is_hash_match { "hash" } else { "name" };
+                                    println!(
+                                        "{}\t{}\t({} {})",
+                                        m.hash, m.name, kind_str, match_type
+                                    );
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
                     _ => {
                         println!("unknown command: {}", line);
                         println!("type 'help' for available commands");
@@ -846,6 +1105,16 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Check for help before filtering flags
+    if args
+        .iter()
+        .any(|a| a == "--help" || a == "-h" || a == "help")
+    {
+        print_usage();
+        return Ok(());
+    }
+
     let ephemeral = args.iter().any(|a| a == "--ephemeral");
     let no_relay = args.iter().any(|a| a == "--no-relay");
     let args: Vec<&str> = args
@@ -858,12 +1127,14 @@ async fn main() -> Result<()> {
     let node_id: EndpointId = key.public().into();
 
     match args.as_slice() {
+        [] => run_repl().await,
+
         ["id"] => {
             println!("{}", node_id);
             Ok(())
         }
 
-        ["repl"] => run_repl().await,
+        ["repl"] | ["shell"] => run_repl().await,
 
         ["serve"] => {
             info!("serve: {}", node_id);
