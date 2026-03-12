@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 [dependencies]
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 distributed-topic-tracker = { git = "https://github.com/rustonbsd/distributed-topic-tracker" }
 ed25519-dalek = { version = "3.0.0-pre.1", features = ["rand_core"] }
