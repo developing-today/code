@@ -46,15 +46,15 @@ enum Command {
     /// Interactive REPL (auto-detects local/remote)
     #[command(alias = "shell")]
     Repl,
-    /// Store a file
+    /// Store one or more files
     Put {
-        /// File path, "-" for stdin, or remote node ID
-        source: String,
-        /// Name/path (optional - defaults to filename, omit for hash-only)
-        name: Option<String>,
-        /// When source is a node ID, this is the file path
-        file: Option<String>,
-        /// Store by hash only, don't create a named tag
+        /// File paths to store (use filename as name by default)
+        #[arg(required = false)]
+        files: Vec<String>,
+        /// Read additional file paths from stdin (split on newline/tab/comma)
+        #[arg(long)]
+        stdin: bool,
+        /// Store by hash only, don't create named tags
         #[arg(long)]
         hash_only: bool,
         /// Disable relay servers
@@ -67,20 +67,23 @@ enum Command {
         /// File path or "-" for stdin
         source: String,
     },
-    /// Retrieve a file by name or hash
+    /// Retrieve one or more files by name or hash
     Get {
-        /// File name, hash, or remote node ID
-        source: String,
-        /// Output path or remote file name (use "-" for stdout)
-        name: Option<String>,
-        /// Output path for remote get
-        output: Option<String>,
-        /// Treat source as a hash (fail if not found, don't check names)
+        /// File names or hashes to retrieve
+        #[arg(required = false)]
+        sources: Vec<String>,
+        /// Read additional names/hashes from stdin (split on newline/tab/comma)
+        #[arg(long)]
+        stdin: bool,
+        /// Treat all sources as hashes (fail if not found, don't check names)
         #[arg(long, conflicts_with = "name_only")]
         hash: bool,
-        /// Treat source as a name only (don't try as hash even if 64 hex chars)
+        /// Treat all sources as names only (don't try as hash even if 64 hex chars)
         #[arg(long, conflicts_with = "hash")]
         name_only: bool,
+        /// Output all files to stdout (concatenated)
+        #[arg(long)]
+        stdout: bool,
         /// Disable relay servers
         #[arg(long)]
         no_relay: bool,
@@ -401,6 +404,18 @@ async fn read_input(input: &str) -> Result<Vec<u8>> {
     } else {
         Ok(afs::read(input).await?)
     }
+}
+
+/// Parse items from stdin, splitting on newline, tab, or comma
+fn parse_stdin_items() -> Result<Vec<String>> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    Ok(input
+        .split(|c| c == '\n' || c == '\t' || c == ',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect())
 }
 
 /// Info about a running serve instance
@@ -1266,6 +1281,10 @@ async fn cmd_list() -> Result<()> {
 }
 
 async fn cmd_gethash(hash_str: &str, output: &str) -> Result<()> {
+    // Validate hash format before parsing (64 hex chars)
+    if hash_str.len() != 64 || !hash_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("invalid hash: expected 64 hex characters");
+    }
     let hash: Hash = hash_str.parse().context("invalid hash")?;
 
     if let Some(serve_info) = get_serve_info().await {
@@ -1822,6 +1841,119 @@ async fn cmd_get_remote(
     Ok(())
 }
 
+/// Get a single item by name or hash (for multi-get)
+async fn cmd_get_one(source: &str, output: &str, hash_mode: bool, name_only: bool) -> Result<()> {
+    let is_valid_hash = source.len() == 64 && source.chars().all(|c| c.is_ascii_hexdigit());
+
+    // If --hash flag, treat as hash lookup
+    if hash_mode {
+        return cmd_gethash(source, output).await;
+    }
+
+    // If it looks like a hash (64 hex chars) and not --name-only, try hash first
+    if is_valid_hash && !name_only {
+        if let Ok(hash) = source.parse::<Hash>() {
+            if let Some(serve_info) = get_serve_info().await {
+                let store = open_store(true).await?;
+                let store_handle = store.as_store();
+                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+                let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+
+                match store_handle.remote().fetch(blobs_conn.clone(), hash).await {
+                    Ok(_) => {
+                        blobs_conn.close(0u32.into(), b"done");
+                        export_blob(&store_handle, hash, output).await?;
+                        store.shutdown().await?;
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        blobs_conn.close(0u32.into(), b"done");
+                    }
+                }
+                store.shutdown().await?;
+            } else {
+                let store = open_store(false).await?;
+                let store_handle = store.as_store();
+                if store_handle.blobs().has(hash).await? {
+                    export_blob(&store_handle, hash, output).await?;
+                    store.shutdown().await?;
+                    return Ok(());
+                }
+                store.shutdown().await?;
+            }
+        }
+    }
+
+    // Try as name
+    cmd_get_local(source, output).await
+}
+
+/// Get multiple items by name or hash
+async fn cmd_get_multi(
+    sources: Vec<String>,
+    from_stdin: bool,
+    hash_mode: bool,
+    name_only: bool,
+    to_stdout: bool,
+) -> Result<()> {
+    let mut items = sources;
+
+    if from_stdin {
+        items.extend(parse_stdin_items()?);
+    }
+
+    if items.is_empty() {
+        bail!("no sources provided");
+    }
+
+    let mut errors = Vec::new();
+    for source in &items {
+        let output = if to_stdout { "-" } else { source.as_str() };
+        if let Err(e) = cmd_get_one(source, output, hash_mode, name_only).await {
+            errors.push(format!("{}: {}", source, e));
+        }
+    }
+
+    if !errors.is_empty() {
+        bail!("some gets failed:\n{}", errors.join("\n"));
+    }
+    Ok(())
+}
+
+/// Put a single local file (for multi-put)
+async fn cmd_put_one(path: &str, hash_only: bool) -> Result<()> {
+    if hash_only {
+        cmd_put_hash(path).await
+    } else {
+        cmd_put_local_file(path, None).await
+    }
+}
+
+/// Put multiple local files
+async fn cmd_put_multi(files: Vec<String>, from_stdin: bool, hash_only: bool) -> Result<()> {
+    let mut items = files;
+
+    if from_stdin {
+        items.extend(parse_stdin_items()?);
+    }
+
+    if items.is_empty() {
+        bail!("no files provided");
+    }
+
+    let mut errors = Vec::new();
+    for path in &items {
+        if let Err(e) = cmd_put_one(path, hash_only).await {
+            errors.push(format!("{}: {}", path, e));
+        }
+    }
+
+    if !errors.is_empty() {
+        bail!("some puts failed:\n{}", errors.join("\n"));
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
@@ -1839,39 +1971,19 @@ async fn main() -> Result<()> {
         Some(Command::List) => cmd_list().await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {
-            source,
-            name,
-            file,
+            files,
+            stdin,
             hash_only,
-            no_relay,
-        }) => {
-            cmd_put(
-                &source,
-                name.as_deref(),
-                file.as_deref(),
-                hash_only,
-                no_relay,
-            )
-            .await
-        }
+            no_relay: _,
+        }) => cmd_put_multi(files, stdin, hash_only).await,
         Some(Command::PutHash { source }) => cmd_put_hash(&source).await,
         Some(Command::Get {
-            source,
-            name,
-            output,
+            sources,
+            stdin,
             hash,
             name_only,
-            no_relay,
-        }) => {
-            cmd_get(
-                &source,
-                name.as_deref(),
-                output.as_deref(),
-                hash,
-                name_only,
-                no_relay,
-            )
-            .await
-        }
+            stdout,
+            no_relay: _,
+        }) => cmd_get_multi(sources, stdin, hash, name_only, stdout).await,
     }
 }
