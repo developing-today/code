@@ -29,7 +29,7 @@ require (
 	github.com/samber/go-type-to-string v1.2.0
 	github.com/spf13/cobra v1.8.0
 	github.com/treilik/bubbleboxer v0.2.0
-	github.com/tursodatabase/libsql-client-go v0.0.0-20240220085343-4ae0eb9d0898
+	github.com/tursodatabase/libsql-client-go v0.0.0-20251219100830-236aa1ff8acc
 	golang.org/x/crypto v0.22.0
 	gopkg.in/go-jose/go-jose.v2 v2.6.3
 )
@@ -40,6 +40,7 @@ require (
 	github.com/FZambia/eagle v0.1.0 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230512164433-5d1fd1a340c9 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -51,6 +52,7 @@ require (
 	github.com/charmbracelet/keygen v0.5.0 // indirect
 	github.com/charmbracelet/x/errors v0.0.0-20240307183742-ad8dadc14f31 // indirect
 	github.com/charmbracelet/x/exp/term v0.0.0-20240307183742-ad8dadc14f31 // indirect
+	github.com/coder/websocket v1.8.12 // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/creack/pty v1.1.21 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -113,7 +115,7 @@ require (
 	github.com/xrash/smetrics v0.0.0-20231213231151-1d8dd44e695e // indirect
 	go.opencensus.io v0.24.0 // indirect
 	goji.io v2.0.2+incompatible // indirect
-	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
+	golang.org/x/exp v0.0.0-20240325151524-a685a6edb6d8 // indirect
 	golang.org/x/net v0.24.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/sys v0.19.0 // indirect
