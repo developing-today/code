@@ -1,6 +1,6 @@
 module github.com/developing-today/code/src/identity
 
-go 1.22
+go 1.23.0
 
 require (
 	github.com/a-h/templ v0.2.598
@@ -15,7 +15,7 @@ require (
 	github.com/charmbracelet/log v0.3.1
 	github.com/charmbracelet/melt v0.6.0
 	github.com/charmbracelet/promwish v0.7.1-0.20240301193744-83a66da07faa
-	github.com/charmbracelet/ssh v0.0.0-20240301204039-e79ff702f5b3
+	github.com/charmbracelet/ssh v0.0.0-20250826160808-ebfa259c7309
 	github.com/charmbracelet/wish v1.3.2
 	github.com/go-chi/chi v1.5.5
 	github.com/golang-jwt/jwt v3.2.2+incompatible
@@ -30,7 +30,7 @@ require (
 	github.com/spf13/cobra v1.8.0
 	github.com/treilik/bubbleboxer v0.2.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240220085343-4ae0eb9d0898
-	golang.org/x/crypto v0.22.0
+	golang.org/x/crypto v0.37.0
 	gopkg.in/go-jose/go-jose.v2 v2.6.3
 )
 
@@ -49,8 +49,10 @@ require (
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/charmbracelet/keygen v0.5.0 // indirect
-	github.com/charmbracelet/x/errors v0.0.0-20240307183742-ad8dadc14f31 // indirect
+	github.com/charmbracelet/x/conpty v0.1.0 // indirect
+	github.com/charmbracelet/x/errors v0.0.0-20240508181413-e8d8b6e2de86 // indirect
 	github.com/charmbracelet/x/exp/term v0.0.0-20240307183742-ad8dadc14f31 // indirect
+	github.com/charmbracelet/x/termios v0.1.0 // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/creack/pty v1.1.21 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -115,10 +117,10 @@ require (
 	goji.io v2.0.2+incompatible // indirect
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
 	golang.org/x/net v0.24.0 // indirect
-	golang.org/x/sync v0.6.0 // indirect
-	golang.org/x/sys v0.19.0 // indirect
-	golang.org/x/term v0.19.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/sys v0.32.0 // indirect
+	golang.org/x/term v0.31.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240304020402-f0dba7c97c2b // indirect
 	modernc.org/libc v1.43.1 // indirect
