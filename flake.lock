@@ -1159,48 +1159,48 @@
     },
     "nixpkgs-master": {
       "locked": {
-        "lastModified": 1762059460,
-        "narHash": "sha256-q3NNJy1ZaIYXuqNqnY8k5iIdLLKitwTIUkBvdyeRyuE=",
+        "lastModified": 1773484221,
+        "narHash": "sha256-LdrYgtWRUAbc0SMaEK8XqPCNzLe1QMtJvrBPr92IDH0=",
         "owner": "developing-today-forks",
         "repo": "nixpkgs",
-        "rev": "e5fcba7ae622ed9f40c214a0d61e0bcf8f49b325",
+        "rev": "c623987b11782d6a71b1d79fda5a767dedc4daa1",
         "type": "github"
       },
       "original": {
         "owner": "developing-today-forks",
-        "ref": "2025-11-01_nixos-unstable",
+        "ref": "2025-03-14_nixos-unstable-merge",
         "repo": "nixpkgs",
         "type": "github"
       }
     },
     "nixpkgs-stable": {
       "locked": {
-        "lastModified": 1762059460,
-        "narHash": "sha256-q3NNJy1ZaIYXuqNqnY8k5iIdLLKitwTIUkBvdyeRyuE=",
+        "lastModified": 1773484221,
+        "narHash": "sha256-LdrYgtWRUAbc0SMaEK8XqPCNzLe1QMtJvrBPr92IDH0=",
         "owner": "developing-today-forks",
         "repo": "nixpkgs",
-        "rev": "e5fcba7ae622ed9f40c214a0d61e0bcf8f49b325",
+        "rev": "c623987b11782d6a71b1d79fda5a767dedc4daa1",
         "type": "github"
       },
       "original": {
         "owner": "developing-today-forks",
-        "ref": "2025-11-01_nixos-unstable",
+        "ref": "2025-03-14_nixos-unstable-merge",
         "repo": "nixpkgs",
         "type": "github"
       }
     },
     "nixpkgs-unstable": {
       "locked": {
-        "lastModified": 1762059460,
-        "narHash": "sha256-q3NNJy1ZaIYXuqNqnY8k5iIdLLKitwTIUkBvdyeRyuE=",
+        "lastModified": 1773484221,
+        "narHash": "sha256-LdrYgtWRUAbc0SMaEK8XqPCNzLe1QMtJvrBPr92IDH0=",
         "owner": "developing-today-forks",
         "repo": "nixpkgs",
-        "rev": "e5fcba7ae622ed9f40c214a0d61e0bcf8f49b325",
+        "rev": "c623987b11782d6a71b1d79fda5a767dedc4daa1",
         "type": "github"
       },
       "original": {
         "owner": "developing-today-forks",
-        "ref": "2025-11-01_nixos-unstable",
+        "ref": "2025-03-14_nixos-unstable-merge",
         "repo": "nixpkgs",
         "type": "github"
       }
