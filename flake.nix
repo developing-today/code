@@ -218,13 +218,13 @@ rec {
       inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
-      url = "github:nix-community/nixvim"; # ?shallow=1";
+      # TODO: revert to default, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      # url = "github:nix-community/nixvim"; # ?shallow=1";
+      url = "github:nix-community/nixvim/main"; # ?shallow=1";
       #url = "github:nix-community/nixvim/nixos-25.05"; #?shallow=1";
       # inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      inputs.nixpkgs.follows = "nixpkgs"; # ";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.home-manager.follows = "home-manager";
       inputs.devshell.follows = "devshell";
       inputs.flake-compat.follows = "flake-compat";

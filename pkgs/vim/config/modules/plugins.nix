@@ -21,6 +21,7 @@
         max_eidth = 400;
       };
     };
+    dap.enable = true;
     dap-ui.enable = true;
     dap-virtual-text.enable = true;
     inc-rename = { };
