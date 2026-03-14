@@ -371,7 +371,7 @@ let
       let
         pkgs = import inputs.nixpkgs {
           ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-          # pkgs = import inputs.nixpkgs-unstable {
+          # pkgs = import inputs.nixpkgs-unstable { # breaks xrdb?? x11 move pr
           inherit system;
           config = {
             allowBroken = true;
