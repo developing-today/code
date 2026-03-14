@@ -179,7 +179,9 @@ rec {
     flake-parts = {
       # TODO: use this?
       url = "github:hercules-ci/flake-parts"; # ?shallow=1";
-      inputs.nixpkgs-lib.follows = "nixpkgs";
+      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      # inputs.nixpkgs-lib.follows = "nixpkgs";
+      inputs.nixpkgs-lib.follows = "nixpkgs-unstable";
     };
     hercules-ci-effects = {
       url = "github:hercules-ci/hercules-ci-effects"; # ?shallow=1";
