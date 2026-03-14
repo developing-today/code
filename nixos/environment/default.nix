@@ -51,8 +51,11 @@ in
         designer
       ])
       ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
-      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ opencode ])
-      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [ ghostty ])
+      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
+      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+        ghostty
+        opencode
+      ])
       # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
       ++ [
         my-helmfile
@@ -271,7 +274,7 @@ in
         gdm
         ghc
         github-copilot-cli
-        gnomeExtensions.toggle-alacritty
+        # gnomeExtensions.toggle-alacritty
         grimblast
         gtk2
         gtk3
@@ -457,7 +460,7 @@ in
 
         # Calculators
         bc # old school calculator
-        galculator
+        # galculator
 
         # Audio tools
         cava # Terminal audio visualizer

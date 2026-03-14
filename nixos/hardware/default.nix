@@ -8,5 +8,5 @@
     pulseaudio.enable = false;
   };
   # Enable Android Debug Bridge (ADB) for phone connectivity
-  programs.adb.enable = true;
+  # programs.adb.enable = true;
 }

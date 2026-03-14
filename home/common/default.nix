@@ -310,22 +310,22 @@
         };
 
         # extraConfig = {
-          push = {
-            autoSetupRemote = true;
-          };
-          pull = {
-            # rebase = true;
-            rebase = false;
-            # ff = "only";
-          };
-          safe = {
-            directory = "*";
-          };
-          help.autocorrect = "immediate";
-          init.defaultBranch = "main";
-          #   credential.helper = "${
-          #       pkgs.git.override { withLibsecret = true; }
-          #     }/bin/git-credential-libsecret";
+        push = {
+          autoSetupRemote = true;
+        };
+        pull = {
+          # rebase = true;
+          rebase = false;
+          # ff = "only";
+        };
+        safe = {
+          directory = "*";
+        };
+        help.autocorrect = "immediate";
+        init.defaultBranch = "main";
+        #   credential.helper = "${
+        #       pkgs.git.override { withLibsecret = true; }
+        #     }/bin/git-credential-libsecret";
         # };
       };
       # signing.signByDefault = true;
@@ -390,12 +390,12 @@
     # ssh = {
     #   enable = true;
     #   enableDefaultConfig = true;
-      # evaluation warning: user profile: You have set either `nixpkgs.config` or `nixpkgs.overlays` while using `home-manager.useGlobalPkgs`.
-      #                     This will soon not be possible. Please remove all `nixpkgs` options when using `home-manager.useGlobalPkgs`.
-      # evaluation warning: user profile: `programs.ssh` default values will be removed in the future.
-      #                     Consider setting `programs.ssh.enableDefaultConfig` to false,
-      #                     and manually set the default values you want to keep at
-      #                     `programs.ssh.matchBlocks."*"`.
+    # evaluation warning: user profile: You have set either `nixpkgs.config` or `nixpkgs.overlays` while using `home-manager.useGlobalPkgs`.
+    #                     This will soon not be possible. Please remove all `nixpkgs` options when using `home-manager.useGlobalPkgs`.
+    # evaluation warning: user profile: `programs.ssh` default values will be removed in the future.
+    #                     Consider setting `programs.ssh.enableDefaultConfig` to false,
+    #                     and manually set the default values you want to keep at
+    #                     `programs.ssh.matchBlocks."*"`.
     # };
     starship.enable = true;
     swaylock.enable = true;
@@ -775,7 +775,7 @@
         dmenu
         dnsutils
         docker-compose
-        dogdns # dns for dogs
+        # dogdns # dns for dogs
         kdePackages.dolphin
         dprint
         dracula-theme # gtk theme
@@ -803,7 +803,7 @@
         flatpak
         fnm
         #fontconfig
-        fontfinder
+        # fontfinder
         freetype
         fselect
         furtherance
@@ -888,7 +888,7 @@
         libva-utils
         libverto
         #licensor # https://github.com/NixOS/nixpkgs/issues/141368
-        light
+        # light
         lld
         #lmms # https://github.com/NixOS/nixpkgs/issues/450908 # https://github.com/NixOS/nixpkgs/pull/377643
         #loc
@@ -910,7 +910,8 @@
         nano
         navi
         ncspot
-        neofetch # sysinfo
+        # neofetch # sysinfo
+        fastfetch
         neovim
         networkmanager
         networkmanagerapplet
