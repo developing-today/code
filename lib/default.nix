@@ -370,6 +370,8 @@ let
       system:
       let
         pkgs = import inputs.nixpkgs {
+          ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+          # pkgs = import inputs.nixpkgs-unstable {
           inherit system;
           config = {
             allowBroken = true;
