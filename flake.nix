@@ -76,9 +76,12 @@ rec {
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
 
     nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
-    nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
-    nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
-    nixpkgs-stable.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
+    # nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
+    nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
+    # nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
+    nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
+    # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
+    nixpkgs-stable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
 
     # nixpkgs-inner.url = "github:developing-today-forks/nixpkgs"; #?shallow=1";
     #nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable"; #?shallow=1";
