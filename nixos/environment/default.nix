@@ -50,10 +50,6 @@ in
         publisher
         designer
       ])
-      ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
-      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ opencode ])
-      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [ ghostty ])
-      # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
       ++ [
         my-helmfile
         my-kubernetes-helm
@@ -63,7 +59,15 @@ in
         age
         wpa_supplicant_gui
       ])
-      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
+      ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
+      ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
+      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
+      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+        ghostty
+        opencode
+        zed-editor
+      ])
+      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
         rclone
         rclone-browser
         rclone-ui
@@ -423,7 +427,6 @@ in
         yq
         zathura
         zathura
-        zed-editor
         magic-wormhole-rs
         wormhole-william
         magic-wormhole

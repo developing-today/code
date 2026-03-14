@@ -1111,18 +1111,34 @@
         "type": "github"
       }
     },
-    "nixpkgs-master": {
+    "nixpkgs-25": {
       "locked": {
-        "lastModified": 1773484221,
-        "narHash": "sha256-LdrYgtWRUAbc0SMaEK8XqPCNzLe1QMtJvrBPr92IDH0=",
+        "lastModified": 1762059460,
+        "narHash": "sha256-q3NNJy1ZaIYXuqNqnY8k5iIdLLKitwTIUkBvdyeRyuE=",
         "owner": "developing-today-forks",
         "repo": "nixpkgs",
-        "rev": "c623987b11782d6a71b1d79fda5a767dedc4daa1",
+        "rev": "e5fcba7ae622ed9f40c214a0d61e0bcf8f49b325",
         "type": "github"
       },
       "original": {
         "owner": "developing-today-forks",
-        "ref": "2025-03-14_nixos-unstable-merge",
+        "ref": "2025-11-01_nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs-master": {
+      "locked": {
+        "lastModified": 1773497764,
+        "narHash": "sha256-xUDYYW3BR8ACoqw5EOhSuONa7kRSDOA6vI1iyubBrOY=",
+        "owner": "developing-today-forks",
+        "repo": "nixpkgs",
+        "rev": "fe6975b7f00dc73ed8bb27aec6f953c65eb1d693",
+        "type": "github"
+      },
+      "original": {
+        "owner": "developing-today-forks",
+        "ref": "2026-03-14_nixos-master-merge",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -1496,6 +1512,7 @@
         "nixos-facter-modules": "nixos-facter-modules_2",
         "nixos-hardware": "nixos-hardware",
         "nixpkgs": "nixpkgs_6",
+        "nixpkgs-25": "nixpkgs-25",
         "nixpkgs-master": "nixpkgs-master",
         "nixpkgs-stable": "nixpkgs-stable",
         "nixpkgs-unstable": "nixpkgs-unstable",
