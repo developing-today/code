@@ -68,6 +68,7 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz"; # shallow=1
+    # TODO: update! way out of date even as of 2026-03
     server.url = "github:developing-today-forks/server.nix/master"; # ?shallow=1";
     microvm.url = "github:astro/microvm.nix"; # ?shallow=1";
     zen-browser.url = "github:0xc000022070/zen-browser-flake"; # ?shallow=1";
@@ -83,6 +84,7 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     #arunoruto.url = "github:arunoruto/flake"; #?shallow=1";
+    # # TODO: update! way out of date even as of 2026-03
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
 
     nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
@@ -121,6 +123,7 @@ rec {
     #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.11"; #?shallow=1";
 
     sops-nix = {
+      # TODO: update! way out of date even as of 2026-03
       url = "github:developing-today-forks/sops-nix"; # ?shallow=1";
       # url = "github:mic92/sops-nix";
       # inputs.nixpkgs-stable.follows = "nixpkgs";
