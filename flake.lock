@@ -1129,48 +1129,45 @@
     },
     "nixpkgs-master": {
       "locked": {
-        "lastModified": 1773497764,
-        "narHash": "sha256-xUDYYW3BR8ACoqw5EOhSuONa7kRSDOA6vI1iyubBrOY=",
-        "owner": "developing-today-forks",
+        "lastModified": 1773497919,
+        "narHash": "sha256-r9m3wwYrI50r35G8VsHsqds33es7th6sCgcOOZm9jKc=",
+        "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "fe6975b7f00dc73ed8bb27aec6f953c65eb1d693",
+        "rev": "ca82feec736331f4c438121a994344e08ed547f5",
         "type": "github"
       },
       "original": {
-        "owner": "developing-today-forks",
-        "ref": "2026-03-14_nixos-master-merge",
+        "owner": "NixOS",
         "repo": "nixpkgs",
         "type": "github"
       }
     },
     "nixpkgs-stable": {
       "locked": {
-        "lastModified": 1773484221,
-        "narHash": "sha256-LdrYgtWRUAbc0SMaEK8XqPCNzLe1QMtJvrBPr92IDH0=",
-        "owner": "developing-today-forks",
+        "lastModified": 1773497919,
+        "narHash": "sha256-r9m3wwYrI50r35G8VsHsqds33es7th6sCgcOOZm9jKc=",
+        "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "c623987b11782d6a71b1d79fda5a767dedc4daa1",
+        "rev": "ca82feec736331f4c438121a994344e08ed547f5",
         "type": "github"
       },
       "original": {
-        "owner": "developing-today-forks",
-        "ref": "2025-03-14_nixos-unstable-merge",
+        "owner": "NixOS",
         "repo": "nixpkgs",
         "type": "github"
       }
     },
     "nixpkgs-unstable": {
       "locked": {
-        "lastModified": 1773484221,
-        "narHash": "sha256-LdrYgtWRUAbc0SMaEK8XqPCNzLe1QMtJvrBPr92IDH0=",
-        "owner": "developing-today-forks",
+        "lastModified": 1773497919,
+        "narHash": "sha256-r9m3wwYrI50r35G8VsHsqds33es7th6sCgcOOZm9jKc=",
+        "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "c623987b11782d6a71b1d79fda5a767dedc4daa1",
+        "rev": "ca82feec736331f4c438121a994344e08ed547f5",
         "type": "github"
       },
       "original": {
-        "owner": "developing-today-forks",
-        "ref": "2025-03-14_nixos-unstable-merge",
+        "owner": "NixOS",
         "repo": "nixpkgs",
         "type": "github"
       }
