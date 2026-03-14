@@ -32,6 +32,7 @@ fi
 # --no-net
 # -vvvv
 nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+git add flake.lock
 set +e
 current=$(nixos-rebuild list-generations | grep current)
 set -e
