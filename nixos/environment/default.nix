@@ -59,8 +59,8 @@ in
         my-kubernetes-helm
       ]
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      ++ (with pkgs; [
-        # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
+      ++ (with pkgs; [ age ])
+      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
         rclone
         rclone-browser
         rclone-ui
@@ -428,7 +428,7 @@ in
         portal
         cdrkit
         cdrtools
-        age
+        # age # TODO: move to nixpkgs-unstable, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
         libisoburn # xorriso
         wpa_supplicant_gui
         # wpa_cute # TODO: try this?
