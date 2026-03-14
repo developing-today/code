@@ -125,10 +125,10 @@ rec {
       # url = "github:mic92/sops-nix";
       # inputs.nixpkgs-stable.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      inputs.nixpkgs-stable.follows = "nixpkgs-unstable";
+      inputs.nixpkgs-stable.follows = "nixpkgs";
       #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
       #url = "github:developing-today-forks/home-manager"; #?shallow=1";

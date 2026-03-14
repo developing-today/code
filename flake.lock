@@ -1692,10 +1692,10 @@
     "sops-nix_2": {
       "inputs": {
         "nixpkgs": [
-          "nixpkgs-unstable"
+          "nixpkgs"
         ],
         "nixpkgs-stable": [
-          "nixpkgs-unstable"
+          "nixpkgs"
         ]
       },
       "locked": {
