@@ -23,16 +23,14 @@ rec {
   inputs = {
     nixgl = {
       url = "github:nix-community/nixGL";
-      # inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-utils.follows = "flake-utils";
     };
     roc = {
       url = "github:roc-lang/roc"; # ?shallow=1";
       #inputs.nixpkgs.follows = "nixpkgs"; # https://roc.zulipchat.com/#narrow/channel/231634-beginners/topic/roc.20nix.20flake/near/553273845
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs"; #"; # https://roc.zulipchat.com/#narrow/channel/231634-beginners/topic/roc.20nix.20flake/near/5532738-unstable45
       # inputs.rust-overlay.follows = "rust-overlay";
       inputs.flake-utils.follows = "flake-utils";
       inputs.flake-compat.follows = "flake-compat";
@@ -53,8 +51,8 @@ rec {
       url = "https://flakehub.com/f/Svenum/Solaar-Flake/*.tar.gz"; # For latest stable version
       #url = "https://flakehub.com/f/Svenum/Solaar-Flake/0.1.1.tar.gz" # uncomment line for solaar version 1.1.13
       #url = "github:Svenum/Solaar-Flake/main"; # Uncomment line for latest unstable version
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     # TODO: ?? use git instead of github ?? "git+https://github.com/NixOS/nixpkgs"; #?shallow=1&ref=nixpkgs-unstable";
@@ -63,8 +61,8 @@ rec {
     affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f"; # ?shallow=1"; # need 2.5.7 before can update
     nix-output-monitor = {
       url = "github:maralorn/nix-output-monitor"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz"; # shallow=1
@@ -79,8 +77,8 @@ rec {
     impermanence.url = "github:Nix-community/impermanence"; # ?shallow=1";
     disko = {
       url = "github:nix-community/disko"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     #arunoruto.url = "github:arunoruto/flake"; #?shallow=1";
@@ -90,69 +88,24 @@ rec {
     # actually 2026-03-14
     nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
     nixpkgs-25.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
-    # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
     nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-    # nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-    # nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-03-14_nixos-unstable-merge"; # ?shallow=1";
-    # nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2026-03-14_nixos-master-merge"; # ?shallow=1";
     nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-
-    # nixpkgs-inner.url = "github:developing-today-forks/nixpkgs"; #?shallow=1";
-    #nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable"; #?shallow=1";
-    #nixpkgs.url = "github:developing-today-forks/nixpkgs"; #?shallow=1";
-    #nixpkgs.url = "github:developing-today-forks/nixpkgs/e5fcba7ae622ed9f40c214a0d61e0bcf8f49b32";
-    #nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05"; #?shallow=1";
-    #nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11"; #?shallow=1";
-    # nixpkgs.url = "github:dezren39/nixpkgs"; #?shallow=1";
-    # nixpkgs = {
-    #nixpkgs-master.url = "github:NixOS/nixpkgs/master"; #?shallow=1";
-    #nixpkgs-master.url = "github:NixOS/nixpkgs/nixos-25.11"; #?shallow=1";
-    # nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
-    #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.05"; #?shallow=1";
-    #nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-25.11"; #?shallow=1";
-    #   url = "github:numtide/nixpkgs-unfree?ref=nixos-unstable"; #?shallow=1";
-    # nixpkgs-master.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
-    # nixpkgs-unstable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; #?shallow=1";
-    # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
-    #   inputs.nixpkgs.follows = "nixpkgs-inner";
-    # };
-    # nixpkgs-stable.url = "github:developing-today-forks/nixpkgs"; #?shallow=1";
-    #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.11"; #?shallow=1";
-    # nixpkgs-stable.url = "github:dezren39/nixpkgs"; #?shallow=1";
-    # nixpkgs-stable.url = "github:NixOS/nixpkgs"; #?shallow=1";
-    #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05"; #?shallow=1";
-    #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.05"; #?shallow=1";
-    #nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.11"; #?shallow=1";
 
     sops-nix = {
       # TODO: update! way out of date even as of 2026-03
       url = "github:developing-today-forks/sops-nix"; # ?shallow=1";
       # url = "github:mic92/sops-nix";
-      # inputs.nixpkgs-stable.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       inputs.nixpkgs-stable.follows = "nixpkgs";
-      #inputs.nixpkgs.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
-      #url = "github:developing-today-forks/home-manager"; #?shallow=1";
-      # inputs.nixpkgs.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
       url = "github:nix-community/home-manager"; # ?shallow=1";
-      #url = "github:nix-community/home-manager/release-25.05"; #?shallow=1";
-      #url = "github:nix-community/home-manager/release-25.11"; #?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs-master";
     };
     systems = {
       # TODO: use this?
       # url = "github:nix-systems/default-linux";
       url = "github:nix-systems/default"; # ?shallow=1";
-      # inputs.nixpkgs.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
     };
     flake-utils = {
       # TODO: use this?
@@ -167,16 +120,13 @@ rec {
     gitignore = {
       # TODO: use this?
       url = "github:hercules-ci/gitignore.nix"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     waybar = {
       # TODO: use this?
       url = "github:Alexays/Waybar"; # ?shallow=1";
-      # inputs.nixpkgs.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
     };
     neovim-src = {
       url = "github:neovim/neovim"; # ?shallow=1";
@@ -192,16 +142,14 @@ rec {
     hercules-ci-effects = {
       url = "github:hercules-ci/hercules-ci-effects"; # ?shallow=1";
       inputs.flake-parts.follows = "flake-parts";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     neovim-nightly-overlay = {
       url = "github:nix-community/neovim-nightly-overlay"; # ?shallow=1";
+      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       # inputs.nixpkgs.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-parts.follows = "flake-parts";
       inputs.hercules-ci-effects.follows = "hercules-ci-effects";
@@ -211,27 +159,26 @@ rec {
     };
     git-hooks = {
       url = "github:cachix/git-hooks.nix"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.gitignore.follows = "gitignore";
       inputs.flake-compat.follows = "flake-compat";
     };
     zig-overlay = {
       url = "github:mitchellh/zig-overlay"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
       inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
-      # TODO: revert to default, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       # url = "github:nix-community/nixvim"; # ?shallow=1";
       url = "github:nix-community/nixvim/main"; # ?shallow=1";
       #url = "github:nix-community/nixvim/nixos-25.05"; #?shallow=1";
-      # inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.home-manager.follows = "home-manager";
       inputs.devshell.follows = "devshell";
@@ -244,21 +191,21 @@ rec {
     nix-darwin = {
       # TODO: use this?
       url = "github:lnl7/nix-darwin"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     treefmt-nix = {
       # TODO: use this?
       url = "github:numtide/treefmt-nix"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     nix-topology = {
       url = "github:oddlama/nix-topology"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-utils.follows = "flake-utils";
       inputs.devshell.follows = "devshell";
@@ -267,15 +214,15 @@ rec {
     devshell = {
       # TODO: use this?
       url = "github:numtide/devshell"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     pre-commit-hooks = {
       # TODO: use this?
       url = "github:cachix/pre-commit-hooks.nix"; # ?shallow=1";
-      #inputs.nixpkgs.follows = "nixpkgs";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+      #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
       inputs.gitignore.follows = "gitignore";
@@ -290,8 +237,6 @@ rec {
       url = "github:sxyazi/yazi"; # ?shallow=1";
       # not following to allow using yazi cache
       # inputs.nixpkgs.follows = "nixpkgs";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
       # inputs.flake-utils.follows = "flake-utils";
       # inputs.rust-overlay.follows = "rust-overlay";
     };
@@ -306,8 +251,6 @@ rec {
     #url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
     # url = "github:hyprwm/Hyprland";
     #inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    #inputs.nixpkgs.follows = "nixpkgs"; #"; # MESA/OpenGL HW workarou-unstablend
     #   inputs.hyprcursor.follows = "hyprcursor";
     #  inputs.hyprlang.follows = "hyprlang";
     #};
@@ -315,8 +258,6 @@ rec {
     # url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
     #   url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
     # inputs.nixpkgs.follows = "nixpkgs";
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    # inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
     #  inputs.systems.follows = "systems";
     #};
     # nix-topology.nixosModules.default
@@ -330,33 +271,23 @@ rec {
     # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice # TODO: use this?
     # firefox-addons = { # TODO: use this?
     #   url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons&shallow=1";
-    ## inputs.nixpkgs.follows = "nixpkgs";
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    #   inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
+    # inputs.nixpkgs.follows = "nixpkgs";
     # };
     # nix-gaming = { # TODO: use this?
     #   url = "github:fufexan/nix-gaming"; #?shallow=1";
-    ## inputs.nixpkgs.follows = "nixpkgs";
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    #   inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
+    # inputs.nixpkgs.follows = "nixpkgs";
     # };
     # trustix = { # TODO: use this?
     #   url = "github:nix-community/trustix"; #?shallow=1";
-    ## inputs.nixpkgs.follows = "nixpkgs";
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    #   inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
+    # inputs.nixpkgs.follows = "nixpkgs";
     # };
     # nix-inspect = { # TODO: use this?
     #   url = "github:bluskript/nix-inspect"; #?shallow=1";
-    ## inputs.nixpkgs.follows = "nixpkgs";
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    #   inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
+    # inputs.nixpkgs.follows = "nixpkgs";
     # };
     # nixos-wsl = { # TODO: use this?
     #   url = "github:nix-community/NixOS-WSL"; #?shallow=1";
-    ## inputs.nixpkgs.follows = "nixpkgs";
-    # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-    #   inputs.nixpkgs.follows = "nixpkgs"; #-unstable";
+    # inputs.nixpkgs.follows = "nixpkgs";
     # };
   };
   nixConfig = {
