@@ -18,6 +18,7 @@
     wireless = {
       enable = true;
       # userControlled.enable = true;
+      # enableHardened false? consider TODO
       scanOnLowSignal = true;
       fallbackToWPA2 = true;
       # TODO: separate module for secretsFile and template

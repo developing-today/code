@@ -23,7 +23,7 @@ let
     if builtins.hasAttr "outPath" inputs.self then
       inputs.self.outPath # Flake-based setup
     else
-      builtins.toString ./.; # Traditional Nix setup, resolve to project root
+      toString ./.; # Traditional Nix setup, resolve to project root
 
   pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
 
@@ -46,7 +46,7 @@ let
 
   matrix =
     spec: f:
-    builtins.map (combo: f (lib.genAttrs (builtins.attrNames spec) (name: combo.${name}))) (
+    map (combo: f (lib.genAttrs (builtins.attrNames spec) (name: combo.${name}))) (
       lib.cartesianProduct (lib.genAttrs (builtins.attrNames spec) (name: spec.${name}))
     );
 
@@ -370,6 +370,8 @@ let
       system:
       let
         pkgs = import inputs.nixpkgs {
+          ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+          # pkgs = import inputs.nixpkgs-unstable { # breaks xrdb?? x11 move pr
           inherit system;
           config = {
             allowBroken = true;

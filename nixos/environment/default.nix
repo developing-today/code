@@ -51,17 +51,16 @@ in
         designer
       ])
       ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ activitywatch ])
-      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
-      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
-        ghostty
-        opencode
-      ])
+      ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ opencode ])
+      ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [ ghostty ])
       # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
       ++ [
         my-helmfile
         my-kubernetes-helm
       ]
+      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       ++ (with pkgs; [
+        # ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
         rclone
         rclone-browser
         rclone-ui
@@ -274,7 +273,7 @@ in
         gdm
         ghc
         github-copilot-cli
-        # gnomeExtensions.toggle-alacritty
+        # gnomeExtensions.toggle-alacritty # TODO: broke with 26
         grimblast
         gtk2
         gtk3
@@ -460,7 +459,7 @@ in
 
         # Calculators
         bc # old school calculator
-        # galculator
+        # galculator # broke with 26, maybe try again later?
 
         # Audio tools
         cava # Terminal audio visualizer
