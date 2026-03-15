@@ -4,25 +4,33 @@ use futures_lite::StreamExt;
 use iroh::{
     address_lookup::{DnsAddressLookup, PkarrPublisher},
     endpoint::{Connection, Endpoint, RelayMode},
-    protocol::{AcceptError, ProtocolHandler, Router},
+    protocol::Router,
+    EndpointAddr,
 };
-use iroh_base::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
+use iroh_base::EndpointId;
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobFormat, BlobsProtocol, Hash,
     api::{Store, blobs::AddBytesOptions},
     protocol::{ChunkRanges, ChunkRangesSeq, PushRequest},
-    store::{fs::FsStore, mem::MemStore},
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
-use serde::{Deserialize, Serialize};
 use std::{
-    io::{Read, Write},
+    io::{IsTerminal, Read},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
 };
 use tokio::fs as afs;
 use tracing::info;
+
+// Import from library
+use id::{
+    FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch,
+    StoreType, load_or_create_keypair, open_store,
+    create_local_client_endpoint, create_serve_lock, get_serve_info, remove_serve_lock,
+    KEY_FILE, CLIENT_KEY_FILE, STORE_PATH, META_ALPN,
+    export_blob, is_node_id, parse_stdin_items, read_input,
+};
+use id::repl::{ReplInput, continue_heredoc, preprocess_repl_line};
 
 /// iroh-based peer-to-peer file sharing
 #[derive(Parser)]
@@ -52,13 +60,14 @@ enum Command {
     },
     /// Store one or more files (supports path:name for renaming)
     /// Use "put <NODE_ID> file1 file2 ..." to put to a remote node
+    #[command(aliases = ["in", "add", "store", "import"])]
     Put {
         /// File paths to store (use path:name to rename, e.g. file.txt:stored.txt)
         /// If first arg is a 64-char hex NODE_ID, remaining args are sent to that remote node
         #[arg(required = false)]
         files: Vec<String>,
         /// Read content from stdin instead of file paths (requires one name argument)
-        #[arg(long, conflicts_with = "stdin")]
+        #[arg(long, visible_alias = "data", conflicts_with = "stdin")]
         content: bool,
         /// Read additional file paths from stdin (split on newline/tab/comma)
         #[arg(long, conflicts_with = "content")]
@@ -107,6 +116,77 @@ enum Command {
         /// Output path (use "-" for stdout)
         output: String,
     },
+    /// Output files to stdout (like get but defaults to stdout)
+    #[command(aliases = ["output", "out"])]
+    Cat {
+        /// Names or hashes to retrieve
+        /// If first arg is a 64-char hex NODE_ID, remaining args are fetched from that remote node
+        #[arg(required = false)]
+        sources: Vec<String>,
+        /// Read additional sources from stdin (split on newline/tab/comma)
+        #[arg(long)]
+        stdin: bool,
+        /// Treat all sources as hashes
+        #[arg(long, conflicts_with = "name_only")]
+        hash: bool,
+        /// Treat all sources as names only
+        #[arg(long, conflicts_with = "hash")]
+        name_only: bool,
+        /// Disable relay servers (for remote operations)
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Find files by name/hash query and output to file (use --stdout for stdout)
+    Find {
+        /// Search queries (matches name or hash: exact > prefix > contains)
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches
+        #[arg(long)]
+        name: bool,
+        /// Output to stdout instead of file
+        #[arg(long)]
+        stdout: bool,
+        /// Output all matches (to stdout, or to directory with --dir)
+        #[arg(long, visible_aliases = ["out", "export", "save", "full"])]
+        all: bool,
+        /// Output directory for --all (each file saved by name)
+        #[arg(long)]
+        dir: Option<String>,
+        /// Output format: tag (default), group, or union
+        #[arg(long, default_value = "tag")]
+        format: String,
+        /// Remote node ID to search
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Search files by name/hash query and list all matches
+    Search {
+        /// Search queries (matches name or hash: exact > prefix > contains)
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches
+        #[arg(long)]
+        name: bool,
+        /// Output all matches (to stdout, or to directory with --dir)
+        #[arg(long, visible_aliases = ["out", "export", "save", "full"])]
+        all: bool,
+        /// Output directory for --all (each file saved by name)
+        #[arg(long)]
+        dir: Option<String>,
+        /// Output format: tag (default), group, or union
+        #[arg(long, default_value = "tag")]
+        format: String,
+        /// Remote node ID to search
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// List all stored files (local or remote)
     List {
         /// Remote node ID to list (optional - lists local if not provided)
@@ -120,636 +200,7 @@ enum Command {
     Id,
 }
 
-const KEY_FILE: &str = ".iroh-key";
-const CLIENT_KEY_FILE: &str = ".iroh-key-client";
-const STORE_PATH: &str = ".iroh-store";
-const SERVE_LOCK: &str = ".iroh-serve.lock";
-const META_ALPN: &[u8] = b"/iroh-meta/1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-enum MatchKind {
-    Exact,    // Best: exact match
-    Prefix,   // Good: starts with query
-    Contains, // Okay: contains query
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FindMatch {
-    hash: Hash,
-    name: String,
-    kind: MatchKind,
-    is_hash_match: bool, // true if matched against hash, false if matched against name
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum MetaRequest {
-    Put { filename: String, hash: Hash },
-    Get { filename: String },
-    List,
-    Delete { filename: String },
-    Rename { from: String, to: String },
-    Copy { from: String, to: String },
-    Find { query: String, prefer_name: bool },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum MetaResponse {
-    Put { success: bool },
-    Get { hash: Option<Hash> },
-    List { items: Vec<(Hash, String)> },
-    Delete { success: bool },
-    Rename { success: bool },
-    Copy { success: bool },
-    Find { matches: Vec<FindMatch> },
-}
-
-#[derive(Clone, Debug)]
-struct MetaProtocol {
-    store: Store,
-}
-
-impl MetaProtocol {
-    fn new(store: &Store) -> Arc<Self> {
-        Arc::new(Self {
-            store: store.clone(),
-        })
-    }
-
-    fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
-        if haystack == needle {
-            Some(MatchKind::Exact)
-        } else if haystack.starts_with(needle) {
-            Some(MatchKind::Prefix)
-        } else if haystack.contains(needle) {
-            Some(MatchKind::Contains)
-        } else {
-            None
-        }
-    }
-}
-
-impl ProtocolHandler for MetaProtocol {
-    async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
-        // Handle multiple requests per connection
-        loop {
-            let (mut send, mut recv) = match conn.accept_bi().await {
-                Ok(streams) => streams,
-                Err(_) => break, // Connection closed
-            };
-            let buf = match recv.read_to_end(64 * 1024).await {
-                Ok(buf) => buf,
-                Err(_) => break,
-            };
-            let req: MetaRequest = match postcard::from_bytes(&buf) {
-                Ok(req) => req,
-                Err(_) => break,
-            };
-            match req {
-                MetaRequest::Put { filename, hash } => {
-                    self.store
-                        .tags()
-                        .set(&filename, hash)
-                        .await
-                        .map_err(AcceptError::from_err)?;
-                    let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Get { filename } => {
-                    let mut found: Option<Hash> = None;
-                    if let Ok(Some(tag)) = self.store.tags().get(&filename).await {
-                        found = Some(tag.hash);
-                    } else {
-                        if let Ok(mut list) = self.store.tags().list().await {
-                            while let Some(item) = list.next().await {
-                                let item = item.map_err(AcceptError::from_err)?;
-                                if item.name.as_ref() == filename.as_bytes() {
-                                    found = Some(item.hash);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    let resp = postcard::to_allocvec(&MetaResponse::Get { hash: found })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::List => {
-                    let mut items = Vec::new();
-                    if let Ok(mut list) = self.store.tags().list().await {
-                        while let Some(item) = list.next().await {
-                            if let Ok(item) = item {
-                                let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
-                                items.push((item.hash, name));
-                            }
-                        }
-                    }
-                    let resp = postcard::to_allocvec(&MetaResponse::List { items })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Delete { filename } => {
-                    let success = self.store.tags().delete(&filename).await.is_ok();
-                    let resp = postcard::to_allocvec(&MetaResponse::Delete { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Rename { from, to } => {
-                    let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
-                        let hash = tag.hash;
-                        if self.store.tags().set(&to, hash).await.is_ok() {
-                            self.store.tags().delete(&from).await.is_ok()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::Rename { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Copy { from, to } => {
-                    let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
-                        self.store.tags().set(&to, tag.hash).await.is_ok()
-                    } else {
-                        false
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::Copy { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Find { query, prefer_name } => {
-                    let mut matches = Vec::new();
-                    let query_lower = query.to_lowercase();
-
-                    if let Ok(mut list) = self.store.tags().list().await {
-                        while let Some(item) = list.next().await {
-                            if let Ok(item) = item {
-                                let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
-                                let hash_str = item.hash.to_string();
-                                let name_lower = name.to_lowercase();
-
-                                // Check name matches
-                                if let Some(kind) = Self::match_kind(&name_lower, &query_lower) {
-                                    matches.push(FindMatch {
-                                        hash: item.hash,
-                                        name: name.clone(),
-                                        kind,
-                                        is_hash_match: false,
-                                    });
-                                }
-                                // Check hash matches (only if no name match or query looks like a hash)
-                                else if let Some(kind) = Self::match_kind(&hash_str, &query_lower)
-                                {
-                                    matches.push(FindMatch {
-                                        hash: item.hash,
-                                        name,
-                                        kind,
-                                        is_hash_match: true,
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    // Sort: by match kind first, then by preference (hash vs name)
-                    matches.sort_by(|a, b| {
-                        match a.kind.cmp(&b.kind) {
-                            std::cmp::Ordering::Equal => {
-                                // If prefer_name, name matches come first (is_hash_match=false < true)
-                                // If prefer_hash (default), hash matches come first (is_hash_match=true < false)
-                                if prefer_name {
-                                    a.is_hash_match.cmp(&b.is_hash_match)
-                                } else {
-                                    b.is_hash_match.cmp(&a.is_hash_match)
-                                }
-                            }
-                            other => other,
-                        }
-                    });
-
-                    let resp = postcard::to_allocvec(&MetaResponse::Find { matches })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
-    match afs::read(path).await {
-        Ok(bytes) => {
-            let bytes: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| anyhow!("invalid key length"))?;
-            Ok(SecretKey::from(bytes))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let key = SecretKey::generate(&mut rand::rng());
-            afs::write(path, key.to_bytes()).await?;
-            Ok(key)
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
-enum StoreType {
-    Persistent(FsStore),
-    Ephemeral(MemStore),
-}
-
-impl StoreType {
-    fn as_store(&self) -> Store {
-        match self {
-            StoreType::Persistent(s) => s.clone().into(),
-            StoreType::Ephemeral(s) => s.clone().into(),
-        }
-    }
-
-    async fn shutdown(self) -> Result<()> {
-        match self {
-            StoreType::Persistent(s) => s.shutdown().await?,
-            StoreType::Ephemeral(s) => s.shutdown().await?,
-        }
-        Ok(())
-    }
-}
-
-async fn open_store(ephemeral: bool) -> Result<StoreType> {
-    if ephemeral {
-        Ok(StoreType::Ephemeral(MemStore::new()))
-    } else {
-        let store = FsStore::load(STORE_PATH).await?;
-        Ok(StoreType::Persistent(store))
-    }
-}
-
-fn to_absolute(path: &PathBuf) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.clone())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
-
-async fn export_blob(store: &Store, hash: Hash, output: &str) -> Result<()> {
-    if output == "-" {
-        let data = store.blobs().get_bytes(hash).await?;
-        std::io::stdout().write_all(&data)?;
-    } else {
-        let path = to_absolute(&PathBuf::from(output))?;
-        store.blobs().export(hash, &path).await?;
-        eprintln!("exported: {} -> {}", hash, path.display());
-    }
-    Ok(())
-}
-
-async fn read_input(input: &str) -> Result<Vec<u8>> {
-    if input == "-" {
-        let mut data = Vec::new();
-        std::io::stdin().read_to_end(&mut data)?;
-        Ok(data)
-    } else {
-        Ok(afs::read(input).await?)
-    }
-}
-
-/// Parse items from stdin, splitting on newline, tab, or comma
-fn parse_stdin_items() -> Result<Vec<String>> {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
-    Ok(input
-        .split(|c| c == '\n' || c == '\t' || c == ',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect())
-}
-
-/// Execute a shell command and return its stdout
-fn shell_capture(cmd: &str) -> Result<String> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .output()
-        .context("failed to execute shell command")?;
-    if !output.status.success() {
-        bail!(
-            "command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Result of preprocessing a REPL line
-enum ReplInput {
-    /// Ready to execute with this line (possibly modified)
-    Ready(String),
-    /// Need more input - heredoc mode with delimiter
-    NeedMore {
-        delimiter: String,
-        lines: Vec<String>,
-        original_line: String,
-    },
-    /// Empty/whitespace only
-    Empty,
-}
-
-/// Preprocess a REPL line, handling:
-/// - $(...) and `...` command substitution
-/// - <<< here-string
-/// - <<DELIM heredoc start
-/// - |> pipe operator (cmd |> put - name)
-fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
-    let line = line.trim();
-    if line.is_empty() {
-        return Ok(ReplInput::Empty);
-    }
-
-    // Check for heredoc: put - name <<EOF
-    if let Some(heredoc_start) = line.find("<<") {
-        let after = &line[heredoc_start + 2..];
-        // Check it's not <<< (here-string)
-        if !after.starts_with('<') {
-            let delimiter = after.trim().to_string();
-            if !delimiter.is_empty() {
-                let original_line = line[..heredoc_start].trim().to_string();
-                return Ok(ReplInput::NeedMore {
-                    delimiter,
-                    lines: Vec::new(),
-                    original_line,
-                });
-            }
-        }
-    }
-
-    let mut result = line.to_string();
-
-    // Process here-string: <<< 'content' or <<< "content" or <<< content
-    while let Some(pos) = result.find("<<<") {
-        let before = &result[..pos];
-        let after = &result[pos + 3..].trim_start();
-
-        // Extract the content (quoted or unquoted)
-        let (content, rest) = if after.starts_with('\'') {
-            // Single-quoted
-            if let Some(end) = after[1..].find('\'') {
-                (&after[1..end + 1], &after[end + 2..])
-            } else {
-                bail!("unterminated single quote in here-string");
-            }
-        } else if after.starts_with('"') {
-            // Double-quoted
-            if let Some(end) = after[1..].find('"') {
-                (&after[1..end + 1], &after[end + 2..])
-            } else {
-                bail!("unterminated double quote in here-string");
-            }
-        } else {
-            // Unquoted - take until end (rest of line is content)
-            (after.trim(), "")
-        };
-
-        // Replace - with content marker in the command
-        // The pattern is: put - name <<< content
-        let before_str = before.trim();
-        let new_before = before_str
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{} ", content))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{}", content));
-        result = format!("{}{}", new_before, rest);
-    }
-
-    // Process $(...) command substitution - for put commands, treat as content
-    while let Some(start) = result.find("$(") {
-        let mut depth = 1;
-        let mut end = start + 2;
-        for (i, c) in result[start + 2..].chars().enumerate() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = start + 2 + i;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if depth != 0 {
-            bail!("unterminated $(...) in command");
-        }
-        let cmd = &result[start + 2..end];
-        let output = shell_capture(cmd)?;
-
-        // Check if this $() is the first arg to put - if so, treat as content
-        let before = result[..start].trim();
-        if before == "put" || before.ends_with(" put") {
-            result = format!(
-                "{}__STDIN_CONTENT__:{}{}",
-                &result[..start],
-                output,
-                &result[end + 1..]
-            );
-        } else {
-            result = format!("{}{}{}", &result[..start], output, &result[end + 1..]);
-        }
-    }
-
-    // Process `...` backtick substitution - for put commands, treat as content
-    while let Some(start) = result.find('`') {
-        if let Some(end) = result[start + 1..].find('`') {
-            let cmd = &result[start + 1..start + 1 + end];
-            let output = shell_capture(cmd)?;
-
-            // Check if this `` is the first arg to put - if so, treat as content
-            let before = result[..start].trim();
-            if before == "put" || before.ends_with(" put") {
-                result = format!(
-                    "{}__STDIN_CONTENT__:{}{}",
-                    &result[..start],
-                    output,
-                    &result[start + 2 + end..]
-                );
-            } else {
-                result = format!(
-                    "{}{}{}",
-                    &result[..start],
-                    output,
-                    &result[start + 2 + end..]
-                );
-            }
-        } else {
-            bail!("unterminated backtick in command");
-        }
-    }
-
-    // Process |> pipe operator: echo hello |> put - name
-    if let Some(pos) = result.find("|>") {
-        let left = result[..pos].trim().to_string();
-        let right = result[pos + 2..].trim().to_string();
-
-        // Execute left side as shell command
-        let output = shell_capture(&left)?;
-
-        // Replace - in right side with stdin content marker
-        let mut new_result = right
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{} ", output))
-            .replace(" -\n", &format!(" __STDIN_CONTENT__:{}\n", output))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{}", output));
-
-        // If no - found, might be at end
-        if !new_result.contains("__STDIN_CONTENT__") {
-            // Append content as argument
-            new_result = format!("{} __STDIN_CONTENT__:{}", right, output);
-        }
-        result = new_result;
-    }
-
-    Ok(ReplInput::Ready(result))
-}
-
-/// Continue reading heredoc lines until delimiter is found
-fn continue_heredoc(
-    rl: &mut DefaultEditor,
-    delimiter: &str,
-    lines: &mut Vec<String>,
-) -> Result<Option<String>> {
-    println!(
-        "(heredoc: type '{}' on its own line to end, Ctrl+C to cancel)",
-        delimiter
-    );
-
-    loop {
-        match rl.readline(".. ") {
-            Ok(line) => {
-                if line.trim() == delimiter {
-                    return Ok(Some(lines.join("\n")));
-                }
-                lines.push(line);
-            }
-            Err(ReadlineError::Interrupted) => {
-                println!("^C (heredoc cancelled)");
-                return Ok(None);
-            }
-            Err(ReadlineError::Eof) => {
-                return Ok(None);
-            }
-            Err(e) => {
-                bail!("readline error: {}", e);
-            }
-        }
-    }
-}
-
-/// Info about a running serve instance
-struct ServeInfo {
-    node_id: EndpointId,
-    addrs: Vec<SocketAddr>,
-}
-
-/// Check if serve is running by reading the lock file and verifying the PID
-async fn get_serve_info() -> Option<ServeInfo> {
-    let contents = afs::read_to_string(SERVE_LOCK).await.ok()?;
-    let mut lines = contents.lines();
-    let node_id_str = lines.next()?;
-    let pid_str = lines.next()?;
-    let pid: u32 = pid_str.parse().ok()?;
-
-    // Check if process is still alive
-    if !is_process_alive(pid) {
-        // Stale lock file - remove it
-        let _ = afs::remove_file(SERVE_LOCK).await;
-        return None;
-    }
-
-    let node_id: EndpointId = node_id_str.parse().ok()?;
-
-    // Parse socket addresses (remaining lines)
-    let addrs: Vec<SocketAddr> = lines.filter_map(|line| line.parse().ok()).collect();
-
-    Some(ServeInfo { node_id, addrs })
-}
-
-/// Check if a process with the given PID is still running
-fn is_process_alive(pid: u32) -> bool {
-    // On Unix, sending signal 0 checks if process exists without actually sending a signal
-    #[cfg(unix)]
-    {
-        // kill -0 checks existence without sending a signal
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        // On non-Unix, just assume it's alive if we have a PID
-        let _ = pid;
-        true
-    }
-}
-
-/// Create serve lock file with node ID, PID, and socket addresses
-async fn create_serve_lock(node_id: &EndpointId, addrs: &[SocketAddr]) -> Result<()> {
-    let pid = std::process::id();
-    let mut contents = format!("{}\n{}", node_id, pid);
-    for addr in addrs {
-        contents.push_str(&format!("\n{}", addr));
-    }
-    afs::write(SERVE_LOCK, contents).await?;
-    Ok(())
-}
-
-/// Remove serve lock file
-async fn remove_serve_lock() -> Result<()> {
-    let _ = afs::remove_file(SERVE_LOCK).await;
-    Ok(())
-}
-
-/// Create a client endpoint configured to connect to the local serve
-async fn create_local_client_endpoint(serve_info: &ServeInfo) -> Result<(Endpoint, EndpointAddr)> {
-    let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    // Enable relay and DNS lookup so @NODE_ID targeting works for remote peers
-    let endpoint = Endpoint::builder()
-        .secret_key(client_key)
-        .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(DnsAddressLookup::n0_dns())
-        .bind()
-        .await?;
-
-    // Build EndpointAddr with known socket addresses to bypass DNS discovery
-    // Prefer IPv4 localhost for reliability on systems with IPv6 issues
-    let addrs: Vec<_> = serve_info
-        .addrs
-        .iter()
-        .filter(|addr| addr.is_ipv4())
-        .map(|addr| TransportAddr::Ip(*addr))
-        .collect();
-
-    // Fall back to all addresses if no IPv4 found
-    let addrs = if addrs.is_empty() {
-        serve_info
-            .addrs
-            .iter()
-            .map(|addr| TransportAddr::Ip(*addr))
-            .collect()
-    } else {
-        addrs
-    };
-
-    let endpoint_addr = EndpointAddr::from_parts(serve_info.node_id, addrs);
-
-    Ok((endpoint, endpoint_addr))
-}
 
 /// REPL context - holds either remote connections or local store access
 struct ReplContext {
@@ -1503,10 +954,12 @@ async fn run_repl(target_node: Option<String>) -> Result<()> {
     println!("input: $(...), `...`, |>, <<<, <<EOF supported");
 
     let mut rl = DefaultEditor::new()?;
+    let mut ctrl_c_count = 0u8;
 
     loop {
         match rl.readline("> ") {
             Ok(raw_line) => {
+                ctrl_c_count = 0; // Reset on any input
                 let raw_line = raw_line.trim();
                 if raw_line.is_empty() {
                     continue;
@@ -1650,10 +1103,10 @@ async fn run_repl(target_node: Option<String>) -> Result<()> {
                             println!("  rename <FROM> <TO>     - Rename a file");
                             println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
                             println!(
-                                "  find <QUERY> [--name]  - Find files (exact/prefix/contains match)"
+                                "  find <QUERY> [--name] [--file|>FILE] - Find & output (stdout default)"
                             );
                             println!(
-                                "  search <QUERY> [--name] - List all matches (no selection prompt)"
+                                "  search <QUERY> [--name] [--file|>FILE] - List matches (optionally save first)"
                             );
                             println!("  !<cmd>                 - Run shell command");
                             println!("  help                   - Show this help");
@@ -1675,106 +1128,333 @@ async fn run_repl(target_node: Option<String>) -> Result<()> {
                             Ok(())
                         }
                         (None, ["list"]) | (None, ["ls"]) => ctx.list().await,
-                        (None, ["put", path]) => ctx.put(path, None).await,
-                        (None, ["put", path, name]) => ctx.put(path, Some(name)).await,
+                        (None, ["put", path]) | (None, ["in", path]) => ctx.put(path, None).await,
+                        (None, ["put", path, name]) | (None, ["in", path, name]) => {
+                            ctx.put(path, Some(name)).await
+                        }
                         (None, ["get", name]) => ctx.get(name, None).await,
                         (None, ["get", name, output]) => ctx.get(name, Some(output)).await,
-                        (None, ["cat", name]) => ctx.get(name, Some("-")).await,
+                        (None, ["cat", name])
+                        | (None, ["output", name])
+                        | (None, ["out", name]) => ctx.get(name, Some("-")).await,
                         (None, ["gethash", hash, output]) => ctx.gethash(hash, output).await,
                         (None, ["delete", name]) | (None, ["rm", name]) => ctx.delete(name).await,
                         (None, ["rename", from, to]) => ctx.rename(from, to).await,
                         (None, ["copy", from, to]) | (None, ["cp", from, to]) => {
                             ctx.copy(from, to).await
                         }
-                        (None, ["find", query, rest @ ..]) => {
-                            let prefer_name = rest.contains(&"--name");
-                            match ctx.find(query, prefer_name).await {
-                                Ok(matches) if matches.is_empty() => {
-                                    println!("no matches found for: {}", query);
-                                    Ok(())
-                                }
-                                Ok(matches) if matches.len() == 1 => {
-                                    let m = &matches[0];
-                                    let kind_str = match m.kind {
-                                        MatchKind::Exact => "exact",
-                                        MatchKind::Prefix => "prefix",
-                                        MatchKind::Contains => "contains",
-                                    };
-                                    let match_type = if m.is_hash_match { "hash" } else { "name" };
-                                    println!("{}\t{}", m.hash, m.name);
-                                    println!("({} {} match)", kind_str, match_type);
-                                    Ok(())
-                                }
-                                Ok(matches) => {
-                                    println!("found {} matches:", matches.len());
-                                    for (i, m) in matches.iter().enumerate() {
-                                        let kind_str = match m.kind {
-                                            MatchKind::Exact => "exact",
-                                            MatchKind::Prefix => "prefix",
-                                            MatchKind::Contains => "contains",
-                                        };
-                                        let match_type =
-                                            if m.is_hash_match { "hash" } else { "name" };
-                                        println!(
-                                            "  [{}] {}\t{} ({} {})",
-                                            i + 1,
-                                            m.hash,
-                                            m.name,
-                                            kind_str,
-                                            match_type
-                                        );
+                        (None, ["find", rest @ ..]) => {
+                            // Parse queries (args before flags) and flags
+                            let mut queries: Vec<&str> = Vec::new();
+                            let mut prefer_name = false;
+                            let mut all = false;
+                            let mut output_file: Option<&str> = None;
+                            let mut dir: Option<&str> = None;
+                            let mut to_file = false;
+                            let mut format = "union"; // REPL default is union
+                            
+                            let mut i = 0;
+                            while i < rest.len() {
+                                let arg = rest[i];
+                                if arg == "--name" {
+                                    prefer_name = true;
+                                } else if arg == "--all" || arg == "--out" || arg == "--export" || arg == "--save" || arg == "--full" {
+                                    all = true;
+                                } else if arg == "--file" {
+                                    to_file = true;
+                                } else if arg.starts_with('>') {
+                                    output_file = Some(&arg[1..]);
+                                    to_file = true;
+                                } else if arg == "--dir" {
+                                    if i + 1 < rest.len() {
+                                        dir = Some(rest[i + 1]);
+                                        i += 1;
                                     }
-                                    println!(
-                                        "select [1-{}] or press enter to cancel:",
-                                        matches.len()
-                                    );
-                                    match rl.readline("? ") {
-                                        Ok(sel) => {
-                                            let sel = sel.trim();
-                                            if sel.is_empty() {
-                                                println!("cancelled");
-                                            } else if let Ok(n) = sel.parse::<usize>() {
-                                                if n >= 1 && n <= matches.len() {
-                                                    let m = &matches[n - 1];
-                                                    println!("selected: {}\t{}", m.hash, m.name);
-                                                } else {
-                                                    println!("invalid selection");
-                                                }
+                                } else if arg == "--format" {
+                                    if i + 1 < rest.len() {
+                                        format = rest[i + 1];
+                                        i += 1;
+                                    }
+                                } else if arg == "--tag" {
+                                    format = "tag";
+                                } else if arg == "--group" {
+                                    format = "group";
+                                } else if arg == "--union" {
+                                    format = "union";
+                                } else if !arg.starts_with('-') {
+                                    queries.push(arg);
+                                }
+                                i += 1;
+                            }
+                            
+                            if queries.is_empty() {
+                                println!("usage: find <query>... [--name] [--all] [--dir <dir>] [--file] [>filename]");
+                                return Ok(());
+                            }
+
+                            // Collect matches for all queries
+                            let mut all_matches: Vec<(String, FindMatch)> = Vec::new();
+                            for query in &queries {
+                                match ctx.find(query, prefer_name).await {
+                                    Ok(matches) => {
+                                        for m in matches {
+                                            all_matches.push((query.to_string(), m));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("error searching for '{}': {}", query, e);
+                                    }
+                                }
+                            }
+
+                            if all_matches.is_empty() {
+                                println!("no matches found for: {}", queries.join(", "));
+                                return Ok(());
+                            }
+
+                            // --all mode: output all matches
+                            if all {
+                                if let Some(dir_path) = dir {
+                                    if let Err(e) = std::fs::create_dir_all(dir_path) {
+                                        println!("error creating directory: {}", e);
+                                        return Ok(());
+                                    }
+                                    let mut seen = std::collections::HashSet::new();
+                                    for (query, m) in &all_matches {
+                                        let key = format!("{}:{}", m.hash, m.name);
+                                        if seen.insert(key) {
+                                            let output_path = format!("{}/{}", dir_path, m.name);
+                                            if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
+                                                println!("error: {}", e);
                                             } else {
-                                                println!("invalid selection");
+                                                print_match_repl(query, m, format);
                                             }
                                         }
-                                        _ => println!("cancelled"),
+                                    }
+                                } else {
+                                    // Output all to stdout
+                                    let mut seen = std::collections::HashSet::new();
+                                    for (_, m) in &all_matches {
+                                        let key = format!("{}:{}", m.hash, m.name);
+                                        if seen.insert(key) {
+                                            if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                                                println!("error: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                                return Ok(());
+                            }
+
+                            // Single match
+                            if all_matches.len() == 1 {
+                                let (_, m) = &all_matches[0];
+                                let output = if to_file {
+                                    output_file.unwrap_or(&m.name)
+                                } else {
+                                    "-"
+                                };
+                                return ctx.get(&m.name, Some(output)).await;
+                            }
+
+                            // Multiple matches - show numbered list and prompt for selection
+                            println!("found {} matches:", all_matches.len());
+                            for (i, (query, m)) in all_matches.iter().enumerate() {
+                                let kind_str = match m.kind {
+                                    MatchKind::Exact => "exact",
+                                    MatchKind::Prefix => "prefix",
+                                    MatchKind::Contains => "contains",
+                                };
+                                let match_type = if m.is_hash_match { "hash" } else { "name" };
+                                match format {
+                                    "tag" => println!("[{}]\t{}\t{}\t{}\t({} {})", i + 1, query, m.hash, m.name, kind_str, match_type),
+                                    "group" => println!("[{}]\t{}\t{}\t({} {})", i + 1, m.hash, m.name, kind_str, match_type),
+                                    _ => println!("[{}]\t{}\t{}\t({} {}) [{}]", i + 1, m.hash, m.name, kind_str, match_type, query),
+                                }
+                            }
+                            println!("select numbers (e.g., '1 3 5' or '1,2,3') or enter to cancel:");
+                            
+                            match rl.readline("? ") {
+                                Ok(sel) => {
+                                    let sel = sel.trim();
+                                    if sel.is_empty() {
+                                        println!("cancelled");
+                                        return Ok(());
+                                    }
+                                    
+                                    // Parse selection: split on comma and space, parse integers
+                                    let selections: Vec<usize> = sel
+                                        .split(|c| c == ',' || c == ' ')
+                                        .filter(|s| !s.is_empty())
+                                        .filter_map(|s| s.trim().parse::<usize>().ok())
+                                        .filter(|&n| n >= 1 && n <= all_matches.len())
+                                        .collect();
+                                    
+                                    if selections.is_empty() {
+                                        println!("invalid selection");
+                                        return Ok(());
+                                    }
+
+                                    // Determine output mode
+                                    if let Some(dir_path) = dir {
+                                        // Output to directory AND stdout
+                                        if let Err(e) = std::fs::create_dir_all(dir_path) {
+                                            println!("error creating directory: {}", e);
+                                            return Ok(());
+                                        }
+                                        for n in &selections {
+                                            let (_, m) = &all_matches[n - 1];
+                                            let output_path = format!("{}/{}", dir_path, m.name);
+                                            // Write to file
+                                            if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
+                                                println!("error: {}", e);
+                                            }
+                                            // Also output to stdout
+                                            if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                                                println!("error: {}", e);
+                                            }
+                                        }
+                                    } else if to_file {
+                                        // Output to file(s)
+                                        for n in &selections {
+                                            let (_, m) = &all_matches[n - 1];
+                                            let output = output_file.unwrap_or(&m.name);
+                                            if let Err(e) = ctx.get(&m.name, Some(output)).await {
+                                                println!("error: {}", e);
+                                            }
+                                        }
+                                    } else {
+                                        // Output to stdout in selection order
+                                        for n in &selections {
+                                            let (_, m) = &all_matches[n - 1];
+                                            if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                                                println!("error: {}", e);
+                                            }
+                                        }
                                     }
                                     Ok(())
                                 }
-                                Err(e) => Err(e),
+                                _ => {
+                                    println!("cancelled");
+                                    Ok(())
+                                }
                             }
                         }
-                        (None, ["search", query, rest @ ..]) => {
-                            let prefer_name = rest.contains(&"--name");
-                            match ctx.find(query, prefer_name).await {
-                                Ok(matches) if matches.is_empty() => {
-                                    println!("no matches found for: {}", query);
-                                    Ok(())
-                                }
-                                Ok(matches) => {
-                                    for m in &matches {
-                                        let kind_str = match m.kind {
-                                            MatchKind::Exact => "exact",
-                                            MatchKind::Prefix => "prefix",
-                                            MatchKind::Contains => "contains",
-                                        };
-                                        let match_type =
-                                            if m.is_hash_match { "hash" } else { "name" };
-                                        println!(
-                                            "{}\t{}\t({} {})",
-                                            m.hash, m.name, kind_str, match_type
-                                        );
+                        (None, ["search", rest @ ..]) => {
+                            // Parse queries (args before flags) and flags
+                            let mut queries: Vec<&str> = Vec::new();
+                            let mut prefer_name = false;
+                            let mut all = false;
+                            let mut output_file: Option<&str> = None;
+                            let mut dir: Option<&str> = None;
+                            let mut to_file = false;
+                            let mut format = "union"; // REPL default is union
+                            
+                            let mut i = 0;
+                            while i < rest.len() {
+                                let arg = rest[i];
+                                if arg == "--name" {
+                                    prefer_name = true;
+                                } else if arg == "--all" || arg == "--out" || arg == "--export" || arg == "--save" || arg == "--full" {
+                                    all = true;
+                                } else if arg == "--file" {
+                                    to_file = true;
+                                } else if arg.starts_with('>') {
+                                    output_file = Some(&arg[1..]);
+                                    to_file = true;
+                                } else if arg == "--dir" {
+                                    if i + 1 < rest.len() {
+                                        dir = Some(rest[i + 1]);
+                                        i += 1;
                                     }
-                                    Ok(())
+                                } else if arg == "--format" {
+                                    if i + 1 < rest.len() {
+                                        format = rest[i + 1];
+                                        i += 1;
+                                    }
+                                } else if arg == "--tag" {
+                                    format = "tag";
+                                } else if arg == "--group" {
+                                    format = "group";
+                                } else if arg == "--union" {
+                                    format = "union";
+                                } else if !arg.starts_with('-') {
+                                    queries.push(arg);
                                 }
-                                Err(e) => Err(e),
+                                i += 1;
+                            }
+                            
+                            if queries.is_empty() {
+                                println!("usage: search <query>... [--name] [--all] [--dir <dir>] [--file] [>filename]");
+                                return Ok(());
+                            }
+
+                            // Collect matches for all queries
+                            let mut all_matches: Vec<(String, FindMatch)> = Vec::new();
+                            for query in &queries {
+                                match ctx.find(query, prefer_name).await {
+                                    Ok(matches) => {
+                                        for m in matches {
+                                            all_matches.push((query.to_string(), m));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("error searching for '{}': {}", query, e);
+                                    }
+                                }
+                            }
+
+                            if all_matches.is_empty() {
+                                println!("no matches found for: {}", queries.join(", "));
+                                return Ok(());
+                            }
+
+                            // --all mode: output all matches to files
+                            if all {
+                                if let Some(dir_path) = dir {
+                                    if let Err(e) = std::fs::create_dir_all(dir_path) {
+                                        println!("error creating directory: {}", e);
+                                        return Ok(());
+                                    }
+                                    let mut seen = std::collections::HashSet::new();
+                                    for (query, m) in &all_matches {
+                                        let key = format!("{}:{}", m.hash, m.name);
+                                        if seen.insert(key) {
+                                            let output_path = format!("{}/{}", dir_path, m.name);
+                                            if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
+                                                println!("error: {}", e);
+                                            } else {
+                                                print_match_repl(query, m, format);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Output all to stdout
+                                    let mut seen = std::collections::HashSet::new();
+                                    for (_, m) in &all_matches {
+                                        let key = format!("{}:{}", m.hash, m.name);
+                                        if seen.insert(key) {
+                                            if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                                                println!("error: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                                return Ok(());
+                            }
+
+                            // Default: list matches (union format for REPL)
+                            for (query, m) in &all_matches {
+                                print_match_repl(query, m, format);
+                            }
+
+                            // If --file or >filename, also output first match to file
+                            if to_file {
+                                let (_, m) = &all_matches[0];
+                                let output = output_file.unwrap_or(&m.name);
+                                ctx.get(&m.name, Some(output)).await
+                            } else {
+                                Ok(())
                             }
                         }
                         _ => {
@@ -1790,8 +1470,12 @@ async fn run_repl(target_node: Option<String>) -> Result<()> {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl+C - just print ^C and continue (user can type 'quit' or Ctrl+D to exit)
-                println!("^C (type 'quit' or Ctrl+D to exit)");
+                ctrl_c_count += 1;
+                if ctrl_c_count >= 2 {
+                    println!("^C");
+                    break;
+                }
+                println!("^C (press Ctrl+C again, Ctrl+D, or type 'quit' to exit)");
                 continue;
             }
             Err(ReadlineError::Eof) => {
@@ -2490,13 +2174,10 @@ async fn cmd_put_one_remote(
     Ok(())
 }
 
-/// Check if a string looks like a node ID (64 hex chars)
-fn is_node_id(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
 
 /// Put multiple files - local or to a remote node
 /// If first argument is a NODE_ID, remaining files are sent to that remote
+/// Auto-detects stdin content if no files provided and stdin is piped
 async fn cmd_put_multi(
     files: Vec<String>,
     content_mode: bool,
@@ -2532,6 +2213,21 @@ async fn cmd_put_multi(
         items.extend(parse_stdin_items()?);
     }
 
+    // Auto-detect stdin content: if exactly one arg (the name) and stdin is piped
+    if items.len() == 1 && !std::io::stdin().is_terminal() && !from_stdin {
+        // Check if the item looks like a file path that exists
+        let path = PathBuf::from(&items[0]);
+        if !path.exists() {
+            // Doesn't exist as a file, treat as name and read content from stdin
+            let name = &items[0];
+            if hash_only {
+                return cmd_put_hash("-").await;
+            } else {
+                return cmd_put_local_stdin(name).await;
+            }
+        }
+    }
+
     if items.is_empty() {
         bail!("no files provided");
     }
@@ -2553,6 +2249,347 @@ async fn cmd_put_multi(
         bail!("some puts failed:\n{}", errors.join("\n"));
     }
     Ok(())
+}
+
+/// Find files matching queries - CLI version (defaults to file output)
+/// Supports multiple queries with format options: tag, group, union
+async fn cmd_find(
+    queries: Vec<String>,
+    prefer_name: bool,
+    to_stdout: bool,
+    all: bool,
+    dir: Option<String>,
+    format: &str,
+    node: Option<String>,
+    no_relay: bool,
+) -> Result<()> {
+    // Collect matches for all queries
+    let mut all_matches: Vec<TaggedMatch> = Vec::new();
+    for query in &queries {
+        let matches = cmd_find_matches(query, prefer_name, node.clone(), no_relay).await?;
+        for m in matches {
+            all_matches.push(TaggedMatch {
+                query: query.clone(),
+                hash: m.hash,
+                name: m.name,
+                kind: m.kind,
+                is_hash_match: m.is_hash_match,
+            });
+        }
+    }
+
+    if all_matches.is_empty() {
+        bail!("no matches found for: {}", queries.join(", "));
+    }
+
+    // --all mode: output all matches
+    if all {
+        if let Some(ref dir_path) = dir {
+            std::fs::create_dir_all(dir_path)?;
+            // Deduplicate by hash+name for file output
+            let mut seen = std::collections::HashSet::new();
+            for m in &all_matches {
+                let key = format!("{}:{}", m.hash, m.name);
+                if seen.insert(key) {
+                    let output_path = format!("{}/{}", dir_path, m.name);
+                    if let Some(ref node_str) = node {
+                        let node_id: EndpointId = node_str.parse()?;
+                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                    } else {
+                        cmd_get_one(&m.name, &output_path, false, false).await?;
+                    }
+                    print_match_cli(m, format);
+                }
+            }
+        } else {
+            // Output all to stdout (concatenated)
+            let mut seen = std::collections::HashSet::new();
+            for m in &all_matches {
+                let key = format!("{}:{}", m.hash, m.name);
+                if seen.insert(key) {
+                    if let Some(ref node_str) = node {
+                        let node_id: EndpointId = node_str.parse()?;
+                        cmd_get_one_remote(node_id, &m.name, "-", no_relay).await?;
+                    } else {
+                        cmd_get_one(&m.name, "-", false, false).await?;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Single match or first match mode
+    if all_matches.len() == 1 {
+        let m = &all_matches[0];
+        let output = if to_stdout { "-" } else { &m.name };
+        if node.is_some() {
+            let node_id: EndpointId = node.unwrap().parse()?;
+            cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
+        } else {
+            cmd_get_one(&m.name, output, false, false).await?;
+        }
+    } else {
+        // Multiple matches - print them and use first one
+        eprintln!("found {} matches (using first):", all_matches.len());
+        print_matches_cli(&all_matches, format);
+        let m = &all_matches[0];
+        let output = if to_stdout { "-" } else { &m.name };
+        if let Some(node_str) = node {
+            let node_id: EndpointId = node_str.parse()?;
+            cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
+        } else {
+            cmd_get_one(&m.name, output, false, false).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Search files matching queries - CLI version (list only, or --all to output files)
+/// Supports multiple queries with format options: tag, group, union
+async fn cmd_search(
+    queries: Vec<String>,
+    prefer_name: bool,
+    all: bool,
+    dir: Option<String>,
+    format: &str,
+    node: Option<String>,
+    no_relay: bool,
+) -> Result<()> {
+    // Collect matches for all queries
+    let mut all_matches: Vec<TaggedMatch> = Vec::new();
+    for query in &queries {
+        let matches = cmd_find_matches(query, prefer_name, node.clone(), no_relay).await?;
+        for m in matches {
+            all_matches.push(TaggedMatch {
+                query: query.clone(),
+                hash: m.hash,
+                name: m.name,
+                kind: m.kind,
+                is_hash_match: m.is_hash_match,
+            });
+        }
+    }
+
+    if all_matches.is_empty() {
+        println!("no matches found for: {}", queries.join(", "));
+        return Ok(());
+    }
+
+    // --all mode: output all files (like find --all)
+    if all {
+        if let Some(ref dir_path) = dir {
+            std::fs::create_dir_all(dir_path)?;
+            let mut seen = std::collections::HashSet::new();
+            for m in &all_matches {
+                let key = format!("{}:{}", m.hash, m.name);
+                if seen.insert(key) {
+                    let output_path = format!("{}/{}", dir_path, m.name);
+                    if let Some(ref node_str) = node {
+                        let node_id: EndpointId = node_str.parse()?;
+                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                    } else {
+                        cmd_get_one(&m.name, &output_path, false, false).await?;
+                    }
+                    print_match_cli(m, format);
+                }
+            }
+        } else {
+            // Output all to stdout (concatenated)
+            let mut seen = std::collections::HashSet::new();
+            for m in &all_matches {
+                let key = format!("{}:{}", m.hash, m.name);
+                if seen.insert(key) {
+                    if let Some(ref node_str) = node {
+                        let node_id: EndpointId = node_str.parse()?;
+                        cmd_get_one_remote(node_id, &m.name, "-", no_relay).await?;
+                    } else {
+                        cmd_get_one(&m.name, "-", false, false).await?;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Default: just list matches
+    print_matches_cli(&all_matches, format);
+    Ok(())
+}
+
+/// Print a single match in CLI format
+fn print_match_cli(m: &TaggedMatch, format: &str) {
+    let kind_str = match m.kind {
+        MatchKind::Exact => "exact",
+        MatchKind::Prefix => "prefix",
+        MatchKind::Contains => "contains",
+    };
+    let match_type = if m.is_hash_match { "hash" } else { "name" };
+    
+    match format {
+        "tag" => println!("{}\t{}\t{}\t({} {})", m.query, m.hash, m.name, kind_str, match_type),
+        "union" => println!("{}\t{}\t({} {}) [{}]", m.hash, m.name, kind_str, match_type, m.query),
+        _ => println!("{}\t{}\t({} {})", m.hash, m.name, kind_str, match_type), // group or default
+    }
+}
+
+/// Print matches in CLI format based on format option
+fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
+    match format {
+        "group" => {
+            // Group by query
+            let mut current_query: Option<&str> = None;
+            for m in matches {
+                if current_query != Some(&m.query) {
+                    eprintln!("=== {} ===", m.query);
+                    current_query = Some(&m.query);
+                }
+                let kind_str = match m.kind {
+                    MatchKind::Exact => "exact",
+                    MatchKind::Prefix => "prefix",
+                    MatchKind::Contains => "contains",
+                };
+                let match_type = if m.is_hash_match { "hash" } else { "name" };
+                println!("{}\t{}\t({} {})", m.hash, m.name, kind_str, match_type);
+            }
+        }
+        "union" => {
+            for m in matches {
+                let kind_str = match m.kind {
+                    MatchKind::Exact => "exact",
+                    MatchKind::Prefix => "prefix",
+                    MatchKind::Contains => "contains",
+                };
+                let match_type = if m.is_hash_match { "hash" } else { "name" };
+                println!("{}\t{}\t({} {}) [{}]", m.hash, m.name, kind_str, match_type, m.query);
+            }
+        }
+        _ => {
+            // "tag" format (default): query as first column
+            for m in matches {
+                let kind_str = match m.kind {
+                    MatchKind::Exact => "exact",
+                    MatchKind::Prefix => "prefix",
+                    MatchKind::Contains => "contains",
+                };
+                let match_type = if m.is_hash_match { "hash" } else { "name" };
+                println!("{}\t{}\t{}\t({} {})", m.query, m.hash, m.name, kind_str, match_type);
+            }
+        }
+    }
+}
+
+/// Print a single match in REPL format (used by REPL find/search)
+fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
+    let kind_str = match m.kind {
+        MatchKind::Exact => "exact",
+        MatchKind::Prefix => "prefix",
+        MatchKind::Contains => "contains",
+    };
+    let match_type = if m.is_hash_match { "hash" } else { "name" };
+    
+    match format {
+        "tag" => println!("{}\t{}\t{}\t({} {})", query, m.hash, m.name, kind_str, match_type),
+        "group" => println!("{}\t{}\t({} {})", m.hash, m.name, kind_str, match_type),
+        _ => println!("{}\t{}\t({} {}) [{}]", m.hash, m.name, kind_str, match_type, query), // union (default for REPL)
+    }
+}
+
+/// Get find matches (shared by cmd_find and cmd_search)
+async fn cmd_find_matches(
+    query: &str,
+    prefer_name: bool,
+    node: Option<String>,
+    no_relay: bool,
+) -> Result<Vec<FindMatch>> {
+    if let Some(node_str) = node {
+        let node_id: EndpointId = node_str.parse()?;
+        let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
+        let mut builder = Endpoint::builder()
+            .secret_key(client_key)
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(DnsAddressLookup::n0_dns());
+        if no_relay {
+            builder = builder.relay_mode(RelayMode::Disabled);
+        }
+        let endpoint = builder.bind().await?;
+
+        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
+        let (mut send, mut recv) = meta_conn.open_bi().await?;
+        let req = postcard::to_allocvec(&MetaRequest::Find {
+            query: query.to_string(),
+            prefer_name,
+        })?;
+        send.write_all(&req).await?;
+        send.finish()?;
+        let resp_buf = recv.read_to_end(64 * 1024).await?;
+        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        meta_conn.close(0u32.into(), b"done");
+
+        match resp {
+            MetaResponse::Find { matches } => Ok(matches),
+            _ => bail!("unexpected response"),
+        }
+    } else {
+        // Local search
+        let store = open_store(false).await?;
+        let store_handle = store.as_store();
+        let mut matches = Vec::new();
+        let query_lower = query.to_lowercase();
+
+        if let Ok(mut list) = store_handle.tags().list().await {
+            while let Some(item) = list.next().await {
+                if let Ok(item) = item {
+                    let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
+                    let hash_str = item.hash.to_string();
+                    let name_lower = name.to_lowercase();
+
+                    if let Some(kind) = match_kind(&name_lower, &query_lower) {
+                        matches.push(FindMatch {
+                            hash: item.hash,
+                            name: name.clone(),
+                            kind,
+                            is_hash_match: false,
+                        });
+                    } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
+                        matches.push(FindMatch {
+                            hash: item.hash,
+                            name,
+                            kind,
+                            is_hash_match: true,
+                        });
+                    }
+                }
+            }
+        }
+
+        matches.sort_by(|a, b| match a.kind.cmp(&b.kind) {
+            std::cmp::Ordering::Equal => {
+                if prefer_name {
+                    a.is_hash_match.cmp(&b.is_hash_match)
+                } else {
+                    b.is_hash_match.cmp(&a.is_hash_match)
+                }
+            }
+            other => other,
+        });
+
+        store.shutdown().await?;
+        Ok(matches)
+    }
+}
+
+/// Helper function for matching (used by cmd_find_matches)
+fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
+    if haystack == needle {
+        Some(MatchKind::Exact)
+    } else if haystack.starts_with(needle) {
+        Some(MatchKind::Prefix)
+    } else if haystack.contains(needle) {
+        Some(MatchKind::Contains)
+    } else {
+        None
+    }
 }
 
 #[tokio::main]
@@ -2587,5 +2624,31 @@ async fn main() -> Result<()> {
             stdout,
             no_relay,
         }) => cmd_get_multi(sources, stdin, hash, name_only, stdout, no_relay).await,
+        Some(Command::Cat {
+            sources,
+            stdin,
+            hash,
+            name_only,
+            no_relay,
+        }) => cmd_get_multi(sources, stdin, hash, name_only, true, no_relay).await,
+        Some(Command::Find {
+            queries,
+            name,
+            stdout,
+            all,
+            dir,
+            format,
+            node,
+            no_relay,
+        }) => cmd_find(queries, name, stdout, all, dir, &format, node, no_relay).await,
+        Some(Command::Search {
+            queries,
+            name,
+            all,
+            dir,
+            format,
+            node,
+            no_relay,
+        }) => cmd_search(queries, name, all, dir, &format, node, no_relay).await,
     }
 }
