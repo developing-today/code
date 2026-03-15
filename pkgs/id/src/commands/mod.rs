@@ -63,7 +63,7 @@ pub mod repl;
 pub mod serve;
 
 pub use client::create_local_client_endpoint;
-pub use find::{cmd_find, cmd_search, cmd_find_matches};
+pub use find::{cmd_find, cmd_search, cmd_find_matches, cmd_show, cmd_peek, SearchOptions, PeekOptions};
 pub use get::{cmd_gethash, cmd_get_local, cmd_get_one, cmd_get_one_remote, cmd_get_multi};
 pub use id::cmd_id;
 pub use list::{cmd_list, cmd_list_remote};

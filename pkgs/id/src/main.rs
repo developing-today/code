@@ -7,7 +7,8 @@ use id::{
     cmd_id, cmd_serve, cmd_list,
     cmd_put_hash, cmd_put_multi,
     cmd_gethash, cmd_get_multi,
-    cmd_find, cmd_search,
+    cmd_find, cmd_search, cmd_show, cmd_peek,
+    SearchOptions, PeekOptions,
 };
 
 #[tokio::main]
@@ -56,17 +57,73 @@ async fn main() -> Result<()> {
             all,
             dir,
             format,
+            first,
+            last,
+            count,
+            exclude,
             node,
             no_relay,
-        }) => cmd_find(queries, name, stdout, all, dir, &format, node, no_relay).await,
+        }) => {
+            let options = SearchOptions::new(first, last, count, exclude);
+            cmd_find(queries, name, stdout, all, dir, &format, options, node, no_relay).await
+        }
         Some(Command::Search {
             queries,
             name,
             all,
             dir,
             format,
+            first,
+            last,
+            count,
+            exclude,
             node,
             no_relay,
-        }) => cmd_search(queries, name, all, dir, &format, node, no_relay).await,
+        }) => {
+            let options = SearchOptions::new(first, last, count, exclude);
+            cmd_search(queries, name, all, dir, &format, options, node, no_relay).await
+        }
+        Some(Command::Show {
+            queries,
+            name,
+            all,
+            output,
+            first,
+            last,
+            exclude,
+            node,
+            no_relay,
+        }) => {
+            let options = SearchOptions::new(first, last, false, exclude);
+            cmd_show(queries, name, all, output, options, node, no_relay).await
+        }
+        Some(Command::Peek {
+            queries,
+            name,
+            lines,
+            head_only,
+            tail_only,
+            chars,
+            words,
+            quiet,
+            output,
+            all,
+            first,
+            last,
+            exclude,
+            node,
+            no_relay,
+        }) => {
+            let search_opts = SearchOptions::new(first, last, false, exclude);
+            let peek_opts = PeekOptions {
+                lines,
+                head_only,
+                tail_only,
+                chars,
+                words,
+                quiet,
+            };
+            cmd_peek(queries, name, all, output, peek_opts, search_opts, node, no_relay).await
+        }
     }
 }

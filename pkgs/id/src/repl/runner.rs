@@ -37,9 +37,11 @@
 
 use anyhow::Result;
 use rustyline::{DefaultEditor, error::ReadlineError};
+use std::io::Write;
 
 use crate::{
     FindMatch, MatchKind, ReplContext,
+    SearchOptions, PeekOptions,
     is_node_id, print_match_repl,
 };
 use super::{ReplInput, continue_heredoc, preprocess_repl_line};
@@ -342,6 +344,14 @@ async fn execute_repl_command(
             handle_search_command(ctx, rest).await?;
             Ok(ReplAction::Continue)
         }
+        (None, ["show", rest @ ..]) | (None, ["view", rest @ ..]) => {
+            handle_show_command(ctx, rest).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["peek", rest @ ..]) => {
+            handle_peek_command(ctx, rest).await?;
+            Ok(ReplAction::Continue)
+        }
         _ => {
             println!("unknown command: {}", line);
             println!("type 'help' for available commands");
@@ -432,11 +442,32 @@ fn print_help() {
     println!("  delete <NAME>          - Delete a file (alias: rm)");
     println!("  rename <FROM> <TO>     - Rename a file");
     println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
-    println!("  find <QUERY> [--name] [--file|>FILE] - Find & output (stdout default)");
-    println!("  search <QUERY> [--name] [--file|>FILE] - List matches (optionally save first)");
+    println!("  find <QUERY>...        - Find & output matches");
+    println!("  search <QUERY>...      - List matches");
+    println!("  show <QUERY>...        - Find & cat to stdout (alias: view)");
+    println!("  peek <QUERY>...        - Preview with head/tail display");
     println!("  !<cmd>                 - Run shell command");
     println!("  help                   - Show this help");
     println!("  quit                   - Exit repl");
+    println!();
+    println!("search/find flags:");
+    println!("  --name                 - Prefer name matches over hash matches");
+    println!("  --all                  - Output all matches");
+    println!("  --first [N]            - Return first N matches (default 1)");
+    println!("  --last [N]             - Return last N matches (default 1)");
+    println!("  --count                - Print match count only");
+    println!("  --exclude PAT          - Exclude matches containing PAT (repeatable)");
+    println!("  --dir <DIR>            - Save matches to directory");
+    println!("  --file, >FILE          - Save to file");
+    println!();
+    println!("peek flags:");
+    println!("  --lines N, -n N        - Lines to show from head/tail (default 5)");
+    println!("  --head-only            - Show only head lines");
+    println!("  --tail-only            - Show only tail lines");
+    println!("  --chars                - Count by characters instead of lines");
+    println!("  --words                - Count by words instead of lines");
+    println!("  --quiet, -q            - No header banner");
+    println!("  -o FILE                - Output to file");
     println!();
     println!("remote targeting:");
     println!("  list @NODE_ID          - List files on remote node");
@@ -472,6 +503,26 @@ struct FindArgs<'a> {
     to_file: bool,
     /// Output format: "tag", "group", or "union"
     format: &'a str,
+    /// Return only first N matches
+    first: Option<usize>,
+    /// Return only last N matches
+    last: Option<usize>,
+    /// Print count instead of matches
+    count: bool,
+    /// Exclude patterns (names/hashes containing these are excluded)
+    exclude: Vec<&'a str>,
+}
+
+impl<'a> FindArgs<'a> {
+    /// Convert to SearchOptions for filtering.
+    fn to_search_options(&self) -> SearchOptions {
+        SearchOptions::new(
+            self.first,
+            self.last,
+            self.count,
+            self.exclude.iter().map(|s| s.to_string()).collect(),
+        )
+    }
 }
 
 /// Parse find/search command arguments from tokens.
@@ -485,6 +536,10 @@ struct FindArgs<'a> {
 /// - `--dir <path>`: Save all to directory
 /// - `--format <fmt>`: Set output format
 /// - `--tag`, `--group`, `--union`: Format shortcuts
+/// - `--first [N]`: Return only first N matches (default 1)
+/// - `--last [N]`: Return only last N matches (default 1)
+/// - `--count`: Print count instead of matches
+/// - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
 fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a> {
     let mut args = FindArgs {
         queries: Vec::new(),
@@ -494,6 +549,10 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
         dir: None,
         to_file: false,
         format: default_format,
+        first: None,
+        last: None,
+        count: false,
+        exclude: Vec::new(),
     };
 
     let mut i = 0;
@@ -524,6 +583,37 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
             args.format = "group";
         } else if arg == "--union" {
             args.format = "union";
+        } else if arg == "--first" {
+            // --first with optional number argument
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                if let Ok(n) = rest[i + 1].parse::<usize>() {
+                    args.first = Some(n);
+                    i += 1;
+                } else {
+                    args.first = Some(1); // default to 1
+                }
+            } else {
+                args.first = Some(1); // default to 1
+            }
+        } else if arg == "--last" {
+            // --last with optional number argument
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                if let Ok(n) = rest[i + 1].parse::<usize>() {
+                    args.last = Some(n);
+                    i += 1;
+                } else {
+                    args.last = Some(1); // default to 1
+                }
+            } else {
+                args.last = Some(1); // default to 1
+            }
+        } else if arg == "--count" {
+            args.count = true;
+        } else if arg == "--exclude" {
+            if i + 1 < rest.len() {
+                args.exclude.push(rest[i + 1]);
+                i += 1;
+            }
         } else if !arg.starts_with('-') {
             args.queries.push(arg);
         }
@@ -543,6 +633,9 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
 /// - Single match: Output immediately
 /// - Multiple matches: Show numbered list, prompt for selection
 /// - `--all` flag: Output all matches without prompting
+/// - `--count` flag: Just print count
+/// - `--first N` / `--last N`: Limit results
+/// - `--exclude PATTERN`: Filter out matches
 async fn handle_find_command(
     ctx: &mut ReplContext,
     rl: &mut DefaultEditor,
@@ -551,26 +644,36 @@ async fn handle_find_command(
     let args = parse_find_args(rest, "union");
 
     if args.queries.is_empty() {
-        println!("usage: find <query>... [--name] [--all] [--dir <dir>] [--file] [>filename]");
+        println!("usage: find <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]");
         return Ok(());
     }
 
     // Collect matches for all queries
     let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
 
-    if all_matches.is_empty() {
+    // Apply filtering and limiting via SearchOptions
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
         println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // --count mode: just print the count
+    if args.count {
+        println!("{}", filtered_matches.len());
         return Ok(());
     }
 
     // --all mode: output all matches
     if args.all {
-        return output_all_matches(ctx, &all_matches, args.dir, args.format).await;
+        return output_all_matches_filtered(ctx, &filtered_matches, args.dir, args.format).await;
     }
 
     // Single match
-    if all_matches.len() == 1 {
-        let (_, m) = &all_matches[0];
+    if filtered_matches.len() == 1 {
+        let (_, m) = &filtered_matches[0];
         let output = if args.to_file {
             args.output_file.unwrap_or(&m.name)
         } else {
@@ -580,7 +683,7 @@ async fn handle_find_command(
     }
 
     // Multiple matches - interactive selection
-    select_and_output_matches(ctx, rl, &all_matches, args.dir, args.output_file, args.to_file, args.format).await
+    select_and_output_matches_filtered(ctx, rl, &filtered_matches, args.dir, args.output_file, args.to_file, args.format).await
 }
 
 /// Handle the `search` command in the REPL.
@@ -591,36 +694,156 @@ async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<(
     let args = parse_find_args(rest, "union");
 
     if args.queries.is_empty() {
-        println!("usage: search <query>... [--name] [--all] [--dir <dir>] [--file] [>filename]");
+        println!("usage: search <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]");
         return Ok(());
     }
 
     // Collect matches for all queries
     let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
 
-    if all_matches.is_empty() {
+    // Apply filtering and limiting via SearchOptions
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
         println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // --count mode: just print the count
+    if args.count {
+        println!("{}", filtered_matches.len());
         return Ok(());
     }
 
     // --all mode: output all matches to files
     if args.all {
-        return output_all_matches(ctx, &all_matches, args.dir, args.format).await;
+        return output_all_matches_filtered(ctx, &filtered_matches, args.dir, args.format).await;
     }
 
     // Default: list matches
-    for (query, m) in &all_matches {
+    for (query, m) in &filtered_matches {
         print_match_repl(query, m, args.format);
     }
 
     // If --file or >filename, also output first match to file
     if args.to_file {
-        let (_, m) = &all_matches[0];
+        let (_, m) = &filtered_matches[0];
         let output = args.output_file.unwrap_or(&m.name);
         ctx.get(&m.name, Some(output)).await
     } else {
         Ok(())
     }
+}
+
+/// Handle the `show` command in the REPL (find + cat to stdout).
+///
+/// Searches for blobs matching the queries and outputs their content
+/// to stdout (or file with -o).
+async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
+    let args = parse_find_args(rest, "union");
+
+    if args.queries.is_empty() {
+        println!("usage: show <query>... [--all] [--first [N]] [--last [N]] [--exclude PAT] [-o FILE]");
+        return Ok(());
+    }
+
+    // Collect matches for all queries
+    let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
+
+    // Apply filtering and limiting
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
+        println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // Determine output destination
+    let output = args.output_file.unwrap_or("-");
+
+    if args.all {
+        // Output all matches
+        let mut seen = std::collections::HashSet::new();
+        for (_, m) in &filtered_matches {
+            let key = format!("{}:{}", m.hash, m.name);
+            if seen.insert(key) {
+                if let Err(e) = ctx.get(&m.name, Some(output)).await {
+                    println!("error: {}", e);
+                }
+            }
+        }
+    } else {
+        // Output first match only
+        let (_, m) = &filtered_matches[0];
+        ctx.get(&m.name, Some(output)).await?;
+    }
+
+    Ok(())
+}
+
+/// Handle the `peek` command in the REPL (preview with head/tail).
+///
+/// Searches for blobs and shows a preview with configurable head/tail lines.
+async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
+    let (args, peek_opts) = parse_peek_args(rest);
+
+    if args.queries.is_empty() {
+        println!("usage: peek <query>... [--lines N] [--head-only] [--tail-only] [--chars] [--words] [--quiet] [-o FILE]");
+        return Ok(());
+    }
+
+    // Collect matches for all queries
+    let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
+
+    // Apply filtering and limiting
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
+        println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // Determine which matches to peek
+    let matches_to_peek: Vec<&(String, FindMatch)> = if args.all {
+        // Deduplicate
+        let mut seen = std::collections::HashSet::new();
+        filtered_matches
+            .iter()
+            .filter(|(_, m)| seen.insert(format!("{}:{}", m.hash, m.name)))
+            .collect()
+    } else {
+        // Just first unique match
+        let mut seen = std::collections::HashSet::new();
+        filtered_matches
+            .iter()
+            .filter(|(_, m)| seen.insert(format!("{}:{}", m.hash, m.name)))
+            .take(1)
+            .collect()
+    };
+
+    // Output destination
+    let mut out: Box<dyn std::io::Write> = if let Some(path) = args.output_file {
+        Box::new(std::fs::File::create(path)?)
+    } else {
+        Box::new(std::io::stdout())
+    };
+
+    for (idx, (_, m)) in matches_to_peek.iter().enumerate() {
+        if idx > 0 {
+            writeln!(out)?;
+        }
+
+        // Fetch content to string (via get to temp file)
+        let content = fetch_content_for_peek(ctx, m).await?;
+
+        // Print the peek
+        print_peek(&mut out, &m.name, &m.hash.to_string(), &content, &peek_opts, matches_to_peek.len())?;
+    }
+
+    Ok(())
 }
 
 /// Collect matches for multiple queries.
@@ -649,13 +872,37 @@ async fn collect_matches(
     all_matches
 }
 
-/// Output all matches (for `--all` mode).
-///
-/// Either saves all matching files to a directory or outputs them
-/// all to stdout. Deduplicates by hash+name.
-async fn output_all_matches(
+/// Apply SearchOptions to filter and limit matches.
+fn apply_search_options(
+    matches: &[(String, FindMatch)],
+    opts: &SearchOptions,
+) -> Vec<(String, FindMatch)> {
+    // First, apply exclusions
+    let filtered: Vec<(String, FindMatch)> = matches
+        .iter()
+        .filter(|(_, m)| !opts.should_exclude(&m.name, &m.hash.to_string()))
+        .cloned()
+        .collect();
+
+    // Then apply first/last limiting
+    if let Some(n) = opts.first {
+        filtered.into_iter().take(n).collect()
+    } else if let Some(n) = opts.last {
+        let len = filtered.len();
+        if n >= len {
+            filtered
+        } else {
+            filtered.into_iter().skip(len - n).collect()
+        }
+    } else {
+        filtered
+    }
+}
+
+/// Output all filtered matches (for `--all` mode).
+async fn output_all_matches_filtered(
     ctx: &mut ReplContext,
-    all_matches: &[(String, FindMatch)],
+    filtered_matches: &[(String, FindMatch)],
     dir: Option<&str>,
     format: &str,
 ) -> Result<()> {
@@ -665,7 +912,7 @@ async fn output_all_matches(
             return Ok(());
         }
         let mut seen = std::collections::HashSet::new();
-        for (query, m) in all_matches {
+        for (query, m) in filtered_matches {
             let key = format!("{}:{}", m.hash, m.name);
             if seen.insert(key) {
                 let output_path = format!("{}/{}", dir_path, m.name);
@@ -679,7 +926,7 @@ async fn output_all_matches(
     } else {
         // Output all to stdout
         let mut seen = std::collections::HashSet::new();
-        for (_, m) in all_matches {
+        for (_, m) in filtered_matches {
             let key = format!("{}:{}", m.hash, m.name);
             if seen.insert(key) {
                 if let Err(e) = ctx.get(&m.name, Some("-")).await {
@@ -691,31 +938,19 @@ async fn output_all_matches(
     Ok(())
 }
 
-/// Interactive selection and output of multiple matches.
-///
-/// Displays a numbered list of matches and prompts the user to select
-/// which ones to output. Supports comma or space-separated numbers.
-///
-/// # Selection Format
-///
-/// Users can enter:
-/// - Single number: `3`
-/// - Space-separated: `1 3 5`
-/// - Comma-separated: `1,2,3`
-/// - Mixed: `1, 3 5`
-/// - Empty (Enter): Cancel selection
-async fn select_and_output_matches(
+/// Interactive selection and output of filtered matches.
+async fn select_and_output_matches_filtered(
     ctx: &mut ReplContext,
     rl: &mut DefaultEditor,
-    all_matches: &[(String, FindMatch)],
+    filtered_matches: &[(String, FindMatch)],
     dir: Option<&str>,
     output_file: Option<&str>,
     to_file: bool,
     format: &str,
 ) -> Result<()> {
     // Print numbered list
-    println!("found {} matches:", all_matches.len());
-    for (i, (query, m)) in all_matches.iter().enumerate() {
+    println!("found {} matches:", filtered_matches.len());
+    for (i, (query, m)) in filtered_matches.iter().enumerate() {
         let kind_str = match m.kind {
             MatchKind::Exact => "exact",
             MatchKind::Prefix => "prefix",
@@ -743,7 +978,7 @@ async fn select_and_output_matches(
                 .split(|c| c == ',' || c == ' ')
                 .filter(|s| !s.is_empty())
                 .filter_map(|s| s.trim().parse::<usize>().ok())
-                .filter(|&n| n >= 1 && n <= all_matches.len())
+                .filter(|&n| n >= 1 && n <= filtered_matches.len())
                 .collect();
 
             if selections.is_empty() {
@@ -758,7 +993,7 @@ async fn select_and_output_matches(
                     return Ok(());
                 }
                 for n in &selections {
-                    let (_, m) = &all_matches[n - 1];
+                    let (_, m) = &filtered_matches[n - 1];
                     let output_path = format!("{}/{}", dir_path, m.name);
                     if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
                         println!("error: {}", e);
@@ -769,7 +1004,7 @@ async fn select_and_output_matches(
                 }
             } else if to_file {
                 for n in &selections {
-                    let (_, m) = &all_matches[n - 1];
+                    let (_, m) = &filtered_matches[n - 1];
                     let output = output_file.unwrap_or(&m.name);
                     if let Err(e) = ctx.get(&m.name, Some(output)).await {
                         println!("error: {}", e);
@@ -777,7 +1012,7 @@ async fn select_and_output_matches(
                 }
             } else {
                 for n in &selections {
-                    let (_, m) = &all_matches[n - 1];
+                    let (_, m) = &filtered_matches[n - 1];
                     if let Err(e) = ctx.get(&m.name, Some("-")).await {
                         println!("error: {}", e);
                     }
@@ -790,6 +1025,273 @@ async fn select_and_output_matches(
             Ok(())
         }
     }
+}
+
+/// Parse peek command arguments.
+fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
+    let mut find_args = FindArgs {
+        queries: Vec::new(),
+        prefer_name: false,
+        all: false,
+        output_file: None,
+        dir: None,
+        to_file: false,
+        format: "union",
+        first: None,
+        last: None,
+        count: false,
+        exclude: Vec::new(),
+    };
+    let mut peek_opts = PeekOptions::default();
+
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i];
+        if arg == "--name" {
+            find_args.prefer_name = true;
+        } else if arg == "--all" {
+            find_args.all = true;
+        } else if arg == "-o" || arg == "--output" {
+            if i + 1 < rest.len() {
+                find_args.output_file = Some(rest[i + 1]);
+                i += 1;
+            }
+        } else if arg == "--first" {
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                if let Ok(n) = rest[i + 1].parse::<usize>() {
+                    find_args.first = Some(n);
+                    i += 1;
+                } else {
+                    find_args.first = Some(1);
+                }
+            } else {
+                find_args.first = Some(1);
+            }
+        } else if arg == "--last" {
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                if let Ok(n) = rest[i + 1].parse::<usize>() {
+                    find_args.last = Some(n);
+                    i += 1;
+                } else {
+                    find_args.last = Some(1);
+                }
+            } else {
+                find_args.last = Some(1);
+            }
+        } else if arg == "--exclude" {
+            if i + 1 < rest.len() {
+                find_args.exclude.push(rest[i + 1]);
+                i += 1;
+            }
+        } else if arg == "--lines" || arg == "-n" {
+            if i + 1 < rest.len() {
+                if let Ok(n) = rest[i + 1].parse::<usize>() {
+                    peek_opts.lines = n;
+                    i += 1;
+                }
+            }
+        } else if arg == "--head-only" || arg == "--head" {
+            peek_opts.head_only = true;
+        } else if arg == "--tail-only" || arg == "--tail" {
+            peek_opts.tail_only = true;
+        } else if arg == "--chars" {
+            peek_opts.chars = true;
+        } else if arg == "--words" {
+            peek_opts.words = true;
+        } else if arg == "--quiet" || arg == "-q" {
+            peek_opts.quiet = true;
+        } else if !arg.starts_with('-') {
+            find_args.queries.push(arg);
+        }
+        i += 1;
+    }
+
+    (find_args, peek_opts)
+}
+
+/// Fetch content for peek preview.
+async fn fetch_content_for_peek(ctx: &mut ReplContext, m: &FindMatch) -> Result<String> {
+    use std::io::Read;
+    use tempfile::NamedTempFile;
+
+    // Create a temp file to fetch into
+    let temp_file = NamedTempFile::new()?;
+    let temp_path = temp_file.path().to_string_lossy().to_string();
+
+    ctx.get(&m.name, Some(&temp_path)).await?;
+
+    // Read content
+    let mut content = String::new();
+    let mut file = std::fs::File::open(&temp_path)?;
+    file.read_to_string(&mut content)?;
+
+    Ok(content)
+}
+
+/// Print peek preview.
+fn print_peek(
+    out: &mut dyn std::io::Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    if opts.chars {
+        print_peek_chars(out, name, hash, content, opts, total_files)
+    } else if opts.words {
+        print_peek_words(out, name, hash, content, opts, total_files)
+    } else {
+        print_peek_lines(out, name, hash, content, opts, total_files)
+    }
+}
+
+/// Print peek by lines.
+fn print_peek_lines(
+    out: &mut dyn std::io::Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    let n = opts.lines;
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
+
+    // Print header if not quiet
+    if !opts.quiet {
+        writeln!(out, "─── {} ───", name)?;
+        writeln!(out, "hash: {}  lines: {}  files: {}", hash_short, total_lines, total_files)?;
+        writeln!(out, "───────────────────────────────────────")?;
+    }
+
+    // If small enough, show all
+    if total_lines <= n * 2 {
+        for line in &lines {
+            writeln!(out, "{}", line)?;
+        }
+    } else if opts.head_only {
+        // Show only head
+        for line in lines.iter().take(n) {
+            writeln!(out, "{}", line)?;
+        }
+        if total_lines > n && !opts.quiet {
+            writeln!(out, "... ({} more lines)", total_lines - n)?;
+        }
+    } else if opts.tail_only {
+        // Show only tail
+        if total_lines > n && !opts.quiet {
+            writeln!(out, "... ({} lines above)", total_lines - n)?;
+        }
+        for line in lines.iter().skip(total_lines.saturating_sub(n)) {
+            writeln!(out, "{}", line)?;
+        }
+    } else {
+        // Show head + tail
+        for line in lines.iter().take(n) {
+            writeln!(out, "{}", line)?;
+        }
+        writeln!(out, "...")?;
+        writeln!(out, "... ({} lines omitted)", total_lines.saturating_sub(n * 2))?;
+        writeln!(out, "...")?;
+        for line in lines.iter().skip(total_lines.saturating_sub(n)) {
+            writeln!(out, "{}", line)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Print peek by characters.
+fn print_peek_chars(
+    out: &mut dyn std::io::Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    let total_chars = content.chars().count();
+    let n = opts.lines; // reuse lines as char count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
+
+    if !opts.quiet {
+        writeln!(out, "─── {} ───", name)?;
+        writeln!(out, "hash: {}  chars: {}  files: {}", hash_short, total_chars, total_files)?;
+        writeln!(out, "───────────────────────────────────────")?;
+    }
+
+    if total_chars <= n * 2 {
+        write!(out, "{}", content)?;
+    } else if opts.head_only {
+        let head: String = content.chars().take(n).collect();
+        write!(out, "{}", head)?;
+        if !opts.quiet {
+            writeln!(out, "\n... ({} more chars)", total_chars - n)?;
+        }
+    } else if opts.tail_only {
+        if !opts.quiet {
+            writeln!(out, "... ({} chars above)", total_chars - n)?;
+        }
+        let tail: String = content.chars().skip(total_chars.saturating_sub(n)).collect();
+        write!(out, "{}", tail)?;
+    } else {
+        let head: String = content.chars().take(n).collect();
+        let tail: String = content.chars().skip(total_chars.saturating_sub(n)).collect();
+        write!(out, "{}", head)?;
+        writeln!(out, "\n... ({} chars omitted)", total_chars.saturating_sub(n * 2))?;
+        write!(out, "{}", tail)?;
+    }
+    writeln!(out)?;
+
+    Ok(())
+}
+
+/// Print peek by words.
+fn print_peek_words(
+    out: &mut dyn std::io::Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    let words: Vec<&str> = content.split_whitespace().collect();
+    let total_words = words.len();
+    let n = opts.lines; // reuse lines as word count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
+
+    if !opts.quiet {
+        writeln!(out, "─── {} ───", name)?;
+        writeln!(out, "hash: {}  words: {}  files: {}", hash_short, total_words, total_files)?;
+        writeln!(out, "───────────────────────────────────────")?;
+    }
+
+    if total_words <= n * 2 {
+        writeln!(out, "{}", words.join(" "))?;
+    } else if opts.head_only {
+        let head: Vec<&str> = words.iter().take(n).copied().collect();
+        writeln!(out, "{}", head.join(" "))?;
+        if !opts.quiet {
+            writeln!(out, "... ({} more words)", total_words - n)?;
+        }
+    } else if opts.tail_only {
+        if !opts.quiet {
+            writeln!(out, "... ({} words above)", total_words - n)?;
+        }
+        let tail: Vec<&str> = words.iter().skip(total_words.saturating_sub(n)).copied().collect();
+        writeln!(out, "{}", tail.join(" "))?;
+    } else {
+        let head: Vec<&str> = words.iter().take(n).copied().collect();
+        let tail: Vec<&str> = words.iter().skip(total_words.saturating_sub(n)).copied().collect();
+        writeln!(out, "{}", head.join(" "))?;
+        writeln!(out, "... ({} words omitted)", total_words.saturating_sub(n * 2))?;
+        writeln!(out, "{}", tail.join(" "))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -870,5 +1372,124 @@ mod tests {
         let rest = vec!["query", "--union"];
         let args = parse_find_args(&rest, "tag");
         assert_eq!(args.format, "union");
+    }
+
+    #[test]
+    fn test_parse_find_args_first_with_number() {
+        let rest = vec!["query", "--first", "5"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.first, Some(5));
+        assert_eq!(args.last, None);
+    }
+
+    #[test]
+    fn test_parse_find_args_first_without_number() {
+        let rest = vec!["query", "--first"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.first, Some(1)); // defaults to 1
+    }
+
+    #[test]
+    fn test_parse_find_args_last_with_number() {
+        let rest = vec!["query", "--last", "3"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.last, Some(3));
+        assert_eq!(args.first, None);
+    }
+
+    #[test]
+    fn test_parse_find_args_count() {
+        let rest = vec!["query", "--count"];
+        let args = parse_find_args(&rest, "union");
+        assert!(args.count);
+    }
+
+    #[test]
+    fn test_parse_find_args_exclude() {
+        let rest = vec!["query", "--exclude", ".bak", "--exclude", ".tmp"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.exclude, vec![".bak", ".tmp"]);
+    }
+
+    #[test]
+    fn test_parse_find_args_combined_filters() {
+        let rest = vec!["query", "--first", "10", "--exclude", ".bak", "--name"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.first, Some(10));
+        assert_eq!(args.exclude, vec![".bak"]);
+        assert!(args.prefer_name);
+    }
+
+    #[test]
+    fn test_parse_peek_args_basic() {
+        let rest = vec!["readme"];
+        let (find_args, peek_opts) = parse_peek_args(&rest);
+        assert_eq!(find_args.queries, vec!["readme"]);
+        assert_eq!(peek_opts.lines, 5); // default
+        assert!(!peek_opts.head_only);
+        assert!(!peek_opts.tail_only);
+    }
+
+    #[test]
+    fn test_parse_peek_args_with_lines() {
+        let rest = vec!["readme", "--lines", "10"];
+        let (_, peek_opts) = parse_peek_args(&rest);
+        assert_eq!(peek_opts.lines, 10);
+    }
+
+    #[test]
+    fn test_parse_peek_args_head_only() {
+        let rest = vec!["readme", "--head-only"];
+        let (_, peek_opts) = parse_peek_args(&rest);
+        assert!(peek_opts.head_only);
+        assert!(!peek_opts.tail_only);
+    }
+
+    #[test]
+    fn test_parse_peek_args_tail_only() {
+        let rest = vec!["readme", "--tail-only"];
+        let (_, peek_opts) = parse_peek_args(&rest);
+        assert!(!peek_opts.head_only);
+        assert!(peek_opts.tail_only);
+    }
+
+    #[test]
+    fn test_parse_peek_args_chars() {
+        let rest = vec!["readme", "--chars"];
+        let (_, peek_opts) = parse_peek_args(&rest);
+        assert!(peek_opts.chars);
+        assert!(!peek_opts.words);
+    }
+
+    #[test]
+    fn test_parse_peek_args_words() {
+        let rest = vec!["readme", "--words"];
+        let (_, peek_opts) = parse_peek_args(&rest);
+        assert!(!peek_opts.chars);
+        assert!(peek_opts.words);
+    }
+
+    #[test]
+    fn test_parse_peek_args_quiet() {
+        let rest = vec!["readme", "-q"];
+        let (_, peek_opts) = parse_peek_args(&rest);
+        assert!(peek_opts.quiet);
+    }
+
+    #[test]
+    fn test_parse_peek_args_output_file() {
+        let rest = vec!["readme", "-o", "out.txt"];
+        let (find_args, _) = parse_peek_args(&rest);
+        assert_eq!(find_args.output_file, Some("out.txt"));
+    }
+
+    #[test]
+    fn test_find_args_to_search_options() {
+        let rest = vec!["query", "--first", "5", "--exclude", ".bak"];
+        let args = parse_find_args(&rest, "union");
+        let opts = args.to_search_options();
+        assert_eq!(opts.first, Some(5));
+        assert_eq!(opts.exclude, vec![".bak".to_string()]);
+        assert!(!opts.count);
     }
 }

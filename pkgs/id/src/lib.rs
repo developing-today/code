@@ -164,7 +164,8 @@ pub use commands::{
     cmd_id, cmd_serve, cmd_list, cmd_list_remote,
     cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_one, cmd_put_one_remote, cmd_put_multi,
     cmd_gethash, cmd_get_local, cmd_get_one, cmd_get_one_remote, cmd_get_multi,
-    cmd_find, cmd_search, cmd_find_matches,
+    cmd_find, cmd_search, cmd_find_matches, cmd_show, cmd_peek,
+    SearchOptions, PeekOptions,
     create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
 pub use helpers::{parse_put_spec, parse_get_spec, print_match_cli, print_matches_cli, print_match_repl};

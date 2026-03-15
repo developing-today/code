@@ -11,6 +11,8 @@ An iroh-based peer-to-peer file sharing CLI tool.
 - **Peer-to-peer transfers**: Share files directly with other nodes
 - **Interactive REPL**: Shell-like interface with command substitution
 - **Background server**: Long-running process for accepting connections
+- **Fuzzy search**: Find files by partial name or hash matches
+- **Content preview**: Peek at file contents with head/tail display
 
 ## Installation
 
@@ -35,6 +37,15 @@ id list
 
 # Retrieve a file
 id get myfile.txt
+
+# Search for files
+id search config
+
+# Show file content by pattern
+id show config
+
+# Preview a file
+id peek readme
 
 # Start interactive REPL
 id repl
@@ -61,6 +72,8 @@ id serve
 |---------|-------------|
 | `find <QUERY>` | Find and output matching files |
 | `search <QUERY>` | List matches without content |
+| `show <QUERY>` | Find and output content (alias: `view`) |
+| `peek <QUERY>` | Preview with head/tail display |
 | `list` | List all stored files |
 
 ### System Commands
@@ -70,6 +83,84 @@ id serve
 | `serve` | Start background server |
 | `repl` | Start interactive REPL |
 | `id` | Print this node's public ID |
+
+## Search Filtering
+
+All search commands (`find`, `search`, `show`, `peek`) support filtering flags:
+
+```bash
+# Get first 3 matches
+id search --first 3 config
+
+# Get last 5 matches
+id search --last 5 config
+
+# Count matches
+id search --count config
+
+# Exclude patterns (repeatable)
+id search --exclude .bak --exclude .tmp config
+
+# Combine filters
+id search --first 10 --exclude .bak config
+```
+
+### Filter Flags
+
+| Flag | Description |
+|------|-------------|
+| `--first [N]` | Return first N matches (default 1 if N omitted) |
+| `--last [N]` | Return last N matches (default 1 if N omitted) |
+| `--count` | Print count instead of matches |
+| `--exclude PATTERN` | Exclude matches containing pattern |
+
+## Show/View Command
+
+Output file content found by pattern search:
+
+```bash
+# Show first match
+id show config
+
+# Show all matches
+id show --all config
+
+# Write to file
+id show -o output.txt config
+
+# With filtering
+id show --first 3 --exclude .bak config
+```
+
+## Peek Command
+
+Preview files with configurable head/tail display:
+
+```bash
+# Default: 5 head + 5 tail lines
+id peek readme
+
+# Custom line count
+id peek -n 10 readme
+
+# Head only
+id peek --head-only -n 20 readme
+
+# Tail only
+id peek --tail-only -n 20 readme
+
+# Preview by characters
+id peek --chars -n 100 readme
+
+# Preview by words
+id peek --words -n 50 readme
+
+# Quiet mode (no header)
+id peek -q readme
+
+# Output to file
+id peek -o preview.txt readme
+```
 
 ## Remote Operations
 
@@ -84,6 +175,9 @@ id put <NODE_ID> myfile.txt
 
 # List files on remote node
 id list <NODE_ID>
+
+# Search on remote node
+id search --node <NODE_ID> config
 ```
 
 ## REPL Features
@@ -118,6 +212,26 @@ EOF
 # Remote targeting
 > list @<NODE_ID>
 > get @<NODE_ID> config.json
+
+# Search commands in REPL
+> find config
+> search --first 5 config
+> show readme
+> peek --lines 10 config
+```
+
+### REPL Search Flags
+
+In the REPL, search commands support the same filtering flags:
+
+```bash
+> search --first 5 config
+> search --last 3 config
+> search --count config
+> search --exclude .bak config
+> find --first 2 --exclude .tmp readme
+> show --all config
+> peek --head-only -n 10 readme
 ```
 
 ## Architecture

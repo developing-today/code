@@ -19,9 +19,20 @@
 //!   cat        Output files to stdout (aliases: output, out)
 //!   find       Find files and output content
 //!   search     Search files and list matches
+//!   show       Find and output file content (alias: view)
+//!   peek       Preview files with head/tail display
 //!   list       List all stored files
 //!   id         Print node ID
 //! ```
+//!
+//! # Search Filtering Flags
+//!
+//! The `find`, `search`, `show`, and `peek` commands support filtering:
+//!
+//! - `--first N`: Return only the first N matches (default 1 if no number)
+//! - `--last N`: Return only the last N matches (default 1 if no number)
+//! - `--count`: Print count of matches instead of the matches
+//! - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
 //!
 //! # Usage Examples
 //!
@@ -37,6 +48,15 @@
 //!
 //! # Interactive REPL connected to remote
 //! id repl abc123...def456
+//!
+//! # Show content of first match for "config"
+//! id show config
+//!
+//! # Preview file with head/tail
+//! id peek readme
+//!
+//! # Search with filters
+//! id search --first 5 --exclude .bak config
 //! ```
 //!
 //! # Remote Operations
@@ -341,6 +361,142 @@ pub enum Command {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Find a file by pattern and output its content (cat over find).
+    ///
+    /// Searches for files matching the query and outputs content to stdout.
+    /// By default outputs the first (best) match. Use `--all` for all matches.
+    ///
+    /// Supports all find/search flags: `--first`, `--last`, `--exclude`, etc.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Show first match for "config"
+    /// id show config
+    ///
+    /// # Show all matches
+    /// id show --all config
+    ///
+    /// # Show first 3 matches
+    /// id show --first 3 config
+    ///
+    /// # Exclude backup files
+    /// id show --exclude .bak config
+    ///
+    /// # Write to file instead of stdout
+    /// id show -o output.txt config
+    /// ```
+    #[command(alias = "view")]
+    Show {
+        /// Search queries (case-insensitive).
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches in results.
+        #[arg(long)]
+        name: bool,
+        /// Output all matches instead of just the first.
+        #[arg(long)]
+        all: bool,
+        /// Output file (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
+        /// Remote node ID to search.
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Preview file content with configurable head/tail lines.
+    ///
+    /// Shows a preview of matching files with head and tail lines.
+    /// By default shows 5 head + 5 tail lines (or full content if ≤10 lines).
+    ///
+    /// # Display Modes
+    ///
+    /// - Default: shows header banner + head lines + ... + tail lines
+    /// - `--quiet`: no header, just content
+    /// - `--lines`: custom number of head/tail lines
+    /// - `--head-only` / `--tail-only`: show only head or tail
+    /// - `--chars` / `--words`: count by characters or words instead of lines
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Preview readme (default 5 head + 5 tail)
+    /// id peek readme
+    ///
+    /// # Preview with 10 head/tail lines
+    /// id peek --lines 10 readme
+    ///
+    /// # Show only first 20 lines
+    /// id peek --head-only --lines 20 readme
+    ///
+    /// # Preview multiple files
+    /// id peek readme config.json package.json
+    ///
+    /// # Preview first 100 characters
+    /// id peek --chars --lines 100 readme
+    ///
+    /// # Quiet mode (no header)
+    /// id peek --quiet readme
+    /// ```
+    Peek {
+        /// Search queries (case-insensitive).
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches in results.
+        #[arg(long)]
+        name: bool,
+        /// Number of lines to show from head and tail (default: 5).
+        #[arg(short = 'n', long, default_value = "5")]
+        lines: usize,
+        /// Show only head lines (no tail).
+        #[arg(long, conflicts_with = "tail_only")]
+        head_only: bool,
+        /// Show only tail lines (no head).
+        #[arg(long, conflicts_with = "head_only")]
+        tail_only: bool,
+        /// Count by characters instead of lines.
+        #[arg(long, conflicts_with = "words")]
+        chars: bool,
+        /// Count by words instead of lines.
+        #[arg(long, conflicts_with = "chars")]
+        words: bool,
+        /// Quiet mode: no header banner, just content.
+        #[arg(short = 'q', long)]
+        quiet: bool,
+        /// Output file (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Peek all matches instead of just the first per query.
+        #[arg(long)]
+        all: bool,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
+        /// Remote node ID to search.
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers.
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Find files by name/hash query and optionally output content.
     ///
     /// Searches return the best match (or all matches with `--all`).
@@ -351,6 +507,16 @@ pub enum Command {
     /// - Default: write best match to file with its name
     /// - `--stdout`: write best match to stdout
     /// - `--all`: write all matches (to stdout or `--dir`)
+    ///
+    /// # Result Limiting
+    ///
+    /// - `--first`: Return only the first N matches (default 1 if no number)
+    /// - `--last`: Return only the last N matches (default 1 if no number)
+    /// - `--count`: Print count of matches instead of the matches themselves
+    ///
+    /// # Filtering
+    ///
+    /// - `--exclude`: Exclude matches containing the pattern (repeatable)
     ///
     /// # Examples
     ///
@@ -363,6 +529,18 @@ pub enum Command {
     ///
     /// # Find all matches and save to directory
     /// id find --all --dir ./output config
+    ///
+    /// # Get first 3 matches
+    /// id find --first 3 config
+    ///
+    /// # Get last match
+    /// id find --last config
+    ///
+    /// # Count matches
+    /// id find --count config
+    ///
+    /// # Exclude backup files
+    /// id find --exclude .bak --exclude .tmp config
     /// ```
     Find {
         /// Search queries (case-insensitive).
@@ -389,6 +567,18 @@ pub enum Command {
         /// - `union`: deduplicated by hash
         #[arg(long, default_value = "tag")]
         format: String,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Print count of matches instead of the matches themselves.
+        #[arg(long)]
+        count: bool,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
         /// Remote node ID to search.
         #[arg(long)]
         node: Option<String>,
@@ -400,6 +590,16 @@ pub enum Command {
     ///
     /// Like `find` but only lists matches, doesn't retrieve content.
     ///
+    /// # Result Limiting
+    ///
+    /// - `--first`: Return only the first N matches (default 1 if no number)
+    /// - `--last`: Return only the last N matches (default 1 if no number)
+    /// - `--count`: Print count of matches instead of the matches themselves
+    ///
+    /// # Filtering
+    ///
+    /// - `--exclude`: Exclude matches containing the pattern (repeatable)
+    ///
     /// # Examples
     ///
     /// ```bash
@@ -408,6 +608,15 @@ pub enum Command {
     ///
     /// # Search with grouped output
     /// id search --format group config test
+    ///
+    /// # Get first 5 matches
+    /// id search --first 5 config
+    ///
+    /// # Count matches
+    /// id search --count config
+    ///
+    /// # Exclude backup files
+    /// id search --exclude .bak config
     /// ```
     Search {
         /// Search queries (case-insensitive).
@@ -425,6 +634,18 @@ pub enum Command {
         /// Output format: tag, group, or union.
         #[arg(long, default_value = "tag")]
         format: String,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Print count of matches instead of the matches themselves.
+        #[arg(long)]
+        count: bool,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
         /// Remote node ID to search.
         #[arg(long)]
         node: Option<String>,
@@ -774,5 +995,389 @@ mod tests {
     fn test_cli_verify() {
         // Verify CLI structure is valid
         Cli::command().debug_assert();
+    }
+
+    // Tests for Show command
+    #[test]
+    fn test_cli_parse_show() {
+        let cli = Cli::parse_from(["id", "show", "query"]);
+        match cli.command {
+            Some(Command::Show {
+                queries,
+                name,
+                all,
+                output,
+                first,
+                last,
+                exclude,
+                ..
+            }) => {
+                assert_eq!(queries, vec!["query"]);
+                assert!(!name);
+                assert!(!all);
+                assert!(output.is_none());
+                assert!(first.is_none());
+                assert!(last.is_none());
+                assert!(exclude.is_empty());
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_show_alias_view() {
+        let cli = Cli::parse_from(["id", "view", "query"]);
+        assert!(matches!(cli.command, Some(Command::Show { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_show_with_all() {
+        let cli = Cli::parse_from(["id", "show", "--all", "query"]);
+        match cli.command {
+            Some(Command::Show { all, .. }) => {
+                assert!(all);
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_show_with_output() {
+        let cli = Cli::parse_from(["id", "show", "-o", "output.txt", "query"]);
+        match cli.command {
+            Some(Command::Show { output, .. }) => {
+                assert_eq!(output, Some("output.txt".to_string()));
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_show_with_filters() {
+        let cli = Cli::parse_from([
+            "id",
+            "show",
+            "--first",
+            "3",
+            "--exclude",
+            ".bak",
+            "--exclude",
+            ".tmp",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Show { first, exclude, .. }) => {
+                assert_eq!(first, Some(3));
+                assert_eq!(exclude, vec![".bak", ".tmp"]);
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    // Tests for Peek command
+    #[test]
+    fn test_cli_parse_peek() {
+        let cli = Cli::parse_from(["id", "peek", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                queries,
+                lines,
+                head_only,
+                tail_only,
+                chars,
+                words,
+                quiet,
+                ..
+            }) => {
+                assert_eq!(queries, vec!["query"]);
+                assert_eq!(lines, 5); // default
+                assert!(!head_only);
+                assert!(!tail_only);
+                assert!(!chars);
+                assert!(!words);
+                assert!(!quiet);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_with_lines() {
+        let cli = Cli::parse_from(["id", "peek", "-n", "10", "query"]);
+        match cli.command {
+            Some(Command::Peek { lines, .. }) => {
+                assert_eq!(lines, 10);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_head_only() {
+        let cli = Cli::parse_from(["id", "peek", "--head-only", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                head_only,
+                tail_only,
+                ..
+            }) => {
+                assert!(head_only);
+                assert!(!tail_only);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_tail_only() {
+        let cli = Cli::parse_from(["id", "peek", "--tail-only", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                head_only,
+                tail_only,
+                ..
+            }) => {
+                assert!(!head_only);
+                assert!(tail_only);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_chars() {
+        let cli = Cli::parse_from(["id", "peek", "--chars", "-n", "100", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                chars,
+                words,
+                lines,
+                ..
+            }) => {
+                assert!(chars);
+                assert!(!words);
+                assert_eq!(lines, 100);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_words() {
+        let cli = Cli::parse_from(["id", "peek", "--words", "-n", "50", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                chars,
+                words,
+                lines,
+                ..
+            }) => {
+                assert!(!chars);
+                assert!(words);
+                assert_eq!(lines, 50);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_quiet() {
+        let cli = Cli::parse_from(["id", "peek", "-q", "query"]);
+        match cli.command {
+            Some(Command::Peek { quiet, .. }) => {
+                assert!(quiet);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_with_output() {
+        let cli = Cli::parse_from(["id", "peek", "-o", "output.txt", "query"]);
+        match cli.command {
+            Some(Command::Peek { output, .. }) => {
+                assert_eq!(output, Some("output.txt".to_string()));
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_all() {
+        let cli = Cli::parse_from(["id", "peek", "--all", "query"]);
+        match cli.command {
+            Some(Command::Peek { all, .. }) => {
+                assert!(all);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_with_filters() {
+        let cli = Cli::parse_from(["id", "peek", "--first", "2", "--exclude", ".bak", "query"]);
+        match cli.command {
+            Some(Command::Peek { first, exclude, .. }) => {
+                assert_eq!(first, Some(2));
+                assert_eq!(exclude, vec![".bak"]);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    // Tests for find/search with new flags
+    #[test]
+    fn test_cli_parse_find_with_first() {
+        let cli = Cli::parse_from(["id", "find", "--first", "3", "query"]);
+        match cli.command {
+            Some(Command::Find { first, .. }) => {
+                assert_eq!(first, Some(3));
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_first_default() {
+        // When --first is at the end, it uses the default value
+        let cli = Cli::parse_from(["id", "find", "query", "--first"]);
+        match cli.command {
+            Some(Command::Find { first, .. }) => {
+                assert_eq!(first, Some(1)); // default missing value
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_last() {
+        let cli = Cli::parse_from(["id", "find", "--last", "5", "query"]);
+        match cli.command {
+            Some(Command::Find { last, .. }) => {
+                assert_eq!(last, Some(5));
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_last_default() {
+        // When --last is at the end, it uses the default value
+        let cli = Cli::parse_from(["id", "find", "query", "--last"]);
+        match cli.command {
+            Some(Command::Find { last, .. }) => {
+                assert_eq!(last, Some(1)); // default missing value
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_count() {
+        let cli = Cli::parse_from(["id", "find", "--count", "query"]);
+        match cli.command {
+            Some(Command::Find { count, .. }) => {
+                assert!(count);
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_exclude() {
+        let cli = Cli::parse_from([
+            "id",
+            "find",
+            "--exclude",
+            ".bak",
+            "--exclude",
+            ".tmp",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Find { exclude, .. }) => {
+                assert_eq!(exclude, vec![".bak", ".tmp"]);
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_first() {
+        let cli = Cli::parse_from(["id", "search", "--first", "3", "query"]);
+        match cli.command {
+            Some(Command::Search { first, .. }) => {
+                assert_eq!(first, Some(3));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_last() {
+        let cli = Cli::parse_from(["id", "search", "--last", "5", "query"]);
+        match cli.command {
+            Some(Command::Search { last, .. }) => {
+                assert_eq!(last, Some(5));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_count() {
+        let cli = Cli::parse_from(["id", "search", "--count", "query"]);
+        match cli.command {
+            Some(Command::Search { count, .. }) => {
+                assert!(count);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_exclude() {
+        let cli = Cli::parse_from([
+            "id",
+            "search",
+            "--exclude",
+            ".bak",
+            "--exclude",
+            ".tmp",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Search { exclude, .. }) => {
+                assert_eq!(exclude, vec![".bak", ".tmp"]);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_combined_options() {
+        let cli = Cli::parse_from([
+            "id",
+            "find",
+            "--first",
+            "10",
+            "--exclude",
+            ".bak",
+            "--count",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Find {
+                first,
+                count,
+                exclude,
+                ..
+            }) => {
+                assert_eq!(first, Some(10));
+                assert!(count);
+                assert_eq!(exclude, vec![".bak"]);
+            }
+            _ => panic!("Expected Find command"),
+        }
     }
 }

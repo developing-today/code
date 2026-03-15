@@ -386,3 +386,443 @@ mod error_handling_tests {
         assert!(!output.status.success());
     }
 }
+
+mod show_view_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_show_basic() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.show-basic.txt");
+        let content = "Content for show test";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Show should output content to stdout
+        let output = run_cmd_success(&["show", "test.show-basic.txt"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_show_alias_view() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.view-alias.txt");
+        let content = "Content for view alias test";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // view alias should work the same as show
+        let output = run_cmd_success(&["view", "test.view-alias.txt"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_show_partial_match() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.show-partial-match.txt");
+        let content = "Partial match content";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Search by partial name
+        let output = run_cmd_success(&["show", "show-partial"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_show_with_output_file() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.show-output.txt");
+        let output_file = tmp.path().join("show-output-result.txt");
+        let content = "Content for output file test";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Show with -o flag
+        run_cmd_success(
+            &[
+                "show",
+                "-o",
+                output_file.to_str().unwrap(),
+                "test.show-output.txt",
+            ],
+            tmp.path(),
+        );
+
+        // Verify content was written to file
+        let result = fs::read_to_string(&output_file).unwrap();
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_show_no_match() {
+        let tmp = TempDir::new().unwrap();
+
+        // Show for something that doesn't exist
+        let output = run_cmd(&["show", "nonexistent_xyz_123"], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains("no matches") || !output.status.success());
+    }
+}
+
+mod peek_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_peek_basic() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-basic.txt");
+        let content = "line1\nline2\nline3\nline4\nline5";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek should show content with header
+        let output = run_cmd_success(&["peek", "test.peek-basic.txt"], tmp.path());
+        assert!(output.contains("line1"));
+        assert!(output.contains("test.peek-basic.txt"));
+    }
+
+    #[test]
+    fn test_peek_quiet_mode() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-quiet.txt");
+        let content = "line1\nline2\nline3";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with quiet mode should not show header
+        let output = run_cmd_success(&["peek", "-q", "test.peek-quiet.txt"], tmp.path());
+        assert!(output.contains("line1"));
+        // Header contains "───" which shouldn't appear in quiet mode
+        assert!(!output.contains("───"));
+    }
+
+    #[test]
+    fn test_peek_with_lines() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-lines.txt");
+        // Create content with many lines
+        let mut content = String::new();
+        for i in 1..=20 {
+            content.push_str(&format!("line{}\n", i));
+        }
+
+        fs::write(&test_file, &content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with custom line count
+        let output = run_cmd_success(&["peek", "-n", "3", "test.peek-lines.txt"], tmp.path());
+        assert!(output.contains("line1"));
+        assert!(output.contains("line2"));
+        assert!(output.contains("line3"));
+        // Should show truncation indicator
+        assert!(output.contains("..."));
+    }
+
+    #[test]
+    fn test_peek_head_only() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-head.txt");
+        let mut content = String::new();
+        for i in 1..=20 {
+            content.push_str(&format!("line{}\n", i));
+        }
+
+        fs::write(&test_file, &content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with head-only
+        let output = run_cmd_success(
+            &["peek", "--head-only", "-n", "3", "test.peek-head.txt"],
+            tmp.path(),
+        );
+        assert!(output.contains("line1"));
+        assert!(output.contains("line2"));
+        assert!(output.contains("line3"));
+        assert!(!output.contains("line20")); // Tail should not be shown
+    }
+
+    #[test]
+    fn test_peek_tail_only() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-tail.txt");
+        let mut content = String::new();
+        for i in 1..=20 {
+            content.push_str(&format!("content-line-{}\n", i));
+        }
+
+        fs::write(&test_file, &content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with tail-only and quiet mode to avoid header interference
+        let output = run_cmd_success(
+            &["peek", "--tail-only", "-n", "3", "-q", "test.peek-tail.txt"],
+            tmp.path(),
+        );
+        assert!(!output.contains("content-line-1\n")); // Head should not be shown (with newline)
+        assert!(output.contains("content-line-18"));
+        assert!(output.contains("content-line-19"));
+        assert!(output.contains("content-line-20"));
+    }
+
+    #[test]
+    fn test_peek_with_output_file() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-output.txt");
+        let output_file = tmp.path().join("peek-output-result.txt");
+        let content = "line1\nline2\nline3";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with -o flag
+        run_cmd_success(
+            &[
+                "peek",
+                "-q",
+                "-o",
+                output_file.to_str().unwrap(),
+                "test.peek-output.txt",
+            ],
+            tmp.path(),
+        );
+
+        // Verify content was written to file
+        let result = fs::read_to_string(&output_file).unwrap();
+        assert!(result.contains("line1"));
+    }
+
+    #[test]
+    fn test_peek_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peek", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("head"));
+        assert!(stdout.contains("tail"));
+        assert!(stdout.contains("lines"));
+    }
+}
+
+mod filter_flag_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_search_with_first() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=5 {
+            let test_file = tmp.path().join(format!("test.filter-first-{}.txt", i));
+            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Search with --first flag - use --count to verify
+        let output = run_cmd_success(
+            &["search", "--first", "2", "--count", "filter-first"],
+            tmp.path(),
+        );
+        assert!(output.trim() == "2");
+    }
+
+    #[test]
+    fn test_search_with_last() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=5 {
+            let test_file = tmp.path().join(format!("test.filter-last-{}.txt", i));
+            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Search with --last flag - use --count to verify
+        let output = run_cmd_success(
+            &["search", "--last", "2", "--count", "filter-last"],
+            tmp.path(),
+        );
+        assert!(output.trim() == "2");
+    }
+
+    #[test]
+    fn test_search_with_count() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=3 {
+            let test_file = tmp.path().join(format!("test.filter-count-{}.txt", i));
+            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Search with --count flag
+        let output = run_cmd_success(&["search", "--count", "filter-count"], tmp.path());
+        // Should output just the count
+        assert!(output.trim() == "3");
+    }
+
+    #[test]
+    fn test_search_with_exclude() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create files including one to exclude
+        let keep1 = tmp.path().join("test.filter-keep-1.txt");
+        let keep2 = tmp.path().join("test.filter-keep-2.txt");
+        let exclude = tmp.path().join("test.filter-exclude.bak");
+
+        fs::write(&keep1, "Keep 1").unwrap();
+        fs::write(&keep2, "Keep 2").unwrap();
+        fs::write(&exclude, "Exclude this").unwrap();
+
+        run_cmd_success(&["put", keep1.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", keep2.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", exclude.to_str().unwrap()], tmp.path());
+
+        // Search with --exclude flag
+        let output = run_cmd_success(&["search", "--exclude", ".bak", "filter"], tmp.path());
+        assert!(output.contains("filter-keep-1"));
+        assert!(output.contains("filter-keep-2"));
+        assert!(!output.contains("filter-exclude.bak"));
+    }
+
+    #[test]
+    fn test_search_multiple_excludes() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create files
+        let keep = tmp.path().join("test.multi-exclude-keep.txt");
+        let bak = tmp.path().join("test.multi-exclude-file.bak");
+        let tmp_file = tmp.path().join("test.multi-exclude-file.tmp");
+
+        fs::write(&keep, "Keep").unwrap();
+        fs::write(&bak, "Backup").unwrap();
+        fs::write(&tmp_file, "Temp").unwrap();
+
+        run_cmd_success(&["put", keep.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", bak.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", tmp_file.to_str().unwrap()], tmp.path());
+
+        // Search with multiple --exclude flags
+        let output = run_cmd_success(
+            &[
+                "search",
+                "--exclude",
+                ".bak",
+                "--exclude",
+                ".tmp",
+                "multi-exclude",
+            ],
+            tmp.path(),
+        );
+        assert!(output.contains("multi-exclude-keep"));
+        assert!(!output.contains(".bak"));
+        assert!(!output.contains(".tmp"));
+    }
+
+    #[test]
+    fn test_find_with_count() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=4 {
+            let test_file = tmp.path().join(format!("test.find-count-{}.txt", i));
+            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Find with --count flag
+        let output = run_cmd_success(&["find", "--count", "find-count"], tmp.path());
+        // Should output just the count
+        assert!(output.trim() == "4");
+    }
+
+    #[test]
+    fn test_find_with_first_default() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=3 {
+            let test_file = tmp.path().join(format!("test.find-first-def-{}.txt", i));
+            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Find with --first (no number) at the end, should default to 1
+        let output = run_cmd_success(
+            &["find", "--count", "find-first-def", "--first"],
+            tmp.path(),
+        );
+        // Should find 1 match
+        assert!(output.trim() == "1");
+    }
+
+    #[test]
+    fn test_combined_filters() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=5 {
+            let test_file = tmp.path().join(format!("test.combined-{}.txt", i));
+            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+        // Create one to exclude
+        let exclude = tmp.path().join("test.combined-exclude.bak");
+        fs::write(&exclude, "Exclude").unwrap();
+        run_cmd_success(&["put", exclude.to_str().unwrap()], tmp.path());
+
+        // Search with combined filters - use count to verify
+        let output = run_cmd_success(
+            &[
+                "search",
+                "--exclude",
+                ".bak",
+                "--first",
+                "2",
+                "--count",
+                "combined",
+            ],
+            tmp.path(),
+        );
+        // Should return count of 2
+        assert!(output.trim() == "2");
+    }
+}
+
+mod show_peek_subcommand_help {
+    use super::*;
+
+    #[test]
+    fn test_show_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["show", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("find") || stdout.contains("search") || stdout.contains("output"));
+        assert!(stdout.contains("--all"));
+        assert!(stdout.contains("--first"));
+        assert!(stdout.contains("--exclude"));
+    }
+
+    #[test]
+    fn test_view_help() {
+        let tmp = TempDir::new().unwrap();
+        // view is alias for show
+        let output = run_cmd(&["view", "--help"], tmp.path());
+        assert!(output.status.success());
+    }
+}
