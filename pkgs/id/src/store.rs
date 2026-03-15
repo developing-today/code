@@ -1,4 +1,48 @@
-//! Store module - handles blob storage and keypair management
+//! Blob storage and keypair management.
+//!
+//! This module provides the storage layer for the ID system, handling both
+//! content-addressed blob storage and Ed25519 keypair management for node
+//! identity.
+//!
+//! # Storage Types
+//!
+//! Two storage modes are supported via [`StoreType`]:
+//!
+//! - **Persistent** ([`FsStore`]): SQLite-backed storage in `.iroh-store/`.
+//!   Data survives restarts. Only one process can access at a time.
+//!
+//! - **Ephemeral** ([`MemStore`]): In-memory storage that is discarded on
+//!   shutdown. Useful for testing or temporary operations.
+//!
+//! # Keypair Management
+//!
+//! Node identity is based on Ed25519 keypairs. The [`load_or_create_keypair`]
+//! function handles lazy initialization - it creates a new keypair if the file
+//! doesn't exist, or loads an existing one.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use id::{open_store, load_or_create_keypair, KEY_FILE};
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! // Open persistent storage
+//! let store = open_store(false).await?;
+//!
+//! // Load or create node identity
+//! let keypair = load_or_create_keypair(KEY_FILE).await?;
+//! println!("Node ID: {}", keypair.public());
+//!
+//! // Use the store...
+//! let api = store.as_store();
+//! let hash = api.blobs().add_bytes(b"Hello".to_vec()).await?;
+//! api.tags().set("greeting", hash.hash).await?;
+//!
+//! // Clean shutdown
+//! store.shutdown().await?;
+//! # Ok(())
+//! # }
+//! ```
 
 use anyhow::{Result, anyhow};
 use iroh_base::SecretKey;
@@ -10,7 +54,39 @@ use tokio::fs as afs;
 
 use crate::STORE_PATH;
 
-/// Load or create an Ed25519 keypair from a file
+/// Loads an existing Ed25519 keypair from a file, or creates a new one.
+///
+/// This function provides lazy initialization for node identity:
+/// - If the file exists, it reads and parses the 32-byte secret key
+/// - If the file doesn't exist, it generates a new random keypair and saves it
+///
+/// The keypair file contains just the 32-byte secret key in raw binary format.
+/// The public key (node ID) can be derived from this.
+///
+/// # Arguments
+///
+/// * `path` - Path to the keypair file
+///
+/// # Returns
+///
+/// The Ed25519 secret key, which can be used to derive the public key (node ID).
+///
+/// # Errors
+///
+/// - Returns an error if the file exists but has invalid length (not 32 bytes)
+/// - Returns an error if the file cannot be read or written
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use id::load_or_create_keypair;
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// let key = load_or_create_keypair(".my-key").await?;
+/// println!("Public key (node ID): {}", key.public());
+/// # Ok(())
+/// # }
+/// ```
 pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
     match afs::read(path).await {
         Ok(bytes) => {
@@ -28,14 +104,68 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
     }
 }
 
-/// Wrapper enum for persistent vs ephemeral store types
+/// Wrapper enum for persistent vs ephemeral blob stores.
+///
+/// This enum provides a unified interface over the two storage backends
+/// supported by iroh-blobs. It allows the rest of the application to
+/// work with either storage type transparently.
+///
+/// # Variants
+///
+/// * `Persistent` - File-system backed SQLite storage. Data survives restarts.
+/// * `Ephemeral` - In-memory storage. Data is lost on shutdown.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use id::{open_store, StoreType};
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// // Ephemeral for testing
+/// let test_store = open_store(true).await?;
+/// assert!(matches!(test_store, StoreType::Ephemeral(_)));
+///
+/// // Persistent for production
+/// let prod_store = open_store(false).await?;
+/// assert!(matches!(prod_store, StoreType::Persistent(_)));
+/// # Ok(())
+/// # }
+/// ```
 pub enum StoreType {
+    /// File-system backed persistent storage using SQLite.
+    ///
+    /// Data is stored in the `.iroh-store/` directory. Only one process
+    /// can access the database at a time due to SQLite locking.
     Persistent(FsStore),
+    
+    /// In-memory ephemeral storage.
+    ///
+    /// Useful for testing, temporary operations, or when you don't need
+    /// data to persist. All data is lost when the store is shutdown.
     Ephemeral(MemStore),
 }
 
 impl StoreType {
-    /// Get a Store handle from this StoreType
+    /// Gets a [`Store`] handle from this storage type.
+    ///
+    /// The returned `Store` provides the main API for blob and tag operations.
+    /// This handle is cheaply cloneable.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use id::open_store;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let store_type = open_store(true).await?;
+    /// let store = store_type.as_store();
+    ///
+    /// // Now use the store API
+    /// let blobs = store.blobs();
+    /// let tags = store.tags();
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn as_store(&self) -> Store {
         match self {
             StoreType::Persistent(s) => s.clone().into(),
@@ -43,7 +173,27 @@ impl StoreType {
         }
     }
 
-    /// Shutdown the store gracefully
+    /// Shuts down the store gracefully.
+    ///
+    /// For persistent stores, this ensures all data is flushed to disk
+    /// and the database is properly closed. For ephemeral stores, this
+    /// simply releases the memory.
+    ///
+    /// **Important**: Always call this before dropping the store to ensure
+    /// data integrity, especially for persistent stores.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use id::open_store;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let store = open_store(false).await?;
+    /// // ... use the store ...
+    /// store.shutdown().await?; // Clean shutdown
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn shutdown(self) -> Result<()> {
         match self {
             StoreType::Persistent(s) => s.shutdown().await?,
@@ -53,7 +203,41 @@ impl StoreType {
     }
 }
 
-/// Open a blob store (persistent or ephemeral)
+/// Opens a blob store, either persistent or ephemeral.
+///
+/// This is the main entry point for creating storage. Persistent stores
+/// use the `.iroh-store/` directory in the current working directory.
+///
+/// # Arguments
+///
+/// * `ephemeral` - If `true`, creates an in-memory store. If `false`,
+///   opens/creates a persistent SQLite-backed store.
+///
+/// # Returns
+///
+/// A [`StoreType`] wrapper that can be used to access the blob store.
+///
+/// # Errors
+///
+/// For persistent stores, returns an error if:
+/// - The database file is locked by another process
+/// - The database is corrupted
+/// - Disk I/O fails
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use id::open_store;
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// // For production use
+/// let store = open_store(false).await?;
+///
+/// // For testing
+/// let test_store = open_store(true).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn open_store(ephemeral: bool) -> Result<StoreType> {
     if ephemeral {
         Ok(StoreType::Ephemeral(MemStore::new()))

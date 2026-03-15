@@ -1,4 +1,61 @@
-//! Protocol module - defines the meta protocol for remote operations
+//! Network protocol types for remote node communication.
+//!
+//! This module defines the custom "meta" protocol used for peer-to-peer
+//! metadata operations beyond basic blob transfer. While Iroh handles
+//! blob content via its built-in protocol, this meta protocol enables:
+//!
+//! - **Tag management**: Create, list, delete, rename, and copy tags on remote nodes
+//! - **Search operations**: Find blobs by name or hash with fuzzy matching
+//! - **Metadata queries**: List all stored items on a remote node
+//!
+//! # Protocol Architecture
+//!
+//! ```text
+//! ┌─────────────┐                    ┌─────────────┐
+//! │   Client    │                    │   Server    │
+//! │             │                    │             │
+//! │  MetaRequest├───── QUIC ────────►│MetaProtocol │
+//! │             │    (postcard)      │   handler   │
+//! │             │◄───────────────────┤             │
+//! │ MetaResponse│                    │             │
+//! └─────────────┘                    └─────────────┘
+//! ```
+//!
+//! Messages are serialized using [postcard](https://docs.rs/postcard) for
+//! compact binary encoding. Each connection can handle multiple request/response
+//! pairs using bidirectional QUIC streams.
+//!
+//! # Protocol Identifier
+//!
+//! The meta protocol uses the ALPN identifier defined in [`crate::META_ALPN`]:
+//! `b"/id/meta/1"`. This allows nodes to negotiate the correct protocol handler.
+//!
+//! # Usage Example
+//!
+//! ```rust,ignore
+//! use id::protocol::{MetaRequest, MetaResponse};
+//!
+//! // Create a request to find files matching "config"
+//! let request = MetaRequest::Find {
+//!     query: "config".to_string(),
+//!     prefer_name: true,
+//! };
+//!
+//! // Serialize and send over QUIC connection
+//! let bytes = postcard::to_allocvec(&request)?;
+//! send_stream.write_all(&bytes).await?;
+//!
+//! // Read and deserialize response
+//! let response_bytes = recv_stream.read_to_end(64 * 1024).await?;
+//! let response: MetaResponse = postcard::from_bytes(&response_bytes)?;
+//! ```
+//!
+//! # Match Quality
+//!
+//! Search operations return results ranked by [`MatchKind`]:
+//! - [`MatchKind::Exact`]: Query exactly equals the name/hash (best)
+//! - [`MatchKind::Prefix`]: Name/hash starts with query (good)
+//! - [`MatchKind::Contains`]: Name/hash contains query anywhere (okay)
 
 use futures_lite::StreamExt;
 use iroh::endpoint::Connection;
@@ -7,70 +64,321 @@ use iroh_blobs::{api::Store, Hash};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Match quality for find/search operations
+/// Match quality for find/search operations.
+///
+/// Represents how closely a search query matches a blob's name or hash.
+/// The variants are ordered by quality, with [`Exact`](MatchKind::Exact)
+/// being the best match.
+///
+/// # Ordering
+///
+/// `MatchKind` implements `Ord` such that better matches compare less:
+///
+/// ```rust
+/// use id::protocol::MatchKind;
+///
+/// assert!(MatchKind::Exact < MatchKind::Prefix);
+/// assert!(MatchKind::Prefix < MatchKind::Contains);
+/// ```
+///
+/// This allows sorting search results by quality using the natural ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MatchKind {
-    Exact,    // Best: exact match
-    Prefix,   // Good: starts with query
-    Contains, // Okay: contains query
+    /// Query exactly equals the target string.
+    ///
+    /// For example, query "config.json" matches name "config.json" exactly.
+    Exact,
+    /// Target string starts with the query.
+    ///
+    /// For example, query "config" matches name "config.json" as a prefix.
+    Prefix,
+    /// Target string contains the query somewhere.
+    ///
+    /// For example, query "fig" matches name "config.json" as contained.
+    Contains,
 }
 
-/// A single match result from find/search
+/// A single match result from find/search operations.
+///
+/// Represents one blob that matched a search query, including metadata
+/// about how well it matched and whether the match was against the
+/// blob's name or its hash.
+///
+/// # Example
+///
+/// ```rust
+/// use id::protocol::{FindMatch, MatchKind};
+/// use iroh_blobs::Hash;
+///
+/// let m = FindMatch {
+///     hash: Hash::from_bytes([0u8; 32]),
+///     name: "example.txt".to_string(),
+///     kind: MatchKind::Exact,
+///     is_hash_match: false,
+/// };
+///
+/// // This was a name match, not a hash match
+/// assert!(!m.is_hash_match);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindMatch {
+    /// The content hash of the matched blob.
     pub hash: Hash,
+    /// The tag name associated with this blob.
     pub name: String,
+    /// How well the query matched (exact, prefix, or contains).
     pub kind: MatchKind,
-    pub is_hash_match: bool, // true if matched against hash, false if matched against name
-}
-
-/// FindMatch with the query that matched (for multi-query support)
-#[derive(Debug, Clone)]
-pub struct TaggedMatch {
-    pub query: String,
-    pub hash: Hash,
-    pub name: String,
-    pub kind: MatchKind,
+    /// Whether the match was against the hash (`true`) or name (`false`).
+    ///
+    /// When searching, both the name and hash are checked. This field
+    /// indicates which one matched the query, useful for understanding
+    /// the search result context.
     pub is_hash_match: bool,
 }
 
-/// Requests that can be sent to a remote node
+/// A match result tagged with the query that produced it.
+///
+/// When searching with multiple queries, this struct associates each
+/// match with the specific query that found it. This is used internally
+/// for grouping and formatting multi-query search results.
+///
+/// # Example
+///
+/// ```rust
+/// use id::protocol::{TaggedMatch, MatchKind};
+/// use iroh_blobs::Hash;
+///
+/// let m = TaggedMatch {
+///     query: "config".to_string(),
+///     hash: Hash::from_bytes([0u8; 32]),
+///     name: "config.json".to_string(),
+///     kind: MatchKind::Prefix,
+///     is_hash_match: false,
+/// };
+///
+/// // The query "config" matched "config.json" as a prefix
+/// assert_eq!(m.query, "config");
+/// assert_eq!(m.kind, MatchKind::Prefix);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TaggedMatch {
+    /// The search query that produced this match.
+    pub query: String,
+    /// The content hash of the matched blob.
+    pub hash: Hash,
+    /// The tag name associated with this blob.
+    pub name: String,
+    /// How well the query matched.
+    pub kind: MatchKind,
+    /// Whether the match was against the hash or name.
+    pub is_hash_match: bool,
+}
+
+/// Requests that can be sent to a remote node via the meta protocol.
+///
+/// Each variant represents an operation that can be performed on a remote
+/// node's blob store. The request is serialized with postcard and sent
+/// over a QUIC bidirectional stream.
+///
+/// # Serialization
+///
+/// All variants are serializable for network transmission:
+///
+/// ```rust
+/// use id::protocol::MetaRequest;
+/// use iroh_blobs::Hash;
+///
+/// let req = MetaRequest::List;
+/// let bytes = postcard::to_allocvec(&req).unwrap();
+/// let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
+/// ```
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MetaRequest {
-    Put { filename: String, hash: Hash },
-    Get { filename: String },
+    /// Create or update a tag on the remote node.
+    ///
+    /// Associates `filename` with `hash` in the remote store. The blob
+    /// content must already exist on the remote (transferred via Iroh's
+    /// blob protocol).
+    Put {
+        /// The tag name to create or update.
+        filename: String,
+        /// The content hash to associate with this tag.
+        hash: Hash,
+    },
+    /// Look up a tag by name on the remote node.
+    ///
+    /// Returns the hash associated with `filename`, if it exists.
+    Get {
+        /// The tag name to look up.
+        filename: String,
+    },
+    /// List all tags on the remote node.
+    ///
+    /// Returns a list of (hash, name) pairs for all stored tags.
     List,
-    Delete { filename: String },
-    Rename { from: String, to: String },
-    Copy { from: String, to: String },
-    Find { query: String, prefer_name: bool },
+    /// Delete a tag from the remote node.
+    ///
+    /// Removes the tag but does not delete the underlying blob content.
+    Delete {
+        /// The tag name to delete.
+        filename: String,
+    },
+    /// Rename a tag on the remote node.
+    ///
+    /// Atomically moves the tag from `from` to `to`. The old tag is
+    /// deleted after the new one is created.
+    Rename {
+        /// The current tag name.
+        from: String,
+        /// The new tag name.
+        to: String,
+    },
+    /// Copy a tag on the remote node.
+    ///
+    /// Creates a new tag `to` pointing to the same hash as `from`.
+    Copy {
+        /// The source tag name.
+        from: String,
+        /// The destination tag name.
+        to: String,
+    },
+    /// Search for tags matching a query on the remote node.
+    ///
+    /// Searches both tag names and hashes, returning matches ranked
+    /// by quality (exact > prefix > contains).
+    Find {
+        /// The search query (matched case-insensitively).
+        query: String,
+        /// If `true`, prioritize name matches over hash matches in results.
+        prefer_name: bool,
+    },
 }
 
-/// Responses from a remote node
+/// Responses from a remote node via the meta protocol.
+///
+/// Each variant corresponds to a [`MetaRequest`] variant and contains
+/// the result of that operation.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MetaResponse {
-    Put { success: bool },
-    Get { hash: Option<Hash> },
-    List { items: Vec<(Hash, String)> },
-    Delete { success: bool },
-    Rename { success: bool },
-    Copy { success: bool },
-    Find { matches: Vec<FindMatch> },
+    /// Response to [`MetaRequest::Put`].
+    Put {
+        /// Whether the tag was successfully created/updated.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::Get`].
+    Get {
+        /// The hash if found, or `None` if the tag doesn't exist.
+        hash: Option<Hash>,
+    },
+    /// Response to [`MetaRequest::List`].
+    List {
+        /// All tags as (hash, name) pairs.
+        items: Vec<(Hash, String)>,
+    },
+    /// Response to [`MetaRequest::Delete`].
+    Delete {
+        /// Whether the tag was successfully deleted.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::Rename`].
+    Rename {
+        /// Whether the rename succeeded.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::Copy`].
+    Copy {
+        /// Whether the copy succeeded.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::Find`].
+    Find {
+        /// Matching tags, sorted by match quality.
+        matches: Vec<FindMatch>,
+    },
 }
 
-/// Protocol handler for metadata operations
+/// Protocol handler for the meta protocol.
+///
+/// Implements Iroh's [`ProtocolHandler`] trait to handle incoming
+/// meta protocol connections. When a remote node connects with the
+/// `META_ALPN` protocol identifier, this handler processes the requests.
+///
+/// # Connection Handling
+///
+/// Each connection can contain multiple request/response pairs. The
+/// handler reads requests in a loop until the connection is closed:
+///
+/// ```text
+/// Connection opened
+///     ↓
+/// Accept bidirectional stream
+///     ↓
+/// Read request → Process → Send response
+///     ↓
+/// Loop until connection closed
+/// ```
+///
+/// # Example
+///
+/// Creating a meta protocol handler for a store:
+///
+/// ```rust,ignore
+/// use id::protocol::MetaProtocol;
+/// use iroh_blobs::api::Store;
+///
+/// let store: Store = /* ... */;
+/// let handler = MetaProtocol::new(&store);
+///
+/// // Register with router using META_ALPN
+/// router.accept(META_ALPN, handler);
+/// ```
 #[derive(Clone, Debug)]
 pub struct MetaProtocol {
+    /// The blob store used for tag operations.
     pub store: Store,
 }
 
 impl MetaProtocol {
+    /// Creates a new meta protocol handler for the given store.
+    ///
+    /// Returns an `Arc` for easy registration with Iroh's router.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use id::protocol::MetaProtocol;
+    ///
+    /// let handler = MetaProtocol::new(&store);
+    /// router.accept(META_ALPN, handler);
+    /// ```
     pub fn new(store: &Store) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
         })
     }
 
+    /// Determines the match quality of a needle in a haystack.
+    ///
+    /// Returns the best applicable [`MatchKind`], or `None` if no match.
+    /// Matching is case-sensitive; callers should lowercase both strings
+    /// for case-insensitive matching.
+    ///
+    /// # Match Priority
+    ///
+    /// 1. [`MatchKind::Exact`] - strings are equal
+    /// 2. [`MatchKind::Prefix`] - haystack starts with needle
+    /// 3. [`MatchKind::Contains`] - haystack contains needle
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use id::protocol::{MetaProtocol, MatchKind};
+    ///
+    /// assert_eq!(MetaProtocol::match_kind("hello", "hello"), Some(MatchKind::Exact));
+    /// assert_eq!(MetaProtocol::match_kind("hello world", "hello"), Some(MatchKind::Prefix));
+    /// assert_eq!(MetaProtocol::match_kind("say hello", "hello"), Some(MatchKind::Contains));
+    /// assert_eq!(MetaProtocol::match_kind("goodbye", "hello"), None);
+    /// ```
     fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
         if haystack == needle {
             Some(MatchKind::Exact)
@@ -85,6 +393,28 @@ impl MetaProtocol {
 }
 
 impl ProtocolHandler for MetaProtocol {
+    /// Handles an incoming meta protocol connection.
+    ///
+    /// Processes multiple request/response pairs on bidirectional QUIC streams
+    /// until the connection is closed. Each request is deserialized, processed
+    /// against the local store, and a response is sent back.
+    ///
+    /// # Request Processing
+    ///
+    /// - **Put**: Creates or updates a tag pointing to the given hash
+    /// - **Get**: Looks up a tag by name and returns its hash
+    /// - **List**: Returns all (hash, name) pairs in the store
+    /// - **Delete**: Removes a tag from the store
+    /// - **Rename**: Moves a tag from one name to another
+    /// - **Copy**: Creates a new tag pointing to the same hash
+    /// - **Find**: Searches tags by name/hash and returns ranked matches
+    ///
+    /// # Errors
+    ///
+    /// Returns `AcceptError` if:
+    /// - Tag operations fail
+    /// - Serialization/deserialization fails
+    /// - Stream write fails
     async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
         // Handle multiple requests per connection
         loop {

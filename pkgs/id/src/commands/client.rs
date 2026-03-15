@@ -1,4 +1,24 @@
-//! Client endpoint creation for connecting to local serve
+//! Client endpoint creation for connecting to local serve.
+//!
+//! This module provides utilities for creating client endpoints that
+//! connect to a running local serve instance. It handles:
+//!
+//! - Loading or creating client keypairs
+//! - Building endpoint addresses with known socket addresses
+//! - IPv4/IPv6 address selection
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! use id::commands::{get_serve_info, create_local_client_endpoint};
+//!
+//! if let Some(serve_info) = get_serve_info().await {
+//!     let (endpoint, addr) = create_local_client_endpoint(&serve_info).await?;
+//!     
+//!     // Connect using the meta protocol
+//!     let conn = endpoint.connect(addr, META_ALPN).await?;
+//! }
+//! ```
 
 use anyhow::Result;
 use iroh::{
@@ -10,7 +30,40 @@ use iroh_base::{EndpointAddr, TransportAddr};
 use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 use super::serve::ServeInfo;
 
-/// Create a client endpoint configured to connect to the local serve
+/// Creates a client endpoint configured to connect to a local serve.
+///
+/// The endpoint is configured with:
+/// - A client-specific keypair (separate from the serve keypair)
+/// - DNS and Pkarr address lookup for remote peer discovery
+/// - Known socket addresses from the serve lock file
+///
+/// # Arguments
+///
+/// * `serve_info` - Information about the running serve instance
+///
+/// # Returns
+///
+/// A tuple of:
+/// - `Endpoint`: The QUIC endpoint for making connections
+/// - `EndpointAddr`: The address of the serve, pre-populated with socket addresses
+///
+/// # Address Selection
+///
+/// IPv4 addresses are preferred over IPv6 for reliability on systems
+/// with IPv6 configuration issues. If no IPv4 addresses are available,
+/// all addresses from the serve info are used.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+///
+/// // Connect to meta protocol
+/// let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
+///
+/// // Connect to blobs protocol  
+/// let blobs_conn = endpoint.connect(endpoint_addr, BLOBS_ALPN).await?;
+/// ```
 pub async fn create_local_client_endpoint(serve_info: &ServeInfo) -> Result<(Endpoint, EndpointAddr)> {
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
     // Enable relay and DNS lookup so @NODE_ID targeting works for remote peers

@@ -1,25 +1,141 @@
-//! REPL input preprocessing - handles shell substitution, heredocs, etc.
+//! REPL input preprocessing for shell-like features.
+//!
+//! This module handles preprocessing of REPL input lines before they are
+//! executed as commands. It provides shell-like features that make the
+//! REPL more powerful and familiar to command-line users.
+//!
+//! # Supported Features
+//!
+//! ## Command Substitution
+//!
+//! Both `$(...)` and backtick styles are supported:
+//!
+//! ```text
+//! get $(echo filename)     # Execute 'echo filename', use output
+//! get `echo filename`      # Same, with backticks
+//! get $(echo $(cat list))  # Nested substitution works
+//! ```
+//!
+//! ## Here-String (`<<<`)
+//!
+//! Inline content for the `put` command:
+//!
+//! ```text
+//! put - name <<< 'literal content'     # Single-quoted
+//! put - name <<< "some content"        # Double-quoted
+//! put - name <<< unquoted_content      # Unquoted (rest of line)
+//! ```
+//!
+//! ## Heredoc (`<<DELIMITER`)
+//!
+//! Multi-line input for the `put` command:
+//!
+//! ```text
+//! put - name <<EOF
+//! line 1
+//! line 2
+//! EOF
+//! ```
+//!
+//! ## Pipe Operator (`|>`)
+//!
+//! Pipe shell command output to a REPL command:
+//!
+//! ```text
+//! echo "hello world" |> put - greeting
+//! cat file.txt |> put - backup
+//! ```
+//!
+//! # Content Markers
+//!
+//! When preprocessing detects inline content (from `$()`, here-strings, or pipes),
+//! it replaces the `-` placeholder with a special marker: `__STDIN_CONTENT__:data`.
+//! The REPL runner recognizes this marker and passes the data to the put command.
+//!
+//! # Processing Flow
+//!
+//! ```text
+//! Raw Input
+//!     │
+//!     ▼
+//! ┌─────────────────────────────────────┐
+//! │         preprocess_repl_line        │
+//! │  1. Check for heredoc (<<DELIM)     │
+//! │  2. Process here-string (<<<)       │
+//! │  3. Process $(...) substitution     │
+//! │  4. Process `...` substitution      │
+//! │  5. Process |> pipe operator        │
+//! └─────────────────────────────────────┘
+//!     │
+//!     ▼
+//! ┌─────────────────────────────────────┐
+//! │             ReplInput               │
+//! │  - Empty: whitespace only           │
+//! │  - Ready(line): execute this        │
+//! │  - NeedMore: heredoc, read more     │
+//! └─────────────────────────────────────┘
+//! ```
 
 use anyhow::{bail, Result};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-/// Result of preprocessing a REPL line
+/// Result of preprocessing a REPL input line.
+///
+/// After preprocessing, a line can be in one of three states:
+///
+/// - **Empty**: The line was whitespace-only; skip it
+/// - **Ready**: The line is ready to execute (possibly modified)
+/// - **NeedMore**: We're starting a heredoc; read more lines until delimiter
 #[derive(Debug)]
 pub enum ReplInput {
-    /// Ready to execute with this line (possibly modified)
+    /// Line is ready to execute (possibly preprocessed).
+    ///
+    /// The string may contain `__STDIN_CONTENT__:data` markers for inline content.
     Ready(String),
-    /// Need more input - heredoc mode with delimiter
+
+    /// Need more input - heredoc mode.
+    ///
+    /// The REPL should continue reading lines until the delimiter is found,
+    /// then join them and substitute into the original line.
     NeedMore {
+        /// The heredoc delimiter (e.g., "EOF")
         delimiter: String,
+        /// Lines collected so far (initially empty)
         lines: Vec<String>,
+        /// The original command line (before `<<DELIM`)
         original_line: String,
     },
-    /// Empty/whitespace only
+
+    /// Empty or whitespace-only input; skip.
     Empty,
 }
 
-/// Execute a shell command and return its stdout
+/// Execute a shell command and capture its stdout.
+///
+/// This function runs a command through `/bin/sh -c` and returns the
+/// trimmed output. Used internally for `$()` and backtick substitution.
+///
+/// # Arguments
+///
+/// * `cmd` - Shell command to execute
+///
+/// # Returns
+///
+/// The command's stdout with leading/trailing whitespace trimmed.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The shell command cannot be spawned
+/// - The command exits with a non-zero status
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let output = shell_capture("echo hello")?;
+/// assert_eq!(output, "hello");
+/// ```
 pub fn shell_capture(cmd: &str) -> Result<String> {
     let output = std::process::Command::new("sh")
         .arg("-c")
@@ -35,11 +151,60 @@ pub fn shell_capture(cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Preprocess a REPL line, handling:
-/// - $(...) and `...` command substitution
-/// - <<< here-string
-/// - <<DELIM heredoc start
-/// - |> pipe operator (cmd |> put - name)
+/// Preprocess a REPL input line, handling shell-like features.
+///
+/// This function transforms the input line by:
+///
+/// 1. Detecting heredoc start (`<<DELIM`) and returning `NeedMore`
+/// 2. Processing here-strings (`<<<`) and substituting content
+/// 3. Processing `$(...)` command substitution
+/// 4. Processing backtick command substitution
+/// 5. Processing `|>` pipe operator
+///
+/// # Arguments
+///
+/// * `line` - The raw input line from the REPL
+///
+/// # Returns
+///
+/// - `ReplInput::Empty` if the line is whitespace-only
+/// - `ReplInput::Ready(processed)` if ready to execute
+/// - `ReplInput::NeedMore { ... }` if starting a heredoc
+///
+/// # Content Markers
+///
+/// When the `put` command has inline content (from `$()`, `<<<`, or `|>`),
+/// the `-` placeholder is replaced with `__STDIN_CONTENT__:content`. This
+/// marker is recognized by the REPL runner.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Unterminated `$(...)` or backticks
+/// - Unterminated quotes in here-string
+/// - Shell command execution fails
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Simple command passes through
+/// assert!(matches!(
+///     preprocess_repl_line("list")?,
+///     ReplInput::Ready(s) if s == "list"
+/// ));
+///
+/// // Here-string becomes content marker
+/// assert!(matches!(
+///     preprocess_repl_line("put - name <<< 'hello'")?,
+///     ReplInput::Ready(s) if s.contains("__STDIN_CONTENT__:hello")
+/// ));
+///
+/// // Heredoc starts NeedMore mode
+/// assert!(matches!(
+///     preprocess_repl_line("put - name <<EOF")?,
+///     ReplInput::NeedMore { delimiter, .. } if delimiter == "EOF"
+/// ));
+/// ```
 pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     let line = line.trim();
     if line.is_empty() {
@@ -188,7 +353,40 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     Ok(ReplInput::Ready(result))
 }
 
-/// Continue reading heredoc lines until delimiter is found
+/// Continue reading heredoc lines until the delimiter is found.
+///
+/// This function is called after `preprocess_repl_line` returns `NeedMore`.
+/// It reads lines from the user until a line matching the delimiter is found,
+/// then returns the collected content.
+///
+/// # Arguments
+///
+/// * `rl` - The rustyline editor for reading input
+/// * `delimiter` - The heredoc delimiter to look for
+/// * `lines` - Mutable vector to collect lines (passed from `NeedMore`)
+///
+/// # Returns
+///
+/// - `Ok(Some(content))` when delimiter is found; content is joined lines
+/// - `Ok(None)` if user cancels (Ctrl+C) or EOF
+/// - `Err(...)` on readline error
+///
+/// # User Experience
+///
+/// - Prompts with `.. ` to indicate continuation
+/// - Prints hint about delimiter and Ctrl+C
+/// - Ctrl+C cancels without error
+///
+/// # Example Flow
+///
+/// ```text
+/// > put - name <<EOF
+/// (heredoc: type 'EOF' on its own line to end, Ctrl+C to cancel)
+/// .. line 1
+/// .. line 2
+/// .. EOF
+/// stored: name -> abc123...
+/// ```
 pub fn continue_heredoc(
     rl: &mut DefaultEditor,
     delimiter: &str,

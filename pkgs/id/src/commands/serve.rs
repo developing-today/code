@@ -1,20 +1,116 @@
-//! Serve command and lock file management
+//! Server command and lock file management.
+//!
+//! This module implements the `serve` command which starts a persistent
+//! server that accepts connections from peers for blob storage and retrieval.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                     Serve Process                           │
+//! ├─────────────────────────────────────────────────────────────┤
+//! │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
+//! │  │  Endpoint   │    │   Router    │    │   Store     │      │
+//! │  │  (QUIC)     │───►│             │───►│ (blobs/tags)│      │
+//! │  └─────────────┘    └─────────────┘    └─────────────┘      │
+//! │         │                  │                                 │
+//! │         │           ┌──────┴──────┐                          │
+//! │         │           │             │                          │
+//! │         │     ┌─────▼─────┐ ┌─────▼─────┐                    │
+//! │         │     │MetaProtocol│ │BlobsProtocol│                    │
+//! │         │     │ /id/meta/1 │ │ /iroh/blobs │                    │
+//! │         │     └───────────┘ └───────────┘                    │
+//! │         │                                                    │
+//! │         ▼                                                    │
+//! │  Lock File: .id-serve-lock                                   │
+//! │  - Node ID, PID, Socket addresses                            │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Lock File Protocol
+//!
+//! The serve process creates a lock file (`.id-serve-lock`) containing:
+//! 1. Node ID (line 1)
+//! 2. Process ID (line 2)
+//! 3. Socket addresses (remaining lines)
+//!
+//! Other processes (REPL, CLI commands) check this file to determine
+//! if a local serve is running and how to connect to it.
+//!
+//! # Examples
+//!
+//! ```bash
+//! # Start persistent server
+//! id serve
+//!
+//! # Start ephemeral server (in-memory)
+//! id serve --ephemeral
+//!
+//! # Start without relay servers
+//! id serve --no-relay
+//! ```
 
 use anyhow::Result;
+use iroh::{
+    address_lookup::{DnsAddressLookup, PkarrPublisher},
+    endpoint::{Endpoint, RelayMode},
+    protocol::Router,
+};
 use iroh_base::EndpointId;
-use std::net::SocketAddr;
+use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::fs as afs;
+use tracing::info;
 
-use crate::SERVE_LOCK;
+use crate::protocol::MetaProtocol;
+use crate::store::{load_or_create_keypair, open_store};
+use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
-/// Info about a running serve instance
+/// Information about a running serve instance.
+///
+/// Retrieved from the lock file by [`get_serve_info`] to enable
+/// other processes to connect to the local serve.
+///
+/// # Fields
+///
+/// - `node_id`: The public identity of the serve node
+/// - `addrs`: Local socket addresses where the serve is listening
 #[derive(Debug, Clone)]
 pub struct ServeInfo {
+    /// The public node ID derived from the serve's keypair.
     pub node_id: EndpointId,
+    /// Socket addresses the serve is bound to.
     pub addrs: Vec<SocketAddr>,
 }
 
-/// Check if serve is running by reading the lock file and verifying the PID
+/// Checks if a serve instance is running and returns its connection info.
+///
+/// Reads the lock file, verifies the PID is still alive, and returns
+/// the serve info needed to connect. Returns `None` if:
+/// - Lock file doesn't exist
+/// - Lock file is malformed
+/// - Referenced process is no longer running (stale lock)
+///
+/// # Lock File Format
+///
+/// ```text
+/// <node_id>
+/// <pid>
+/// <socket_addr_1>
+/// <socket_addr_2>
+/// ...
+/// ```
+///
+/// # Example
+///
+/// ```rust,ignore
+/// if let Some(info) = get_serve_info().await {
+///     println!("Serve running: {}", info.node_id);
+///     // Connect to info.addrs...
+/// } else {
+///     println!("No serve running");
+/// }
+/// ```
 pub async fn get_serve_info() -> Option<ServeInfo> {
     let contents = afs::read_to_string(SERVE_LOCK).await.ok()?;
     let mut lines = contents.lines();
@@ -37,7 +133,19 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
     Some(ServeInfo { node_id, addrs })
 }
 
-/// Check if a process with the given PID is still running
+/// Checks if a process with the given PID is still running.
+///
+/// Uses platform-specific methods:
+/// - Unix: `kill(pid, 0)` which checks existence without sending a signal
+/// - Other: Always returns `true` (conservative fallback)
+///
+/// # Arguments
+///
+/// * `pid` - The process ID to check
+///
+/// # Returns
+///
+/// `true` if the process exists, `false` otherwise.
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -52,7 +160,19 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-/// Create serve lock file with node ID, PID, and socket addresses
+/// Creates the serve lock file with connection information.
+///
+/// Writes the node ID, current process ID, and socket addresses
+/// to the lock file so other processes can discover and connect.
+///
+/// # Arguments
+///
+/// * `node_id` - The serve node's public identity
+/// * `addrs` - Socket addresses the serve is listening on
+///
+/// # Errors
+///
+/// Returns an error if the lock file cannot be written.
 pub async fn create_serve_lock(node_id: &EndpointId, addrs: &[SocketAddr]) -> Result<()> {
     let pid = std::process::id();
     let mut contents = format!("{}\n{}", node_id, pid);
@@ -63,9 +183,100 @@ pub async fn create_serve_lock(node_id: &EndpointId, addrs: &[SocketAddr]) -> Re
     Ok(())
 }
 
-/// Remove serve lock file
+/// Removes the serve lock file.
+///
+/// Called during graceful shutdown to indicate the serve is no longer running.
+/// Errors are silently ignored (file may already be removed).
 pub async fn remove_serve_lock() -> Result<()> {
     let _ = afs::remove_file(SERVE_LOCK).await;
+    Ok(())
+}
+
+/// Starts the serve process.
+///
+/// Initializes the Iroh endpoint, blob store, and protocol handlers,
+/// then waits for incoming connections until interrupted with Ctrl+C.
+///
+/// # Arguments
+///
+/// * `ephemeral` - If `true`, use in-memory storage (lost on exit)
+/// * `no_relay` - If `true`, disable relay servers (direct connections only)
+///
+/// # Behavior
+///
+/// 1. Loads or creates the node keypair
+/// 2. Opens the blob store (persistent or ephemeral)
+/// 3. Creates the Iroh endpoint with DNS/Pkarr address lookup
+/// 4. Registers MetaProtocol and BlobsProtocol handlers
+/// 5. Creates the lock file for discovery
+/// 6. Waits for Ctrl+C
+/// 7. Cleans up and exits
+///
+/// # Output
+///
+/// Prints the node ID and mode to stdout. Status messages go to stderr.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Start a persistent server
+/// cmd_serve(false, false).await?;
+/// ```
+pub async fn cmd_serve(ephemeral: bool, no_relay: bool) -> Result<()> {
+    let key = load_or_create_keypair(KEY_FILE).await?;
+    let node_id: EndpointId = key.public().into();
+    info!("serve: {}", node_id);
+
+    let store = open_store(ephemeral).await?;
+    let store_handle = store.as_store();
+
+    let mut builder = Endpoint::builder()
+        .secret_key(key.clone())
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(DnsAddressLookup::n0_dns());
+    if no_relay {
+        builder = builder.relay_mode(RelayMode::Disabled);
+    }
+    let endpoint = builder.bind().await?;
+
+    let meta = MetaProtocol::new(&store_handle);
+    let blobs = BlobsProtocol::new(&store_handle, None);
+
+    let router = Router::builder(endpoint)
+        .accept(META_ALPN, meta)
+        .accept(BLOBS_ALPN, blobs)
+        .spawn();
+
+    let serve_node_id = router.endpoint().id();
+    let bound_addrs = router.endpoint().bound_sockets();
+    let local_addrs: Vec<SocketAddr> = bound_addrs
+        .iter()
+        .map(|addr| match addr {
+            SocketAddr::V4(v4) if v4.ip().is_unspecified() => {
+                SocketAddr::new(Ipv4Addr::LOCALHOST.into(), v4.port())
+            }
+            SocketAddr::V6(v6) if v6.ip().is_unspecified() => {
+                SocketAddr::new(Ipv6Addr::LOCALHOST.into(), v6.port())
+            }
+            other => *other,
+        })
+        .collect();
+    create_serve_lock(&serve_node_id, &local_addrs).await?;
+
+    println!("node: {}", serve_node_id);
+    if ephemeral {
+        println!("mode: ephemeral (in-memory)");
+    } else {
+        println!("mode: persistent ({})", STORE_PATH);
+    }
+    if no_relay {
+        println!("relay: disabled");
+    }
+
+    tokio::signal::ctrl_c().await?;
+    remove_serve_lock().await?;
+    router.shutdown().await?;
+    store.shutdown().await?;
     Ok(())
 }
 

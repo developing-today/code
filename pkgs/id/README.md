@@ -1,5 +1,190 @@
+# id
+
+An iroh-based peer-to-peer file sharing CLI tool.
+
+## Overview
+
+`id` is a command-line tool for storing and sharing files using content-addressed storage and peer-to-peer networking. Built on [iroh](https://iroh.computer/), it provides:
+
+- **Content-addressed storage**: Files are identified by their cryptographic hash
+- **Named tags**: Human-friendly names for your files
+- **Peer-to-peer transfers**: Share files directly with other nodes
+- **Interactive REPL**: Shell-like interface with command substitution
+- **Background server**: Long-running process for accepting connections
+
+## Installation
+
+```bash
+# Clone and build
+git clone <repository>
+cd pkgs/id
+cargo build --release
+
+# Or install directly
+cargo install --path .
 ```
 
+## Quick Start
+
+```bash
+# Store a file
+id put myfile.txt
+
+# List stored files
+id list
+
+# Retrieve a file
+id get myfile.txt
+
+# Start interactive REPL
+id repl
+
+# Start a server (for remote access)
+id serve
+```
+
+## Commands
+
+### Storage Commands
+
+| Command | Description |
+|---------|-------------|
+| `put <FILE> [NAME]` | Store a file with optional custom name |
+| `put-hash <FILE>` | Store file by hash only (no name) |
+| `get <NAME> [OUTPUT]` | Retrieve file by name |
+| `get-hash <HASH> <OUTPUT>` | Retrieve file by hash |
+| `cat <NAME>` | Output file to stdout |
+
+### Search Commands
+
+| Command | Description |
+|---------|-------------|
+| `find <QUERY>` | Find and output matching files |
+| `search <QUERY>` | List matches without content |
+| `list` | List all stored files |
+
+### System Commands
+
+| Command | Description |
+|---------|-------------|
+| `serve` | Start background server |
+| `repl` | Start interactive REPL |
+| `id` | Print this node's public ID |
+
+## Remote Operations
+
+Commands support remote operations by specifying a 64-character hex node ID:
+
+```bash
+# Get from remote node
+id get <NODE_ID> config.json
+
+# Put to remote node
+id put <NODE_ID> myfile.txt
+
+# List files on remote node
+id list <NODE_ID>
+```
+
+## REPL Features
+
+The interactive REPL supports shell-like features:
+
+```bash
+# Start REPL
+id repl
+
+# Command substitution
+> put $(date +%Y-%m-%d) today.txt
+
+# Backtick substitution
+> put `cat file.txt` content.txt
+
+# Pipe operator
+> echo "hello" |> put - greeting.txt
+
+# Here-string
+> put - note.txt <<< 'Quick note'
+
+# Heredoc
+> put - story.txt <<EOF
+Once upon a time...
+The end.
+EOF
+
+# Shell escape
+> !ls -la
+
+# Remote targeting
+> list @<NODE_ID>
+> get @<NODE_ID> config.json
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         CLI Layer                           │
+│  (main.rs → cli.rs → Command dispatch)                     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+   │   commands/ │     │    repl/    │     │   serve     │
+   │  (put/get/  │     │ (input.rs,  │     │  (server,   │
+   │  find/etc.) │     │  runner.rs) │     │  protocol)  │
+   └─────────────┘     └─────────────┘     └─────────────┘
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │                      Core Layer                          │
+   │  lib.rs: Constants, utilities, exports                  │
+   │  store.rs: Blob storage (FsStore/MemStore)              │
+   │  protocol.rs: Network protocol (MetaRequest/Response)   │
+   │  helpers.rs: Parsing and formatting                     │
+   └─────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │                   iroh / iroh-blobs                      │
+   │  Content-addressed storage + QUIC networking            │
+   └─────────────────────────────────────────────────────────┘
+```
+
+## Data Storage
+
+- **Store path**: `.iroh-store/` (SQLite database)
+- **Key files**:
+  - `.iroh-key` - Server identity keypair
+  - `.iroh-client-key` - Client identity keypair
+  - `.iroh-serve.lock` - Server lock file with connection info
+
+## Protocol
+
+Communication uses two ALPN protocols:
+
+- **META_ALPN** (`id/meta/1`): Metadata operations (list, put, get, find, etc.)
+- **BLOBS_ALPN** (`iroh/blobs/...`): Binary blob transfers
+
+## API Documentation
+
+Full API documentation is available via rustdoc:
+
+```bash
+cargo doc --open
+```
+
+## License
+
+MIT
+
+---
+
+## Original Brainstorming
+
+```
 # TypeCharacteristics
 # TypeDetails
 Type
@@ -110,13 +295,4 @@ CreateRoom
 # ram/hashmap -> ring buffer -> local file optane/nvme -> redis -> websocket -> optane db (sqlite/duck/postgres) -> nvme db (sqlite/duck/postgres) -> optane file -> nvme file -> nvme seaweed -> hdd seaweed
 # delete tag -> prune/compress -> pre-emptive index/cache
 # lru cache of pull/used // on-startup file // Ids_Seen // streamed/published by controller
-
-
-
-
-
-
-
-
-
 ```

@@ -1,172 +1,467 @@
-//! CLI argument parsing
+//! Command-line interface argument parsing for the `id` CLI tool.
+//!
+//! This module defines the CLI structure using [clap](https://docs.rs/clap),
+//! providing a declarative interface for parsing command-line arguments
+//! into structured data.
+//!
+//! # CLI Structure
+//!
+//! ```text
+//! id [COMMAND]
+//!
+//! Commands:
+//!   serve      Start server (accepts put/get from peers)
+//!   repl       Interactive REPL (alias: shell)
+//!   put        Store files (aliases: in, add, store, import)
+//!   put-hash   Store content by hash only
+//!   get        Retrieve files by name or hash
+//!   get-hash   Retrieve by hash (shortcut)
+//!   cat        Output files to stdout (aliases: output, out)
+//!   find       Find files and output content
+//!   search     Search files and list matches
+//!   list       List all stored files
+//!   id         Print node ID
+//! ```
+//!
+//! # Usage Examples
+//!
+//! ```bash
+//! # Start a persistent server
+//! id serve
+//!
+//! # Store a file with a custom name
+//! id put myfile.txt:config.json
+//!
+//! # Get from a remote node
+//! id get abc123...def456 config.json
+//!
+//! # Interactive REPL connected to remote
+//! id repl abc123...def456
+//! ```
+//!
+//! # Remote Operations
+//!
+//! Many commands support remote operations by specifying a 64-character
+//! hex node ID as the first positional argument:
+//!
+//! ```bash
+//! # Local put
+//! id put file.txt
+//!
+//! # Remote put (NODE_ID is 64 hex chars)
+//! id put abc123...def456 file.txt
+//! ```
+//!
+//! # Input/Output Flexibility
+//!
+//! Commands support various input and output modes:
+//!
+//! - **Stdin input**: `--content` for direct content, `--stdin` for paths
+//! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
+//! - **Renaming**: Use `source:dest` syntax for any path argument
 
 use clap::{Parser, Subcommand};
 
-/// iroh-based peer-to-peer file sharing
+/// The main CLI structure for the `id` peer-to-peer file sharing tool.
+///
+/// When invoked without a subcommand, the CLI defaults to REPL mode.
+///
+/// # Example
+///
+/// ```rust
+/// use id::cli::Cli;
+/// use clap::Parser;
+///
+/// // Parse command line arguments
+/// let cli = Cli::parse_from(["id", "serve", "--ephemeral"]);
+/// ```
 #[derive(Parser)]
-#[command(name = "id", version, about)]
+#[command(
+    name = "id",
+    version,
+    about = "An iroh-based peer-to-peer file sharing CLI",
+    long_about = None
+)]
 pub struct Cli {
+    /// The subcommand to execute.
+    ///
+    /// If `None`, the REPL is started.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
+/// Available CLI commands.
+///
+/// Each variant represents a distinct operation mode for the `id` tool.
+/// Commands are organized by their primary function: storage, retrieval,
+/// search, or system operations.
 #[derive(Subcommand)]
 pub enum Command {
-    /// Start server (accepts put/get from peers)
+    /// Start a server that accepts put/get requests from peers.
+    ///
+    /// The server runs indefinitely, hosting stored blobs and accepting
+    /// new content from remote nodes.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Persistent storage (default)
+    /// id serve
+    ///
+    /// # In-memory storage (lost on exit)
+    /// id serve --ephemeral
+    ///
+    /// # Direct connections only (no relay)
+    /// id serve --no-relay
+    /// ```
     Serve {
-        /// Use in-memory storage (default: persistent .iroh-store)
+        /// Use in-memory storage instead of persistent disk storage.
+        ///
+        /// Content is lost when the server stops. Useful for testing
+        /// or temporary file sharing sessions.
         #[arg(long)]
         ephemeral: bool,
-        /// Disable relay servers (direct connections only)
+        /// Disable relay servers and use direct connections only.
+        ///
+        /// May prevent connections through NATs or firewalls.
         #[arg(long)]
         no_relay: bool,
     },
-    /// Interactive REPL - use 'id repl <NODE_ID>' for remote session, or @NODE_ID prefix in commands
+    /// Start an interactive REPL for issuing commands.
+    ///
+    /// The REPL provides a shell-like interface for executing multiple
+    /// commands without restarting the tool.
+    ///
+    /// # Session Modes
+    ///
+    /// - **Local mode**: `id repl` - commands operate on local store
+    /// - **Remote mode**: `id repl NODE_ID` - commands target remote node
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Local REPL
+    /// id repl
+    ///
+    /// # Remote REPL (all commands target this node)
+    /// id repl abc123...def456
+    /// ```
     #[command(alias = "shell")]
     Repl {
-        /// Remote node ID for session-level remote targeting (all commands target this node)
+        /// Remote node ID for session-level remote targeting.
+        ///
+        /// When set, all commands in the REPL session target this
+        /// remote node instead of the local store.
         #[arg(required = false)]
         node: Option<String>,
     },
-    /// Store one or more files (supports path:name for renaming)
-    /// Use "put <NODE_ID> file1 file2 ..." to put to a remote node
+    /// Store one or more files in the local or remote blob store.
+    ///
+    /// Files can be renamed during storage using the `path:name` syntax.
+    ///
+    /// # Remote Operations
+    ///
+    /// If the first argument is a 64-character hex node ID, remaining
+    /// files are stored on that remote node.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Store a single file
+    /// id put file.txt
+    ///
+    /// # Store multiple files
+    /// id put file1.txt file2.txt
+    ///
+    /// # Rename during storage
+    /// id put myfile.txt:config.json
+    ///
+    /// # Store on remote node
+    /// id put NODE_ID file.txt
+    ///
+    /// # Store from stdin
+    /// echo "content" | id put --content myname.txt
+    /// ```
     #[command(aliases = ["in", "add", "store", "import"])]
     Put {
-        /// File paths to store (use path:name to rename, e.g. file.txt:stored.txt)
-        /// If first arg is a 64-char hex NODE_ID, remaining args are sent to that remote node
+        /// File paths to store.
+        ///
+        /// Use `path:name` syntax to rename files during storage.
+        /// If the first argument is a 64-char hex node ID, files
+        /// are sent to that remote node.
         #[arg(required = false)]
         files: Vec<String>,
-        /// Read content from stdin instead of file paths (requires one name argument)
+        /// Read content from stdin instead of file paths.
+        ///
+        /// Requires exactly one name argument for the stored content.
         #[arg(long, visible_alias = "data", conflicts_with = "stdin")]
         content: bool,
-        /// Read additional file paths from stdin (split on newline/tab/comma)
+        /// Read additional file paths from stdin.
+        ///
+        /// Paths are split on newline, tab, or comma.
         #[arg(long, conflicts_with = "content")]
         stdin: bool,
-        /// Store by hash only, don't create named tags
+        /// Store by hash only without creating a named tag.
+        ///
+        /// The content is stored but no human-readable name is assigned.
+        /// Useful when you only need the content hash.
         #[arg(long)]
         hash_only: bool,
-        /// Disable relay servers (for remote operations)
+        /// Disable relay servers for remote operations.
         #[arg(long)]
         no_relay: bool,
     },
-    /// Store content by hash only (no name)
+    /// Store content by hash only, without a named tag.
+    ///
+    /// Similar to `put --hash-only` but only accepts a single source.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Store file by hash
+    /// id put-hash file.txt
+    ///
+    /// # Store stdin by hash
+    /// echo "content" | id put-hash -
+    /// ```
     #[command(name = "put-hash")]
     PutHash {
-        /// File path or "-" for stdin
+        /// File path to store, or "-" for stdin.
         source: String,
     },
-    /// Retrieve one or more files by name or hash (supports source:output for renaming)
-    /// Use "get <NODE_ID> name1 name2 ..." to get from a remote node
+    /// Retrieve one or more files by name or hash.
+    ///
+    /// Files can be written to different output paths using `source:output`.
+    ///
+    /// # Source Resolution
+    ///
+    /// 1. Try as exact tag name
+    /// 2. Try as hash (if 64 hex characters)
+    /// 3. Use `--hash` to force hash interpretation
+    /// 4. Use `--name-only` to skip hash interpretation
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Get by name (writes to same name)
+    /// id get config.json
+    ///
+    /// # Get with custom output
+    /// id get config.json:local.json
+    ///
+    /// # Get to stdout
+    /// id get config.json:-
+    ///
+    /// # Get from remote
+    /// id get NODE_ID config.json
+    /// ```
     Get {
-        /// Names or hashes to retrieve (use source:output to rename, e.g. file.txt:out.txt or hash:- for stdout)
-        /// If first arg is a 64-char hex NODE_ID, remaining args are fetched from that remote node
+        /// Names or hashes to retrieve.
+        ///
+        /// Use `source:output` to specify output path (`-` for stdout).
+        /// If first arg is a 64-char hex node ID, files are fetched
+        /// from that remote node.
         #[arg(required = false)]
         sources: Vec<String>,
-        /// Read additional sources from stdin (split on newline/tab/comma)
+        /// Read additional sources from stdin.
+        ///
+        /// Sources are split on newline, tab, or comma.
         #[arg(long)]
         stdin: bool,
-        /// Treat all sources as hashes (fail if not found, don't check names)
+        /// Treat all sources as hashes.
+        ///
+        /// Fails if a source doesn't match a known hash.
         #[arg(long, conflicts_with = "name_only")]
         hash: bool,
-        /// Treat all sources as names only (don't try as hash even if 64 hex chars)
+        /// Treat all sources as names only.
+        ///
+        /// Skips hash interpretation even for 64-char hex strings.
         #[arg(long, conflicts_with = "hash")]
         name_only: bool,
-        /// Output all files to stdout (concatenated) - overrides per-item outputs
+        /// Output all files to stdout (concatenated).
+        ///
+        /// Overrides per-item output specifications.
         #[arg(long)]
         stdout: bool,
-        /// Disable relay servers (for remote operations)
+        /// Disable relay servers for remote operations.
         #[arg(long)]
         no_relay: bool,
     },
-    /// Retrieve a file by hash (alias for get --hash)
+    /// Retrieve a file by hash with explicit output path.
+    ///
+    /// Shortcut for `get --hash HASH:OUTPUT`.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Get hash to file
+    /// id get-hash abc123... output.txt
+    ///
+    /// # Get hash to stdout
+    /// id get-hash abc123... -
+    /// ```
     #[command(name = "get-hash")]
     GetHash {
-        /// The blob hash
+        /// The blob hash (64 hex characters).
         hash: String,
-        /// Output path (use "-" for stdout)
+        /// Output path, or "-" for stdout.
         output: String,
     },
-    /// Output files to stdout (like get but defaults to stdout)
+    /// Output files to stdout (like `get` but defaults to stdout).
+    ///
+    /// Convenient for piping content to other commands.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Output to stdout
+    /// id cat config.json
+    ///
+    /// # Pipe to another command
+    /// id cat config.json | jq .
+    /// ```
     #[command(aliases = ["output", "out"])]
     Cat {
-        /// Names or hashes to retrieve
-        /// If first arg is a 64-char hex NODE_ID, remaining args are fetched from that remote node
+        /// Names or hashes to output.
+        ///
+        /// If first arg is a 64-char hex node ID, content is fetched
+        /// from that remote node.
         #[arg(required = false)]
         sources: Vec<String>,
-        /// Read additional sources from stdin (split on newline/tab/comma)
+        /// Read additional sources from stdin.
         #[arg(long)]
         stdin: bool,
-        /// Treat all sources as hashes
+        /// Treat all sources as hashes.
         #[arg(long, conflicts_with = "name_only")]
         hash: bool,
-        /// Treat all sources as names only
+        /// Treat all sources as names only.
         #[arg(long, conflicts_with = "hash")]
         name_only: bool,
-        /// Disable relay servers (for remote operations)
+        /// Disable relay servers for remote operations.
         #[arg(long)]
         no_relay: bool,
     },
-    /// Find files by name/hash query and output to file (use --stdout for stdout)
+    /// Find files by name/hash query and optionally output content.
+    ///
+    /// Searches return the best match (or all matches with `--all`).
+    /// Match quality: exact > prefix > contains.
+    ///
+    /// # Output Modes
+    ///
+    /// - Default: write best match to file with its name
+    /// - `--stdout`: write best match to stdout
+    /// - `--all`: write all matches (to stdout or `--dir`)
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Find and save best match
+    /// id find config
+    ///
+    /// # Find and output to stdout
+    /// id find --stdout config
+    ///
+    /// # Find all matches and save to directory
+    /// id find --all --dir ./output config
+    /// ```
     Find {
-        /// Search queries (matches name or hash: exact > prefix > contains)
+        /// Search queries (case-insensitive).
+        ///
+        /// Multiple queries find the best match for each.
         #[arg(required = true)]
         queries: Vec<String>,
-        /// Prefer name matches over hash matches
+        /// Prefer name matches over hash matches in results.
         #[arg(long)]
         name: bool,
-        /// Output to stdout instead of file
+        /// Output to stdout instead of writing to files.
         #[arg(long)]
         stdout: bool,
-        /// Output all matches (to stdout, or to directory with --dir)
+        /// Output all matches instead of just the best match.
         #[arg(long, visible_aliases = ["out", "export", "save", "full"])]
         all: bool,
-        /// Output directory for --all (each file saved by name)
+        /// Output directory for `--all` (each file saved by name).
         #[arg(long)]
         dir: Option<String>,
-        /// Output format: tag (default), group, or union
+        /// Output format: tag (default), group, or union.
+        ///
+        /// - `tag`: each match with its query
+        /// - `group`: matches grouped by query
+        /// - `union`: deduplicated by hash
         #[arg(long, default_value = "tag")]
         format: String,
-        /// Remote node ID to search
+        /// Remote node ID to search.
         #[arg(long)]
         node: Option<String>,
-        /// Disable relay servers
+        /// Disable relay servers.
         #[arg(long)]
         no_relay: bool,
     },
-    /// Search files by name/hash query and list all matches
+    /// Search files and list all matches (without outputting content).
+    ///
+    /// Like `find` but only lists matches, doesn't retrieve content.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Search for matches
+    /// id search config
+    ///
+    /// # Search with grouped output
+    /// id search --format group config test
+    /// ```
     Search {
-        /// Search queries (matches name or hash: exact > prefix > contains)
+        /// Search queries (case-insensitive).
         #[arg(required = true)]
         queries: Vec<String>,
-        /// Prefer name matches over hash matches
+        /// Prefer name matches over hash matches.
         #[arg(long)]
         name: bool,
-        /// Output all matches (to stdout, or to directory with --dir)
+        /// Include all matches in output.
         #[arg(long, visible_aliases = ["out", "export", "save", "full"])]
         all: bool,
-        /// Output directory for --all (each file saved by name)
+        /// Output directory for `--all`.
         #[arg(long)]
         dir: Option<String>,
-        /// Output format: tag (default), group, or union
+        /// Output format: tag, group, or union.
         #[arg(long, default_value = "tag")]
         format: String,
-        /// Remote node ID to search
+        /// Remote node ID to search.
         #[arg(long)]
         node: Option<String>,
-        /// Disable relay servers
+        /// Disable relay servers.
         #[arg(long)]
         no_relay: bool,
     },
-    /// List all stored files (local or remote)
+    /// List all stored files (tags) in local or remote store.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # List local store
+    /// id list
+    ///
+    /// # List remote store
+    /// id list NODE_ID
+    /// ```
     List {
-        /// Remote node ID to list (optional - lists local if not provided)
+        /// Remote node ID to list (omit for local).
         #[arg(required = false)]
         node: Option<String>,
-        /// Disable relay servers (for remote operations)
+        /// Disable relay servers for remote operations.
         #[arg(long)]
         no_relay: bool,
     },
-    /// Print node ID
+    /// Print the local node's public ID.
+    ///
+    /// The node ID is derived from the keypair and is needed for
+    /// remote nodes to connect.
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// id id
+    /// # Output: abc123...def456
+    /// ```
     Id,
 }
 
