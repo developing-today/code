@@ -2,6 +2,8 @@
 
 Guidelines for AI coding agents working on the `id` peer-to-peer file sharing CLI built with Rust and Iroh.
 
+**Updating this file:** Keep prose tight and context-efficient. Prefer links to files over inline examples. Include only essential code samples.
+
 ## Critical: Toolchain Files
 
 **NEVER delete `rust-toolchain.toml`** - it is required for Nix builds. The flake.nix uses rust-overlay which reads this file. Deleting it breaks `nix develop` and `nix build`.
@@ -10,200 +12,90 @@ Guidelines for AI coding agents working on the `id` peer-to-peer file sharing CL
 
 **When adding or modifying justfile commands, ALWAYS add a corresponding `nix run .#<command>` app in `flake.nix`.**
 
-The flake.nix provides Nix-native equivalents for all just commands. This enables:
-- Running commands without entering a dev shell: `nix run .#check-all`
-- CI/CD pipelines that use pure Nix evaluation
-- Reproducible command execution across systems
+This enables running commands without entering a dev shell (`nix run .#check-all`), CI/CD pipelines with pure Nix evaluation, and reproducible execution across systems.
 
-### Adding a New Just Command
-
+When adding a new just command:
 1. Add the recipe to `justfile`
-2. Add a corresponding app to `flake.nix` in the `apps` section:
-   ```nix
-   my-command = mkApp (mkScript "my-command" "just my-command");
-   ```
-3. If the command should be verifiable in CI, also add a check in the `checks` section:
-   ```nix
-   my-command = mkCheck "my-command" "my-command";
-   ```
+2. Add corresponding app in `flake.nix` `apps` section
+3. For CI-verifiable commands, add a check in `flake.nix` `checks` section
 
-### Shared Packages (nix-common.nix)
-
-Package definitions are shared between `shell.nix` and `flake.nix` via `nix-common.nix`. When adding new development dependencies:
-
-1. Add the package to `nix-common.nix` (in `buildInputs` or `nativeBuildInputs`)
-2. Both shell.nix and flake.nix will automatically include it
-3. **Never** add packages directly to shell.nix or flake.nix—use nix-common.nix
-
-The `shell.nix` reads `flake.lock` to use the exact same nixpkgs and rust-overlay versions as the flake, ensuring reproducibility without requiring flakes support.
-
-### Nix File Architecture
-
-```
-flake.lock              # Pins exact versions (nixpkgs, rust-overlay hashes)
-    │
-    ├── flake.nix       # Reads inputs, defines rustToolchain, imports nix-common.nix
-    │
-    └── shell.nix       # Reads flake.lock for same versions, defines rustToolchain,
-                        # imports nix-common.nix
-            │
-            └── nix-common.nix  # Shared: buildInputs, nativeBuildInputs,
-                                # opensslEnv, shellHook
-```
-
-**Key alignment points:**
-
-1. **Version pinning**: `shell.nix` parses `flake.lock` to get exact `narHash` values for nixpkgs and rust-overlay, ensuring identical versions to `flake.nix`
-
-2. **Rust toolchain**: Defined separately in both `flake.nix` and `shell.nix` using:
-   ```nix
-   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-   ```
-   This requires rust-overlay to be applied to pkgs first, which happens before importing nix-common.nix. The toolchain is then prepended to `nativeBuildInputs`.
-
-3. **Shared packages**: `nix-common.nix` contains `buildInputs`, `nativeBuildInputs` (excluding rustToolchain), `opensslEnv`, and `shellHook`
-
-4. **Shell hook**: Defined once in `nix-common.nix`, used by both shells
-
-5. **OpenSSL env vars**: Defined in `nix-common.nix.opensslEnv`, applied in both shells
+**Package management:** Add new dev dependencies to `nix-common.nix` only (never directly to shell.nix or flake.nix). See `nix-common.nix` for the shared package architecture.
 
 ## Environment Setup
 
-**When in doubt, use the Nix dev shell** - it provides all tools with correct versions:
+Use the Nix dev shell for correct tool versions:
 
 ```bash
-nix develop              # Preferred: Enter flake-based dev shell
-nix-shell                # Alternative: Legacy shell.nix
+nix develop   # Preferred: flake-based
+nix-shell     # Alternative: legacy
 ```
 
-The dev shell includes: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-outdated, cargo-machete, just, and more.
-
-**Note:** Ignore Nix log messages about disk space, symlinks, or "cannot link" errors - these are harmless warnings.
+Includes: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-outdated, cargo-machete, just. Ignore Nix warnings about disk space or symlinks.
 
 ## Build, Test, and Lint Commands
 
-Use `just` for common tasks. Run `just` with no arguments to see all recipes.
+See [`justfile`](justfile) for all recipes (`just` with no args lists them).
 
+**Essential commands:**
 ```bash
-# Primary quality check - RUN THIS BEFORE COMPLETING WORK
-just check-all           # Runs: fmt, lint, test, doc
-
-# Individual checks
-just fmt-check           # Check formatting (no changes)
-just fmt                 # Auto-format code
-just lint                # Run clippy with all targets/features
-just lint-fix            # Auto-fix clippy issues
-just test                # Run all tests
-just test-lib            # Run only unit tests (fast)
-just test-int            # Run only integration tests
-just doc                 # Build documentation
-
-# Run a single test by name
-just test-one test_name
-cargo test --lib test_cli_parse_show
-cargo test --test cli_integration test_peek_basic
-
-# Code coverage
-just coverage            # Generate HTML coverage report
-just coverage-summary    # Print coverage summary
+just check-all    # Primary quality check - RUN BEFORE COMPLETING WORK (fmt, lint, test, doc)
+just fmt          # Format code
+just lint         # Run clippy
+just lint-fix     # Auto-fix clippy issues
+just test         # All tests
+just test-lib     # Unit tests only (fast)
+just test-one X   # Run single test by name
 ```
+
+**Dependency management:** `just outdated`, `just audit`, `just machete`, `just update`. Ask user before updating dependencies, especially major versions.
+
+## CLI Commands
+
+```
+id serve     Start server accepting put/get requests from peers
+id repl      Interactive REPL for commands
+id put       Store files in local/remote blob store
+id get       Retrieve files by name or hash
+id cat       Output files to stdout
+id find      Find files by name/hash query
+id list      List all stored files (tags)
+id id        Print local node's public ID
+```
+
+Run `id --help` or `id <command> --help` for full options.
 
 ## Project Structure
 
 ```
 src/
-├── main.rs              # CLI entry point, command dispatch
-├── lib.rs               # Library exports, constants, utilities
-├── cli.rs               # Clap argument parsing definitions
-├── protocol.rs          # Network protocol types (MetaRequest/Response)
-├── store.rs             # Storage layer (FsStore/MemStore)
-├── helpers.rs           # Parsing and formatting utilities
-├── commands/            # Command implementations
-│   ├── mod.rs, put.rs, get.rs, find.rs, list.rs, serve.rs, id.rs, client.rs, repl.rs
-└── repl/
-    ├── runner.rs        # REPL command execution
-    └── input.rs         # Input preprocessing (heredocs, substitution)
-tests/
-└── cli_integration.rs   # Integration tests using built binary
+├── main.rs, lib.rs, cli.rs    # Entry point, exports, Clap definitions
+├── protocol.rs, store.rs      # Network protocol, storage layer
+├── helpers.rs                 # Parsing/formatting utilities
+├── commands/                  # Command implementations (put, get, find, list, serve, etc.)
+└── repl/                      # REPL runner and input preprocessing
+tests/cli_integration.rs       # Integration tests
 ```
 
 ## Code Style
 
-### Imports
+**Imports:** Group by std → external crates (alphabetical) → internal (`crate::`, `super::`), separated by blank lines.
 
-Order imports in groups separated by blank lines:
-1. Standard library (`std::`)
-2. External crates (alphabetically)
-3. Internal crate imports (`crate::`, `super::`)
+**Naming:** Functions `snake_case` (commands prefixed `cmd_`), types `PascalCase`, constants `SCREAMING_SNAKE_CASE`, tests `test_` prefix.
 
-### Naming
+**Error handling:** Use `anyhow::Result<T>`, `bail!()` for early returns, `?` with `.context()` for propagation.
 
-- **Functions**: `snake_case`, prefix commands with `cmd_` (e.g., `cmd_find`)
-- **Types/Structs**: `PascalCase` (e.g., `SearchOptions`, `MetaRequest`)
-- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `META_ALPN`, `KEY_FILE`)
-- **Tests**: `test_` prefix (e.g., `test_search_options_first`)
+**Lint rules (see `Cargo.toml`):** Denied: `unwrap_used`, `expect_used`, `panic`, `todo`, `dbg_macro`. Test modules: add `#[allow(clippy::unwrap_used, clippy::expect_used)]`.
 
-### Error Handling
-
-- Use `anyhow::Result<T>` for fallible functions
-- Use `bail!()` for early error returns
-- Use `?` operator for propagation
-- Add `.context()` for helpful error messages
-
-```rust
-pub async fn cmd_example(path: &str) -> Result<()> {
-    if path.is_empty() { bail!("path cannot be empty"); }
-    let content = std::fs::read(path).context("failed to read file")?;
-    Ok(())
-}
-```
-
-### Strict Lint Rules (Cargo.toml)
-
-- **Denied**: `unwrap_used`, `expect_used`, `panic`, `todo`, `dbg_macro`
-- **Enabled**: `clippy::all`, `clippy::pedantic`, `clippy::nursery`, `clippy::cargo`
-- **Test modules**: Add `#[allow(clippy::unwrap_used, clippy::expect_used)]`
-
-### Test Organization
-
-Place tests in `#[cfg(test)] mod tests` at the bottom of each file:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
-    #[test]
-    fn test_feature_basic() { /* ... */ }
-}
-```
+**Tests:** Place in `#[cfg(test)] mod tests` at file bottom.
 
 ## Adding Features
 
-### Requirements
+1. Add docstrings (`///` for items, `//!` for modules)
+2. Add unit tests in `#[cfg(test)] mod tests`
+3. Add integration tests in `tests/cli_integration.rs` for CLI behavior
+4. Run `just check-all` before completing
 
-1. **Documentation**: Add docstrings (`///` for items, `//!` for modules)
-2. **Unit tests**: In `#[cfg(test)] mod tests` at file bottom
-3. **Integration tests**: In `tests/cli_integration.rs` for CLI behavior
-4. **Quality**: Run `just check-all` before completing
-
-### Handling Test Failures
-
-- Ensure failure is related to your change
-- Make tests *correct*, not just passing
-- If behavior changed intentionally, update tests to match
-
-## Dependency Management
-
-```bash
-just outdated            # Check for outdated dependencies
-just audit               # Security vulnerability audit
-just machete             # Find unused dependencies
-just update              # Update Cargo.lock
-```
-
-Ask the user before updating dependencies, especially major versions.
+When tests fail: ensure failure relates to your change, make tests *correct* not just passing, update tests if behavior changed intentionally.
 
 ## Documenting Design & Architecture Decisions
 
@@ -294,33 +186,8 @@ docs/
 
 ## Key Patterns
 
-### Command Flow
+**Command flow:** parse args → check local/remote → open store/connect → execute → cleanup
 
-Commands: parse args → check local/remote → open store/connect → execute → cleanup
+**Remote operations:** Check if first argument is a 64-char hex node ID to determine local vs remote mode.
 
-### Store Access
-
-```rust
-let store = open_store(ephemeral).await?;
-let api = store.as_store();
-// Use api.blobs() and api.tags()
-store.shutdown().await?;
-```
-
-### Remote Operations
-
-Check if first argument is a 64-char hex node ID to determine local vs remote mode.
-
-### Type Definitions
-
-Define options structs for commands with multiple parameters:
-
-```rust
-#[derive(Debug, Clone, Default)]
-pub struct SearchOptions {
-    pub first: Option<usize>,
-    pub last: Option<usize>,
-    pub count: bool,
-    pub exclude: Vec<String>,
-}
-```
+**Type definitions:** Define options structs for commands with multiple parameters (see `SearchOptions` in `helpers.rs`).

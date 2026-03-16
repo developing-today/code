@@ -6,13 +6,13 @@
 #
 # Run `just` with no arguments to see available recipes.
 #
-# NOTE: Commands marked [requires: bun] need Bun installed (use `nix develop`).
+# NOTE: Commands marked [bun] need Bun installed (use `nix develop`).
 # NOTE: Every just command should have a corresponding `nix run .#<cmd>` in flake.nix.
 #
-# Build System:
-# - Tracks which variant (lib vs web) was last built via .build-variant file
-# - Conditional builds skip if sources unchanged AND correct variant is built
-# - Use *-force commands to bypass freshness checks
+# Naming conventions:
+#   - Simple command names (build, serve, check) default to web variant
+#   - Use -lib suffix for library-only variant (no web/bun required)
+#   - Use -force suffix to bypass freshness checks
 
 # Default recipe - show help
 default:
@@ -22,19 +22,23 @@ default:
 # Quality Checks
 # =============================================================================
 
-# Run all quality checks
-check-all: fix fmt-check lint test doc
+# Run all checks (with auto-fix first) [bun]
+check: fix ci
     @echo "✓ All checks passed!"
 
-# Run all checks with auto-fix
+# CI-safe checks (read-only, no modifications) [bun]
+ci: fmt-check lint test test-web doc
+    @echo "✓ CI checks passed!"
+
+# Auto-fix formatting and lint issues
 fix: fmt lint-fix
     @echo "✓ Fixed what could be fixed"
 
-# Format code
+# Format Rust code
 fmt:
     cargo fmt
 
-# Check formatting without changes
+# Check Rust formatting (no changes)
 fmt-check:
     cargo fmt -- --check
 
@@ -42,19 +46,19 @@ fmt-check:
 lint:
     cargo clippy --all-targets --all-features
 
-# Run clippy and auto-fix issues
+# Run clippy with auto-fix
 lint-fix:
     cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged
 
-# Run all tests
+# Run all Rust tests
 test:
     cargo test
 
-# Run only unit tests (fast)
-test-lib:
+# Run unit tests only (fast)
+test-unit:
     cargo test --lib
 
-# Run only integration tests
+# Run integration tests only
 test-int:
     cargo test --test cli_integration
 
@@ -66,7 +70,11 @@ test-verbose:
 test-one NAME:
     cargo test {{NAME}}
 
-# Build documentation
+# [bun] Run web tests (TypeScript type checking)
+test-web:
+    cd web && bun run typecheck
+
+# Build Rust documentation
 doc:
     cargo doc --no-deps --document-private-items
 
@@ -87,338 +95,103 @@ coverage-summary:
     cargo llvm-cov
 
 # =============================================================================
-# Build Commands (Conditional)
+# Build Commands
 # =============================================================================
 
-# Build entire system (lib + web) [requires: bun]
-build: build-web
+# Build with web UI (default) [bun]
+build:
+    ./scripts/build.sh web debug
 
-# Build only Rust library/binary (no web, conditional)
+# Build library only (no web/bun required)
 build-lib:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    
-    binary="target/debug/id"
-    variant_file="target/.build-variant"
-    needs_build=false
-    
-    # Check if binary exists
-    if [[ ! -f "$binary" ]]; then
-        echo "[rust] No binary found, build needed"
-        needs_build=true
-    # Check if last build was 'web' variant (need to rebuild as 'lib')
-    elif [[ -f "$variant_file" ]] && [[ "$(cat "$variant_file")" == "web" ]]; then
-        echo "[rust] Last build was 'web' variant, rebuilding as 'lib'"
-        needs_build=true
-    else
-        # Check if any source file is newer than binary
-        binary_time=$(stat -c %Y "$binary" 2>/dev/null || echo 0)
-        
-        for f in src/*.rs src/**/*.rs Cargo.toml Cargo.lock; do
-            if [[ -f "$f" ]]; then
-                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-                if [[ "$file_time" -gt "$binary_time" ]]; then
-                    echo "[rust] $f is newer than binary"
-                    needs_build=true
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [[ "$needs_build" == "true" ]]; then
-        echo "[rust] Building lib variant..."
-        cargo build
-        mkdir -p target
-        echo "lib" > "$variant_file"
-    else
-        echo "[rust] Lib variant up to date"
-    fi
+    ./scripts/build.sh lib debug
 
-# Force build lib (ignores freshness checks)
+# Build release with web UI [bun]
+release:
+    ./scripts/build.sh web release
+
+# Build release library only
+release-lib:
+    ./scripts/build.sh lib release
+
+# Force rebuild with web UI (skip freshness checks) [bun]
+build-force:
+    cd web && bun install && bun run build
+    cargo build --features web
+    @mkdir -p target && echo "web" > target/.build-variant
+
+# Force rebuild library only
 build-lib-force:
     cargo build
-    @mkdir -p target
-    @echo "lib" > target/.build-variant
+    @mkdir -p target && echo "lib" > target/.build-variant
 
-# Build release (lib + web) [requires: bun]
-build-release: build-web-release
+# Force rebuild release with web UI [bun]
+release-force:
+    cd web && bun install && bun run build
+    cargo build --release --features web
+    @mkdir -p target && echo "web" > target/.build-variant-release
 
-# Build release Rust library/binary only (conditional)
-build-lib-release:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    
-    binary="target/release/id"
-    variant_file="target/.build-variant-release"
-    needs_build=false
-    
-    if [[ ! -f "$binary" ]]; then
-        echo "[rust] No release binary found, build needed"
-        needs_build=true
-    elif [[ -f "$variant_file" ]] && [[ "$(cat "$variant_file")" == "web" ]]; then
-        echo "[rust] Last release build was 'web' variant, rebuilding as 'lib'"
-        needs_build=true
-    else
-        binary_time=$(stat -c %Y "$binary" 2>/dev/null || echo 0)
-        
-        for f in src/*.rs src/**/*.rs Cargo.toml Cargo.lock; do
-            if [[ -f "$f" ]]; then
-                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-                if [[ "$file_time" -gt "$binary_time" ]]; then
-                    echo "[rust] $f is newer than release binary"
-                    needs_build=true
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [[ "$needs_build" == "true" ]]; then
-        echo "[rust] Building lib release variant..."
-        cargo build --release
-        mkdir -p target
-        echo "lib" > "$variant_file"
-    else
-        echo "[rust] Lib release variant up to date"
-    fi
-
-# Force build lib release (ignores freshness checks)
-build-lib-release-force:
+# Force rebuild release library only
+release-lib-force:
     cargo build --release
-    @mkdir -p target
-    @echo "lib" > target/.build-variant-release
+    @mkdir -p target && echo "lib" > target/.build-variant-release
 
-# Force build everything [requires: bun]
-build-force: build-web-force
-
-# Clean build artifacts
+# Clean all build artifacts
 clean:
     cargo clean
 
 # =============================================================================
-# Web Development [requires: bun]
+# Web Assets [bun]
 # =============================================================================
 
-# [requires: bun] Build web assets with Bun (only if sources changed)
-web-build:
+# [bun] Build web frontend assets
+web:
     #!/usr/bin/env bash
     set -euo pipefail
-    
     if [[ ! -f web/dist/manifest.json ]]; then
-        echo "[web] No manifest found, building..."
-        cd web && bun install && bun run build
-        exit 0
-    fi
-    
-    manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
-    needs_build=false
-    
-    for f in web/src/*.ts web/styles/*.css web/package.json web/scripts/*.ts; do
-        if [[ -f "$f" ]]; then
-            file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-            if [[ "$file_time" -gt "$manifest_time" ]]; then
-                echo "[web] $f is newer than manifest"
-                needs_build=true
-                break
-            fi
-        fi
-    done
-    
-    if [[ "$needs_build" == "true" ]]; then
-        echo "[web] Sources changed, rebuilding..."
+        echo "[web] Building assets..."
         cd web && bun install && bun run build
     else
-        echo "[web] Assets up to date"
+        manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
+        needs_build=false
+        for f in web/src/*.ts web/styles/*.css web/package.json web/scripts/*.ts; do
+            if [[ -f "$f" ]]; then
+                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+                if [[ "$file_time" -gt "$manifest_time" ]]; then
+                    needs_build=true
+                    break
+                fi
+            fi
+        done
+        if [[ "$needs_build" == "true" ]]; then
+            echo "[web] Rebuilding assets..."
+            cd web && bun install && bun run build
+        else
+            echo "[web] Assets up to date"
+        fi
     fi
 
-# [requires: bun] Force rebuild web assets (ignores freshness check)
-web-build-force:
+# [bun] Force rebuild web assets
+web-force:
     cd web && bun install && bun run build
 
-# [requires: bun] Watch web assets for development
+# [bun] Watch web assets for development
 web-dev:
     cd web && bun install && bun run dev
-
-# [requires: bun] Type-check TypeScript
-web-typecheck:
-    cd web && bun run typecheck
-
-# [requires: bun] Build Rust with web feature (includes web assets, conditional)
-build-web:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # Step 1: Check if frontend assets need rebuilding
-    # ─────────────────────────────────────────────────────────────────────────
-    needs_frontend=false
-    
-    if [[ ! -f web/dist/manifest.json ]]; then
-        echo "[web] No manifest found, frontend build needed"
-        needs_frontend=true
-    else
-        manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
-        
-        for f in web/src/*.ts web/styles/*.css web/package.json web/scripts/*.ts; do
-            if [[ -f "$f" ]]; then
-                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-                if [[ "$file_time" -gt "$manifest_time" ]]; then
-                    echo "[web] $f is newer than manifest"
-                    needs_frontend=true
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [[ "$needs_frontend" == "true" ]]; then
-        echo "[web] Building frontend assets..."
-        cd web && bun install && bun run build
-        cd ..
-    else
-        echo "[web] Frontend assets up to date"
-    fi
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # Step 2: Check if Rust backend needs rebuilding
-    # ─────────────────────────────────────────────────────────────────────────
-    binary="target/debug/id"
-    variant_file="target/.build-variant"
-    needs_backend=false
-    
-    if [[ ! -f "$binary" ]]; then
-        echo "[rust] No binary found, backend build needed"
-        needs_backend=true
-    # Check if last build was 'lib' variant (need to rebuild as 'web')
-    elif [[ -f "$variant_file" ]] && [[ "$(cat "$variant_file")" == "lib" ]]; then
-        echo "[rust] Last build was 'lib' variant, rebuilding as 'web'"
-        needs_backend=true
-    else
-        binary_time=$(stat -c %Y "$binary" 2>/dev/null || echo 0)
-        
-        # Check Rust sources AND web/dist (embedded assets)
-        for f in src/*.rs src/**/*.rs Cargo.toml Cargo.lock web/dist/*; do
-            if [[ -f "$f" ]]; then
-                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-                if [[ "$file_time" -gt "$binary_time" ]]; then
-                    echo "[rust] $f is newer than binary"
-                    needs_backend=true
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [[ "$needs_backend" == "true" ]]; then
-        echo "[rust] Building web variant..."
-        cargo build --features web
-        mkdir -p target
-        echo "web" > "$variant_file"
-    else
-        echo "[rust] Web variant up to date"
-    fi
-
-# [requires: bun] Build release with web feature (conditional)
-build-web-release:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # Step 1: Check if frontend assets need rebuilding
-    # ─────────────────────────────────────────────────────────────────────────
-    needs_frontend=false
-    
-    if [[ ! -f web/dist/manifest.json ]]; then
-        echo "[web] No manifest found, frontend build needed"
-        needs_frontend=true
-    else
-        manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
-        
-        for f in web/src/*.ts web/styles/*.css web/package.json web/scripts/*.ts; do
-            if [[ -f "$f" ]]; then
-                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-                if [[ "$file_time" -gt "$manifest_time" ]]; then
-                    echo "[web] $f is newer than manifest"
-                    needs_frontend=true
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [[ "$needs_frontend" == "true" ]]; then
-        echo "[web] Building frontend assets..."
-        cd web && bun install && bun run build
-        cd ..
-    else
-        echo "[web] Frontend assets up to date"
-    fi
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # Step 2: Check if Rust backend needs rebuilding
-    # ─────────────────────────────────────────────────────────────────────────
-    binary="target/release/id"
-    variant_file="target/.build-variant-release"
-    needs_backend=false
-    
-    if [[ ! -f "$binary" ]]; then
-        echo "[rust] No release binary found, build needed"
-        needs_backend=true
-    elif [[ -f "$variant_file" ]] && [[ "$(cat "$variant_file")" == "lib" ]]; then
-        echo "[rust] Last release build was 'lib' variant, rebuilding as 'web'"
-        needs_backend=true
-    else
-        binary_time=$(stat -c %Y "$binary" 2>/dev/null || echo 0)
-        
-        for f in src/*.rs src/**/*.rs Cargo.toml Cargo.lock web/dist/*; do
-            if [[ -f "$f" ]]; then
-                file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-                if [[ "$file_time" -gt "$binary_time" ]]; then
-                    echo "[rust] $f is newer than release binary"
-                    needs_backend=true
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [[ "$needs_backend" == "true" ]]; then
-        echo "[rust] Building web release variant..."
-        cargo build --release --features web
-        mkdir -p target
-        echo "web" > "$variant_file"
-    else
-        echo "[rust] Web release variant up to date"
-    fi
-
-# [requires: bun] Force rebuild everything (ignores freshness checks)
-build-web-force:
-    cd web && bun install && bun run build
-    cargo build --features web
-    @mkdir -p target
-    @echo "web" > target/.build-variant
-
-# [requires: bun] Force rebuild release (ignores freshness checks)
-build-web-release-force:
-    cd web && bun install && bun run build
-    cargo build --release --features web
-    @mkdir -p target
-    @echo "web" > target/.build-variant-release
 
 # =============================================================================
 # Run Commands
 # =============================================================================
 
-# Run the CLI with arguments
+# Run CLI with arguments (lib variant)
 run *ARGS:
     cargo run -- {{ARGS}}
 
-# Run serve with web interface (default, calls serve-web) [requires: bun]
-serve PORT="3000":
-    just serve-web {{PORT}}
+# Serve with web UI (default) [bun]
+serve PORT="3000": build
+    cargo run --features web -- serve --web {{PORT}}
 
-# Run serve without web interface
+# Serve without web UI
 serve-lib *ARGS:
     cargo run -- serve {{ARGS}}
 
@@ -426,28 +199,20 @@ serve-lib *ARGS:
 repl:
     cargo run -- repl
 
-# [requires: bun] Run with web feature
-run-web *ARGS: build-web
-    cargo run --features web -- {{ARGS}}
-
-# [requires: bun] Run serve with web interface on default port 3000
-serve-web PORT="3000": build-web
-    cargo run --features web -- serve --web {{PORT}}
-
 # =============================================================================
 # Watch Commands
 # =============================================================================
 
-# Watch for changes and run tests
+# Watch and run tests on changes
 watch-test:
     cargo watch -x test
 
-# Watch for changes and run clippy
+# Watch and run clippy on changes
 watch-lint:
     cargo watch -x clippy
 
-# Watch for changes and rebuild
-watch-build:
+# Watch and rebuild on changes
+watch:
     cargo watch -x build
 
 # =============================================================================
@@ -466,7 +231,7 @@ audit:
 machete:
     cargo machete
 
-# Update dependencies
+# Update Cargo.lock
 update:
     cargo update
 
@@ -474,32 +239,62 @@ update:
 tree:
     cargo tree
 
-# Full CI check (what CI would run)
-ci: fmt-check lint test doc
-    @echo "✓ CI checks passed!"
+# =============================================================================
+# Utilities
+# =============================================================================
 
 # Count lines of code
 loc:
     tokei
 
 # =============================================================================
-# Combined Build + Check + Serve Commands
+# Combined Commands
 # =============================================================================
 
-# Build and run all checks [requires: bun]
-build-check: build check-all
-    @echo "✓ Build and all checks passed!"
+# Build and check [bun]
+build-check: build check
 
-# Build, check, and serve (without web)
-build-check-serve-lib: build-lib check-all serve-lib
-
-# Build, check, and serve with web [requires: bun]
-build-check-serve PORT="3000": build check-all
+# Build, check, and serve with web UI [bun]
+build-check-serve PORT="3000": build check
     just serve {{PORT}}
 
-# Build and serve (without web)
-build-serve-lib: build-lib serve-lib
+# Build, check, and serve without web UI
+build-check-serve-lib: build-lib ci serve-lib
 
-# Build and serve with web [requires: bun]
+# Build and serve with web UI [bun]
 build-serve PORT="3000": build
     just serve {{PORT}}
+
+# Build and serve without web UI
+build-serve-lib: build-lib serve-lib
+
+# =============================================================================
+# Legacy Aliases (for backwards compatibility)
+# =============================================================================
+
+# Alias: test-lib -> test-unit
+test-lib: test-unit
+
+# Alias: build-release -> release
+build-release: release
+
+# Alias: build-lib-release -> release-lib
+build-lib-release: release-lib
+
+# Alias: build-web -> build
+build-web: build
+
+# Alias: build-web-release -> release
+build-web-release: release
+
+# Alias: web-build -> web
+web-build: web
+
+# Alias: web-typecheck -> test-web
+web-typecheck: test-web
+
+# Alias: watch-build -> watch
+watch-build: watch
+
+# Alias: check-all -> check (with fix)
+check-all: check

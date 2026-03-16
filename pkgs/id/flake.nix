@@ -85,20 +85,20 @@
 
         # =======================================================================
         # Checks: nix flake check
-        # All checks use just commands for consistency
+        # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # Full check-all (runs: fix fmt-check lint test doc)
-          default = mkCheck "check-all" "check-all";
+          # CI-safe checks (read-only): fmt-check lint test test-web doc
+          default = mkCheck "ci" "ci";
 
           # Individual checks
           fmt-check = mkCheck "fmt-check" "fmt-check";
           lint = mkCheck "lint" "lint";
           test = mkCheck "test" "test";
-          test-lib = mkCheck "test-lib" "test-lib";
+          test-unit = mkCheck "test-unit" "test-unit";
           test-int = mkCheck "test-int" "test-int";
+          test-web = mkCheck "test-web" "test-web";
           doc = mkCheck "doc" "doc";
-          ci = mkCheck "ci" "ci";
         };
 
         # =======================================================================
@@ -111,7 +111,12 @@
             version = "0.1.0";
             src = ./.;
 
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "distributed-topic-tracker-0.2.5" = "sha256-9wMDB1PGHuzxWiZeRQpGs1m9mTTcjbB7y3kSJomNjeY=";
+              };
+            };
 
             inherit buildInputs;
             nativeBuildInputs = [
@@ -140,7 +145,12 @@
             version = "0.1.0";
             src = ./.;
 
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "distributed-topic-tracker-0.2.5" = "sha256-9wMDB1PGHuzxWiZeRQpGs1m9mTTcjbB7y3kSJomNjeY=";
+              };
+            };
 
             inherit buildInputs;
             nativeBuildInputs = [
@@ -190,7 +200,8 @@
           # Quality checks
           # ─────────────────────────────────────────────────────────────────────
 
-          check-all = mkApp (mkScript "check-all" "just check-all");
+          check = mkApp (mkScript "check" "just check");
+          ci = mkApp (mkScript "ci" "just ci");
           fix = mkApp (mkScript "fix" "just fix");
           fmt = mkApp (mkScript "fmt" "just fmt");
           fmt-check = mkApp (mkScript "fmt-check" "just fmt-check");
@@ -202,8 +213,9 @@
           # ─────────────────────────────────────────────────────────────────────
 
           test = mkApp (mkScript "test" "just test");
-          test-lib = mkApp (mkScript "test-lib" "just test-lib");
+          test-unit = mkApp (mkScript "test-unit" "just test-unit");
           test-int = mkApp (mkScript "test-int" "just test-int");
+          test-web = mkApp (mkScript "test-web" "just test-web");
           test-verbose = mkApp (mkScript "test-verbose" "just test-verbose");
 
           # ─────────────────────────────────────────────────────────────────────
@@ -222,27 +234,31 @@
           coverage-summary = mkApp (mkScript "coverage-summary" "just coverage-summary");
 
           # ─────────────────────────────────────────────────────────────────────
-          # Build commands (conditional rebuild with variant tracking)
+          # Build commands
           # ─────────────────────────────────────────────────────────────────────
 
           build = mkApp (mkScript "build" "just build");
           build-lib = mkApp (mkScript "build-lib" "just build-lib");
-          build-lib-force = mkApp (mkScript "build-lib-force" "just build-lib-force");
-          build-release = mkApp (mkScript "build-release" "just build-release");
-          build-lib-release = mkApp (mkScript "build-lib-release" "just build-lib-release");
-          build-lib-release-force = mkApp (mkScript "build-lib-release-force" "just build-lib-release-force");
-          build-web = mkApp (mkScript "build-web" "just build-web");
-          build-web-force = mkApp (mkScript "build-web-force" "just build-web-force");
-          build-web-release = mkApp (mkScript "build-web-release" "just build-web-release");
-          build-web-release-force = mkApp (mkScript "build-web-release-force" "just build-web-release-force");
           build-force = mkApp (mkScript "build-force" "just build-force");
+          build-lib-force = mkApp (mkScript "build-lib-force" "just build-lib-force");
+          release = mkApp (mkScript "release" "just release");
+          release-lib = mkApp (mkScript "release-lib" "just release-lib");
+          release-force = mkApp (mkScript "release-force" "just release-force");
+          release-lib-force = mkApp (mkScript "release-lib-force" "just release-lib-force");
+
+          # ─────────────────────────────────────────────────────────────────────
+          # Web assets
+          # ─────────────────────────────────────────────────────────────────────
+
+          web = mkApp (mkScript "web" "just web");
+          web-force = mkApp (mkScript "web-force" "just web-force");
+          web-dev = mkApp (mkScript "web-dev" "just web-dev");
 
           # ─────────────────────────────────────────────────────────────────────
           # Run commands
           # ─────────────────────────────────────────────────────────────────────
 
           run = mkApp (mkScript "run" ''just run "$@"'');
-          run-web = mkApp (mkScript "run-web" ''just run-web "$@"'');
           repl = mkApp (mkScript "repl" "just repl");
 
           # ─────────────────────────────────────────────────────────────────────
@@ -251,7 +267,6 @@
 
           serve = mkApp (mkScript "serve" ''just serve "''${1:-3000}"'');
           serve-lib = mkApp (mkScript "serve-lib" ''just serve-lib "$@"'');
-          serve-web = mkApp (mkScript "serve-web" ''just serve-web "''${1:-3000}"'');
 
           # ─────────────────────────────────────────────────────────────────────
           # Combined commands
@@ -264,21 +279,12 @@
           build-serve-lib = mkApp (mkScript "build-serve-lib" "just build-serve-lib");
 
           # ─────────────────────────────────────────────────────────────────────
-          # Web development
-          # ─────────────────────────────────────────────────────────────────────
-
-          web-build = mkApp (mkScript "web-build" "just web-build");
-          web-build-force = mkApp (mkScript "web-build-force" "just web-build-force");
-          web-dev = mkApp (mkScript "web-dev" "just web-dev");
-          web-typecheck = mkApp (mkScript "web-typecheck" "just web-typecheck");
-
-          # ─────────────────────────────────────────────────────────────────────
           # Watch commands
           # ─────────────────────────────────────────────────────────────────────
 
+          watch = mkApp (mkScript "watch" "just watch");
           watch-test = mkApp (mkScript "watch-test" "just watch-test");
           watch-lint = mkApp (mkScript "watch-lint" "just watch-lint");
-          watch-build = mkApp (mkScript "watch-build" "just watch-build");
 
           # ─────────────────────────────────────────────────────────────────────
           # Dependency management
@@ -296,7 +302,19 @@
 
           clean = mkApp (mkScript "clean" "just clean");
           loc = mkApp (mkScript "loc" "just loc");
-          ci = mkApp (mkScript "ci" "just ci");
+
+          # ─────────────────────────────────────────────────────────────────────
+          # Legacy aliases (backwards compatibility)
+          # ─────────────────────────────────────────────────────────────────────
+
+          check-all = mkApp (mkScript "check-all" "just check");
+          test-lib = mkApp (mkScript "test-lib" "just test-unit");
+          build-web = mkApp (mkScript "build-web" "just build");
+          build-release = mkApp (mkScript "build-release" "just release");
+          build-lib-release = mkApp (mkScript "build-lib-release" "just release-lib");
+          web-build = mkApp (mkScript "web-build" "just web");
+          web-typecheck = mkApp (mkScript "web-typecheck" "just test-web");
+          watch-build = mkApp (mkScript "watch-build" "just watch");
         };
       }
     );

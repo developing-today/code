@@ -1,6 +1,11 @@
 /**
  * Collaborative cursor plugin for ProseMirror.
  * Tracks and displays remote user cursors/selections.
+ * 
+ * Note on inactive tabs: Browsers heavily throttle setInterval/setTimeout
+ * in background tabs. We handle this by:
+ * 1. Using a visibility change listener to refresh on tab focus
+ * 2. Storing timestamps and computing opacity on-demand during render
  */
 
 import { Plugin, PluginKey, EditorState, Transaction } from 'prosemirror-state';
@@ -10,6 +15,7 @@ import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
 const FADE_START_MS = 30_000;  // Start fading after 30s of inactivity
 const FADE_END_MS = 60_000;   // Fully faded at 60s
 const HIDE_MS = 300_000;      // Hide completely after 5 minutes (300s)
+const REFRESH_INTERVAL_MS = 5_000; // Refresh every 5s when active
 
 export interface CursorInfo {
   clientID: string | number;
@@ -224,9 +230,8 @@ export function createCursorPlugin(
         }, 50);
       };
 
-      // Periodically refresh decorations to update fading cursors
-      refreshInterval = setInterval(() => {
-        // Trigger a dummy transaction to refresh decorations
+      // Refresh decorations to update cursor opacity based on age
+      const refreshCursorDecorations = (): void => {
         const pluginState = cursorPluginKey.getState(editorView.state);
         if (pluginState && pluginState.cursors.size > 0) {
           // Check if any cursors need opacity updates
@@ -235,8 +240,8 @@ export function createCursorPlugin(
           pluginState.cursors.forEach((cursor, clientID) => {
             if (clientID !== myClientID) {
               const age = now - cursor.lastUpdate;
-              // Refresh if in the fading range
-              if (age >= FADE_START_MS && age < HIDE_MS) {
+              // Refresh if in the fading range or just past hide threshold
+              if (age >= FADE_START_MS && age < HIDE_MS + 1000) {
                 needsRefresh = true;
               }
             }
@@ -246,7 +251,23 @@ export function createCursorPlugin(
             editorView.dispatch(editorView.state.tr);
           }
         }
-      }, 5000); // Check every 5 seconds
+      };
+
+      // Periodically refresh decorations to update fading cursors
+      // Note: This interval may be throttled in inactive tabs, which is fine -
+      // we'll catch up when the tab becomes visible again
+      refreshInterval = setInterval(refreshCursorDecorations, REFRESH_INTERVAL_MS);
+
+      // Handle visibility changes to refresh cursors when tab becomes active
+      // This is crucial because setInterval is heavily throttled in background tabs
+      const handleVisibilityChange = (): void => {
+        if (document.visibilityState === 'visible') {
+          // Tab became visible - immediately refresh cursor decorations
+          // This catches up on any fading that should have happened while tab was inactive
+          refreshCursorDecorations();
+        }
+      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
 
       return {
         update(view: EditorView, prevState: EditorState): void {
@@ -257,6 +278,7 @@ export function createCursorPlugin(
         destroy(): void {
           if (sendTimeout) clearTimeout(sendTimeout);
           if (refreshInterval) clearInterval(refreshInterval);
+          document.removeEventListener('visibilitychange', handleVisibilityChange);
         },
       };
     },
