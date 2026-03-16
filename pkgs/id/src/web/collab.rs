@@ -10,8 +10,21 @@
 //! - `[1, version, steps, clientID]` - Steps: client sends changes
 //! - `[2, steps, clientIDs]` - Update: server broadcasts changes
 //! - `[3, version]` - Ack: server confirms steps applied
-//! - `[4, clientID, head, anchor, name?]` - Cursor position
+//! - `[4, clientID, head, anchor, name?, idleSecs?]` - Cursor position
 //! - `[5, error]` - Error message
+//! - `""` (empty text) - Ping/pong for inactive tab cursor refresh
+//!
+//! The `idleSecs` field is only sent when the server sends existing cursors
+//! to a newly connected client. It indicates how long the cursor has been
+//! idle so the client can display the correct opacity immediately.
+//!
+//! ## Empty Text Messages
+//!
+//! WebSocket Ping control frames are handled silently by browsers and don't
+//! trigger JavaScript's `onmessage`. To allow cursor decoration refresh in
+//! inactive tabs (where `setInterval` is throttled), the server sends empty
+//! text messages every 60s instead of Ping frames. The client responds with
+//! empty text and refreshes cursor decorations.
 //!
 //! ## Timeout Behavior
 //!
@@ -185,9 +198,10 @@ impl Document {
     }
 
     /// Increment client count when a client connects.
-    pub fn client_connected(&self) {
+    /// Returns the new count.
+    pub fn client_connected(&self) -> usize {
         use std::sync::atomic::Ordering;
-        self.client_count.fetch_add(1, Ordering::SeqCst);
+        self.client_count.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// Decrement client count when a client disconnects.
@@ -317,7 +331,9 @@ impl CollabMessage {
                 anchor,
                 name,
                 idle_secs,
-            } => to_vec(&(msg::CURSOR, client_id, head, anchor, name, idle_secs)).unwrap_or_default(),
+            } => {
+                to_vec(&(msg::CURSOR, client_id, head, anchor, name, idle_secs)).unwrap_or_default()
+            }
             Self::Error { error } => to_vec(&(msg::ERROR, error)).unwrap_or_default(),
         }
     }
@@ -405,15 +421,23 @@ async fn handle_collab_socket(
 ) {
     use std::sync::atomic::Ordering;
 
-    tracing::info!("[collab] New connection for doc: {}", doc_id);
+    tracing::info!("[collab] New connection for doc '{}' (page load)", doc_id);
 
     // Try to load file content from the store (doc_id is the hash)
     let initial_content = load_file_content(&store, &doc_id).await;
+    if initial_content.is_some() {
+        tracing::debug!("[collab] Loaded file content from store for '{}'", doc_id);
+    }
 
     let doc = collab
         .get_or_create(&doc_id, initial_content.as_deref())
         .await;
-    doc.client_connected();
+    let client_count = doc.client_connected();
+    tracing::info!(
+        "[collab] Client connected to doc '{}', {} total clients",
+        doc_id,
+        client_count
+    );
 
     let mut rx = doc.broadcast.subscribe();
 
@@ -426,10 +450,14 @@ async fn handle_collab_socket(
     };
 
     let init_bytes = init_msg.encode();
-    tracing::debug!("[collab] Sending init: {} bytes", init_bytes.len());
+    tracing::info!(
+        "[collab] Sending Init: version={}, {} bytes",
+        doc.version(),
+        init_bytes.len()
+    );
 
     if sender.send(Message::Binary(init_bytes)).await.is_err() {
-        tracing::warn!("[collab] Client disconnected during init");
+        tracing::warn!("[collab] Client disconnected during init send");
         doc.client_disconnected().await;
         return;
     }
@@ -438,6 +466,7 @@ async fn handle_collab_socket(
     {
         let cursors = doc.cursors.read().await;
         let now = Instant::now();
+        let mut cursor_count = 0;
         for (client_id_str, cursor) in cursors.iter() {
             // Skip cursors from disconnected clients
             if cursor.disconnected_at.is_some() {
@@ -446,6 +475,12 @@ async fn handle_collab_socket(
             let client_id = client_id_str.parse::<u64>().unwrap_or(0);
             // Calculate how long this cursor has been idle (in seconds)
             let idle_secs = now.duration_since(cursor.last_update).as_secs();
+            tracing::debug!(
+                "[collab] Sending existing cursor: client={}, idle={}s, name={:?}",
+                client_id,
+                idle_secs,
+                cursor.name
+            );
             let cursor_msg = CollabMessage::Cursor {
                 client_id,
                 head: cursor.head,
@@ -458,12 +493,18 @@ async fn handle_collab_socket(
                 .await
                 .is_err()
             {
-                tracing::warn!("[collab] Client disconnected while sending cursors");
+                tracing::warn!("[collab] Client disconnected while sending existing cursors");
                 doc.client_disconnected().await;
                 return;
             }
+            cursor_count += 1;
         }
-        tracing::debug!("[collab] Sent existing cursors to new client");
+        if cursor_count > 0 {
+            tracing::info!(
+                "[collab] Sent {} existing cursor(s) to new client",
+                cursor_count
+            );
+        }
     }
 
     // Wrap sender in Arc<Mutex> for sharing between tasks
@@ -508,7 +549,8 @@ async fn handle_collab_socket(
             // If no activity for 30m, connection is dead
             if elapsed >= timeouts::PONG_TIMEOUT {
                 tracing::info!(
-                    "[collab] Closing connection - no activity for 30m (page closed/offline)"
+                    "[collab] Connection timeout - no activity for {}s, closing (page likely closed)",
+                    elapsed.as_secs()
                 );
                 let mut sender = sender_for_ping.lock().await;
                 let _ = sender.close().await;
@@ -524,13 +566,18 @@ async fn handle_collab_socket(
                 let use_text = ping_cycle % timeouts::EMPTY_TEXT_MESSAGE_EVERY_N_PINGS == 0;
 
                 let result = if use_text {
+                    tracing::debug!(
+                        "[collab] Sending empty text message (cursor refresh trigger), idle={}s",
+                        elapsed.as_secs()
+                    );
                     sender.send(Message::Text(String::new())).await
                 } else {
+                    tracing::debug!("[collab] Sending ping, idle={}s", elapsed.as_secs());
                     sender.send(Message::Ping(vec![])).await
                 };
 
                 if result.is_err() {
-                    tracing::debug!("[collab] Failed to send ping, client disconnected");
+                    tracing::info!("[collab] Failed to send ping/text, client disconnected");
                     break;
                 }
             }
@@ -611,6 +658,10 @@ async fn handle_collab_socket(
                         let ack = CollabMessage::Ack {
                             version: new_version,
                         };
+                        tracing::debug!(
+                            "[collab] Sending Ack: version={}",
+                            new_version
+                        );
                         let mut sender = sender.lock().await;
                         let _ = sender.send(Message::Binary(ack.encode())).await;
                     }
@@ -622,6 +673,13 @@ async fn handle_collab_socket(
                         .. // Ignore idle_secs from incoming messages
                     } => {
                         let client_id_str = client_id.to_string();
+                        tracing::debug!(
+                            "[collab] Received Cursor: client={}, head={}, anchor={}, name={:?}",
+                            client_id,
+                            head,
+                            anchor,
+                            name
+                        );
 
                         // Remember this client's ID for disconnect cleanup
                         *client_id_for_cleanup.write().await = Some(client_id_str.clone());
@@ -651,15 +709,32 @@ async fn handle_collab_socket(
                         let _ = doc.broadcast.send(cursor_msg);
                     }
                     _ => {
-                        tracing::debug!("[collab] Ignoring unexpected message type");
+                        tracing::debug!("[collab] Received unexpected message type, ignoring");
                     }
                 }
             }
-            Message::Close(_) => {
-                tracing::info!("[collab] Client closed connection");
+            Message::Text(text) => {
+                // Empty text is pong response from client (for cursor refresh)
+                if text.is_empty() {
+                    tracing::debug!("[collab] Received empty text (pong for cursor refresh)");
+                } else {
+                    tracing::debug!("[collab] Received text message: {} chars", text.len());
+                }
+            }
+            Message::Pong(_) => {
+                tracing::debug!("[collab] Received pong");
+            }
+            Message::Close(reason) => {
+                tracing::info!(
+                    "[collab] Client closed connection: {:?}",
+                    reason.map(|r| format!("{}: {}", r.code, r.reason))
+                );
                 break;
             }
-            _ => {}
+            Message::Ping(_) => {
+                // Browser doesn't send pings, but handle anyway
+                tracing::debug!("[collab] Received ping from client");
+            }
         }
     }
 
@@ -670,7 +745,8 @@ async fn handle_collab_socket(
     // Handle client disconnect
     let remaining_clients = doc.client_disconnected().await;
     tracing::info!(
-        "[collab] Client disconnected, {} clients remaining",
+        "[collab] Client disconnected from doc '{}', {} clients remaining",
+        doc_id,
         remaining_clients
     );
 
@@ -682,7 +758,10 @@ async fn handle_collab_socket(
             let mut cursors = doc.cursors.write().await;
             if let Some(cursor) = cursors.get_mut(&client_id_str) {
                 cursor.disconnected_at = Some(now);
-                tracing::debug!("[collab] Marked cursor {} as disconnected", client_id_str);
+                tracing::info!(
+                    "[collab] Marked cursor {} as disconnected, will remove in 5m if not reconnected",
+                    client_id_str
+                );
             }
         }
 
@@ -698,7 +777,12 @@ async fn handle_collab_socket(
                 if cursor.disconnected_at.is_some() {
                     cursors.remove(&client_id_for_task);
                     tracing::info!(
-                        "[collab] Removed cursor {} after 5m disconnect",
+                        "[collab] Removed cursor {} after 5m disconnect timeout",
+                        client_id_for_task
+                    );
+                } else {
+                    tracing::debug!(
+                        "[collab] Cursor {} reconnected, not removing",
                         client_id_for_task
                     );
                 }

@@ -7,8 +7,11 @@
  * - [1, version, steps, clientID] - Steps: client sends changes
  * - [2, steps, clientIDs] - Update: server broadcasts changes
  * - [3, version] - Ack: server confirms steps applied
- * - [4, clientID, head, anchor, name?] - Cursor position
+ * - [4, clientID, head, anchor, name?, idleSecs?] - Cursor position
  * - [5, error] - Error message
+ * 
+ * The idleSecs field is only sent when the server sends existing cursors
+ * to a newly connected client, indicating how long the cursor has been idle.
  * 
  * Additionally, the server sends empty text messages periodically
  * (instead of WebSocket Ping frames) to trigger cursor decoration refresh.
@@ -19,7 +22,7 @@ import { Packr, Unpackr } from 'msgpackr';
 import { receiveTransaction, getVersion } from 'prosemirror-collab';
 import { Step } from 'prosemirror-transform';
 import { schema, getSendableSteps, initEditor, type EditorInstance } from './editor';
-import { updateCursor } from './cursors';
+import { updateCursor, setConnectionState, onInitReceived } from './cursors';
 
 // Message type tags
 const MSG = {
@@ -119,7 +122,8 @@ export function initCollab(
     }, delay);
   };
 
-  // Send cursor position to server: [4, clientID, head, anchor, name?]
+  // Send cursor position to server: [4, clientID, head, anchor, name?, idleSecs?]
+  // Note: client never sends idleSecs, only server sends it on initial load
   const sendCursor = (head: number, anchor: number): void => {
     if (myClientID === null) return;
     send(MSG.CURSOR, myClientID, head, anchor, null);
@@ -148,6 +152,9 @@ export function initCollab(
         const version = msg[1] as number;
         const doc = msg[2];
         console.log('[collab] Received initial state, version:', version);
+        
+        // Start reconnect cleanup timer (will remove stale cursors after 1s)
+        onInitReceived();
         
         // Initialize the editor with the server's version
         if (!editorInstance) {
@@ -239,12 +246,14 @@ export function initCollab(
       connected = true;
       reconnectAttempts = 0;
       updateStatus('connected');
+      setConnectionState('connected');
       flushQueue();
     };
 
     socket.onclose = (event): void => {
       console.log('[collab] Disconnected:', event.code, event.reason);
       connected = false;
+      setConnectionState('disconnected');
       
       if (event.code !== 1000) { // Not a normal closure
         updateStatus('disconnected');
@@ -282,6 +291,7 @@ export function initCollab(
       clearTimeout(reconnectTimer);
     }
     container.removeEventListener('editor:change', handleEditorChange);
+    setConnectionState('disconnected');
     ws.close(1000, 'Client disconnected');
     updateStatus('disconnected');
   };

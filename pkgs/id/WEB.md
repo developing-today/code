@@ -114,18 +114,13 @@ The editor uses prosemirror-collab for real-time collaboration via WebSocket:
 4. **Broadcast**: Server validates, applies, and broadcasts to other clients
 5. **Ack**: Server acknowledges applied steps with new version
 
-### Message Types
+### Wire Protocol
 
-```typescript
-// Server → Client
-{ type: "init", version: number, doc: ProseMirrorDoc }
-{ type: "update", steps: Step[], clientIDs: string[] }
-{ type: "ack", version: number }
-{ type: "error", error: string }
-
-// Client → Server
-{ type: "steps", version: number, steps: Step[], clientID: string }
-```
+Messages are binary MessagePack arrays for efficiency. See `web/README.md` for the complete wire protocol specification including:
+- Message types and formats
+- Cursor position sharing with idle time tracking
+- Empty text messages for inactive tab cursor refresh
+- Timeout behavior
 
 ## Themes
 

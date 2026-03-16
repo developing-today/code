@@ -153,6 +153,7 @@ pub enum Command {
         ///
         /// Enables an HTTP server with a browser-based UI for
         /// file browsing and collaborative editing.
+        /// Use port 0 to let the OS assign a random available port.
         /// Requires the `web` feature to be enabled at build time.
         #[arg(long)]
         web: Option<u16>,

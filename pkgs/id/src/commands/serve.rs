@@ -290,7 +290,9 @@ pub async fn cmd_serve(ephemeral: bool, no_relay: bool, web_port: Option<u16>) -
         let web_router = crate::web::web_router(store_handle.clone());
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        println!("web: http://localhost:{port}");
+        // Get the actual bound port (important when port 0 is used for random assignment)
+        let actual_port = listener.local_addr()?.port();
+        println!("web: http://localhost:{actual_port}");
         Some(tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, web_router).await {
                 tracing::error!("web server error: {}", e);
