@@ -23,8 +23,8 @@
 use anyhow::Result;
 use iroh_base::EndpointId;
 
-use crate::store::load_or_create_keypair;
 use crate::KEY_FILE;
+use crate::store::load_or_create_keypair;
 
 /// Prints the node ID derived from the local keypair.
 ///
@@ -39,12 +39,13 @@ use crate::KEY_FILE;
 /// ```
 pub async fn cmd_id() -> Result<()> {
     let key = load_or_create_keypair(KEY_FILE).await?;
-    let node_id: EndpointId = key.public().into();
-    println!("{}", node_id);
+    let node_id: EndpointId = key.public();
+    println!("{node_id}");
     Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -71,10 +72,10 @@ mod tests {
 
         // Get ID twice - should be the same
         let key1 = load_or_create_keypair(key_path_str).await.unwrap();
-        let id1: EndpointId = key1.public().into();
+        let id1: EndpointId = key1.public();
 
         let key2 = load_or_create_keypair(key_path_str).await.unwrap();
-        let id2: EndpointId = key2.public().into();
+        let id2: EndpointId = key2.public();
 
         assert_eq!(id1, id2);
     }

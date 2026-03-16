@@ -1,0 +1,21 @@
+# Rust toolchain configuration for the id project.
+#
+# IMPORTANT: DO NOT DELETE THIS FILE - it is required for Nix builds.
+# The flake.nix uses rust-overlay which reads this file to determine
+# the Rust version. Deleting it will break `nix develop` and `nix build`.
+#
+# This file pins the Rust version to ensure reproducible builds across
+# all development environments. It works with both:
+# - rustup (reads this file automatically)
+# - Nix flake (rust-overlay reads this file via fromRustupToolchainFile)
+#
+# Components:
+# - rustfmt: Code formatting
+# - clippy: Linting
+# - rust-analyzer: IDE support
+# - llvm-tools: Coverage instrumentation
+
+[toolchain]
+channel = "1.89.0"
+components = ["rustfmt", "clippy", "rust-analyzer", "llvm-tools"]
+profile = "default"

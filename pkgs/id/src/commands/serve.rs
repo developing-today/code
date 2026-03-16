@@ -146,10 +146,14 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// # Returns
 ///
 /// `true` if the process exists, `false` otherwise.
+#[allow(clippy::cast_possible_wrap)] // PID is always positive, wrap is safe for kill()
+#[allow(unsafe_code)] // Required for libc::kill
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // kill -0 checks existence without sending a signal
+        // SAFETY: libc::kill with signal 0 only checks process existence without
+        // sending any signal. The pid cast from u32 to i32 is safe because valid
+        // PIDs on Unix are always positive and fit in i32.
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
     #[cfg(not(unix))]
@@ -174,10 +178,11 @@ pub fn is_process_alive(pid: u32) -> bool {
 ///
 /// Returns an error if the lock file cannot be written.
 pub async fn create_serve_lock(node_id: &EndpointId, addrs: &[SocketAddr]) -> Result<()> {
+    use std::fmt::Write;
     let pid = std::process::id();
-    let mut contents = format!("{}\n{}", node_id, pid);
+    let mut contents = format!("{node_id}\n{pid}");
     for addr in addrs {
-        contents.push_str(&format!("\n{}", addr));
+        let _ = write!(contents, "\n{addr}");
     }
     afs::write(SERVE_LOCK, contents).await?;
     Ok(())
@@ -201,16 +206,18 @@ pub async fn remove_serve_lock() -> Result<()> {
 ///
 /// * `ephemeral` - If `true`, use in-memory storage (lost on exit)
 /// * `no_relay` - If `true`, disable relay servers (direct connections only)
+/// * `web_port` - Optional port for the web interface (requires `web` feature)
 ///
 /// # Behavior
 ///
 /// 1. Loads or creates the node keypair
 /// 2. Opens the blob store (persistent or ephemeral)
 /// 3. Creates the Iroh endpoint with DNS/Pkarr address lookup
-/// 4. Registers MetaProtocol and BlobsProtocol handlers
-/// 5. Creates the lock file for discovery
-/// 6. Waits for Ctrl+C
-/// 7. Cleans up and exits
+/// 4. Registers `MetaProtocol` and `BlobsProtocol` handlers
+/// 5. Optionally starts the web interface on the specified port
+/// 6. Creates the lock file for discovery
+/// 7. Waits for Ctrl+C
+/// 8. Cleans up and exits
 ///
 /// # Output
 ///
@@ -220,11 +227,15 @@ pub async fn remove_serve_lock() -> Result<()> {
 ///
 /// ```rust,ignore
 /// // Start a persistent server
-/// cmd_serve(false, false).await?;
+/// cmd_serve(false, false, None).await?;
+///
+/// // Start with web interface on port 3000
+/// cmd_serve(false, false, Some(3000)).await?;
 /// ```
-pub async fn cmd_serve(ephemeral: bool, no_relay: bool) -> Result<()> {
+#[allow(unused_variables)] // web_port is only used with web feature
+pub async fn cmd_serve(ephemeral: bool, no_relay: bool, web_port: Option<u16>) -> Result<()> {
     let key = load_or_create_keypair(KEY_FILE).await?;
-    let node_id: EndpointId = key.public().into();
+    let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
 
     let store = open_store(ephemeral).await?;
@@ -263,15 +274,31 @@ pub async fn cmd_serve(ephemeral: bool, no_relay: bool) -> Result<()> {
         .collect();
     create_serve_lock(&serve_node_id, &local_addrs).await?;
 
-    println!("node: {}", serve_node_id);
+    println!("node: {serve_node_id}");
     if ephemeral {
         println!("mode: ephemeral (in-memory)");
     } else {
-        println!("mode: persistent ({})", STORE_PATH);
+        println!("mode: persistent ({STORE_PATH})");
     }
     if no_relay {
         println!("relay: disabled");
     }
+
+    // Start web server if enabled
+    #[cfg(feature = "web")]
+    let _web_handle = if let Some(port) = web_port {
+        let web_router = crate::web::web_router(store_handle.clone());
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        println!("web: http://localhost:{port}");
+        Some(tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, web_router).await {
+                tracing::error!("web server error: {}", e);
+            }
+        }))
+    } else {
+        None
+    };
 
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
@@ -281,6 +308,7 @@ pub async fn cmd_serve(ephemeral: bool, no_relay: bool) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -296,7 +324,7 @@ mod tests {
         // Note: On non-Unix this always returns true
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(999999999));
+            assert!(!is_process_alive(999_999_999));
         }
     }
 
@@ -314,19 +342,16 @@ mod tests {
     #[test]
     fn test_serve_info_struct() {
         use iroh_base::SecretKey;
-        
+
         let key = SecretKey::generate(&mut rand::rng());
         let node_id = key.public();
         let addrs = vec![
             "127.0.0.1:8080".parse().unwrap(),
             "[::1]:8080".parse().unwrap(),
         ];
-        
-        let info = ServeInfo {
-            node_id,
-            addrs: addrs.clone(),
-        };
-        
+
+        let info = ServeInfo { node_id, addrs };
+
         assert_eq!(info.node_id, node_id);
         assert_eq!(info.addrs.len(), 2);
         assert_eq!(info.addrs[0].to_string(), "127.0.0.1:8080");
@@ -335,14 +360,14 @@ mod tests {
     #[test]
     fn test_serve_info_clone() {
         use iroh_base::SecretKey;
-        
+
         let key = SecretKey::generate(&mut rand::rng());
         let node_id = key.public();
         let info = ServeInfo {
             node_id,
             addrs: vec!["127.0.0.1:8080".parse().unwrap()],
         };
-        
+
         let cloned = info.clone();
         assert_eq!(cloned.node_id, info.node_id);
         assert_eq!(cloned.addrs, info.addrs);

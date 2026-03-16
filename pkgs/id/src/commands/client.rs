@@ -27,8 +27,8 @@ use iroh::{
 };
 use iroh_base::{EndpointAddr, TransportAddr};
 
-use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 use super::serve::ServeInfo;
+use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 
 /// Creates a client endpoint configured to connect to a local serve.
 ///
@@ -64,7 +64,9 @@ use super::serve::ServeInfo;
 /// // Connect to blobs protocol  
 /// let blobs_conn = endpoint.connect(endpoint_addr, BLOBS_ALPN).await?;
 /// ```
-pub async fn create_local_client_endpoint(serve_info: &ServeInfo) -> Result<(Endpoint, EndpointAddr)> {
+pub async fn create_local_client_endpoint(
+    serve_info: &ServeInfo,
+) -> Result<(Endpoint, EndpointAddr)> {
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
     // Enable relay and DNS lookup so @NODE_ID targeting works for remote peers
     let endpoint = Endpoint::builder()

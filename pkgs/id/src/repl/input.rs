@@ -76,9 +76,9 @@
 //! └─────────────────────────────────────┘
 //! ```
 
-use anyhow::{bail, Result};
-use rustyline::error::ReadlineError;
+use anyhow::{Result, bail};
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 /// Result of preprocessing a REPL input line.
 ///
@@ -86,7 +86,7 @@ use rustyline::DefaultEditor;
 ///
 /// - **Empty**: The line was whitespace-only; skip it
 /// - **Ready**: The line is ready to execute (possibly modified)
-/// - **NeedMore**: We're starting a heredoc; read more lines until delimiter
+/// - **`NeedMore`**: We're starting a heredoc; read more lines until delimiter
 #[derive(Debug)]
 pub enum ReplInput {
     /// Line is ready to execute (possibly preprocessed).
@@ -141,14 +141,14 @@ pub fn shell_capture(cmd: &str) -> Result<String> {
         .arg("-c")
         .arg(cmd)
         .output()
-        .map_err(|e| anyhow::anyhow!("failed to execute shell command: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to execute shell command: {e}"))?;
     if !output.status.success() {
         bail!(
             "command failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// Preprocess a REPL input line, handling shell-like features.
@@ -216,9 +216,9 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let after = &line[heredoc_start + 2..];
         // Check it's not <<< (here-string)
         if !after.starts_with('<') {
-            let delimiter = after.trim().to_string();
+            let delimiter = after.trim().to_owned();
             if !delimiter.is_empty() {
-                let original_line = line[..heredoc_start].trim().to_string();
+                let original_line = line[..heredoc_start].trim().to_owned();
                 return Ok(ReplInput::NeedMore {
                     delimiter,
                     lines: Vec::new(),
@@ -228,7 +228,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         }
     }
 
-    let mut result = line.to_string();
+    let mut result = line.to_owned();
 
     // Process here-string: <<< 'content' or <<< "content" or <<< content
     while let Some(pos) = result.find("<<<") {
@@ -236,17 +236,17 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let after = &result[pos + 3..].trim_start();
 
         // Extract the content (quoted or unquoted)
-        let (content, rest) = if after.starts_with('\'') {
+        let (content, rest) = if let Some(after_quote) = after.strip_prefix('\'') {
             // Single-quoted
-            if let Some(end) = after[1..].find('\'') {
-                (&after[1..end + 1], &after[end + 2..])
+            if let Some(end) = after_quote.find('\'') {
+                (&after_quote[..end], &after_quote[end + 1..])
             } else {
                 bail!("unterminated single quote in here-string");
             }
-        } else if after.starts_with('"') {
+        } else if let Some(after_quote) = after.strip_prefix('"') {
             // Double-quoted
-            if let Some(end) = after[1..].find('"') {
-                (&after[1..end + 1], &after[end + 2..])
+            if let Some(end) = after_quote.find('"') {
+                (&after_quote[..end], &after_quote[end + 1..])
             } else {
                 bail!("unterminated double quote in here-string");
             }
@@ -258,9 +258,9 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         // Replace - with content marker in the command
         let before_str = before.trim();
         let new_before = before_str
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{} ", content))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{}", content));
-        result = format!("{}{}", new_before, rest);
+            .replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
+            .replace(" -$", &format!(" __STDIN_CONTENT__:{content}"));
+        result = format!("{new_before}{rest}");
     }
 
     // Process $(...) command substitution
@@ -330,22 +330,22 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
 
     // Process |> pipe operator: echo hello |> put - name
     if let Some(pos) = result.find("|>") {
-        let left = result[..pos].trim().to_string();
-        let right = result[pos + 2..].trim().to_string();
+        let left = result[..pos].trim().to_owned();
+        let right = result[pos + 2..].trim().to_owned();
 
         // Execute left side as shell command
         let output = shell_capture(&left)?;
 
         // Replace - in right side with stdin content marker
         let mut new_result = right
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{} ", output))
-            .replace(" -\n", &format!(" __STDIN_CONTENT__:{}\n", output))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{}", output));
+            .replace(" - ", &format!(" __STDIN_CONTENT__:{output} "))
+            .replace(" -\n", &format!(" __STDIN_CONTENT__:{output}\n"))
+            .replace(" -$", &format!(" __STDIN_CONTENT__:{output}"));
 
         // If no - found, might be at end
         if !new_result.contains("__STDIN_CONTENT__") {
             // Append content as argument
-            new_result = format!("{} __STDIN_CONTENT__:{}", right, output);
+            new_result = format!("{right} __STDIN_CONTENT__:{output}");
         }
         result = new_result;
     }
@@ -392,10 +392,7 @@ pub fn continue_heredoc(
     delimiter: &str,
     lines: &mut Vec<String>,
 ) -> Result<Option<String>> {
-    println!(
-        "(heredoc: type '{}' on its own line to end, Ctrl+C to cancel)",
-        delimiter
-    );
+    println!("(heredoc: type '{delimiter}' on its own line to end, Ctrl+C to cancel)");
 
     loop {
         match rl.readline(".. ") {
@@ -413,13 +410,14 @@ pub fn continue_heredoc(
                 return Ok(None);
             }
             Err(e) => {
-                bail!("readline error: {}", e);
+                bail!("readline error: {e}");
             }
         }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -522,20 +520,24 @@ mod tests {
     fn test_preprocess_here_string_unterminated_single() {
         let result = preprocess_repl_line("put - name <<< 'unterminated");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unterminated single quote"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unterminated single quote")
+        );
     }
 
     #[test]
     fn test_preprocess_here_string_unterminated_double() {
         let result = preprocess_repl_line("put - name <<< \"unterminated");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unterminated double quote"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unterminated double quote")
+        );
     }
 
     #[test]
@@ -598,10 +600,12 @@ mod tests {
     fn test_preprocess_unterminated_backtick() {
         let result = preprocess_repl_line("get `echo incomplete");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unterminated backtick"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unterminated backtick")
+        );
     }
 
     #[test]
@@ -646,7 +650,7 @@ mod tests {
     #[test]
     fn test_repl_input_enum_variants() {
         // Test Ready variant
-        let ready = ReplInput::Ready("test".to_string());
+        let ready = ReplInput::Ready("test".to_owned());
         assert!(matches!(ready, ReplInput::Ready(_)));
 
         // Test Empty variant
@@ -655,9 +659,9 @@ mod tests {
 
         // Test NeedMore variant
         let need_more = ReplInput::NeedMore {
-            delimiter: "EOF".to_string(),
-            lines: vec!["line1".to_string()],
-            original_line: "put - name".to_string(),
+            delimiter: "EOF".to_owned(),
+            lines: vec!["line1".to_owned()],
+            original_line: "put - name".to_owned(),
         };
         match need_more {
             ReplInput::NeedMore {

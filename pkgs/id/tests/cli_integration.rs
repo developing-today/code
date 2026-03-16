@@ -3,6 +3,8 @@
 //! These tests run the actual CLI commands and verify their behavior.
 //! They use a separate test store directory to avoid interfering with development data.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -31,6 +33,7 @@ fn run_cmd(args: &[&str], work_dir: &std::path::Path) -> std::process::Output {
 }
 
 /// Run a CLI command and return stdout as string
+#[allow(dead_code)]
 fn run_cmd_stdout(args: &[&str], work_dir: &std::path::Path) -> String {
     let output = run_cmd(args, work_dir);
     String::from_utf8_lossy(&output.stdout).to_string()
@@ -40,7 +43,7 @@ fn run_cmd_stdout(args: &[&str], work_dir: &std::path::Path) -> String {
 fn run_cmd_success(args: &[&str], work_dir: &std::path::Path) -> String {
     let output = run_cmd(args, work_dir);
     if !output.status.success() {
-        eprintln!("Command failed: {:?}", args);
+        eprintln!("Command failed: {args:?}");
         eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
         eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
         panic!("Command failed with exit code: {:?}", output.status.code());
@@ -48,7 +51,7 @@ fn run_cmd_success(args: &[&str], work_dir: &std::path::Path) -> String {
     // Return combined stdout + stderr since some output goes to stderr
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    format!("{}{}", stdout, stderr)
+    format!("{stdout}{stderr}")
 }
 
 mod cli_tests {
@@ -84,7 +87,7 @@ mod cli_tests {
             "serve", "put", "get", "list", "find", "search", "repl", "cat",
         ] {
             let output = run_cmd(&[cmd, "--help"], tmp.path());
-            assert!(output.status.success(), "Help failed for {}", cmd);
+            assert!(output.status.success(), "Help failed for {cmd}");
         }
     }
 }
@@ -516,7 +519,8 @@ mod peek_tests {
         // Create content with many lines
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str(&format!("line{}\n", i));
+            use std::fmt::Write;
+            let _ = writeln!(content, "line{i}");
         }
 
         fs::write(&test_file, &content).unwrap();
@@ -537,7 +541,8 @@ mod peek_tests {
         let test_file = tmp.path().join("test.peek-head.txt");
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str(&format!("line{}\n", i));
+            use std::fmt::Write;
+            let _ = writeln!(content, "line{i}");
         }
 
         fs::write(&test_file, &content).unwrap();
@@ -560,7 +565,8 @@ mod peek_tests {
         let test_file = tmp.path().join("test.peek-tail.txt");
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str(&format!("content-line-{}\n", i));
+            use std::fmt::Write;
+            let _ = writeln!(content, "content-line-{i}");
         }
 
         fs::write(&test_file, &content).unwrap();
@@ -626,8 +632,8 @@ mod filter_flag_tests {
 
         // Create multiple files
         for i in 1..=5 {
-            let test_file = tmp.path().join(format!("test.filter-first-{}.txt", i));
-            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            let test_file = tmp.path().join(format!("test.filter-first-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
@@ -645,8 +651,8 @@ mod filter_flag_tests {
 
         // Create multiple files
         for i in 1..=5 {
-            let test_file = tmp.path().join(format!("test.filter-last-{}.txt", i));
-            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            let test_file = tmp.path().join(format!("test.filter-last-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
@@ -664,8 +670,8 @@ mod filter_flag_tests {
 
         // Create multiple files
         for i in 1..=3 {
-            let test_file = tmp.path().join(format!("test.filter-count-{}.txt", i));
-            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            let test_file = tmp.path().join(format!("test.filter-count-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
@@ -739,8 +745,8 @@ mod filter_flag_tests {
 
         // Create multiple files
         for i in 1..=4 {
-            let test_file = tmp.path().join(format!("test.find-count-{}.txt", i));
-            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            let test_file = tmp.path().join(format!("test.find-count-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
@@ -756,8 +762,8 @@ mod filter_flag_tests {
 
         // Create multiple files
         for i in 1..=3 {
-            let test_file = tmp.path().join(format!("test.find-first-def-{}.txt", i));
-            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            let test_file = tmp.path().join(format!("test.find-first-def-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
@@ -776,8 +782,8 @@ mod filter_flag_tests {
 
         // Create multiple files
         for i in 1..=5 {
-            let test_file = tmp.path().join(format!("test.combined-{}.txt", i));
-            fs::write(&test_file, format!("Content {}", i)).unwrap();
+            let test_file = tmp.path().join(format!("test.combined-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
         // Create one to exclude

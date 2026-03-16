@@ -81,11 +81,9 @@ use iroh::{
 use iroh_base::EndpointId;
 
 use crate::{
-    CLIENT_KEY_FILE, META_ALPN,
-    FindMatch, MetaRequest, MetaResponse, TaggedMatch,
-    load_or_create_keypair, open_store,
-    print_match_cli, print_matches_cli, match_kind,
-    cmd_get_one, cmd_get_one_remote,
+    CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, TaggedMatch, cmd_get_one,
+    cmd_get_one_remote, load_or_create_keypair, match_kind, open_store, print_match_cli,
+    print_matches_cli,
 };
 
 /// Options for filtering and limiting search results.
@@ -102,14 +100,19 @@ pub struct SearchOptions {
 }
 
 impl SearchOptions {
-    /// Creates a new SearchOptions with the given parameters.
-    pub fn new(
+    /// Creates a new `SearchOptions` with the given parameters.
+    pub const fn new(
         first: Option<usize>,
         last: Option<usize>,
         count: bool,
         exclude: Vec<String>,
     ) -> Self {
-        Self { first, last, count, exclude }
+        Self {
+            first,
+            last,
+            count,
+            exclude,
+        }
     }
 
     /// Checks if a match should be excluded based on the exclude patterns.
@@ -134,7 +137,8 @@ impl SearchOptions {
             .collect();
 
         // Then apply first/last limiting
-        let limited = if let Some(n) = self.first {
+
+        if let Some(n) = self.first {
             filtered.into_iter().take(n).collect()
         } else if let Some(n) = self.last {
             let len = filtered.len();
@@ -145,9 +149,7 @@ impl SearchOptions {
             }
         } else {
             filtered
-        };
-
-        limited
+        }
     }
 }
 
@@ -268,8 +270,8 @@ pub async fn cmd_find(
     if all_matches.len() == 1 {
         let m = &all_matches[0];
         let output = if to_stdout { "-" } else { &m.name };
-        if node.is_some() {
-            let node_id: EndpointId = node.as_ref().unwrap().parse()?;
+        if let Some(node_str) = node {
+            let node_id: EndpointId = node_str.parse()?;
             cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
         } else {
             cmd_get_one(&m.name, output, false, false).await?;
@@ -525,7 +527,7 @@ impl Default for PeekOptions {
 /// * `prefer_name` - If true, prioritize name matches over hash matches
 /// * `all` - If true, peek all matches (not just the first per query)
 /// * `output` - Output destination (None = stdout)
-/// * `peek_opts` - Peek-specific options (lines, head_only, etc.)
+/// * `peek_opts` - Peek-specific options (lines, `head_only`, etc.)
 /// * `search_opts` - Search options for filtering and limiting
 /// * `node` - Optional remote node ID to search on
 /// * `no_relay` - If true, disable relay servers for remote connections
@@ -569,17 +571,15 @@ pub async fn cmd_peek(
         bail!("no matches found for: {}", queries.join(", "));
     }
 
-    // Determine which matches to process
+    // Determine which matches to process (deduplicated)
+    let mut seen = std::collections::HashSet::new();
     let matches_to_peek: Vec<&TaggedMatch> = if all {
-        // Deduplicate
-        let mut seen = std::collections::HashSet::new();
         all_matches
             .iter()
             .filter(|m| seen.insert(format!("{}:{}", m.hash, m.name)))
             .collect()
     } else {
         // Just first match per unique hash+name
-        let mut seen = std::collections::HashSet::new();
         all_matches
             .iter()
             .filter(|m| seen.insert(format!("{}:{}", m.hash, m.name)))
@@ -603,7 +603,14 @@ pub async fn cmd_peek(
         let content = fetch_content_to_string(m, node.clone(), no_relay).await?;
 
         // Print the peek
-        print_peek(&mut out, &m.name, &m.hash.to_string(), &content, &peek_opts, matches_to_peek.len())?;
+        print_peek(
+            &mut out,
+            &m.name,
+            &m.hash.to_string(),
+            &content,
+            &peek_opts,
+            matches_to_peek.len(),
+        )?;
     }
 
     Ok(())
@@ -615,7 +622,6 @@ async fn fetch_content_to_string(
     node: Option<String>,
     no_relay: bool,
 ) -> Result<String> {
-    use std::io::Read;
     use tempfile::NamedTempFile;
 
     // Create a temp file to fetch into
@@ -630,9 +636,7 @@ async fn fetch_content_to_string(
     }
 
     // Read content
-    let mut content = String::new();
-    let mut file = std::fs::File::open(&temp_path)?;
-    file.read_to_string(&mut content)?;
+    let content = std::fs::read_to_string(&temp_path)?;
 
     Ok(content)
 }
@@ -670,20 +674,26 @@ fn print_peek_lines(
 
     // Print header if not quiet
     if !opts.quiet {
-        writeln!(out, "─── {} ───", name)?;
-        writeln!(out, "hash: {}  lines: {}  files: {}", &hash[..12], total_lines, total_files)?;
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {}  lines: {}  files: {}",
+            &hash[..12],
+            total_lines,
+            total_files
+        )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
     // If small enough, show all
     if total_lines <= n * 2 {
         for line in &lines {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
     } else if opts.head_only {
         // Show only head
         for line in lines.iter().take(n) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
         if total_lines > n && !opts.quiet {
             writeln!(out, "... ({} more lines)", total_lines - n)?;
@@ -694,18 +704,22 @@ fn print_peek_lines(
             writeln!(out, "... ({} lines above)", total_lines - n)?;
         }
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
     } else {
         // Show head + tail
         for line in lines.iter().take(n) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
         writeln!(out, "...")?;
-        writeln!(out, "... ({} lines omitted)", total_lines.saturating_sub(n * 2))?;
+        writeln!(
+            out,
+            "... ({} lines omitted)",
+            total_lines.saturating_sub(n * 2)
+        )?;
         writeln!(out, "...")?;
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
     }
 
@@ -725,16 +739,22 @@ fn print_peek_chars(
     let n = opts.lines; // reuse lines as char count
 
     if !opts.quiet {
-        writeln!(out, "─── {} ───", name)?;
-        writeln!(out, "hash: {}  chars: {}  files: {}", &hash[..12], total_chars, total_files)?;
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {}  chars: {}  files: {}",
+            &hash[..12],
+            total_chars,
+            total_files
+        )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
     if total_chars <= n * 2 {
-        write!(out, "{}", content)?;
+        write!(out, "{content}")?;
     } else if opts.head_only {
         let head: String = content.chars().take(n).collect();
-        write!(out, "{}", head)?;
+        write!(out, "{head}")?;
         if !opts.quiet {
             writeln!(out, "\n... ({} more chars)", total_chars - n)?;
         }
@@ -742,14 +762,24 @@ fn print_peek_chars(
         if !opts.quiet {
             writeln!(out, "... ({} chars above)", total_chars - n)?;
         }
-        let tail: String = content.chars().skip(total_chars.saturating_sub(n)).collect();
-        write!(out, "{}", tail)?;
+        let tail: String = content
+            .chars()
+            .skip(total_chars.saturating_sub(n))
+            .collect();
+        write!(out, "{tail}")?;
     } else {
         let head: String = content.chars().take(n).collect();
-        let tail: String = content.chars().skip(total_chars.saturating_sub(n)).collect();
-        write!(out, "{}", head)?;
-        writeln!(out, "\n... ({} chars omitted)", total_chars.saturating_sub(n * 2))?;
-        write!(out, "{}", tail)?;
+        let tail: String = content
+            .chars()
+            .skip(total_chars.saturating_sub(n))
+            .collect();
+        write!(out, "{head}")?;
+        writeln!(
+            out,
+            "\n... ({} chars omitted)",
+            total_chars.saturating_sub(n * 2)
+        )?;
+        write!(out, "{tail}")?;
     }
     writeln!(out)?;
 
@@ -770,8 +800,14 @@ fn print_peek_words(
     let n = opts.lines; // reuse lines as word count
 
     if !opts.quiet {
-        writeln!(out, "─── {} ───", name)?;
-        writeln!(out, "hash: {}  words: {}  files: {}", &hash[..12], total_words, total_files)?;
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {}  words: {}  files: {}",
+            &hash[..12],
+            total_words,
+            total_files
+        )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
@@ -787,13 +823,25 @@ fn print_peek_words(
         if !opts.quiet {
             writeln!(out, "... ({} words above)", total_words - n)?;
         }
-        let tail: Vec<&str> = words.iter().skip(total_words.saturating_sub(n)).copied().collect();
+        let tail: Vec<&str> = words
+            .iter()
+            .skip(total_words.saturating_sub(n))
+            .copied()
+            .collect();
         writeln!(out, "{}", tail.join(" "))?;
     } else {
         let head: Vec<&str> = words.iter().take(n).copied().collect();
-        let tail: Vec<&str> = words.iter().skip(total_words.saturating_sub(n)).copied().collect();
+        let tail: Vec<&str> = words
+            .iter()
+            .skip(total_words.saturating_sub(n))
+            .copied()
+            .collect();
         writeln!(out, "{}", head.join(" "))?;
-        writeln!(out, "... ({} words omitted)", total_words.saturating_sub(n * 2))?;
+        writeln!(
+            out,
+            "... ({} words omitted)",
+            total_words.saturating_sub(n * 2)
+        )?;
         writeln!(out, "{}", tail.join(" "))?;
     }
 
@@ -857,7 +905,7 @@ pub async fn cmd_find_matches(
         let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Find {
-            query: query.to_string(),
+            query: query.to_owned(),
             prefer_name,
         })?;
         send.write_all(&req).await?;
@@ -920,6 +968,7 @@ pub async fn cmd_find_matches(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::MatchKind;
@@ -937,7 +986,10 @@ mod tests {
 
     #[test]
     fn test_match_kind_contains() {
-        assert_eq!(match_kind("say hello to me", "hello"), Some(MatchKind::Contains));
+        assert_eq!(
+            match_kind("say hello to me", "hello"),
+            Some(MatchKind::Contains)
+        );
     }
 
     #[test]
@@ -947,14 +999,14 @@ mod tests {
 
     #[test]
     fn test_search_options_exclude() {
-        let opts = SearchOptions::new(None, None, false, vec![".bak".to_string()]);
+        let opts = SearchOptions::new(None, None, false, vec![".bak".to_owned()]);
         assert!(opts.should_exclude("file.bak", "abc123"));
         assert!(!opts.should_exclude("file.txt", "abc123"));
     }
 
     #[test]
     fn test_search_options_exclude_hash() {
-        let opts = SearchOptions::new(None, None, false, vec!["abc".to_string()]);
+        let opts = SearchOptions::new(None, None, false, vec!["abc".to_owned()]);
         assert!(opts.should_exclude("file.txt", "abc123def"));
         assert!(!opts.should_exclude("file.txt", "xyz789"));
     }
@@ -965,23 +1017,23 @@ mod tests {
         let hash = Hash::from_bytes([0u8; 32]);
         let matches = vec![
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "a.txt".to_string(),
+                name: "a.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "b.txt".to_string(),
+                name: "b.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "c.txt".to_string(),
+                name: "c.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
@@ -998,23 +1050,23 @@ mod tests {
         let hash = Hash::from_bytes([0u8; 32]);
         let matches = vec![
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "a.txt".to_string(),
+                name: "a.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "b.txt".to_string(),
+                name: "b.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "c.txt".to_string(),
+                name: "c.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
@@ -1028,27 +1080,27 @@ mod tests {
     #[test]
     fn test_search_options_combined() {
         // Exclude + first
-        let opts = SearchOptions::new(Some(1), None, false, vec![".bak".to_string()]);
+        let opts = SearchOptions::new(Some(1), None, false, vec![".bak".to_owned()]);
         let hash = Hash::from_bytes([0u8; 32]);
         let matches = vec![
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "a.bak".to_string(),
+                name: "a.bak".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "b.txt".to_string(),
+                name: "b.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "c.txt".to_string(),
+                name: "c.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
@@ -1069,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_search_options_exclude_case_insensitive() {
-        let opts = SearchOptions::new(None, None, false, vec!["BAK".to_string()]);
+        let opts = SearchOptions::new(None, None, false, vec!["BAK".to_owned()]);
         // Should exclude .bak even though pattern is uppercase
         assert!(opts.should_exclude("file.bak", "abc123"));
         assert!(opts.should_exclude("FILE.BAK", "abc123"));
@@ -1081,7 +1133,7 @@ mod tests {
             None,
             None,
             false,
-            vec![".bak".to_string(), ".tmp".to_string(), "test".to_string()],
+            vec![".bak".to_owned(), ".tmp".to_owned(), "test".to_owned()],
         );
         assert!(opts.should_exclude("file.bak", "abc123"));
         assert!(opts.should_exclude("file.tmp", "abc123"));
@@ -1096,16 +1148,16 @@ mod tests {
         let hash = Hash::from_bytes([0u8; 32]);
         let matches = vec![
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "a.txt".to_string(),
+                name: "a.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q".to_string(),
+                query: "q".to_owned(),
                 hash,
-                name: "b.txt".to_string(),
+                name: "b.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
@@ -1118,15 +1170,13 @@ mod tests {
     fn test_search_options_first_zero() {
         let opts = SearchOptions::new(Some(0), None, false, vec![]);
         let hash = Hash::from_bytes([0u8; 32]);
-        let matches = vec![
-            TaggedMatch {
-                query: "q".to_string(),
-                hash,
-                name: "a.txt".to_string(),
-                kind: MatchKind::Exact,
-                is_hash_match: false,
-            },
-        ];
+        let matches = vec![TaggedMatch {
+            query: "q".to_owned(),
+            hash,
+            name: "a.txt".to_owned(),
+            kind: MatchKind::Exact,
+            is_hash_match: false,
+        }];
         let result = opts.apply(matches);
         assert_eq!(result.len(), 0);
     }

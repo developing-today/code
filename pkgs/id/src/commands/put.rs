@@ -51,7 +51,7 @@
 //! id put NODE_ID file.txt
 //! ```
 
-use anyhow::{Result, bail, Context};
+use anyhow::{Context, Result, bail};
 use iroh::{
     address_lookup::{DnsAddressLookup, PkarrPublisher},
     endpoint::{Endpoint, RelayMode},
@@ -67,11 +67,9 @@ use std::path::PathBuf;
 use tokio::fs as afs;
 
 use crate::{
-    CLIENT_KEY_FILE, META_ALPN,
-    MetaRequest, MetaResponse,
-    is_node_id, parse_stdin_items, read_input, parse_put_spec,
-    load_or_create_keypair, open_store,
-    get_serve_info, create_local_client_endpoint,
+    CLIENT_KEY_FILE, META_ALPN, MetaRequest, MetaResponse, create_local_client_endpoint,
+    get_serve_info, is_node_id, load_or_create_keypair, open_store, parse_put_spec,
+    parse_stdin_items, read_input,
 };
 
 /// Stores content by hash only, without creating a named tag.
@@ -124,7 +122,7 @@ pub async fn cmd_put_hash(source: &str) -> Result<()> {
             .await?;
         blobs_conn.close(0u32.into(), b"done");
 
-        println!("{}", hash);
+        println!("{hash}");
         store.shutdown().await?;
     } else {
         let store = open_store(false).await?;
@@ -159,8 +157,7 @@ pub async fn cmd_put_local_file(path: &str, custom_name: Option<String>) -> Resu
     let path = PathBuf::from(path);
     let filename = custom_name.unwrap_or_else(|| {
         path.file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unnamed".to_string())
+            .map_or_else(|| "unnamed".to_owned(), |s| s.to_string_lossy().to_string())
     });
     let data = afs::read(&path).await?;
 
@@ -200,7 +197,7 @@ pub async fn cmd_put_local_file(path: &str, custom_name: Option<String>) -> Resu
                     .execute_push(blobs_conn.clone(), push_request)
                     .await?;
                 blobs_conn.close(0u32.into(), b"done");
-                eprintln!("stored: {} -> {}", filename, hash);
+                eprintln!("stored: {filename} -> {hash}");
                 store.shutdown().await?;
             }
             MetaResponse::Put { success: false } => bail!("server rejected"),
@@ -253,7 +250,7 @@ pub async fn cmd_put_local_stdin(name: &str) -> Result<()> {
         let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Put {
-            filename: name.to_string(),
+            filename: name.to_owned(),
             hash,
         })?;
         send.write_all(&req).await?;
@@ -272,7 +269,7 @@ pub async fn cmd_put_local_stdin(name: &str) -> Result<()> {
                     .execute_push(blobs_conn.clone(), push_request)
                     .await?;
                 blobs_conn.close(0u32.into(), b"done");
-                eprintln!("stored: {} -> {}", name, hash);
+                eprintln!("stored: {name} -> {hash}");
                 store.shutdown().await?;
             }
             MetaResponse::Put { success: false } => bail!("server rejected"),
@@ -307,7 +304,7 @@ pub async fn cmd_put_one(path: &str, name: Option<&str>, hash_only: bool) -> Res
     if hash_only {
         cmd_put_hash(path).await
     } else {
-        cmd_put_local_file(path, name.map(|s| s.to_string())).await
+        cmd_put_local_file(path, name.map(ToOwned::to_owned)).await
     }
 }
 
@@ -334,7 +331,7 @@ pub async fn cmd_put_one_remote(
 ) -> Result<()> {
     let path_buf = PathBuf::from(path);
     let filename = if let Some(n) = name {
-        n.to_string()
+        n.to_owned()
     } else {
         path_buf
             .file_name()
@@ -387,7 +384,7 @@ pub async fn cmd_put_one_remote(
                 .execute_push(blobs_conn.clone(), push_request)
                 .await?;
             blobs_conn.close(0u32.into(), b"done");
-            println!("uploaded: {} -> {}", filename, hash);
+            println!("uploaded: {filename} -> {hash}");
             store.shutdown().await?;
         }
         MetaResponse::Put { success: false } => bail!("server rejected"),
@@ -400,7 +397,7 @@ pub async fn cmd_put_one_remote(
 ///
 /// This is the main entry point for the `put` command. It handles:
 /// - Content mode (stdin as content)
-/// - Remote targeting (first arg is NODE_ID)
+/// - Remote targeting (first arg is `NODE_ID`)
 /// - Multiple file specs
 /// - Stdin path reading
 ///
@@ -430,9 +427,8 @@ pub async fn cmd_put_multi(
         let name = &files[0];
         if hash_only {
             return cmd_put_hash("-").await;
-        } else {
-            return cmd_put_local_stdin(name).await;
         }
+        return cmd_put_local_stdin(name).await;
     }
 
     let mut items = files;
@@ -459,9 +455,8 @@ pub async fn cmd_put_multi(
             let name = &items[0];
             if hash_only {
                 return cmd_put_hash("-").await;
-            } else {
-                return cmd_put_local_stdin(name).await;
             }
+            return cmd_put_local_stdin(name).await;
         }
     }
 
@@ -478,7 +473,7 @@ pub async fn cmd_put_multi(
             cmd_put_one(path, name, hash_only).await
         };
         if let Err(e) = result {
-            errors.push(format!("{}: {}", spec, e));
+            errors.push(format!("{spec}: {e}"));
         }
     }
 
@@ -489,13 +484,16 @@ pub async fn cmd_put_multi(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_is_node_id_integration() {
         // Valid node ID
-        assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+        assert!(is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
         // Invalid
         assert!(!is_node_id("not_a_node_id"));
     }
@@ -529,7 +527,12 @@ mod tests {
     async fn test_cmd_put_multi_empty_no_files() {
         let result = cmd_put_multi(vec![], false, false, false, false).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no files provided"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no files provided")
+        );
     }
 
     #[tokio::test]
@@ -537,12 +540,22 @@ mod tests {
         // Content mode with no args
         let result = cmd_put_multi(vec![], true, false, false, false).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("--content requires exactly one name argument"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--content requires exactly one name argument")
+        );
 
         // Content mode with multiple args
         let result = cmd_put_multi(vec!["a".into(), "b".into()], true, false, false, false).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("--content requires exactly one name argument"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--content requires exactly one name argument")
+        );
     }
 
     #[tokio::test]

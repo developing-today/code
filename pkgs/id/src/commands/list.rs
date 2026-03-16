@@ -24,7 +24,7 @@
 //! id list abc123...def456
 //! ```
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use futures_lite::StreamExt;
 use iroh::{
     address_lookup::{DnsAddressLookup, PkarrPublisher},
@@ -36,7 +36,7 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
-use crate::{is_node_id, CLIENT_KEY_FILE, META_ALPN};
+use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
 
 /// Lists all stored files (local or remote).
 ///
@@ -91,7 +91,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
                     println!("(no files stored)");
                 } else {
                     for (hash, name) in items {
-                        println!("{}\t{}", hash, name);
+                        println!("{hash}\t{name}");
                     }
                 }
             }
@@ -156,7 +156,7 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
                 println!("(no files stored)");
             } else {
                 for (hash, name) in items {
-                    println!("{}\t{}", hash, name);
+                    println!("{hash}\t{name}");
                 }
             }
         }
@@ -166,18 +166,23 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_is_node_id_validation() {
         // Valid node ID (64 hex chars)
-        assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
-        
+        assert!(is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+
         // Invalid: too short
         assert!(!is_node_id("0123456789abcdef"));
-        
+
         // Invalid: non-hex chars
-        assert!(!is_node_id("ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcdef"));
+        assert!(!is_node_id(
+            "ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
     }
 }

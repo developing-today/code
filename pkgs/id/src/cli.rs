@@ -95,7 +95,7 @@ use clap::{Parser, Subcommand};
 /// // Parse command line arguments
 /// let cli = Cli::parse_from(["id", "serve", "--ephemeral"]);
 /// ```
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(
     name = "id",
     version,
@@ -115,7 +115,7 @@ pub struct Cli {
 /// Each variant represents a distinct operation mode for the `id` tool.
 /// Commands are organized by their primary function: storage, retrieval,
 /// search, or system operations.
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
     ///
@@ -133,6 +133,9 @@ pub enum Command {
     ///
     /// # Direct connections only (no relay)
     /// id serve --no-relay
+    ///
+    /// # Start with web interface on port 3000
+    /// id serve --web 3000
     /// ```
     Serve {
         /// Use in-memory storage instead of persistent disk storage.
@@ -146,6 +149,13 @@ pub enum Command {
         /// May prevent connections through NATs or firewalls.
         #[arg(long)]
         no_relay: bool,
+        /// Start web interface on the specified port.
+        ///
+        /// Enables an HTTP server with a browser-based UI for
+        /// file browsing and collaborative editing.
+        /// Requires the `web` feature to be enabled at build time.
+        #[arg(long)]
+        web: Option<u16>,
     },
     /// Start an interactive REPL for issuing commands.
     ///
@@ -687,6 +697,7 @@ pub enum Command {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
@@ -704,9 +715,11 @@ mod tests {
             Some(Command::Serve {
                 ephemeral,
                 no_relay,
+                web,
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);
+                assert!(web.is_none());
             }
             _ => panic!("Expected Serve command"),
         }
@@ -719,9 +732,11 @@ mod tests {
             Some(Command::Serve {
                 ephemeral,
                 no_relay,
+                web,
             }) => {
                 assert!(ephemeral);
                 assert!(no_relay);
+                assert!(web.is_none());
             }
             _ => panic!("Expected Serve command"),
         }
@@ -939,7 +954,7 @@ mod tests {
         let cli = Cli::parse_from(["id", "list", node_id]);
         match cli.command {
             Some(Command::List { node, .. }) => {
-                assert_eq!(node, Some(node_id.to_string()));
+                assert_eq!(node, Some(node_id.to_owned()));
             }
             _ => panic!("Expected List command"),
         }
@@ -1046,7 +1061,7 @@ mod tests {
         let cli = Cli::parse_from(["id", "show", "-o", "output.txt", "query"]);
         match cli.command {
             Some(Command::Show { output, .. }) => {
-                assert_eq!(output, Some("output.txt".to_string()));
+                assert_eq!(output, Some("output.txt".to_owned()));
             }
             _ => panic!("Expected Show command"),
         }
@@ -1196,7 +1211,7 @@ mod tests {
         let cli = Cli::parse_from(["id", "peek", "-o", "output.txt", "query"]);
         match cli.command {
             Some(Command::Peek { output, .. }) => {
-                assert_eq!(output, Some("output.txt".to_string()));
+                assert_eq!(output, Some("output.txt".to_owned()));
             }
             _ => panic!("Expected Peek command"),
         }

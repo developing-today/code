@@ -109,7 +109,7 @@
 //!    immutable.
 //!
 //! Storage locations (relative to working directory):
-//! - `.iroh-store/` - SQLite database with blob data
+//! - `.iroh-store/` - `SQLite` database with blob data
 //! - `.iroh-key` - Server Ed25519 keypair
 //! - `.iroh-key-client` - Client keypair for remote connections
 //! - `.iroh-serve.lock` - Lock file when serve is running
@@ -155,21 +155,25 @@ pub mod protocol;
 pub mod repl;
 pub mod store;
 
+#[cfg(feature = "web")]
+pub mod web;
+
 // Re-export commonly used types for convenience
 pub use cli::{Cli, Command};
-pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
-pub use store::{StoreType, load_or_create_keypair, open_store};
 pub use commands::{
-    ServeInfo, ReplContext, ReplContextInner,
-    cmd_id, cmd_serve, cmd_list, cmd_list_remote,
-    cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_one, cmd_put_one_remote, cmd_put_multi,
-    cmd_gethash, cmd_get_local, cmd_get_one, cmd_get_one_remote, cmd_get_multi,
-    cmd_find, cmd_search, cmd_find_matches, cmd_show, cmd_peek,
-    SearchOptions, PeekOptions,
-    create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
+    PeekOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo, cmd_find,
+    cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash,
+    cmd_id, cmd_list, cmd_list_remote, cmd_peek, cmd_put_hash, cmd_put_local_file,
+    cmd_put_local_stdin, cmd_put_multi, cmd_put_one, cmd_put_one_remote, cmd_search, cmd_serve,
+    cmd_show, create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive,
+    remove_serve_lock,
 };
-pub use helpers::{parse_put_spec, parse_get_spec, print_match_cli, print_matches_cli, print_match_repl};
+pub use helpers::{
+    parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,
+};
+pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
 pub use repl::run_repl;
+pub use store::{StoreType, load_or_create_keypair, open_store};
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -192,8 +196,8 @@ pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
 
 /// Directory name for persistent blob storage.
 ///
-/// Contains an SQLite database with blob data and metadata. Only one process
-/// can access this at a time due to SQLite locking.
+/// Contains an `SQLite` database with blob data and metadata. Only one process
+/// can access this at a time due to `SQLite` locking.
 pub const STORE_PATH: &str = ".iroh-store";
 
 /// Filename for the serve lock file.
@@ -348,10 +352,10 @@ pub fn parse_stdin_items() -> Result<Vec<String>> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     Ok(input
-        .split(|c| c == '\n' || c == '\t' || c == ',')
-        .map(|s| s.trim())
+        .split(['\n', '\t', ','])
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(ToOwned::to_owned)
         .collect())
 }
 
@@ -386,7 +390,7 @@ pub fn parse_stdin_items() -> Result<Vec<String>> {
 pub async fn read_input(input: &str) -> Result<Vec<u8>> {
     use std::io::Read;
     use tokio::fs as afs;
-    
+
     if input == "-" {
         let mut data = Vec::new();
         std::io::stdin().read_to_end(&mut data)?;
@@ -427,9 +431,13 @@ pub async fn read_input(input: &str) -> Result<Vec<u8>> {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn export_blob(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash, output: &str) -> Result<()> {
+pub async fn export_blob(
+    store: &iroh_blobs::api::Store,
+    hash: iroh_blobs::Hash,
+    output: &str,
+) -> Result<()> {
     use std::io::Write;
-    
+
     if output == "-" {
         let data = store.blobs().get_bytes(hash).await?;
         std::io::stdout().write_all(&data)?;
@@ -442,6 +450,7 @@ pub async fn export_blob(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash,
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -449,15 +458,23 @@ mod tests {
     #[test]
     fn test_is_node_id() {
         // Valid 64 hex char string
-        assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+        assert!(is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
         // Mixed case
-        assert!(is_node_id("0123456789ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef"));
+        assert!(is_node_id(
+            "0123456789ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef"
+        ));
         // Too short
         assert!(!is_node_id("0123456789abcdef"));
         // Too long
-        assert!(!is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"));
+        assert!(!is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+        ));
         // Invalid chars
-        assert!(!is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg"));
+        assert!(!is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg"
+        ));
     }
 
     #[test]
@@ -467,18 +484,26 @@ mod tests {
 
     #[test]
     fn test_is_node_id_spaces() {
-        assert!(!is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde "));
+        assert!(!is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde "
+        ));
     }
 
     #[test]
     fn test_is_node_id_all_zeros() {
-        assert!(is_node_id("0000000000000000000000000000000000000000000000000000000000000000"));
+        assert!(is_node_id(
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ));
     }
 
     #[test]
     fn test_is_node_id_all_f() {
-        assert!(is_node_id("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
-        assert!(is_node_id("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"));
+        assert!(is_node_id(
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ));
+        assert!(is_node_id(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+        ));
     }
 
     #[test]
@@ -488,7 +513,10 @@ mod tests {
         // Prefix match
         assert_eq!(match_kind("hello world", "hello"), Some(MatchKind::Prefix));
         // Contains match
-        assert_eq!(match_kind("say hello to me", "hello"), Some(MatchKind::Contains));
+        assert_eq!(
+            match_kind("say hello to me", "hello"),
+            Some(MatchKind::Contains)
+        );
         // No match
         assert_eq!(match_kind("goodbye", "hello"), None);
     }
@@ -551,7 +579,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("test.txt");
         std::fs::write(&file_path, b"test content").unwrap();
-        
+
         let data = read_input(file_path.to_str().unwrap()).await.unwrap();
         assert_eq!(data, b"test content");
     }
@@ -567,20 +595,22 @@ mod tests {
         // Create an ephemeral store
         let store_type = open_store(true).await.unwrap();
         let store = store_type.as_store();
-        
+
         // Add a blob
         let data = b"export test content";
         let result = store.blobs().add_bytes(data.to_vec()).await.unwrap();
-        
+
         // Export to file
         let tmp_dir = TempDir::new().unwrap();
         let output_path = tmp_dir.path().join("exported.txt");
-        export_blob(&store, result.hash, output_path.to_str().unwrap()).await.unwrap();
-        
+        export_blob(&store, result.hash, output_path.to_str().unwrap())
+            .await
+            .unwrap();
+
         // Verify content
         let read_data = std::fs::read(&output_path).unwrap();
         assert_eq!(read_data, data);
-        
+
         store_type.shutdown().await.unwrap();
     }
 }

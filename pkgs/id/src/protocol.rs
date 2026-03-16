@@ -60,7 +60,7 @@
 use futures_lite::StreamExt;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use iroh_blobs::{api::Store, Hash};
+use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -415,20 +415,17 @@ impl ProtocolHandler for MetaProtocol {
     /// - Tag operations fail
     /// - Serialization/deserialization fails
     /// - Stream write fails
-    async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Handle multiple requests per connection
         loop {
-            let (mut send, mut recv) = match conn.accept_bi().await {
-                Ok(streams) => streams,
-                Err(_) => break, // Connection closed
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                break; // Connection closed
             };
-            let buf = match recv.read_to_end(64 * 1024).await {
-                Ok(buf) => buf,
-                Err(_) => break,
+            let Ok(buf) = recv.read_to_end(64 * 1024).await else {
+                break;
             };
-            let req: MetaRequest = match postcard::from_bytes(&buf) {
-                Ok(req) => req,
-                Err(_) => break,
+            let Ok(req): Result<MetaRequest, _> = postcard::from_bytes(&buf) else {
+                break;
             };
             match req {
                 MetaRequest::Put { filename, hash } => {
@@ -446,14 +443,12 @@ impl ProtocolHandler for MetaProtocol {
                     let mut found: Option<Hash> = None;
                     if let Ok(Some(tag)) = self.store.tags().get(&filename).await {
                         found = Some(tag.hash);
-                    } else {
-                        if let Ok(mut list) = self.store.tags().list().await {
-                            while let Some(item) = list.next().await {
-                                let item = item.map_err(AcceptError::from_err)?;
-                                if item.name.as_ref() == filename.as_bytes() {
-                                    found = Some(item.hash);
-                                    break;
-                                }
+                    } else if let Ok(mut list) = self.store.tags().list().await {
+                        while let Some(item) = list.next().await {
+                            let item = item.map_err(AcceptError::from_err)?;
+                            if item.name.as_ref() == filename.as_bytes() {
+                                found = Some(item.hash);
+                                break;
                             }
                         }
                     }
@@ -573,6 +568,7 @@ impl ProtocolHandler for MetaProtocol {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -617,7 +613,10 @@ mod tests {
         // Empty string matches as exact with empty
         assert_eq!(MetaProtocol::match_kind("", ""), Some(MatchKind::Exact));
         // Empty needle: starts_with("") is true, so returns Prefix
-        assert_eq!(MetaProtocol::match_kind("hello", ""), Some(MatchKind::Prefix));
+        assert_eq!(
+            MetaProtocol::match_kind("hello", ""),
+            Some(MatchKind::Prefix)
+        );
         // Empty haystack with non-empty needle
         assert_eq!(MetaProtocol::match_kind("", "hello"), None);
     }
@@ -645,7 +644,7 @@ mod tests {
         let hash = Hash::from_bytes([0u8; 32]);
         let m = FindMatch {
             hash,
-            name: "test.txt".to_string(),
+            name: "test.txt".to_owned(),
             kind: MatchKind::Exact,
             is_hash_match: false,
         };
@@ -658,9 +657,9 @@ mod tests {
     fn test_tagged_match_struct() {
         let hash = Hash::from_bytes([0u8; 32]);
         let m = TaggedMatch {
-            query: "test".to_string(),
+            query: "test".to_owned(),
             hash,
-            name: "test.txt".to_string(),
+            name: "test.txt".to_owned(),
             kind: MatchKind::Prefix,
             is_hash_match: true,
         };
@@ -673,7 +672,7 @@ mod tests {
     fn test_meta_request_serialization() {
         // Test Put
         let req = MetaRequest::Put {
-            filename: "test.txt".to_string(),
+            filename: "test.txt".to_owned(),
             hash: Hash::from_bytes([0u8; 32]),
         };
         let bytes = postcard::to_allocvec(&req).unwrap();
@@ -687,7 +686,7 @@ mod tests {
     #[test]
     fn test_meta_request_get_serialization() {
         let req = MetaRequest::Get {
-            filename: "myfile.txt".to_string(),
+            filename: "myfile.txt".to_owned(),
         };
         let bytes = postcard::to_allocvec(&req).unwrap();
         let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
@@ -708,7 +707,7 @@ mod tests {
     #[test]
     fn test_meta_request_delete_serialization() {
         let req = MetaRequest::Delete {
-            filename: "to_delete.txt".to_string(),
+            filename: "to_delete.txt".to_owned(),
         };
         let bytes = postcard::to_allocvec(&req).unwrap();
         let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
@@ -721,8 +720,8 @@ mod tests {
     #[test]
     fn test_meta_request_rename_serialization() {
         let req = MetaRequest::Rename {
-            from: "old.txt".to_string(),
-            to: "new.txt".to_string(),
+            from: "old.txt".to_owned(),
+            to: "new.txt".to_owned(),
         };
         let bytes = postcard::to_allocvec(&req).unwrap();
         let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
@@ -738,8 +737,8 @@ mod tests {
     #[test]
     fn test_meta_request_copy_serialization() {
         let req = MetaRequest::Copy {
-            from: "source.txt".to_string(),
-            to: "dest.txt".to_string(),
+            from: "source.txt".to_owned(),
+            to: "dest.txt".to_owned(),
         };
         let bytes = postcard::to_allocvec(&req).unwrap();
         let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
@@ -755,7 +754,7 @@ mod tests {
     #[test]
     fn test_meta_request_find_serialization() {
         let req = MetaRequest::Find {
-            query: "search term".to_string(),
+            query: "search term".to_owned(),
             prefer_name: true,
         };
         let bytes = postcard::to_allocvec(&req).unwrap();
@@ -812,8 +811,8 @@ mod tests {
         let hash2 = Hash::from_bytes([2u8; 32]);
         let resp = MetaResponse::List {
             items: vec![
-                (hash1, "file1.txt".to_string()),
-                (hash2, "file2.txt".to_string()),
+                (hash1, "file1.txt".to_owned()),
+                (hash2, "file2.txt".to_owned()),
             ],
         };
         let bytes = postcard::to_allocvec(&resp).unwrap();
@@ -833,7 +832,7 @@ mod tests {
         let hash = Hash::from_bytes([0u8; 32]);
         let matches = vec![FindMatch {
             hash,
-            name: "found.txt".to_string(),
+            name: "found.txt".to_owned(),
             kind: MatchKind::Exact,
             is_hash_match: false,
         }];
@@ -863,7 +862,7 @@ mod tests {
         let hash = Hash::from_bytes([5u8; 32]);
         let m = FindMatch {
             hash,
-            name: "serialized.txt".to_string(),
+            name: "serialized.txt".to_owned(),
             kind: MatchKind::Contains,
             is_hash_match: true,
         };

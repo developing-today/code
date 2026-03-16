@@ -63,10 +63,17 @@ pub mod repl;
 pub mod serve;
 
 pub use client::create_local_client_endpoint;
-pub use find::{cmd_find, cmd_search, cmd_find_matches, cmd_show, cmd_peek, SearchOptions, PeekOptions};
-pub use get::{cmd_gethash, cmd_get_local, cmd_get_one, cmd_get_one_remote, cmd_get_multi};
+pub use find::{
+    PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,
+};
+pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
 pub use id::cmd_id;
 pub use list::{cmd_list, cmd_list_remote};
-pub use put::{cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_one, cmd_put_one_remote, cmd_put_multi};
+pub use put::{
+    cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
+    cmd_put_one_remote,
+};
 pub use repl::{ReplContext, ReplContextInner};
-pub use serve::{ServeInfo, cmd_serve, create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock};
+pub use serve::{
+    ServeInfo, cmd_serve, create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
+};

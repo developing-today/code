@@ -57,7 +57,7 @@
 //! id get <NODE_ID> config.json
 //! ```
 
-use anyhow::{Result, bail, Context};
+use anyhow::{Context, Result, bail};
 use iroh::{
     address_lookup::{DnsAddressLookup, PkarrPublisher},
     endpoint::{Endpoint, RelayMode},
@@ -66,11 +66,9 @@ use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, Hash};
 
 use crate::{
-    CLIENT_KEY_FILE, META_ALPN,
-    MetaRequest, MetaResponse,
-    is_node_id, parse_stdin_items, parse_get_spec, export_blob,
-    load_or_create_keypair, open_store,
-    get_serve_info, create_local_client_endpoint,
+    CLIENT_KEY_FILE, META_ALPN, MetaRequest, MetaResponse, create_local_client_endpoint,
+    export_blob, get_serve_info, is_node_id, load_or_create_keypair, open_store, parse_get_spec,
+    parse_stdin_items,
 };
 
 /// Retrieve a blob by its content hash and export to the specified output.
@@ -137,10 +135,10 @@ pub async fn cmd_gethash(hash_str: &str, output: &str) -> Result<()> {
 ///
 /// # Protocol Flow (when serve is running)
 ///
-/// 1. Connect to local serve via META_ALPN
+/// 1. Connect to local serve via `META_ALPN`
 /// 2. Send `MetaRequest::Get { filename }` to resolve name → hash
 /// 3. Receive `MetaResponse::Get { hash }` with the content hash
-/// 4. Connect via BLOBS_ALPN and fetch the blob data
+/// 4. Connect via `BLOBS_ALPN` and fetch the blob data
 /// 5. Export to the output destination
 ///
 /// # Arguments
@@ -164,7 +162,7 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
         let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Get {
-            filename: name.to_string(),
+            filename: name.to_owned(),
         })?;
         send.write_all(&req).await?;
         send.finish()?;
@@ -225,7 +223,12 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the source cannot be found as either a name or hash.
-pub async fn cmd_get_one(source: &str, output: &str, hash_mode: bool, name_only: bool) -> Result<()> {
+pub async fn cmd_get_one(
+    source: &str,
+    output: &str,
+    hash_mode: bool,
+    name_only: bool,
+) -> Result<()> {
     let is_valid_hash = source.len() == 64 && source.chars().all(|c| c.is_ascii_hexdigit());
 
     // If --hash flag, treat as hash lookup
@@ -234,36 +237,37 @@ pub async fn cmd_get_one(source: &str, output: &str, hash_mode: bool, name_only:
     }
 
     // If it looks like a hash (64 hex chars) and not --name-only, try hash first
-    if is_valid_hash && !name_only {
-        if let Ok(hash) = source.parse::<Hash>() {
-            if let Some(serve_info) = get_serve_info().await {
-                let store = open_store(true).await?;
-                let store_handle = store.as_store();
-                let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
-                let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+    if is_valid_hash
+        && !name_only
+        && let Ok(hash) = source.parse::<Hash>()
+    {
+        if let Some(serve_info) = get_serve_info().await {
+            let store = open_store(true).await?;
+            let store_handle = store.as_store();
+            let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+            let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
 
-                match store_handle.remote().fetch(blobs_conn.clone(), hash).await {
-                    Ok(_) => {
-                        blobs_conn.close(0u32.into(), b"done");
-                        export_blob(&store_handle, hash, output).await?;
-                        store.shutdown().await?;
-                        return Ok(());
-                    }
-                    Err(_) => {
-                        blobs_conn.close(0u32.into(), b"done");
-                    }
-                }
-                store.shutdown().await?;
-            } else {
-                let store = open_store(false).await?;
-                let store_handle = store.as_store();
-                if store_handle.blobs().has(hash).await? {
+            match store_handle.remote().fetch(blobs_conn.clone(), hash).await {
+                Ok(_) => {
+                    blobs_conn.close(0u32.into(), b"done");
                     export_blob(&store_handle, hash, output).await?;
                     store.shutdown().await?;
                     return Ok(());
                 }
-                store.shutdown().await?;
+                Err(_) => {
+                    blobs_conn.close(0u32.into(), b"done");
+                }
             }
+            store.shutdown().await?;
+        } else {
+            let store = open_store(false).await?;
+            let store_handle = store.as_store();
+            if store_handle.blobs().has(hash).await? {
+                export_blob(&store_handle, hash, output).await?;
+                store.shutdown().await?;
+                return Ok(());
+            }
+            store.shutdown().await?;
         }
     }
 
@@ -280,9 +284,9 @@ pub async fn cmd_get_one(source: &str, output: &str, hash_mode: bool, name_only:
 /// # Protocol Flow
 ///
 /// 1. Create a client endpoint with the local keypair
-/// 2. Connect to the remote node via META_ALPN
+/// 2. Connect to the remote node via `META_ALPN`
 /// 3. Send `MetaRequest::Get { filename }` to get the hash
-/// 4. Connect via BLOBS_ALPN and fetch the blob data
+/// 4. Connect via `BLOBS_ALPN` and fetch the blob data
 /// 5. Export to the output destination
 ///
 /// # Arguments
@@ -320,7 +324,7 @@ pub async fn cmd_get_one_remote(
     let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
     let (mut send, mut recv) = meta_conn.open_bi().await?;
     let req = postcard::to_allocvec(&MetaRequest::Get {
-        filename: name.to_string(),
+        filename: name.to_owned(),
     })?;
     send.write_all(&req).await?;
     send.finish()?;
@@ -435,7 +439,7 @@ pub async fn cmd_get_multi(
             cmd_get_one(source, output, hash_mode, name_only).await
         };
         if let Err(e) = result {
-            errors.push(format!("{}: {}", source, e));
+            errors.push(format!("{source}: {e}"));
         }
     }
 
@@ -446,13 +450,16 @@ pub async fn cmd_get_multi(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_is_node_id_integration() {
         // Valid node ID
-        assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+        assert!(is_node_id(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
         // Invalid
         assert!(!is_node_id("not_a_node_id"));
     }
@@ -478,7 +485,11 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("invalid hash"));
 
         // Non-hex chars
-        let result = cmd_gethash("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "-").await;
+        let result = cmd_gethash(
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "-",
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -486,6 +497,11 @@ mod tests {
     async fn test_cmd_get_multi_empty_no_sources() {
         let result = cmd_get_multi(vec![], false, false, false, false, false).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no sources provided"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no sources provided")
+        );
     }
 }

@@ -64,7 +64,7 @@
 //! | [`copy()`](ReplContext::copy) | Duplicate a blob with a new name |
 //! | [`find()`](ReplContext::find) | Search for blobs by pattern |
 //!
-//! # Remote Targeting with @NODE_ID
+//! # Remote Targeting with @`NODE_ID`
 //!
 //! In Remote mode (connected to local serve), commands can target specific
 //! remote nodes using the `@NODE_ID` prefix:
@@ -90,13 +90,12 @@ use iroh_blobs::{
 use std::{io::Read, path::PathBuf};
 use tokio::fs as afs;
 
-use crate::{
-    FindMatch, MatchKind, MetaRequest, MetaResponse, StoreType,
-    load_or_create_keypair, open_store, export_blob, is_node_id,
-    CLIENT_KEY_FILE, META_ALPN,
-};
 use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
+use crate::{
+    CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
+    export_blob, is_node_id, load_or_create_keypair, open_store,
+};
 
 /// REPL execution context managing connections and store access.
 ///
@@ -121,6 +120,7 @@ use crate::commands::serve::get_serve_info;
 ///
 /// `ReplContext` is not `Send` or `Sync` because it holds mutable connection
 /// state. Use it from a single async task.
+#[derive(Debug)]
 pub struct ReplContext {
     inner: ReplContextInner,
     /// Session-level remote target (from `id repl <NODE_ID>`) - reserved for future use
@@ -135,6 +135,7 @@ pub struct ReplContext {
 /// - [`Local`](ReplContextInner::Local): Direct store access, no networking
 /// - [`Remote`](ReplContextInner::Remote): Connected to local serve instance
 /// - [`RemoteNode`](ReplContextInner::RemoteNode): Connected to remote peer
+#[derive(Debug)]
 pub enum ReplContextInner {
     /// Connected to a running serve instance on the local machine.
     ///
@@ -145,9 +146,9 @@ pub enum ReplContextInner {
         endpoint: Endpoint,
         /// Address of the local serve instance
         endpoint_addr: iroh::EndpointAddr,
-        /// Cached META_ALPN connection (lazy, reconnects if closed)
+        /// Cached `META_ALPN` connection (lazy, reconnects if closed)
         meta_conn: Option<Connection>,
-        /// Cached BLOBS_ALPN connection (lazy, reconnects if closed)
+        /// Cached `BLOBS_ALPN` connection (lazy, reconnects if closed)
         blobs_conn: Option<Connection>,
         /// Ephemeral store for blob transfers
         store: StoreType,
@@ -169,9 +170,9 @@ pub enum ReplContextInner {
         endpoint: Endpoint,
         /// The remote peer's node ID
         node_id: EndpointId,
-        /// Cached META_ALPN connection (lazy, reconnects if closed)
+        /// Cached `META_ALPN` connection (lazy, reconnects if closed)
         meta_conn: Option<Connection>,
-        /// Cached BLOBS_ALPN connection (lazy, reconnects if closed)
+        /// Cached `BLOBS_ALPN` connection (lazy, reconnects if closed)
         blobs_conn: Option<Connection>,
         /// Local store for blob transfers
         store: StoreType,
@@ -217,7 +218,7 @@ impl ReplContext {
                 .await?;
 
             let store = open_store(true).await?;
-            return Ok(ReplContext {
+            return Ok(Self {
                 inner: ReplContextInner::RemoteNode {
                     endpoint,
                     node_id,
@@ -233,7 +234,7 @@ impl ReplContext {
             let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
             // Use ephemeral store for remote mode (just for blob transfers)
             let store = open_store(true).await?;
-            Ok(ReplContext {
+            Ok(Self {
                 inner: ReplContextInner::Remote {
                     endpoint,
                     endpoint_addr,
@@ -245,7 +246,7 @@ impl ReplContext {
             })
         } else {
             let store = open_store(false).await?;
-            Ok(ReplContext {
+            Ok(Self {
                 inner: ReplContextInner::Local { store },
                 session_target: None,
             })
@@ -257,11 +258,11 @@ impl ReplContext {
     /// Returns:
     /// - `"local-serve"` for Remote mode
     /// - `"local"` for Local mode
-    /// - `"remote:XXXXXXXX"` for RemoteNode mode (first 8 chars of node ID)
+    /// - `"remote:XXXXXXXX"` for `RemoteNode` mode (first 8 chars of node ID)
     pub fn mode_str(&self) -> String {
         match &self.inner {
-            ReplContextInner::Remote { .. } => "local-serve".to_string(),
-            ReplContextInner::Local { .. } => "local".to_string(),
+            ReplContextInner::Remote { .. } => "local-serve".to_owned(),
+            ReplContextInner::Local { .. } => "local".to_owned(),
             ReplContextInner::RemoteNode { node_id, .. } => {
                 format!("remote:{}", &node_id.to_string()[..8])
             }
@@ -270,9 +271,9 @@ impl ReplContext {
 
     /// Check if connected to a server (local serve or remote node).
     ///
-    /// Returns `true` for Remote and RemoteNode modes, `false` for Local mode.
+    /// Returns `true` for Remote and `RemoteNode` modes, `false` for Local mode.
     /// This affects how operations are performed (protocol vs direct store access).
-    pub fn is_connected(&self) -> bool {
+    pub const fn is_connected(&self) -> bool {
         matches!(
             &self.inner,
             ReplContextInner::Remote { .. } | ReplContextInner::RemoteNode { .. }
@@ -285,6 +286,7 @@ impl ReplContext {
     /// Works in all modes - the store is either:
     /// - The main store (Local mode)
     /// - An ephemeral transfer store (Remote/RemoteNode modes)
+    #[allow(clippy::match_same_arms)] // Different enum variants, same action - intentional for exhaustiveness
     pub fn store_handle(&self) -> Store {
         match &self.inner {
             ReplContextInner::Remote { store, .. } => store.as_store(),
@@ -293,7 +295,7 @@ impl ReplContext {
         }
     }
 
-    /// Get or create a connection for metadata operations (META_ALPN).
+    /// Get or create a connection for metadata operations (`META_ALPN`).
     ///
     /// This method lazily establishes a connection to the serve instance or
     /// remote node. The connection is cached and reused for subsequent calls.
@@ -304,6 +306,7 @@ impl ReplContext {
     /// Returns an error if:
     /// - Called in Local mode (no server to connect to)
     /// - Cannot establish a QUIC connection
+    #[allow(clippy::unwrap_used)] // Safe: we just assigned Some(conn) before unwrapping
     pub async fn meta_conn(&mut self) -> Result<&Connection> {
         match &mut self.inner {
             ReplContextInner::Remote {
@@ -312,10 +315,10 @@ impl ReplContext {
                 meta_conn,
                 ..
             } => {
-                if let Some(conn) = meta_conn.as_ref() {
-                    if conn.close_reason().is_none() {
-                        return Ok(meta_conn.as_ref().unwrap());
-                    }
+                if let Some(conn) = meta_conn.as_ref()
+                    && conn.close_reason().is_none()
+                {
+                    return Ok(meta_conn.as_ref().unwrap());
                 }
                 let conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
                 *meta_conn = Some(conn);
@@ -327,10 +330,10 @@ impl ReplContext {
                 meta_conn,
                 ..
             } => {
-                if let Some(conn) = meta_conn.as_ref() {
-                    if conn.close_reason().is_none() {
-                        return Ok(meta_conn.as_ref().unwrap());
-                    }
+                if let Some(conn) = meta_conn.as_ref()
+                    && conn.close_reason().is_none()
+                {
+                    return Ok(meta_conn.as_ref().unwrap());
                 }
                 let conn = endpoint.connect(*node_id, META_ALPN).await?;
                 *meta_conn = Some(conn);
@@ -340,7 +343,7 @@ impl ReplContext {
         }
     }
 
-    /// Get or create a connection for blob transfers (BLOBS_ALPN).
+    /// Get or create a connection for blob transfers (`BLOBS_ALPN`).
     ///
     /// Similar to [`meta_conn()`](Self::meta_conn), this lazily establishes
     /// and caches a connection for the iroh-blobs protocol.
@@ -350,6 +353,7 @@ impl ReplContext {
     /// Returns an error if:
     /// - Called in Local mode (no server to connect to)
     /// - Cannot establish a QUIC connection
+    #[allow(clippy::unwrap_used)] // Safe: we just assigned Some(conn) before unwrapping
     pub async fn blobs_conn(&mut self) -> Result<&Connection> {
         match &mut self.inner {
             ReplContextInner::Remote {
@@ -358,10 +362,10 @@ impl ReplContext {
                 blobs_conn,
                 ..
             } => {
-                if let Some(conn) = blobs_conn.as_ref() {
-                    if conn.close_reason().is_none() {
-                        return Ok(blobs_conn.as_ref().unwrap());
-                    }
+                if let Some(conn) = blobs_conn.as_ref()
+                    && conn.close_reason().is_none()
+                {
+                    return Ok(blobs_conn.as_ref().unwrap());
                 }
                 let conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                 *blobs_conn = Some(conn);
@@ -373,10 +377,10 @@ impl ReplContext {
                 blobs_conn,
                 ..
             } => {
-                if let Some(conn) = blobs_conn.as_ref() {
-                    if conn.close_reason().is_none() {
-                        return Ok(blobs_conn.as_ref().unwrap());
-                    }
+                if let Some(conn) = blobs_conn.as_ref()
+                    && conn.close_reason().is_none()
+                {
+                    return Ok(blobs_conn.as_ref().unwrap());
                 }
                 let conn = endpoint.connect(*node_id, BLOBS_ALPN).await?;
                 *blobs_conn = Some(conn);
@@ -390,7 +394,8 @@ impl ReplContext {
     ///
     /// Returns `None` in Local mode (no networking available).
     /// Used by `@NODE_ID` targeting to create connections to arbitrary nodes.
-    pub fn endpoint(&self) -> Option<&Endpoint> {
+    #[allow(clippy::match_same_arms)] // Different enum variants - intentional for exhaustiveness
+    pub const fn endpoint(&self) -> Option<&Endpoint> {
         match &self.inner {
             ReplContextInner::Remote { endpoint, .. } => Some(endpoint),
             ReplContextInner::RemoteNode { endpoint, .. } => Some(endpoint),
@@ -424,7 +429,7 @@ impl ReplContext {
                         println!("(no files stored)");
                     } else {
                         for (hash, name) in items {
-                            println!("{}\t{}", hash, name);
+                            println!("{hash}\t{name}");
                         }
                     }
                 }
@@ -458,7 +463,7 @@ impl ReplContext {
     ///
     /// 1. Read data from source and add to local store
     /// 2. Send `MetaRequest::Put { filename, hash }` to register the name
-    /// 3. Push blob data via BLOBS_ALPN connection
+    /// 3. Push blob data via `BLOBS_ALPN` connection
     ///
     /// # Errors
     ///
@@ -469,18 +474,23 @@ impl ReplContext {
     pub async fn put(&mut self, path: &str, name: Option<&str>) -> Result<()> {
         let (data, filename) = if let Some(content) = path.strip_prefix("__STDIN_CONTENT__:") {
             let name = name.ok_or_else(|| anyhow!("content requires a name"))?;
-            (content.as_bytes().to_vec(), name.to_string())
+            (content.as_bytes().to_vec(), name.to_owned())
         } else if path == "-" {
             let name = name.ok_or_else(|| anyhow!("stdin requires a name: put - <NAME>"))?;
             let mut data = Vec::new();
             std::io::stdin().read_to_end(&mut data)?;
-            (data, name.to_string())
+            (data, name.to_owned())
         } else {
             let path_buf = PathBuf::from(path);
             let data = afs::read(&path_buf).await?;
-            let filename = name
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| path_buf.file_name().unwrap().to_string_lossy().to_string());
+            let filename = name.map_or_else(
+                || {
+                    path_buf
+                        .file_name()
+                        .map_or_else(|| "unnamed".to_owned(), |f| f.to_string_lossy().to_string())
+                },
+                ToOwned::to_owned,
+            );
             (data, filename)
         };
 
@@ -517,7 +527,7 @@ impl ReplContext {
                         .remote()
                         .execute_push(blobs_conn, push_request)
                         .await?;
-                    println!("stored: {} -> {}", filename, hash);
+                    println!("stored: {filename} -> {hash}");
                 }
                 MetaResponse::Put { success: false } => bail!("server rejected"),
                 _ => bail!("unexpected response"),
@@ -546,7 +556,7 @@ impl ReplContext {
     /// # Protocol Flow (connected mode)
     ///
     /// 1. Send `MetaRequest::Get { filename }` to resolve name → hash
-    /// 2. Fetch blob data via BLOBS_ALPN connection
+    /// 2. Fetch blob data via `BLOBS_ALPN` connection
     /// 3. Export to the destination
     ///
     /// # Errors
@@ -559,7 +569,7 @@ impl ReplContext {
             let meta_conn = self.meta_conn().await?;
             let (mut send, mut recv) = meta_conn.open_bi().await?;
             let req = postcard::to_allocvec(&MetaRequest::Get {
-                filename: name.to_string(),
+                filename: name.to_owned(),
             })?;
             send.write_all(&req).await?;
             send.finish()?;
@@ -573,7 +583,7 @@ impl ReplContext {
                     store_handle.remote().fetch(blobs_conn, hash).await?;
                     export_blob(&store_handle, hash, output).await?;
                 }
-                MetaResponse::Get { hash: None } => bail!("not found: {}", name),
+                MetaResponse::Get { hash: None } => bail!("not found: {name}"),
                 _ => bail!("unexpected response"),
             }
         } else {
@@ -582,7 +592,7 @@ impl ReplContext {
                 .tags()
                 .get(name)
                 .await?
-                .ok_or_else(|| anyhow!("not found: {}", name))?;
+                .ok_or_else(|| anyhow!("not found: {name}"))?;
             export_blob(&store_handle, tag.hash, output).await?;
         }
         Ok(())
@@ -599,7 +609,7 @@ impl ReplContext {
     ///
     /// Returns an error if the hash is invalid or the blob cannot be found.
     pub async fn gethash(&mut self, hash_str: &str, output: &str) -> Result<()> {
-        let hash: Hash = hash_str.parse().map_err(|_| anyhow!("invalid hash"))?;
+        let hash: Hash = hash_str.parse().map_err(|e| anyhow!("invalid hash: {e}"))?;
 
         if self.is_connected() {
             let blobs_conn = self.blobs_conn().await?.clone();
@@ -626,7 +636,7 @@ impl ReplContext {
             let meta_conn = self.meta_conn().await?;
             let (mut send, mut recv) = meta_conn.open_bi().await?;
             let req = postcard::to_allocvec(&MetaRequest::Delete {
-                filename: name.to_string(),
+                filename: name.to_owned(),
             })?;
             send.write_all(&req).await?;
             send.finish()?;
@@ -634,14 +644,14 @@ impl ReplContext {
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
-                MetaResponse::Delete { success: true } => println!("deleted: {}", name),
-                MetaResponse::Delete { success: false } => bail!("not found: {}", name),
+                MetaResponse::Delete { success: true } => println!("deleted: {name}"),
+                MetaResponse::Delete { success: false } => bail!("not found: {name}"),
                 _ => bail!("unexpected response"),
             }
         } else {
             let store_handle = self.store_handle();
             store_handle.tags().delete(name).await?;
-            println!("deleted: {}", name);
+            println!("deleted: {name}");
         }
         Ok(())
     }
@@ -664,8 +674,8 @@ impl ReplContext {
             let meta_conn = self.meta_conn().await?;
             let (mut send, mut recv) = meta_conn.open_bi().await?;
             let req = postcard::to_allocvec(&MetaRequest::Rename {
-                from: from.to_string(),
-                to: to.to_string(),
+                from: from.to_owned(),
+                to: to.to_owned(),
             })?;
             send.write_all(&req).await?;
             send.finish()?;
@@ -673,8 +683,8 @@ impl ReplContext {
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
-                MetaResponse::Rename { success: true } => println!("renamed: {} -> {}", from, to),
-                MetaResponse::Rename { success: false } => bail!("not found: {}", from),
+                MetaResponse::Rename { success: true } => println!("renamed: {from} -> {to}"),
+                MetaResponse::Rename { success: false } => bail!("not found: {from}"),
                 _ => bail!("unexpected response"),
             }
         } else {
@@ -683,10 +693,10 @@ impl ReplContext {
                 .tags()
                 .get(from)
                 .await?
-                .ok_or_else(|| anyhow!("not found: {}", from))?;
+                .ok_or_else(|| anyhow!("not found: {from}"))?;
             store_handle.tags().set(to, tag.hash).await?;
             store_handle.tags().delete(from).await?;
-            println!("renamed: {} -> {}", from, to);
+            println!("renamed: {from} -> {to}");
         }
         Ok(())
     }
@@ -709,8 +719,8 @@ impl ReplContext {
             let meta_conn = self.meta_conn().await?;
             let (mut send, mut recv) = meta_conn.open_bi().await?;
             let req = postcard::to_allocvec(&MetaRequest::Copy {
-                from: from.to_string(),
-                to: to.to_string(),
+                from: from.to_owned(),
+                to: to.to_owned(),
             })?;
             send.write_all(&req).await?;
             send.finish()?;
@@ -718,8 +728,8 @@ impl ReplContext {
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
-                MetaResponse::Copy { success: true } => println!("copied: {} -> {}", from, to),
-                MetaResponse::Copy { success: false } => bail!("not found: {}", from),
+                MetaResponse::Copy { success: true } => println!("copied: {from} -> {to}"),
+                MetaResponse::Copy { success: false } => bail!("not found: {from}"),
                 _ => bail!("unexpected response"),
             }
         } else {
@@ -728,9 +738,9 @@ impl ReplContext {
                 .tags()
                 .get(from)
                 .await?
-                .ok_or_else(|| anyhow!("not found: {}", from))?;
+                .ok_or_else(|| anyhow!("not found: {from}"))?;
             store_handle.tags().set(to, tag.hash).await?;
-            println!("copied: {} -> {}", from, to);
+            println!("copied: {from} -> {to}");
         }
         Ok(())
     }
@@ -753,7 +763,7 @@ impl ReplContext {
             let meta_conn = self.meta_conn().await?;
             let (mut send, mut recv) = meta_conn.open_bi().await?;
             let req = postcard::to_allocvec(&MetaRequest::Find {
-                query: query.to_string(),
+                query: query.to_owned(),
                 prefer_name,
             })?;
             send.write_all(&req).await?;
@@ -835,7 +845,7 @@ impl ReplContext {
         }
     }
 
-    /// List files on a specific remote node using @NODE_ID syntax.
+    /// List files on a specific remote node using @`NODE_ID` syntax.
     ///
     /// This creates a one-off connection to the specified node and lists
     /// its stored blobs. Requires connected mode (serve must be running).
@@ -867,7 +877,7 @@ impl ReplContext {
                     println!("(no files stored on @{})", &node_str[..8]);
                 } else {
                     for (hash, name) in items {
-                        println!("{}\t{}", hash, name);
+                        println!("{hash}\t{name}");
                     }
                 }
             }
@@ -877,7 +887,7 @@ impl ReplContext {
         Ok(())
     }
 
-    /// Store a file on a specific remote node using @NODE_ID syntax.
+    /// Store a file on a specific remote node using @`NODE_ID` syntax.
     ///
     /// Uploads the file to the specified remote peer. The blob data is
     /// pushed after the metadata is registered on the remote.
@@ -891,7 +901,12 @@ impl ReplContext {
     /// # Errors
     ///
     /// Returns an error if not in connected mode or the operation fails.
-    pub async fn put_on_node(&mut self, node_str: &str, path: &str, name: Option<&str>) -> Result<()> {
+    pub async fn put_on_node(
+        &mut self,
+        node_str: &str,
+        path: &str,
+        name: Option<&str>,
+    ) -> Result<()> {
         let node_id: EndpointId = node_str.parse()?;
         let endpoint = self.endpoint().ok_or_else(|| {
             anyhow!("@NODE_ID requires a connected mode (use 'id repl' with a running serve)")
@@ -899,18 +914,23 @@ impl ReplContext {
 
         let (data, filename) = if let Some(content) = path.strip_prefix("__STDIN_CONTENT__:") {
             let name = name.ok_or_else(|| anyhow!("content requires a name"))?;
-            (content.as_bytes().to_vec(), name.to_string())
+            (content.as_bytes().to_vec(), name.to_owned())
         } else if path == "-" {
             let name = name.ok_or_else(|| anyhow!("stdin requires a name: put - <NAME>"))?;
             let mut data = Vec::new();
             std::io::stdin().read_to_end(&mut data)?;
-            (data, name.to_string())
+            (data, name.to_owned())
         } else {
             let path_buf = PathBuf::from(path);
             let data = afs::read(&path_buf).await?;
-            let filename = name
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| path_buf.file_name().unwrap().to_string_lossy().to_string());
+            let filename = name.map_or_else(
+                || {
+                    path_buf
+                        .file_name()
+                        .map_or_else(|| "unnamed".to_owned(), |f| f.to_string_lossy().to_string())
+                },
+                ToOwned::to_owned,
+            );
             (data, filename)
         };
 
@@ -955,7 +975,7 @@ impl ReplContext {
         Ok(())
     }
 
-    /// Retrieve a file from a specific remote node using @NODE_ID syntax.
+    /// Retrieve a file from a specific remote node using @`NODE_ID` syntax.
     ///
     /// Downloads a blob from the specified remote peer by name.
     ///
@@ -984,7 +1004,7 @@ impl ReplContext {
         let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Get {
-            filename: name.to_string(),
+            filename: name.to_owned(),
         })?;
         send.write_all(&req).await?;
         send.finish()?;
@@ -1005,7 +1025,7 @@ impl ReplContext {
         Ok(())
     }
 
-    /// Delete a file on a specific remote node using @NODE_ID syntax.
+    /// Delete a file on a specific remote node using @`NODE_ID` syntax.
     ///
     /// Removes a tag from the specified remote peer.
     ///
@@ -1027,7 +1047,7 @@ impl ReplContext {
         let conn = endpoint.connect(node_id, META_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Delete {
-            filename: name.to_string(),
+            filename: name.to_owned(),
         })?;
         send.write_all(&req).await?;
         send.finish()?;
@@ -1036,7 +1056,7 @@ impl ReplContext {
 
         match resp {
             MetaResponse::Delete { success: true } => {
-                println!("deleted: {} (@{})", name, &node_str[..8])
+                println!("deleted: {} (@{})", name, &node_str[..8]);
             }
             MetaResponse::Delete { success: false } => {
                 bail!("not found: {} (@{})", name, &node_str[..8])

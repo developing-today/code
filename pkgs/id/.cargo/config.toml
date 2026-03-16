@@ -1,0 +1,18 @@
+# Cargo configuration for the id project.
+#
+# Build settings and useful command aliases.
+# Lint configuration is in Cargo.toml [lints] section.
+
+[build]
+# Enable incremental compilation for faster rebuilds
+incremental = true
+
+[alias]
+# Run clippy with all targets and features
+lint = "clippy --all-targets --all-features"
+
+# Generate and open HTML coverage report
+coverage = "llvm-cov --html --open"
+
+# Quick test - just lib tests (no integration tests)
+test-lib = "test --lib"

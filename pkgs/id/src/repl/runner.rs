@@ -39,12 +39,10 @@ use anyhow::Result;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::io::Write;
 
-use crate::{
-    FindMatch, MatchKind, ReplContext,
-    SearchOptions, PeekOptions,
-    is_node_id, print_match_repl,
-};
 use super::{ReplInput, continue_heredoc, preprocess_repl_line};
+use crate::{
+    FindMatch, MatchKind, PeekOptions, ReplContext, SearchOptions, is_node_id, print_match_repl,
+};
 
 /// Run the interactive REPL.
 ///
@@ -115,10 +113,10 @@ pub async fn run_repl(target_node: Option<String>) -> Result<()> {
                         match status {
                             Ok(s) if !s.success() => {
                                 if let Some(code) = s.code() {
-                                    println!("exit: {}", code);
+                                    println!("exit: {code}");
                                 }
                             }
-                            Err(e) => println!("error: {}", e),
+                            Err(e) => println!("error: {e}"),
                             _ => {}
                         }
                     }
@@ -139,18 +137,18 @@ pub async fn run_repl(target_node: Option<String>) -> Result<()> {
                             Ok(Some(content)) => {
                                 // Replace - with content marker in original line
                                 original_line
-                                    .replace(" - ", &format!(" __STDIN_CONTENT__:{} ", content))
-                                    .replace(" -$", &format!(" __STDIN_CONTENT__:{}", content))
+                                    .replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
+                                    .replace(" -$", &format!(" __STDIN_CONTENT__:{content}"))
                             }
                             Ok(None) => continue, // Cancelled
                             Err(e) => {
-                                println!("error: {}", e);
+                                println!("error: {e}");
                                 continue;
                             }
                         }
                     }
                     Err(e) => {
-                        println!("error: {}", e);
+                        println!("error: {e}");
                         continue;
                     }
                 };
@@ -164,7 +162,7 @@ pub async fn run_repl(target_node: Option<String>) -> Result<()> {
                 }
 
                 if let Err(e) = result {
-                    println!("error: {}", e);
+                    println!("error: {e}");
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -174,13 +172,12 @@ pub async fn run_repl(target_node: Option<String>) -> Result<()> {
                     break;
                 }
                 println!("^C (press Ctrl+C again, Ctrl+D, or type 'quit' to exit)");
-                continue;
             }
             Err(ReadlineError::Eof) => {
                 break;
             }
             Err(e) => {
-                println!("readline error: {}", e);
+                println!("readline error: {e}");
                 break;
             }
         }
@@ -194,6 +191,7 @@ pub async fn run_repl(target_node: Option<String>) -> Result<()> {
 ///
 /// Commands return this enum to indicate whether the REPL should
 /// continue running or exit.
+#[derive(Debug)]
 pub enum ReplAction {
     /// Continue the REPL loop (default for most commands).
     Continue,
@@ -257,7 +255,7 @@ async fn execute_repl_command(
 
     match (target_node, cmd_parts.as_slice()) {
         // Commands with @NODE_ID target
-        (Some(node), ["list"]) | (Some(node), ["ls"]) => {
+        (Some(node), ["list" | "ls"]) => {
             ctx.list_on_node(node).await?;
             Ok(ReplAction::Continue)
         }
@@ -281,7 +279,7 @@ async fn execute_repl_command(
             ctx.get_on_node(node, name, Some("-")).await?;
             Ok(ReplAction::Continue)
         }
-        (Some(node), ["delete", name]) | (Some(node), ["rm", name]) => {
+        (Some(node), ["delete" | "rm", name]) => {
             ctx.delete_on_node(node, name).await?;
             Ok(ReplAction::Continue)
         }
@@ -291,20 +289,20 @@ async fn execute_repl_command(
         }
 
         // Regular commands (no @NODE_ID)
-        (None, ["quit"]) | (None, ["exit"]) | (None, ["q"]) => Ok(ReplAction::Quit),
-        (None, ["help"]) | (None, ["?"]) => {
+        (None, ["quit" | "exit" | "q"]) => Ok(ReplAction::Quit),
+        (None, ["help" | "?"]) => {
             print_help();
             Ok(ReplAction::Continue)
         }
-        (None, ["list"]) | (None, ["ls"]) => {
+        (None, ["list" | "ls"]) => {
             ctx.list().await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["put", path]) | (None, ["in", path]) => {
+        (None, ["put" | "in", path]) => {
             ctx.put(path, None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["put", path, name]) | (None, ["in", path, name]) => {
+        (None, ["put" | "in", path, name]) => {
             ctx.put(path, Some(name)).await?;
             Ok(ReplAction::Continue)
         }
@@ -316,7 +314,7 @@ async fn execute_repl_command(
             ctx.get(name, Some(output)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["cat", name]) | (None, ["output", name]) | (None, ["out", name]) => {
+        (None, ["cat" | "output" | "out", name]) => {
             ctx.get(name, Some("-")).await?;
             Ok(ReplAction::Continue)
         }
@@ -324,7 +322,7 @@ async fn execute_repl_command(
             ctx.gethash(hash, output).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["delete", name]) | (None, ["rm", name]) => {
+        (None, ["delete" | "rm", name]) => {
             ctx.delete(name).await?;
             Ok(ReplAction::Continue)
         }
@@ -332,7 +330,7 @@ async fn execute_repl_command(
             ctx.rename(from, to).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["copy", from, to]) | (None, ["cp", from, to]) => {
+        (None, ["copy" | "cp", from, to]) => {
             ctx.copy(from, to).await?;
             Ok(ReplAction::Continue)
         }
@@ -344,7 +342,7 @@ async fn execute_repl_command(
             handle_search_command(ctx, rest).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["show", rest @ ..]) | (None, ["view", rest @ ..]) => {
+        (None, ["show" | "view", rest @ ..]) => {
             handle_show_command(ctx, rest).await?;
             Ok(ReplAction::Continue)
         }
@@ -353,7 +351,7 @@ async fn execute_repl_command(
             Ok(ReplAction::Continue)
         }
         _ => {
-            println!("unknown command: {}", line);
+            println!("unknown command: {line}");
             println!("type 'help' for available commands");
             Ok(ReplAction::Continue)
         }
@@ -384,10 +382,10 @@ async fn handle_stdin_content(ctx: &mut ReplContext, line: &str) -> Result<ReplA
             let name = &after_trimmed[last_space + 1..];
 
             if before == "put" {
-                let content_marker = format!("__STDIN_CONTENT__:{}", content);
+                let content_marker = format!("__STDIN_CONTENT__:{content}");
                 ctx.put(&content_marker, Some(name)).await?;
             } else {
-                println!("unknown command with content: {}", before);
+                println!("unknown command with content: {before}");
             }
         } else {
             println!("error: content requires a name (e.g., put $(cmd) name.txt)");
@@ -416,14 +414,13 @@ async fn handle_stdin_content(ctx: &mut ReplContext, line: &str) -> Result<ReplA
 /// assert_eq!(parts, vec!["list"]);
 /// ```
 fn parse_target_node<'a>(parts: &[&'a str]) -> (Option<&'a str>, Vec<&'a str>) {
-    if parts.len() >= 2 {
-        if let Some(node_str) = parts[1].strip_prefix('@') {
-            if is_node_id(node_str) {
-                let mut new_parts = vec![parts[0]];
-                new_parts.extend(&parts[2..]);
-                return (Some(node_str), new_parts);
-            }
-        }
+    if parts.len() >= 2
+        && let Some(node_str) = parts[1].strip_prefix('@')
+        && is_node_id(node_str)
+    {
+        let mut new_parts = vec![parts[0]];
+        new_parts.extend(&parts[2..]);
+        return (Some(node_str), new_parts);
     }
     (None, parts.to_vec())
 }
@@ -461,6 +458,7 @@ fn print_help() {
     println!("  --file, >FILE          - Save to file");
     println!();
     println!("peek flags:");
+    println!("  --all                  - Peek all matches (excerpt of each)");
     println!("  --lines N, -n N        - Lines to show from head/tail (default 5)");
     println!("  --head-only            - Show only head lines");
     println!("  --tail-only            - Show only tail lines");
@@ -513,14 +511,14 @@ struct FindArgs<'a> {
     exclude: Vec<&'a str>,
 }
 
-impl<'a> FindArgs<'a> {
-    /// Convert to SearchOptions for filtering.
+impl FindArgs<'_> {
+    /// Convert to `SearchOptions` for filtering.
     fn to_search_options(&self) -> SearchOptions {
         SearchOptions::new(
             self.first,
             self.last,
             self.count,
-            self.exclude.iter().map(|s| s.to_string()).collect(),
+            self.exclude.iter().map(ToString::to_string).collect(),
         )
     }
 }
@@ -560,12 +558,17 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
         let arg = rest[i];
         if arg == "--name" {
             args.prefer_name = true;
-        } else if arg == "--all" || arg == "--out" || arg == "--export" || arg == "--save" || arg == "--full" {
+        } else if arg == "--all"
+            || arg == "--out"
+            || arg == "--export"
+            || arg == "--save"
+            || arg == "--full"
+        {
             args.all = true;
         } else if arg == "--file" {
             args.to_file = true;
-        } else if arg.starts_with('>') {
-            args.output_file = Some(&arg[1..]);
+        } else if let Some(path) = arg.strip_prefix('>') {
+            args.output_file = Some(path);
             args.to_file = true;
         } else if arg == "--dir" {
             if i + 1 < rest.len() {
@@ -644,7 +647,9 @@ async fn handle_find_command(
     let args = parse_find_args(rest, "union");
 
     if args.queries.is_empty() {
-        println!("usage: find <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]");
+        println!(
+            "usage: find <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
+        );
         return Ok(());
     }
 
@@ -683,7 +688,16 @@ async fn handle_find_command(
     }
 
     // Multiple matches - interactive selection
-    select_and_output_matches_filtered(ctx, rl, &filtered_matches, args.dir, args.output_file, args.to_file, args.format).await
+    select_and_output_matches_filtered(
+        ctx,
+        rl,
+        &filtered_matches,
+        args.dir,
+        args.output_file,
+        args.to_file,
+        args.format,
+    )
+    .await
 }
 
 /// Handle the `search` command in the REPL.
@@ -694,7 +708,9 @@ async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<(
     let args = parse_find_args(rest, "union");
 
     if args.queries.is_empty() {
-        println!("usage: search <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]");
+        println!(
+            "usage: search <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
+        );
         return Ok(());
     }
 
@@ -744,7 +760,9 @@ async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
     let args = parse_find_args(rest, "union");
 
     if args.queries.is_empty() {
-        println!("usage: show <query>... [--all] [--first [N]] [--last [N]] [--exclude PAT] [-o FILE]");
+        println!(
+            "usage: show <query>... [--all] [--first [N]] [--last [N]] [--exclude PAT] [-o FILE]"
+        );
         return Ok(());
     }
 
@@ -768,10 +786,10 @@ async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
         let mut seen = std::collections::HashSet::new();
         for (_, m) in &filtered_matches {
             let key = format!("{}:{}", m.hash, m.name);
-            if seen.insert(key) {
-                if let Err(e) = ctx.get(&m.name, Some(output)).await {
-                    println!("error: {}", e);
-                }
+            if seen.insert(key)
+                && let Err(e) = ctx.get(&m.name, Some(output)).await
+            {
+                println!("error: {e}");
             }
         }
     } else {
@@ -790,7 +808,9 @@ async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
     let (args, peek_opts) = parse_peek_args(rest);
 
     if args.queries.is_empty() {
-        println!("usage: peek <query>... [--lines N] [--head-only] [--tail-only] [--chars] [--words] [--quiet] [-o FILE]");
+        println!(
+            "usage: peek <query>... [--all] [--lines N] [--head-only] [--tail-only] [--chars] [--words] [--quiet] [-o FILE]"
+        );
         return Ok(());
     }
 
@@ -806,17 +826,15 @@ async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
         return Ok(());
     }
 
-    // Determine which matches to peek
+    // Determine which matches to peek (deduplicated)
+    let mut seen = std::collections::HashSet::new();
     let matches_to_peek: Vec<&(String, FindMatch)> = if args.all {
-        // Deduplicate
-        let mut seen = std::collections::HashSet::new();
         filtered_matches
             .iter()
             .filter(|(_, m)| seen.insert(format!("{}:{}", m.hash, m.name)))
             .collect()
     } else {
         // Just first unique match
-        let mut seen = std::collections::HashSet::new();
         filtered_matches
             .iter()
             .filter(|(_, m)| seen.insert(format!("{}:{}", m.hash, m.name)))
@@ -825,7 +843,7 @@ async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
     };
 
     // Output destination
-    let mut out: Box<dyn std::io::Write> = if let Some(path) = args.output_file {
+    let mut out: Box<dyn Write> = if let Some(path) = args.output_file {
         Box::new(std::fs::File::create(path)?)
     } else {
         Box::new(std::io::stdout())
@@ -840,7 +858,14 @@ async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
         let content = fetch_content_for_peek(ctx, m).await?;
 
         // Print the peek
-        print_peek(&mut out, &m.name, &m.hash.to_string(), &content, &peek_opts, matches_to_peek.len())?;
+        print_peek(
+            &mut out,
+            &m.name,
+            &m.hash.to_string(),
+            &content,
+            &peek_opts,
+            matches_to_peek.len(),
+        )?;
     }
 
     Ok(())
@@ -861,18 +886,18 @@ async fn collect_matches(
         match ctx.find(query, prefer_name).await {
             Ok(matches) => {
                 for m in matches {
-                    all_matches.push((query.to_string(), m));
+                    all_matches.push((String::from(*query), m));
                 }
             }
             Err(e) => {
-                println!("error searching for '{}': {}", query, e);
+                println!("error searching for '{query}': {e}");
             }
         }
     }
     all_matches
 }
 
-/// Apply SearchOptions to filter and limit matches.
+/// Apply `SearchOptions` to filter and limit matches.
 fn apply_search_options(
     matches: &[(String, FindMatch)],
     opts: &SearchOptions,
@@ -908,7 +933,7 @@ async fn output_all_matches_filtered(
 ) -> Result<()> {
     if let Some(dir_path) = dir {
         if let Err(e) = std::fs::create_dir_all(dir_path) {
-            println!("error creating directory: {}", e);
+            println!("error creating directory: {e}");
             return Ok(());
         }
         let mut seen = std::collections::HashSet::new();
@@ -917,7 +942,7 @@ async fn output_all_matches_filtered(
             if seen.insert(key) {
                 let output_path = format!("{}/{}", dir_path, m.name);
                 if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
-                    println!("error: {}", e);
+                    println!("error: {e}");
                 } else {
                     print_match_repl(query, m, format);
                 }
@@ -928,10 +953,10 @@ async fn output_all_matches_filtered(
         let mut seen = std::collections::HashSet::new();
         for (_, m) in filtered_matches {
             let key = format!("{}:{}", m.hash, m.name);
-            if seen.insert(key) {
-                if let Err(e) = ctx.get(&m.name, Some("-")).await {
-                    println!("error: {}", e);
-                }
+            if seen.insert(key)
+                && let Err(e) = ctx.get(&m.name, Some("-")).await
+            {
+                println!("error: {e}");
             }
         }
     }
@@ -939,6 +964,7 @@ async fn output_all_matches_filtered(
 }
 
 /// Interactive selection and output of filtered matches.
+#[allow(clippy::if_same_then_else)] // Both branches return Ok(()), but have different side effects
 async fn select_and_output_matches_filtered(
     ctx: &mut ReplContext,
     rl: &mut DefaultEditor,
@@ -958,73 +984,92 @@ async fn select_and_output_matches_filtered(
         };
         let match_type = if m.is_hash_match { "hash" } else { "name" };
         match format {
-            "tag" => println!("[{}]\t{}\t{}\t{}\t({} {})", i + 1, query, m.hash, m.name, kind_str, match_type),
-            "group" => println!("[{}]\t{}\t{}\t({} {})", i + 1, m.hash, m.name, kind_str, match_type),
-            _ => println!("[{}]\t{}\t{}\t({} {}) [{}]", i + 1, m.hash, m.name, kind_str, match_type, query),
+            "tag" => println!(
+                "[{}]\t{}\t{}\t{}\t({} {})",
+                i + 1,
+                query,
+                m.hash,
+                m.name,
+                kind_str,
+                match_type
+            ),
+            "group" => println!(
+                "[{}]\t{}\t{}\t({} {})",
+                i + 1,
+                m.hash,
+                m.name,
+                kind_str,
+                match_type
+            ),
+            _ => println!(
+                "[{}]\t{}\t{}\t({} {}) [{}]",
+                i + 1,
+                m.hash,
+                m.name,
+                kind_str,
+                match_type,
+                query
+            ),
         }
     }
     println!("select numbers (e.g., '1 3 5' or '1,2,3') or enter to cancel:");
 
-    match rl.readline("? ") {
-        Ok(sel) => {
-            let sel = sel.trim();
-            if sel.is_empty() {
-                println!("cancelled");
-                return Ok(());
-            }
-
-            // Parse selection
-            let selections: Vec<usize> = sel
-                .split(|c| c == ',' || c == ' ')
-                .filter(|s| !s.is_empty())
-                .filter_map(|s| s.trim().parse::<usize>().ok())
-                .filter(|&n| n >= 1 && n <= filtered_matches.len())
-                .collect();
-
-            if selections.is_empty() {
-                println!("invalid selection");
-                return Ok(());
-            }
-
-            // Output based on mode
-            if let Some(dir_path) = dir {
-                if let Err(e) = std::fs::create_dir_all(dir_path) {
-                    println!("error creating directory: {}", e);
-                    return Ok(());
-                }
-                for n in &selections {
-                    let (_, m) = &filtered_matches[n - 1];
-                    let output_path = format!("{}/{}", dir_path, m.name);
-                    if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
-                        println!("error: {}", e);
-                    }
-                    if let Err(e) = ctx.get(&m.name, Some("-")).await {
-                        println!("error: {}", e);
-                    }
-                }
-            } else if to_file {
-                for n in &selections {
-                    let (_, m) = &filtered_matches[n - 1];
-                    let output = output_file.unwrap_or(&m.name);
-                    if let Err(e) = ctx.get(&m.name, Some(output)).await {
-                        println!("error: {}", e);
-                    }
-                }
-            } else {
-                for n in &selections {
-                    let (_, m) = &filtered_matches[n - 1];
-                    if let Err(e) = ctx.get(&m.name, Some("-")).await {
-                        println!("error: {}", e);
-                    }
-                }
-            }
-            Ok(())
-        }
-        _ => {
+    if let Ok(sel) = rl.readline("? ") {
+        let sel = sel.trim();
+        if sel.is_empty() {
             println!("cancelled");
-            Ok(())
+            return Ok(());
         }
+
+        // Parse selection
+        let selections: Vec<usize> = sel
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .filter(|&n| n >= 1 && n <= filtered_matches.len())
+            .collect();
+
+        if selections.is_empty() {
+            println!("invalid selection");
+            return Ok(());
+        }
+
+        // Output based on mode
+        if let Some(dir_path) = dir {
+            if let Err(e) = std::fs::create_dir_all(dir_path) {
+                println!("error creating directory: {e}");
+                return Ok(());
+            }
+            for n in &selections {
+                let (_, m) = &filtered_matches[n - 1];
+                let output_path = format!("{}/{}", dir_path, m.name);
+                if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
+                    println!("error: {e}");
+                }
+                if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                    println!("error: {e}");
+                }
+            }
+        } else if to_file {
+            for n in &selections {
+                let (_, m) = &filtered_matches[n - 1];
+                let output = output_file.unwrap_or(&m.name);
+                if let Err(e) = ctx.get(&m.name, Some(output)).await {
+                    println!("error: {e}");
+                }
+            }
+        } else {
+            for n in &selections {
+                let (_, m) = &filtered_matches[n - 1];
+                if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                    println!("error: {e}");
+                }
+            }
+        }
+    } else {
+        println!("cancelled");
     }
+    Ok(())
 }
 
 /// Parse peek command arguments.
@@ -1084,11 +1129,11 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
                 i += 1;
             }
         } else if arg == "--lines" || arg == "-n" {
-            if i + 1 < rest.len() {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    peek_opts.lines = n;
-                    i += 1;
-                }
+            if i + 1 < rest.len()
+                && let Ok(n) = rest[i + 1].parse::<usize>()
+            {
+                peek_opts.lines = n;
+                i += 1;
             }
         } else if arg == "--head-only" || arg == "--head" {
             peek_opts.head_only = true;
@@ -1111,7 +1156,6 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
 
 /// Fetch content for peek preview.
 async fn fetch_content_for_peek(ctx: &mut ReplContext, m: &FindMatch) -> Result<String> {
-    use std::io::Read;
     use tempfile::NamedTempFile;
 
     // Create a temp file to fetch into
@@ -1121,16 +1165,14 @@ async fn fetch_content_for_peek(ctx: &mut ReplContext, m: &FindMatch) -> Result<
     ctx.get(&m.name, Some(&temp_path)).await?;
 
     // Read content
-    let mut content = String::new();
-    let mut file = std::fs::File::open(&temp_path)?;
-    file.read_to_string(&mut content)?;
+    let content = std::fs::read_to_string(&temp_path)?;
 
     Ok(content)
 }
 
 /// Print peek preview.
 fn print_peek(
-    out: &mut dyn std::io::Write,
+    out: &mut dyn Write,
     name: &str,
     hash: &str,
     content: &str,
@@ -1148,7 +1190,7 @@ fn print_peek(
 
 /// Print peek by lines.
 fn print_peek_lines(
-    out: &mut dyn std::io::Write,
+    out: &mut dyn Write,
     name: &str,
     hash: &str,
     content: &str,
@@ -1162,20 +1204,23 @@ fn print_peek_lines(
 
     // Print header if not quiet
     if !opts.quiet {
-        writeln!(out, "─── {} ───", name)?;
-        writeln!(out, "hash: {}  lines: {}  files: {}", hash_short, total_lines, total_files)?;
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {hash_short}  lines: {total_lines}  files: {total_files}"
+        )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
     // If small enough, show all
     if total_lines <= n * 2 {
         for line in &lines {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
     } else if opts.head_only {
         // Show only head
         for line in lines.iter().take(n) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
         if total_lines > n && !opts.quiet {
             writeln!(out, "... ({} more lines)", total_lines - n)?;
@@ -1186,18 +1231,22 @@ fn print_peek_lines(
             writeln!(out, "... ({} lines above)", total_lines - n)?;
         }
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
     } else {
         // Show head + tail
         for line in lines.iter().take(n) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
         writeln!(out, "...")?;
-        writeln!(out, "... ({} lines omitted)", total_lines.saturating_sub(n * 2))?;
+        writeln!(
+            out,
+            "... ({} lines omitted)",
+            total_lines.saturating_sub(n * 2)
+        )?;
         writeln!(out, "...")?;
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
-            writeln!(out, "{}", line)?;
+            writeln!(out, "{line}")?;
         }
     }
 
@@ -1206,7 +1255,7 @@ fn print_peek_lines(
 
 /// Print peek by characters.
 fn print_peek_chars(
-    out: &mut dyn std::io::Write,
+    out: &mut dyn Write,
     name: &str,
     hash: &str,
     content: &str,
@@ -1218,16 +1267,19 @@ fn print_peek_chars(
     let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     if !opts.quiet {
-        writeln!(out, "─── {} ───", name)?;
-        writeln!(out, "hash: {}  chars: {}  files: {}", hash_short, total_chars, total_files)?;
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {hash_short}  chars: {total_chars}  files: {total_files}"
+        )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
     if total_chars <= n * 2 {
-        write!(out, "{}", content)?;
+        write!(out, "{content}")?;
     } else if opts.head_only {
         let head: String = content.chars().take(n).collect();
-        write!(out, "{}", head)?;
+        write!(out, "{head}")?;
         if !opts.quiet {
             writeln!(out, "\n... ({} more chars)", total_chars - n)?;
         }
@@ -1235,14 +1287,24 @@ fn print_peek_chars(
         if !opts.quiet {
             writeln!(out, "... ({} chars above)", total_chars - n)?;
         }
-        let tail: String = content.chars().skip(total_chars.saturating_sub(n)).collect();
-        write!(out, "{}", tail)?;
+        let tail: String = content
+            .chars()
+            .skip(total_chars.saturating_sub(n))
+            .collect();
+        write!(out, "{tail}")?;
     } else {
         let head: String = content.chars().take(n).collect();
-        let tail: String = content.chars().skip(total_chars.saturating_sub(n)).collect();
-        write!(out, "{}", head)?;
-        writeln!(out, "\n... ({} chars omitted)", total_chars.saturating_sub(n * 2))?;
-        write!(out, "{}", tail)?;
+        let tail: String = content
+            .chars()
+            .skip(total_chars.saturating_sub(n))
+            .collect();
+        write!(out, "{head}")?;
+        writeln!(
+            out,
+            "\n... ({} chars omitted)",
+            total_chars.saturating_sub(n * 2)
+        )?;
+        write!(out, "{tail}")?;
     }
     writeln!(out)?;
 
@@ -1251,7 +1313,7 @@ fn print_peek_chars(
 
 /// Print peek by words.
 fn print_peek_words(
-    out: &mut dyn std::io::Write,
+    out: &mut dyn Write,
     name: &str,
     hash: &str,
     content: &str,
@@ -1264,8 +1326,11 @@ fn print_peek_words(
     let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     if !opts.quiet {
-        writeln!(out, "─── {} ───", name)?;
-        writeln!(out, "hash: {}  words: {}  files: {}", hash_short, total_words, total_files)?;
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {hash_short}  words: {total_words}  files: {total_files}"
+        )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
@@ -1281,13 +1346,25 @@ fn print_peek_words(
         if !opts.quiet {
             writeln!(out, "... ({} words above)", total_words - n)?;
         }
-        let tail: Vec<&str> = words.iter().skip(total_words.saturating_sub(n)).copied().collect();
+        let tail: Vec<&str> = words
+            .iter()
+            .skip(total_words.saturating_sub(n))
+            .copied()
+            .collect();
         writeln!(out, "{}", tail.join(" "))?;
     } else {
         let head: Vec<&str> = words.iter().take(n).copied().collect();
-        let tail: Vec<&str> = words.iter().skip(total_words.saturating_sub(n)).copied().collect();
+        let tail: Vec<&str> = words
+            .iter()
+            .skip(total_words.saturating_sub(n))
+            .copied()
+            .collect();
         writeln!(out, "{}", head.join(" "))?;
-        writeln!(out, "... ({} words omitted)", total_words.saturating_sub(n * 2))?;
+        writeln!(
+            out,
+            "... ({} words omitted)",
+            total_words.saturating_sub(n * 2)
+        )?;
         writeln!(out, "{}", tail.join(" "))?;
     }
 
@@ -1295,12 +1372,16 @@ fn print_peek_words(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_target_node_with_node() {
-        let parts = vec!["list", "@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"];
+        let parts = vec![
+            "list",
+            "@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ];
         let (node, cmd_parts) = parse_target_node(&parts);
         assert!(node.is_some());
         assert_eq!(cmd_parts, vec!["list"]);
@@ -1489,7 +1570,7 @@ mod tests {
         let args = parse_find_args(&rest, "union");
         let opts = args.to_search_options();
         assert_eq!(opts.first, Some(5));
-        assert_eq!(opts.exclude, vec![".bak".to_string()]);
+        assert_eq!(opts.exclude, vec![".bak".to_owned()]);
         assert!(!opts.count);
     }
 }

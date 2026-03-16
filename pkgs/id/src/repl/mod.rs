@@ -58,5 +58,5 @@
 pub mod input;
 pub mod runner;
 
-pub use input::{continue_heredoc, preprocess_repl_line, shell_capture, ReplInput};
+pub use input::{ReplInput, continue_heredoc, preprocess_repl_line, shell_capture};
 pub use runner::run_repl;

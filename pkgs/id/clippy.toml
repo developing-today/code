@@ -1,0 +1,35 @@
+# Clippy configuration for the id project.
+#
+# This configuration enables comprehensive linting with strict rules
+# to catch potential bugs, improve code quality, and enforce best practices.
+#
+# Lint levels:
+# - deny: Treated as errors, must be fixed
+# - warn: Warnings, should be addressed
+# - allow: Explicitly permitted patterns
+#
+# See: https://rust-lang.github.io/rust-clippy/master/index.html
+
+# Use the Rust edition from Cargo.toml
+msrv = "1.89.0"
+
+# Cognitive complexity threshold for functions
+cognitive-complexity-threshold = 25
+
+# Maximum number of lines in a function
+too-many-lines-threshold = 100
+
+# Maximum number of arguments in a function
+too-many-arguments-threshold = 7
+
+# Type complexity threshold
+type-complexity-threshold = 250
+
+# Allowed names that would otherwise trigger warnings
+allowed-idents-below-min-chars = ["i", "j", "k", "n", "m", "x", "y", "s", "f", "id", "to", "ok"]
+
+# Allow certain lint patterns in specific contexts
+avoid-breaking-exported-api = true
+
+# Documentation requirements
+missing-docs-in-crate-items = true

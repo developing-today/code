@@ -261,7 +261,7 @@ pub fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
 
 /// Determines the match quality of a needle in a haystack.
 ///
-/// This is a local helper duplicating the logic from the protocol's match_kind
+/// This is a local helper duplicating the logic from the protocol's `match_kind`
 /// for use in local command implementations without requiring protocol access.
 ///
 /// # Arguments
@@ -308,6 +308,7 @@ pub fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use iroh_blobs::Hash;
@@ -397,9 +398,9 @@ mod tests {
     fn test_print_match_cli_formats() {
         let hash_bytes = [0u8; 32];
         let m = TaggedMatch {
-            query: "test".to_string(),
+            query: "test".to_owned(),
             hash: Hash::from_bytes(hash_bytes),
-            name: "file.txt".to_string(),
+            name: "file.txt".to_owned(),
             kind: MatchKind::Exact,
             is_hash_match: false,
         };
@@ -415,23 +416,23 @@ mod tests {
         let hash_bytes = [0u8; 32];
         let matches = vec![
             TaggedMatch {
-                query: "q1".to_string(),
+                query: "q1".to_owned(),
                 hash: Hash::from_bytes(hash_bytes),
-                name: "file1.txt".to_string(),
+                name: "file1.txt".to_owned(),
                 kind: MatchKind::Exact,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q1".to_string(),
+                query: "q1".to_owned(),
                 hash: Hash::from_bytes([1u8; 32]),
-                name: "file2.txt".to_string(),
+                name: "file2.txt".to_owned(),
                 kind: MatchKind::Prefix,
                 is_hash_match: false,
             },
             TaggedMatch {
-                query: "q2".to_string(),
+                query: "q2".to_owned(),
                 hash: Hash::from_bytes([2u8; 32]),
-                name: "file3.txt".to_string(),
+                name: "file3.txt".to_owned(),
                 kind: MatchKind::Contains,
                 is_hash_match: true,
             },
@@ -448,7 +449,7 @@ mod tests {
         let hash_bytes = [0u8; 32];
         let m = FindMatch {
             hash: Hash::from_bytes(hash_bytes),
-            name: "file.txt".to_string(),
+            name: "file.txt".to_owned(),
             kind: MatchKind::Exact,
             is_hash_match: false,
         };
