@@ -7,7 +7,7 @@
 #   nix-shell                      # Enter development environment
 #   nix-shell --pure               # Enter isolated environment
 #   nix-shell --run "just test"    # Run tests
-#   nix-shell --run "just check-all" # Run all checks
+#   nix-shell --run "just check"    # Run all checks
 #
 # For flake users: `nix develop` provides an equivalent environment.
 

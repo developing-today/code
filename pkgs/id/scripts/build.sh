@@ -105,9 +105,11 @@ if [[ "$needs_backend" == "true" ]]; then
   echo "[rust] Building $VARIANT $PROFILE variant..."
 
   if [[ "$VARIANT" == "web" ]]; then
-    cargo build $CARGO_FLAGS --features web
-  else
+    # Web is default, no extra flags needed
     cargo build $CARGO_FLAGS
+  else
+    # Lib variant disables default web feature
+    cargo build $CARGO_FLAGS --no-default-features
   fi
 
   mkdir -p target

@@ -9,6 +9,10 @@
  * - [3, version] - Ack: server confirms steps applied
  * - [4, clientID, head, anchor, name?] - Cursor position
  * - [5, error] - Error message
+ * 
+ * Additionally, the server sends empty text messages periodically
+ * (instead of WebSocket Ping frames) to trigger cursor decoration refresh.
+ * Client responds with empty text as pong.
  */
 
 import { Packr, Unpackr } from 'msgpackr';
@@ -193,18 +197,19 @@ export function initCollab(
       }
 
       case MSG.CURSOR: {
-        // [4, clientID, head, anchor, name?]
+        // [4, clientID, head, anchor, name?, idleSecs?]
         if (!editorInstance) break;
         
         const clientID = msg[1] as number;
         const head = msg[2] as number;
         const anchor = msg[3] as number;
         const name = msg[4] as string | null;
+        const idleSecs = msg[5] as number | null | undefined;
         
         if (clientID === myClientID) break; // Ignore our own cursor
         
-        console.log('[collab] Cursor update from', clientID, 'at', head);
-        updateCursor(editorInstance.view, clientID, head, anchor, name ?? undefined);
+        console.log('[collab] Cursor update from', clientID, 'at', head, idleSecs ? `(idle ${idleSecs}s)` : '');
+        updateCursor(editorInstance.view, clientID, head, anchor, name ?? undefined, idleSecs ?? undefined);
         break;
       }
 
@@ -255,8 +260,16 @@ export function initCollab(
     socket.onmessage = (event): void => {
       if (event.data instanceof ArrayBuffer) {
         handleMessage(event.data);
-      } else {
-        console.error('[collab] Expected binary message, got:', typeof event.data);
+      } else if (typeof event.data === 'string') {
+        // Empty text message from server = ping that triggers JS
+        // (WebSocket Ping frames don't trigger onmessage)
+        // Refresh cursor decorations and respond with pong
+        if (event.data === '' && editorInstance) {
+          // Dispatch empty transaction to refresh cursor decorations
+          editorInstance.view.dispatch(editorInstance.view.state.tr);
+          // Send pong (empty text)
+          socket.send('');
+        }
       }
     };
   };

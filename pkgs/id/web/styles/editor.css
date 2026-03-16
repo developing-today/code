@@ -234,10 +234,13 @@
   backdrop-filter: blur(2px);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   transition: opacity 0.3s ease;
+  /* Enable hover interaction even though parent has pointer-events: none */
+  pointer-events: auto;
+  cursor: default;
 }
 
 .collab-cursor-label:hover {
-  opacity: 0.5;
+  opacity: 1 !important;
 }
 
 /* Selection highlight from other users */

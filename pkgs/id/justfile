@@ -52,26 +52,27 @@ lint-fix:
 
 # Run all Rust tests
 test:
-    cargo test
+    cargo test --all-features
 
 # Run unit tests only (fast)
 test-unit:
-    cargo test --lib
+    cargo test --all-features --lib
 
 # Run integration tests only
 test-int:
-    cargo test --test cli_integration
+    cargo test --all-features --test cli_integration
 
 # Run tests with output shown
 test-verbose:
-    cargo test -- --nocapture
+    cargo test --all-features -- --nocapture
 
 # Run a specific test by name
 test-one NAME:
-    cargo test {{NAME}}
+    cargo test --all-features {{NAME}}
 
-# [bun] Run web tests (TypeScript type checking)
+# [bun] Run web tests (Rust with web features + TypeScript type checking)
 test-web:
+    cargo test --all-features
     cd web && bun run typecheck
 
 # Build Rust documentation
@@ -117,23 +118,23 @@ release-lib:
 # Force rebuild with web UI (skip freshness checks) [bun]
 build-force:
     cd web && bun install && bun run build
-    cargo build --features web
+    cargo build
     @mkdir -p target && echo "web" > target/.build-variant
 
 # Force rebuild library only
 build-lib-force:
-    cargo build
+    cargo build --no-default-features
     @mkdir -p target && echo "lib" > target/.build-variant
 
 # Force rebuild release with web UI [bun]
 release-force:
     cd web && bun install && bun run build
-    cargo build --release --features web
+    cargo build --release
     @mkdir -p target && echo "web" > target/.build-variant-release
 
 # Force rebuild release library only
 release-lib-force:
-    cargo build --release
+    cargo build --release --no-default-features
     @mkdir -p target && echo "lib" > target/.build-variant-release
 
 # Clean all build artifacts

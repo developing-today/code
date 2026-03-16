@@ -13,9 +13,7 @@
 
 {
   # Build inputs (libraries)
-  buildInputs = with pkgs; [
-    openssl
-  ];
+  buildInputs = with pkgs; [ openssl ];
 
   # Native build inputs (tools, compilers)
   # Note: rustToolchain should be added separately as it's defined differently
@@ -68,8 +66,9 @@
     echo ""
     echo "  Quick commands:"
     echo "    just                 - List all available tasks"
-    echo "    just check-all       - Run fmt, lint, test, doc"
-    echo "    just build           - Build entire system (lib + web)"
+    echo "    just check           - Run fix + ci (primary check)"
+    echo "    just ci              - Run read-only checks (CI-safe)"
+    echo "    just build           - Build with web UI [bun]"
     echo "    just build-lib       - Build Rust only (no web/bun)"
     echo "    just serve           - Build and serve with web UI"
     echo "    just serve-lib       - Serve without web UI"
@@ -87,8 +86,11 @@
     echo ""
     echo "  Nix commands:"
     echo "    nix run .#<cmd>      - Run any just command via Nix"
+    echo "    nix run .#just <cmd> - Run just (fallback for missing apps)"
+    echo "    nix fmt              - Run formatter (just fix)"
     echo "    nix flake check      - Run all Nix checks"
-    echo "    nix build .#id-web   - Build web-enabled package"
+    echo "    nix build            - Build web-enabled package (default)"
+    echo "    nix build .#id-lib   - Build library-only package"
     echo "════════════════════════════════════════════════════════════"
 
     export RUST_BACKTRACE=1

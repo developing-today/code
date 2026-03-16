@@ -12,7 +12,7 @@ Guidelines for AI coding agents working on the `id` peer-to-peer file sharing CL
 
 **When adding or modifying justfile commands, ALWAYS add a corresponding `nix run .#<command>` app in `flake.nix`.**
 
-This enables running commands without entering a dev shell (`nix run .#check-all`), CI/CD pipelines with pure Nix evaluation, and reproducible execution across systems.
+This enables running commands without entering a dev shell (`nix run .#ci`), CI/CD pipelines with pure Nix evaluation, and reproducible execution across systems.
 
 When adding a new just command:
 1. Add the recipe to `justfile`
@@ -32,13 +32,49 @@ nix-shell     # Alternative: legacy
 
 Includes: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-outdated, cargo-machete, just. Ignore Nix warnings about disk space or symlinks.
 
+## Build Variants
+
+The project has two build variants:
+
+- **lib** - Rust CLI only (no web dependencies)
+- **web** - Rust CLI with embedded web UI (requires Bun)
+
+**Naming convention:** Simple command names default to web variant; use `-lib` suffix for library-only.
+
+```bash
+just build          # Build with web UI [requires bun]
+just build-lib      # Build library only (no web)
+just serve          # Serve with web UI [requires bun]
+just serve-lib      # Serve without web UI
+just release        # Release build with web UI [requires bun]
+just release-lib    # Release build library only
+```
+
+**For non-just users (direct cargo/nix):**
+
+```bash
+# Library variant (no web) - works standalone
+cargo build --no-default-features     # Debug build
+cargo build --release --no-default-features  # Release build
+nix build .#id-lib                    # Nix package
+
+# Web variant - requires web assets built first
+cd web && bun install && bun run build && cd ..  # Build web assets
+cargo build                             # Debug build with embedded web UI
+cargo build --release                   # Release build with embedded web UI
+nix build                               # Nix package (handles assets automatically)
+```
+
+**Build variant tracking:** The build system tracks variants in `target/.build-variant` to detect when rebuild is needed due to variant change.
+
 ## Build, Test, and Lint Commands
 
 See [`justfile`](justfile) for all recipes (`just` with no args lists them).
 
 **Essential commands:**
 ```bash
-just check-all    # Primary quality check - RUN BEFORE COMPLETING WORK (fmt, lint, test, doc)
+just check        # Primary quality check - RUN BEFORE COMPLETING WORK (fix + ci)
+just ci           # CI-safe read-only checks (fmt-check, lint, test, test-web, doc)
 just fmt          # Format code
 just lint         # Run clippy
 just lint-fix     # Auto-fix clippy issues
@@ -93,7 +129,7 @@ tests/cli_integration.rs       # Integration tests
 1. Add docstrings (`///` for items, `//!` for modules)
 2. Add unit tests in `#[cfg(test)] mod tests`
 3. Add integration tests in `tests/cli_integration.rs` for CLI behavior
-4. Run `just check-all` before completing
+4. Run `just check` before completing
 
 When tests fail: ensure failure relates to your change, make tests *correct* not just passing, update tests if behavior changed intentionally.
 

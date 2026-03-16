@@ -84,6 +84,14 @@
         };
 
         # =======================================================================
+        # Formatter: nix fmt
+        # Runs 'just fix' to format Rust and web code
+        # =======================================================================
+        formatter = pkgs.writeShellScriptBin "formatter" ''
+          exec ${pkgs.just}/bin/just fix
+        '';
+
+        # =======================================================================
         # Checks: nix flake check
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
@@ -105,43 +113,9 @@
         # Packages: nix build
         # =======================================================================
         packages = {
-          # Default package (lib only, no web)
-          default = pkgs.rustPlatform.buildRustPackage {
-            pname = "id";
-            version = "0.1.0";
-            src = ./.;
-
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = {
-                "distributed-topic-tracker-0.2.5" = "sha256-9wMDB1PGHuzxWiZeRQpGs1m9mTTcjbB7y3kSJomNjeY=";
-              };
-            };
-
-            inherit buildInputs;
-            nativeBuildInputs = [
-              pkgs.pkg-config
-              rustToolchain
-            ];
-
-            OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
-            OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
-            OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
-
-            doCheck = true;
-
-            meta = with pkgs.lib; {
-              description = "A peer-to-peer file sharing CLI built with Iroh";
-              license = with licenses; [
-                mit
-                asl20
-              ];
-            };
-          };
-
-          # Web-enabled package
+          # Web-enabled package (primary product)
           id-web = pkgs.rustPlatform.buildRustPackage {
-            pname = "id-web";
+            pname = "id";
             version = "0.1.0";
             src = ./.;
 
@@ -171,8 +145,6 @@
               cd ..
             '';
 
-            buildFeatures = [ "web" ];
-
             doCheck = true;
 
             meta = with pkgs.lib; {
@@ -183,6 +155,46 @@
               ];
             };
           };
+
+          # Library-only package (no web UI, no bun required)
+          id-lib = pkgs.rustPlatform.buildRustPackage {
+            pname = "id-lib";
+            version = "0.1.0";
+            src = ./.;
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "distributed-topic-tracker-0.2.5" = "sha256-9wMDB1PGHuzxWiZeRQpGs1m9mTTcjbB7y3kSJomNjeY=";
+              };
+            };
+
+            # Disable default web feature for lib-only build
+            buildNoDefaultFeatures = true;
+
+            inherit buildInputs;
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              rustToolchain
+            ];
+
+            OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
+            OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
+            OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
+
+            doCheck = true;
+
+            meta = with pkgs.lib; {
+              description = "A peer-to-peer file sharing CLI built with Iroh";
+              license = with licenses; [
+                mit
+                asl20
+              ];
+            };
+          };
+
+          # Default = web
+          default = self.packages.${system}.id-web;
         };
 
         # =======================================================================
@@ -193,8 +205,15 @@
           # Default: run the web-enabled CLI
           default = {
             type = "app";
-            program = "${self.packages.${system}.id-web}/bin/id";
+            program = "${self.packages.${system}.default}/bin/id";
           };
+
+          # Run just with any arguments (fallback for commands not added as apps)
+          just = mkApp (
+            pkgs.writeShellScriptBin "just-runner" ''
+              exec ${pkgs.just}/bin/just "$@"
+            ''
+          );
 
           # ─────────────────────────────────────────────────────────────────────
           # Quality checks

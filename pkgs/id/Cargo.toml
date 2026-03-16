@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "network-programming"]
 # =============================================================================
 
 [features]
-default = []
+default = ["web"]
 web = [
     "dep:axum",
     "dep:tower",

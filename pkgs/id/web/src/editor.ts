@@ -5,7 +5,7 @@
 
 import { EditorState, type Transaction, type Plugin } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
-import { Schema, DOMParser } from 'prosemirror-model';
+import { Schema, DOMParser, type Node } from 'prosemirror-model';
 import { schema as basicSchema } from 'prosemirror-schema-basic';
 import { addListNodes } from 'prosemirror-schema-list';
 import { exampleSetup } from 'prosemirror-example-setup';
@@ -48,7 +48,7 @@ export function initEditor(
   const clientID = Math.floor(Math.random() * 0xFFFFFFFF);
   
   // Parse initial content if provided
-  let doc = schema.topNodeType.createAndFill();
+  let doc: Node | undefined = schema.topNodeType.createAndFill() ?? undefined;
   if (initialContent) {
     const element = document.createElement('div');
     element.innerHTML = initialContent;

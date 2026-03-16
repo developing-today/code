@@ -81,8 +81,11 @@ function createCursorDecorations(state: EditorState, cursors: Map<string | numbe
     
     // Hide completely after HIDE_MS
     if (ageMs >= HIDE_MS) return;
-
     const opacity = getOpacityForAge(ageMs);
+    
+    // Skip if opacity is 0 (hidden)
+    if (opacity <= 0) return;
+
     const color = cursor.color || getColorForClient(clientID);
     const name = cursor.name || `User ${String(clientID).slice(-4)}`;
     
@@ -170,13 +173,17 @@ export function createCursorPlugin(
         if (cursorUpdate) {
           const newCursors = new Map(pluginState.cursors);
           if (cursorUpdate.type === 'update') {
+            // If idleSecs is provided (initial load), backdate lastUpdate
+            const lastUpdate = cursorUpdate.idleSecs 
+              ? Date.now() - (cursorUpdate.idleSecs * 1000)
+              : Date.now();
             newCursors.set(cursorUpdate.clientID, {
               clientID: cursorUpdate.clientID,
               head: cursorUpdate.head,
               anchor: cursorUpdate.anchor,
               name: cursorUpdate.name,
               color: cursorUpdate.color,
-              lastUpdate: Date.now(),
+              lastUpdate,
             });
           } else if (cursorUpdate.type === 'remove') {
             newCursors.delete(cursorUpdate.clientID);
@@ -287,13 +294,15 @@ export function createCursorPlugin(
 
 /**
  * Update a remote cursor in the editor.
+ * @param idleSecs - If provided, backdate lastUpdate by this many seconds (for initial load)
  */
 export function updateCursor(
   view: EditorView,
   clientID: string | number,
   head: number,
   anchor: number,
-  name?: string
+  name?: string,
+  idleSecs?: number
 ): void {
   const tr = view.state.tr.setMeta(cursorPluginKey, {
     type: 'update',
@@ -301,6 +310,7 @@ export function updateCursor(
     head,
     anchor,
     name,
+    idleSecs,
   });
   view.dispatch(tr);
 }

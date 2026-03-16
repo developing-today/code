@@ -81,6 +81,11 @@ mod timeouts {
 
     /// Clean up document 1 hour after last client disconnects.
     pub const DOCUMENT_CLEANUP: Duration = Duration::from_secs(60 * 60);
+
+    /// Send empty text message (instead of Ping control frame) every N pings.
+    /// This triggers client's onmessage handler so it can refresh cursor decorations.
+    /// (Ping control frames are handled silently by the browser and don't trigger JS.)
+    pub const EMPTY_TEXT_MESSAGE_EVERY_N_PINGS: u32 = 2;
 }
 
 /// Stored cursor position for a client.
@@ -89,6 +94,8 @@ pub struct CursorPosition {
     pub head: u32,
     pub anchor: u32,
     pub name: Option<String>,
+    /// When the cursor was last updated (for age calculation on initial load).
+    pub last_update: Instant,
     /// When the client disconnected (None if still connected).
     pub disconnected_at: Option<Instant>,
 }
@@ -274,12 +281,15 @@ pub enum CollabMessage {
     },
     /// `[3, version]` - Acknowledgment that steps were applied.
     Ack { version: u64 },
-    /// `[4, clientID, head, anchor, name?]` - Cursor/selection position.
+    /// `[4, clientID, head, anchor, name?, idleSecs?]` - Cursor/selection position.
+    /// `idleSecs` is only set when sending existing cursors to a new client.
     Cursor {
         client_id: u64,
         head: u32,
         anchor: u32,
         name: Option<String>,
+        /// Seconds the cursor has been idle (only set on initial load).
+        idle_secs: Option<u64>,
     },
     /// `[5, error]` - Error message.
     Error { error: String },
@@ -306,7 +316,8 @@ impl CollabMessage {
                 head,
                 anchor,
                 name,
-            } => to_vec(&(msg::CURSOR, client_id, head, anchor, name)).unwrap_or_default(),
+                idle_secs,
+            } => to_vec(&(msg::CURSOR, client_id, head, anchor, name, idle_secs)).unwrap_or_default(),
             Self::Error { error } => to_vec(&(msg::ERROR, error)).unwrap_or_default(),
         }
     }
@@ -344,6 +355,18 @@ impl CollabMessage {
             return Some(Self::Ack { version });
         }
 
+        // Try cursor with idle_secs first, then without
+        if let Ok((msg::CURSOR, client_id, head, anchor, name, idle_secs)) =
+            from_slice::<(u8, u64, u32, u32, Option<String>, Option<u64>)>(data)
+        {
+            return Some(Self::Cursor {
+                client_id,
+                head,
+                anchor,
+                name,
+                idle_secs,
+            });
+        }
         if let Ok((msg::CURSOR, client_id, head, anchor, name)) =
             from_slice::<(u8, u64, u32, u32, Option<String>)>(data)
         {
@@ -352,6 +375,7 @@ impl CollabMessage {
                 head,
                 anchor,
                 name,
+                idle_secs: None,
             });
         }
 
@@ -413,17 +437,21 @@ async fn handle_collab_socket(
     // Send existing cursor positions to new client (only those still connected)
     {
         let cursors = doc.cursors.read().await;
+        let now = Instant::now();
         for (client_id_str, cursor) in cursors.iter() {
             // Skip cursors from disconnected clients
             if cursor.disconnected_at.is_some() {
                 continue;
             }
             let client_id = client_id_str.parse::<u64>().unwrap_or(0);
+            // Calculate how long this cursor has been idle (in seconds)
+            let idle_secs = now.duration_since(cursor.last_update).as_secs();
             let cursor_msg = CollabMessage::Cursor {
                 client_id,
                 head: cursor.head,
                 anchor: cursor.anchor,
                 name: cursor.name.clone(),
+                idle_secs: Some(idle_secs),
             };
             if sender
                 .send(Message::Binary(cursor_msg.encode()))
@@ -464,11 +492,15 @@ async fn handle_collab_socket(
     });
 
     // Spawn task to monitor connection health via ping/pong
-    // Only sends ping if no activity for PING_INTERVAL
+    // Every N pings, sends empty Text instead of Ping frame to trigger client's onmessage
+    // (allows client to refresh cursor decorations even in inactive tabs)
     // Closes connection if no activity for PONG_TIMEOUT (page closed/offline)
     let ping_task = tokio::spawn(async move {
+        let mut ping_cycle: u32 = 0;
+
         loop {
             tokio::time::sleep(timeouts::PING_INTERVAL).await;
+            ping_cycle = ping_cycle.wrapping_add(1);
 
             let last = *last_activity_for_ping.read().await;
             let elapsed = last.elapsed();
@@ -486,7 +518,18 @@ async fn handle_collab_socket(
             // Only ping if idle for the ping interval (no recent messages)
             if elapsed >= timeouts::PING_INTERVAL {
                 let mut sender = sender_for_ping.lock().await;
-                if sender.send(Message::Ping(vec![])).await.is_err() {
+
+                // Every N pings, send empty Text instead of Ping frame
+                // This triggers client's onmessage so it can refresh cursor decorations
+                let use_text = ping_cycle % timeouts::EMPTY_TEXT_MESSAGE_EVERY_N_PINGS == 0;
+
+                let result = if use_text {
+                    sender.send(Message::Text(String::new())).await
+                } else {
+                    sender.send(Message::Ping(vec![])).await
+                };
+
+                if result.is_err() {
                     tracing::debug!("[collab] Failed to send ping, client disconnected");
                     break;
                 }
@@ -576,6 +619,7 @@ async fn handle_collab_socket(
                         head,
                         anchor,
                         name,
+                        .. // Ignore idle_secs from incoming messages
                     } => {
                         let client_id_str = client_id.to_string();
 
@@ -590,17 +634,19 @@ async fn handle_collab_socket(
                                     head,
                                     anchor,
                                     name: name.clone(),
+                                    last_update: Instant::now(),
                                     disconnected_at: None,
                                 },
                             );
                         }
 
-                        // Broadcast cursor position to all clients
+                        // Broadcast cursor position to all clients (no idle_secs for live updates)
                         let cursor_msg = CollabMessage::Cursor {
                             client_id,
                             head,
                             anchor,
                             name,
+                            idle_secs: None,
                         };
                         let _ = doc.broadcast.send(cursor_msg);
                     }
@@ -778,6 +824,7 @@ mod tests {
             head: 100,
             anchor: 50,
             name: Some("Alice".to_owned()),
+            idle_secs: None,
         };
         let encoded = msg.encode();
         let decoded = CollabMessage::decode(&encoded).unwrap();
@@ -788,11 +835,13 @@ mod tests {
                 head,
                 anchor,
                 name,
+                idle_secs,
             } => {
                 assert_eq!(client_id, 54321);
                 assert_eq!(head, 100);
                 assert_eq!(anchor, 50);
                 assert_eq!(name, Some("Alice".to_owned()));
+                assert!(idle_secs.is_none());
             }
             _ => panic!("Expected Cursor message"),
         }
@@ -806,6 +855,7 @@ mod tests {
             head: 10,
             anchor: 10,
             name: None,
+            idle_secs: None,
         };
         let encoded = msg.encode();
         let decoded = CollabMessage::decode(&encoded).unwrap();
@@ -816,11 +866,44 @@ mod tests {
                 head,
                 anchor,
                 name,
+                idle_secs,
             } => {
                 assert_eq!(client_id, 12345);
                 assert_eq!(head, 10);
                 assert_eq!(anchor, 10);
                 assert!(name.is_none());
+                assert!(idle_secs.is_none());
+            }
+            _ => panic!("Expected Cursor message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_cursor_with_idle_secs() {
+        let msg = CollabMessage::Cursor {
+            client_id: 11111,
+            head: 200,
+            anchor: 150,
+            name: Some("Bob".to_owned()),
+            idle_secs: Some(30), // 30 seconds idle
+        };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::Cursor {
+                client_id,
+                head,
+                anchor,
+                name,
+                idle_secs,
+            } => {
+                assert_eq!(client_id, 11111);
+                assert_eq!(head, 200);
+                assert_eq!(anchor, 150);
+                assert_eq!(name, Some("Bob".to_owned()));
+                assert_eq!(idle_secs, Some(30));
             }
             _ => panic!("Expected Cursor message"),
         }
