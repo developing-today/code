@@ -64,12 +64,62 @@ When the client receives an empty text message, it:
 ### Cursor Opacity
 
 Cursors fade based on inactivity to indicate staleness:
-- **0-30s**: Full opacity (1.0)
-- **30-60s**: Fades linearly to 0.3
-- **60s-5m**: Stays at 0.3 opacity  
+- **0-30s**: Full opacity (1.0), fast strobing (1s cycle)
+- **30-60s**: Fades linearly to 0.3, strobing slows to 3s cycle
+- **60s-5m**: Stays at 0.3 opacity, no strobing
 - **5m+**: Hidden completely
 
 The `idleSecs` field in Cursor messages is only sent when the server sends existing cursors to a newly connected client. The client backdates `lastUpdate` by `idleSecs * 1000ms` so the cursor displays at the correct opacity immediately.
+
+### Cursor Hover Behavior
+
+When a user hovers over a cursor (label or cursor line):
+- Cursor immediately becomes fully visible (100% opacity)
+- Strobing animation stops
+- The entire cursor group at that position is brought to the top (highest z-index)
+- After 1 second of not hovering, cursor returns to its previous opacity/strobing state
+
+Hovering on the cursor line (not just the label) also triggers full visibility. This allows bringing a covered cursor group to the top by hovering on its visible line.
+
+### Tooltip Stacking
+
+When multiple cursors are at the same document position:
+- Labels stack horizontally (not vertically)
+- Order is by activity: most recently active on left, longest inactive on right
+- Labels grow to the right, anchored at the cursor position
+- Hovering any label in the group highlights all cursors in that group
+
+### Cursor Line Color Cycling
+
+When multiple cursors share the same position, the cursor line (vertical bar) cycles through all cursor colors:
+- Colors cycle left-to-right through the tooltip order (most recent to oldest)
+- Cycle interval: 1.5 seconds per color
+- On new cursor activity: immediately shows that cursor's color, then resumes cycling
+- On cursor removal: if currently showing that color, jumps to next; otherwise continues unchanged
+- Cycling stops when disconnected (keeps current color)
+
+### User Cursor Interaction
+
+If the user's cursor (caret) is at the same position as remote cursors:
+- Those remote cursors become fully visible (100% opacity, no strobing)
+- This helps users see who else is editing at the same location
+
+This allows users to inspect faded cursors without permanently changing their state.
+
+### Connection State and Cursors
+
+Cursor behavior changes based on WebSocket connection state:
+
+**When disconnected:**
+- All cursors keep their current opacity
+- All strobing animations stop (cursors appear static)
+- Reconnect cleanup is cancelled if in progress
+
+**When reconnecting (on Init message):**
+1. Client starts a 1-second cleanup timer
+2. As cursor updates arrive from server, those cursors are marked "fresh"
+3. After 1 second (if still connected), cursors not marked fresh are removed
+4. If disconnected during this window, cleanup is cancelled and cursors remain
 
 ### Timeouts
 

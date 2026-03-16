@@ -16,6 +16,13 @@
  * Additionally, the server sends empty text messages periodically
  * (instead of WebSocket Ping frames) to trigger cursor decoration refresh.
  * Client responds with empty text as pong.
+ * 
+ * Connection State Management:
+ * - On WebSocket open: calls setConnectionState('connected')
+ * - On WebSocket close: calls setConnectionState('disconnected')
+ * - On Init message: calls onInitReceived() to start stale cursor cleanup
+ * 
+ * See cursors.ts for cursor state management and reconnect behavior.
  */
 
 import { Packr, Unpackr } from 'msgpackr';

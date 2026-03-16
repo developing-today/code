@@ -186,19 +186,19 @@ web-dev:
 
 # Run CLI with arguments (lib variant)
 run *ARGS:
-    cargo run -- {{ARGS}}
+    RUST_LOG="${RUST_LOG:-debug}" cargo run -- {{ARGS}}
 
 # Serve with web UI (default) [bun]
 serve PORT="3000": build
-    cargo run --features web -- serve --web {{PORT}}
+    RUST_LOG="${RUST_LOG:-debug}" cargo run --features web -- serve --web {{PORT}}
 
 # Serve without web UI
 serve-lib *ARGS:
-    cargo run -- serve {{ARGS}}
+    RUST_LOG="${RUST_LOG:-debug}" cargo run -- serve {{ARGS}}
 
 # Run the REPL
 repl:
-    cargo run -- repl
+    RUST_LOG="${RUST_LOG:-debug}" cargo run -- repl
 
 # =============================================================================
 # Watch Commands
