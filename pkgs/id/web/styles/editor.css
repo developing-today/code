@@ -17,6 +17,14 @@
   background-color: var(--bg-secondary);
 }
 
+/* The #editor div needs to fill its parent and pass height to children */
+.editor-wrapper > #editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0; /* Allow flex child to shrink */
+}
+
 .editor-toolbar {
   display: flex;
   align-items: center;

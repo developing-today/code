@@ -325,3 +325,20 @@ export function removeCursor(view: EditorView, clientID: string | number): void 
   });
   view.dispatch(tr);
 }
+
+// Connection state for cursor display
+let connectionState: 'connected' | 'disconnected' = 'disconnected';
+
+/**
+ * Set the connection state (affects cursor display).
+ */
+export function setConnectionState(state: 'connected' | 'disconnected'): void {
+  connectionState = state;
+}
+
+/**
+ * Called when Init message is received - can be used to start cleanup timers.
+ */
+export function onInitReceived(): void {
+  // Currently a no-op, but available for future use
+}

@@ -58,7 +58,7 @@
   gtk = {
     enable = true;
     gtk3.extraConfig.gtk-decoration-layout = "menu:";
-    cursorTheme.name = "Qogir";
+    # cursorTheme.name = "Qogir";
     iconTheme.name = "Qogir";
     theme.name = "Jasper-Grey-Dark-Compact";
   };
@@ -512,13 +512,13 @@
     #   "$HOME/bin"
     #   "$HOME/.local/bin"
     # ];
-    pointerCursor = {
-      package = pkgs.vanilla-dmz;
-      name = "Vanilla-DMZ";
-      gtk.enable = true;
-      size = 24;
-      x11.enable = true;
-    };
+    # pointerCursor = {
+    #   package = pkgs.vanilla-dmz;
+    #   name = "Vanilla-DMZ";
+    #   gtk.enable = true;
+    #   size = 24;
+    #   x11.enable = true;
+    # };
     file.".config/nixpkgs/config.nix".text = ''
       {
         allowUnfree = true;
@@ -707,7 +707,7 @@
         #zoom-us
         acpi
         acpitool
-        adwaita-icon-theme # default gnome cursors
+        # adwaita-icon-theme # default gnome cursors
         #alacritty
         #alacritty # gpu accelerated terminal
         alsa-lib
@@ -1048,7 +1048,7 @@
         udev
         universal-ctags # for nvim nvchad custom
         unzip
-        vanilla-dmz
+        # vanilla-dmz
         variety
         vault
         vaultwarden
@@ -1078,7 +1078,7 @@
         xfce.thunar
         xh
         xorg.libX11
-        xorg.libXcursor
+        # xorg.libXcursor
         xournalpp # xournal
         #xsv # https://github.com/NixOS/nixpkgs/issues/141368
         yad

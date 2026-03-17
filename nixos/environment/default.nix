@@ -200,7 +200,7 @@ in
         mimir
         wavemon
         nordzy-icon-theme
-        nordzy-cursor-theme
+        # nordzy-cursor-theme
         # fdd # TODO
         # wpe # TODO
         # we # TODO
@@ -239,7 +239,7 @@ in
 
         # fancycat
         xorg.libX11
-        xorg.libXcursor
+        # xorg.libXcursor
         xorg.libXi
         xorg.libXinerama
         xorg.libXrandr
@@ -305,7 +305,7 @@ in
         hledger-utils
         # zen-browser
         hledger-web
-        hyprcursor
+        # hyprcursor
         hyprdim
         hyprkeys
         hyprland-monitor-attached
@@ -421,7 +421,7 @@ in
         waybar
         wayland
         # xdg-desktop-portal-hyprland
-        xorg.xcursorthemes
+        # xorg.xcursorthemes
         xwayland
         yazi
         yq
