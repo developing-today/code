@@ -1,6 +1,6 @@
 ---
 description: Update AGENTS.md - review and refresh project instructions
-agent: coder
+agent: build
 ---
 
 # Update AGENTS.md
