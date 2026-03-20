@@ -55,7 +55,7 @@ nix develop   # Preferred: flake-based
 nix-shell     # Alternative: legacy
 ```
 
-Includes: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-outdated, cargo-machete, just. Ignore Nix warnings about disk space or symlinks.
+Includes: Rust (see `rust-toolchain.toml`), clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-outdated, cargo-machete, just. Ignore Nix warnings about disk space or symlinks.
 
 ## Build Variants
 
@@ -106,27 +106,11 @@ just run        # Run CLI with arguments
 just test-unit  # Unit tests only (fast)
 ```
 
-See [`justfile`](justfile) for all recipes. Ask user before updating dependencies.
+Ask user before updating dependencies.
 
 ## CLI Commands
 
-```
-id serve      Start server accepting put/get requests from peers
-id repl       Interactive REPL for commands (alias: shell)
-id put        Store files in local/remote blob store
-id put-hash   Store content by hash only
-id get        Retrieve files by name or hash
-id get-hash   Retrieve by hash (shortcut)
-id cat        Output files to stdout
-id find       Find files and output content
-id search     Search files and list matches
-id show       Find and output file content (alias: view)
-id peek       Preview files with head/tail display
-id list       List all stored files (tags)
-id id         Print local node's public ID
-```
-
-Run `id --help` or `id <command> --help` for full options.
+Run `id --help` for command list, `id <command> --help` for options. See `src/cli.rs` for full definitions.
 
 ## Project Structure
 
@@ -180,4 +164,4 @@ For significant changes, **document first, then implement**. See [`docs/DOCUMENT
 
 **Remote operations:** Check if first argument is a 64-char hex node ID to determine local vs remote mode.
 
-**Type definitions:** Define options structs for commands with multiple parameters (see `SearchOptions` in `commands/find.rs`).
+**Type definitions:** Define options structs for commands with multiple parameters.
