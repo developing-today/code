@@ -21,6 +21,31 @@ When adding a new just command:
 
 **Package management:** Add new dev dependencies to `nix-common.nix` only (never directly to shell.nix or flake.nix). See `nix-common.nix` for the shared package architecture.
 
+## Critical: Preserving Unstaged Work
+
+**NEVER use `git restore`, `git checkout -- <file>`, or any command that overwrites pre-existing unstaged changes.**
+
+Only discard unstaged work if:
+1. The user explicitly instructs you to discard it, OR
+2. You ask and receive specific approval to do so
+
+This applies to all files with uncommitted modifications—assume the user has intentional work in progress.
+
+## OpenCode Plan Mode
+
+When creating plans for this project:
+
+1. **Write plans to `.opencode/plans/`** in the repo root (create directory if needed)
+2. **After finalizing a plan**, add a first task to create a comprehensive docs file following the datetime documentation protocol in "Documenting Design & Architecture Decisions":
+   - Create folder: `docs/<UTC_RFC_DATETIME>_<kind>_<name>/`
+   - Create document explaining features, design, intent, and architecture in technical detail
+   - Limit raw code listings; prefer explanations and file references
+   - Near the top, add a relative markdown link to the source plan file (e.g., `See [original plan](../../.opencode/plans/<plan-file>.md)`)
+   - Add a "References" section at the bottom that also links to the plan file
+3. Plans in `.opencode/plans/` are working drafts; docs files are the comprehensive historical record
+
+**Compaction priority:** During context compaction, active `docs/` and `.opencode/plans/` files should be kept near the top of context. If these files seem no longer relevant, ask the user before removing them from context or starting work without them.
+
 ## Environment Setup
 
 Use the Nix dev shell for correct tool versions:
@@ -73,29 +98,32 @@ See [`justfile`](justfile) for all recipes (`just` with no args lists them).
 
 **Essential commands:**
 ```bash
-just check        # Primary quality check - RUN BEFORE COMPLETING WORK (fix + ci)
-just ci           # CI-safe read-only checks (fmt-check, lint, test, test-web, doc)
-just fmt          # Format code
-just lint         # Run clippy
-just lint-fix     # Auto-fix clippy issues
-just test         # All tests
-just test-lib     # Unit tests only (fast)
-just test-one X   # Run single test by name
+just check      # Primary quality check - RUN BEFORE COMPLETING WORK
+just ci         # CI-safe read-only checks (no modifications)
+just fix        # Auto-fix formatting and lint issues
+just serve      # Serve with web UI [requires bun]
+just run        # Run CLI with arguments
+just test-unit  # Unit tests only (fast)
 ```
 
-**Dependency management:** `just outdated`, `just audit`, `just machete`, `just update`. Ask user before updating dependencies, especially major versions.
+See [`justfile`](justfile) for all recipes. Ask user before updating dependencies.
 
 ## CLI Commands
 
 ```
-id serve     Start server accepting put/get requests from peers
-id repl      Interactive REPL for commands
-id put       Store files in local/remote blob store
-id get       Retrieve files by name or hash
-id cat       Output files to stdout
-id find      Find files by name/hash query
-id list      List all stored files (tags)
-id id        Print local node's public ID
+id serve      Start server accepting put/get requests from peers
+id repl       Interactive REPL for commands (alias: shell)
+id put        Store files in local/remote blob store
+id put-hash   Store content by hash only
+id get        Retrieve files by name or hash
+id get-hash   Retrieve by hash (shortcut)
+id cat        Output files to stdout
+id find       Find files and output content
+id search     Search files and list matches
+id show       Find and output file content (alias: view)
+id peek       Preview files with head/tail display
+id list       List all stored files (tags)
+id id         Print local node's public ID
 ```
 
 Run `id --help` or `id <command> --help` for full options.
@@ -108,7 +136,8 @@ src/
 ├── protocol.rs, store.rs      # Network protocol, storage layer
 ├── helpers.rs                 # Parsing/formatting utilities
 ├── commands/                  # Command implementations (put, get, find, list, serve, etc.)
-└── repl/                      # REPL runner and input preprocessing
+├── repl/                      # REPL runner and input preprocessing
+└── web/                       # Web UI: routes, assets, templates, collab (feature-gated)
 tests/cli_integration.rs       # Integration tests
 ```
 
@@ -120,7 +149,7 @@ tests/cli_integration.rs       # Integration tests
 
 **Error handling:** Use `anyhow::Result<T>`, `bail!()` for early returns, `?` with `.context()` for propagation.
 
-**Lint rules (see `Cargo.toml`):** Denied: `unwrap_used`, `expect_used`, `panic`, `todo`, `dbg_macro`. Test modules: add `#[allow(clippy::unwrap_used, clippy::expect_used)]`.
+**Lint rules (see `Cargo.toml`):** Denied: `unwrap_used`, `expect_used`, `panic`, `unimplemented`, `todo`, `dbg_macro`. Test modules: add `#[allow(clippy::unwrap_used, clippy::expect_used)]`.
 
 **Tests:** Place in `#[cfg(test)] mod tests` at file bottom.
 
@@ -135,90 +164,15 @@ When tests fail: ensure failure relates to your change, make tests *correct* not
 
 ## Documenting Design & Architecture Decisions
 
-When making a significant design or architecture decision—whether modifying an existing component or introducing a new feature that changes how things operate—**document first, then implement**.
+For significant changes, **document first, then implement**. See [`docs/DOCUMENTATION_PROTOCOL.md`](docs/DOCUMENTATION_PROTOCOL.md) for the full protocol.
 
-### When to Document
+**When to create docs** (load the protocol if any apply):
+- New features affecting system behavior or adding new commands
+- Architectural changes or major refactors
+- Design decisions with non-obvious trade-offs
+- Interface or API changes to existing components
 
-- New features or components that affect system behavior
-- Architectural changes or refactors
-- Design decisions with trade-offs worth recording
-- Changes to existing components that alter their interface or semantics
-
-### Initial Documentation
-
-1. **Create a docs folder** for the change:
-   ```
-   docs/<UTC_RFC_DATETIME>_<kind>_<name>/
-   ```
-   - `<UTC_RFC_DATETIME>`: e.g., `2026-03-16T14-30-00Z`
-   - `<kind>`: `feature`, `architecture`, `refactor`, `design`, `component`, etc.
-   - `<name>`: descriptive snake_case name
-
-2. **Create the initial document** with the same naming:
-   ```
-   docs/2026-03-16T14-30-00Z_feature_blob_streaming/2026-03-16T14-30-00Z_feature_blob_streaming.md
-   ```
-
-3. **Document the request/intent and initial plan** before implementing:
-   - What was requested or identified as needed
-   - Initial design approach
-   - Key decisions and their rationale
-
-4. **Append updates during rollout** as new sections:
-   - Modifications discovered during implementation
-   - Clarifications and edge cases
-   - Deviations from the original plan
-
-### Post-Rollout Updates
-
-After initial rollout is complete:
-
-- **If significantly different or many updates**: Create a new file in the same folder with a new datetime and clarifying suffix:
-  ```
-  2026-03-18T09-00-00Z_feature_blob_streaming_final_design.md
-  ```
-
-- **Returning in a new session with major changes planned**: Create a new datetime document with a suffix explaining the revision type:
-  ```
-  2026-03-25T11-00-00Z_feature_blob_streaming_v2_proposal.md
-  ```
-
-- **Short updates**: Files can be brief notes, updates to specific parts, or complete re-summarization of current/proposed design
-
-### File Immutability
-
-- **Do not modify files** after initial creation (except appending during active rollout)
-- **After some time**, stop appending—create new files instead
-- **Preserve historical record**: Files represent the state of understanding at that point in time
-
-### Handling Superseded Features
-
-If a new feature replaces or subsumes an old documented feature:
-
-1. Create a new folder based on the new feature's creation date
-2. Reference the old feature's folder in the new documentation
-3. Add a note file in the old feature's folder backlinking to the new one
-   - This may not be a 1:1 replacement—could indicate a shift in direction
-   - Old feature may be deprioritized over time, or not
-
-### Noticed Discrepancies
-
-If the latest summary + subsequent notes are out of date with the actual implementation:
-
-- Create a TODO to provide an update datetime file
-- Cover at minimum: noticed differences, understanding of intent/implications, timeline if known
-
-### Example Structure
-
-```
-docs/
-├── 2026-03-10T08-00-00Z_feature_meta_protocol/
-│   ├── 2026-03-10T08-00-00Z_feature_meta_protocol.md          # Initial design
-│   ├── 2026-03-12T14-00-00Z_feature_meta_protocol_revised.md  # Post-rollout summary
-│   └── 2026-03-20T10-00-00Z_note_superseded_by_v2.md          # Backlink to replacement
-├── 2026-03-20T09-00-00Z_feature_meta_protocol_v2/
-│   └── 2026-03-20T09-00-00Z_feature_meta_protocol_v2.md       # References old folder
-```
+**Quick reference:** Create `docs/<UTC_RFC_DATETIME>_<kind>_<name>/` folder with matching `.md` file before implementing.
 
 ## Key Patterns
 
@@ -226,4 +180,4 @@ docs/
 
 **Remote operations:** Check if first argument is a 64-char hex node ID to determine local vs remote mode.
 
-**Type definitions:** Define options structs for commands with multiple parameters (see `SearchOptions` in `helpers.rs`).
+**Type definitions:** Define options structs for commands with multiple parameters (see `SearchOptions` in `commands/find.rs`).

@@ -29,7 +29,7 @@ import { Packr, Unpackr } from 'msgpackr';
 import { receiveTransaction, getVersion } from 'prosemirror-collab';
 import { Step } from 'prosemirror-transform';
 import { schema, getSendableSteps, initEditor, type EditorInstance } from './editor';
-import { updateCursor, setConnectionState, onInitReceived } from './cursors';
+import { updateCursor, setConnectionState, onInitReceived, markCursorFresh } from './cursors';
 
 // Message type tags
 const MSG = {
@@ -221,6 +221,9 @@ export function initCollab(
         const idleSecs = msg[5] as number | null | undefined;
         
         if (clientID === myClientID) break; // Ignore our own cursor
+        
+        // Mark cursor as fresh for reconnect cleanup
+        markCursorFresh(clientID);
         
         console.log('[collab] Cursor update from', clientID, 'at', head, idleSecs ? `(idle ${idleSecs}s)` : '');
         updateCursor(editorInstance.view, clientID, head, anchor, name ?? undefined, idleSecs ?? undefined);

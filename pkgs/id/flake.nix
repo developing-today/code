@@ -96,7 +96,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): fmt-check lint test test-web doc
+          # CI-safe checks (read-only): fmt-check lint test test-web-unit test-web-typecheck doc
           default = mkCheck "ci" "ci";
 
           # Individual checks
@@ -106,6 +106,8 @@
           test-unit = mkCheck "test-unit" "test-unit";
           test-int = mkCheck "test-int" "test-int";
           test-web = mkCheck "test-web" "test-web";
+          test-web-unit = mkCheck "test-web-unit" "test-web-unit";
+          test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
         };
 
@@ -235,6 +237,8 @@
           test-unit = mkApp (mkScript "test-unit" "just test-unit");
           test-int = mkApp (mkScript "test-int" "just test-int");
           test-web = mkApp (mkScript "test-web" "just test-web");
+          test-web-unit = mkApp (mkScript "test-web-unit" "just test-web-unit");
+          test-web-typecheck = mkApp (mkScript "test-web-typecheck" "just test-web-typecheck");
           test-verbose = mkApp (mkScript "test-verbose" "just test-verbose");
 
           # ─────────────────────────────────────────────────────────────────────

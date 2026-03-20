@@ -32,10 +32,16 @@ fn run_cmd(args: &[&str], work_dir: &std::path::Path) -> std::process::Output {
         .expect("Failed to execute command")
 }
 
-/// Run a CLI command and return stdout as string
-#[allow(dead_code)]
-fn run_cmd_stdout(args: &[&str], work_dir: &std::path::Path) -> String {
+/// Run a CLI command, check it succeeded, and return only stdout
+/// Use this for tests that check actual command output (logs go to stderr)
+fn run_cmd_success_stdout(args: &[&str], work_dir: &std::path::Path) -> String {
     let output = run_cmd(args, work_dir);
+    if !output.status.success() {
+        eprintln!("Command failed: {args:?}");
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        panic!("Command failed with exit code: {:?}", output.status.code());
+    }
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
@@ -168,8 +174,8 @@ mod put_get_tests {
         // Put the file
         run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
 
-        // Get to stdout using cat
-        let output = run_cmd_success(&["cat", "test.stdout.txt"], tmp.path());
+        // Get to stdout using cat (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["cat", "test.stdout.txt"], tmp.path());
         assert_eq!(output.trim(), content);
     }
 
@@ -403,8 +409,8 @@ mod show_view_tests {
         fs::write(&test_file, content).unwrap();
         run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
 
-        // Show should output content to stdout
-        let output = run_cmd_success(&["show", "test.show-basic.txt"], tmp.path());
+        // Show should output content to stdout (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["show", "test.show-basic.txt"], tmp.path());
         assert_eq!(output.trim(), content);
     }
 
@@ -417,8 +423,8 @@ mod show_view_tests {
         fs::write(&test_file, content).unwrap();
         run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
 
-        // view alias should work the same as show
-        let output = run_cmd_success(&["view", "test.view-alias.txt"], tmp.path());
+        // view alias should work the same as show (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["view", "test.view-alias.txt"], tmp.path());
         assert_eq!(output.trim(), content);
     }
 
@@ -431,8 +437,8 @@ mod show_view_tests {
         fs::write(&test_file, content).unwrap();
         run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
 
-        // Search by partial name
-        let output = run_cmd_success(&["show", "show-partial"], tmp.path());
+        // Search by partial name (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["show", "show-partial"], tmp.path());
         assert_eq!(output.trim(), content);
     }
 
@@ -637,8 +643,8 @@ mod filter_flag_tests {
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
-        // Search with --first flag - use --count to verify
-        let output = run_cmd_success(
+        // Search with --first flag - use --count to verify (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(
             &["search", "--first", "2", "--count", "filter-first"],
             tmp.path(),
         );
@@ -656,8 +662,8 @@ mod filter_flag_tests {
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
-        // Search with --last flag - use --count to verify
-        let output = run_cmd_success(
+        // Search with --last flag - use --count to verify (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(
             &["search", "--last", "2", "--count", "filter-last"],
             tmp.path(),
         );
@@ -675,8 +681,8 @@ mod filter_flag_tests {
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
-        // Search with --count flag
-        let output = run_cmd_success(&["search", "--count", "filter-count"], tmp.path());
+        // Search with --count flag (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["search", "--count", "filter-count"], tmp.path());
         // Should output just the count
         assert!(output.trim() == "3");
     }
@@ -750,8 +756,8 @@ mod filter_flag_tests {
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
-        // Find with --count flag
-        let output = run_cmd_success(&["find", "--count", "find-count"], tmp.path());
+        // Find with --count flag (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["find", "--count", "find-count"], tmp.path());
         // Should output just the count
         assert!(output.trim() == "4");
     }
@@ -767,8 +773,8 @@ mod filter_flag_tests {
             run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
         }
 
-        // Find with --first (no number) at the end, should default to 1
-        let output = run_cmd_success(
+        // Find with --first (no number) at the end, should default to 1 (use stdout-only)
+        let output = run_cmd_success_stdout(
             &["find", "--count", "find-first-def", "--first"],
             tmp.path(),
         );
@@ -791,8 +797,8 @@ mod filter_flag_tests {
         fs::write(&exclude, "Exclude").unwrap();
         run_cmd_success(&["put", exclude.to_str().unwrap()], tmp.path());
 
-        // Search with combined filters - use count to verify
-        let output = run_cmd_success(
+        // Search with combined filters - use count to verify (use stdout-only)
+        let output = run_cmd_success_stdout(
             &[
                 "search",
                 "--exclude",

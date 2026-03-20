@@ -217,38 +217,116 @@
   margin-left: -1px;
   margin-right: -1px;
   pointer-events: none;
-  /* Animation for cursor appearance */
-  animation: cursor-blink 1s ease-in-out infinite;
+  /* CSS custom properties set by JS for hybrid strobe approach */
+  --strobe-duration: 1000ms;
+  --strobe-state: running;
+  --base-opacity: 1;
+  /* Use custom property animation */
+  animation: cursor-strobe var(--strobe-duration) ease-in-out infinite;
+  animation-play-state: var(--strobe-state);
 }
 
-@keyframes cursor-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+@keyframes cursor-strobe {
+  0%, 100% { opacity: var(--base-opacity); }
+  50% { opacity: calc(var(--base-opacity) * 0.7); }
 }
 
 .collab-cursor-label {
   position: absolute;
-  top: -1.4em;
+  top: -1.2em;
   left: -1px;
   font-size: 10px;
   font-family: var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 3px;
+  padding: 1px 4px;
+  border-radius: 2px;
   white-space: nowrap;
   user-select: none;
   z-index: 10;
   /* Semi-transparent background to see text underneath */
   opacity: 0.85;
   backdrop-filter: blur(2px);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  transition: opacity 0.3s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: opacity 0.3s ease, z-index 0s;
   /* Enable hover interaction even though parent has pointer-events: none */
   pointer-events: auto;
   cursor: default;
 }
 
+/* Hover state for cursor (applied via JS with .collab-cursor-hovered class) */
+.collab-cursor.collab-cursor-hovered {
+  border-left-width: 3px;
+  z-index: 100;
+  /* Override animation - full opacity, no strobe */
+  animation: none;
+  opacity: 1 !important;
+}
+
+.collab-cursor.collab-cursor-hovered .collab-cursor-label {
+  opacity: 1 !important;
+  z-index: 100;
+}
+
 .collab-cursor-label:hover {
   opacity: 1 !important;
+}
+
+/* Same-line state - cursor is on same line as local cursor */
+.collab-cursor.collab-cursor-same-line .collab-cursor-label {
+  opacity: 1;
+}
+
+/* Merged cursor (multiple users at same/nearby positions) */
+.collab-cursor.collab-cursor-merged {
+  /* No label attached - label is in merged bar */
+}
+
+/* ============================================================================
+   Merged Cursor Bar (horizontal tooltip stacking)
+   ============================================================================ */
+
+.collab-cursor-bar-container {
+  position: relative;
+  display: inline;
+}
+
+.collab-cursor-bar {
+  position: absolute;
+  top: -1.2em;
+  left: -1px;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  border-radius: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: none;
+  z-index: 10;
+  backdrop-filter: blur(2px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  pointer-events: auto;
+}
+
+.collab-cursor-bar-segment {
+  padding: 1px 4px;
+  transition: opacity 0.3s ease;
+  cursor: default;
+}
+
+.collab-cursor-bar-segment:hover {
+  opacity: 1 !important;
+}
+
+.collab-cursor-bar-divider {
+  width: 1px;
+  background: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+
+/* Elevated merged bar (on hover) */
+.collab-cursor-bar.collab-cursor-bar-elevated {
+  z-index: 100;
 }
 
 /* Selection highlight from other users */

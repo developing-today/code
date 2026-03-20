@@ -39,6 +39,14 @@
 
 ---
 
+- RUST_LOG env var is fine, but support setting log level by cmdline input. link to this document in appropriate places https://docs.rs/env_logger/latest/env_logger/
+- use structured logging everywhere. in each server and web client log send a json log message. update the slog messages to have appropriate context and properties for the given log message, configure trace ids and use contexts or properties to mark what the log is from. include a nanosecond rfc timestamp including timezone, default to host timezone fallback utc. allow overriding time zone.
+- enable being able to log to a file, enable being able to change the log file location by command line, consider if it's possible to send different log levels to different places. consider if stdout can show info while one log file has up to debug logs and another has up to info logs, for instance.
+
+---
+
+- build variants can that file be made by the cargo build command somehow? instead of in justfile / build.sh it's an additional artifact of the build itself?
+- add this to the just file and nix flake, to allow formatting the justfile automatically, use --check in the ci version and fmt in fmt which should be used in fix https://just.systems/man/en/formatting-and-dumping-justfiles.html
 - justfile cargo test maybe doesn't need all feature for some of the subcomponent tests. verify what this does, i guess if lib has web features it should be included. don't make new test types without checking.
 - fix so meta attribute is on all nix flake sections that need it.
 - just ci is running multiple tests in a row, i see it repeated the 237 test blocks and it may be repeating more tests in some of the smaller groups like the 54/14 tests. does the just command need changes?

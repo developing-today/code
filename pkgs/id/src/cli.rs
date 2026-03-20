@@ -103,6 +103,18 @@ use clap::{Parser, Subcommand};
     long_about = None
 )]
 pub struct Cli {
+    /// Enable debug logging (equivalent to --log-level debug).
+    ///
+    /// Takes precedence over --log-level and environment variables.
+    #[arg(long, global = true)]
+    pub debug: bool,
+
+    /// Set log level (trace, debug, info, warn, error).
+    ///
+    /// Overrides environment variables but not --debug.
+    #[arg(long, global = true, value_name = "LEVEL")]
+    pub log_level: Option<String>,
+
     /// The subcommand to execute.
     ///
     /// If `None`, the REPL is started.
@@ -707,6 +719,44 @@ mod tests {
     fn test_cli_parse_no_args() {
         let cli = Cli::parse_from(["id"]);
         assert!(cli.command.is_none());
+        assert!(!cli.debug);
+        assert!(cli.log_level.is_none());
+    }
+
+    #[test]
+    fn test_cli_parse_debug_flag() {
+        let cli = Cli::parse_from(["id", "--debug"]);
+        assert!(cli.debug);
+        assert!(cli.log_level.is_none());
+    }
+
+    #[test]
+    fn test_cli_parse_log_level_flag() {
+        let cli = Cli::parse_from(["id", "--log-level", "trace"]);
+        assert!(!cli.debug);
+        assert_eq!(cli.log_level, Some("trace".to_owned()));
+    }
+
+    #[test]
+    fn test_cli_parse_debug_with_subcommand() {
+        let cli = Cli::parse_from(["id", "--debug", "serve"]);
+        assert!(cli.debug);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_log_level_with_subcommand() {
+        let cli = Cli::parse_from(["id", "--log-level", "warn", "repl"]);
+        assert_eq!(cli.log_level, Some("warn".to_owned()));
+        assert!(matches!(cli.command, Some(Command::Repl { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_debug_after_subcommand() {
+        // Global flags should work after subcommand too
+        let cli = Cli::parse_from(["id", "serve", "--debug"]);
+        assert!(cli.debug);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
     }
 
     #[test]

@@ -10,7 +10,9 @@
     "build:css": "bun run scripts/build-css.ts",
     "build:manifest": "bun run scripts/build-manifest.ts",
     "dev": "bun build src/main.ts --outdir=dist --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "prosemirror-state": "^1.4.3",
@@ -28,6 +30,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.9.3"
+    "happy-dom": "^17.4.4",
+    "typescript": "^5.9.3",
+    "vitest": "^3.1.4"
   }
 }
