@@ -38,9 +38,10 @@ import {
 } from "./cursor-utils";
 
 // Additional timing constants (not exported from utils)
-const REFRESH_INTERVAL_MS = 5_000; // Refresh every 5s when active
+const REFRESH_INTERVAL_MS = 1_000; // Refresh every 1s for smoother opacity updates
 const RECONNECT_CLEANUP_DELAY_MS = 3_000; // Wait 3s after Init before cleanup (allow slow networks)
 const HOVER_RESTORE_DELAY_MS = 1_000; // 1s delay before restoring after hover
+const PENDING_REMOVAL_MS = 5_000; // Show fading cursor for 5s after disconnect
 
 // Global counter to force widget recreation on every decoration call
 let decorationGeneration = 0;
@@ -52,6 +53,8 @@ export interface CursorInfo {
   name?: string;
   color?: string;
   lastUpdate: number;
+  /** If set, cursor is pending removal and should fade out then disappear */
+  pendingRemovalAt?: number;
 }
 
 export const cursorPluginKey = new PluginKey<CursorPluginState>("cursors");
@@ -518,7 +521,9 @@ function createCursorDecorations(
     : (): void => {};
 
   // First pass: collect all visible cursors with computed properties
+  // Also track cursors that need to be removed after pending timeout
   const visibleCursors: CursorForMerge[] = [];
+  const cursorsToRemove: (string | number)[] = [];
 
   pluginState.cursors.forEach((cursor, clientID) => {
     // Normalize clientID for comparison
@@ -526,6 +531,37 @@ function createCursorDecorations(
 
     // Check if this is our own cursor
     const isOwnCursor = myClientIDNum !== null && clientIDNum === myClientIDNum;
+
+    // Check if cursor is pending removal (user disconnected)
+    if (cursor.pendingRemovalAt) {
+      const pendingAge = now - cursor.pendingRemovalAt;
+      if (pendingAge >= PENDING_REMOVAL_MS) {
+        // Time's up - mark for actual removal
+        cursorsToRemove.push(clientID);
+        return;
+      }
+      // Pending removal - show at low opacity (0.3) while fading out
+      const color = cursor.color || getColorForClient(clientID);
+      const name = cursor.name || `${String(clientID).slice(-4)}`;
+      const head = Math.max(0, Math.min(cursor.head, docSize));
+      const anchor = Math.max(0, Math.min(cursor.anchor, docSize));
+      const onSameLine =
+        view !== null && isOnSameLineAsLocal(head, localHead, view);
+      
+      visibleCursors.push({
+        clientID,
+        head,
+        anchor,
+        name,
+        color,
+        lastUpdate: cursor.pendingRemovalAt,
+        opacity: 0.3,
+        baseOpacity: 0.3,
+        onSameLine,
+        isOwnCursor: false,
+      });
+      return;
+    }
 
     const ageMs = now - cursor.lastUpdate;
 
@@ -568,6 +604,18 @@ function createCursorDecorations(
       isOwnCursor,
     });
   });
+
+  // Schedule removal of cursors that have finished their pending period
+  // This happens outside the forEach to avoid modifying state during iteration
+  if (cursorsToRemove.length > 0 && view) {
+    setTimeout(() => {
+      const viewState = getViewState(view);
+      cursorsToRemove.forEach((clientID) => {
+        removeCursorInternal(view, clientID);
+        unregisterCursorStrobe(clientID, viewState);
+      });
+    }, 0);
+  }
 
   // Find own cursor for special handling
   const ownCursor = visibleCursors.find((c) => c.isOwnCursor);
@@ -856,6 +904,19 @@ export function createCursorPlugin(
               return { ...pluginState, cursors: newCursors };
             }
 
+            case "markPendingRemoval": {
+              // Mark cursor as pending removal - it will fade out over 3 seconds
+              const existing = pluginState.cursors.get(cursorUpdate.clientID);
+              if (!existing) return pluginState;
+              
+              const newCursors = new Map(pluginState.cursors);
+              newCursors.set(cursorUpdate.clientID, {
+                ...existing,
+                pendingRemovalAt: Date.now(),
+              });
+              return { ...pluginState, cursors: newCursors };
+            }
+
             case "setConnectionState": {
               const newState = cursorUpdate.connectionState as
                 | "connected"
@@ -988,10 +1049,15 @@ export function createCursorPlugin(
           let needsRefresh = false;
           pluginState.cursors.forEach((cursor, clientID) => {
             if (clientID !== myClientID) {
-              const age = now - cursor.lastUpdate;
-              // Refresh if in the fading range or just past hide threshold
-              if (age >= FADE_START_MS && age < HIDE_MS + 1000) {
+              // Refresh if cursor is pending removal (fading out before disappearing)
+              if (cursor.pendingRemovalAt) {
                 needsRefresh = true;
+              } else {
+                const age = now - cursor.lastUpdate;
+                // Refresh if in the fading range or just past hide threshold
+                if (age >= FADE_START_MS && age < HIDE_MS + 1000) {
+                  needsRefresh = true;
+                }
               }
             }
           });
@@ -1073,7 +1139,7 @@ export function updateCursor(
 }
 
 /**
- * Remove a remote cursor from the editor (internal use).
+ * Remove a remote cursor from the editor (internal use - immediate removal).
  */
 function removeCursorInternal(
   view: EditorView,
@@ -1087,13 +1153,30 @@ function removeCursorInternal(
 }
 
 /**
+ * Mark a cursor as pending removal - it will fade out then be removed.
+ */
+function markCursorPendingRemoval(
+  view: EditorView,
+  clientID: string | number
+): void {
+  const tr = view.state.tr.setMeta(cursorPluginKey, {
+    type: "markPendingRemoval",
+    clientID,
+  });
+  view.dispatch(tr);
+}
+
+/**
  * Remove a remote cursor from the editor.
+ * The cursor will fade out over 3 seconds before being fully removed.
  */
 export function removeCursor(
   view: EditorView,
   clientID: string | number
 ): void {
-  const viewState = getViewState(view);
-  removeCursorInternal(view, clientID);
-  unregisterCursorStrobe(clientID, viewState);
+  // Mark as pending removal instead of immediately removing
+  // The cursor will be fully removed after PENDING_REMOVAL_MS
+  markCursorPendingRemoval(view, clientID);
+  
+  // Note: strobe cleanup happens when cursor is actually removed (after fade)
 }
