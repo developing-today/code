@@ -247,11 +247,11 @@ describe("estimateTooltipWidth", () => {
 
   it("returns zero for empty name", () => {
     const width = estimateTooltipWidth("");
-    expect(width).toBe(0); // No padding, no chars = 0
+    expect(width).toBe(0); // No chars = 0
   });
 
   it("estimates reasonable width for typical name", () => {
-    // "Alice" = 5 chars * 6px + 0px padding = 30px
+    // "Alice" = 5 chars * 7px = 35px
     const width = estimateTooltipWidth("Alice");
     expect(width).toBeGreaterThanOrEqual(30);
     expect(width).toBeLessThan(50);
@@ -421,13 +421,22 @@ describe("doGroupsOverlap", () => {
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
     });
 
-    it("returns true when groups are close (within MIN_GAP)", () => {
-      // Alice at pos 0 (0px), Bob at pos 1 (10px)
-      // Alice tooltip width = 6px (1 char * 6)
-      // With MIN_GAP = 12, overlap threshold is 6 + 12 = 18px
-      // posDiff = 10, 10 < 18 is TRUE = overlap (merge them)
-      const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
+    it("returns true when groups actually overlap", () => {
+      // A at pos 0 (0px), tooltip width = 7px (1 char * 7)
+      // B at pos 0 (0px) - same position = definite overlap
+      // With MIN_GAP = 2, overlap threshold is 7 + 2 = 9px
+      // posDiff = 0, 0 < 9 is TRUE = overlap
+      const groups = [makeGroup(0, ["A"]), makeGroup(0, ["B"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
+    });
+
+    it("returns false when groups are close but not overlapping", () => {
+      // A at pos 0 (0px), tooltip width = 7px (1 char * 7)
+      // B at pos 1 (10px)
+      // With MIN_GAP = 2, overlap threshold is 7 + 2 = 9px
+      // posDiff = 10, 10 < 9 is FALSE = no overlap
+      const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
+      expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(false);
     });
 
     it("considers combined width of multiple cursors in a group", () => {
@@ -561,15 +570,25 @@ describe("clusterOverlappingGroups", () => {
       expect(result[1].groups).toEqual([groups[1]]);
     });
 
-    it("merges close groups (within MIN_GAP)", () => {
-      // Alice at pos 0 (0px), Bob at pos 1 (10px)
-      // Alice tooltip width = 6px (1 char * 6)
-      // With MIN_GAP = 12, overlap threshold is 6 + 12 = 18px
-      // posDiff = 10, 10 < 18 is TRUE = overlap, so merge
-      const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
+    it("merges groups that actually overlap", () => {
+      // "Alexander" at pos 0 (0px), tooltip width = 63px (9 chars * 7)
+      // "B" at pos 6 (60px)
+      // With MIN_GAP = 2, overlap threshold is 63 + 2 = 65px
+      // posDiff = 60, 60 < 65 is TRUE = overlap, so merge
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(6, ["B"])];
       const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
       expect(result).toHaveLength(1);
       expect(result[0].groups).toHaveLength(2);
+    });
+
+    it("keeps groups separate when not overlapping", () => {
+      // A at pos 0 (0px), tooltip width = 7px (1 char * 7)
+      // B at pos 1 (10px)
+      // With MIN_GAP = 2, overlap threshold is 7 + 2 = 9px
+      // posDiff = 10, 10 < 9 is FALSE = no overlap
+      const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(2);
     });
 
     it("merges actually overlapping groups into one cluster", () => {

@@ -218,6 +218,8 @@
   margin-left: -1px;
   margin-right: -1px;
   pointer-events: none;
+  height: 1.2em; /* Explicit height to ensure cursor line is visible */
+  vertical-align: text-bottom;
   /* CSS custom properties set by JS for hybrid strobe approach */
   --strobe-duration: 1000ms;
   --strobe-state: running;
@@ -234,7 +236,7 @@
 
 .collab-cursor-label {
   position: absolute;
-  top: -1.4em;
+  top: -1.5em;
   left: -1px;
   font-size: 10px;
   line-height: 1;
@@ -292,7 +294,7 @@
 
 .collab-cursor-bar {
   position: absolute;
-  top: -1.4em;
+  top: -1.5em;
   left: -1px;
   display: flex;
   flex-direction: row;
