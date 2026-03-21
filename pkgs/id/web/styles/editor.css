@@ -213,19 +213,32 @@
    ============================================================================ */
 
 .collab-cursor {
+  /* Zero-width container that doesn't affect layout */
   position: relative;
   display: inline-block;
-  border-left: 1px solid;
-  margin-left: -0.5px;
-  margin-right: -0.5px;
-  pointer-events: none;
-  height: 1.2em; /* Explicit height to ensure cursor line is visible */
+  width: 0;
+  height: 0;
   vertical-align: text-bottom;
+  overflow: visible;
+  pointer-events: none;
   /* CSS custom properties set by JS for hybrid strobe approach */
   --strobe-duration: 1000ms;
   --strobe-state: running;
   --base-opacity: 1;
-  /* Use custom property animation */
+  /* Use custom property animation on the pseudo-element */
+}
+
+/* The visible cursor line - absolutely positioned to not affect layout */
+.collab-cursor::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 1.2em;
+  /* Color is set via border-color on parent, inherit it */
+  background-color: var(--cursor-color, currentColor);
+  pointer-events: none;
   animation: cursor-strobe var(--strobe-duration) ease-in-out infinite;
   animation-play-state: var(--strobe-state);
 }
@@ -254,8 +267,11 @@
 
 /* Hover state for cursor (applied via JS with .collab-cursor-hovered class) */
 .collab-cursor.collab-cursor-hovered {
-  border-left-width: 2px;
   z-index: 100;
+}
+
+.collab-cursor.collab-cursor-hovered::before {
+  width: 2px;
   /* Override animation - full opacity, no strobe */
   animation: none;
   opacity: 1 !important;
@@ -272,8 +288,11 @@
 
 /* Own cursor - visually distinct, no label */
 .collab-cursor.collab-cursor-own {
-  border-left-width: 3px;
   z-index: 5;
+}
+
+.collab-cursor.collab-cursor-own::before {
+  width: 2px;
   /* No strobe for own cursor - solid */
   animation: none;
   opacity: 1 !important;

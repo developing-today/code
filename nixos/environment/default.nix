@@ -14,16 +14,21 @@ let
   my-helmfile = pkgs.helmfile-wrapped.override { inherit (my-kubernetes-helm) pluginsDir; };
 
   # # Fix opencode-desktop: upstream flake is missing outputHashes for git dependencies
-  # opencode-desktop = inputs.opencode.packages.${system}.desktop.overrideAttrs (old: {
-  #   cargoDeps = pkgs.rustPlatform.importCargoLock {
-  #     lockFile = inputs.opencode + "/packages/desktop/src-tauri/Cargo.lock";
-  #     outputHashes = {
-  #       "specta-2.0.0-rc.22" = "sha256-J+rDfV5Wx82VNbpLRh3g/4LerjKQodgMq7A9S9WGhXU=";
-  #       "tauri-2.9.5" = "sha256-dv5E/+A49ZBvnUQUkCGGJ21iHrVvrhHKNcpUctivJ8M=";
-  #       "tauri-specta-2.0.0-rc.21" = "sha256-n2VJ+B1nVrh6zQoZyfMoctqP+Csh7eVHRXwUQuiQjaQ=";
-  #     };
-  #   };
-  # });
+  # and has TypeScript errors in auth.set calls (auth -> body)
+  opencode-desktop = inputs.opencode.packages.${system}.desktop.overrideAttrs (old: {
+    cargoDeps = pkgs.rustPlatform.importCargoLock {
+      lockFile = inputs.opencode + "/packages/desktop/src-tauri/Cargo.lock";
+      outputHashes = {
+        "specta-2.0.0-rc.22" = "sha256-YsyOAnXELLKzhNlJ35dHA6KGbs0wTAX/nlQoW8wWyJQ=";
+        "tauri-2.9.5" = "sha256-dv5E/+A49ZBvnUQUkCGGJ21iHrVvrhHKNcpUctivJ8M=";
+        "tauri-specta-2.0.0-rc.21" = "sha256-n2VJ+B1nVrh6zQoZyfMoctqP+Csh7eVHRXwUQuiQjaQ=";
+      };
+    };
+    postPatch = (old.postPatch or "") + ''
+      sed -i "s/        auth: {$/        body: {/" packages/app/src/components/dialog-connect-provider.tsx
+      sed -i "s/          auth: {$/          body: {/" packages/app/src/components/dialog-custom-provider.tsx
+    '';
+  });
 in
 {
   environment = {
@@ -47,7 +52,7 @@ in
     # or just because
     # etc.
     systemPackages = [
-      # opencode-desktop
+      opencode-desktop
     ]
     ++ (with inputs; [
       #rose-pine-hyprcursor.packages.${pkgs.system}.default

@@ -423,7 +423,8 @@ function createCursorLine(
     ? "collab-cursor collab-cursor-merged"
     : "collab-cursor";
 
-  cursorLine.style.borderColor = cursor.color;
+  // Set cursor color via CSS custom property (used by ::before pseudo-element)
+  cursorLine.style.setProperty("--cursor-color", cursor.color);
 
   if (isMerged && allClientIDs) {
     cursorLine.setAttribute("data-client-ids", allClientIDs.join(","));
@@ -696,7 +697,8 @@ function createCursorDecorations(
       if (clusterHasOwnCursor && ownCursor) {
         const ownCursorLine = document.createElement("span");
         ownCursorLine.className = "collab-cursor collab-cursor-own";
-        ownCursorLine.style.borderColor = ownCursor.color;
+        // Set cursor color via CSS custom property (used by ::before pseudo-element)
+        ownCursorLine.style.setProperty("--cursor-color", ownCursor.color);
         ownCursorLine.setAttribute("data-client-id", String(ownCursor.clientID));
 
         decorations.push(
@@ -741,7 +743,8 @@ function createCursorDecorations(
             connectionState,
             allClientIDs
           );
-          cursorLine.style.borderColor = group.mostRecentColor;
+          // Set cursor color via CSS custom property (used by ::before pseudo-element)
+          cursorLine.style.setProperty("--cursor-color", group.mostRecentColor);
           
           // For merged cursor lines with bars, use full opacity on the line
           // (the bar segments handle their own individual opacities)

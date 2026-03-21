@@ -6,7 +6,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
@@ -37,19 +37,32 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Check if this is an HTMX request (partial content).
+fn is_htmx_request(headers: &HeaderMap) -> bool {
+    headers.contains_key("HX-Request")
+}
+
 /// Index page handler - shows file list.
-async fn index_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let files = get_file_list(&state.store).await;
     let content = render_file_list(&files);
-    Html(render_page("Files", &content, "", &state.assets))
+    if is_htmx_request(&headers) {
+        Html(content)
+    } else {
+        Html(render_page("Files", &content, "", &state.assets))
+    }
 }
 
 /// Settings page handler.
-async fn settings_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn settings_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     // TODO: Get actual node ID from state
     let node_id = "0000000000000000000000000000000000000000000000000000000000000000";
     let content = render_settings(node_id);
-    Html(render_page("Settings", &content, "", &state.assets))
+    if is_htmx_request(&headers) {
+        Html(content)
+    } else {
+        Html(render_page("Settings", &content, "", &state.assets))
+    }
 }
 
 /// Query parameters for blob requests.
@@ -68,6 +81,7 @@ struct BlobQuery {
 async fn edit_handler(
     State(state): State<AppState>,
     Path(hash): Path<String>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     // Try to find the file name from tags
     let name = get_file_name(&state.store, &hash)
@@ -76,6 +90,8 @@ async fn edit_handler(
 
     // Get file content bytes from store
     let content_result = get_file_bytes(&state.store, &hash).await;
+
+    let is_htmx = is_htmx_request(&headers);
 
     match content_result {
         Ok(bytes) => {
@@ -86,45 +102,61 @@ async fn edit_handler(
                 ContentMode::Media(media_type) => {
                     // Render media viewer
                     let viewer_html = render_media_viewer(&hash, &name, media_type);
-                    Html(render_page(
-                        &format!("View: {name}"),
-                        &viewer_html,
-                        "",
-                        &state.assets,
-                    ))
+                    if is_htmx {
+                        Html(viewer_html)
+                    } else {
+                        Html(render_page(
+                            &format!("View: {name}"),
+                            &viewer_html,
+                            "",
+                            &state.assets,
+                        ))
+                    }
                 }
                 ContentMode::Binary => {
                     // Render binary viewer with download option
                     let viewer_html = render_binary_viewer(&hash, &name);
-                    Html(render_page(
-                        &format!("File: {name}"),
-                        &viewer_html,
-                        "",
-                        &state.assets,
-                    ))
+                    if is_htmx {
+                        Html(viewer_html)
+                    } else {
+                        Html(render_page(
+                            &format!("File: {name}"),
+                            &viewer_html,
+                            "",
+                            &state.assets,
+                        ))
+                    }
                 }
                 _ => {
                     // Editable modes - convert bytes to HTML for editor
                     let content = get_file_content_html(&bytes);
                     let editor_html = render_editor(&hash, &name, &content);
-                    Html(render_page(
-                        &format!("Edit: {name}"),
-                        &editor_html,
-                        "",
-                        &state.assets,
-                    ))
+                    if is_htmx {
+                        Html(editor_html)
+                    } else {
+                        Html(render_page(
+                            &format!("Edit: {name}"),
+                            &editor_html,
+                            "",
+                            &state.assets,
+                        ))
+                    }
                 }
             }
         }
         Err(err_msg) => {
             // Error loading file
             let editor_html = render_editor(&hash, &name, &err_msg);
-            Html(render_page(
-                &format!("Edit: {name}"),
-                &editor_html,
-                "",
-                &state.assets,
-            ))
+            if is_htmx {
+                Html(editor_html)
+            } else {
+                Html(render_page(
+                    &format!("Edit: {name}"),
+                    &editor_html,
+                    "",
+                    &state.assets,
+                ))
+            }
         }
     }
 }
