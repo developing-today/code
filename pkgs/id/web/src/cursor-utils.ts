@@ -72,16 +72,30 @@ export function isLightColor(color: string): boolean {
   return luminance > 0.5;
 }
 
-// Colors for different users (cycles through these)
+// Colors for different users - high contrast, deterministic by client ID hash
+// Selected for visibility against both light and dark backgrounds
 export const CURSOR_COLORS = [
-  "#ff6b6b", // red
-  "#4ecdc4", // teal
-  "#ffe66d", // yellow
-  "#95e1d3", // mint
-  "#a29bfe", // purple
-  "#fd79a8", // pink
-  "#00b894", // green
-  "#e17055", // orange
+  // Reds/Oranges
+  "#e63946", // red
+  "#f77f00", // orange
+  "#ff006e", // magenta-red
+  // Yellows/Greens
+  "#ffbe0b", // yellow
+  "#06d6a0", // mint-green
+  "#2a9d8f", // teal
+  "#38b000", // green
+  // Blues
+  "#00b4d8", // cyan
+  "#0077b6", // blue
+  "#3a86ff", // bright blue
+  // Purples/Pinks
+  "#8338ec", // purple
+  "#c77dff", // lavender
+  "#ff5da2", // pink
+  "#9d4edd", // violet
+  // Earth tones
+  "#fb8500", // amber
+  "#d62828", // crimson
 ];
 
 /**

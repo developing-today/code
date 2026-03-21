@@ -269,11 +269,6 @@
   opacity: 1 !important;
 }
 
-/* Same-line state - cursor is on same line as local cursor */
-.collab-cursor.collab-cursor-same-line .collab-cursor-label {
-  opacity: 1;
-}
-
 /* Own cursor - visually distinct, no label */
 .collab-cursor.collab-cursor-own {
   border-left-width: 3px;

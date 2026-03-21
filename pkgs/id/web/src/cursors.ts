@@ -423,10 +423,6 @@ function createCursorLine(
     ? "collab-cursor collab-cursor-merged"
     : "collab-cursor";
 
-  if (cursor.onSameLine) {
-    cursorLine.classList.add("collab-cursor-same-line");
-  }
-
   cursorLine.style.borderColor = cursor.color;
 
   if (isMerged && allClientIDs) {
@@ -436,8 +432,8 @@ function createCursorLine(
   }
 
   // Set up CSS custom properties for strobe animation
-  const effectiveOpacity = cursor.onSameLine ? 1.0 : cursor.baseOpacity;
-  const strobeDurationMs = getStrobeDurationMs(effectiveOpacity);
+  // Remote cursor opacity is based solely on age
+  const strobeDurationMs = getStrobeDurationMs(cursor.baseOpacity);
   const shouldStrobe = strobeDurationMs > 0 && connectionState === "connected";
 
   cursorLine.style.setProperty("--strobe-duration", `${strobeDurationMs}ms`);
@@ -586,10 +582,11 @@ function createCursorDecorations(
       ? state.selection.anchor
       : Math.max(0, Math.min(cursor.anchor, docSize));
 
-    // Check if this cursor is on the same line as the local cursor
+    // Check if this cursor is on the same line as the local cursor (for CSS styling)
     const onSameLine =
       view !== null && isOnSameLineAsLocal(head, localHead, view);
-    const opacity = onSameLine ? 1.0 : baseOpacity;
+    // Remote cursor opacity is based solely on age, not affected by local cursor position
+    const opacity = baseOpacity;
 
     visibleCursors.push({
       clientID,
