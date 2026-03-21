@@ -359,7 +359,8 @@ function isOnSameLineAsLocal(
 function createMergedBar(
   groups: PositionGroup[],
   handleMouseEnter: (clientID: string | number) => void,
-  handleMouseLeave: (clientID: string | number) => void
+  handleMouseLeave: (clientID: string | number) => void,
+  connectionState: "connected" | "disconnected"
 ): HTMLElement {
   const bar = document.createElement("span");
   bar.className = "collab-cursor-bar";
@@ -378,10 +379,17 @@ function createMergedBar(
       segment.className = "collab-cursor-bar-segment";
       segment.style.backgroundColor = cursor.color;
       segment.style.color = isLightColor(cursor.color) ? "#000" : "#fff";
-      segment.style.opacity = String(cursor.opacity);
       segment.textContent = cursor.name;
       segment.setAttribute("data-client-id", String(cursor.clientID));
       segment.setAttribute("data-position", String(cursor.head));
+
+      // Set up strobe animation for this segment
+      const strobeDurationMs = getStrobeDurationMs(cursor.baseOpacity);
+      const shouldStrobe = strobeDurationMs > 0 && connectionState === "connected";
+      segment.style.setProperty("--strobe-duration", `${strobeDurationMs}ms`);
+      segment.style.setProperty("--strobe-state", shouldStrobe ? "running" : "paused");
+      segment.style.setProperty("--base-opacity", String(cursor.opacity));
+      segment.style.opacity = String(cursor.opacity);
 
       // Hover handlers for individual segments
       segment.addEventListener("mouseenter", () =>
@@ -689,6 +697,14 @@ function createCursorDecorations(
             allClientIDs
           );
           cursorLine.style.borderColor = group.mostRecentColor;
+          
+          // For merged cursor lines with bars, use full opacity on the line
+          // (the bar segments handle their own individual opacities)
+          if (group === leftmostGroup) {
+            cursorLine.style.opacity = "1";
+            cursorLine.style.setProperty("--base-opacity", "1");
+            cursorLine.style.animation = "none"; // No strobe on bar container
+          }
 
           // Track the leftmost cursor line for bar attachment
           if (group === leftmostGroup) {
@@ -720,7 +736,8 @@ function createCursorDecorations(
         const mergedBar = createMergedBar(
           groupsForBar,
           handleMouseEnter,
-          handleMouseLeave
+          handleMouseLeave,
+          connectionState
         );
 
         if (leftmostCursorLine) {

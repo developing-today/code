@@ -251,7 +251,7 @@ describe("estimateTooltipWidth", () => {
   });
 
   it("estimates reasonable width for typical name", () => {
-    // "Alice" = 5 chars * 7px = 35px
+    // "Alice" = 5 chars * 6.3px = 31.5px
     const width = estimateTooltipWidth("Alice");
     expect(width).toBeGreaterThanOrEqual(30);
     expect(width).toBeLessThan(50);
@@ -422,19 +422,19 @@ describe("doGroupsOverlap", () => {
     });
 
     it("returns true when groups actually overlap", () => {
-      // A at pos 0 (0px), tooltip width = 7px (1 char * 7)
+      // A at pos 0 (0px), tooltip width = 6.3px (1 char * 6.3)
       // B at pos 0 (0px) - same position = definite overlap
-      // With MIN_GAP = 2, overlap threshold is 7 + 2 = 9px
-      // posDiff = 0, 0 < 9 is TRUE = overlap
+      // With MIN_GAP = 2, overlap threshold is 6.3 + 2 = 8.3px
+      // posDiff = 0, 0 < 8.3 is TRUE = overlap
       const groups = [makeGroup(0, ["A"]), makeGroup(0, ["B"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
     });
 
     it("returns false when groups are close but not overlapping", () => {
-      // A at pos 0 (0px), tooltip width = 7px (1 char * 7)
+      // A at pos 0 (0px), tooltip width = 6.3px (1 char * 6.3)
       // B at pos 1 (10px)
-      // With MIN_GAP = 2, overlap threshold is 7 + 2 = 9px
-      // posDiff = 10, 10 < 9 is FALSE = no overlap
+      // With MIN_GAP = 2, overlap threshold is 6.3 + 2 = 8.3px
+      // posDiff = 10, 10 < 8.3 is FALSE = no overlap
       const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(false);
     });
@@ -571,21 +571,21 @@ describe("clusterOverlappingGroups", () => {
     });
 
     it("merges groups that actually overlap", () => {
-      // "Alexander" at pos 0 (0px), tooltip width = 63px (9 chars * 7)
-      // "B" at pos 6 (60px)
-      // With MIN_GAP = 2, overlap threshold is 63 + 2 = 65px
-      // posDiff = 60, 60 < 65 is TRUE = overlap, so merge
-      const groups = [makeGroup(0, ["Alexander"]), makeGroup(6, ["B"])];
+      // "Alexander" at pos 0 (0px), tooltip width = 56.7px (9 chars * 6.3)
+      // "B" at pos 5 (50px)
+      // With MIN_GAP = 2, overlap threshold is 56.7 + 2 = 58.7px
+      // posDiff = 50, 50 < 58.7 is TRUE = overlap, so merge
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(5, ["B"])];
       const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
       expect(result).toHaveLength(1);
       expect(result[0].groups).toHaveLength(2);
     });
 
     it("keeps groups separate when not overlapping", () => {
-      // A at pos 0 (0px), tooltip width = 7px (1 char * 7)
+      // A at pos 0 (0px), tooltip width = 6.3px (1 char * 6.3)
       // B at pos 1 (10px)
-      // With MIN_GAP = 2, overlap threshold is 7 + 2 = 9px
-      // posDiff = 10, 10 < 9 is FALSE = no overlap
+      // With MIN_GAP = 2, overlap threshold is 6.3 + 2 = 8.3px
+      // posDiff = 10, 10 < 8.3 is FALSE = no overlap
       const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
       const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
       expect(result).toHaveLength(2);
@@ -593,9 +593,9 @@ describe("clusterOverlappingGroups", () => {
 
     it("merges actually overlapping groups into one cluster", () => {
       // Use longer name so tooltip actually overlaps significantly
-      // "Alexander" at pos 0, width ~60px (9*6+6)
-      // "B" at pos 3 (30px) - within Alexander's overlap threshold (60-20=40px)
-      // posDiff = 30, 30 < 40 = TRUE = overlap
+      // "Alexander" at pos 0, width ~56.7px (9*6.3)
+      // "B" at pos 3 (30px) - within Alexander's overlap threshold (56.7+2=58.7px)
+      // posDiff = 30, 30 < 58.7 = TRUE = overlap
       const groups = [makeGroup(0, ["Alexander"]), makeGroup(3, ["B"])];
       const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
       expect(result).toHaveLength(1);

@@ -131,7 +131,7 @@ export interface PositionGroup {
  * Used for overlap detection.
  */
 export function estimateTooltipWidth(name: string): number {
-  const CHAR_WIDTH = 7; // Approximate width per character at 10px monospace font
+  const CHAR_WIDTH = 6.3; // Approximate width per character at 9px monospace font
   return name.length * CHAR_WIDTH;
 }
 

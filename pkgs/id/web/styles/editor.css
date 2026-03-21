@@ -214,9 +214,9 @@
 .collab-cursor {
   position: relative;
   display: inline-block;
-  border-left: 2px solid;
-  margin-left: -1px;
-  margin-right: -1px;
+  border-left: 1px solid;
+  margin-left: -0.5px;
+  margin-right: -0.5px;
   pointer-events: none;
   height: 1.2em; /* Explicit height to ensure cursor line is visible */
   vertical-align: text-bottom;
@@ -236,9 +236,9 @@
 
 .collab-cursor-label {
   position: absolute;
-  top: -1.5em;
+  top: -1.05em;
   left: -1px;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
   font-family: var(--font-mono);
   padding: 0;
@@ -253,7 +253,7 @@
 
 /* Hover state for cursor (applied via JS with .collab-cursor-hovered class) */
 .collab-cursor.collab-cursor-hovered {
-  border-left-width: 3px;
+  border-left-width: 2px;
   z-index: 100;
   /* Override animation - full opacity, no strobe */
   animation: none;
@@ -294,12 +294,12 @@
 
 .collab-cursor-bar {
   position: absolute;
-  top: -1.5em;
+  top: -1.05em;
   left: -1px;
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
   font-family: var(--font-mono);
   white-space: nowrap;
@@ -310,12 +310,18 @@
 
 .collab-cursor-bar-segment {
   padding: 0;
-  transition: opacity 0.3s ease;
   cursor: default;
+  /* CSS custom properties for strobe animation */
+  --strobe-duration: 1000ms;
+  --strobe-state: running;
+  --base-opacity: 1;
+  animation: cursor-strobe var(--strobe-duration) ease-in-out infinite;
+  animation-play-state: var(--strobe-state);
 }
 
 .collab-cursor-bar-segment:hover {
   opacity: 1 !important;
+  animation: none;
 }
 
 .collab-cursor-bar-divider {
