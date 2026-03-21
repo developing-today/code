@@ -444,6 +444,49 @@
    Menu Bar Styles (prosemirror-menu overrides)
    ============================================================================ */
 
+.ProseMirror-menubar-wrapper {
+  flex-shrink: 0;
+  background-color: transparent;
+  border: none;
+}
+
+/* Menubar in editor - compact, sticky, right-aligned */
+.editor-wrapper .ProseMirror-menubar {
+  /* Float right for alignment, sticky for scroll behavior */
+  float: right;
+  position: sticky;
+  top: 1px;
+  z-index: 100;
+  
+  /* Reset prosemirror defaults */
+  left: auto;
+  right: auto;
+  
+  /* Margin for whitespace around toolbar */
+  margin: 1px 1px 0 0;
+  
+  /* Layout */
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  
+  /* Appearance */
+  background-color: var(--bg-tertiary) !important;
+  border: 1px solid var(--border) !important;
+  min-height: 0;
+  color: var(--text-secondary) !important;
+  
+  /* Compact sizing - scale down everything */
+  font-size: 7px;
+  line-height: 1;
+  
+  /* Prevent content from escaping */
+  overflow: hidden;
+}
+
+/* Fallback for non-editor contexts */
 .ProseMirror-menubar {
   display: inline-flex;
   flex-wrap: nowrap;
@@ -453,22 +496,16 @@
   padding: 0;
   background-color: var(--bg-tertiary) !important;
   border: 1px solid var(--border) !important;
+  border-bottom: 1px solid var(--border) !important;
   min-height: 0;
   color: var(--text-secondary) !important;
   flex-shrink: 0;
-  /* Scale down the entire menubar content */
-  transform: scale(0.6);
-  transform-origin: top right;
-  position: absolute;
-  right: 0;
-  top: 0;
-}
-
-.ProseMirror-menubar-wrapper {
-  display: block;
-  position: relative;
-  min-height: 14px;
-  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  /* Reset prosemirror defaults */
+  left: auto;
+  right: auto;
 }
 
 .ProseMirror-menu {
@@ -480,7 +517,6 @@
   padding: 0;
   line-height: 1;
   flex-wrap: nowrap;
-  overflow: visible;
 }
 
 /* Icon buttons in menu - override ProseMirror defaults */
@@ -488,7 +524,7 @@
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  padding: 0 4px !important;
+  padding: 1px 3px !important;
   margin: 0 !important;
   background: transparent !important;
   border: none !important;
