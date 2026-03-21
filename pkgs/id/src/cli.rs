@@ -146,8 +146,11 @@ pub enum Command {
     /// # Direct connections only (no relay)
     /// id serve --no-relay
     ///
-    /// # Start with web interface on port 3000
-    /// id serve --web 3000
+    /// # Start with web interface
+    /// id serve --web
+    ///
+    /// # Start with web interface on custom port
+    /// id serve --web --port 8080
     /// ```
     Serve {
         /// Use in-memory storage instead of persistent disk storage.
@@ -161,14 +164,18 @@ pub enum Command {
         /// May prevent connections through NATs or firewalls.
         #[arg(long)]
         no_relay: bool,
-        /// Start web interface on the specified port.
+        /// Start web interface.
         ///
         /// Enables an HTTP server with a browser-based UI for
         /// file browsing and collaborative editing.
-        /// Use port 0 to let the OS assign a random available port.
         /// Requires the `web` feature to be enabled at build time.
         #[arg(long)]
-        web: Option<u16>,
+        web: bool,
+        /// Port for the web interface.
+        ///
+        /// Use port 0 to let the OS assign a random available port.
+        #[arg(long, default_value = "3000")]
+        port: u16,
     },
     /// Start an interactive REPL for issuing commands.
     ///
@@ -767,10 +774,12 @@ mod tests {
                 ephemeral,
                 no_relay,
                 web,
+                port,
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);
-                assert!(web.is_none());
+                assert!(!web);
+                assert_eq!(port, 3000);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -784,10 +793,12 @@ mod tests {
                 ephemeral,
                 no_relay,
                 web,
+                port,
             }) => {
                 assert!(ephemeral);
                 assert!(no_relay);
-                assert!(web.is_none());
+                assert!(!web);
+                assert_eq!(port, 3000);
             }
             _ => panic!("Expected Serve command"),
         }

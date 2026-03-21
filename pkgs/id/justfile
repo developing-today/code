@@ -14,9 +14,8 @@
 #   - Use -lib suffix for library-only variant (no web/bun required)
 #   - Use -force suffix to bypass freshness checks
 
-# Default recipe - show help
-default:
-    @just --list
+# Default recipe - serve with web UI
+default: serve
 
 # =============================================================================
 # Quality Checks
@@ -123,25 +122,50 @@ release-lib:
     ./scripts/build.sh lib release
 
 # Force rebuild with web UI (skip freshness checks) [bun]
-build-force:
-    cd web && bun install && bun run build
-    cargo build --features web
-    @mkdir -p target && echo "web" > target/.build-variant
+build-force: build-web-force
+build-web-force: web build-web-cargo mark-variant-web
 
 # Force rebuild library only
-build-lib-force:
-    cargo build
-    @mkdir -p target && echo "lib" > target/.build-variant
+build-lib-force: build-lib-cargo mark-variant-lib
 
 # Force rebuild release with web UI [bun]
-release-force:
-    cd web && bun install && bun run build
-    cargo build --release --features web
-    @mkdir -p target && echo "web" > target/.build-variant-release
+release-force: release-web-force
+
+release-web-force: web release-web-cargo mark-variant-release-web
 
 # Force rebuild release library only
-release-lib-force:
+release-lib-force: release-lib-cargo mark-variant-release-lib
+
+# cargo build commands
+build-cargo: build-web-cargo
+
+build-web-cargo:
+    cargo build --features web
+
+build-lib-cargo:
+    cargo build
+
+release-web-cargo:
+    cargo build --release --features web
+
+release-lib-cargo:
     cargo build --release
+
+# Internal: variant tracking
+[private]
+mark-variant-web:
+    @mkdir -p target && echo "web" > target/.build-variant
+
+[private]
+mark-variant-lib:
+    @mkdir -p target && echo "lib" > target/.build-variant
+
+[private]
+mark-variant-release-web:
+    @mkdir -p target && echo "web" > target/.build-variant-release
+
+[private]
+mark-variant-release-lib:
     @mkdir -p target && echo "lib" > target/.build-variant-release
 
 # Clean all build artifacts
@@ -153,38 +177,22 @@ clean:
 # =============================================================================
 
 # [bun] Build web frontend assets
-web:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ ! -f web/dist/manifest.json ]]; then
-        echo "[web] Building assets..."
-        cd web && bun install && bun run build
-    else
-        manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
-        needs_build=false
-        # Check all .ts, .css, .json config files under web/ (excluding dist/ and node_modules/)
-        # Also check bun.lock for dependency changes
-        while IFS= read -r f; do
-            file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-            if [[ "$file_time" -gt "$manifest_time" ]]; then
-                needs_build=true
-                break
-            fi
-        done < <(find web -type f \( -name '*.ts' -o -name '*.css' -o -name '*.json' -o -name 'bun.lock' \) ! -path 'web/dist/*' ! -path 'web/node_modules/*' 2>/dev/null)
-        if [[ "$needs_build" == "true" ]]; then
-            echo "[web] Rebuilding assets..."
-            cd web && bun install && bun run build
-        else
-            echo "[web] Assets up to date"
-        fi
-    fi
+web: web-assets
+assets: web-assets
+
+web-assets:
+    ./scripts/build.sh assets
 
 # [bun] Force rebuild web assets
-web-force:
+web-force: web-assets-force
+
+web-assets-force:
     cd web && bun install && bun run build
 
 # [bun] Watch web assets for development
-web-dev:
+web-dev: web-assets-dev
+
+web-assets-dev:
     cd web && bun install && bun run dev
 
 # =============================================================================
@@ -196,9 +204,9 @@ run *ARGS:
     RUST_LOG="${RUST_LOG:-debug}" cargo run -- {{ARGS}}
 
 # Serve with web UI (default) [bun]
-serve *ARGS: (build-serve ARGS)
+serve *ARGS: web (serve-web ARGS)
 
-# Serve with web UI (no build) [bun]
+# Serve with web UI (no asset build) [bun]
 serve-web *ARGS:
     RUST_LOG="${RUST_LOG:-debug}" cargo run --features web -- serve --web {{ARGS}}
 
@@ -206,8 +214,8 @@ serve-web *ARGS:
 serve-lib *ARGS:
     RUST_LOG="${RUST_LOG:-debug}" cargo run -- serve {{ARGS}}
 
-# Build and serve with web UI [bun]
-build-serve *ARGS: build (serve-web ARGS)
+# Build and serve with web UI (alias for serve) [bun]
+build-serve *ARGS: build (serve ARGS)
 
 # Kill any running 'id serve' processes
 kill:

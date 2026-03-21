@@ -41,7 +41,7 @@
 //!
 //! ```bash
 //! cargo build --features web
-//! id serve --web --port 3000
+//! id serve --web
 //! ```
 
 mod assets;

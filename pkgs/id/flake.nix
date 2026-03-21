@@ -265,18 +265,29 @@
           build-lib = mkApp (mkScript "build-lib" "just build-lib");
           build-force = mkApp (mkScript "build-force" "just build-force");
           build-lib-force = mkApp (mkScript "build-lib-force" "just build-lib-force");
+          build-web-force = mkApp (mkScript "build-web-force" "just build-web-force");
+          build-cargo = mkApp (mkScript "build-cargo" "just build-cargo");
+          build-web-cargo = mkApp (mkScript "build-web-cargo" "just build-web-cargo");
+          build-lib-cargo = mkApp (mkScript "build-lib-cargo" "just build-lib-cargo");
           release = mkApp (mkScript "release" "just release");
           release-lib = mkApp (mkScript "release-lib" "just release-lib");
           release-force = mkApp (mkScript "release-force" "just release-force");
           release-lib-force = mkApp (mkScript "release-lib-force" "just release-lib-force");
+          release-web-force = mkApp (mkScript "release-web-force" "just release-web-force");
+          release-web-cargo = mkApp (mkScript "release-web-cargo" "just release-web-cargo");
+          release-lib-cargo = mkApp (mkScript "release-lib-cargo" "just release-lib-cargo");
 
           # ─────────────────────────────────────────────────────────────────────
           # Web assets
           # ─────────────────────────────────────────────────────────────────────
 
+          assets = mkApp (mkScript "assets" "just assets");
           web = mkApp (mkScript "web" "just web");
+          web-assets = mkApp (mkScript "web-assets" "just web-assets");
           web-force = mkApp (mkScript "web-force" "just web-force");
+          web-assets-force = mkApp (mkScript "web-assets-force" "just web-assets-force");
           web-dev = mkApp (mkScript "web-dev" "just web-dev");
+          web-assets-dev = mkApp (mkScript "web-assets-dev" "just web-assets-dev");
 
           # ─────────────────────────────────────────────────────────────────────
           # Run commands

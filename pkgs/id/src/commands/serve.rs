@@ -206,7 +206,8 @@ pub async fn remove_serve_lock() -> Result<()> {
 ///
 /// * `ephemeral` - If `true`, use in-memory storage (lost on exit)
 /// * `no_relay` - If `true`, disable relay servers (direct connections only)
-/// * `web_port` - Optional port for the web interface (requires `web` feature)
+/// * `web` - If `true`, start the web interface (requires `web` feature)
+/// * `port` - Port for the web interface (default 3000)
 ///
 /// # Behavior
 ///
@@ -227,13 +228,16 @@ pub async fn remove_serve_lock() -> Result<()> {
 ///
 /// ```rust,ignore
 /// // Start a persistent server
-/// cmd_serve(false, false, None).await?;
+/// cmd_serve(false, false, false, 3000).await?;
 ///
 /// // Start with web interface on port 3000
-/// cmd_serve(false, false, Some(3000)).await?;
+/// cmd_serve(false, false, true, 3000).await?;
+///
+/// // Start with web interface on custom port
+/// cmd_serve(false, false, true, 8080).await?;
 /// ```
-#[allow(unused_variables)] // web_port is only used with web feature
-pub async fn cmd_serve(ephemeral: bool, no_relay: bool, web_port: Option<u16>) -> Result<()> {
+#[allow(unused_variables)] // web/port only used with web feature
+pub async fn cmd_serve(ephemeral: bool, no_relay: bool, web: bool, port: u16) -> Result<()> {
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -286,7 +290,7 @@ pub async fn cmd_serve(ephemeral: bool, no_relay: bool, web_port: Option<u16>) -
 
     // Start web server if enabled
     #[cfg(feature = "web")]
-    let _web_handle = if let Some(port) = web_port {
+    let _web_handle = if web {
         let web_router = crate::web::web_router(store_handle.clone());
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = tokio::net::TcpListener::bind(addr).await?;

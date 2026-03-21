@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Conditional build script for id project
 # Usage: build.sh [variant] [profile]
-#   variant: lib | web (default: web)
+#   variant: lib | web | assets (default: web)
 #   profile: debug | release (default: debug)
+#
+# Variants:
+#   lib    - Build Rust binary only (no web features)
+#   web    - Build web assets + Rust binary with web features
+#   assets - Build web assets only (no Rust compilation)
 #
 # Tracks build variant in target/.build-variant[-release] to detect when
 # a rebuild is needed due to variant change.
@@ -13,8 +18,8 @@ VARIANT="${1:-web}"
 PROFILE="${2:-debug}"
 
 # Validate inputs
-if [[ "$VARIANT" != "lib" && "$VARIANT" != "web" ]]; then
-  echo "Error: variant must be 'lib' or 'web', got '$VARIANT'" >&2
+if [[ "$VARIANT" != "lib" && "$VARIANT" != "web" && "$VARIANT" != "assets" ]]; then
+  echo "Error: variant must be 'lib', 'web', or 'assets', got '$VARIANT'" >&2
   exit 1
 fi
 
@@ -35,9 +40,9 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1: Build web assets if needed (only for web variant)
+# Step 1: Build web assets if needed (for web and assets variants)
 # ─────────────────────────────────────────────────────────────────────────────
-if [[ "$VARIANT" == "web" ]]; then
+if [[ "$VARIANT" == "web" || "$VARIANT" == "assets" ]]; then
   needs_frontend=false
 
   if [[ ! -f web/dist/manifest.json ]]; then
@@ -72,8 +77,13 @@ if [[ "$VARIANT" == "web" ]]; then
   fi
 fi
 
+# Exit early for assets-only variant
+if [[ "$VARIANT" == "assets" ]]; then
+  exit 0
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 2: Build Rust binary if needed
+# Step 2: Build Rust binary if needed (for lib and web variants)
 # ─────────────────────────────────────────────────────────────────────────────
 needs_backend=false
 OTHER_VARIANT=$([[ "$VARIANT" == "web" ]] && echo "lib" || echo "web")
@@ -112,11 +122,9 @@ if [[ "$needs_backend" == "true" ]]; then
   echo "[rust] Building $VARIANT $PROFILE variant..."
 
   if [[ "$VARIANT" == "web" ]]; then
-    # Web is default, no extra flags needed
-    cargo build $CARGO_FLAGS
+    cargo build $CARGO_FLAGS --features web
   else
-    # Lib variant disables default web feature
-    cargo build $CARGO_FLAGS --no-default-features
+    cargo build $CARGO_FLAGS
   fi
 
   mkdir -p target
