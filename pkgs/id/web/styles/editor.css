@@ -460,8 +460,9 @@
   left: auto !important;
   z-index: 100;
   
-  /* Only as wide as content */
+  /* Only as wide as content, never wrap */
   width: fit-content;
+  white-space: nowrap;
   
   /* Layout - stretch for full-height clickable areas */
   display: flex;
