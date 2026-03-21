@@ -236,6 +236,7 @@
           test = mkApp (mkScript "test" "just test");
           test-unit = mkApp (mkScript "test-unit" "just test-unit");
           test-int = mkApp (mkScript "test-int" "just test-int");
+          test-one = mkApp (mkScript "test-one" ''just test-one "$@"'');
           test-web = mkApp (mkScript "test-web" "just test-web");
           test-web-unit = mkApp (mkScript "test-web-unit" "just test-web-unit");
           test-web-typecheck = mkApp (mkScript "test-web-typecheck" "just test-web-typecheck");
@@ -288,17 +289,20 @@
           # Serve commands
           # ─────────────────────────────────────────────────────────────────────
 
-          serve = mkApp (mkScript "serve" ''just serve "''${1:-3000}"'');
+          serve = mkApp (mkScript "serve" ''just serve "$@"'');
+          serve-web = mkApp (mkScript "serve-web" ''just serve-web "$@"'');
           serve-lib = mkApp (mkScript "serve-lib" ''just serve-lib "$@"'');
+          build-serve = mkApp (mkScript "build-serve" ''just build-serve "$@"'');
+          kill = mkApp (mkScript "kill" "just kill");
+          kill-serve = mkApp (mkScript "kill-serve" ''just kill-serve "$@"'');
 
           # ─────────────────────────────────────────────────────────────────────
           # Combined commands
           # ─────────────────────────────────────────────────────────────────────
 
           build-check = mkApp (mkScript "build-check" "just build-check");
-          build-check-serve = mkApp (mkScript "build-check-serve" ''just build-check-serve "''${1:-3000}"'');
+          build-check-serve = mkApp (mkScript "build-check-serve" ''just build-check-serve "$@"'');
           build-check-serve-lib = mkApp (mkScript "build-check-serve-lib" "just build-check-serve-lib");
-          build-serve = mkApp (mkScript "build-serve" ''just build-serve "''${1:-3000}"'');
           build-serve-lib = mkApp (mkScript "build-serve-lib" "just build-serve-lib");
 
           # ─────────────────────────────────────────────────────────────────────
@@ -333,6 +337,7 @@
           check-all = mkApp (mkScript "check-all" "just check");
           test-lib = mkApp (mkScript "test-lib" "just test-unit");
           build-web = mkApp (mkScript "build-web" "just build");
+          build-web-release = mkApp (mkScript "build-web-release" "just build-web-release");
           build-release = mkApp (mkScript "build-release" "just release");
           build-lib-release = mkApp (mkScript "build-lib-release" "just release-lib");
           web-build = mkApp (mkScript "web-build" "just web");

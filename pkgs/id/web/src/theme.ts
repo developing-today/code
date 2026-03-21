@@ -11,7 +11,7 @@ export type Theme = 'sneak' | 'arch' | 'mech';
 const THEME_STORAGE_KEY = 'id-theme';
 
 /**
- * Get the currently active theme.
+ * Get the currently active theme from localStorage.
  */
 export function getTheme(): Theme {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
@@ -19,6 +19,17 @@ export function getTheme(): Theme {
     return stored;
   }
   return 'sneak';
+}
+
+/**
+ * Get the current theme from the DOM (what this tab is actually showing).
+ */
+export function getCurrentTabTheme(): Theme {
+  const domTheme = document.documentElement.getAttribute('data-theme');
+  if (domTheme && isValidTheme(domTheme)) {
+    return domTheme;
+  }
+  return getTheme();
 }
 
 /**
@@ -62,11 +73,11 @@ export function initTheme(): void {
 }
 
 /**
- * Cycle through available themes.
+ * Cycle through available themes based on what this tab is currently showing.
  */
 export function cycleTheme(): void {
   const themes: Theme[] = ['sneak', 'arch', 'mech'];
-  const current = getTheme();
+  const current = getCurrentTabTheme();
   const currentIndex = themes.indexOf(current);
   const nextIndex = (currentIndex + 1) % themes.length;
   setTheme(themes[nextIndex]);

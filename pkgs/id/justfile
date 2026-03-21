@@ -125,23 +125,23 @@ release-lib:
 # Force rebuild with web UI (skip freshness checks) [bun]
 build-force:
     cd web && bun install && bun run build
-    cargo build
+    cargo build --features web
     @mkdir -p target && echo "web" > target/.build-variant
 
 # Force rebuild library only
 build-lib-force:
-    cargo build --no-default-features
+    cargo build
     @mkdir -p target && echo "lib" > target/.build-variant
 
 # Force rebuild release with web UI [bun]
 release-force:
     cd web && bun install && bun run build
-    cargo build --release
+    cargo build --release --features web
     @mkdir -p target && echo "web" > target/.build-variant-release
 
 # Force rebuild release library only
 release-lib-force:
-    cargo build --release --no-default-features
+    cargo build --release
     @mkdir -p target && echo "lib" > target/.build-variant-release
 
 # Clean all build artifacts
@@ -196,12 +196,25 @@ run *ARGS:
     RUST_LOG="${RUST_LOG:-debug}" cargo run -- {{ARGS}}
 
 # Serve with web UI (default) [bun]
-serve PORT="3000": build
-    RUST_LOG="${RUST_LOG:-debug}" cargo run --features web -- serve --web {{PORT}}
+serve *ARGS: (build-serve ARGS)
+
+# Serve with web UI (no build) [bun]
+serve-web *ARGS:
+    RUST_LOG="${RUST_LOG:-debug}" cargo run --features web -- serve --web {{ARGS}}
 
 # Serve without web UI
 serve-lib *ARGS:
     RUST_LOG="${RUST_LOG:-debug}" cargo run -- serve {{ARGS}}
+
+# Build and serve with web UI [bun]
+build-serve *ARGS: build (serve-web ARGS)
+
+# Kill any running 'id serve' processes
+kill:
+    -pkill -xf ".*/id serve.*"
+
+# Kill and restart serve with web UI [bun]
+kill-serve *ARGS: kill (build-serve ARGS)
 
 # Run the REPL
 repl:
@@ -263,15 +276,10 @@ loc:
 build-check: build check
 
 # Build, check, and serve with web UI [bun]
-build-check-serve PORT="3000": build check
-    just serve {{PORT}}
+build-check-serve *ARGS: build check (serve ARGS)
 
 # Build, check, and serve without web UI
 build-check-serve-lib: build-lib ci serve-lib
-
-# Build and serve with web UI [bun]
-build-serve PORT="3000": build
-    just serve {{PORT}}
 
 # Build and serve without web UI
 build-serve-lib: build-lib serve-lib

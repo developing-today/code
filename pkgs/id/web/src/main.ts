@@ -6,13 +6,14 @@
 import htmx from 'htmx.org';
 import { type EditorInstance } from './editor';
 import { initCollab, type CollabConnection } from './collab';
-import { initTheme, setTheme, type Theme } from './theme';
+import { initTheme, setTheme, cycleTheme, type Theme } from './theme';
 
 // Expose htmx globally for HTMX attributes in HTML
 declare global {
   interface Window {
     htmx: typeof htmx;
     idApp: IdApp;
+    cycleTheme: typeof cycleTheme;
   }
 }
 
@@ -240,6 +241,9 @@ let scrollCleanup: (() => void) | null = null;
 function init(): void {
   // Initialize HTMX
   window.htmx = htmx;
+  
+  // Expose cycleTheme globally for onclick handlers
+  window.cycleTheme = cycleTheme;
   
   // Configure HTMX
   htmx.config.defaultSwapStyle = 'innerHTML';

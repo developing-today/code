@@ -111,9 +111,9 @@ pub fn render_main_page_wrapper(content: &str) -> String {
         "        <a href=\"#\" onclick=\"history.back()\" id=\"back-link\" class=\"back-link\">&larr; back</a>",
     );
     html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<span>id v0.1.0</span>");
+    html.push_str("<a href=\"/\" class=\"footer-link\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id v0.1.0</a>");
     html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<kbd>Alt+T</kbd> <span>themes</span>\n");
+    html.push_str("<a href=\"#\" class=\"footer-link\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
     html.push_str("    </footer>\n");
 
     html.push_str("</div>\n");
@@ -215,9 +215,9 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
         "        <a href=\"#\" id=\"back-link\" class=\"back-link disabled\">&larr; back</a>",
     );
     html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<span>id v0.1.0</span>");
+    html.push_str("<a href=\"/\" class=\"footer-link\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id v0.1.0</a>");
     html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<kbd>Alt+T</kbd> <span>themes</span>\n");
+    html.push_str("<a href=\"#\" class=\"footer-link\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
     html.push_str("    </div>\n");
 
     html.push_str("</div>\n");
