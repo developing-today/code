@@ -156,27 +156,89 @@ pub fn render_file_list(files: &[(String, String, u64)]) -> String {
 /// HTML fragment for the editor.
 pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     let doc_id_escaped = html_escape(doc_id);
-    let name_escaped = html_escape(name);
     // URL-encode the filename for WebSocket query parameter
     let name_urlencoded = urlencoding::encode(name);
 
     let mut html = String::with_capacity(2048);
-    html.push_str("<div class=\"card\">\n");
-    let _ = write!(
-        html,
-        "    <div class=\"card-header flex items-center justify-between\">\n        <span>Editing: {}</span>\n        <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n    </div>\n",
-        name_escaped
-    );
+    html.push_str("<div class=\"editor-page\">\n");
     let _ = write!(
         html,
         "    <div class=\"editor-wrapper\" id=\"editor-container\" data-doc-id=\"{}\" data-filename=\"{}\">\n        <div id=\"editor\">{}</div>\n    </div>\n",
         doc_id_escaped, name_urlencoded, content
     );
-    html.push_str("    <div class=\"flex justify-between mt-md\">\n");
-    html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
-    html.push_str("        <button onclick=\"alert('Save functionality coming soon')\" class=\"primary\">Save</button>\n");
-    html.push_str("    </div>\n");
     html.push_str("</div>\n");
+
+    html
+}
+
+/// Render a complete editor page with custom header.
+///
+/// # Arguments
+///
+/// * `doc_id` - Document identifier (hash)
+/// * `name` - Human-readable document name
+/// * `content` - Initial document content (HTML)
+/// * `assets` - Asset URLs
+///
+/// # Returns
+///
+/// A complete HTML document for the editor.
+pub fn render_editor_page(doc_id: &str, name: &str, content: &str, assets: &AssetUrls) -> String {
+    let doc_id_escaped = html_escape(doc_id);
+    let name_escaped = html_escape(name);
+    let name_urlencoded = urlencoding::encode(name);
+    let edit_url = format!("/edit/{}", doc_id_escaped);
+
+    let mut html = String::with_capacity(4096);
+
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\" data-theme=\"sneak\">\n<head>\n");
+    html.push_str("    <meta charset=\"UTF-8\">\n");
+    html.push_str(
+        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
+    );
+    let _ = write!(html, "    <title>{} - id</title>\n", name_escaped);
+    let _ = write!(
+        html,
+        "    <link rel=\"stylesheet\" href=\"{}\">\n",
+        assets.styles_css
+    );
+    let _ = write!(
+        html,
+        "    <script type=\"module\" src=\"{}\"></script>\n",
+        assets.main_js
+    );
+    html.push_str("\n</head>\n<body>\n");
+
+    // Editor header - hide on scroll down, show on scroll up
+    html.push_str("    <header class=\"header editor-page-header\">\n");
+    html.push_str("        <div class=\"container flex items-center justify-between\">\n");
+    let _ = write!(
+        html,
+        "            <h1 class=\"mb-0\"><a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id</a> <span class=\"text-muted\">// <a href=\"{}\" class=\"editor-file-link\">{}</a></span></h1>\n",
+        edit_url, name_escaped
+    );
+    html.push_str(
+        "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
+    );
+    html.push_str("        </div>\n");
+    html.push_str("    </header>\n");
+
+    // Main content - editor fills the space
+    html.push_str("    <main class=\"main\" id=\"main\">\n");
+    let _ = write!(
+        html,
+        "        <div class=\"editor-page\">\n            <div class=\"editor-wrapper\" id=\"editor-container\" data-doc-id=\"{}\" data-filename=\"{}\">\n                <div id=\"editor\">{}</div>\n            </div>\n        </div>\n",
+        doc_id_escaped, name_urlencoded, content
+    );
+    html.push_str("    </main>\n");
+
+    // Footer
+    html.push_str("    <footer class=\"footer editor-page-footer\">\n");
+    html.push_str("        <div class=\"container\">\n");
+    html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back</a>\n");
+    html.push_str("        </div>\n");
+    html.push_str("    </footer>\n");
+    html.push_str("</body>\n</html>");
 
     html
 }

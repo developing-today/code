@@ -166,21 +166,31 @@ export function initCollab(
   const handleMessage = (data: ArrayBuffer): void => {
     const msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
     const msgType = msg[0] as number;
+    console.log('[collab] handleMessage msgType:', msgType, 'full msg:', msg);
 
     switch (msgType) {
       case MSG.INIT: {
         // [0, version, doc, mode]
         const version = msg[1] as number;
-        const doc = msg[2];
+        const doc = msg[2] as { type: string; content?: unknown[] };
         const mode = (msg[3] as string || 'raw') as ContentMode;
         documentMode = mode;
         console.log('[collab] Received initial state, version:', version, 'mode:', mode);
+        console.log('[collab] Doc type:', doc?.type);
+        console.log('[collab] Doc content length:', doc?.content?.length);
+        if (doc?.content?.[0]) {
+          const firstNode = doc.content[0] as { type?: string; attrs?: unknown };
+          console.log('[collab] First node type:', firstNode?.type, 'attrs:', firstNode?.attrs);
+        }
+        console.log('[collab] Full doc:', JSON.stringify(doc).slice(0, 500));
         
         // Initialize the editor with the server's document and mode
         if (!editorInstance) {
           console.log('[collab] Initializing editor with server version:', version, 'mode:', mode);
+          console.log('[collab] Container element:', container, 'innerHTML before:', container.innerHTML.slice(0, 100));
           // Pass the server's ProseMirror JSON doc, not the HTML initialContent
           editorInstance = initEditor(container, doc, version, mode, sendCursor);
+          console.log('[collab] Container innerHTML after initEditor:', container.innerHTML.slice(0, 200));
           myClientID = editorInstance.clientID;
           console.log('[collab] Our clientID:', myClientID);
           
@@ -300,11 +310,10 @@ export function initCollab(
     socket.onclose = (event): void => {
       console.log('[collab] Disconnected:', event.code, event.reason);
       connected = false;
-      if (editorInstance) {
+      // Only update connection state if we're not intentionally closing
+      // (the view may be destroyed if this is an intentional disconnect)
+      if (event.code !== 1000 && editorInstance) {
         setConnectionState(editorInstance.view, 'disconnected');
-      }
-      
-      if (event.code !== 1000) { // Not a normal closure
         updateStatus('disconnected');
         scheduleReconnect();
       }
@@ -316,6 +325,9 @@ export function initCollab(
     };
 
     socket.onmessage = (event): void => {
+      // Ignore messages if we're not connected (e.g., during close)
+      if (!connected) return;
+      
       if (event.data instanceof ArrayBuffer) {
         handleMessage(event.data);
       } else if (typeof event.data === 'string') {
@@ -340,9 +352,9 @@ export function initCollab(
       clearTimeout(reconnectTimer);
     }
     container.removeEventListener('editor:change', handleEditorChange);
-    if (editorInstance) {
-      setConnectionState(editorInstance.view, 'disconnected');
-    }
+    // Note: We intentionally don't call setConnectionState here because
+    // the view will be destroyed immediately after this function returns.
+    // The close code 1000 tells the onclose handler not to try using the view.
     ws.close(1000, 'Client disconnected');
     updateStatus('disconnected');
   };

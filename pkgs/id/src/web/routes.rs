@@ -15,8 +15,8 @@ use serde::Deserialize;
 use super::AppState;
 use super::content_mode::{ContentMode, detect_mode_with_content, get_content_type};
 use super::templates::{
-    render_binary_viewer, render_editor, render_file_list, render_media_viewer, render_page,
-    render_settings,
+    render_binary_viewer, render_editor, render_editor_page, render_file_list, render_media_viewer,
+    render_page, render_settings,
 };
 
 /// Create the main router with all web routes.
@@ -39,7 +39,9 @@ pub fn create_router(state: AppState) -> Router {
 
 /// Check if this is an HTMX request (partial content).
 fn is_htmx_request(headers: &HeaderMap) -> bool {
-    headers.contains_key("HX-Request")
+    let is_htmx = headers.contains_key("HX-Request");
+    tracing::debug!("[routes] is_htmx_request: {}", is_htmx);
+    is_htmx
 }
 
 /// Index page handler - shows file list.
@@ -83,15 +85,19 @@ async fn edit_handler(
     Path(hash): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    tracing::info!("[routes] edit_handler called for hash: {}", hash);
+
     // Try to find the file name from tags
     let name = get_file_name(&state.store, &hash)
         .await
         .unwrap_or_else(|| hash.clone());
+    tracing::debug!("[routes] Resolved name: {}", name);
 
     // Get file content bytes from store
     let content_result = get_file_bytes(&state.store, &hash).await;
 
     let is_htmx = is_htmx_request(&headers);
+    tracing::info!("[routes] edit_handler is_htmx={}, name={}", is_htmx, name);
 
     match content_result {
         Ok(bytes) => {
@@ -130,32 +136,20 @@ async fn edit_handler(
                 _ => {
                     // Editable modes - convert bytes to HTML for editor
                     let content = get_file_content_html(&bytes);
-                    let editor_html = render_editor(&hash, &name, &content);
                     if is_htmx {
-                        Html(editor_html)
+                        Html(render_editor(&hash, &name, &content))
                     } else {
-                        Html(render_page(
-                            &format!("Edit: {name}"),
-                            &editor_html,
-                            "",
-                            &state.assets,
-                        ))
+                        Html(render_editor_page(&hash, &name, &content, &state.assets))
                     }
                 }
             }
         }
         Err(err_msg) => {
             // Error loading file
-            let editor_html = render_editor(&hash, &name, &err_msg);
             if is_htmx {
-                Html(editor_html)
+                Html(render_editor(&hash, &name, &err_msg))
             } else {
-                Html(render_page(
-                    &format!("Edit: {name}"),
-                    &editor_html,
-                    "",
-                    &state.assets,
-                ))
+                Html(render_editor_page(&hash, &name, &err_msg, &state.assets))
             }
         }
     }

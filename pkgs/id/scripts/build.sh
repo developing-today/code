@@ -46,7 +46,10 @@ if [[ "$VARIANT" == "web" ]]; then
   else
     manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
 
-    for f in web/src/*.ts web/styles/*.css web/package.json web/scripts/*.ts; do
+    # Use find for robust recursive file discovery
+    # Check all .ts, .css, .json config files under web/ (excluding dist/ and node_modules/)
+    # Also check bun.lock for dependency changes
+    while IFS= read -r f; do
       if [[ -f "$f" ]]; then
         file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
         if [[ "$file_time" -gt "$manifest_time" ]]; then
@@ -55,7 +58,10 @@ if [[ "$VARIANT" == "web" ]]; then
           break
         fi
       fi
-    done
+    done < <(
+      find web -type f \( -name '*.ts' -o -name '*.css' -o -name '*.json' -o -name 'bun.lock' \) \
+        ! -path 'web/dist/*' ! -path 'web/node_modules/*' 2>/dev/null
+    )
   fi
 
   if [[ "$needs_frontend" == "true" ]]; then
@@ -81,15 +87,8 @@ elif [[ -f "$VARIANT_FILE" ]] && [[ "$(cat "$VARIANT_FILE")" == "$OTHER_VARIANT"
 else
   binary_time=$(stat -c %Y "$BINARY" 2>/dev/null || echo 0)
 
-  # Source files to check
-  sources=(src/*.rs src/**/*.rs Cargo.toml Cargo.lock)
-
-  # For web variant, also check embedded assets
-  if [[ "$VARIANT" == "web" ]]; then
-    sources+=(web/dist/*)
-  fi
-
-  for f in "${sources[@]}"; do
+  # Use find for robust recursive file discovery
+  while IFS= read -r f; do
     if [[ -f "$f" ]]; then
       file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
       if [[ "$file_time" -gt "$binary_time" ]]; then
@@ -98,7 +97,15 @@ else
         break
       fi
     fi
-  done
+  done < <(
+    find src -name '*.rs' -type f 2>/dev/null
+    echo Cargo.toml
+    echo Cargo.lock
+    # For web variant, also check embedded assets
+    if [[ "$VARIANT" == "web" ]]; then
+      find web/dist -type f 2>/dev/null
+    fi
+  )
 fi
 
 if [[ "$needs_backend" == "true" ]]; then

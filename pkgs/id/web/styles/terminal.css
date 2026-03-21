@@ -270,6 +270,11 @@ button.primary:hover {
   min-height: calc(100vh - 120px);
 }
 
+/* When main contains editor, remove padding */
+.main:has(.editor-page) {
+  padding: 0;
+}
+
 .footer {
   padding: var(--space-md) 0;
   border-top: 1px solid var(--border);

@@ -42,6 +42,50 @@ function updateStatus(status: 'connecting' | 'connected' | 'disconnected' | 'err
 }
 
 /**
+ * Initialize scroll-hide behavior for editor page header.
+ * Header hides on scroll down, shows on scroll up.
+ */
+function initScrollHideHeader(): (() => void) | null {
+  const header = document.querySelector('.editor-page-header');
+  const editorContent = document.querySelector('.ProseMirror');
+  
+  if (!header || !editorContent) return null;
+  
+  let lastScrollTop = 0;
+  let ticking = false;
+  
+  const handleScroll = (): void => {
+    const scrollTop = editorContent.scrollTop;
+    
+    if (!ticking) {
+      window.requestAnimationFrame(() => {
+        // Scrolling down - hide header
+        if (scrollTop > lastScrollTop && scrollTop > 20) {
+          header.classList.add('hidden');
+        }
+        // Scrolling up - show header
+        else if (scrollTop < lastScrollTop) {
+          header.classList.remove('hidden');
+        }
+        lastScrollTop = scrollTop;
+        ticking = false;
+      });
+      ticking = true;
+    }
+  };
+  
+  editorContent.addEventListener('scroll', handleScroll);
+  
+  // Return cleanup function
+  return () => {
+    editorContent.removeEventListener('scroll', handleScroll);
+  };
+}
+
+// Track cleanup function for scroll handler
+let scrollCleanup: (() => void) | null = null;
+
+/**
  * Initialize the application.
  */
 function init(): void {
@@ -98,6 +142,8 @@ function init(): void {
           updateStatus,
           (editor: EditorInstance) => {
             console.log('[id] Editor initialized with server version, mode:', editor.mode);
+            // Initialize scroll-hide header after editor is ready
+            scrollCleanup = initScrollHideHeader();
           }
         );
         console.log('[id] Collab connection initiated');
@@ -108,12 +154,20 @@ function init(): void {
     },
     
     closeEditor(): void {
+      // Clean up scroll handler
+      if (scrollCleanup) {
+        scrollCleanup();
+        scrollCleanup = null;
+      }
+      
       if (this.collab) {
-        // The collab connection owns the editor, so destroying collab cleans up both
+        // Disconnect first (closes WebSocket, removes event listeners)
+        // This must happen before destroying the view to avoid dispatch errors
+        this.collab.disconnect();
+        // Then destroy the editor view
         if (this.collab.editor) {
           this.collab.editor.view.destroy();
         }
-        this.collab.disconnect();
         this.collab = null;
       }
       updateStatus('disconnected');
@@ -137,15 +191,27 @@ function init(): void {
   
   // Listen for HTMX events to handle editor initialization
   document.body.addEventListener('htmx:afterSwap', (event: Event) => {
-    const target = (event as CustomEvent).detail?.target;
+    const detail = (event as CustomEvent).detail;
+    const target = detail?.target;
+    console.log('[id] htmx:afterSwap fired, target:', target?.id, 'detail:', detail);
     // After swap into #main, check if editor-container exists
     if (target?.id === 'main') {
       const editorContainer = document.getElementById('editor-container');
       const docId = editorContainer?.dataset.docId;
+      console.log('[id] afterSwap: editorContainer=', editorContainer, 'docId=', docId, 'app.collab=', app.collab);
       if (docId && !app.collab) {
+        console.log('[id] afterSwap: calling openEditor for docId:', docId);
         app.openEditor(docId);
+      } else {
+        console.log('[id] afterSwap: NOT calling openEditor - docId:', docId, 'app.collab:', app.collab);
       }
     }
+  });
+  
+  // Also listen for htmx:beforeSwap to see what's happening
+  document.body.addEventListener('htmx:beforeSwap', (event: Event) => {
+    const detail = (event as CustomEvent).detail;
+    console.log('[id] htmx:beforeSwap fired, target:', detail?.target?.id, 'xhr status:', detail?.xhr?.status);
   });
   
   // Handle navigation away from editor

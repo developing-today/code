@@ -8,18 +8,19 @@
  * - "media" / "binary" - Not editable (handled elsewhere)
  */
 
-import { EditorState, type Transaction, type Plugin } from 'prosemirror-state';
+import { EditorState, type Transaction, type Plugin, TextSelection } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import { Schema, DOMParser, Node } from 'prosemirror-model';
 import { schema as basicSchema } from 'prosemirror-schema-basic';
 import { addListNodes } from 'prosemirror-schema-list';
-import { exampleSetup } from 'prosemirror-example-setup';
+import { exampleSetup, buildMenuItems } from 'prosemirror-example-setup';
 import { collab, sendableSteps, getVersion } from 'prosemirror-collab';
 import { keymap } from 'prosemirror-keymap';
 import { baseKeymap } from 'prosemirror-commands';
 import { history } from 'prosemirror-history';
 import { dropCursor } from 'prosemirror-dropcursor';
 import { gapCursor } from 'prosemirror-gapcursor';
+import { undoItem, redoItem, blockTypeItem, icons } from 'prosemirror-menu';
 import { createCursorPlugin, type SendCursorFn } from './cursors';
 
 /**
@@ -111,22 +112,29 @@ export function initEditor(
   mode: ContentMode = 'raw',
   sendCursor?: SendCursorFn
 ): EditorInstance {
+  console.log('[editor] initEditor called with mode:', mode, 'collabVersion:', collabVersion);
+  console.log('[editor] initialDoc:', initialDoc ? JSON.stringify(initialDoc).slice(0, 300) : 'undefined');
+  
   // Generate a random client ID for this session
   const clientID = Math.floor(Math.random() * 0xFFFFFFFF);
   
   // Select schema based on mode
   const editorSchema = getSchema(mode);
+  console.log('[editor] Using schema for mode:', mode, 'hasToolbar:', hasToolbar(mode));
   
   // Parse initial document from JSON if provided, otherwise create empty
   let doc: Node;
   if (initialDoc && typeof initialDoc === 'object') {
     try {
+      console.log('[editor] Parsing initialDoc with Node.fromJSON');
       doc = Node.fromJSON(editorSchema, initialDoc);
+      console.log('[editor] Parsed doc successfully, content:', doc.toString().slice(0, 200));
     } catch (err) {
       console.error('[editor] Failed to parse initial doc JSON, using empty doc:', err);
       doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node('doc');
     }
   } else {
+    console.log('[editor] No initialDoc, creating empty doc');
     doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node('doc');
   }
 
@@ -134,8 +142,64 @@ export function initEditor(
   const plugins: Plugin[] = [];
   
   if (hasToolbar(mode)) {
-    // Full editor with toolbar, menu, and all formatting features
-    plugins.push(...exampleSetup({ schema: editorSchema }));
+    // Build custom menu that flattens the Type dropdown into inline buttons
+    const menuItems = buildMenuItems(editorSchema);
+    
+    // Filter out null/undefined items
+    const cut = <T>(arr: (T | null | undefined)[]): T[] => arr.filter((x): x is T => x != null);
+    
+    // Create compact block type items with short labels
+    const paragraph = editorSchema.nodes.paragraph;
+    const codeBlock = editorSchema.nodes.code_block;
+    const heading = editorSchema.nodes.heading;
+    
+    const makeParagraph = paragraph && blockTypeItem(paragraph, {
+      title: 'Change to paragraph',
+      label: '¶',
+    });
+    const makeCodeBlock = codeBlock && blockTypeItem(codeBlock, {
+      title: 'Change to code block',
+      label: '</>',
+    });
+    
+    // Create heading items H1-H6 with compact labels
+    const makeHeadings = heading ? [1, 2, 3, 4, 5, 6].map(level => 
+      blockTypeItem(heading, {
+        title: `Change to heading ${level}`,
+        label: `H${level}`,
+        attrs: { level },
+      })
+    ) : [];
+    
+    // Build flattened menu structure:
+    // Row 1: inline formatting (bold, italic, code, link)
+    // Row 2: block types (paragraph, code, H1-H6) + undo/redo
+    // Row 3: lists, blockquote, structure tools
+    const customMenu = [
+      // Inline formatting
+      cut([menuItems.toggleStrong, menuItems.toggleEm, menuItems.toggleCode, menuItems.toggleLink]),
+      // Block types flattened + undo/redo
+      cut([
+        makeParagraph,
+        makeCodeBlock,
+        ...makeHeadings,
+        undoItem,
+        redoItem,
+      ]),
+      // Block structure tools
+      cut([
+        menuItems.wrapBulletList,
+        menuItems.wrapOrderedList,
+        menuItems.wrapBlockQuote,
+        menuItems.liftItem,
+        menuItems.selectParentNodeItem,
+      ]),
+    ];
+    
+    plugins.push(...exampleSetup({ 
+      schema: editorSchema, 
+      menuContent: customMenu,
+    }));
   } else {
     // Minimal setup for raw mode - just basic editing, no menu/toolbar
     plugins.push(
@@ -186,6 +250,38 @@ export function initEditor(
       } else if (transaction.docChanged) {
         console.log('[editor] Remote document change (from collab), not dispatching event');
       }
+    },
+    handleKeyDown(view, event) {
+      // Fix for cursor jumping 2 lines when pressing Up at start of visual line.
+      // The browser's native caret can be positioned at end of previous line
+      // (visually same as start of current line), causing Up to move from there.
+      // We detect this case and manually compute the correct target position.
+      if (event.key === 'ArrowUp') {
+        const { $head } = view.state.selection;
+        
+        // Check if we're at the start of a visual line:
+        // - parentOffset is 0 (start of block), OR
+        // - character before cursor is a newline
+        const textBefore = $head.parent.textContent.slice(0, $head.parentOffset);
+        const isAtVisualLineStart = $head.parentOffset === 0 || textBefore.endsWith('\n');
+        
+        if (isAtVisualLineStart) {
+          // Get current visual coordinates
+          const coords = view.coordsAtPos($head.pos);
+          const lineHeight = coords.bottom - coords.top;
+          
+          // Move up by half a line height to ensure we're in the previous line
+          const targetY = coords.top - lineHeight / 2;
+          const targetPos = view.posAtCoords({ left: coords.left, top: targetY });
+          
+          if (targetPos && targetPos.pos < $head.pos) {
+            const tr = view.state.tr.setSelection(TextSelection.create(view.state.doc, targetPos.pos));
+            view.dispatch(tr);
+            return true; // Handled
+          }
+        }
+      }
+      return false; // Let ProseMirror/browser handle it
     },
     attributes: {
       class: editorClass,

@@ -4,17 +4,84 @@
  */
 
 /* ============================================================================
+   Editor Page Layout
+   ============================================================================ */
+
+.editor-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 30px); /* Account for header and footer */
+  margin: 0;
+}
+
+/* Editor page header - minimal, compact */
+.editor-page-header {
+  padding: 2px 4px !important;
+  min-height: auto !important;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.editor-page-header.hidden {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.editor-page-header h1 {
+  font-size: 11px !important;
+  margin: 0 !important;
+}
+
+.editor-page-header .container {
+  padding: 0 4px !important;
+}
+
+.editor-page-header a {
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.editor-page-header a:hover {
+  color: var(--accent);
+}
+
+.editor-file-link {
+  color: var(--text-muted) !important;
+}
+
+.editor-file-link:hover {
+  color: var(--accent) !important;
+}
+
+/* Editor page footer - minimal */
+.editor-page-footer {
+  padding: 1px 4px !important;
+  min-height: auto !important;
+  font-size: 9px !important;
+  border-top: 1px solid var(--border);
+}
+
+.editor-page-footer .container {
+  padding: 0 4px !important;
+}
+
+.editor-page-footer a {
+  font-size: 9px;
+}
+
+/* ============================================================================
    Editor Container
    ============================================================================ */
 
 .editor-wrapper {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   min-height: 400px;
-  border: 1px solid var(--border);
-  border-radius: var(--border-radius);
+  margin: 0 2px;
   background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
 
 /* The #editor div needs to fill its parent and pass height to children */
@@ -22,7 +89,6 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 0; /* Allow flex child to shrink */
 }
 
 .editor-toolbar {
@@ -76,7 +142,6 @@
   flex: 1;
   padding: var(--space-md);
   outline: none;
-  overflow-y: auto;
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
   line-height: var(--line-height);
@@ -213,32 +278,19 @@
    ============================================================================ */
 
 .collab-cursor {
-  /* Zero-width container that doesn't affect layout */
   position: relative;
   display: inline-block;
-  width: 0;
-  height: 0;
-  vertical-align: text-bottom;
-  overflow: visible;
+  border-left: 1px solid;
+  margin-left: -0.5px;
+  margin-right: -0.5px;
   pointer-events: none;
+  height: 1.2em; /* Explicit height to ensure cursor line is visible */
+  vertical-align: text-bottom;
   /* CSS custom properties set by JS for hybrid strobe approach */
   --strobe-duration: 1000ms;
   --strobe-state: running;
   --base-opacity: 1;
-  /* Use custom property animation on the pseudo-element */
-}
-
-/* The visible cursor line - absolutely positioned to not affect layout */
-.collab-cursor::before {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 1px;
-  height: 1.2em;
-  /* Color is set via border-color on parent, inherit it */
-  background-color: var(--cursor-color, currentColor);
-  pointer-events: none;
+  /* Use custom property animation */
   animation: cursor-strobe var(--strobe-duration) ease-in-out infinite;
   animation-play-state: var(--strobe-state);
 }
@@ -267,11 +319,8 @@
 
 /* Hover state for cursor (applied via JS with .collab-cursor-hovered class) */
 .collab-cursor.collab-cursor-hovered {
+  border-left-width: 2px;
   z-index: 100;
-}
-
-.collab-cursor.collab-cursor-hovered::before {
-  width: 2px;
   /* Override animation - full opacity, no strobe */
   animation: none;
   opacity: 1 !important;
@@ -288,11 +337,8 @@
 
 /* Own cursor - visually distinct, no label */
 .collab-cursor.collab-cursor-own {
+  border-left-width: 3px;
   z-index: 5;
-}
-
-.collab-cursor.collab-cursor-own::before {
-  width: 2px;
   /* No strobe for own cursor - solid */
   animation: none;
   opacity: 1 !important;
@@ -362,13 +408,14 @@
 
 .ProseMirror-menubar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 2px;
-  padding: var(--space-sm) var(--space-md);
+  justify-content: space-between;
+  gap: 0;
+  padding: 2px 4px;
   background-color: var(--bg-tertiary) !important;
   border-bottom: 1px solid var(--border) !important;
-  min-height: 36px;
+  min-height: 24px;
   color: var(--text-secondary) !important;
 }
 
@@ -381,7 +428,9 @@
 .ProseMirror-menu {
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  flex: 1;
+  gap: 0;
   margin: 0;
   line-height: 1;
 }
@@ -391,9 +440,11 @@
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 28px;
-  padding: 4px 8px;
+  flex: 1;
+  max-width: 48px;
+  min-width: 24px;
+  height: 22px;
+  padding: 2px 4px;
   /* Override ProseMirror's default white background */
   background: transparent !important;
   border: 1px solid transparent !important;
@@ -404,6 +455,9 @@
   transition: all var(--transition-fast);
   vertical-align: middle;
   line-height: 1;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .ProseMirror-icon:hover {
@@ -415,8 +469,8 @@
 /* SVG icons in menu - ensure proper coloring */
 .ProseMirror-icon svg {
   fill: currentColor !important;
-  height: 14px;
-  width: 14px;
+  height: 12px;
+  width: 12px;
 }
 
 /* Text labels in icons */
@@ -443,16 +497,18 @@
 .ProseMirror-menuitem {
   display: inline-flex;
   align-items: center;
-  margin-right: 2px;
+  flex: 1;
+  margin: 0;
 }
 
 /* Separator between menu groups */
 .ProseMirror-menuseparator {
   width: 1px;
-  height: 20px;
+  height: 16px;
   background-color: var(--border);
-  margin: 0 var(--space-sm);
+  margin: 0 2px;
   border: none;
+  flex-shrink: 0;
 }
 
 /* Dropdown menus */

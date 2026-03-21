@@ -162,14 +162,15 @@ web:
     else
         manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
         needs_build=false
-        # Use find for robust file discovery (handles subdirectories)
+        # Check all .ts, .css, .json config files under web/ (excluding dist/ and node_modules/)
+        # Also check bun.lock for dependency changes
         while IFS= read -r f; do
             file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
             if [[ "$file_time" -gt "$manifest_time" ]]; then
                 needs_build=true
                 break
             fi
-        done < <(find web/src -name '*.ts' -type f 2>/dev/null; find web/styles -name '*.css' -type f 2>/dev/null; find web/scripts -name '*.ts' -type f 2>/dev/null; echo web/package.json)
+        done < <(find web -type f \( -name '*.ts' -o -name '*.css' -o -name '*.json' -o -name 'bun.lock' \) ! -path 'web/dist/*' ! -path 'web/node_modules/*' 2>/dev/null)
         if [[ "$needs_build" == "true" ]]; then
             echo "[web] Rebuilding assets..."
             cd web && bun install && bun run build
