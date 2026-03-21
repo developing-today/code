@@ -117,9 +117,10 @@
   flex: 1;
 }
 
-/* ProseMirror menubar wrapper - block display for float to work */
+/* ProseMirror menubar wrapper - flex to allow margin-left:auto on menubar */
 .editor-wrapper .ProseMirror-menubar-wrapper {
-  display: block;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   position: relative;
   min-height: 0;
@@ -453,11 +454,11 @@
 
 /* Menubar in editor - compact, floating top-right */
 .editor-wrapper .ProseMirror-menubar {
-  /* Float right + sticky for right-aligned sticky behavior */
-  float: right;
+  /* Sticky + margin-left:auto for right-aligned sticky behavior */
   position: sticky;
   top: 0;
   z-index: 100;
+  margin-left: auto;
   
   /* Negative margin so it doesn't push content down */
   margin-bottom: -100px;
@@ -580,8 +581,8 @@
 }
 
 .ProseMirror-menuitem button:hover {
-  background: transparent !important;
-  color: inherit !important;
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
 }
 
 /* Menu items container - minimal */
