@@ -21,6 +21,8 @@ interface IdApp {
   setTheme: (theme: Theme) => void;
   openEditor: (docId: string) => Promise<void>;
   closeEditor: () => void;
+  navHistory: string[];
+  currentPath: string;
 }
 
 /**
@@ -42,30 +44,37 @@ function updateStatus(status: 'connecting' | 'connected' | 'disconnected' | 'err
 }
 
 /**
- * Initialize scroll-hide behavior for editor page header.
- * Header hides on scroll down, shows on scroll up.
+ * Initialize scroll-show behavior for editor inline header.
+ * Header shows when scrolling up, hides when scrolling down.
  */
-function initScrollHideHeader(): (() => void) | null {
-  const header = document.querySelector('.editor-page-header');
-  const editorContent = document.querySelector('.ProseMirror');
+function initScrollShowHeader(): (() => void) | null {
+  const header = document.querySelector('.editor-inline-header');
   
-  if (!header || !editorContent) return null;
+  if (!header) {
+    console.log('[id] scroll-show: header not found');
+    return null;
+  }
   
-  let lastScrollTop = 0;
+  console.log('[id] scroll-show: initializing, header element:', header);
+  
+  let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
   let ticking = false;
   
   const handleScroll = (): void => {
-    const scrollTop = editorContent.scrollTop;
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
     
     if (!ticking) {
       window.requestAnimationFrame(() => {
-        // Scrolling down - hide header
-        if (scrollTop > lastScrollTop && scrollTop > 20) {
-          header.classList.add('hidden');
-        }
+        const delta = scrollTop - lastScrollTop;
+        console.log('[id] scroll:', scrollTop, 'delta:', delta, 'header visible:', header.classList.contains('visible'));
+        
         // Scrolling up - show header
-        else if (scrollTop < lastScrollTop) {
-          header.classList.remove('hidden');
+        if (scrollTop < lastScrollTop) {
+          header.classList.add('visible');
+        }
+        // Scrolling down - hide header (but only if scrolled past a small threshold)
+        else if (scrollTop > lastScrollTop && scrollTop > 10) {
+          header.classList.remove('visible');
         }
         lastScrollTop = scrollTop;
         ticking = false;
@@ -74,12 +83,47 @@ function initScrollHideHeader(): (() => void) | null {
     }
   };
   
-  editorContent.addEventListener('scroll', handleScroll);
+  window.addEventListener('scroll', handleScroll, { passive: true });
+  console.log('[id] scroll-show: listener attached to window, current scrollY:', window.scrollY);
   
   // Return cleanup function
   return () => {
-    editorContent.removeEventListener('scroll', handleScroll);
+    window.removeEventListener('scroll', handleScroll);
+    header.classList.remove('visible');
+    console.log('[id] scroll-show: listener removed');
   };
+}
+
+/**
+ * Update back link based on app navigation history.
+ */
+function updateBackLink(navHistory: string[], currentPath: string): void {
+  const backLink = document.getElementById('back-link');
+  if (!backLink) return;
+  
+  // Find previous path (not current)
+  const prevPath = navHistory.length > 0 ? navHistory[navHistory.length - 1] : null;
+  
+  if (prevPath && prevPath !== currentPath) {
+    backLink.classList.remove('disabled');
+    backLink.setAttribute('href', prevPath);
+    backLink.setAttribute('hx-get', prevPath);
+    backLink.setAttribute('hx-target', '#main');
+    backLink.setAttribute('hx-push-url', 'true');
+    backLink.removeAttribute('onclick');
+    // Re-process with HTMX
+    if (window.htmx) {
+      window.htmx.process(backLink);
+    }
+  } else {
+    // No history - grey out and use browser back as fallback
+    backLink.classList.add('disabled');
+    backLink.removeAttribute('href');
+    backLink.removeAttribute('hx-get');
+    backLink.removeAttribute('hx-target');
+    backLink.removeAttribute('hx-push-url');
+    backLink.setAttribute('onclick', 'history.back()');
+  }
 }
 
 // Track cleanup function for scroll handler
@@ -104,6 +148,8 @@ function init(): void {
   const app: IdApp = {
     collab: null,
     setTheme,
+    navHistory: [],
+    currentPath: window.location.pathname,
     
     async openEditor(docId: string): Promise<void> {
       // Guard against double initialization
@@ -142,8 +188,10 @@ function init(): void {
           updateStatus,
           (editor: EditorInstance) => {
             console.log('[id] Editor initialized with server version, mode:', editor.mode);
-            // Initialize scroll-hide header after editor is ready
-            scrollCleanup = initScrollHideHeader();
+            // Initialize scroll-show header after editor is ready
+            scrollCleanup = initScrollShowHeader();
+            // Update back link based on navigation history
+            updateBackLink(this.navHistory, this.currentPath);
           }
         );
         console.log('[id] Collab connection initiated');
@@ -196,6 +244,19 @@ function init(): void {
     console.log('[id] htmx:afterSwap fired, target:', target?.id, 'detail:', detail);
     // After swap into #main, check if editor-container exists
     if (target?.id === 'main') {
+      const newPath = window.location.pathname;
+      
+      // Track navigation: push previous path to history
+      if (app.currentPath && app.currentPath !== newPath) {
+        app.navHistory.push(app.currentPath);
+        // Limit history size
+        if (app.navHistory.length > 50) {
+          app.navHistory.shift();
+        }
+      }
+      app.currentPath = newPath;
+      console.log('[id] Navigation: path=', newPath, 'history=', app.navHistory);
+      
       const editorContainer = document.getElementById('editor-container');
       const docId = editorContainer?.dataset.docId;
       console.log('[id] afterSwap: editorContainer=', editorContainer, 'docId=', docId, 'app.collab=', app.collab);
@@ -204,6 +265,8 @@ function init(): void {
         app.openEditor(docId);
       } else {
         console.log('[id] afterSwap: NOT calling openEditor - docId:', docId, 'app.collab:', app.collab);
+        // Update back button on main page
+        updateBackLink(app.navHistory, app.currentPath);
       }
     }
   });
@@ -222,6 +285,9 @@ function init(): void {
   });
   
   console.log('[id] Web interface initialized');
+  
+  // Initialize back button on main page
+  updateBackLink(app.navHistory, app.currentPath);
   
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById('editor-container');

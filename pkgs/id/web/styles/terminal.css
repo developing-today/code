@@ -276,10 +276,34 @@ button.primary:hover {
 }
 
 .footer {
-  padding: var(--space-md) 0;
-  border-top: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
+  padding: 2px 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  background-color: var(--bg-primary);
+}
+
+.footer .sep {
+  opacity: 0.5;
+}
+
+.footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  color: var(--accent);
+}
+
+.footer a.disabled {
+  opacity: 0.3;
+  pointer-events: none;
+  cursor: default;
+}
+
+.footer kbd {
+  font-size: 9px;
+  padding: 0 2px;
 }
 
 /* Grid layout */

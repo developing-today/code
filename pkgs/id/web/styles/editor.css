@@ -7,66 +7,120 @@
    Editor Page Layout
    ============================================================================ */
 
+/* Editor main - no padding, full height */
+.editor-main {
+  padding: 0 !important;
+  min-height: 100vh;
+}
+
+/* When main contains editor-page via HTMX, remove padding */
+.main:has(.editor-page) {
+  padding: 0 !important;
+}
+
+/* Hide the main site header and footer when editor is shown via HTMX */
+body:has(.editor-page) > .header,
+body:has(.editor-page) > .footer {
+  display: none !important;
+}
+
 .editor-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 30px); /* Account for header and footer */
+  min-height: 100vh;
   margin: 0;
+  position: relative;
 }
 
-/* Editor page header - minimal, compact */
-.editor-page-header {
-  padding: 2px 4px !important;
-  min-height: auto !important;
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
-
-.editor-page-header.hidden {
+/* Inline header - hidden by default, shows on scroll up */
+.editor-inline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1px 4px;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
   transform: translateY(-100%);
   opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
   pointer-events: none;
 }
 
-.editor-page-header h1 {
-  font-size: 11px !important;
-  margin: 0 !important;
+.editor-inline-header.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
 }
 
-.editor-page-header .container {
-  padding: 0 4px !important;
+.editor-inline-title {
+  color: var(--text-primary);
 }
 
-.editor-page-header a {
+.editor-inline-title a {
   color: var(--text-primary);
   text-decoration: none;
 }
 
-.editor-page-header a:hover {
+.editor-inline-title a:hover {
   color: var(--accent);
 }
 
-.editor-file-link {
-  color: var(--text-muted) !important;
+.editor-inline-header .editor-file-link {
+  color: var(--text-muted);
 }
 
-.editor-file-link:hover {
-  color: var(--accent) !important;
+.editor-inline-header .editor-file-link:hover {
+  color: var(--accent);
 }
 
-/* Editor page footer - minimal */
-.editor-page-footer {
-  padding: 1px 4px !important;
-  min-height: auto !important;
-  font-size: 9px !important;
-  border-top: 1px solid var(--border);
-}
-
-.editor-page-footer .container {
-  padding: 0 4px !important;
-}
-
-.editor-page-footer a {
+.editor-inline-header .editor-status {
   font-size: 9px;
+}
+
+/* Inline footer - at end of document content */
+.editor-inline-footer {
+  padding: 2px 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  background-color: var(--bg-primary);
+  flex-shrink: 0;
+  margin-top: auto;
+}
+
+.editor-inline-footer .sep {
+  opacity: 0.5;
+}
+
+.editor-inline-footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.editor-inline-footer a:hover {
+  color: var(--accent);
+}
+
+.editor-inline-footer a.disabled {
+  opacity: 0.3;
+  pointer-events: none;
+  cursor: default;
+}
+
+.editor-inline-footer kbd {
+  font-size: 9px;
+  padding: 0 2px;
+}
+
+/* Legacy styles - hide if present */
+.editor-page-header,
+.editor-page-footer {
+  display: none;
 }
 
 /* ============================================================================
@@ -77,14 +131,14 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 400px;
+  min-height: calc(100vh - 20px); /* Leave room for footer */
   margin: 0 2px;
   background-color: var(--bg-secondary);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
 
-/* The #editor div needs to fill its parent and pass height to children */
+/* The #editor div needs to fill its parent */
 .editor-wrapper > #editor {
   display: flex;
   flex-direction: column;
@@ -417,12 +471,13 @@
   border-bottom: 1px solid var(--border) !important;
   min-height: 24px;
   color: var(--text-secondary) !important;
+  flex-shrink: 0; /* Don't shrink - stay at top */
 }
 
 .ProseMirror-menubar-wrapper {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
 }
 
 .ProseMirror-menu {
