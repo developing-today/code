@@ -67,42 +67,56 @@ pub fn render_page(title: &str, content: &str, scripts: &str, assets: &AssetUrls
     html.push_str(scripts);
     html.push_str("\n</head>\n<body>\n");
 
-    // Header
-    html.push_str("    <header class=\"header\">\n");
-    html.push_str("        <div class=\"container flex items-center justify-between\">\n");
-    html.push_str("            <h1 class=\"mb-0\">id <span class=\"text-muted\">// p2p file sharing</span></h1>\n");
-    html.push_str("            <nav class=\"flex items-center gap-md\">\n");
-    html.push_str("                <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
-    html.push_str("                <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
-    html.push_str("                <div class=\"theme-switcher\">\n");
-    html.push_str("                    <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
-    html.push_str("                    <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
-    html.push_str("                    <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
-    html.push_str("                </div>\n");
-    html.push_str("            </nav>\n");
-    html.push_str("        </div>\n");
+    // Main content - includes header and footer for HTMX compatibility
+    html.push_str("    <main class=\"main\" id=\"main\">\n");
+    html.push_str(&render_main_page_wrapper(content));
+    html.push_str("    </main>\n");
+
+    html.push_str("</body>\n</html>");
+
+    html
+}
+
+/// Render the main page wrapper with header and footer.
+/// This is used both for full page renders and HTMX partial updates.
+pub fn render_main_page_wrapper(content: &str) -> String {
+    let mut html = String::with_capacity(2048);
+
+    html.push_str("<div class=\"main-page\">\n");
+
+    // Header - same style as editor inline header
+    html.push_str("    <header class=\"inline-header\" id=\"main-header\">\n");
+    html.push_str("        <span class=\"header-title\"><a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
+    html.push_str("        <nav class=\"header-nav\">\n");
+    html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
+    html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
+    html.push_str("            <span class=\"theme-switcher\">\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
+    html.push_str("            </span>\n");
+    html.push_str("        </nav>\n");
     html.push_str("    </header>\n");
 
-    // Main content
-    html.push_str("    <main class=\"main\" id=\"main\">\n");
+    // Content
+    html.push_str("    <div class=\"main-content\">\n");
     html.push_str("        <div class=\"container\">\n");
     html.push_str(content);
     html.push_str("\n        </div>\n");
-    html.push_str("    </main>\n");
+    html.push_str("    </div>\n");
 
-    // Footer - compact, matching editor inline footer style
-    html.push_str("    <footer class=\"footer\">\n");
-    html.push_str("        <div class=\"container\">\n");
+    // Footer
+    html.push_str("    <footer class=\"inline-footer\" id=\"main-footer\">\n");
     html.push_str(
-        "            <a href=\"#\" id=\"back-link\" class=\"back-link disabled\">&larr; back</a>",
+        "        <a href=\"#\" onclick=\"history.back()\" id=\"back-link\" class=\"back-link\">&larr; back</a>",
     );
     html.push_str(" <span class=\"sep\">|</span> ");
     html.push_str("<span>id v0.1.0</span>");
     html.push_str(" <span class=\"sep\">|</span> ");
     html.push_str("<kbd>Alt+T</kbd> <span>themes</span>\n");
-    html.push_str("        </div>\n");
     html.push_str("    </footer>\n");
-    html.push_str("</body>\n</html>");
+
+    html.push_str("</div>\n");
 
     html
 }
@@ -168,16 +182,25 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     let mut html = String::with_capacity(2048);
     html.push_str("<div class=\"editor-page\">\n");
 
-    // Inline header - hidden by default, shows on scroll up
+    // Inline header - in normal flow at top, floats on scroll
     html.push_str("    <div class=\"editor-inline-header\" id=\"editor-header\">\n");
     let _ = write!(
         html,
         "        <span class=\"editor-inline-title\"><a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id</a> // <a href=\"{}\" class=\"editor-file-link\">{}</a></span>\n",
         edit_url, name_escaped
     );
+    html.push_str("        <nav class=\"header-nav\">\n");
     html.push_str(
-        "        <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
+        "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
+    html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
+    html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
+    html.push_str("            <span class=\"theme-switcher\">\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
+    html.push_str("            </span>\n");
+    html.push_str("        </nav>\n");
     html.push_str("    </div>\n");
 
     let _ = write!(

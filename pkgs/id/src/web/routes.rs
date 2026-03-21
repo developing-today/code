@@ -15,8 +15,8 @@ use serde::Deserialize;
 use super::AppState;
 use super::content_mode::{ContentMode, detect_mode_with_content, get_content_type};
 use super::templates::{
-    render_binary_viewer, render_editor, render_editor_page, render_file_list, render_media_viewer,
-    render_page, render_settings,
+    render_binary_viewer, render_editor, render_editor_page, render_file_list,
+    render_main_page_wrapper, render_media_viewer, render_page, render_settings,
 };
 
 /// Create the main router with all web routes.
@@ -49,7 +49,8 @@ async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
     let files = get_file_list(&state.store).await;
     let content = render_file_list(&files);
     if is_htmx_request(&headers) {
-        Html(content)
+        // HTMX request - return wrapped content with header/footer
+        Html(render_main_page_wrapper(&content))
     } else {
         Html(render_page("Files", &content, "", &state.assets))
     }
@@ -61,7 +62,8 @@ async fn settings_handler(State(state): State<AppState>, headers: HeaderMap) -> 
     let node_id = "0000000000000000000000000000000000000000000000000000000000000000";
     let content = render_settings(node_id);
     if is_htmx_request(&headers) {
-        Html(content)
+        // HTMX request - return wrapped content with header/footer
+        Html(render_main_page_wrapper(&content))
     } else {
         Html(render_page("Settings", &content, "", &state.assets))
     }

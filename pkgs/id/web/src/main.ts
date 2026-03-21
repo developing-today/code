@@ -23,6 +23,8 @@ interface IdApp {
   closeEditor: () => void;
   navHistory: string[];
   currentPath: string;
+  lastFilename: string | null;
+  lastFilePath: string | null;
 }
 
 /**
@@ -44,48 +46,80 @@ function updateStatus(status: 'connecting' | 'connected' | 'disconnected' | 'err
 }
 
 /**
- * Initialize scroll-show behavior for editor inline header.
- * Header is in normal flow at top. Once scrolled past, it becomes fixed
- * and shows when scrolling up, hides when scrolling down.
- * When scrolled back to very top, it returns to normal flow.
+ * Initialize scroll-show behavior for inline header and footer.
+ * 
+ * Header: In normal flow at top. When scrolled past, becomes fixed and 
+ *         shows on scroll-up, hides on scroll-down.
+ * 
+ * Footer: In normal flow at bottom. When not at bottom, becomes fixed and
+ *         shows on scroll-up (with header), hides on scroll-down.
+ *         Also shows when at top (with header).
  */
-function initScrollShowHeader(): (() => void) | null {
-  const header = document.querySelector('.editor-inline-header') as HTMLElement | null;
+function initScrollShowHeader(headerSelector: string = '.editor-inline-header', footerSelector: string = '.editor-inline-footer'): (() => void) | null {
+  const header = document.querySelector(headerSelector) as HTMLElement | null;
+  const footer = document.querySelector(footerSelector) as HTMLElement | null;
   
   if (!header) {
-    console.log('[id] scroll-show: header not found');
+    console.log('[id] scroll-show: header not found for selector:', headerSelector);
     return null;
   }
   
-  console.log('[id] scroll-show: initializing, header element:', header);
+  console.log('[id] scroll-show: initializing for', headerSelector, 'footer selector:', footerSelector, 'footer found:', !!footer);
   
-  // Get header height for threshold calculation
   const headerHeight = header.offsetHeight;
+  const footerHeight = footer?.offsetHeight || 18;
+  console.log('[id] scroll-show: headerHeight:', headerHeight, 'footerHeight:', footerHeight);
   let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
   let ticking = false;
   
   const handleScroll = (): void => {
     const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const windowHeight = window.innerHeight;
+    const docHeight = document.documentElement.scrollHeight;
+    const scrollBottom = docHeight - scrollTop - windowHeight;
+    const isScrollingUp = scrollTop < lastScrollTop;
+    const atTop = scrollTop <= headerHeight;
+    const atBottom = scrollBottom <= footerHeight;
     
     if (!ticking) {
       window.requestAnimationFrame(() => {
-        // At the very top - header is in normal document flow
-        if (scrollTop <= headerHeight) {
+        // === HEADER ===
+        if (atTop) {
+          // At the very top - in normal document flow
           header.classList.remove('floating', 'visible');
-        }
-        // Scrolled past header - make it floating
-        else {
+        } else {
+          // Scrolled past header - floating behavior
           if (!header.classList.contains('floating')) {
             header.classList.add('floating');
           }
-          
-          // Scrolling up - show floating header
-          if (scrollTop < lastScrollTop) {
+          if (isScrollingUp) {
             header.classList.add('visible');
-          }
-          // Scrolling down - hide floating header
-          else if (scrollTop > lastScrollTop) {
+          } else {
             header.classList.remove('visible');
+          }
+        }
+        
+        // === FOOTER ===
+        if (footer) {
+          if (atBottom) {
+            // At the very bottom - in normal document flow
+            footer.classList.remove('floating', 'visible');
+          } else if (atTop) {
+            // At the very top - show footer floating (with header visible)
+            if (!footer.classList.contains('floating')) {
+              footer.classList.add('floating');
+            }
+            footer.classList.add('visible');
+          } else {
+            // In the middle - floating behavior
+            if (!footer.classList.contains('floating')) {
+              footer.classList.add('floating');
+            }
+            if (isScrollingUp) {
+              footer.classList.add('visible');
+            } else {
+              footer.classList.remove('visible');
+            }
           }
         }
         
@@ -96,19 +130,76 @@ function initScrollShowHeader(): (() => void) | null {
     }
   };
   
+  // Initial state check
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const windowHeight = window.innerHeight;
+  const docHeight = document.documentElement.scrollHeight;
+  const scrollBottom = docHeight - scrollTop - windowHeight;
+  const atTop = scrollTop <= headerHeight;
+  const atBottom = scrollBottom <= footerHeight;
+  
+  console.log('[id] scroll-show initial state:', {
+    scrollTop,
+    headerHeight,
+    footerHeight,
+    windowHeight,
+    docHeight,
+    scrollBottom,
+    atTop,
+    atBottom,
+    footer: footer ? 'found' : 'not found',
+  });
+  
+  if (footer) {
+    if (atBottom) {
+      // At bottom - footer in normal flow
+      console.log('[id] scroll-show: footer at bottom - normal flow');
+      footer.classList.remove('floating', 'visible');
+    } else if (atTop) {
+      // At top - footer floating and visible
+      console.log('[id] scroll-show: footer at top - floating visible');
+      footer.classList.add('floating', 'visible');
+    } else {
+      // Middle - footer floating and hidden
+      console.log('[id] scroll-show: footer in middle - floating hidden');
+      footer.classList.add('floating');
+      footer.classList.remove('visible');
+    }
+  }
+  
   window.addEventListener('scroll', handleScroll, { passive: true });
-  console.log('[id] scroll-show: listener attached to window, current scrollY:', window.scrollY);
   
   // Return cleanup function
   return () => {
     window.removeEventListener('scroll', handleScroll);
     header.classList.remove('floating', 'visible');
-    console.log('[id] scroll-show: listener removed');
+    footer?.classList.remove('floating', 'visible');
   };
 }
 
 /**
+ * Update header subtitle based on navigation state.
+ * Shows "p2p file sharing" on initial load, or last filename as link after navigation.
+ */
+function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string | null, hasHistory: boolean): void {
+  const subtitle = document.getElementById('header-subtitle');
+  if (!subtitle) return;
+  
+  if (lastFilename && lastFilePath && hasHistory) {
+    // Create a link to the last file
+    subtitle.innerHTML = `// <a href="${lastFilePath}" hx-get="${lastFilePath}" hx-target="#main" hx-push-url="true">${lastFilename}</a>`;
+    // Re-process with HTMX so the link works
+    if (window.htmx) {
+      window.htmx.process(subtitle);
+    }
+  } else {
+    subtitle.textContent = '// p2p file sharing';
+  }
+}
+
+/**
  * Update back link based on app navigation history.
+ * If there's history, use HTMX to navigate. Otherwise, grey out but still allow browser back.
  */
 function updateBackLink(navHistory: string[], currentPath: string): void {
   const backLink = document.getElementById('back-link');
@@ -118,6 +209,7 @@ function updateBackLink(navHistory: string[], currentPath: string): void {
   const prevPath = navHistory.length > 0 ? navHistory[navHistory.length - 1] : null;
   
   if (prevPath && prevPath !== currentPath) {
+    // Has app history - use HTMX navigation
     backLink.classList.remove('disabled');
     backLink.setAttribute('href', prevPath);
     backLink.setAttribute('hx-get', prevPath);
@@ -129,13 +221,13 @@ function updateBackLink(navHistory: string[], currentPath: string): void {
       window.htmx.process(backLink);
     }
   } else {
-    // No history - grey out and use browser back as fallback
+    // No app history - grey out but use browser back as fallback
     backLink.classList.add('disabled');
-    backLink.removeAttribute('href');
+    backLink.setAttribute('href', '#');
     backLink.removeAttribute('hx-get');
     backLink.removeAttribute('hx-target');
     backLink.removeAttribute('hx-push-url');
-    backLink.setAttribute('onclick', 'history.back()');
+    backLink.setAttribute('onclick', 'history.back(); return false;');
   }
 }
 
@@ -163,6 +255,8 @@ function init(): void {
     setTheme,
     navHistory: [],
     currentPath: window.location.pathname,
+    lastFilename: null,
+    lastFilePath: null,
     
     async openEditor(docId: string): Promise<void> {
       // Guard against double initialization
@@ -183,6 +277,12 @@ function init(): void {
         const filenameEncoded = editorContainer.dataset.filename;
         const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : undefined;
         console.log('[id] Filename:', filename);
+        
+        // Track the filename and path for header subtitle
+        if (filename) {
+          this.lastFilename = filename;
+          this.lastFilePath = this.currentPath;
+        }
         
         // Clear container - server doc comes via WebSocket Init message
         container.innerHTML = '';
@@ -273,13 +373,24 @@ function init(): void {
       const editorContainer = document.getElementById('editor-container');
       const docId = editorContainer?.dataset.docId;
       console.log('[id] afterSwap: editorContainer=', editorContainer, 'docId=', docId, 'app.collab=', app.collab);
+      
+      // Clean up previous scroll handler
+      if (scrollCleanup) {
+        scrollCleanup();
+        scrollCleanup = null;
+      }
+      
       if (docId && !app.collab) {
         console.log('[id] afterSwap: calling openEditor for docId:', docId);
         app.openEditor(docId);
       } else {
         console.log('[id] afterSwap: NOT calling openEditor - docId:', docId, 'app.collab:', app.collab);
+        // Initialize scroll handler for main page
+        scrollCleanup = initScrollShowHeader('.inline-header', '.inline-footer');
         // Update back button on main page
         updateBackLink(app.navHistory, app.currentPath);
+        // Update header subtitle (show last filename if we have history)
+        updateHeaderSubtitle(app.lastFilename, app.lastFilePath, app.navHistory.length > 0);
       }
     }
   });
@@ -301,6 +412,12 @@ function init(): void {
   
   // Initialize back button on main page
   updateBackLink(app.navHistory, app.currentPath);
+  
+  // Initialize scroll-show header for main page
+  const mainHeader = document.getElementById('main-header');
+  if (mainHeader) {
+    scrollCleanup = initScrollShowHeader('.inline-header', '.inline-footer');
+  }
   
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById('editor-container');

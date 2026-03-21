@@ -101,9 +101,9 @@ else
     find src -name '*.rs' -type f 2>/dev/null
     echo Cargo.toml
     echo Cargo.lock
-    # For web variant, also check embedded assets
+    # For web variant, also check embedded assets (exclude .map files - not embedded)
     if [[ "$VARIANT" == "web" ]]; then
-      find web/dist -type f 2>/dev/null
+      find web/dist -type f ! -name '*.map' 2>/dev/null
     fi
   )
 fi

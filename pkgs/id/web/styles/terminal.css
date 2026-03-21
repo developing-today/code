@@ -259,51 +259,168 @@ button.primary:hover {
   padding: 0 var(--space-md);
 }
 
-.header {
-  padding: var(--space-md) 0;
+/* Shared inline header style (main page and editor) */
+.inline-header,
+.editor-inline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  background-color: var(--bg-tertiary);
   border-bottom: 1px solid var(--border);
-  background-color: var(--bg-secondary);
+  font-size: 10px;
+  /* Start in normal document flow */
+  position: relative;
+  z-index: 1000;
+}
+
+/* When floating (added by JS when scrolled away from top) */
+.inline-header.floating,
+.editor-inline-header.floating {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  transform: translateY(-100%);
+  opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.inline-header.floating.visible,
+.editor-inline-header.floating.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.header-title,
+.editor-inline-title {
+  color: var(--text-primary);
+}
+
+.header-title a,
+.editor-inline-title a {
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.header-title a:hover,
+.editor-inline-title a:hover {
+  color: var(--accent);
+}
+
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 10px;
+}
+
+.header-nav a:hover {
+  color: var(--accent);
+}
+
+.header-nav .theme-switcher {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.header-nav .theme-btn {
+  width: 8px;
+  height: 8px;
+}
+
+.header-nav .editor-status {
+  font-size: 9px;
+  margin-left: 4px;
+}
+
+/* Legacy header class - hidden when using inline-header */
+.header {
+  display: none;
 }
 
 .main {
-  padding: var(--space-lg) 0;
-  min-height: calc(100vh - 120px);
-}
-
-/* When main contains editor, remove padding */
-.main:has(.editor-page) {
   padding: 0;
+  min-height: 100vh;
 }
 
-.footer {
+/* Main page wrapper - similar structure to editor-page */
+.main-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  margin: 0;
+  position: relative;
+}
+
+.main-content {
+  flex: 1;
+  padding: var(--space-md) 0;
+}
+
+/* Inline footer - matches editor-inline-footer */
+.inline-footer {
   padding: 2px 4px;
   font-size: 9px;
   color: var(--text-muted);
-  background-color: var(--bg-primary);
+  background-color: var(--bg-tertiary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
-.footer .sep {
+/* When floating (added by JS when not at bottom) */
+.inline-footer.floating {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  transform: translateY(100%);
+  opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.inline-footer.floating.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.inline-footer .sep {
   opacity: 0.5;
 }
 
-.footer a {
+.inline-footer a {
   color: var(--text-muted);
   text-decoration: none;
 }
 
-.footer a:hover {
+.inline-footer a:hover {
   color: var(--accent);
 }
 
-.footer a.disabled {
+.inline-footer a.disabled {
   opacity: 0.3;
-  pointer-events: none;
-  cursor: default;
+  /* Still clickable - falls back to browser history.back() */
 }
 
-.footer kbd {
+.inline-footer kbd {
   font-size: 9px;
   padding: 0 2px;
+}
+
+/* Legacy footer class - no longer used */
+.footer {
+  display: none;
 }
 
 /* Grid layout */

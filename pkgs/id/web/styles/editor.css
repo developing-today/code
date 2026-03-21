@@ -18,12 +18,6 @@
   padding: 0 !important;
 }
 
-/* Hide the main site header and footer when editor is shown via HTMX */
-body:has(.editor-page) > .header,
-body:has(.editor-page) > .footer {
-  display: none !important;
-}
-
 .editor-page {
   display: flex;
   flex-direction: column;
@@ -32,51 +26,7 @@ body:has(.editor-page) > .footer {
   position: relative;
 }
 
-/* Inline header - in normal flow at top, becomes fixed when scrolling */
-.editor-inline-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1px 4px;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-  font-size: 10px;
-  /* Start in normal document flow */
-  position: relative;
-  z-index: 1000;
-}
-
-/* When floating (added by JS when scrolled away from top) */
-.editor-inline-header.floating {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  transform: translateY(-100%);
-  opacity: 0;
-  transition: transform 0.15s ease, opacity 0.15s ease;
-  pointer-events: none;
-}
-
-.editor-inline-header.floating.visible {
-  transform: translateY(0);
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.editor-inline-title {
-  color: var(--text-primary);
-}
-
-.editor-inline-title a {
-  color: var(--text-primary);
-  text-decoration: none;
-}
-
-.editor-inline-title a:hover {
-  color: var(--accent);
-}
-
+/* Editor-specific header additions (file link, status) */
 .editor-inline-header .editor-file-link {
   color: var(--text-muted);
 }
@@ -85,18 +35,33 @@ body:has(.editor-page) > .footer {
   color: var(--accent);
 }
 
-.editor-inline-header .editor-status {
-  font-size: 9px;
-}
-
 /* Inline footer - at end of document content */
 .editor-inline-footer {
   padding: 2px 4px;
   font-size: 9px;
   color: var(--text-muted);
-  background-color: var(--bg-primary);
+  background-color: var(--bg-tertiary);
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
-  margin-top: auto;
+}
+
+/* When floating (added by JS when not at bottom) */
+.editor-inline-footer.floating {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  transform: translateY(100%);
+  opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.editor-inline-footer.floating.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .editor-inline-footer .sep {
@@ -114,8 +79,7 @@ body:has(.editor-page) > .footer {
 
 .editor-inline-footer a.disabled {
   opacity: 0.3;
-  pointer-events: none;
-  cursor: default;
+  /* Still clickable - falls back to browser history.back() */
 }
 
 .editor-inline-footer kbd {
@@ -137,17 +101,31 @@ body:has(.editor-page) > .footer {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: calc(100vh - 20px); /* Leave room for footer */
-  margin: 0 2px;
+  /* Minimum height leaves room for header (~18px) and footer (~18px) */
+  min-height: calc(100vh - 36px);
+  margin: 0;
   background-color: var(--bg-secondary);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
+  /* No bottom border - footer's top border serves as the separator */
 }
 
 /* The #editor div needs to fill its parent */
 .editor-wrapper > #editor {
   display: flex;
   flex-direction: column;
+  flex: 1;
+}
+
+/* ProseMirror menubar wrapper needs to grow */
+.editor-wrapper .ProseMirror-menubar-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* ProseMirror content area grows to fill available space */
+.editor-wrapper .ProseMirror {
   flex: 1;
 }
 
@@ -467,23 +445,34 @@ body:has(.editor-page) > .footer {
    ============================================================================ */
 
 .ProseMirror-menubar {
-  display: flex;
+  display: inline-flex;
   flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0;
-  padding: 0 4px;
+  padding: 0 2px;
   background-color: var(--bg-tertiary) !important;
-  border-bottom: 1px solid var(--border) !important;
-  min-height: 18px;
+  border: 1px solid var(--border) !important;
+  min-height: 0;
   color: var(--text-secondary) !important;
-  flex-shrink: 0; /* Don't shrink - stay at top */
+  flex-shrink: 0;
+  /* Scale down the entire menubar content */
+  transform: scale(0.6);
+  transform-origin: top right;
+  float: right;
 }
 
 .ProseMirror-menubar-wrapper {
   display: flex;
   flex-direction: column;
   flex: 1;
+}
+
+/* Clear float after menubar */
+.ProseMirror-menubar-wrapper::after {
+  content: "";
+  display: table;
+  clear: both;
 }
 
 .ProseMirror-menu {
@@ -493,7 +482,10 @@ body:has(.editor-page) > .footer {
   flex: 1;
   gap: 0;
   margin: 0;
+  padding: 0;
   line-height: 1;
+  flex-wrap: nowrap;
+  overflow: visible;
 }
 
 /* Icon buttons in menu - override ProseMirror defaults */
@@ -501,52 +493,48 @@ body:has(.editor-page) > .footer {
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  flex: 1;
-  max-width: 48px;
-  min-width: 24px;
-  height: 16px;
-  padding: 0 4px;
-  /* Override ProseMirror's default white background */
+  padding: 1px 4px !important;
+  margin: 0 !important;
   background: transparent !important;
-  border: 1px solid transparent !important;
+  border: none !important;
   border-radius: var(--border-radius);
-  /* Override ProseMirror's default dark text color */
   color: var(--text-secondary) !important;
   cursor: pointer;
   transition: all var(--transition-fast);
   vertical-align: middle;
-  line-height: 1;
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  flex-wrap: nowrap !important;
+  flex-shrink: 0;
 }
 
 .ProseMirror-icon:hover {
   background-color: var(--bg-secondary) !important;
   color: var(--text-primary) !important;
-  border-color: var(--border) !important;
 }
 
-/* SVG icons in menu - ensure proper coloring */
+/* SVG icons in menu */
 .ProseMirror-icon svg {
   fill: currentColor !important;
-  height: 11px;
-  width: 11px;
+  height: 1em;
+  width: auto;
   vertical-align: middle;
+  flex-shrink: 0;
 }
 
-/* Text labels in icons */
+/* Text labels in icons - prevent wrapping */
 .ProseMirror-icon span {
+  display: inline-block !important;
   vertical-align: middle;
   color: inherit !important;
-  line-height: 16px;
+  white-space: nowrap !important;
+  line-height: 1 !important;
 }
 
 /* Active state for icons */
 .ProseMirror-menu-active {
   background-color: var(--accent-dim) !important;
   color: var(--accent) !important;
-  border-color: var(--accent) !important;
   border-radius: var(--border-radius);
 }
 
@@ -560,18 +548,17 @@ body:has(.editor-page) > .footer {
 .ProseMirror-menuitem {
   display: inline-flex;
   align-items: center;
-  flex: 1;
   margin: 0;
+  padding: 0;
 }
 
 /* Separator between menu groups */
 .ProseMirror-menuseparator {
   width: 1px;
-  height: 16px;
+  height: 14px;
   background-color: var(--border);
   margin: 0 2px;
   border: none;
-  flex-shrink: 0;
 }
 
 /* Dropdown menus */
