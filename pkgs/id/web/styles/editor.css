@@ -32,7 +32,7 @@ body:has(.editor-page) > .footer {
   position: relative;
 }
 
-/* Inline header - hidden by default, shows on scroll up */
+/* Inline header - in normal flow at top, becomes fixed when scrolling */
 .editor-inline-header {
   display: flex;
   align-items: center;
@@ -41,18 +41,24 @@ body:has(.editor-page) > .footer {
   background-color: var(--bg-tertiary);
   border-bottom: 1px solid var(--border);
   font-size: 10px;
+  /* Start in normal document flow */
+  position: relative;
+  z-index: 1000;
+}
+
+/* When floating (added by JS when scrolled away from top) */
+.editor-inline-header.floating {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  z-index: 1000;
   transform: translateY(-100%);
   opacity: 0;
   transition: transform 0.15s ease, opacity 0.15s ease;
   pointer-events: none;
 }
 
-.editor-inline-header.visible {
+.editor-inline-header.floating.visible {
   transform: translateY(0);
   opacity: 1;
   pointer-events: auto;
@@ -466,10 +472,10 @@ body:has(.editor-page) > .footer {
   align-items: center;
   justify-content: space-between;
   gap: 0;
-  padding: 2px 4px;
+  padding: 0 4px;
   background-color: var(--bg-tertiary) !important;
   border-bottom: 1px solid var(--border) !important;
-  min-height: 24px;
+  min-height: 18px;
   color: var(--text-secondary) !important;
   flex-shrink: 0; /* Don't shrink - stay at top */
 }
@@ -498,8 +504,8 @@ body:has(.editor-page) > .footer {
   flex: 1;
   max-width: 48px;
   min-width: 24px;
-  height: 22px;
-  padding: 2px 4px;
+  height: 16px;
+  padding: 0 4px;
   /* Override ProseMirror's default white background */
   background: transparent !important;
   border: 1px solid transparent !important;
@@ -510,7 +516,7 @@ body:has(.editor-page) > .footer {
   transition: all var(--transition-fast);
   vertical-align: middle;
   line-height: 1;
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -524,14 +530,16 @@ body:has(.editor-page) > .footer {
 /* SVG icons in menu - ensure proper coloring */
 .ProseMirror-icon svg {
   fill: currentColor !important;
-  height: 12px;
-  width: 12px;
+  height: 11px;
+  width: 11px;
+  vertical-align: middle;
 }
 
 /* Text labels in icons */
 .ProseMirror-icon span {
   vertical-align: middle;
   color: inherit !important;
+  line-height: 16px;
 }
 
 /* Active state for icons */

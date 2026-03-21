@@ -45,10 +45,12 @@ function updateStatus(status: 'connecting' | 'connected' | 'disconnected' | 'err
 
 /**
  * Initialize scroll-show behavior for editor inline header.
- * Header shows when scrolling up, hides when scrolling down.
+ * Header is in normal flow at top. Once scrolled past, it becomes fixed
+ * and shows when scrolling up, hides when scrolling down.
+ * When scrolled back to very top, it returns to normal flow.
  */
 function initScrollShowHeader(): (() => void) | null {
-  const header = document.querySelector('.editor-inline-header');
+  const header = document.querySelector('.editor-inline-header') as HTMLElement | null;
   
   if (!header) {
     console.log('[id] scroll-show: header not found');
@@ -57,6 +59,8 @@ function initScrollShowHeader(): (() => void) | null {
   
   console.log('[id] scroll-show: initializing, header element:', header);
   
+  // Get header height for threshold calculation
+  const headerHeight = header.offsetHeight;
   let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
   let ticking = false;
   
@@ -65,17 +69,26 @@ function initScrollShowHeader(): (() => void) | null {
     
     if (!ticking) {
       window.requestAnimationFrame(() => {
-        const delta = scrollTop - lastScrollTop;
-        console.log('[id] scroll:', scrollTop, 'delta:', delta, 'header visible:', header.classList.contains('visible'));
+        // At the very top - header is in normal document flow
+        if (scrollTop <= headerHeight) {
+          header.classList.remove('floating', 'visible');
+        }
+        // Scrolled past header - make it floating
+        else {
+          if (!header.classList.contains('floating')) {
+            header.classList.add('floating');
+          }
+          
+          // Scrolling up - show floating header
+          if (scrollTop < lastScrollTop) {
+            header.classList.add('visible');
+          }
+          // Scrolling down - hide floating header
+          else if (scrollTop > lastScrollTop) {
+            header.classList.remove('visible');
+          }
+        }
         
-        // Scrolling up - show header
-        if (scrollTop < lastScrollTop) {
-          header.classList.add('visible');
-        }
-        // Scrolling down - hide header (but only if scrolled past a small threshold)
-        else if (scrollTop > lastScrollTop && scrollTop > 10) {
-          header.classList.remove('visible');
-        }
         lastScrollTop = scrollTop;
         ticking = false;
       });
@@ -89,7 +102,7 @@ function initScrollShowHeader(): (() => void) | null {
   // Return cleanup function
   return () => {
     window.removeEventListener('scroll', handleScroll);
-    header.classList.remove('visible');
+    header.classList.remove('floating', 'visible');
     console.log('[id] scroll-show: listener removed');
   };
 }
