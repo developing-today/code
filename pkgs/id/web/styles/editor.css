@@ -117,10 +117,9 @@
   flex: 1;
 }
 
-/* ProseMirror menubar wrapper - flex to allow margin-left:auto on menubar */
+/* ProseMirror menubar wrapper - block for float:right to work */
 .editor-wrapper .ProseMirror-menubar-wrapper {
-  display: flex;
-  flex-direction: column;
+  display: block;
   flex: 1;
   position: relative;
   min-height: 0;
@@ -452,18 +451,14 @@
   border: none;
 }
 
-/* Menubar in editor - compact, floating top-right */
+/* Menubar in editor - compact, top-right */
 .editor-wrapper .ProseMirror-menubar {
-  /* Sticky + margin-left:auto for right-aligned sticky behavior */
-  position: sticky;
+  /* Absolute position for non-floating state (ProseMirror will override to fixed when floating) */
+  position: absolute;
   top: 0;
+  right: 0;
+  left: auto !important;
   z-index: 100;
-  margin-left: auto;
-  
-  /* Negative margin so it doesn't push content down */
-  margin-bottom: -100px;
-  margin-top: 0;
-  margin-right: 0;
   
   /* Only as wide as content */
   width: fit-content;
@@ -475,13 +470,13 @@
   gap: 0;
   padding: 0 !important;
   
-  /* Appearance - merge top border with editor */
-  background-color: var(--bg-tertiary) !important;
-  border: 1px solid var(--border) !important;
-  border-top: none !important;
-  border-right: none !important;
+  /* Appearance - same as header/footer */
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-right: none;
   min-height: 0 !important;
-  color: var(--text-secondary) !important;
+  color: var(--text-secondary);
   
   /* Match header size: font-size 10px */
   font-size: 10px;
@@ -489,6 +484,12 @@
   
   /* Prevent content from escaping */
   overflow: hidden;
+}
+
+/* When ProseMirror sets position:fixed for floating, keep it on right */
+.editor-wrapper .ProseMirror-menubar[style*="position: fixed"] {
+  left: auto !important;
+  right: 0 !important;
 }
 
 /* Fallback for non-editor contexts */
@@ -581,8 +582,8 @@
 }
 
 .ProseMirror-menuitem button:hover {
-  background-color: var(--bg-secondary) !important;
-  color: var(--text-primary) !important;
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
 }
 
 /* Menu items container - minimal */
