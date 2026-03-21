@@ -117,11 +117,12 @@
   flex: 1;
 }
 
-/* ProseMirror menubar wrapper needs to grow */
+/* ProseMirror menubar wrapper - block display for float to work */
 .editor-wrapper .ProseMirror-menubar-wrapper {
-  display: flex;
-  flex-direction: column;
+  display: block;
   flex: 1;
+  position: relative;
+  min-height: 0;
 }
 
 /* ProseMirror content area grows to fill available space */
@@ -450,37 +451,40 @@
   border: none;
 }
 
-/* Menubar in editor - compact, sticky, right-aligned */
+/* Menubar in editor - compact, floating top-right */
 .editor-wrapper .ProseMirror-menubar {
-  /* Float right for alignment, sticky for scroll behavior */
+  /* Float right + sticky for right-aligned sticky behavior */
   float: right;
   position: sticky;
-  top: 1px;
+  top: 0;
   z-index: 100;
   
-  /* Reset prosemirror defaults */
-  left: auto;
-  right: auto;
+  /* Negative margin so it doesn't push content down */
+  margin-bottom: -100px;
+  margin-top: 0;
+  margin-right: 0;
   
-  /* Margin for whitespace around toolbar */
-  margin: 1px 1px 0 0;
+  /* Only as wide as content */
+  width: fit-content;
   
-  /* Layout */
-  display: inline-flex;
+  /* Layout - stretch for full-height clickable areas */
+  display: flex;
   flex-wrap: nowrap;
   align-items: stretch;
   gap: 0;
-  padding: 0;
+  padding: 0 !important;
   
-  /* Appearance */
+  /* Appearance - merge top border with editor */
   background-color: var(--bg-tertiary) !important;
   border: 1px solid var(--border) !important;
-  min-height: 0;
+  border-top: none !important;
+  border-right: none !important;
+  min-height: 0 !important;
   color: var(--text-secondary) !important;
   
-  /* Compact sizing - scale down everything */
-  font-size: 7px;
-  line-height: 1;
+  /* Match header size: font-size 10px */
+  font-size: 10px;
+  line-height: 1 !important;
   
   /* Prevent content from escaping */
   overflow: hidden;
@@ -524,7 +528,7 @@
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  padding: 1px 3px !important;
+  padding: 0 3px !important;
   margin: 0 !important;
   background: transparent !important;
   border: none !important;
@@ -532,12 +536,11 @@
   color: var(--text-secondary) !important;
   cursor: pointer;
   transition: all var(--transition-fast);
-  vertical-align: middle;
+  vertical-align: baseline !important;
   line-height: 1 !important;
   white-space: nowrap !important;
-  flex-wrap: nowrap !important;
   flex-shrink: 0;
-  /* Full height clickable area */
+  /* Stretch for full clickable area */
   align-self: stretch;
 }
 
@@ -551,25 +554,59 @@
   fill: currentColor !important;
   height: 1em;
   width: auto;
-  vertical-align: middle;
+  vertical-align: baseline;
   flex-shrink: 0;
+  display: block;
 }
 
 /* Text labels in icons - prevent wrapping */
 .ProseMirror-icon span {
-  display: inline-block !important;
-  vertical-align: middle;
+  display: inline !important;
+  vertical-align: baseline !important;
   color: inherit !important;
   white-space: nowrap !important;
   line-height: 1 !important;
 }
 
-/* Menu items container - full height */
+/* Menu item buttons - override base button styles */
+.ProseMirror-menuitem button {
+  padding: 0 3px !important;
+  border: none !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-size: inherit !important;
+  line-height: 1 !important;
+  cursor: pointer;
+}
+
+.ProseMirror-menuitem button:hover {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+/* Menu items container - minimal */
 .ProseMirror-menuitem {
   display: inline-flex;
-  align-items: stretch;
-  margin: 0;
-  padding: 0;
+  align-items: center;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+}
+
+/* Menu group container */
+.ProseMirror-menu {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+}
+
+/* Dropdown wrapper - remove padding */
+.ProseMirror-menu-dropdown-wrap {
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Active state for icons */
@@ -588,9 +625,10 @@
 /* Separator between menu groups */
 .ProseMirror-menuseparator {
   width: 1px;
-  align-self: stretch;
+  height: 1em;
+  align-self: center;
   background-color: var(--border);
-  margin: 0;
+  margin: 0 1px !important;
   border: none;
 }
 
