@@ -198,6 +198,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
+- Done? \/
 - Cursor opacity fading (0-30s full, 30-60s fade, 60s-5m at 0.3, 5m+ hidden)
 - Strobing slows as cursors fade (1s → 3s cycle), stops at minimum
 - Strobing stops on WebSocket disconnect
@@ -211,3 +212,4 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 - websocket sends empty string message instead of ping was this deleted
 - grey out offline isn't working
+- ensure binary messagepack

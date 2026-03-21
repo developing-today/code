@@ -213,6 +213,7 @@
 
 .collab-cursor {
   position: relative;
+  display: inline-block;
   border-left: 2px solid;
   margin-left: -1px;
   margin-right: -1px;
@@ -233,21 +234,17 @@
 
 .collab-cursor-label {
   position: absolute;
-  top: -1.2em;
+  top: -1.1em;
   left: -1px;
   font-size: 10px;
+  line-height: 1;
   font-family: var(--font-mono);
-  padding: 0px 2px;
-  border-radius: 2px;
+  padding: 0;
   white-space: nowrap;
   user-select: none;
   z-index: 10;
-  /* Semi-transparent background to see text underneath */
   opacity: 0.85;
-  backdrop-filter: blur(2px);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: opacity 0.3s ease, z-index 0s;
-  /* Enable hover interaction even though parent has pointer-events: none */
   pointer-events: auto;
   cursor: default;
 }
@@ -293,32 +290,24 @@
    Merged Cursor Bar (horizontal tooltip stacking)
    ============================================================================ */
 
-.collab-cursor-bar-container {
-  position: relative;
-  display: inline;
-}
-
 .collab-cursor-bar {
   position: absolute;
-  top: -1.2em;
+  top: -1em;
   left: -1px;
   display: flex;
   flex-direction: row;
   align-items: stretch;
   font-size: 10px;
+  line-height: 1;
   font-family: var(--font-mono);
-  border-radius: 2px;
-  overflow: hidden;
   white-space: nowrap;
   user-select: none;
   z-index: 10;
-  backdrop-filter: blur(2px);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
 }
 
 .collab-cursor-bar-segment {
-  padding: 0px 2px;
+  padding: 0;
   transition: opacity 0.3s ease;
   cursor: default;
 }

@@ -4,6 +4,16 @@ Guidelines for AI coding agents working on the `id` peer-to-peer file sharing CL
 
 **Updating this file:** Keep prose tight and context-efficient. Prefer links to files over inline examples. Include only essential code samples.
 
+## Critical: Preserving Unstaged Work
+
+**NEVER use `git restore`, `git checkout -- <file>`, or any command that overwrites pre-existing unstaged changes.**
+
+Only discard unstaged work if:
+1. The user explicitly instructs you to discard it, OR
+2. You ask and receive specific approval to do so
+
+This applies to all files with uncommitted modifications—assume the user has intentional work in progress.
+
 ## Critical: Toolchain Files
 
 **NEVER delete `rust-toolchain.toml`** - it is required for Nix builds. The flake.nix uses rust-overlay which reads this file. Deleting it breaks `nix develop` and `nix build`.
@@ -20,16 +30,6 @@ When adding a new just command:
 3. For CI-verifiable commands, add a check in `flake.nix` `checks` section
 
 **Package management:** Add new dev dependencies to `nix-common.nix` only (never directly to shell.nix or flake.nix). See `nix-common.nix` for the shared package architecture.
-
-## Critical: Preserving Unstaged Work
-
-**NEVER use `git restore`, `git checkout -- <file>`, or any command that overwrites pre-existing unstaged changes.**
-
-Only discard unstaged work if:
-1. The user explicitly instructs you to discard it, OR
-2. You ask and receive specific approval to do so
-
-This applies to all files with uncommitted modifications—assume the user has intentional work in progress.
 
 ## OpenCode Plan Mode
 

@@ -132,7 +132,7 @@ export interface PositionGroup {
  */
 export function estimateTooltipWidth(name: string): number {
   const CHAR_WIDTH = 6; // Approximate width per character at 10px font
-  const PADDING = 6; // padding: 0px 2px on each side = 4px + small margin
+  const PADDING = 0; // No padding (CSS has padding: 0)
   return name.length * CHAR_WIDTH + PADDING;
 }
 
@@ -186,7 +186,7 @@ export function doGroupsOverlap(
 ): boolean {
   if (groups.length <= 1 || !getLeftCoord) return false;
 
-  const MIN_GAP = 4; // Minimum gap between tooltips
+  const MIN_GAP = -20; // Only merge when actually overlapping by at least 20px
 
   for (let i = 0; i < groups.length - 1; i++) {
     const curr = groups[i];
@@ -245,7 +245,7 @@ export function clusterOverlappingGroups(
     }));
   }
 
-  const MIN_GAP = 4; // Minimum gap between tooltips
+  const MIN_GAP = -20; // Only merge when actually overlapping by at least 20px
   const clusters: MergeCluster[] = [];
   let currentCluster: PositionGroup[] = [groups[0]];
   let clusterRightEdge = 0;

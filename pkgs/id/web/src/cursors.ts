@@ -611,8 +611,12 @@ function createCursorDecorations(
 
     clusters.forEach((cluster) => {
       if (cluster.groups.length > 1) {
-        // Multiple groups overlap - create merged bar
+        // Multiple groups overlap - create merged bar attached to leftmost cursor
         const leftmostPos = cluster.leftmostPosition;
+
+        // Find the leftmost group (we'll attach the bar to its cursor line)
+        const leftmostGroup = cluster.groups.find((g) => g.position === leftmostPos);
+        let leftmostCursorLine: HTMLElement | null = null;
 
         // Create cursor lines for each position group (no attached labels)
         cluster.groups.forEach((group) => {
@@ -625,6 +629,11 @@ function createCursorDecorations(
             allClientIDs
           );
           cursorLine.style.borderColor = group.mostRecentColor;
+
+          // Track the leftmost cursor line for bar attachment
+          if (group === leftmostGroup) {
+            leftmostCursorLine = cursorLine;
+          }
 
           // Register all cursors in this group for strobe tracking
           if (viewState) {
@@ -645,23 +654,17 @@ function createCursorDecorations(
           );
         });
 
-        // Create merged tooltip bar at leftmost position
+        // Create merged tooltip bar and attach to leftmost cursor line
+        // (appending to cursor line ensures proper positioning via position: relative)
         const mergedBar = createMergedBar(
           cluster.groups,
           handleMouseEnter,
           handleMouseLeave
         );
 
-        const barContainer = document.createElement("span");
-        barContainer.className = "collab-cursor-bar-container";
-        barContainer.appendChild(mergedBar);
-
-        decorations.push(
-          Decoration.widget(leftmostPos, barContainer, {
-            side: 1,
-            key: `cursor-bar-${leftmostPos}`,
-          })
-        );
+        if (leftmostCursorLine) {
+          (leftmostCursorLine as HTMLElement).appendChild(mergedBar);
+        }
       } else {
         // Single group (no overlap with other groups)
         const group = cluster.groups[0];
@@ -709,28 +712,19 @@ function createCursorDecorations(
             });
           }
 
-          decorations.push(
-            Decoration.widget(group.position, cursorLine, {
-              side: 1,
-              key: `cursor-merged-${group.position}`,
-            })
-          );
-
-          // Create merged bar for same-position cursors (no dividers since same position)
+          // Create merged bar for same-position cursors and append to cursor line
+          // (appending to cursor line ensures proper positioning via position: relative)
           const mergedBar = createMergedBar(
             [group], // Single group, so no dividers
             handleMouseEnter,
             handleMouseLeave
           );
-
-          const barContainer = document.createElement("span");
-          barContainer.className = "collab-cursor-bar-container";
-          barContainer.appendChild(mergedBar);
+          cursorLine.appendChild(mergedBar);
 
           decorations.push(
-            Decoration.widget(group.position, barContainer, {
-              side: 2, // Different side to ensure it appears after cursor line
-              key: `cursor-bar-${group.position}`,
+            Decoration.widget(group.position, cursorLine, {
+              side: 1,
+              key: `cursor-merged-${group.position}`,
             })
           );
         }
