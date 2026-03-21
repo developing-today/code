@@ -484,10 +484,11 @@
   overflow: hidden;
 }
 
-/* When ProseMirror sets position:fixed for floating, keep it on right */
+/* When ProseMirror sets position:fixed for floating, keep it on right with proper offset */
 .editor-wrapper .ProseMirror-menubar[style*="position: fixed"] {
   left: auto !important;
-  right: -1px !important;
+  right: 0 !important;
+  top: 0 !important;
 }
 
 /* Fallback for non-editor contexts */
