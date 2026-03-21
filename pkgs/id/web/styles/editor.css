@@ -455,8 +455,8 @@
 .editor-wrapper .ProseMirror-menubar {
   /* Absolute position for non-floating state (ProseMirror will override to fixed when floating) */
   position: absolute;
-  top: 0;
-  right: 0;
+  top: -1px;
+  right: -1px;
   left: auto !important;
   z-index: 100;
   
@@ -473,8 +473,6 @@
   /* Appearance - same as header/footer */
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border);
-  border-top: none;
-  border-right: none;
   min-height: 0 !important;
   color: var(--text-secondary);
   
@@ -489,7 +487,7 @@
 /* When ProseMirror sets position:fixed for floating, keep it on right */
 .editor-wrapper .ProseMirror-menubar[style*="position: fixed"] {
   left: auto !important;
-  right: 0 !important;
+  right: -1px !important;
 }
 
 /* Fallback for non-editor contexts */
