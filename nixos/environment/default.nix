@@ -52,6 +52,8 @@ in
     # or just because
     # etc.
     systemPackages = [
+      my-helmfile
+      my-kubernetes-helm
       opencode-desktop
     ]
     ++ (with inputs; [
@@ -62,7 +64,7 @@ in
       zen-browser.packages.${system}.default
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
-      # opencode.packages.${system}.opencode
+      opencode.packages.${system}.opencode
     ])
     ++ (with inputs.roc.packages.${system}; [ full ])
     ++ (with inputs.affinity-nix.packages.${system}; [
@@ -70,10 +72,6 @@ in
       publisher
       designer
     ])
-    ++ [
-      my-helmfile
-      my-kubernetes-helm
-    ]
     # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
     ++ (with pkgs; [
       age
@@ -85,7 +83,7 @@ in
     ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
       ghostty
       zed-editor
-      opencode
+      # opencode
     ])
     ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
       rclone
