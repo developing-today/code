@@ -447,10 +447,10 @@
 .ProseMirror-menubar {
   display: inline-flex;
   flex-wrap: nowrap;
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-end;
   gap: 0;
-  padding: 0 2px;
+  padding: 0;
   background-color: var(--bg-tertiary) !important;
   border: 1px solid var(--border) !important;
   min-height: 0;
@@ -459,27 +459,22 @@
   /* Scale down the entire menubar content */
   transform: scale(0.6);
   transform-origin: top right;
-  float: right;
+  position: absolute;
+  right: 0;
+  top: 0;
 }
 
 .ProseMirror-menubar-wrapper {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-}
-
-/* Clear float after menubar */
-.ProseMirror-menubar-wrapper::after {
-  content: "";
-  display: table;
-  clear: both;
+  display: block;
+  position: relative;
+  min-height: 14px;
+  flex-shrink: 0;
 }
 
 .ProseMirror-menu {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
+  align-items: stretch;
+  justify-content: flex-end;
   gap: 0;
   margin: 0;
   padding: 0;
@@ -493,11 +488,11 @@
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  padding: 1px 4px !important;
+  padding: 0 4px !important;
   margin: 0 !important;
   background: transparent !important;
   border: none !important;
-  border-radius: var(--border-radius);
+  border-radius: 0;
   color: var(--text-secondary) !important;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -506,6 +501,8 @@
   white-space: nowrap !important;
   flex-wrap: nowrap !important;
   flex-shrink: 0;
+  /* Full height clickable area */
+  align-self: stretch;
 }
 
 .ProseMirror-icon:hover {
@@ -531,6 +528,14 @@
   line-height: 1 !important;
 }
 
+/* Menu items container - full height */
+.ProseMirror-menuitem {
+  display: inline-flex;
+  align-items: stretch;
+  margin: 0;
+  padding: 0;
+}
+
 /* Active state for icons */
 .ProseMirror-menu-active {
   background-color: var(--accent-dim) !important;
@@ -544,20 +549,12 @@
   cursor: default;
 }
 
-/* Menu items container */
-.ProseMirror-menuitem {
-  display: inline-flex;
-  align-items: center;
-  margin: 0;
-  padding: 0;
-}
-
 /* Separator between menu groups */
 .ProseMirror-menuseparator {
   width: 1px;
-  height: 14px;
+  align-self: stretch;
   background-color: var(--border);
-  margin: 0 2px;
+  margin: 0;
   border: none;
 }
 
