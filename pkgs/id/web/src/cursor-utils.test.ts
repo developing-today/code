@@ -16,6 +16,7 @@ import {
   estimateTooltipWidth,
   groupCursorsByPosition,
   doGroupsOverlap,
+  clusterOverlappingGroups,
   type CursorForMerge,
   type PositionGroup,
 } from "./cursor-utils";
@@ -250,10 +251,10 @@ describe("estimateTooltipWidth", () => {
   });
 
   it("estimates reasonable width for typical name", () => {
-    // "Alice" = 5 chars * 7px + 16px padding = 51px
+    // "Alice" = 5 chars * 6px + 6px padding = 36px
     const width = estimateTooltipWidth("Alice");
-    expect(width).toBeGreaterThan(40);
-    expect(width).toBeLessThan(70);
+    expect(width).toBeGreaterThan(30);
+    expect(width).toBeLessThan(50);
   });
 });
 
@@ -403,30 +404,31 @@ describe("doGroupsOverlap", () => {
 
     it("returns false when groups are far apart", () => {
       // Alice at pos 0 (0px), Bob at pos 100 (1000px)
-      // Alice tooltip ~23px wide (1 char * 7 + 16), gap = 1000 - 23 = 977px
+      // Alice tooltip ~12px wide (1 char * 6 + 6), gap = 1000 - 12 = 988px
       const groups = [makeGroup(0, ["A"]), makeGroup(100, ["B"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(false);
     });
 
     it("returns true when groups are close together", () => {
-      // Alice at pos 0 (0px), Bob at pos 2 (20px)
-      // Alice tooltip ~23px wide, gap = 20px, need 23 + 8 = 31px minimum
-      const groups = [makeGroup(0, ["A"]), makeGroup(2, ["B"])];
+      // Alice at pos 0 (0px), Bob at pos 1 (10px)
+      // Alice tooltip ~12px wide, gap = 10px, need 12 + 4 = 16px minimum (overlap!)
+      const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
     });
 
     it("considers combined width of multiple cursors in a group", () => {
-      // Group 1: Alice and Bob at pos 0, combined width ~46px
-      // Group 2: Carol at pos 5 (50px)
-      // Gap = 50 - 46 - 8 = -4px (overlap!)
-      const groups = [makeGroup(0, ["A", "B"]), makeGroup(5, ["C"])];
+      // Group 1: Alice and Bob at pos 0, combined width ~24px (2 * 12)
+      // Group 2: Carol at pos 3 (30px)
+      // Gap = 30 - 24 - 4 = 2px (no overlap)
+      // Need to use closer positions for overlap
+      const groups = [makeGroup(0, ["A", "B"]), makeGroup(2, ["C"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
     });
 
     it("handles longer names correctly", () => {
-      // "Alexander" at pos 0, width ~79px
+      // "Alexander" at pos 0, width ~60px (9*6+6)
       // "Bob" at pos 5 (50px)
-      // Gap would be negative
+      // Gap would be negative (50 - 60 - 4 = -14px)
       const groups = [makeGroup(0, ["Alexander"]), makeGroup(5, ["Bob"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
     });
@@ -434,8 +436,8 @@ describe("doGroupsOverlap", () => {
     it("returns false when adequately spaced", () => {
       // Short names at far positions
       const groups = [makeGroup(0, ["A"]), makeGroup(50, ["B"])];
-      // A: width ~23px at 0px, B at 500px
-      // Gap = 500 - 23 - 8 = 469px (plenty of space)
+      // A: width ~12px at 0px, B at 500px
+      // Gap = 500 - 12 - 4 = 484px (plenty of space)
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(false);
     });
   });
@@ -445,7 +447,7 @@ describe("doGroupsOverlap", () => {
 
     it("checks all consecutive pairs", () => {
       // A at 0, B at 100 (ok), C at 101 (overlaps with B!)
-      // B width ~23px at 1000px, C at 1010px
+      // B width ~12px at 1000px, C at 1010px, need 12 + 4 = 16px (overlap!)
       const groups = [
         makeGroup(0, ["A"]),
         makeGroup(100, ["B"]),
@@ -483,6 +485,182 @@ describe("doGroupsOverlap", () => {
       const result = doGroupsOverlap(groups, errorOnSecond);
       // Result depends on which pairs were successfully checked
       expect(typeof result).toBe("boolean");
+    });
+  });
+});
+
+describe("clusterOverlappingGroups", () => {
+  // Helper to create a position group
+  const makeGroup = (position: number, names: string[]): PositionGroup => ({
+    position,
+    cursors: names.map((name, i) => ({
+      clientID: `${name}-${i}`,
+      head: position,
+      anchor: position,
+      name,
+      color: "#ff0000",
+      lastUpdate: Date.now() - i * 1000, // Most recent first
+      opacity: 1,
+      baseOpacity: 1,
+      onSameLine: false,
+    })),
+    mostRecentColor: "#ff0000",
+  });
+
+  describe("edge cases", () => {
+    it("returns empty array for empty input", () => {
+      expect(clusterOverlappingGroups([], null)).toEqual([]);
+    });
+
+    it("returns single cluster for single group", () => {
+      const groups = [makeGroup(10, ["alice"])];
+      const result = clusterOverlappingGroups(groups, null);
+      expect(result).toHaveLength(1);
+      expect(result[0].groups).toHaveLength(1);
+      expect(result[0].leftmostPosition).toBe(10);
+    });
+
+    it("returns separate clusters when getLeftCoord is null", () => {
+      const groups = [makeGroup(10, ["alice"]), makeGroup(20, ["bob"])];
+      const result = clusterOverlappingGroups(groups, null);
+      expect(result).toHaveLength(2);
+      expect(result[0].groups).toHaveLength(1);
+      expect(result[1].groups).toHaveLength(1);
+    });
+  });
+
+  describe("clustering with mock coords", () => {
+    // Mock: 1 position unit = 10 pixels
+    const mockGetLeftCoord = (pos: number): number => pos * 10;
+
+    it("keeps far apart groups as separate clusters", () => {
+      // Alice at pos 0 (0px), Bob at pos 100 (1000px)
+      const groups = [makeGroup(0, ["A"]), makeGroup(100, ["B"])];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(2);
+      expect(result[0].groups).toEqual([groups[0]]);
+      expect(result[1].groups).toEqual([groups[1]]);
+    });
+
+    it("merges close groups into one cluster", () => {
+      // Alice at pos 0 (0px), Bob at pos 1 (10px)
+      // Alice tooltip ~12px wide (1 char * 6 + 6), gap = 10px < 12 + 4 = 16px = overlap
+      const groups = [makeGroup(0, ["A"]), makeGroup(1, ["B"])];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(1);
+      expect(result[0].groups).toHaveLength(2);
+      expect(result[0].leftmostPosition).toBe(0);
+    });
+
+    it("creates separate clusters for non-overlapping groups on same line", () => {
+      // A at 0, B at 50, C at 100 - all well spaced
+      const groups = [
+        makeGroup(0, ["A"]),
+        makeGroup(50, ["B"]),
+        makeGroup(100, ["C"]),
+      ];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(3);
+      expect(result[0].groups).toHaveLength(1);
+      expect(result[1].groups).toHaveLength(1);
+      expect(result[2].groups).toHaveLength(1);
+    });
+
+    it("clusters only actually overlapping groups", () => {
+      // A at 0, B at 1 (overlap), C at 100 (no overlap)
+      const groups = [
+        makeGroup(0, ["A"]),
+        makeGroup(1, ["B"]),
+        makeGroup(100, ["C"]),
+      ];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(2);
+      expect(result[0].groups).toHaveLength(2); // A and B merged
+      expect(result[0].leftmostPosition).toBe(0);
+      expect(result[1].groups).toHaveLength(1); // C separate
+      expect(result[1].leftmostPosition).toBe(100);
+    });
+
+    it("handles chain of overlapping groups", () => {
+      // A at 0, B at 1, C at 2, D at 3 - all overlap in chain
+      const groups = [
+        makeGroup(0, ["A"]),
+        makeGroup(1, ["B"]),
+        makeGroup(2, ["C"]),
+        makeGroup(3, ["D"]),
+      ];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(1);
+      expect(result[0].groups).toHaveLength(4);
+    });
+
+    it("handles multiple separate clusters", () => {
+      // A-B overlap, C alone, D-E overlap
+      const groups = [
+        makeGroup(0, ["A"]),
+        makeGroup(1, ["B"]),
+        makeGroup(50, ["C"]),
+        makeGroup(100, ["D"]),
+        makeGroup(101, ["E"]),
+      ];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(3);
+      expect(result[0].groups).toHaveLength(2); // A, B
+      expect(result[1].groups).toHaveLength(1); // C
+      expect(result[2].groups).toHaveLength(2); // D, E
+    });
+
+    it("accounts for tooltip width with longer names", () => {
+      // "Alexander" at pos 0, width ~60px (9*6+6)
+      // "B" at pos 5 (50px) - within Alexander's width
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(5, ["B"])];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(1);
+      expect(result[0].groups).toHaveLength(2);
+    });
+
+    it("accounts for combined width of multiple cursors in a group", () => {
+      // Group 1: A and B at pos 0, combined width ~24px (2 * 12)
+      // Group 2: C at pos 2 (20px) - overlaps with combined width
+      const groups = [makeGroup(0, ["A", "B"]), makeGroup(2, ["C"])];
+      const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
+      expect(result).toHaveLength(1);
+      expect(result[0].groups).toHaveLength(2);
+    });
+  });
+
+  describe("error handling", () => {
+    it("puts groups in separate clusters on coordinate error", () => {
+      let callCount = 0;
+      const errorOnFirst = (): number => {
+        callCount++;
+        throw new Error("coord error");
+      };
+
+      const groups = [makeGroup(0, ["A"]), makeGroup(50, ["B"])];
+      const result = clusterOverlappingGroups(groups, errorOnFirst);
+      
+      // Should return separate clusters due to error
+      expect(result).toHaveLength(2);
+    });
+
+    it("handles mid-sequence errors gracefully", () => {
+      let callCount = 0;
+      const errorOnThird = (pos: number): number => {
+        callCount++;
+        if (callCount === 3) throw new Error("coord error");
+        return pos * 10;
+      };
+
+      const groups = [
+        makeGroup(0, ["A"]),
+        makeGroup(1, ["B"]), // This should cluster with A
+        makeGroup(50, ["C"]), // Error here
+      ];
+      
+      const result = clusterOverlappingGroups(groups, errorOnThird);
+      // Should still return valid clusters
+      expect(result.length).toBeGreaterThan(0);
     });
   });
 });

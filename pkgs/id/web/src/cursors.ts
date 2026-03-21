@@ -13,6 +13,9 @@
  * in background tabs. We handle this by:
  * 1. Using a visibility change listener to refresh on tab focus
  * 2. Storing timestamps and computing opacity on-demand during render
+ *
+ * Architecture note: Per-view state (strobeInfos, hover timers) is stored in a
+ * WeakMap keyed by EditorView to support multiple editors without interference.
  */
 
 import { Plugin, PluginKey, EditorState, Transaction } from "prosemirror-state";
@@ -36,7 +39,8 @@ import {
 
 // Additional timing constants (not exported from utils)
 const REFRESH_INTERVAL_MS = 5_000; // Refresh every 5s when active
-const RECONNECT_CLEANUP_DELAY_MS = 1_000; // Wait 1s after Init before cleanup
+const RECONNECT_CLEANUP_DELAY_MS = 3_000; // Wait 3s after Init before cleanup (allow slow networks)
+const HOVER_RESTORE_DELAY_MS = 1_000; // 1s delay before restoring after hover
 
 export interface CursorInfo {
   clientID: string | number;
@@ -49,13 +53,31 @@ export interface CursorInfo {
 
 export const cursorPluginKey = new PluginKey<CursorPluginState>("cursors");
 
+/**
+ * Plugin state - serializable cursor data managed by ProseMirror transactions.
+ */
 interface CursorPluginState {
   cursors: Map<string | number, CursorInfo>;
+  /** Fresh cursor IDs received since last Init (for reconnect cleanup) */
+  freshCursorIDs: Set<string | number>;
+  /** Connection state affects strobe animations */
+  connectionState: "connected" | "disconnected";
 }
 
 // ============================================================================
-// Strobe State Management (CSS Hybrid Approach)
+// Per-View State Management
 // ============================================================================
+
+/**
+ * Per-view instance state (not serializable, contains DOM references).
+ * Stored in a WeakMap to support multiple editors without interference.
+ */
+interface CursorViewState {
+  strobeInfos: Map<string | number, StrobeInfo>;
+  hoverRestoreTimers: Map<string | number, ReturnType<typeof setTimeout>>;
+  reconnectCleanupTimer: ReturnType<typeof setTimeout> | null;
+  view: EditorView;
+}
 
 interface StrobeInfo {
   element: HTMLElement;
@@ -63,28 +85,69 @@ interface StrobeInfo {
   paused: boolean; // True when hover-paused
 }
 
-const strobeInfos = new Map<string | number, StrobeInfo>();
+/**
+ * WeakMap to store per-view state. This ensures:
+ * 1. Multiple editors don't share state
+ * 2. State is automatically cleaned up when view is garbage collected
+ */
+const viewStates = new WeakMap<EditorView, CursorViewState>();
+
+/**
+ * Get or create view state for an editor view.
+ */
+function getViewState(view: EditorView): CursorViewState {
+  let state = viewStates.get(view);
+  if (!state) {
+    state = {
+      strobeInfos: new Map(),
+      hoverRestoreTimers: new Map(),
+      reconnectCleanupTimer: null,
+      view,
+    };
+    viewStates.set(view, state);
+  }
+  return state;
+}
+
+/**
+ * Clean up view state when editor is destroyed.
+ */
+function cleanupViewState(view: EditorView): void {
+  const state = viewStates.get(view);
+  if (state) {
+    // Clear all hover timers
+    state.hoverRestoreTimers.forEach((timer) => clearTimeout(timer));
+    state.hoverRestoreTimers.clear();
+    // Clear reconnect timer
+    if (state.reconnectCleanupTimer) {
+      clearTimeout(state.reconnectCleanupTimer);
+    }
+    // Clear strobe tracking
+    state.strobeInfos.clear();
+    viewStates.delete(view);
+  }
+}
 
 // ============================================================================
-// Hover State Management
+// Strobe and Hover State Management
 // ============================================================================
-
-const HOVER_RESTORE_DELAY_MS = 1_000; // 1s delay before restoring after hover
-const hoverRestoreTimers = new Map<string | number, ReturnType<typeof setTimeout>>();
 
 /**
  * Handle mouse entering a cursor label.
  * Sets hovered state immediately (100% opacity, no strobe, bolder, elevated z-index).
  */
-function handleCursorMouseEnter(clientID: string | number): void {
+function handleCursorMouseEnter(
+  clientID: string | number,
+  viewState: CursorViewState
+): void {
   // Clear any pending restore timer
-  const timer = hoverRestoreTimers.get(clientID);
+  const timer = viewState.hoverRestoreTimers.get(clientID);
   if (timer) {
     clearTimeout(timer);
-    hoverRestoreTimers.delete(clientID);
+    viewState.hoverRestoreTimers.delete(clientID);
   }
 
-  const info = strobeInfos.get(clientID);
+  const info = viewState.strobeInfos.get(clientID);
   if (!info) return;
 
   // Mark as hover-paused
@@ -98,21 +161,29 @@ function handleCursorMouseEnter(clientID: string | number): void {
  * Handle mouse leaving a cursor label.
  * Starts 1s timer before restoring normal state.
  */
-function handleCursorMouseLeave(clientID: string | number): void {
+function handleCursorMouseLeave(
+  clientID: string | number,
+  viewState: CursorViewState,
+  getConnectionState: () => "connected" | "disconnected"
+): void {
   // Start delayed restore
   const timer = setTimeout(() => {
-    hoverRestoreTimers.delete(clientID);
-    restoreCursorFromHover(clientID);
+    viewState.hoverRestoreTimers.delete(clientID);
+    restoreCursorFromHover(clientID, viewState, getConnectionState);
   }, HOVER_RESTORE_DELAY_MS);
 
-  hoverRestoreTimers.set(clientID, timer);
+  viewState.hoverRestoreTimers.set(clientID, timer);
 }
 
 /**
  * Restore cursor to normal state after hover.
  */
-function restoreCursorFromHover(clientID: string | number): void {
-  const info = strobeInfos.get(clientID);
+function restoreCursorFromHover(
+  clientID: string | number,
+  viewState: CursorViewState,
+  getConnectionState: () => "connected" | "disconnected"
+): void {
+  const info = viewState.strobeInfos.get(clientID);
   if (!info) return;
 
   // Remove hover class
@@ -120,11 +191,11 @@ function restoreCursorFromHover(clientID: string | number): void {
 
   // Resume strobe if connected
   info.paused = false;
-  if (connectionState === "connected") {
+  if (getConnectionState() === "connected") {
     const durationMs = getStrobeDurationMs(info.baseOpacity);
     info.element.style.setProperty(
       "--strobe-state",
-      durationMs > 0 ? "running" : "paused",
+      durationMs > 0 ? "running" : "paused"
     );
   }
 }
@@ -132,38 +203,37 @@ function restoreCursorFromHover(clientID: string | number): void {
 /**
  * Clean up hover timer for a cursor being removed.
  */
-function cleanupHoverTimer(clientID: string | number): void {
-  const timer = hoverRestoreTimers.get(clientID);
+function cleanupHoverTimer(
+  clientID: string | number,
+  viewState: CursorViewState
+): void {
+  const timer = viewState.hoverRestoreTimers.get(clientID);
   if (timer) {
     clearTimeout(timer);
-    hoverRestoreTimers.delete(clientID);
+    viewState.hoverRestoreTimers.delete(clientID);
   }
 }
 
 /**
  * Remove cursor from strobe tracking and clean up hover state.
  */
-function unregisterCursorStrobe(clientID: string | number): void {
-  cleanupHoverTimer(clientID);
-  strobeInfos.delete(clientID);
+function unregisterCursorStrobe(
+  clientID: string | number,
+  viewState: CursorViewState
+): void {
+  cleanupHoverTimer(clientID, viewState);
+  viewState.strobeInfos.delete(clientID);
 }
 
-// ============================================================================
-// Connection State Management
-// ============================================================================
-
-let connectionState: "connected" | "disconnected" = "disconnected";
-
 /**
- * Set the connection state (affects cursor strobe display).
- * When disconnected, all cursor strobing is paused.
+ * Update strobe state for all cursors when connection state changes.
  */
-export function setConnectionState(state: "connected" | "disconnected"): void {
-  connectionState = state;
-
-  // Update all cursor strobe states
-  strobeInfos.forEach((info) => {
-    if (state === "disconnected") {
+function updateStrobeStates(
+  viewState: CursorViewState,
+  connectionState: "connected" | "disconnected"
+): void {
+  viewState.strobeInfos.forEach((info) => {
+    if (connectionState === "disconnected") {
       // Pause strobing, set to base opacity
       info.element.style.setProperty("--strobe-state", "paused");
       info.element.style.opacity = String(info.baseOpacity);
@@ -172,76 +242,73 @@ export function setConnectionState(state: "connected" | "disconnected"): void {
       const durationMs = getStrobeDurationMs(info.baseOpacity);
       info.element.style.setProperty(
         "--strobe-state",
-        durationMs > 0 ? "running" : "paused",
+        durationMs > 0 ? "running" : "paused"
       );
     }
   });
+}
 
-  // Cancel reconnect cleanup timer on disconnect
-  if (state === "disconnected" && reconnectCleanupTimer) {
-    clearTimeout(reconnectCleanupTimer);
-    reconnectCleanupTimer = null;
-  }
+// ============================================================================
+// Connection State Management
+// ============================================================================
+
+/**
+ * Set the connection state for a specific editor view.
+ * When disconnected, all cursor strobing is paused.
+ */
+export function setConnectionState(
+  view: EditorView,
+  state: "connected" | "disconnected"
+): void {
+  const tr = view.state.tr.setMeta(cursorPluginKey, {
+    type: "setConnectionState",
+    connectionState: state,
+  });
+  view.dispatch(tr);
 }
 
 // ============================================================================
 // Reconnect Cleanup
 // ============================================================================
 
-let reconnectCleanupTimer: ReturnType<typeof setTimeout> | null = null;
-let freshCursorIDs: Set<string | number> = new Set();
-let cleanupEditorView: EditorView | null = null;
-
-/**
- * Set the editor view for cleanup operations.
- * Should be called after editor initialization.
- */
-export function setCleanupEditorView(view: EditorView): void {
-  cleanupEditorView = view;
-}
-
 /**
  * Mark a cursor as fresh (received update since Init).
  * Call this when receiving a cursor update from the server.
  */
-export function markCursorFresh(clientID: string | number): void {
-  freshCursorIDs.add(clientID);
+export function markCursorFresh(
+  view: EditorView,
+  clientID: string | number
+): void {
+  const tr = view.state.tr.setMeta(cursorPluginKey, {
+    type: "markFresh",
+    clientID,
+  });
+  view.dispatch(tr);
 }
 
 /**
  * Called when Init message is received.
- * Starts a 1s timer to clean up stale cursors.
+ * Resets fresh cursor tracking and schedules stale cursor cleanup.
  */
-export function onInitReceived(): void {
-  // Cancel any existing cleanup timer
-  if (reconnectCleanupTimer) {
-    clearTimeout(reconnectCleanupTimer);
-  }
-
-  // Reset fresh cursor tracking
-  freshCursorIDs = new Set();
-
-  // Start cleanup timer
-  reconnectCleanupTimer = setTimeout(() => {
-    if (cleanupEditorView && connectionState === "connected") {
-      performReconnectCleanup();
-    }
-    reconnectCleanupTimer = null;
-  }, RECONNECT_CLEANUP_DELAY_MS);
+export function onInitReceived(view: EditorView): void {
+  const tr = view.state.tr.setMeta(cursorPluginKey, {
+    type: "initReceived",
+  });
+  view.dispatch(tr);
 }
 
 /**
  * Remove cursors that weren't marked fresh after reconnect.
  */
-function performReconnectCleanup(): void {
-  if (!cleanupEditorView) return;
-
-  const pluginState = cursorPluginKey.getState(cleanupEditorView.state);
+function performReconnectCleanup(view: EditorView): void {
+  const pluginState = cursorPluginKey.getState(view.state);
   if (!pluginState) return;
 
+  const viewState = getViewState(view);
   const staleCursors: (string | number)[] = [];
+
   pluginState.cursors.forEach((_, clientID) => {
-    if (!freshCursorIDs.has(clientID)) {
+    if (!pluginState.freshCursorIDs.has(clientID)) {
       staleCursors.push(clientID);
     }
   });
@@ -249,11 +316,9 @@ function performReconnectCleanup(): void {
   // Remove stale cursors
   staleCursors.forEach((clientID) => {
     console.log("[cursors] Removing stale cursor:", clientID);
-    removeCursorInternal(cleanupEditorView!, clientID);
-    unregisterCursorStrobe(clientID);
+    removeCursorInternal(view, clientID);
+    unregisterCursorStrobe(clientID, viewState);
   });
-
-  freshCursorIDs.clear();
 }
 
 // ============================================================================
@@ -267,7 +332,7 @@ function performReconnectCleanup(): void {
 function isOnSameLineAsLocal(
   remoteCursorPos: number,
   localSelectionHead: number,
-  view: EditorView,
+  view: EditorView
 ): boolean {
   try {
     const localCoords = view.coordsAtPos(localSelectionHead);
@@ -286,23 +351,12 @@ function isOnSameLineAsLocal(
 // ============================================================================
 
 /**
- * Wrapper for doGroupsOverlap that adapts EditorView to the callback interface.
- */
-function checkGroupsOverlap(groups: PositionGroup[], view: EditorView | null): boolean {
-  if (!view) return false;
-  const getLeftCoord = (pos: number): number => {
-    return view.coordsAtPos(pos).left;
-  };
-  return doGroupsOverlap(groups, getLeftCoord);
-}
-
-/**
- * Create a merged tooltip bar for multiple position groups on the same line
+ * Create a merged tooltip bar for multiple position groups that overlap
  */
 function createMergedBar(
   groups: PositionGroup[],
   handleMouseEnter: (clientID: string | number) => void,
-  handleMouseLeave: (clientID: string | number) => void,
+  handleMouseLeave: (clientID: string | number) => void
 ): HTMLElement {
   const bar = document.createElement("span");
   bar.className = "collab-cursor-bar";
@@ -328,10 +382,10 @@ function createMergedBar(
 
       // Hover handlers for individual segments
       segment.addEventListener("mouseenter", () =>
-        handleMouseEnter(cursor.clientID),
+        handleMouseEnter(cursor.clientID)
       );
       segment.addEventListener("mouseleave", () =>
-        handleMouseLeave(cursor.clientID),
+        handleMouseLeave(cursor.clientID)
       );
 
       bar.appendChild(segment);
@@ -342,34 +396,131 @@ function createMergedBar(
 }
 
 /**
+ * Create cursor line element with strobe animation
+ */
+function createCursorLine(
+  cursor: CursorForMerge,
+  isMerged: boolean,
+  connectionState: "connected" | "disconnected",
+  allClientIDs?: (string | number)[]
+): HTMLElement {
+  const cursorLine = document.createElement("span");
+  cursorLine.className = isMerged
+    ? "collab-cursor collab-cursor-merged"
+    : "collab-cursor";
+
+  if (cursor.onSameLine) {
+    cursorLine.classList.add("collab-cursor-same-line");
+  }
+
+  cursorLine.style.borderColor = cursor.color;
+
+  if (isMerged && allClientIDs) {
+    cursorLine.setAttribute("data-client-ids", allClientIDs.join(","));
+  } else {
+    cursorLine.setAttribute("data-client-id", String(cursor.clientID));
+  }
+
+  // Set up CSS custom properties for strobe animation
+  const effectiveOpacity = cursor.onSameLine ? 1.0 : cursor.baseOpacity;
+  const strobeDurationMs = getStrobeDurationMs(effectiveOpacity);
+  const shouldStrobe = strobeDurationMs > 0 && connectionState === "connected";
+
+  cursorLine.style.setProperty("--strobe-duration", `${strobeDurationMs}ms`);
+  cursorLine.style.setProperty(
+    "--strobe-state",
+    shouldStrobe ? "running" : "paused"
+  );
+  cursorLine.style.setProperty("--base-opacity", String(cursor.opacity));
+  cursorLine.style.opacity = String(cursor.opacity);
+
+  return cursorLine;
+}
+
+/**
+ * Create standalone cursor with attached label
+ */
+function createStandaloneCursor(
+  cursor: CursorForMerge,
+  connectionState: "connected" | "disconnected",
+  viewState: CursorViewState,
+  handleMouseEnter: (clientID: string | number) => void,
+  handleMouseLeave: (clientID: string | number) => void
+): HTMLElement {
+  const cursorWidget = createCursorLine(cursor, false, connectionState);
+
+  // Register for strobe tracking
+  viewState.strobeInfos.set(cursor.clientID, {
+    element: cursorWidget,
+    baseOpacity: cursor.opacity,
+    paused: false,
+  });
+
+  const label = document.createElement("span");
+  label.className = "collab-cursor-label";
+  label.style.backgroundColor = cursor.color;
+  label.style.color = isLightColor(cursor.color) ? "#000" : "#fff";
+  label.textContent = cursor.name;
+
+  // Add hover event listeners
+  label.addEventListener("mouseenter", () => handleMouseEnter(cursor.clientID));
+  label.addEventListener("mouseleave", () => handleMouseLeave(cursor.clientID));
+
+  cursorWidget.appendChild(label);
+  return cursorWidget;
+}
+
+/**
  * Create the cursor decoration for a remote user.
- * @param view - Optional EditorView for same-line detection (may be null during initial render)
+ * @param view - EditorView for same-line detection and view state access
  */
 function createCursorDecorations(
   state: EditorState,
-  cursors: Map<string | number, CursorInfo>,
+  pluginState: CursorPluginState,
   myClientID: string | number | null,
-  view: EditorView | null,
+  view: EditorView | null
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const docSize = state.doc.content.size;
   const now = Date.now();
   const localHead = state.selection.head;
 
+  // Normalize myClientID to number for comparison (handles string/number mismatch)
+  const myClientIDNum = myClientID !== null ? Number(myClientID) : null;
+
+  // Get view state for strobe tracking (if view available)
+  const viewState = view ? getViewState(view) : null;
+  const connectionState = pluginState.connectionState;
+
+  // Create hover handlers bound to this view's state
+  const handleMouseEnter = viewState
+    ? (clientID: string | number): void =>
+        handleCursorMouseEnter(clientID, viewState)
+    : (): void => {};
+  const handleMouseLeave = viewState
+    ? (clientID: string | number): void =>
+        handleCursorMouseLeave(clientID, viewState, () => connectionState)
+    : (): void => {};
+
   // First pass: collect all visible cursors with computed properties
   const visibleCursors: CursorForMerge[] = [];
 
-  cursors.forEach((cursor, clientID) => {
-    // Don't show our own cursor
-    if (clientID === myClientID) return;
+  pluginState.cursors.forEach((cursor, clientID) => {
+    // Normalize clientID for comparison
+    const clientIDNum = Number(clientID);
+
+    // Check if this is our own cursor
+    const isOwnCursor = myClientIDNum !== null && clientIDNum === myClientIDNum;
 
     const ageMs = now - cursor.lastUpdate;
 
-    // Hide completely after HIDE_MS
-    if (ageMs >= HIDE_MS) return;
-    const baseOpacity = getOpacityForAge(ageMs);
+    // Hide completely after HIDE_MS (but not own cursor)
+    if (!isOwnCursor && ageMs >= HIDE_MS) return;
 
-    // Skip if base opacity is 0 (hidden)
+    // Get base opacity (own cursor is always full opacity)
+    const baseOpacity = isOwnCursor ? 1.0 : getOpacityForAge(ageMs);
+
+    // Skip if base opacity is 0 (hidden) - doesn't apply to own cursor
     if (baseOpacity <= 0) return;
 
     const color = cursor.color || getColorForClient(clientID);
@@ -394,18 +545,39 @@ function createCursorDecorations(
       opacity,
       baseOpacity,
       onSameLine,
+      isOwnCursor,
     });
   });
 
-  // Group cursors by rendered line (Y position)
+  // Separate own cursor from remote cursors
+  const ownCursor = visibleCursors.find((c) => c.isOwnCursor);
+  const remoteCursors = visibleCursors.filter((c) => !c.isOwnCursor);
+
+  // Create own cursor decoration (larger line, no tooltip)
+  if (ownCursor && view) {
+    const ownCursorLine = document.createElement("span");
+    ownCursorLine.className = "collab-cursor collab-cursor-own";
+    ownCursorLine.style.borderColor = ownCursor.color;
+    ownCursorLine.setAttribute("data-client-id", String(ownCursor.clientID));
+
+    decorations.push(
+      Decoration.widget(ownCursor.head, ownCursorLine, {
+        side: 1,
+        key: `cursor-own-${ownCursor.clientID}`,
+      })
+    );
+  }
+
+  // Group remote cursors by rendered line (Y position)
   const lineGroups = new Map<number, CursorForMerge[]>();
 
   if (view) {
-    visibleCursors.forEach((cursor) => {
+    remoteCursors.forEach((cursor) => {
       try {
         const coords = view.coordsAtPos(cursor.head);
         // Round Y to group cursors on same visual line
-        const lineY = Math.round(coords.top / LINE_THRESHOLD_PX) * LINE_THRESHOLD_PX;
+        const lineY =
+          Math.round(coords.top / LINE_THRESHOLD_PX) * LINE_THRESHOLD_PX;
 
         const existing = lineGroups.get(lineY) || [];
         existing.push(cursor);
@@ -419,163 +591,151 @@ function createCursorDecorations(
     });
   } else {
     // No view available, treat each cursor individually
-    visibleCursors.forEach((cursor, idx) => {
+    remoteCursors.forEach((cursor, idx) => {
       lineGroups.set(idx, [cursor]);
     });
   }
+
+  // Helper to get left coordinate
+  const getLeftCoord = view
+    ? (pos: number): number => view.coordsAtPos(pos).left
+    : null;
 
   // Process each line group
   lineGroups.forEach((lineCursors) => {
     // Group by position within this line
     const positionGroups = groupCursorsByPosition(lineCursors);
 
-    // Check if groups overlap and need merging
-    const needsMerging =
-      positionGroups.length > 1 && checkGroupsOverlap(positionGroups, view);
+    // Cluster overlapping groups - only merge those that actually overlap
+    const clusters = clusterOverlappingGroups(positionGroups, getLeftCoord);
 
-    if (needsMerging) {
-      // Create merged bar for overlapping tooltips
-      // Position at the leftmost cursor position
-      const leftmostPos = positionGroups[0].position;
+    clusters.forEach((cluster) => {
+      if (cluster.groups.length > 1) {
+        // Multiple groups overlap - create merged bar
+        const leftmostPos = cluster.leftmostPosition;
 
-      // Create cursor lines for each position (but merged tooltip)
-      positionGroups.forEach((group) => {
-        // Create cursor line(s) for this position group
-        // Use most recent user's color for the cursor line
-        const cursorLine = document.createElement("span");
-        cursorLine.className = "collab-cursor collab-cursor-merged";
-        cursorLine.style.borderColor = group.mostRecentColor;
-        cursorLine.setAttribute(
-          "data-client-ids",
-          group.cursors.map((c) => c.clientID).join(","),
-        );
+        // Create cursor lines for each position group (no attached labels)
+        cluster.groups.forEach((group) => {
+          const firstCursor = group.cursors[0];
+          const allClientIDs = group.cursors.map((c) => c.clientID);
+          const cursorLine = createCursorLine(
+            firstCursor,
+            true,
+            connectionState,
+            allClientIDs
+          );
+          cursorLine.style.borderColor = group.mostRecentColor;
 
-        // Register first cursor for strobe (others share the line)
-        const firstCursor = group.cursors[0];
-        const strobeDurationMs = getStrobeDurationMs(
-          firstCursor.onSameLine ? 1.0 : firstCursor.baseOpacity,
-        );
-        const shouldStrobe =
-          strobeDurationMs > 0 && connectionState === "connected";
-        cursorLine.style.setProperty(
-          "--strobe-duration",
-          `${strobeDurationMs}ms`,
-        );
-        cursorLine.style.setProperty(
-          "--strobe-state",
-          shouldStrobe ? "running" : "paused",
-        );
-        cursorLine.style.setProperty(
-          "--base-opacity",
-          String(firstCursor.opacity),
-        );
-        cursorLine.style.opacity = String(firstCursor.opacity);
+          // Register all cursors in this group for strobe tracking
+          if (viewState) {
+            group.cursors.forEach((cursor) => {
+              viewState.strobeInfos.set(cursor.clientID, {
+                element: cursorLine,
+                baseOpacity: cursor.opacity,
+                paused: false,
+              });
+            });
+          }
 
-        if (firstCursor.onSameLine) {
-          cursorLine.classList.add("collab-cursor-same-line");
-        }
-
-        // Register all cursors in this group for strobe tracking
-        group.cursors.forEach((cursor) => {
-          strobeInfos.set(cursor.clientID, {
-            element: cursorLine,
-            baseOpacity: cursor.opacity,
-            paused: false,
-          });
+          decorations.push(
+            Decoration.widget(group.position, cursorLine, {
+              side: 1,
+              key: `cursor-merged-${group.position}`,
+            })
+          );
         });
 
-        decorations.push(
-          Decoration.widget(group.position, cursorLine, {
-            side: 1,
-            key: `cursor-merged-${group.position}`,
-          }),
+        // Create merged tooltip bar at leftmost position
+        const mergedBar = createMergedBar(
+          cluster.groups,
+          handleMouseEnter,
+          handleMouseLeave
         );
-      });
 
-      // Create merged tooltip bar at leftmost position
-      const mergedBar = createMergedBar(
-        positionGroups,
-        handleCursorMouseEnter,
-        handleCursorMouseLeave,
-      );
+        const barContainer = document.createElement("span");
+        barContainer.className = "collab-cursor-bar-container";
+        barContainer.appendChild(mergedBar);
 
-      // Create a container for the bar (positioned at leftmost cursor)
-      const barContainer = document.createElement("span");
-      barContainer.className = "collab-cursor-bar-container";
-      barContainer.appendChild(mergedBar);
+        decorations.push(
+          Decoration.widget(leftmostPos, barContainer, {
+            side: 1,
+            key: `cursor-bar-${leftmostPos}`,
+          })
+        );
+      } else {
+        // Single group (no overlap with other groups)
+        const group = cluster.groups[0];
 
-      decorations.push(
-        Decoration.widget(leftmostPos, barContainer, {
-          side: 1,
-          key: `cursor-bar-${leftmostPos}`,
-        }),
-      );
-    } else {
-      // No merging needed - create individual cursor decorations
-      positionGroups.forEach((group) => {
-        group.cursors.forEach((cursor) => {
-          // Create cursor line decoration (widget)
-          const cursorWidget = document.createElement("span");
-          cursorWidget.className = "collab-cursor";
-          if (cursor.onSameLine) {
-            cursorWidget.classList.add("collab-cursor-same-line");
-          }
-          cursorWidget.style.borderColor = cursor.color;
-          cursorWidget.setAttribute("data-client-id", String(cursor.clientID));
-
-          // Set up CSS custom properties for strobe animation
-          const effectiveOpacityForStrobe = cursor.onSameLine
-            ? 1.0
-            : cursor.baseOpacity;
-          const strobeDurationMs = getStrobeDurationMs(effectiveOpacityForStrobe);
-          const shouldStrobe =
-            strobeDurationMs > 0 && connectionState === "connected";
-          cursorWidget.style.setProperty(
-            "--strobe-duration",
-            `${strobeDurationMs}ms`,
-          );
-          cursorWidget.style.setProperty(
-            "--strobe-state",
-            shouldStrobe ? "running" : "paused",
-          );
-          cursorWidget.style.setProperty(
-            "--base-opacity",
-            String(cursor.opacity),
-          );
-          cursorWidget.style.opacity = String(cursor.opacity);
-
-          // Register for strobe tracking
-          strobeInfos.set(cursor.clientID, {
-            element: cursorWidget,
-            baseOpacity: cursor.opacity,
-            paused: false,
-          });
-
-          const label = document.createElement("span");
-          label.className = "collab-cursor-label";
-          label.style.backgroundColor = cursor.color;
-          label.style.color = isLightColor(cursor.color) ? "#000" : "#fff";
-          label.textContent = cursor.name;
-
-          // Add hover event listeners for interactive cursor behavior
-          label.addEventListener("mouseenter", () =>
-            handleCursorMouseEnter(cursor.clientID),
-          );
-          label.addEventListener("mouseleave", () =>
-            handleCursorMouseLeave(cursor.clientID),
-          );
-
-          cursorWidget.appendChild(label);
+        if (group.cursors.length === 1) {
+          // Single cursor at this position - simple case
+          const cursor = group.cursors[0];
+          const cursorWidget = viewState
+            ? createStandaloneCursor(
+                cursor,
+                connectionState,
+                viewState,
+                handleMouseEnter,
+                handleMouseLeave
+              )
+            : createCursorLine(cursor, false, connectionState);
 
           decorations.push(
             Decoration.widget(cursor.head, cursorWidget, {
               side: 1,
               key: `cursor-${cursor.clientID}`,
-            }),
+            })
           );
-        });
-      });
-    }
+        } else {
+          // Multiple cursors at exact same position - create single cursor line with merged bar
+          // Use most recent cursor's color for the line
+          const firstCursor = group.cursors[0]; // Already sorted by lastUpdate desc
+          const allClientIDs = group.cursors.map((c) => c.clientID);
+          const cursorLine = createCursorLine(
+            firstCursor,
+            true,
+            connectionState,
+            allClientIDs
+          );
+          cursorLine.style.borderColor = group.mostRecentColor;
+
+          // Register all cursors for strobe tracking
+          if (viewState) {
+            group.cursors.forEach((cursor) => {
+              viewState.strobeInfos.set(cursor.clientID, {
+                element: cursorLine,
+                baseOpacity: cursor.opacity,
+                paused: false,
+              });
+            });
+          }
+
+          decorations.push(
+            Decoration.widget(group.position, cursorLine, {
+              side: 1,
+              key: `cursor-merged-${group.position}`,
+            })
+          );
+
+          // Create merged bar for same-position cursors (no dividers since same position)
+          const mergedBar = createMergedBar(
+            [group], // Single group, so no dividers
+            handleMouseEnter,
+            handleMouseLeave
+          );
+
+          const barContainer = document.createElement("span");
+          barContainer.className = "collab-cursor-bar-container";
+          barContainer.appendChild(mergedBar);
+
+          decorations.push(
+            Decoration.widget(group.position, barContainer, {
+              side: 2, // Different side to ensure it appears after cursor line
+              key: `cursor-bar-${group.position}`,
+            })
+          );
+        }
+      }
+    });
 
     // Add selection decorations for all cursors on this line
     lineCursors.forEach((cursor) => {
@@ -595,8 +755,8 @@ function createCursorDecorations(
             },
             {
               key: `selection-${cursor.clientID}`,
-            },
-          ),
+            }
+          )
         );
       }
     });
@@ -615,46 +775,115 @@ export type SendCursorFn = (head: number, anchor: number) => void;
  */
 export function createCursorPlugin(
   myClientID: string | number | null,
-  sendCursor: SendCursorFn,
+  sendCursor: SendCursorFn
 ): Plugin {
   let lastSentSelection = { head: -1, anchor: -1 };
   let sendTimeout: ReturnType<typeof setTimeout> | null = null;
   let refreshInterval: ReturnType<typeof setInterval> | null = null;
+  let currentView: EditorView | null = null;
 
   return new Plugin<CursorPluginState>({
     key: cursorPluginKey,
 
     state: {
       init(): CursorPluginState {
-        return { cursors: new Map() };
+        return {
+          cursors: new Map(),
+          freshCursorIDs: new Set(),
+          connectionState: "disconnected",
+        };
       },
 
       apply(
         tr: Transaction,
-        pluginState: CursorPluginState,
+        pluginState: CursorPluginState
       ): CursorPluginState {
         // Check for cursor update meta
         const cursorUpdate = tr.getMeta(cursorPluginKey);
         if (cursorUpdate) {
-          const newCursors = new Map(pluginState.cursors);
-          if (cursorUpdate.type === "update") {
-            // If idleSecs is provided (initial load), backdate lastUpdate
-            const lastUpdate = cursorUpdate.idleSecs
-              ? Date.now() - cursorUpdate.idleSecs * 1000
-              : Date.now();
-            newCursors.set(cursorUpdate.clientID, {
-              clientID: cursorUpdate.clientID,
-              head: cursorUpdate.head,
-              anchor: cursorUpdate.anchor,
-              name: cursorUpdate.name,
-              color: cursorUpdate.color,
-              lastUpdate,
-            });
-          } else if (cursorUpdate.type === "remove") {
-            newCursors.delete(cursorUpdate.clientID);
-            unregisterCursorStrobe(cursorUpdate.clientID);
+          switch (cursorUpdate.type) {
+            case "update": {
+              const newCursors = new Map(pluginState.cursors);
+              // If idleSecs is provided (initial load), backdate lastUpdate
+              const lastUpdate = cursorUpdate.idleSecs
+                ? Date.now() - cursorUpdate.idleSecs * 1000
+                : Date.now();
+              newCursors.set(cursorUpdate.clientID, {
+                clientID: cursorUpdate.clientID,
+                head: cursorUpdate.head,
+                anchor: cursorUpdate.anchor,
+                name: cursorUpdate.name,
+                color: cursorUpdate.color,
+                lastUpdate,
+              });
+              return { ...pluginState, cursors: newCursors };
+            }
+
+            case "remove": {
+              const newCursors = new Map(pluginState.cursors);
+              newCursors.delete(cursorUpdate.clientID);
+              // Note: strobe cleanup is handled by the caller
+              return { ...pluginState, cursors: newCursors };
+            }
+
+            case "setConnectionState": {
+              const newState = cursorUpdate.connectionState as
+                | "connected"
+                | "disconnected";
+              // Update strobe states for all cursors
+              if (currentView) {
+                const viewState = getViewState(currentView);
+                updateStrobeStates(viewState, newState);
+
+                // Cancel reconnect cleanup timer on disconnect
+                if (
+                  newState === "disconnected" &&
+                  viewState.reconnectCleanupTimer
+                ) {
+                  clearTimeout(viewState.reconnectCleanupTimer);
+                  viewState.reconnectCleanupTimer = null;
+                }
+              }
+              return { ...pluginState, connectionState: newState };
+            }
+
+            case "markFresh": {
+              const newFreshIDs = new Set(pluginState.freshCursorIDs);
+              newFreshIDs.add(cursorUpdate.clientID);
+              return { ...pluginState, freshCursorIDs: newFreshIDs };
+            }
+
+            case "initReceived": {
+              // Reset fresh cursor tracking and schedule cleanup
+              if (currentView) {
+                const viewState = getViewState(currentView);
+                const view = currentView;
+
+                // Cancel any existing cleanup timer
+                if (viewState.reconnectCleanupTimer) {
+                  clearTimeout(viewState.reconnectCleanupTimer);
+                }
+
+                // Start cleanup timer
+                viewState.reconnectCleanupTimer = setTimeout(() => {
+                  const currentPluginState = cursorPluginKey.getState(
+                    view.state
+                  );
+                  if (
+                    currentPluginState &&
+                    currentPluginState.connectionState === "connected"
+                  ) {
+                    performReconnectCleanup(view);
+                  }
+                  viewState.reconnectCleanupTimer = null;
+                }, RECONNECT_CLEANUP_DELAY_MS);
+              }
+              return { ...pluginState, freshCursorIDs: new Set() };
+            }
+
+            default:
+              return pluginState;
           }
-          return { cursors: newCursors };
         }
 
         // If document changed, we need to map cursor positions
@@ -669,7 +898,7 @@ export function createCursorPlugin(
               anchor: newAnchor,
             });
           });
-          return { cursors: newCursors };
+          return { ...pluginState, cursors: newCursors };
         }
 
         return pluginState;
@@ -680,19 +909,19 @@ export function createCursorPlugin(
       decorations(state: EditorState): DecorationSet {
         const pluginState = cursorPluginKey.getState(state);
         if (!pluginState) return DecorationSet.empty;
-        // Use cleanupEditorView for same-line detection (may be null during first render)
         return createCursorDecorations(
           state,
-          pluginState.cursors,
+          pluginState,
           myClientID,
-          cleanupEditorView,
+          currentView
         );
       },
     },
 
     view(editorView: EditorView) {
-      // Store view for cleanup operations
-      setCleanupEditorView(editorView);
+      // Store view reference for use in decorations and state transitions
+      currentView = editorView;
+      const viewState = getViewState(editorView);
 
       // Send cursor position on selection change
       const sendSelectionUpdate = (): void => {
@@ -743,7 +972,7 @@ export function createCursorPlugin(
       // we'll catch up when the tab becomes visible again
       refreshInterval = setInterval(
         refreshCursorDecorations,
-        REFRESH_INTERVAL_MS,
+        REFRESH_INTERVAL_MS
       );
 
       // Handle visibility changes to refresh cursors when tab becomes active
@@ -753,6 +982,13 @@ export function createCursorPlugin(
           // Tab became visible - immediately refresh cursor decorations
           // This catches up on any fading that should have happened while tab was inactive
           refreshCursorDecorations();
+          
+          // Also re-send our cursor position to trigger a sync with other clients
+          // This helps ensure our cursor is visible to others after being inactive
+          const { head, anchor } = editorView.state.selection;
+          // Reset lastSentSelection to force re-send
+          lastSentSelection = { head: -1, anchor: -1 };
+          sendSelectionUpdate();
         }
       };
       document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -766,12 +1002,12 @@ export function createCursorPlugin(
         destroy(): void {
           if (sendTimeout) clearTimeout(sendTimeout);
           if (refreshInterval) clearInterval(refreshInterval);
-          if (reconnectCleanupTimer) clearTimeout(reconnectCleanupTimer);
           document.removeEventListener(
             "visibilitychange",
-            handleVisibilityChange,
+            handleVisibilityChange
           );
-          cleanupEditorView = null;
+          cleanupViewState(editorView);
+          currentView = null;
         },
       };
     },
@@ -788,7 +1024,7 @@ export function updateCursor(
   head: number,
   anchor: number,
   name?: string,
-  idleSecs?: number,
+  idleSecs?: number
 ): void {
   const tr = view.state.tr.setMeta(cursorPluginKey, {
     type: "update",
@@ -806,7 +1042,7 @@ export function updateCursor(
  */
 function removeCursorInternal(
   view: EditorView,
-  clientID: string | number,
+  clientID: string | number
 ): void {
   const tr = view.state.tr.setMeta(cursorPluginKey, {
     type: "remove",
@@ -820,8 +1056,9 @@ function removeCursorInternal(
  */
 export function removeCursor(
   view: EditorView,
-  clientID: string | number,
+  clientID: string | number
 ): void {
+  const viewState = getViewState(view);
   removeCursorInternal(view, clientID);
-  unregisterCursorStrobe(clientID);
+  unregisterCursorStrobe(clientID, viewState);
 }

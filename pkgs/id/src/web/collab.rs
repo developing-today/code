@@ -12,6 +12,7 @@
 //! - `[3, version]` - Ack: server confirms steps applied
 //! - `[4, clientID, head, anchor, name?, idleSecs?]` - Cursor position
 //! - `[5, error]` - Error message
+//! - `[6, clientID]` - Cursor removed (client disconnected)
 //! - `""` (empty text) - Ping/pong for inactive tab cursor refresh
 //!
 //! The `idleSecs` field is only sent when the server sends existing cursors
@@ -59,6 +60,7 @@ mod msg {
     pub const ACK: u8 = 3;
     pub const CURSOR: u8 = 4;
     pub const ERROR: u8 = 5;
+    pub const CURSOR_REMOVE: u8 = 6;
 }
 
 /// Load file content from the blob store.
@@ -307,6 +309,8 @@ pub enum CollabMessage {
     },
     /// `[5, error]` - Error message.
     Error { error: String },
+    /// `[6, clientID]` - Cursor removed (client disconnected).
+    CursorRemove { client_id: u64 },
 }
 
 impl CollabMessage {
@@ -335,6 +339,9 @@ impl CollabMessage {
                 to_vec(&(msg::CURSOR, client_id, head, anchor, name, idle_secs)).unwrap_or_default()
             }
             Self::Error { error } => to_vec(&(msg::ERROR, error)).unwrap_or_default(),
+            Self::CursorRemove { client_id } => {
+                to_vec(&(msg::CURSOR_REMOVE, client_id)).unwrap_or_default()
+            }
         }
     }
 
@@ -754,6 +761,10 @@ async fn handle_collab_socket(
     let client_id_opt = client_id_for_disconnect.read().await.clone();
     if let Some(client_id_str) = client_id_opt {
         let now = Instant::now();
+
+        // Parse client_id for broadcast
+        let client_id_num: u64 = client_id_str.parse().unwrap_or(0);
+
         {
             let mut cursors = doc.cursors.write().await;
             if let Some(cursor) = cursors.get_mut(&client_id_str) {
@@ -764,6 +775,16 @@ async fn handle_collab_socket(
                 );
             }
         }
+
+        // Broadcast cursor removal to all connected clients
+        let remove_msg = CollabMessage::CursorRemove {
+            client_id: client_id_num,
+        };
+        let _ = doc.broadcast.send(remove_msg);
+        tracing::debug!(
+            "[collab] Broadcast cursor removal for client {}",
+            client_id_str
+        );
 
         // Schedule cursor cleanup after 5 minutes
         let doc_for_cleanup = Arc::clone(&doc);

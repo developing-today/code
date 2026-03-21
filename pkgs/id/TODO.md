@@ -197,3 +197,17 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - rust/js linters, clippy with all runs, run rustfmt, etc. (youtube video that mentioned what to run? there was another in addition to clippy..)
 
 ---
+
+- Cursor opacity fading (0-30s full, 30-60s fade, 60s-5m at 0.3, 5m+ hidden)
+- Strobing slows as cursors fade (1s → 3s cycle), stops at minimum
+- Strobing stops on WebSocket disconnect
+- Hover on cursor line OR label → 100% opacity, no strobing
+- Hover brings cursor group to top z-index
+- 1s delay before returning to previous state after hover
+- Horizontal tooltip stacking (most recent left, inactive right)
+- User's cursor position triggers full visibility for overlapping cursors
+- Reconnect cleanup (1s timer, fresh marking, cancel on disconnect)
+- Debug logging enabled by default for serve/run/repl
+
+- websocket sends empty string message instead of ping was this deleted
+- grey out offline isn't working

@@ -9,6 +9,7 @@
  * - [3, version] - Ack: server confirms steps applied
  * - [4, clientID, head, anchor, name?, idleSecs?] - Cursor position
  * - [5, error] - Error message
+ * - [6, clientID] - Cursor removed (client disconnected)
  * 
  * The idleSecs field is only sent when the server sends existing cursors
  * to a newly connected client, indicating how long the cursor has been idle.
@@ -29,7 +30,7 @@ import { Packr, Unpackr } from 'msgpackr';
 import { receiveTransaction, getVersion } from 'prosemirror-collab';
 import { Step } from 'prosemirror-transform';
 import { schema, getSendableSteps, initEditor, type EditorInstance } from './editor';
-import { updateCursor, setConnectionState, onInitReceived, markCursorFresh } from './cursors';
+import { updateCursor, setConnectionState, onInitReceived, markCursorFresh, removeCursor } from './cursors';
 
 // Message type tags
 const MSG = {
@@ -39,6 +40,7 @@ const MSG = {
   ACK: 3,
   CURSOR: 4,
   ERROR: 5,
+  CURSOR_REMOVE: 6,
 } as const;
 
 // MessagePack encoder/decoder configured for array format
@@ -160,9 +162,6 @@ export function initCollab(
         const doc = msg[2];
         console.log('[collab] Received initial state, version:', version);
         
-        // Start reconnect cleanup timer (will remove stale cursors after 1s)
-        onInitReceived();
-        
         // Initialize the editor with the server's version
         if (!editorInstance) {
           console.log('[collab] Initializing editor with server version:', version);
@@ -178,6 +177,10 @@ export function initCollab(
             onEditorReady(editorInstance);
           }
         }
+        
+        // Start reconnect cleanup timer (will remove stale cursors after 1s)
+        // Must be called after editor is initialized
+        onInitReceived(editorInstance.view);
         break;
       }
 
@@ -220,12 +223,13 @@ export function initCollab(
         const name = msg[4] as string | null;
         const idleSecs = msg[5] as number | null | undefined;
         
-        if (clientID === myClientID) break; // Ignore our own cursor
+        // Mark cursor as fresh for reconnect cleanup (including own cursor)
+        markCursorFresh(editorInstance.view, clientID);
         
-        // Mark cursor as fresh for reconnect cleanup
-        markCursorFresh(clientID);
+        // Note: We no longer filter out own cursor here - the cursor plugin
+        // handles displaying own cursor with a distinct style (no tooltip)
         
-        console.log('[collab] Cursor update from', clientID, 'at', head, idleSecs ? `(idle ${idleSecs}s)` : '');
+        console.log('[collab] Cursor update from', clientID, 'at', head, idleSecs ? `(idle ${idleSecs}s)` : '', clientID === myClientID ? '(own)' : '');
         updateCursor(editorInstance.view, clientID, head, anchor, name ?? undefined, idleSecs ?? undefined);
         break;
       }
@@ -245,6 +249,20 @@ export function initCollab(
         break;
       }
 
+      case MSG.CURSOR_REMOVE: {
+        // [6, clientID]
+        if (!editorInstance) break;
+        
+        const clientID = msg[1] as number;
+        
+        // Don't remove our own cursor on disconnect notification
+        if (clientID === myClientID) break;
+        
+        console.log('[collab] Cursor removed for client', clientID);
+        removeCursor(editorInstance.view, clientID);
+        break;
+      }
+
       default:
         console.warn('[collab] Unknown message type:', msgType);
     }
@@ -256,14 +274,18 @@ export function initCollab(
       connected = true;
       reconnectAttempts = 0;
       updateStatus('connected');
-      setConnectionState('connected');
+      if (editorInstance) {
+        setConnectionState(editorInstance.view, 'connected');
+      }
       flushQueue();
     };
 
     socket.onclose = (event): void => {
       console.log('[collab] Disconnected:', event.code, event.reason);
       connected = false;
-      setConnectionState('disconnected');
+      if (editorInstance) {
+        setConnectionState(editorInstance.view, 'disconnected');
+      }
       
       if (event.code !== 1000) { // Not a normal closure
         updateStatus('disconnected');
@@ -301,7 +323,9 @@ export function initCollab(
       clearTimeout(reconnectTimer);
     }
     container.removeEventListener('editor:change', handleEditorChange);
-    setConnectionState('disconnected');
+    if (editorInstance) {
+      setConnectionState(editorInstance.view, 'disconnected');
+    }
     ws.close(1000, 'Client disconnected');
     updateStatus('disconnected');
   };

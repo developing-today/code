@@ -135,7 +135,7 @@ in
         arduino-language-server
         arduino-mk
         arduinoOTA
-        code-cursor
+        #code-cursor
         gamemode
         argo-workflows
         argocd
@@ -188,11 +188,11 @@ in
         k3d
         prometheus
         prometheus-alertmanager
-        grafana
-        grafana-loki
-        grafana-image-renderer
-        grafana-reporter
-        grafana-alloy
+        #grafana
+        #grafana-loki
+        #grafana-image-renderer
+        #grafana-reporter
+        #grafana-alloy
         #grafana-agent
         opentelemetry-collector
         tempo
@@ -518,7 +518,7 @@ in
         # Other utilities
         yad # I use yad-calendar with polybar
         xdotool
-        google-chrome
+        #google-chrome
 
         # PDF viewer
         zathura
@@ -527,7 +527,7 @@ in
         spotify
 
         # VR
-        immersed
+        #immersed
       ]);
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };

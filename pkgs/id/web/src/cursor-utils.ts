@@ -114,6 +114,7 @@ export interface CursorForMerge {
   opacity: number;
   baseOpacity: number;
   onSameLine: boolean;
+  isOwnCursor?: boolean;
 }
 
 /**
@@ -131,7 +132,7 @@ export interface PositionGroup {
  */
 export function estimateTooltipWidth(name: string): number {
   const CHAR_WIDTH = 6; // Approximate width per character at 10px font
-  const PADDING = 10; // padding: 1px 4px on each side = 8px + small margin
+  const PADDING = 6; // padding: 0px 2px on each side = 4px + small margin
   return name.length * CHAR_WIDTH + PADDING;
 }
 

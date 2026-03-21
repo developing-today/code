@@ -237,7 +237,7 @@
   left: -1px;
   font-size: 10px;
   font-family: var(--font-mono);
-  padding: 1px 4px;
+  padding: 0px 2px;
   border-radius: 2px;
   white-space: nowrap;
   user-select: none;
@@ -275,6 +275,15 @@
   opacity: 1;
 }
 
+/* Own cursor - visually distinct, no label */
+.collab-cursor.collab-cursor-own {
+  border-left-width: 3px;
+  z-index: 5;
+  /* No strobe for own cursor - solid */
+  animation: none;
+  opacity: 1 !important;
+}
+
 /* Merged cursor (multiple users at same/nearby positions) */
 .collab-cursor.collab-cursor-merged {
   /* No label attached - label is in merged bar */
@@ -309,7 +318,7 @@
 }
 
 .collab-cursor-bar-segment {
-  padding: 1px 4px;
+  padding: 0px 2px;
   transition: opacity 0.3s ease;
   cursor: default;
 }
