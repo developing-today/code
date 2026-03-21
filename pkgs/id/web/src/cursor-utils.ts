@@ -186,7 +186,7 @@ export function doGroupsOverlap(
 ): boolean {
   if (groups.length <= 1 || !getLeftCoord) return false;
 
-  const MIN_GAP = -20; // Only merge when actually overlapping by at least 20px
+  const MIN_GAP = 12; // Merge when tooltips are within 12px of each other
 
   for (let i = 0; i < groups.length - 1; i++) {
     const curr = groups[i];
@@ -245,7 +245,7 @@ export function clusterOverlappingGroups(
     }));
   }
 
-  const MIN_GAP = -20; // Only merge when actually overlapping by at least 20px
+  const MIN_GAP = 12; // Merge when tooltips are within 12px of each other
   const clusters: MergeCluster[] = [];
   let currentCluster: PositionGroup[] = [groups[0]];
   let clusterRightEdge = 0;
@@ -276,7 +276,7 @@ export function clusterOverlappingGroups(
         0,
       );
 
-      // Check if this group overlaps with the current cluster
+      // Check if this group overlaps with the current cluster      // Check if this group overlaps with the current cluster
       if (groupLeft < clusterRightEdge + MIN_GAP) {
         // Overlaps - add to current cluster
         currentCluster.push(group);

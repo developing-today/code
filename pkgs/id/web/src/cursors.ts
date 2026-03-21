@@ -527,8 +527,13 @@ function createCursorDecorations(
     const name = cursor.name || `${String(clientID).slice(-4)}`;
 
     // Clamp positions to valid range
-    const head = Math.max(0, Math.min(cursor.head, docSize));
-    const anchor = Math.max(0, Math.min(cursor.anchor, docSize));
+    // For own cursor, use instant local position instead of stale server data
+    const head = isOwnCursor
+      ? localHead
+      : Math.max(0, Math.min(cursor.head, docSize));
+    const anchor = isOwnCursor
+      ? state.selection.anchor
+      : Math.max(0, Math.min(cursor.anchor, docSize));
 
     // Check if this cursor is on the same line as the local cursor
     const onSameLine =

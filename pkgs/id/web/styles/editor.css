@@ -234,7 +234,7 @@
 
 .collab-cursor-label {
   position: absolute;
-  top: -1.1em;
+  top: -1.4em;
   left: -1px;
   font-size: 10px;
   line-height: 1;
@@ -292,7 +292,7 @@
 
 .collab-cursor-bar {
   position: absolute;
-  top: -1em;
+  top: -1.4em;
   left: -1px;
   display: flex;
   flex-direction: row;
