@@ -3,13 +3,21 @@
  * Implements the client side of prosemirror-collab's authority model.
  * 
  * Wire Protocol (MessagePack arrays):
- * - [0, version, doc] - Init: server sends initial state
+ * - [0, version, doc, mode] - Init: server sends initial state and content mode
  * - [1, version, steps, clientID] - Steps: client sends changes
  * - [2, steps, clientIDs] - Update: server broadcasts changes
  * - [3, version] - Ack: server confirms steps applied
  * - [4, clientID, head, anchor, name?, idleSecs?] - Cursor position
  * - [5, error] - Error message
  * - [6, clientID] - Cursor removed (client disconnected)
+ * 
+ * Content Modes:
+ * - "rich" - ProseMirror JSON files, full editor
+ * - "markdown" - Markdown files, full editor (server converts)
+ * - "plain" - Plain text files, full editor
+ * - "raw" - Code/config files, minimal editor (no toolbar)
+ * - "media" - Media files, displayed natively
+ * - "binary" - Binary files, not editable
  * 
  * The idleSecs field is only sent when the server sends existing cursors
  * to a newly connected client, indicating how long the cursor has been idle.
@@ -29,7 +37,7 @@
 import { Packr, Unpackr } from 'msgpackr';
 import { receiveTransaction, getVersion } from 'prosemirror-collab';
 import { Step } from 'prosemirror-transform';
-import { schema, getSendableSteps, initEditor, type EditorInstance } from './editor';
+import { getSendableSteps, initEditor, getSchema, type EditorInstance, type ContentMode } from './editor';
 import { updateCursor, setConnectionState, onInitReceived, markCursorFresh, removeCursor } from './cursors';
 
 // Message type tags
@@ -52,19 +60,20 @@ export interface CollabConnection {
   docId: string;
   disconnect: () => void;
   editor: EditorInstance | null;
+  mode: ContentMode | null;
 }
 
 export type StatusCallback = (status: 'connecting' | 'connected' | 'disconnected' | 'error') => void;
 
 /**
  * Initialize a collaborative editing connection.
- * This connects to the WebSocket first, receives the server version,
- * then initializes the ProseMirror editor with the correct version.
+ * This connects to the WebSocket first, receives the server version and document,
+ * then initializes the ProseMirror editor with the server's state.
  * 
  * @param wsUrl - WebSocket URL for the collab server
  * @param container - The DOM container for the editor
- * @param initialContent - Initial HTML content for the editor
  * @param docId - Document identifier
+ * @param filename - Optional filename for content mode detection
  * @param onStatus - Callback for status changes
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
@@ -72,12 +81,14 @@ export type StatusCallback = (status: 'connecting' | 'connected' | 'disconnected
 export function initCollab(
   wsUrl: string,
   container: HTMLElement,
-  initialContent: string,
   docId: string,
+  filename?: string,
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void
 ): CollabConnection {
-  const ws = new WebSocket(wsUrl);
+  // Append filename as query parameter if provided
+  const finalWsUrl = filename ? `${wsUrl}?filename=${encodeURIComponent(filename)}` : wsUrl;
+  const ws = new WebSocket(finalWsUrl);
   ws.binaryType = 'arraybuffer'; // Receive binary data as ArrayBuffer
   
   let reconnectAttempts = 0;
@@ -85,6 +96,7 @@ export function initCollab(
   let sendQueue: Uint8Array[] = [];
   let connected = false;
   let editorInstance: EditorInstance | null = null;
+  let documentMode: ContentMode | null = null;
   
   // Track our clientID (set when editor initializes)
   let myClientID: number | null = null;
@@ -125,7 +137,7 @@ export function initCollab(
     console.log(`[collab] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
     updateStatus('connecting');
     reconnectTimer = setTimeout(() => {
-      const newWs = new WebSocket(wsUrl);
+      const newWs = new WebSocket(finalWsUrl);
       newWs.binaryType = 'arraybuffer';
       setupWebSocket(newWs);
     }, delay);
@@ -157,15 +169,18 @@ export function initCollab(
 
     switch (msgType) {
       case MSG.INIT: {
-        // [0, version, doc]
+        // [0, version, doc, mode]
         const version = msg[1] as number;
         const doc = msg[2];
-        console.log('[collab] Received initial state, version:', version);
+        const mode = (msg[3] as string || 'raw') as ContentMode;
+        documentMode = mode;
+        console.log('[collab] Received initial state, version:', version, 'mode:', mode);
         
-        // Initialize the editor with the server's version
+        // Initialize the editor with the server's document and mode
         if (!editorInstance) {
-          console.log('[collab] Initializing editor with server version:', version);
-          editorInstance = initEditor(container, initialContent, version, sendCursor);
+          console.log('[collab] Initializing editor with server version:', version, 'mode:', mode);
+          // Pass the server's ProseMirror JSON doc, not the HTML initialContent
+          editorInstance = initEditor(container, doc, version, mode, sendCursor);
           myClientID = editorInstance.clientID;
           console.log('[collab] Our clientID:', myClientID);
           
@@ -202,7 +217,9 @@ export function initCollab(
             // 1. Recognize and confirm our own steps (matching our clientID)
             // 2. Apply remote steps from other clients
             // 3. Rebase any unconfirmed local steps over remote steps
-            const parsedSteps = steps.map(s => Step.fromJSON(schema, s));
+            // Use the schema from the editor instance (mode-aware)
+            const editorSchema = editorInstance.view.state.schema;
+            const parsedSteps = steps.map(s => Step.fromJSON(editorSchema, s));
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log('[collab] Applied transaction, new version:', getVersion(editorInstance.view.state));
@@ -335,5 +352,6 @@ export function initCollab(
     docId,
     disconnect,
     get editor() { return editorInstance; },
+    get mode() { return documentMode; },
   };
 }

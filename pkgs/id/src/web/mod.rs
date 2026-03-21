@@ -46,8 +46,16 @@
 
 mod assets;
 mod collab;
+mod content_mode;
+mod markdown;
 mod routes;
 mod templates;
+
+pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
+pub use markdown::{
+    markdown_to_prosemirror, plain_text_to_prosemirror, prosemirror_to_markdown,
+    raw_text_to_prosemirror,
+};
 
 use axum::Router;
 use iroh_blobs::api::Store;

@@ -9,6 +9,8 @@
 
 use std::fmt::Write;
 
+use super::content_mode::MediaType;
+
 /// Asset URLs for templates.
 ///
 /// These are resolved from the manifest at startup to support cache busting
@@ -146,7 +148,7 @@ pub fn render_file_list(files: &[(String, String, u64)]) -> String {
 /// # Arguments
 ///
 /// * `doc_id` - Document identifier (usually the hash)
-/// * `name` - Human-readable document name
+/// * `name` - Human-readable document name (used for mode detection)
 /// * `content` - Initial document content (HTML)
 ///
 /// # Returns
@@ -155,6 +157,8 @@ pub fn render_file_list(files: &[(String, String, u64)]) -> String {
 pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     let doc_id_escaped = html_escape(doc_id);
     let name_escaped = html_escape(name);
+    // URL-encode the filename for WebSocket query parameter
+    let name_urlencoded = urlencoding::encode(name);
 
     let mut html = String::with_capacity(2048);
     html.push_str("<div class=\"card\">\n");
@@ -165,12 +169,127 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     );
     let _ = write!(
         html,
-        "    <div class=\"editor-wrapper\" id=\"editor-container\" data-doc-id=\"{}\">\n        <div id=\"editor\">{}</div>\n    </div>\n",
-        doc_id_escaped, content
+        "    <div class=\"editor-wrapper\" id=\"editor-container\" data-doc-id=\"{}\" data-filename=\"{}\">\n        <div id=\"editor\">{}</div>\n    </div>\n",
+        doc_id_escaped, name_urlencoded, content
     );
     html.push_str("    <div class=\"flex justify-between mt-md\">\n");
     html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <button onclick=\"alert('Save functionality coming soon')\" class=\"primary\">Save</button>\n");
+    html.push_str("    </div>\n");
+    html.push_str("</div>\n");
+
+    html
+}
+
+/// Render the media viewer for images, video, audio, and PDF.
+///
+/// # Arguments
+///
+/// * `doc_id` - Document identifier (hash) for blob URL
+/// * `name` - Human-readable file name
+/// * `media_type` - Type of media to render
+///
+/// # Returns
+///
+/// HTML fragment for the media viewer.
+pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> String {
+    let doc_id_escaped = html_escape(doc_id);
+    let name_escaped = html_escape(name);
+    let name_urlencoded = urlencoding::encode(name);
+    let blob_url = format!("/blob/{}?filename={}", doc_id_escaped, name_urlencoded);
+
+    let mut html = String::with_capacity(1024);
+    html.push_str("<div class=\"card\">\n");
+    let _ = write!(
+        html,
+        "    <div class=\"card-header\">{}</div>\n",
+        name_escaped
+    );
+    html.push_str("    <div class=\"media-viewer\">\n");
+
+    match media_type {
+        MediaType::Image => {
+            let _ = write!(
+                html,
+                "        <img src=\"{}\" alt=\"{}\" class=\"media-content\" />\n",
+                blob_url, name_escaped
+            );
+        }
+        MediaType::Video => {
+            let _ = write!(
+                html,
+                "        <video src=\"{}\" controls class=\"media-content\">\n            Your browser does not support the video tag.\n        </video>\n",
+                blob_url
+            );
+        }
+        MediaType::Audio => {
+            let _ = write!(
+                html,
+                "        <audio src=\"{}\" controls class=\"media-content\">\n            Your browser does not support the audio tag.\n        </audio>\n",
+                blob_url
+            );
+        }
+        MediaType::Pdf => {
+            let _ = write!(
+                html,
+                "        <embed src=\"{}\" type=\"application/pdf\" class=\"media-content media-pdf\" />\n",
+                blob_url
+            );
+        }
+    }
+
+    html.push_str("    </div>\n");
+    html.push_str("    <div class=\"flex justify-between mt-md\">\n");
+    html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
+    let _ = write!(
+        html,
+        "        <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
+        blob_url, name_escaped
+    );
+    html.push_str("    </div>\n");
+    html.push_str("</div>\n");
+
+    html
+}
+
+/// Render the binary file viewer with download option.
+///
+/// Shown for files that cannot be displayed in the browser.
+///
+/// # Arguments
+///
+/// * `doc_id` - Document identifier (hash) for blob URL
+/// * `name` - Human-readable file name
+///
+/// # Returns
+///
+/// HTML fragment for the binary viewer.
+pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
+    let doc_id_escaped = html_escape(doc_id);
+    let name_escaped = html_escape(name);
+    let name_urlencoded = urlencoding::encode(name);
+    let blob_url = format!("/blob/{}?filename={}", doc_id_escaped, name_urlencoded);
+
+    let mut html = String::with_capacity(512);
+    html.push_str("<div class=\"card\">\n");
+    let _ = write!(
+        html,
+        "    <div class=\"card-header\">{}</div>\n",
+        name_escaped
+    );
+    html.push_str("    <div class=\"binary-viewer\">\n");
+    html.push_str(
+        "        <p class=\"text-muted\">This file cannot be displayed in the browser.</p>\n",
+    );
+    html.push_str("        <p class=\"text-muted\">Download it to view with an appropriate application.</p>\n");
+    html.push_str("    </div>\n");
+    html.push_str("    <div class=\"flex justify-between mt-md\">\n");
+    html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
+    let _ = write!(
+        html,
+        "        <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
+        blob_url, name_escaped
+    );
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
 

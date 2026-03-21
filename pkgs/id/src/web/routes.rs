@@ -4,13 +4,20 @@
 
 use axum::{
     Router,
-    extract::{Path, State},
-    response::{Html, IntoResponse},
+    body::Body,
+    extract::{Path, Query, State},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::get,
 };
+use serde::Deserialize;
 
 use super::AppState;
-use super::templates::{render_editor, render_file_list, render_page, render_settings};
+use super::content_mode::{ContentMode, detect_mode_with_content, get_content_type};
+use super::templates::{
+    render_binary_viewer, render_editor, render_file_list, render_media_viewer, render_page,
+    render_settings,
+};
 
 /// Create the main router with all web routes.
 pub fn create_router(state: AppState) -> Router {
@@ -19,6 +26,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(index_handler))
         .route("/settings", get(settings_handler))
         .route("/edit/:hash", get(edit_handler))
+        // Blob route (serves raw file content)
+        .route("/blob/:hash", get(blob_handler))
         // HTMX partial routes (return HTML fragments)
         .route("/api/files", get(files_list_handler))
         // WebSocket for collaboration
@@ -43,7 +52,19 @@ async fn settings_handler(State(state): State<AppState>) -> impl IntoResponse {
     Html(render_page("Settings", &content, "", &state.assets))
 }
 
+/// Query parameters for blob requests.
+#[derive(Debug, Deserialize)]
+struct BlobQuery {
+    /// Optional filename for Content-Type detection.
+    filename: Option<String>,
+}
+
 /// Editor page handler - shows `ProseMirror` editor for a file.
+///
+/// Routes to different views based on content mode:
+/// - Editable modes (Rich, Markdown, Plain, Raw) → Editor
+/// - Media modes (Image, Video, Audio, Pdf) → Media viewer
+/// - Binary → Binary viewer with download option
 async fn edit_handler(
     State(state): State<AppState>,
     Path(hash): Path<String>,
@@ -53,16 +74,101 @@ async fn edit_handler(
         .await
         .unwrap_or_else(|| hash.clone());
 
-    // Get file content from store
-    let content = get_file_content(&state.store, &hash).await;
+    // Get file content bytes from store
+    let content_result = get_file_bytes(&state.store, &hash).await;
 
-    let editor_html = render_editor(&hash, &name, &content);
-    Html(render_page(
-        &format!("Edit: {name}"),
-        &editor_html,
-        "",
-        &state.assets,
-    ))
+    match content_result {
+        Ok(bytes) => {
+            // Detect content mode from filename and content
+            let mode = detect_mode_with_content(&name, &bytes);
+
+            match mode {
+                ContentMode::Media(media_type) => {
+                    // Render media viewer
+                    let viewer_html = render_media_viewer(&hash, &name, media_type);
+                    Html(render_page(
+                        &format!("View: {name}"),
+                        &viewer_html,
+                        "",
+                        &state.assets,
+                    ))
+                }
+                ContentMode::Binary => {
+                    // Render binary viewer with download option
+                    let viewer_html = render_binary_viewer(&hash, &name);
+                    Html(render_page(
+                        &format!("File: {name}"),
+                        &viewer_html,
+                        "",
+                        &state.assets,
+                    ))
+                }
+                _ => {
+                    // Editable modes - convert bytes to HTML for editor
+                    let content = get_file_content_html(&bytes);
+                    let editor_html = render_editor(&hash, &name, &content);
+                    Html(render_page(
+                        &format!("Edit: {name}"),
+                        &editor_html,
+                        "",
+                        &state.assets,
+                    ))
+                }
+            }
+        }
+        Err(err_msg) => {
+            // Error loading file
+            let editor_html = render_editor(&hash, &name, &err_msg);
+            Html(render_page(
+                &format!("Edit: {name}"),
+                &editor_html,
+                "",
+                &state.assets,
+            ))
+        }
+    }
+}
+
+/// Blob handler - serves raw file content with appropriate Content-Type.
+///
+/// Used for media files to render directly in browser (images, video, audio, PDF).
+async fn blob_handler(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+    Query(query): Query<BlobQuery>,
+) -> Response {
+    // Parse the hash
+    let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() else {
+        return (StatusCode::BAD_REQUEST, "Invalid hash format").into_response();
+    };
+
+    // Read the blob content
+    let Ok(bytes) = state.store.blobs().get_bytes(parsed_hash).await else {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    };
+
+    // Determine content type from filename if provided, otherwise from hash lookup
+    let filename = match query.filename {
+        Some(name) => name,
+        None => get_file_name(&state.store, &hash)
+            .await
+            .unwrap_or_else(|| "file.bin".to_owned()),
+    };
+
+    let content_type = get_content_type(&filename);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .body(Body::from(bytes.to_vec()))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build response",
+            )
+                .into_response()
+        })
 }
 
 /// API handler for file list (HTMX partial).
@@ -120,23 +226,28 @@ async fn get_file_name(store: &iroh_blobs::api::Store, hash: &str) -> Option<Str
     None
 }
 
-/// Get file content as HTML.
+/// Get file bytes from the blob store.
 ///
-/// Reads the file content from the blob store and converts it to HTML
-/// for display in the editor.
-async fn get_file_content(store: &iroh_blobs::api::Store, hash: &str) -> String {
+/// Returns the file content as bytes if found, or an HTML error message.
+async fn get_file_bytes(store: &iroh_blobs::api::Store, hash: &str) -> Result<Vec<u8>, String> {
     // Parse the hash
-    let Ok(hash) = hash.parse::<iroh_blobs::Hash>() else {
-        return "<p>Invalid hash format</p>".to_owned();
-    };
+    let hash = hash
+        .parse::<iroh_blobs::Hash>()
+        .map_err(|_err| "<p>Invalid hash format</p>".to_owned())?;
 
     // Read the blob content
-    let Ok(bytes) = store.blobs().get_bytes(hash).await else {
-        return "<p>File not found</p>".to_owned();
-    };
+    store
+        .blobs()
+        .get_bytes(hash)
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|_err| "<p>File not found</p>".to_owned())
+}
 
+/// Convert file bytes to HTML for editor display.
+fn get_file_content_html(bytes: &[u8]) -> String {
     // Convert to string (lossy for non-UTF8)
-    let text = String::from_utf8_lossy(&bytes);
+    let text = String::from_utf8_lossy(bytes);
 
     // Escape HTML and wrap in <pre> for plain text display
     // The editor will handle this as text content

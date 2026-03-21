@@ -68,21 +68,23 @@ function init(): void {
         return;
       }
       
+      const editorContainer = document.getElementById('editor-container');
       const container = document.getElementById('editor');
-      if (!container) {
+      if (!container || !editorContainer) {
         console.error('[id] Editor container not found');
         return;
       }
       
       try {
-        // Get initial content from the container (server-rendered)
-        const initialContent = container.innerHTML;
-        console.log('[id] Initial content length:', initialContent.length);
+        // Get filename from data attribute (URL-encoded by server)
+        const filenameEncoded = editorContainer.dataset.filename;
+        const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : undefined;
+        console.log('[id] Filename:', filename);
         
-        // Clear container before connecting
+        // Clear container - server doc comes via WebSocket Init message
         container.innerHTML = '';
         
-        // Connect to collab server - editor will be initialized after receiving server version
+        // Connect to collab server - editor will be initialized after receiving server doc
         updateStatus('connecting');
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${wsProtocol}//${window.location.host}/ws/collab/${docId}`;
@@ -91,11 +93,11 @@ function init(): void {
         this.collab = initCollab(
           wsUrl,
           container,
-          initialContent,
           docId,
+          filename,
           updateStatus,
           (editor: EditorInstance) => {
-            console.log('[id] Editor initialized with server version');
+            console.log('[id] Editor initialized with server version, mode:', editor.mode);
           }
         );
         console.log('[id] Collab connection initiated');

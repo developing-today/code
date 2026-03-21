@@ -6,7 +6,7 @@
 //! ## Wire Protocol (`MessagePack` arrays)
 //!
 //! Messages are encoded as `MessagePack` arrays for efficiency:
-//! - `[0, version, doc]` - Init: server sends initial state
+//! - `[0, version, doc, mode]` - Init: server sends initial state with content mode
 //! - `[1, version, steps, clientID]` - Steps: client sends changes
 //! - `[2, steps, clientIDs]` - Update: server broadcasts changes
 //! - `[3, version]` - Ack: server confirms steps applied
@@ -14,6 +14,16 @@
 //! - `[5, error]` - Error message
 //! - `[6, clientID]` - Cursor removed (client disconnected)
 //! - `""` (empty text) - Ping/pong for inactive tab cursor refresh
+//!
+//! ## Content Modes
+//!
+//! The `mode` field in Init messages tells the client how to render the document:
+//! - `"rich"` - Full `ProseMirror` editor with toolbar
+//! - `"markdown"` - Full editor, server converts markdown to/from PM JSON
+//! - `"plain"` - Full editor, lines become paragraphs
+//! - `"raw"` - Editor with no formatting toolbar (for code/config files)
+//! - `"media"` - Native browser rendering (image/video/audio/pdf)
+//! - `"binary"` - Cannot be edited, show download link
 //!
 //! The `idleSecs` field is only sent when the server sends existing cursors
 //! to a newly connected client. It indicates how long the cursor has been
@@ -35,7 +45,7 @@
 
 use axum::{
     extract::{
-        Path, State, WebSocketUpgrade,
+        Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     response::IntoResponse,
@@ -52,6 +62,11 @@ use std::{
 };
 use tokio::sync::{RwLock, broadcast};
 
+use super::content_mode::{ContentMode, detect_mode_with_content};
+use super::markdown::{
+    markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
+};
+
 /// Message type tags for the wire protocol.
 mod msg {
     pub const INIT: u8 = 0;
@@ -63,13 +78,80 @@ mod msg {
     pub const CURSOR_REMOVE: u8 = 6;
 }
 
+/// Query parameters for WebSocket connection.
+#[derive(Debug, Deserialize)]
+pub struct WsParams {
+    /// Filename for content mode detection (optional).
+    pub filename: Option<String>,
+}
+
 /// Load file content from the blob store.
 ///
-/// Returns the file content as a string if found and valid UTF-8.
-async fn load_file_content(store: &iroh_blobs::api::Store, hash_str: &str) -> Option<String> {
+/// Returns the file content as bytes if found.
+async fn load_file_content(store: &iroh_blobs::api::Store, hash_str: &str) -> Option<Vec<u8>> {
     let hash: iroh_blobs::Hash = hash_str.parse().ok()?;
     let bytes = store.blobs().get_bytes(hash).await.ok()?;
-    String::from_utf8(bytes.to_vec()).ok()
+    Some(bytes.to_vec())
+}
+
+/// Convert content bytes to a `ProseMirror` document based on content mode.
+///
+/// Returns the document JSON and the detected content mode.
+fn content_to_document(
+    content: Option<&[u8]>,
+    filename: Option<&str>,
+) -> (serde_json::Value, ContentMode) {
+    let Some(bytes) = content else {
+        // No content - return empty document
+        return (
+            serde_json::json!({
+                "type": "doc",
+                "content": [{"type": "paragraph"}]
+            }),
+            ContentMode::Raw,
+        );
+    };
+
+    // Detect content mode from filename and content
+    let mode = detect_mode_with_content(filename.unwrap_or(""), bytes);
+
+    // Non-editable modes don't need document conversion
+    if !mode.is_editable() {
+        return (
+            serde_json::json!({
+                "type": "doc",
+                "content": [{"type": "paragraph"}]
+            }),
+            mode,
+        );
+    }
+
+    // Convert bytes to string (for editable modes, we already know it's valid UTF-8)
+    let text = String::from_utf8_lossy(bytes);
+
+    let doc = match mode {
+        ContentMode::Rich => {
+            // Already ProseMirror JSON - parse it directly
+            serde_json::from_str(&text).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "type": "doc",
+                    "content": [{"type": "paragraph"}]
+                })
+            })
+        }
+        ContentMode::Markdown => markdown_to_prosemirror(&text),
+        ContentMode::Plain => plain_text_to_prosemirror(&text),
+        ContentMode::Raw => raw_text_to_prosemirror(&text),
+        // Media and Binary already handled above
+        ContentMode::Media(_) | ContentMode::Binary => {
+            serde_json::json!({
+                "type": "doc",
+                "content": [{"type": "paragraph"}]
+            })
+        }
+    };
+
+    (doc, mode)
 }
 
 /// A step in the `ProseMirror` document history.
@@ -122,6 +204,8 @@ pub struct Document {
     pub version: AtomicU64,
     /// The current document state as JSON.
     pub doc: RwLock<serde_json::Value>,
+    /// Content mode for this document.
+    pub mode: ContentMode,
     /// History of all applied steps (step data, client ID as JSON value).
     pub steps: RwLock<Vec<(Step, serde_json::Value)>>,
     /// Active cursor positions by client ID.
@@ -137,61 +221,37 @@ pub struct Document {
 impl Document {
     /// Create a new empty document.
     pub fn new() -> Self {
-        Self::with_content(None)
+        Self::with_doc_and_mode(
+            serde_json::json!({
+                "type": "doc",
+                "content": [{"type": "paragraph"}]
+            }),
+            ContentMode::Raw,
+        )
     }
 
-    /// Create a document with optional initial text content.
-    ///
-    /// Converts plain text to a `ProseMirror` document structure.
-    /// Each line becomes a paragraph.
-    pub fn with_content(content: Option<&str>) -> Self {
+    /// Create a document with a `ProseMirror` document and content mode.
+    pub fn with_doc_and_mode(doc: serde_json::Value, mode: ContentMode) -> Self {
         let (tx, _) = broadcast::channel(256);
-
-        let doc = match content {
-            Some(text) if !text.is_empty() => {
-                // Convert text to ProseMirror document structure
-                // Each line becomes a paragraph with text content
-                let paragraphs: Vec<serde_json::Value> = text
-                    .lines()
-                    .map(|line| {
-                        if line.is_empty() {
-                            serde_json::json!({"type": "paragraph"})
-                        } else {
-                            serde_json::json!({
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": line}]
-                            })
-                        }
-                    })
-                    .collect();
-
-                serde_json::json!({
-                    "type": "doc",
-                    "content": if paragraphs.is_empty() {
-                        vec![serde_json::json!({"type": "paragraph"})]
-                    } else {
-                        paragraphs
-                    }
-                })
-            }
-            _ => {
-                // Empty document with single empty paragraph
-                serde_json::json!({
-                    "type": "doc",
-                    "content": [{"type": "paragraph"}]
-                })
-            }
-        };
 
         Self {
             version: AtomicU64::new(0),
             doc: RwLock::new(doc),
+            mode,
             steps: RwLock::new(Vec::new()),
             cursors: RwLock::new(HashMap::new()),
             broadcast: tx,
             client_count: AtomicUsize::new(0),
             last_client_disconnect: RwLock::new(None),
         }
+    }
+
+    /// Create a document with optional initial content and filename for mode detection.
+    ///
+    /// Converts content to a `ProseMirror` document structure based on detected mode.
+    pub fn with_content(content: Option<&[u8]>, filename: Option<&str>) -> Self {
+        let (doc, mode) = content_to_document(content, filename);
+        Self::with_doc_and_mode(doc, mode)
     }
 
     /// Get the current version.
@@ -247,7 +307,8 @@ impl CollabState {
     pub async fn get_or_create(
         &self,
         doc_id: &str,
-        initial_content: Option<&str>,
+        initial_content: Option<&[u8]>,
+        filename: Option<&str>,
     ) -> Arc<Document> {
         let read = self.documents.read().await;
         if let Some(doc) = read.get(doc_id) {
@@ -261,7 +322,7 @@ impl CollabState {
             return Arc::clone(doc);
         }
 
-        let doc = Arc::new(Document::with_content(initial_content));
+        let doc = Arc::new(Document::with_content(initial_content, filename));
         write.insert(doc_id.to_owned(), Arc::clone(&doc));
         doc
     }
@@ -279,10 +340,11 @@ impl CollabState {
 /// Serialized as `MessagePack` arrays: `[type_tag, ...fields]`
 #[derive(Debug, Clone)]
 pub enum CollabMessage {
-    /// `[0, version, doc]` - Initial document state sent to client.
+    /// `[0, version, doc, mode]` - Initial document state sent to client.
     Init {
         version: u64,
         doc: serde_json::Value,
+        mode: String,
     },
     /// `[1, version, steps, clientID]` - Steps received from a client.
     Steps {
@@ -319,7 +381,9 @@ impl CollabMessage {
         use rmp_serde::encode::to_vec;
 
         match self {
-            Self::Init { version, doc } => to_vec(&(msg::INIT, version, doc)).unwrap_or_default(),
+            Self::Init { version, doc, mode } => {
+                to_vec(&(msg::INIT, version, doc, mode)).unwrap_or_default()
+            }
             Self::Steps {
                 version,
                 steps,
@@ -354,8 +418,19 @@ impl CollabMessage {
         // but simple and correct.
 
         // Try each message type in order
+        // Init with mode (new format)
+        if let Ok((msg::INIT, version, doc, mode)) =
+            from_slice::<(u8, u64, serde_json::Value, String)>(data)
+        {
+            return Some(Self::Init { version, doc, mode });
+        }
+        // Init without mode (legacy format - default to raw)
         if let Ok((msg::INIT, version, doc)) = from_slice::<(u8, u64, serde_json::Value)>(data) {
-            return Some(Self::Init { version, doc });
+            return Some(Self::Init {
+                version,
+                doc,
+                mode: "raw".to_owned(),
+            });
         }
 
         if let Ok((msg::STEPS, version, steps, client_id)) =
@@ -414,21 +489,29 @@ impl CollabMessage {
 pub async fn ws_collab_handler(
     ws: WebSocketUpgrade,
     Path(doc_id): Path<String>,
+    Query(params): Query<WsParams>,
     State(state): State<super::AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_collab_socket(socket, doc_id, state.collab, state.store))
+    ws.on_upgrade(move |socket| {
+        handle_collab_socket(socket, doc_id, params.filename, state.collab, state.store)
+    })
 }
 
 /// Handle a WebSocket connection for collaborative editing.
 async fn handle_collab_socket(
     socket: WebSocket,
     doc_id: String,
+    filename: Option<String>,
     collab: Arc<CollabState>,
     store: iroh_blobs::api::Store,
 ) {
     use std::sync::atomic::Ordering;
 
-    tracing::info!("[collab] New connection for doc '{}' (page load)", doc_id);
+    tracing::info!(
+        "[collab] New connection for doc '{}' (page load), filename={:?}",
+        doc_id,
+        filename
+    );
 
     // Try to load file content from the store (doc_id is the hash)
     let initial_content = load_file_content(&store, &doc_id).await;
@@ -437,13 +520,14 @@ async fn handle_collab_socket(
     }
 
     let doc = collab
-        .get_or_create(&doc_id, initial_content.as_deref())
+        .get_or_create(&doc_id, initial_content.as_deref(), filename.as_deref())
         .await;
     let client_count = doc.client_connected();
     tracing::info!(
-        "[collab] Client connected to doc '{}', {} total clients",
+        "[collab] Client connected to doc '{}', {} total clients, mode={}",
         doc_id,
-        client_count
+        client_count,
+        doc.mode.as_str()
     );
 
     let mut rx = doc.broadcast.subscribe();
@@ -454,12 +538,14 @@ async fn handle_collab_socket(
     let init_msg = CollabMessage::Init {
         version: doc.version(),
         doc: doc.doc.read().await.clone(),
+        mode: doc.mode.as_str().to_owned(),
     };
 
     let init_bytes = init_msg.encode();
     tracing::info!(
-        "[collab] Sending Init: version={}, {} bytes",
+        "[collab] Sending Init: version={}, mode={}, {} bytes",
         doc.version(),
+        doc.mode.as_str(),
         init_bytes.len()
     );
 
@@ -846,14 +932,16 @@ mod tests {
         let msg = CollabMessage::Init {
             version: 42,
             doc: serde_json::json!({"type": "doc", "content": []}),
+            mode: "markdown".to_owned(),
         };
         let encoded = msg.encode();
         let decoded = CollabMessage::decode(&encoded).unwrap();
 
         match decoded {
-            CollabMessage::Init { version, doc } => {
+            CollabMessage::Init { version, doc, mode } => {
                 assert_eq!(version, 42);
                 assert_eq!(doc, serde_json::json!({"type": "doc", "content": []}));
+                assert_eq!(mode, "markdown");
             }
             _ => panic!("Expected Init message"),
         }
@@ -1050,10 +1138,11 @@ mod tests {
         let init = CollabMessage::Init {
             version: 0,
             doc: serde_json::Value::Null,
+            mode: "raw".to_owned(),
         };
         let init_bytes = init.encode();
         assert!(!init_bytes.is_empty());
-        // MessagePack fixarray of 3 elements starts with 0x93
+        // MessagePack fixarray of 4 elements starts with 0x94
         // First element should decode to 0 (INIT)
 
         let ack = CollabMessage::Ack { version: 0 };
@@ -1070,5 +1159,85 @@ mod tests {
         assert_eq!(msg::ACK, 3);
         assert_eq!(msg::CURSOR, 4);
         assert_eq!(msg::ERROR, 5);
+    }
+
+    #[test]
+    fn test_content_to_document_empty() {
+        let (doc, mode) = content_to_document(None, None);
+        assert_eq!(mode, ContentMode::Raw);
+        assert_eq!(doc["type"], "doc");
+        assert!(doc["content"].as_array().is_some());
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn test_content_to_document_markdown() {
+        let content = b"# Hello\n\nThis is **bold** text.";
+        let (doc, mode) = content_to_document(Some(content), Some("readme.md"));
+        assert_eq!(mode, ContentMode::Markdown);
+        assert_eq!(doc["type"], "doc");
+        // Should have heading and paragraph
+        let content_arr = doc["content"].as_array().unwrap();
+        assert!(content_arr.iter().any(|n| n["type"] == "heading"));
+        assert!(content_arr.iter().any(|n| n["type"] == "paragraph"));
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn test_content_to_document_plain() {
+        let content = b"Line 1\nLine 2\nLine 3";
+        let (doc, mode) = content_to_document(Some(content), Some("notes.txt"));
+        assert_eq!(mode, ContentMode::Plain);
+        assert_eq!(doc["type"], "doc");
+        // Each line should be a paragraph
+        let content_arr = doc["content"].as_array().unwrap();
+        assert_eq!(content_arr.len(), 3);
+        assert!(content_arr.iter().all(|n| n["type"] == "paragraph"));
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn test_content_to_document_raw() {
+        let content = b"fn main() {\n    println!(\"Hello\");\n}";
+        let (doc, mode) = content_to_document(Some(content), Some("main.rs"));
+        assert_eq!(mode, ContentMode::Raw);
+        assert_eq!(doc["type"], "doc");
+        // Should be wrapped in a code_block
+        let content_arr = doc["content"].as_array().unwrap();
+        assert_eq!(content_arr.len(), 1);
+        assert_eq!(content_arr[0]["type"], "code_block");
+    }
+
+    #[test]
+    fn test_content_to_document_media() {
+        use super::super::content_mode::MediaType;
+        // PNG magic bytes
+        let content = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let (doc, mode) = content_to_document(Some(content), Some("image.png"));
+        assert!(matches!(mode, ContentMode::Media(MediaType::Image)));
+        // Media mode returns empty document (not editable)
+        assert_eq!(doc["type"], "doc");
+    }
+
+    #[test]
+    fn test_content_to_document_binary() {
+        // Invalid UTF-8 without known extension
+        let content = &[0xFF, 0xFE, 0x00, 0x01];
+        let (doc, mode) = content_to_document(Some(content), Some("unknown.dat"));
+        assert_eq!(mode, ContentMode::Binary);
+        assert_eq!(doc["type"], "doc");
+    }
+
+    #[test]
+    fn test_document_with_content_modes() {
+        // Test Document::with_content preserves mode
+        let doc = Document::with_content(Some(b"# Test".as_slice()), Some("test.md"));
+        assert_eq!(doc.mode, ContentMode::Markdown);
+
+        let doc = Document::with_content(Some(b"let x = 1;".as_slice()), Some("script.js"));
+        assert_eq!(doc.mode, ContentMode::Raw);
+
+        let doc = Document::with_content(Some(b"Hello".as_slice()), Some("note.txt"));
+        assert_eq!(doc.mode, ContentMode::Plain);
     }
 }

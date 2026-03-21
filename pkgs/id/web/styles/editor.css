@@ -81,7 +81,8 @@
   font-size: var(--font-size-base);
   line-height: var(--line-height);
   color: var(--text-primary);
-  caret-color: var(--accent);
+  /* Hide native caret - we render our own colored cursor via collab-cursor-own */
+  caret-color: transparent;
   /* Required by ProseMirror - see warning about white-space */
   white-space: pre-wrap;
 }
@@ -491,21 +492,12 @@
    ============================================================================ */
 
 /* Arch theme */
-[data-theme="arch"] .ProseMirror {
-  caret-color: var(--accent);
-}
-
 [data-theme="arch"] .ProseMirror ::selection {
   background-color: rgba(0, 255, 65, 0.3);
 }
 
 [data-theme="arch"] .ProseMirror code {
   color: var(--accent);
-}
-
-/* Mech theme */
-[data-theme="mech"] .ProseMirror {
-  caret-color: var(--text-primary);
 }
 
 [data-theme="mech"] .ProseMirror ::selection {
@@ -515,4 +507,60 @@
 [data-theme="mech"] .ProseMirror h1,
 [data-theme="mech"] .ProseMirror h2 {
   color: var(--text-primary);
+}
+
+/* ============================================================================
+   Media Viewer Styles
+   ============================================================================ */
+
+.media-viewer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  min-height: 400px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+}
+
+.media-content {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: var(--border-radius);
+}
+
+/* Video and audio specific styles */
+.media-content:is(video, audio) {
+  width: 100%;
+  max-width: 800px;
+}
+
+/* PDF embed - full width and tall */
+.media-content.media-pdf {
+  width: 100%;
+  height: 70vh;
+  min-height: 500px;
+}
+
+/* ============================================================================
+   Binary Viewer Styles
+   ============================================================================ */
+
+.binary-viewer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xl);
+  min-height: 200px;
+  text-align: center;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+}
+
+.binary-viewer p {
+  margin: var(--space-sm) 0;
 }

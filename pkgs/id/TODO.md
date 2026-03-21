@@ -196,6 +196,15 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 - rust/js linters, clippy with all runs, run rustfmt, etc. (youtube video that mentioned what to run? there was another in addition to clippy..)
 
+
+---
+
+- if reconnect and new server has new css then reload new css/html
+- header is too large, make it smaller and hide it except on hover when on an editor page. foot
+- theme doesn't automatically update which is ok but when you hit alt+t and the local theme is same color as the next alt+t it doesn't do anything.
+- when you make debug/testing logs dont delete them when you are done, just ensure they aren't still triggerred if info.
+- victoriametrics
+
 ---
 
 - Done? \/
@@ -208,7 +217,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - Horizontal tooltip stacking (most recent left, inactive right)
 - User's cursor position triggers full visibility for overlapping cursors
 - Reconnect cleanup (1s timer, fresh marking, cancel on disconnect)
-- Debug logging enabled by default for serve/run/repl
+- Debug logging enabled by default forw serve/run/repl
 
 - websocket sends empty string message instead of ping was this deleted
 - grey out offline isn't working

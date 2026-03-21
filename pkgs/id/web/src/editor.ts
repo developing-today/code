@@ -1,27 +1,92 @@
 /**
  * ProseMirror editor setup for collaborative document editing.
  * Uses prosemirror-example-setup for baseline functionality.
+ * 
+ * Supports multiple content modes:
+ * - "rich" / "markdown" / "plain" - Full editor with toolbar
+ * - "raw" - Minimal editor for code/config (no toolbar, no formatting shortcuts)
+ * - "media" / "binary" - Not editable (handled elsewhere)
  */
 
 import { EditorState, type Transaction, type Plugin } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
-import { Schema, DOMParser, type Node } from 'prosemirror-model';
+import { Schema, DOMParser, Node } from 'prosemirror-model';
 import { schema as basicSchema } from 'prosemirror-schema-basic';
 import { addListNodes } from 'prosemirror-schema-list';
 import { exampleSetup } from 'prosemirror-example-setup';
 import { collab, sendableSteps, getVersion } from 'prosemirror-collab';
+import { keymap } from 'prosemirror-keymap';
+import { baseKeymap } from 'prosemirror-commands';
+import { history } from 'prosemirror-history';
+import { dropCursor } from 'prosemirror-dropcursor';
+import { gapCursor } from 'prosemirror-gapcursor';
 import { createCursorPlugin, type SendCursorFn } from './cursors';
 
-// Extended schema with list support
-export const schema = new Schema({
+/**
+ * Content mode types matching server-side enum.
+ * Determines how the editor is configured.
+ */
+export type ContentMode = 'rich' | 'markdown' | 'plain' | 'raw' | 'media' | 'binary';
+
+/**
+ * Full schema with list support for rich/markdown/plain modes.
+ */
+export const richSchema = new Schema({
   nodes: addListNodes(basicSchema.spec.nodes, 'paragraph block*', 'block'),
   marks: basicSchema.spec.marks,
 });
 
+/**
+ * Minimal schema for raw mode (code/config files).
+ * Only allows doc containing code_block nodes with text.
+ * No marks (formatting) allowed.
+ */
+export const rawSchema = new Schema({
+  nodes: {
+    doc: { content: 'code_block+' },
+    text: { group: 'inline' },
+    code_block: {
+      content: 'text*',
+      marks: '',
+      group: 'block',
+      code: true,
+      defining: true,
+      parseDOM: [{ tag: 'pre', preserveWhitespace: 'full' }],
+      toDOM() { return ['pre', ['code', 0]]; },
+    },
+  },
+  marks: {},
+});
+
+// Export both schemas and a helper to get the right one
+export { richSchema as schema };
+
+/**
+ * Get the schema for a content mode.
+ */
+export function getSchema(mode: ContentMode): Schema {
+  return mode === 'raw' ? rawSchema : richSchema;
+}
+
+/**
+ * Check if a mode uses the full editor with toolbar.
+ */
+export function hasToolbar(mode: ContentMode): boolean {
+  return mode === 'rich' || mode === 'markdown' || mode === 'plain';
+}
+
+/**
+ * Check if a mode is editable.
+ */
+export function isEditable(mode: ContentMode): boolean {
+  return mode !== 'media' && mode !== 'binary';
+}
+
 export interface EditorInstance {
   view: EditorView;
-  schema: typeof schema;
+  schema: Schema;
   clientID: number;
+  mode: ContentMode;
 }
 
 export interface CollabState {
@@ -33,44 +98,70 @@ export interface CollabState {
  * Initialize a ProseMirror editor in the given container.
  * 
  * @param container - The DOM element to mount the editor in
- * @param initialContent - Optional initial HTML content
+ * @param initialDoc - Optional initial document as ProseMirror JSON
  * @param collabVersion - Starting version for collaboration (default 0)
+ * @param mode - Content mode determining schema and plugins
  * @param sendCursor - Optional callback to send cursor updates
  * @returns The editor instance
  */
 export function initEditor(
   container: HTMLElement,
-  initialContent?: string,
+  initialDoc?: unknown,
   collabVersion: number = 0,
+  mode: ContentMode = 'raw',
   sendCursor?: SendCursorFn
 ): EditorInstance {
   // Generate a random client ID for this session
   const clientID = Math.floor(Math.random() * 0xFFFFFFFF);
   
-  // Parse initial content if provided
-  let doc: Node | undefined = schema.topNodeType.createAndFill() ?? undefined;
-  if (initialContent) {
-    const element = document.createElement('div');
-    element.innerHTML = initialContent;
-    doc = DOMParser.fromSchema(schema).parse(element);
+  // Select schema based on mode
+  const editorSchema = getSchema(mode);
+  
+  // Parse initial document from JSON if provided, otherwise create empty
+  let doc: Node;
+  if (initialDoc && typeof initialDoc === 'object') {
+    try {
+      doc = Node.fromJSON(editorSchema, initialDoc);
+    } catch (err) {
+      console.error('[editor] Failed to parse initial doc JSON, using empty doc:', err);
+      doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node('doc');
+    }
+  } else {
+    doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node('doc');
   }
 
-  // Build plugins list
-  const plugins: Plugin[] = [
-    ...exampleSetup({ schema }),
-    collab({ version: collabVersion, clientID }),
-  ];
+  // Build plugins list based on mode
+  const plugins: Plugin[] = [];
+  
+  if (hasToolbar(mode)) {
+    // Full editor with toolbar, menu, and all formatting features
+    plugins.push(...exampleSetup({ schema: editorSchema }));
+  } else {
+    // Minimal setup for raw mode - just basic editing, no menu/toolbar
+    plugins.push(
+      history(),
+      dropCursor(),
+      gapCursor(),
+      keymap(baseKeymap),
+    );
+  }
+  
+  // Always add collab plugin
+  plugins.push(collab({ version: collabVersion, clientID }));
   
   // Add cursor plugin if sendCursor callback provided
   if (sendCursor) {
     plugins.push(createCursorPlugin(clientID, sendCursor));
   }
 
-  // Create editor state with example setup plugins and collab
+  // Create editor state
   const state = EditorState.create({
     doc,
     plugins,
   });
+
+  // Add mode-specific CSS class
+  const editorClass = hasToolbar(mode) ? 'id-editor id-editor-rich' : 'id-editor id-editor-raw';
 
   // Create editor view
   const view = new EditorView(container, {
@@ -97,12 +188,12 @@ export function initEditor(
       }
     },
     attributes: {
-      class: 'id-editor',
+      class: editorClass,
       spellcheck: 'false',
     },
   });
 
-  return { view, schema, clientID };
+  return { view, schema: editorSchema, clientID, mode };
 }
 
 /**

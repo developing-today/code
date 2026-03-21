@@ -33,6 +33,7 @@
       # whats extraConfig.update_config=1 do?
       extraConfig = ''
         update_config=1
+        sae_pwe=2
       '';
     };
   };

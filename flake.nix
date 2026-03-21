@@ -268,6 +268,10 @@ rec {
     #   # follows?
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
+    opencode = {
+      url = "github:anomalyco/opencode";
+      # inputs.nixpkgs.follows = "nixpkgs-master";
+    };
     # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice # TODO: use this?
     # firefox-addons = { # TODO: use this?
     #   url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons&shallow=1";
