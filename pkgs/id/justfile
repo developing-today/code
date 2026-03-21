@@ -15,7 +15,7 @@
 #   - Use -force suffix to bypass freshness checks
 
 # Default recipe - serve with web UI
-default: serve
+default: kill-serve
 
 # =============================================================================
 # Quality Checks
@@ -221,8 +221,12 @@ build-serve *ARGS: build (serve ARGS)
 kill:
     -pkill -xf ".*/id serve.*"
 
+# Sleep for specified seconds (default 0.6)
+sleep SECONDS="0.6":
+    sleep {{SECONDS}}
+
 # Kill and restart serve with web UI [bun]
-kill-serve *ARGS: kill (build-serve ARGS)
+kill-serve *ARGS: kill sleep (serve ARGS)
 
 # Run the REPL
 repl:

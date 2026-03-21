@@ -305,6 +305,7 @@
           serve-lib = mkApp (mkScript "serve-lib" ''just serve-lib "$@"'');
           build-serve = mkApp (mkScript "build-serve" ''just build-serve "$@"'');
           kill = mkApp (mkScript "kill" "just kill");
+          sleep = mkApp (mkScript "sleep" ''just sleep "$@"'');
           kill-serve = mkApp (mkScript "kill-serve" ''just kill-serve "$@"'');
 
           # ─────────────────────────────────────────────────────────────────────
