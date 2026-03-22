@@ -253,6 +253,14 @@
     direnv = {
       enable = true;
       enableZshIntegration = true;
+      config = {
+        whitelist = {
+          prefix = [
+            "~/.local/share/opencode/worktree"
+            "~/code"
+          ];
+        };
+      };
     };
     emacs.enable = true;
     # eww.enable = true; # config
