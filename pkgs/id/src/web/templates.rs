@@ -158,6 +158,18 @@ pub fn render_file_list(files: &[(String, String, u64)]) -> String {
     }
 
     html.push_str("</div>");
+
+    // New file form
+    html.push_str("<div class=\"card mt-md\">");
+    html.push_str("<div class=\"card-header\">New File</div>");
+    html.push_str("<div class=\"new-file-form\" style=\"padding: 0.75rem;\">");
+    html.push_str("<form id=\"new-file-form\" onsubmit=\"window.idApp?.createFile?.(event); return false;\" style=\"display: flex; gap: 0.5rem; align-items: center;\">");
+    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" placeholder=\"filename.md\" required style=\"flex: 1; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 0.25rem 0.5rem; font-family: inherit; font-size: inherit;\" />");
+    html.push_str("<button type=\"submit\" class=\"header-btn\">create</button>");
+    html.push_str("</form>");
+    html.push_str("</div>");
+    html.push_str("</div>");
+
     html
 }
 
@@ -193,6 +205,23 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str(
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
+    // Save button
+    html.push_str("            <button class=\"header-btn\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.saveFile?.()\" disabled>save</button>\n");
+    // Download dropdown
+    html.push_str("            <span class=\"dropdown\" id=\"download-dropdown\">\n");
+    html.push_str("                <button class=\"header-btn\" id=\"download-btn\" title=\"Download\">dl</button>\n");
+    html.push_str("                <span class=\"dropdown-menu\" id=\"download-menu\">\n");
+    html.push_str(
+        "                    <button class=\"dropdown-item\" data-dl-format=\"raw\">raw</button>\n",
+    );
+    html.push_str("                    <button class=\"dropdown-item\" data-dl-format=\"json\">pm json</button>\n");
+    let _ = write!(
+        html,
+        "                    <a class=\"dropdown-item\" href=\"/blob/{}\" download=\"{}\">original</a>\n",
+        doc_id_escaped, name_escaped
+    );
+    html.push_str("                </span>\n");
+    html.push_str("            </span>\n");
     html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
     html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
     html.push_str("            <span class=\"theme-switcher\">\n");

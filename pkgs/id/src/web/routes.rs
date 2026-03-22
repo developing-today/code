@@ -2,18 +2,21 @@
 //!
 //! Defines all the Axum routes and their handlers for serving the web UI.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use super::content_mode::{ContentMode, detect_mode_with_content, get_content_type};
+use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, get_content_type};
+use super::markdown::prosemirror_to_markdown;
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
     render_main_page_wrapper, render_media_viewer, render_page, render_settings,
@@ -30,6 +33,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/blob/:hash", get(blob_handler))
         // HTMX partial routes (return HTML fragments)
         .route("/api/files", get(files_list_handler))
+        // File management API routes
+        .route("/api/save", post(save_handler))
+        .route("/api/new", post(new_file_handler))
+        .route("/api/download", post(download_handler))
         // WebSocket for collaboration
         .route("/ws/collab/:doc_id", get(super::collab::ws_collab_handler))
         // Static assets
@@ -285,4 +292,410 @@ fn get_file_content_html(bytes: &[u8]) -> String {
         .replace('>', "&gt;");
 
     format!("<pre>{escaped}</pre>")
+}
+
+// --- File Management API ---
+
+/// Request body for saving a file.
+#[derive(Debug, Deserialize)]
+struct SaveRequest {
+    /// Current document hash (used to find and archive old tag).
+    doc_id: String,
+    /// File name (tag name).
+    name: String,
+    /// `ProseMirror` document JSON.
+    doc: serde_json::Value,
+}
+
+/// Response from saving a file.
+#[derive(Debug, Serialize)]
+struct SaveResponse {
+    /// New blob hash after save.
+    hash: String,
+    /// File name.
+    name: String,
+    /// Archive tag name (if original was archived).
+    archive_name: Option<String>,
+}
+
+/// Request body for creating a new file.
+#[derive(Debug, Deserialize)]
+struct NewFileRequest {
+    /// File name for the new file.
+    name: String,
+}
+
+/// Response from creating a new file.
+#[derive(Debug, Serialize)]
+struct NewFileResponse {
+    /// Blob hash of the new file.
+    hash: String,
+    /// File name.
+    name: String,
+}
+
+/// Request body for downloading editor content.
+#[derive(Debug, Deserialize)]
+struct DownloadRequest {
+    /// `ProseMirror` document JSON (current editor state).
+    doc: serde_json::Value,
+    /// File name (used for format detection and Content-Disposition).
+    name: String,
+    /// Download format: "raw" (native format) or "json" (`ProseMirror` JSON).
+    format: String,
+}
+
+/// Save the current editor document to the blob store.
+///
+/// Converts the `ProseMirror` JSON to the appropriate format based on filename,
+/// creates a new blob, archives the original under a timestamped name, and
+/// updates the tag to point to the new blob.
+async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest>) -> Response {
+    tracing::info!(
+        "[routes] save_handler: doc_id={}, name={}",
+        req.doc_id,
+        req.name
+    );
+
+    // Convert ProseMirror doc to the appropriate format based on file name
+    let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::error!("[routes] Failed to convert document: {}", err);
+            return (StatusCode::BAD_REQUEST, err).into_response();
+        }
+    };
+
+    // Add new blob to store
+    let add_result = state.store.blobs().add_bytes(bytes).await;
+    let outcome = match add_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!("[routes] Failed to add blob: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save file").into_response();
+        }
+    };
+    let new_hash = outcome.hash;
+    let new_hash_str = new_hash.to_string();
+
+    // Archive the original blob under a timestamped tag
+    let archive_name = archive_original_tag(&state.store, &req.name, &req.doc_id).await;
+
+    // Set the tag to point to the new blob
+    let tag = iroh_blobs::api::Tag::from(req.name.clone());
+    if let Err(err) = state.store.tags().set(tag, new_hash).await {
+        tracing::error!("[routes] Failed to set tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update tag").into_response();
+    }
+
+    tracing::info!(
+        "[routes] File saved: name={}, hash={}, archive={:?}",
+        req.name,
+        new_hash_str,
+        archive_name
+    );
+
+    Json(SaveResponse {
+        hash: new_hash_str,
+        name: req.name,
+        archive_name,
+    })
+    .into_response()
+}
+
+/// Create a new empty file in the blob store.
+///
+/// Creates appropriate empty content based on the file extension,
+/// adds it as a blob, and creates a tag for it.
+async fn new_file_handler(
+    State(state): State<AppState>,
+    Json(req): Json<NewFileRequest>,
+) -> Response {
+    tracing::info!("[routes] new_file_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Create appropriate empty content based on file type
+    let mode = detect_mode(&req.name);
+    let content = match mode {
+        ContentMode::Rich => b"{}".to_vec(), // Empty PM JSON
+        ContentMode::Markdown
+        | ContentMode::Plain
+        | ContentMode::Raw
+        | ContentMode::Binary
+        | ContentMode::Media(_) => b"".to_vec(),
+    };
+
+    // Add blob to store
+    let add_result = state.store.blobs().add_bytes(content).await;
+    let outcome = match add_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!("[routes] Failed to add blob: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create file").into_response();
+        }
+    };
+    let hash = outcome.hash;
+    let hash_str = hash.to_string();
+
+    // Set tag
+    let tag = iroh_blobs::api::Tag::from(req.name.clone());
+    if let Err(err) = state.store.tags().set(tag, hash).await {
+        tracing::error!("[routes] Failed to set tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set file name").into_response();
+    }
+
+    tracing::info!(
+        "[routes] New file created: name={}, hash={}",
+        req.name,
+        hash_str
+    );
+
+    Json(NewFileResponse {
+        hash: hash_str,
+        name: req.name,
+    })
+    .into_response()
+}
+
+/// Download the current editor content in the requested format.
+///
+/// Supports two formats:
+/// - `raw`: Converts `ProseMirror` JSON to the native file format (markdown, plain text, etc.)
+/// - `json`: Returns the `ProseMirror` JSON document as-is
+///
+/// For downloading the original stored blob, use `GET /blob/:hash` directly.
+async fn download_handler(Json(req): Json<DownloadRequest>) -> Response {
+    tracing::info!(
+        "[routes] download_handler: name={}, format={}",
+        req.name,
+        req.format
+    );
+
+    match req.format.as_str() {
+        "raw" => {
+            // Convert PM doc to native format
+            let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
+                Ok(b) => b,
+                Err(err) => {
+                    return (StatusCode::BAD_REQUEST, err).into_response();
+                }
+            };
+            let content_type = get_content_type(&req.name);
+            let filename_encoded = urlencoding::encode(&req.name);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, content_type)
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename_encoded}\""),
+                )
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build response",
+                    )
+                        .into_response()
+                })
+        }
+        "json" => {
+            // Return PM JSON as-is
+            let json_bytes = serde_json::to_vec_pretty(&req.doc).unwrap_or_default();
+            let json_name = if req.name.ends_with(".pm.json") {
+                req.name.clone()
+            } else {
+                format!("{}.pm.json", req.name)
+            };
+            let filename_encoded = urlencoding::encode(&json_name);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename_encoded}\""),
+                )
+                .body(Body::from(json_bytes))
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build response",
+                    )
+                        .into_response()
+                })
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            "Invalid format. Use 'raw' or 'json'",
+        )
+            .into_response(),
+    }
+}
+
+/// Convert a `ProseMirror` document JSON to bytes in the appropriate file format.
+///
+/// The format is determined by the file name extension:
+/// - `.pm.json` → `ProseMirror` JSON (serialized as-is)
+/// - `.md` → Markdown (via `prosemirror_to_markdown`)
+/// - `.txt` → Plain text (extracted from paragraphs)
+/// - Other text files → Raw text (extracted from `code_block` nodes)
+fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let mode = detect_mode(name);
+
+    match mode {
+        ContentMode::Rich => {
+            // .pm.json files: store the ProseMirror JSON directly
+            serde_json::to_vec_pretty(doc).map_err(|e| format!("Failed to serialize JSON: {e}"))
+        }
+        ContentMode::Markdown => {
+            // .md files: convert PM doc to markdown
+            let markdown = prosemirror_to_markdown(doc)
+                .map_err(|e| format!("Failed to convert to markdown: {e}"))?;
+            Ok(markdown.into_bytes())
+        }
+        ContentMode::Plain => {
+            // .txt files: extract plain text from paragraphs
+            let text = extract_plain_text(doc);
+            Ok(text.into_bytes())
+        }
+        ContentMode::Raw => {
+            // Code/config files: extract text from code_block nodes
+            let text = extract_raw_text(doc);
+            Ok(text.into_bytes())
+        }
+        ContentMode::Binary | ContentMode::Media(_) => {
+            Err("Cannot save binary/media files from editor".to_owned())
+        }
+    }
+}
+
+/// Extract plain text from a `ProseMirror` doc with paragraph nodes.
+///
+/// Joins paragraphs with newlines, preserving `hard_break` as newlines.
+fn extract_plain_text(doc: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+
+    if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
+        for node in content {
+            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match node_type {
+                "paragraph" => {
+                    let mut line = String::new();
+                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
+                        for inline in inline_content {
+                            let inline_type =
+                                inline.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            match inline_type {
+                                "text" => {
+                                    if let Some(text) = inline.get("text").and_then(|t| t.as_str())
+                                    {
+                                        line.push_str(text);
+                                    }
+                                }
+                                "hard_break" => {
+                                    line.push('\n');
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    lines.push(line);
+                }
+                "heading" => {
+                    let mut text = String::new();
+                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
+                        for inline in inline_content {
+                            if let Some(t) = inline.get("text").and_then(|t| t.as_str()) {
+                                text.push_str(t);
+                            }
+                        }
+                    }
+                    lines.push(text);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Extract raw text from a `ProseMirror` doc with `code_block` nodes.
+///
+/// Used for code and config files where the content is a single `code_block`.
+fn extract_raw_text(doc: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
+        for node in content {
+            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if node_type == "code_block"
+                && let Some(inline_content) = node.get("content").and_then(|c| c.as_array())
+            {
+                for inline in inline_content {
+                    if let Some(text) = inline.get("text").and_then(|t| t.as_str()) {
+                        parts.push(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    parts.join("\n")
+}
+
+/// Archive the original tag by creating a timestamped copy.
+///
+/// If a tag with the given name exists and points to the expected hash,
+/// creates a new tag `{name}.archive.{timestamp}` pointing to the same hash.
+async fn archive_original_tag(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+    expected_hash: &str,
+) -> Option<String> {
+    use futures_lite::StreamExt;
+
+    let expected: iroh_blobs::Hash = expected_hash.parse().ok()?;
+
+    // Find the current tag
+    let mut tags = store.tags().list().await.ok()?;
+    let mut found = false;
+    while let Some(Ok(tag_info)) = tags.next().await {
+        let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+        if tag_name == name && tag_info.hash == expected {
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return None;
+    }
+
+    // Create archive tag with timestamp
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let archive_name = format!("{name}.archive.{timestamp}");
+    let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
+
+    match store.tags().set(archive_tag, expected).await {
+        Ok(()) => {
+            tracing::info!(
+                "[routes] Archived original: {} -> {}",
+                archive_name,
+                expected_hash
+            );
+            Some(archive_name)
+        }
+        Err(err) => {
+            tracing::error!("[routes] Failed to create archive tag: {}", err);
+            None
+        }
+    }
 }

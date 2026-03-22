@@ -4,7 +4,7 @@
  */
 
 import htmx from 'htmx.org';
-import { type EditorInstance } from './editor';
+import { type EditorInstance, getEditorState } from './editor';
 import { initCollab, type CollabConnection } from './collab';
 import { initTheme, setTheme, cycleTheme, type Theme } from './theme';
 
@@ -22,6 +22,9 @@ interface IdApp {
   setTheme: (theme: Theme) => void;
   openEditor: (docId: string) => Promise<void>;
   closeEditor: () => void;
+  saveFile: () => Promise<void>;
+  createFile: (event: Event) => Promise<void>;
+  downloadFile: (format: string) => Promise<void>;
   navHistory: string[];
   currentPath: string;
   lastFilename: string | null;
@@ -309,6 +312,9 @@ function init(): void {
             scrollCleanup = initScrollShowHeader();
             // Update back link based on navigation history
             updateBackLink(this.navHistory, this.currentPath);
+            // Enable save button
+            const saveBtn = document.getElementById('save-btn') as HTMLButtonElement | null;
+            if (saveBtn) saveBtn.disabled = false;
           }
         );
         console.log('[id] Collab connection initiated');
@@ -337,6 +343,169 @@ function init(): void {
       }
       updateStatus('disconnected');
     },
+
+    async saveFile(): Promise<void> {
+      if (!this.collab?.editor) {
+        console.warn('[id] No editor to save');
+        return;
+      }
+
+      const editorContainer = document.getElementById('editor-container');
+      if (!editorContainer) return;
+
+      const docId = editorContainer.dataset.docId;
+      const filenameEncoded = editorContainer.dataset.filename;
+      const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+
+      if (!docId || !filename) {
+        console.error('[id] Missing doc_id or filename for save');
+        return;
+      }
+
+      // Get current editor state
+      const state = getEditorState(this.collab.editor.view);
+      const saveBtn = document.getElementById('save-btn') as HTMLButtonElement | null;
+
+      try {
+        if (saveBtn) {
+          saveBtn.disabled = true;
+          saveBtn.textContent = 'saving...';
+        }
+
+        const response = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            doc_id: docId,
+            name: filename,
+            doc: state.doc,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[id] Save failed:', errorText);
+          if (saveBtn) saveBtn.textContent = 'error!';
+          setTimeout(() => { if (saveBtn) saveBtn.textContent = 'save'; }, 2000);
+          return;
+        }
+
+        const result = await response.json() as { hash: string; name: string; archive_name: string | null };
+        console.log('[id] File saved:', result);
+
+        // Update the doc_id in the container to the new hash
+        editorContainer.dataset.docId = result.hash;
+
+        // Update the URL to reflect the new hash
+        const newUrl = `/edit/${result.hash}`;
+        window.history.replaceState(null, '', newUrl);
+
+        if (saveBtn) {
+          saveBtn.textContent = 'saved!';
+          setTimeout(() => { if (saveBtn) saveBtn.textContent = 'save'; }, 2000);
+        }
+      } catch (err) {
+        console.error('[id] Save error:', err);
+        if (saveBtn) {
+          saveBtn.textContent = 'error!';
+          setTimeout(() => { if (saveBtn) saveBtn.textContent = 'save'; }, 2000);
+        }
+      }
+    },
+
+    async createFile(event: Event): Promise<void> {
+      event.preventDefault();
+      const input = document.getElementById('new-file-name') as HTMLInputElement | null;
+      if (!input) return;
+
+      const name = input.value.trim();
+      if (!name) return;
+
+      try {
+        const response = await fetch('/api/new', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[id] Create file failed:', errorText);
+          return;
+        }
+
+        const result = await response.json() as { hash: string; name: string };
+        console.log('[id] File created:', result);
+
+        // Clear input
+        input.value = '';
+
+        // Navigate to the new file's editor
+        const editUrl = `/edit/${result.hash}`;
+        if (window.htmx) {
+          window.htmx.ajax('GET', editUrl, { target: '#main', swap: 'innerHTML' });
+          window.history.pushState(null, '', editUrl);
+        } else {
+          window.location.href = editUrl;
+        }
+      } catch (err) {
+        console.error('[id] Create file error:', err);
+      }
+    },
+
+    async downloadFile(format: string): Promise<void> {
+      if (!this.collab?.editor) {
+        console.warn('[id] No editor for download');
+        return;
+      }
+
+      const editorContainer = document.getElementById('editor-container');
+      if (!editorContainer) return;
+
+      const filenameEncoded = editorContainer.dataset.filename;
+      const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : 'download';
+
+      // Get current editor state
+      const state = getEditorState(this.collab.editor.view);
+
+      try {
+        const response = await fetch('/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            doc: state.doc,
+            name: filename,
+            format,
+          }),
+        });
+
+        if (!response.ok) {
+          console.error('[id] Download failed:', await response.text());
+          return;
+        }
+
+        // Get filename from Content-Disposition header or use default
+        const disposition = response.headers.get('Content-Disposition');
+        let dlFilename = filename;
+        if (disposition) {
+          const match = disposition.match(/filename="?([^"]+)"?/);
+          if (match) dlFilename = decodeURIComponent(match[1]);
+        }
+
+        // Create blob and trigger download
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = dlFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error('[id] Download error:', err);
+      }
+    },
   };
   
   window.idApp = app;
@@ -350,6 +519,41 @@ function init(): void {
       const theme = themeBtn.getAttribute('data-theme');
       if (theme === 'sneak' || theme === 'arch' || theme === 'mech') {
         setTheme(theme);
+      }
+    }
+
+    // Handle download format buttons
+    const dlBtn = target.closest('[data-dl-format]');
+    if (dlBtn) {
+      const format = dlBtn.getAttribute('data-dl-format');
+      if (format) {
+        app.downloadFile(format);
+      }
+    }
+
+    // Toggle download dropdown
+    const downloadBtn = target.closest('#download-btn');
+    if (downloadBtn) {
+      const menu = document.getElementById('download-menu');
+      if (menu) {
+        menu.classList.toggle('show');
+      }
+    } else {
+      // Close dropdown when clicking outside
+      const dropdown = target.closest('#download-dropdown');
+      if (!dropdown) {
+        const menu = document.getElementById('download-menu');
+        if (menu) menu.classList.remove('show');
+      }
+    }
+  });
+
+  // Ctrl+S to save
+  document.addEventListener('keydown', (event: KeyboardEvent) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+      event.preventDefault();
+      if (app.collab?.editor) {
+        app.saveFile();
       }
     }
   });
