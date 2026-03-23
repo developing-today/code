@@ -109,6 +109,7 @@
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
+          cargo-check = mkCheck "cargo-check" "cargo-check";
         };
 
         # =======================================================================
@@ -228,6 +229,7 @@
           fmt-check = mkApp (mkScript "fmt-check" "just fmt-check");
           lint = mkApp (mkScript "lint" "just lint");
           lint-fix = mkApp (mkScript "lint-fix" "just lint-fix");
+          cargo-check = mkApp (mkScript "cargo-check" "just cargo-check");
 
           # ─────────────────────────────────────────────────────────────────────
           # Tests
@@ -312,6 +314,7 @@
           # Combined commands
           # ─────────────────────────────────────────────────────────────────────
 
+          check-serve = mkApp (mkScript "check-serve" ''just check-serve "$@"'');
           build-check = mkApp (mkScript "build-check" "just build-check");
           build-check-serve = mkApp (mkScript "build-check-serve" ''just build-check-serve "$@"'');
           build-check-serve-lib = mkApp (mkScript "build-check-serve-lib" "just build-check-serve-lib");

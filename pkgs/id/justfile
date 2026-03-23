@@ -26,7 +26,7 @@ check: fix ci
     @echo "✓ All checks passed!"
 
 # CI-safe checks (read-only, no modifications) [bun]
-ci: fmt-check lint test test-web-unit test-web-typecheck doc
+ci: fmt-check cargo-check lint test test-web-unit test-web-typecheck doc
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -40,6 +40,10 @@ fmt:
 # Check Rust formatting (no changes)
 fmt-check:
     cargo fmt -- --check
+
+# Run cargo check (type checking, all targets and features)
+cargo-check:
+    cargo check --all-targets --all-features
 
 # Run clippy linting
 lint:
@@ -283,6 +287,9 @@ loc:
 # =============================================================================
 # Combined Commands
 # =============================================================================
+
+# Check and serve with web UI [bun]
+check-serve *ARGS: check (serve ARGS)
 
 # Build and check [bun]
 build-check: build check
