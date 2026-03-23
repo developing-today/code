@@ -8,7 +8,7 @@
 
 use axum::{
     body::Body,
-    http::{HeaderValue, Response, StatusCode, header},
+    http::{header, HeaderValue, Response, StatusCode},
 };
 use rust_embed::Embed;
 
@@ -102,9 +102,15 @@ fn is_hashed_filename(path: &str) -> bool {
 
 /// Build a 404 Not Found response.
 fn not_found() -> Response<Body> {
-    let mut resp = Response::new(Body::empty());
-    *resp.status_mut() = StatusCode::NOT_FOUND;
-    resp
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+        .body(Body::from("not found"))
+        .unwrap_or_else(|_| {
+            let mut resp = Response::new(Body::empty());
+            *resp.status_mut() = StatusCode::NOT_FOUND;
+            resp
+        })
 }
 
 /// Build a 500 Internal Server Error response.

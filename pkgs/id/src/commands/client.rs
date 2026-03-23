@@ -22,8 +22,8 @@
 
 use anyhow::Result;
 use iroh::{
-    address_lookup::{DnsAddressLookup, PkarrPublisher},
-    endpoint::Endpoint,
+    address_lookup::MdnsAddressLookup,
+    endpoint::{Endpoint, presets},
 };
 use iroh_base::{EndpointAddr, TransportAddr};
 
@@ -68,11 +68,10 @@ pub async fn create_local_client_endpoint(
     serve_info: &ServeInfo,
 ) -> Result<(Endpoint, EndpointAddr)> {
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    // Enable relay and DNS lookup so @NODE_ID targeting works for remote peers
-    let endpoint = Endpoint::builder()
+    // Enable relay, DNS lookup, and mDNS so local network discovery works
+    let endpoint = Endpoint::builder(presets::N0)
         .secret_key(client_key)
-        .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(DnsAddressLookup::n0_dns())
+        .address_lookup(MdnsAddressLookup::builder())
         .bind()
         .await?;
 

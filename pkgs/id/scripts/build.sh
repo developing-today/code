@@ -48,6 +48,9 @@ if [[ "$VARIANT" == "web" || "$VARIANT" == "assets" ]]; then
   if [[ ! -f web/dist/manifest.json ]]; then
     echo "[web] No manifest found, frontend build needed"
     needs_frontend=true
+  elif ! grep -q '"main.js"' web/dist/manifest.json 2>/dev/null; then
+    echo "[web] Manifest is empty or missing entries, frontend build needed"
+    needs_frontend=true
   else
     manifest_time=$(stat -c %Y web/dist/manifest.json 2>/dev/null || echo 0)
 

@@ -9,6 +9,7 @@
 //! - **[`find`]**: Search and retrieve matching blobs
 //! - **[`list`]**: List stored blobs
 //! - **[`id`]**: Print node identity
+//! - **[`peers`]**: Discover and list known peers
 //! - **[`repl`]**: Interactive REPL context management
 //!
 //! # Command Flow
@@ -58,6 +59,7 @@ pub mod find;
 pub mod get;
 pub mod id;
 pub mod list;
+pub mod peers;
 pub mod put;
 pub mod repl;
 pub mod serve;
@@ -69,6 +71,7 @@ pub use find::{
 pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
 pub use id::cmd_id;
 pub use list::{cmd_list, cmd_list_remote};
+pub use peers::{PeersOptions, cmd_peers};
 pub use put::{
     cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
     cmd_put_one_remote,

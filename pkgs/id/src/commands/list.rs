@@ -26,10 +26,7 @@
 
 use anyhow::{Result, bail};
 use futures_lite::StreamExt;
-use iroh::{
-    address_lookup::{DnsAddressLookup, PkarrPublisher},
-    endpoint::{Endpoint, RelayMode},
-};
+use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 
 use crate::commands::client::create_local_client_endpoint;
@@ -85,7 +82,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
-        match resp {
+        let result = match resp {
             MetaResponse::List { items } => {
                 if items.is_empty() {
                     println!("(no files stored)");
@@ -94,26 +91,29 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
                         println!("{hash}\t{name}");
                     }
                 }
+                Ok(())
             }
-            _ => bail!("unexpected response"),
-        }
-    } else {
-        let store = open_store(false).await?;
-        let store_handle = store.as_store();
-
-        let mut list = store_handle.tags().list().await?;
-        let mut count = 0;
-        while let Some(item) = list.next().await {
-            let item = item?;
-            let name = String::from_utf8_lossy(item.name.as_ref());
-            println!("{}\t{}", item.hash, name);
-            count += 1;
-        }
-        if count == 0 {
-            println!("(no files stored)");
-        }
-        store.shutdown().await?;
+            _ => Err(anyhow::anyhow!("unexpected response")),
+        };
+        endpoint.close().await;
+        return result;
     }
+
+    let store = open_store(false).await?;
+    let store_handle = store.as_store();
+
+    let mut list = store_handle.tags().list().await?;
+    let mut count = 0;
+    while let Some(item) = list.next().await {
+        let item = item?;
+        let name = String::from_utf8_lossy(item.name.as_ref());
+        println!("{}\t{}", item.hash, name);
+        count += 1;
+    }
+    if count == 0 {
+        println!("(no files stored)");
+    }
+    store.shutdown().await?;
     Ok(())
 }
 
@@ -132,10 +132,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
 /// Same format as [`cmd_list`].
 pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Result<()> {
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder()
-        .secret_key(client_key)
-        .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(DnsAddressLookup::n0_dns());
+    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
     if no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
     }
@@ -150,7 +147,7 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
     let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
     meta_conn.close(0u32.into(), b"done");
 
-    match resp {
+    let result = match resp {
         MetaResponse::List { items } => {
             if items.is_empty() {
                 println!("(no files stored)");
@@ -159,10 +156,12 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
                     println!("{hash}\t{name}");
                 }
             }
+            Ok(())
         }
-        _ => bail!("unexpected response"),
-    }
-    Ok(())
+        _ => Err(anyhow::anyhow!("unexpected response")),
+    };
+    endpoint.close().await;
+    result
 }
 
 #[cfg(test)]

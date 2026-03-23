@@ -61,6 +61,8 @@ use axum::Router;
 use iroh_blobs::api::Store;
 use std::sync::Arc;
 
+use crate::discovery::PeerDiscovery;
+
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use routes::create_router;
@@ -68,7 +70,8 @@ pub use templates::{AssetUrls, render_page};
 
 /// Shared application state for web handlers.
 ///
-/// Contains references to the blob store and collaborative editing state.
+/// Contains references to the blob store, collaborative editing state,
+/// and optional peer discovery table.
 #[derive(Clone)]
 pub struct AppState {
     /// The blob store for accessing files.
@@ -77,6 +80,10 @@ pub struct AppState {
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
     pub assets: AssetUrls,
+    /// Optional peer discovery table (populated when gossip is active).
+    pub peers: Option<PeerDiscovery>,
+    /// This node's public ID (hex-encoded).
+    pub node_id: String,
 }
 
 impl std::fmt::Debug for AppState {
@@ -85,17 +92,21 @@ impl std::fmt::Debug for AppState {
             .field("store", &"<Store>")
             .field("collab", &self.collab)
             .field("assets", &self.assets)
+            .field("peers", &self.peers.is_some())
+            .field("node_id", &self.node_id)
             .finish()
     }
 }
 
 impl AppState {
     /// Create a new application state.
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, peers: Option<PeerDiscovery>, node_id: String) -> Self {
         Self {
             store,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
+            peers,
+            node_id,
         }
     }
 }
@@ -153,12 +164,14 @@ fn load_asset_urls() -> AssetUrls {
 /// # Arguments
 ///
 /// * `store` - The blob store to use for file operations
+/// * `peers` - Optional peer discovery table for the `/peers` page
+/// * `node_id` - This node's public ID (hex-encoded)
 ///
 /// # Returns
 ///
 /// An Axum router ready to be merged with the serve endpoint.
-pub fn web_router(store: Store) -> Router {
-    let state = AppState::new(store);
+pub fn web_router(store: Store, peers: Option<PeerDiscovery>, node_id: String) -> Router {
+    let state = AppState::new(store, peers, node_id);
     create_router(state)
 }
 

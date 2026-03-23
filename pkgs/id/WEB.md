@@ -150,8 +150,10 @@ NERV-inspired theme with:
 | Route | Method | Description |
 |-------|--------|-------------|
 | `/` | GET | File browser (main page) |
+| `/peers` | GET | Discovered peers (auto-refreshes every 10s) |
 | `/settings` | GET | Settings page |
 | `/edit/{hash}` | GET | Editor for file |
+| `/blob/{hash}` | GET | Raw blob content with Content-Type |
 | `/api/files` | GET | File list (HTMX partial) |
 | `/ws/collab/{doc_id}` | WS | Collaboration WebSocket |
 | `/assets/*` | GET | Static assets |

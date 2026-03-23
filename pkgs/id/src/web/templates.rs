@@ -89,6 +89,7 @@ pub fn render_main_page_wrapper(content: &str) -> String {
     html.push_str("        <span class=\"header-title\"><a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
     html.push_str("        <nav class=\"header-nav\">\n");
     html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
+    html.push_str("            <a href=\"/peers\" hx-get=\"/peers\" hx-target=\"#main\" hx-push-url=\"true\">peers</a>\n");
     html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
     html.push_str("            <span class=\"theme-switcher\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
@@ -194,6 +195,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
+    html.push_str("            <a href=\"/peers\" hx-get=\"/peers\" hx-target=\"#main\" hx-push-url=\"true\">peers</a>\n");
     html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
     html.push_str("            <span class=\"theme-switcher\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
@@ -424,6 +426,69 @@ pub fn render_settings(node_id: &str) -> String {
     html
 }
 
+/// Render the peers page showing discovered peers.
+///
+/// # Arguments
+///
+/// * `peers` - List of (`node_id`, `name`, `blob_count`, `age_secs`) tuples
+///
+/// # Returns
+///
+/// HTML fragment for the peers page.
+pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
+    let mut html = String::with_capacity(2048);
+    html.push_str("<div id=\"peers-content\" hx-get=\"/peers\" hx-trigger=\"every 10s\" hx-select=\"#peers-content\" hx-target=\"this\" hx-swap=\"outerHTML\">\n");
+    html.push_str("<div class=\"card\">\n");
+    html.push_str("    <div class=\"card-header\">Discovered Peers</div>\n");
+    html.push_str("    <div style=\"padding: 1rem;\">\n");
+    html.push_str("        <p class=\"text-muted mb-md\">Peers discovered via gossip-based peer discovery.</p>\n");
+
+    if peers.is_empty() {
+        html.push_str("        <p class=\"text-muted\">No peers discovered yet.</p>\n");
+    } else {
+        html.push_str("        <table>\n");
+        html.push_str(
+            "            <tr><th>Node ID</th><th>Name</th><th>Blobs</th><th>Last Seen</th></tr>\n",
+        );
+        for (node_id, name, blob_count, age_secs) in peers {
+            let node_id_escaped = html_escape(node_id);
+            let name_escaped = html_escape(name);
+            let short_id = &node_id_escaped[..12.min(node_id_escaped.len())];
+            let age_str = format_age(*age_secs);
+            let _ = write!(
+                html,
+                "            <tr>\
+                    <td><code class=\"file-hash\" title=\"{}\">{}</code></td>\
+                    <td>{}</td>\
+                    <td>{}</td>\
+                    <td>{}</td>\
+                </tr>\n",
+                node_id_escaped, short_id, name_escaped, blob_count, age_str,
+            );
+        }
+        html.push_str("        </table>\n");
+    }
+
+    html.push_str("    </div>\n");
+    html.push_str("</div>\n");
+    html.push_str("</div>");
+
+    html
+}
+
+/// Format an age in seconds into a human-readable string.
+fn format_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
 /// Escape HTML special characters.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -509,5 +574,36 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("1.0 KB"));
+    }
+
+    #[test]
+    fn test_render_peers_empty() {
+        let html = render_peers(&[]);
+        assert!(html.contains("No peers discovered yet"));
+        assert!(html.contains("Discovered Peers"));
+        assert!(html.contains("hx-trigger=\"every 10s\""));
+    }
+
+    #[test]
+    fn test_render_peers_with_peers() {
+        let peers = vec![(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            "test-node".to_owned(),
+            42,
+            30,
+        )];
+        let html = render_peers(&peers);
+        assert!(html.contains("0123456789ab")); // short ID
+        assert!(html.contains("test-node"));
+        assert!(html.contains("42"));
+        assert!(html.contains("30s ago"));
+    }
+
+    #[test]
+    fn test_format_age() {
+        assert_eq!(format_age(5), "5s ago");
+        assert_eq!(format_age(90), "1m ago");
+        assert_eq!(format_age(7200), "2h ago");
+        assert_eq!(format_age(172_800), "2d ago");
     }
 }

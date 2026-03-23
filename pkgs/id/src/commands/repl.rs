@@ -63,6 +63,7 @@
 //! | [`rename()`](ReplContext::rename) | Change a blob's name |
 //! | [`copy()`](ReplContext::copy) | Duplicate a blob with a new name |
 //! | [`find()`](ReplContext::find) | Search for blobs by pattern |
+//! | [`peers()`](ReplContext::peers) | List discovered peers |
 //!
 //! # Remote Targeting with @`NODE_ID`
 //!
@@ -77,10 +78,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use futures_lite::StreamExt;
-use iroh::{
-    address_lookup::{DnsAddressLookup, PkarrPublisher},
-    endpoint::{Connection, Endpoint},
-};
+use iroh::endpoint::{Connection, Endpoint, presets};
 use iroh_base::EndpointId;
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobFormat, Hash,
@@ -210,10 +208,8 @@ impl ReplContext {
             let node_id: EndpointId = node_str.parse()?;
 
             let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-            let endpoint = Endpoint::builder()
+            let endpoint = Endpoint::builder(presets::N0)
                 .secret_key(client_key)
-                .address_lookup(PkarrPublisher::n0_dns())
-                .address_lookup(DnsAddressLookup::n0_dns())
                 .bind()
                 .await?;
 
@@ -1067,6 +1063,105 @@ impl ReplContext {
         Ok(())
     }
 
+    /// List known peers from gossip-based peer discovery.
+    ///
+    /// In connected modes (Remote or `RemoteNode`), sends `MetaRequest::ListPeers`
+    /// to the server and prints the results in tab-separated format:
+    /// `<node_id>\t<name>\t<blob_count>\t<age>`
+    ///
+    /// In Local mode, prints a message indicating peers are unavailable
+    /// (peer discovery requires a running serve instance).
+    pub async fn peers(&mut self) -> Result<()> {
+        if !self.is_connected() {
+            println!("no serve running, peers unavailable");
+            return Ok(());
+        }
+
+        let meta_conn = self.meta_conn().await?;
+        let (mut send, mut recv) = meta_conn.open_bi().await?;
+        let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
+        send.write_all(&req).await?;
+        send.finish()?;
+        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+        match resp {
+            MetaResponse::ListPeers { peers } => {
+                if peers.is_empty() {
+                    println!("(no peers discovered)");
+                } else {
+                    for peer in &peers {
+                        let name = peer.name.as_deref().unwrap_or("-");
+                        let age = {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| d.as_secs());
+                            now.saturating_sub(peer.timestamp_secs)
+                        };
+                        println!(
+                            "{}\t{}\t{} blobs\t{}s ago",
+                            peer.node_id, name, peer.blob_count, age
+                        );
+                    }
+                }
+            }
+            _ => bail!("unexpected response"),
+        }
+        Ok(())
+    }
+
+    /// List known peers on a specific remote node using @`NODE_ID` syntax.
+    ///
+    /// This creates a one-off connection to the specified node and queries
+    /// its peer discovery table. Requires connected mode (serve must be running).
+    ///
+    /// # Arguments
+    ///
+    /// * `node_str` - The 64-character hex node ID
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not in connected mode or connection fails.
+    pub async fn peers_on_node(&mut self, node_str: &str) -> Result<()> {
+        let node_id: EndpointId = node_str.parse()?;
+        let endpoint = self.endpoint().ok_or_else(|| {
+            anyhow!("@NODE_ID requires a connected mode (use 'id repl' with a running serve)")
+        })?;
+
+        let conn = endpoint.connect(node_id, META_ALPN).await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
+        send.write_all(&req).await?;
+        send.finish()?;
+        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+
+        match resp {
+            MetaResponse::ListPeers { peers } => {
+                if peers.is_empty() {
+                    println!("(no peers discovered on @{})", &node_str[..8]);
+                } else {
+                    for peer in &peers {
+                        let name = peer.name.as_deref().unwrap_or("-");
+                        let age = {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| d.as_secs());
+                            now.saturating_sub(peer.timestamp_secs)
+                        };
+                        println!(
+                            "{}\t{}\t{} blobs\t{}s ago",
+                            peer.node_id, name, peer.blob_count, age
+                        );
+                    }
+                }
+            }
+            _ => bail!("unexpected response"),
+        }
+        conn.close(0u32.into(), b"done");
+        Ok(())
+    }
+
     /// Gracefully shut down the REPL context.
     ///
     /// Closes all connections and shuts down the blob store.
@@ -1074,6 +1169,7 @@ impl ReplContext {
     pub async fn shutdown(self) -> Result<()> {
         match self.inner {
             ReplContextInner::Remote {
+                endpoint,
                 meta_conn,
                 blobs_conn,
                 store,
@@ -1085,9 +1181,11 @@ impl ReplContext {
                 if let Some(conn) = blobs_conn {
                     conn.close(0u32.into(), b"done");
                 }
+                endpoint.close().await;
                 store.shutdown().await?;
             }
             ReplContextInner::RemoteNode {
+                endpoint,
                 meta_conn,
                 blobs_conn,
                 store,
@@ -1099,6 +1197,7 @@ impl ReplContext {
                 if let Some(conn) = blobs_conn {
                     conn.close(0u32.into(), b"done");
                 }
+                endpoint.close().await;
                 store.shutdown().await?;
             }
             ReplContextInner::Local { store } => {

@@ -32,13 +32,13 @@ web = [
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
-distributed-topic-tracker = { git = "https://github.com/rustonbsd/distributed-topic-tracker" }
+distributed-topic-tracker = { git = "https://github.com/developing-today-forks/distributed-topic-tracker", branch = "main" }
 ed25519-dalek = { version = "3.0.0-pre.1", features = ["rand_core"] }
 futures-lite = "2"
-iroh = "0.96"
-iroh-base = "0.96"
-iroh-blobs = "0.98"
-iroh-gossip = { version = "0.96", features = ["net"] }
+iroh = { version = "0.97", features = ["address-lookup-mdns"] }
+iroh-base = "0.97"
+iroh-blobs = "0.99"
+iroh-gossip = { version = "0.97", features = ["net"] }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.9"
 rustyline = "15"
