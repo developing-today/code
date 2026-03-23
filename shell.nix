@@ -32,9 +32,17 @@ pkgs.mkShell {
     pkgs.glib
   ];
   shellHook = ''
-    # Re-source Home Manager session vars so sessionPath entries survive devshell PATH reset
+    # Save devshell PATH, then source HM session vars (EDITOR, etc.)
+    _devshell_path="$PATH"
     unset __HM_SESS_VARS_SOURCED
     . "$HOME/.profile"
+    # .profile prepends HM sessionPath entries to PATH — move devshell paths back to front
+    # so devshell takes priority, with HM paths (e.g. ~/.local/bin) as fallback
+    _hm_prefix="''${PATH%:$_devshell_path}"
+    if [ "$_hm_prefix" != "$PATH" ]; then
+      export PATH="$_devshell_path:$_hm_prefix"
+    fi
+    unset _devshell_path _hm_prefix
 
     echo "Welcome to the development shell!"
   '';
