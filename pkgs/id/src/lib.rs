@@ -150,6 +150,7 @@
 
 pub mod cli;
 pub mod commands;
+pub mod discovery;
 pub mod helpers;
 pub mod protocol;
 pub mod repl;
@@ -161,12 +162,17 @@ pub mod web;
 // Re-export commonly used types for convenience
 pub use cli::{Cli, Command};
 pub use commands::{
-    PeekOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo, cmd_find,
+    PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo, cmd_find,
     cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash,
-    cmd_id, cmd_list, cmd_list_remote, cmd_peek, cmd_put_hash, cmd_put_local_file,
+    cmd_id, cmd_list, cmd_list_remote, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_local_file,
     cmd_put_local_stdin, cmd_put_multi, cmd_put_one, cmd_put_one_remote, cmd_search, cmd_serve,
     cmd_show, create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive,
     remove_serve_lock,
+};
+pub use discovery::{
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
+    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
+    parse_defaults, resolve_config,
 };
 pub use helpers::{
     parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,

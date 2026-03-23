@@ -19,7 +19,7 @@ use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, ge
 use super::markdown::prosemirror_to_markdown;
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
-    render_main_page_wrapper, render_media_viewer, render_page, render_settings,
+    render_main_page_wrapper, render_media_viewer, render_page, render_peers, render_settings,
 };
 
 /// Create the main router with all web routes.
@@ -28,6 +28,7 @@ pub fn create_router(state: AppState) -> Router {
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
         .route("/settings", get(settings_handler))
+        .route("/peers", get(peers_handler))
         .route("/edit/:hash", get(edit_handler))
         // Blob route (serves raw file content)
         .route("/blob/:hash", get(blob_handler))
@@ -65,14 +66,40 @@ async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
 
 /// Settings page handler.
 async fn settings_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    // TODO: Get actual node ID from state
-    let node_id = "0000000000000000000000000000000000000000000000000000000000000000";
-    let content = render_settings(node_id);
+    let content = render_settings(&state.node_id);
     if is_htmx_request(&headers) {
         // HTMX request - return wrapped content with header/footer
         Html(render_main_page_wrapper(&content))
     } else {
         Html(render_page("Settings", &content, "", &state.assets))
+    }
+}
+
+/// Peers page handler - shows discovered peers from gossip.
+async fn peers_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let peers_data: Vec<(String, String, u64, u64)> = if let Some(ref discovery) = state.peers {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        discovery
+            .peers()
+            .into_iter()
+            .map(|info| {
+                let ann = &info.announcement;
+                let name = ann.name.clone().unwrap_or_else(|| "-".to_owned());
+                let age = now.saturating_sub(ann.timestamp_secs);
+                (ann.node_id.to_string(), name, ann.blob_count, age)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let content = render_peers(&peers_data);
+    if is_htmx_request(&headers) {
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Peers", &content, "", &state.assets))
     }
 }
 

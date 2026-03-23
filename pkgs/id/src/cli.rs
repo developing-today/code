@@ -23,6 +23,7 @@
 //!   peek       Preview files with head/tail display
 //!   list       List all stored files
 //!   id         Print node ID
+//!   peers      Discover and list known peers
 //! ```
 //!
 //! # Search Filtering Flags
@@ -132,7 +133,8 @@ pub enum Command {
     /// Start a server that accepts put/get requests from peers.
     ///
     /// The server runs indefinitely, hosting stored blobs and accepting
-    /// new content from remote nodes.
+    /// new content from remote nodes. Automatically discovers other
+    /// servers via gossip-based peer discovery using the `BitTorrent` DHT.
     ///
     /// # Examples
     ///
@@ -151,6 +153,24 @@ pub enum Command {
     ///
     /// # Start with web interface on custom port
     /// id serve --web --port 8080
+    ///
+    /// # Bootstrap from known peer
+    /// id serve --bootstrap abc123...def456
+    ///
+    /// # Private discovery network
+    /// id serve --topic my-private-net --topic-secret my-secret
+    ///
+    /// # Disable gossip entirely
+    /// id serve --no-gossip
+    ///
+    /// # Skip built-in bootstrap nodes
+    /// id serve --no-default-bootstrap
+    ///
+    /// # Skip built-in topic/secret (use hardcoded constants)
+    /// id serve --no-default-topic
+    ///
+    /// # Use only defaults.conf values (ignore hardcoded fallbacks)
+    /// id serve --replace-defaults
     /// ```
     Serve {
         /// Use in-memory storage instead of persistent disk storage.
@@ -164,6 +184,13 @@ pub enum Command {
         /// May prevent connections through NATs or firewalls.
         #[arg(long)]
         no_relay: bool,
+        /// Disable gossip-based peer discovery entirely.
+        ///
+        /// The server still accepts connections but does not join
+        /// any gossip topic, does not announce itself, and does not
+        /// discover peers. Useful for isolated servers.
+        #[arg(long)]
+        no_gossip: bool,
         /// Start web interface.
         ///
         /// Enables an HTTP server with a browser-based UI for
@@ -176,6 +203,50 @@ pub enum Command {
         /// Use port 0 to let the OS assign a random available port.
         #[arg(long, default_value = "3000")]
         port: u16,
+        /// Comma-separated node IDs for manual peer bootstrapping.
+        ///
+        /// Supplementary to automatic DHT discovery. Useful when DHT
+        /// traffic is blocked or for development/testing.
+        #[arg(long, value_delimiter = ',')]
+        bootstrap: Vec<String>,
+        /// Gossip topic name for peer discovery.
+        ///
+        /// All servers on the same topic can discover each other.
+        /// Default: "id-peer-discovery-v1" (public network).
+        /// Use a custom topic for private networks.
+        #[arg(long)]
+        topic: Option<String>,
+        /// Shared secret for topic access control.
+        ///
+        /// Used to encrypt DHT bootstrap records. Only nodes with
+        /// the same secret can discover each other via DHT.
+        /// Default: "id-public-discovery-v1" (public network).
+        #[arg(long)]
+        topic_secret: Option<String>,
+        /// Skip default bootstrap node IDs from `defaults.conf`.
+        ///
+        /// Only CLI-provided `--bootstrap` nodes are used.
+        #[arg(long)]
+        no_default_bootstrap: bool,
+        /// Skip default topic and secret from `defaults.conf`.
+        ///
+        /// Falls back to the hardcoded constant values. CLI-provided
+        /// `--topic` and `--topic-secret` still take precedence.
+        #[arg(long)]
+        no_default_topic: bool,
+        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
+        ///
+        /// Useful when you want to fully control defaults via the
+        /// embedded configuration file at build time.
+        #[arg(long)]
+        replace_defaults: bool,
+        /// Disable mDNS local peer discovery.
+        ///
+        /// By default, the server uses mDNS to discover peers on the
+        /// local network. This flag disables that, which is useful in
+        /// environments where multicast traffic is blocked or unwanted.
+        #[arg(long)]
+        no_mdns: bool,
     },
     /// Start an interactive REPL for issuing commands.
     ///
@@ -714,6 +785,110 @@ pub enum Command {
     /// # Output: abc123...def456
     /// ```
     Id,
+    /// Discover and list known peers.
+    ///
+    /// Discovers other `id` servers via gossip-based networking, RPC
+    /// queries to a running serve instance, or both (default). Supports
+    /// depth-based recursive crawling to find peers-of-peers.
+    ///
+    /// # Discovery Modes
+    ///
+    /// - **Default**: Try RPC (query local serve), then gossip as fallback
+    /// - **RPC only** (`--rpc`): Only query via `ListPeers` RPC
+    /// - **Gossip only** (`--gossip`): Only use gossip topic discovery
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # List peers from local serve
+    /// id peers
+    ///
+    /// # List peers from a remote node
+    /// id peers abc123...def456
+    ///
+    /// # Deep crawl up to 3 levels
+    /// id peers --depth 3
+    ///
+    /// # Direct gossip discovery (no serve needed)
+    /// id peers --gossip
+    ///
+    /// # Gossip with custom topic
+    /// id peers --gossip --topic my-net --topic-secret my-secret
+    ///
+    /// # Skip built-in bootstrap nodes
+    /// id peers --gossip --no-default-bootstrap
+    /// ```
+    Peers {
+        /// Use gossip-only discovery (join topic, collect announcements).
+        ///
+        /// Bypasses RPC entirely. Useful when no local serve is running.
+        #[arg(long)]
+        gossip: bool,
+        /// Use RPC-only discovery (query server's `ListPeers`).
+        ///
+        /// Fails if no local serve is running (unless a node ID is given).
+        #[arg(long)]
+        rpc: bool,
+        /// Recursive depth for peer-of-peer crawling.
+        ///
+        /// 0 = no crawl, 1 = query direct peers (default),
+        /// N = recursively query up to N levels deep.
+        #[arg(long, default_value = "1")]
+        depth: i32,
+        /// Maximum total peers to discover.
+        ///
+        /// Hard cap to prevent unbounded crawling.
+        #[arg(long, default_value = "1000")]
+        max_peers: usize,
+        /// Per-crawl timeout in seconds.
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+        /// Comma-separated node IDs for gossip bootstrapping.
+        ///
+        /// Supplementary to DHT auto-discovery. These nodes are
+        /// contacted first when joining the gossip topic.
+        #[arg(long, value_delimiter = ',')]
+        bootstrap: Vec<String>,
+        /// Gossip topic name for peer discovery.
+        ///
+        /// Default: "id-peer-discovery-v1" (public network).
+        /// Use a custom topic for private networks.
+        #[arg(long)]
+        topic: Option<String>,
+        /// Shared secret for topic access control.
+        ///
+        /// Used to encrypt DHT bootstrap records.
+        #[arg(long)]
+        topic_secret: Option<String>,
+        /// Skip default bootstrap node IDs from `defaults.conf`.
+        ///
+        /// Only CLI-provided `--bootstrap` nodes are used.
+        #[arg(long)]
+        no_default_bootstrap: bool,
+        /// Skip default topic and secret from `defaults.conf`.
+        ///
+        /// Falls back to the hardcoded constant values.
+        #[arg(long)]
+        no_default_topic: bool,
+        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
+        #[arg(long)]
+        replace_defaults: bool,
+        /// Disable relay servers and use direct connections only.
+        #[arg(long)]
+        no_relay: bool,
+        /// Disable mDNS local peer discovery.
+        ///
+        /// By default, peers uses mDNS to discover peers on the
+        /// local network. This flag disables that.
+        #[arg(long)]
+        no_mdns: bool,
+        /// Remote node ID to query (64-char hex).
+        ///
+        /// When set, queries this specific node instead of the
+        /// local serve instance.
+        #[arg(required = false)]
+        node: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -773,13 +948,29 @@ mod tests {
             Some(Command::Serve {
                 ephemeral,
                 no_relay,
+                no_gossip,
                 web,
                 port,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);
+                assert!(!no_gossip);
                 assert!(!web);
                 assert_eq!(port, 3000);
+                assert!(bootstrap.is_empty());
+                assert!(topic.is_none());
+                assert!(topic_secret.is_none());
+                assert!(!no_default_bootstrap);
+                assert!(!no_default_topic);
+                assert!(!replace_defaults);
+                assert!(!no_mdns);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -792,13 +983,63 @@ mod tests {
             Some(Command::Serve {
                 ephemeral,
                 no_relay,
+                no_gossip,
                 web,
                 port,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
             }) => {
                 assert!(ephemeral);
                 assert!(no_relay);
+                assert!(!no_gossip);
                 assert!(!web);
                 assert_eq!(port, 3000);
+                assert!(bootstrap.is_empty());
+                assert!(topic.is_none());
+                assert!(topic_secret.is_none());
+                assert!(!no_default_bootstrap);
+                assert!(!no_default_topic);
+                assert!(!replace_defaults);
+                assert!(!no_mdns);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_bootstrap() {
+        let cli = Cli::parse_from(["id", "serve", "--bootstrap", "abc123,def456"]);
+        match cli.command {
+            Some(Command::Serve { bootstrap, .. }) => {
+                assert_eq!(bootstrap, vec!["abc123", "def456"]);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_topic() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--topic",
+            "my-private-net",
+            "--topic-secret",
+            "my-secret",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                topic,
+                topic_secret,
+                ..
+            }) => {
+                assert_eq!(topic, Some("my-private-net".to_owned()));
+                assert_eq!(topic_secret, Some("my-secret".to_owned()));
             }
             _ => panic!("Expected Serve command"),
         }
@@ -1043,6 +1284,116 @@ mod tests {
     fn test_cli_parse_id() {
         let cli = Cli::parse_from(["id", "id"]);
         assert!(matches!(cli.command, Some(Command::Id)));
+    }
+
+    #[test]
+    fn test_cli_parse_peers_default() {
+        let cli = Cli::parse_from(["id", "peers"]);
+        match cli.command {
+            Some(Command::Peers {
+                gossip,
+                rpc,
+                depth,
+                max_peers,
+                timeout,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_relay,
+                no_mdns,
+                node,
+            }) => {
+                assert!(!gossip);
+                assert!(!rpc);
+                assert_eq!(depth, 1);
+                assert_eq!(max_peers, 1000);
+                assert_eq!(timeout, 30);
+                assert!(bootstrap.is_empty());
+                assert!(topic.is_none());
+                assert!(topic_secret.is_none());
+                assert!(!no_default_bootstrap);
+                assert!(!no_default_topic);
+                assert!(!replace_defaults);
+                assert!(!no_relay);
+                assert!(!no_mdns);
+                assert!(node.is_none());
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_gossip_mode() {
+        let cli = Cli::parse_from([
+            "id",
+            "peers",
+            "--gossip",
+            "--topic",
+            "my-net",
+            "--topic-secret",
+            "s3cret",
+        ]);
+        match cli.command {
+            Some(Command::Peers {
+                gossip,
+                rpc,
+                topic,
+                topic_secret,
+                ..
+            }) => {
+                assert!(gossip);
+                assert!(!rpc);
+                assert_eq!(topic, Some("my-net".to_owned()));
+                assert_eq!(topic_secret, Some("s3cret".to_owned()));
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_rpc_with_depth() {
+        let cli = Cli::parse_from(["id", "peers", "--rpc", "--depth", "3", "--max-peers", "50"]);
+        match cli.command {
+            Some(Command::Peers {
+                rpc,
+                gossip,
+                depth,
+                max_peers,
+                ..
+            }) => {
+                assert!(rpc);
+                assert!(!gossip);
+                assert_eq!(depth, 3);
+                assert_eq!(max_peers, 50);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_with_node() {
+        let node_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let cli = Cli::parse_from(["id", "peers", node_id]);
+        match cli.command {
+            Some(Command::Peers { node, .. }) => {
+                assert_eq!(node, Some(node_id.to_owned()));
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_with_bootstrap() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--bootstrap", "abc123,def456"]);
+        match cli.command {
+            Some(Command::Peers { bootstrap, .. }) => {
+                assert_eq!(bootstrap, vec!["abc123", "def456"]);
+            }
+            _ => panic!("Expected Peers command"),
+        }
     }
 
     #[test]
@@ -1455,6 +1806,150 @@ mod tests {
                 assert_eq!(exclude, vec![".bak"]);
             }
             _ => panic!("Expected Find command"),
+        }
+    }
+
+    // Tests for new discovery flags
+    #[test]
+    fn test_cli_parse_serve_no_gossip() {
+        let cli = Cli::parse_from(["id", "serve", "--no-gossip"]);
+        match cli.command {
+            Some(Command::Serve { no_gossip, .. }) => {
+                assert!(no_gossip);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_no_default_bootstrap() {
+        let cli = Cli::parse_from(["id", "serve", "--no-default-bootstrap"]);
+        match cli.command {
+            Some(Command::Serve {
+                no_default_bootstrap,
+                ..
+            }) => {
+                assert!(no_default_bootstrap);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_no_default_topic() {
+        let cli = Cli::parse_from(["id", "serve", "--no-default-topic"]);
+        match cli.command {
+            Some(Command::Serve {
+                no_default_topic, ..
+            }) => {
+                assert!(no_default_topic);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_replace_defaults() {
+        let cli = Cli::parse_from(["id", "serve", "--replace-defaults"]);
+        match cli.command {
+            Some(Command::Serve {
+                replace_defaults, ..
+            }) => {
+                assert!(replace_defaults);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_all_new_flags() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--no-gossip",
+            "--no-default-bootstrap",
+            "--no-default-topic",
+            "--replace-defaults",
+            "--no-mdns",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                no_gossip,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
+                ..
+            }) => {
+                assert!(no_gossip);
+                assert!(no_default_bootstrap);
+                assert!(no_default_topic);
+                assert!(replace_defaults);
+                assert!(no_mdns);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_no_default_bootstrap() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--no-default-bootstrap"]);
+        match cli.command {
+            Some(Command::Peers {
+                no_default_bootstrap,
+                ..
+            }) => {
+                assert!(no_default_bootstrap);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_no_default_topic() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--no-default-topic"]);
+        match cli.command {
+            Some(Command::Peers {
+                no_default_topic, ..
+            }) => {
+                assert!(no_default_topic);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_replace_defaults() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--replace-defaults"]);
+        match cli.command {
+            Some(Command::Peers {
+                replace_defaults, ..
+            }) => {
+                assert!(replace_defaults);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_no_mdns() {
+        let cli = Cli::parse_from(["id", "serve", "--no-mdns"]);
+        match cli.command {
+            Some(Command::Serve { no_mdns, .. }) => {
+                assert!(no_mdns);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_no_mdns() {
+        let cli = Cli::parse_from(["id", "peers", "--no-mdns"]);
+        match cli.command {
+            Some(Command::Peers { no_mdns, .. }) => {
+                assert!(no_mdns);
+            }
+            _ => panic!("Expected Peers command"),
         }
     }
 }

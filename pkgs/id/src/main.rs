@@ -8,8 +8,9 @@ use clap::Parser;
 
 // Import from library
 use id::{
-    Cli, Command, PeekOptions, SearchOptions, cmd_find, cmd_get_multi, cmd_gethash, cmd_id,
-    cmd_list, cmd_peek, cmd_put_hash, cmd_put_multi, cmd_search, cmd_serve, cmd_show, run_repl,
+    Cli, Command, PeekOptions, PeersOptions, SearchOptions, cmd_find, cmd_get_multi, cmd_gethash,
+    cmd_id, cmd_list, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_multi, cmd_search, cmd_serve,
+    cmd_show, run_repl,
 };
 
 /// Determine the log level based on CLI flags and environment variables.
@@ -54,6 +55,17 @@ fn get_log_level(cli: &Cli) -> String {
     "debug".to_owned()
 }
 
+/// Per-module overrides to suppress noisy third-party modules.
+/// These are appended to whatever base level is active. Users can still
+/// override via `RUST_LOG` (e.g. `RUST_LOG=debug,mainline::rpc=trace`).
+const NOISY_MODULE_FILTERS: &[&str] = &[
+    "mainline::rpc=warn",
+    "distributed_topic_tracker::crypto::record=warn",
+    "rustls=warn",
+    "hickory_proto::error=warn",
+    "hickory_proto::udp::udp_client_stream=warn",
+];
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
@@ -72,10 +84,15 @@ async fn main() -> Result<()> {
             )
             .init();
     } else {
-        // Use the determined log level
+        // Append noisy-module filters to the base level
+        let mut filter = log_level.clone();
+        for module_filter in NOISY_MODULE_FILTERS {
+            filter.push(',');
+            filter.push_str(module_filter);
+        }
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
-            .with_env_filter(tracing_subscriber::EnvFilter::new(&log_level))
+            .with_env_filter(tracing_subscriber::EnvFilter::new(&filter))
             .init();
     }
 
@@ -85,10 +102,67 @@ async fn main() -> Result<()> {
         Some(Command::Serve {
             ephemeral,
             no_relay,
+            no_gossip,
             web,
             port,
-        }) => cmd_serve(ephemeral, no_relay, web, port).await,
+            bootstrap,
+            topic,
+            topic_secret,
+            no_default_bootstrap,
+            no_default_topic,
+            replace_defaults,
+            no_mdns,
+        }) => {
+            cmd_serve(
+                ephemeral,
+                no_relay,
+                no_gossip,
+                web,
+                port,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
+            )
+            .await
+        }
         Some(Command::Id) => cmd_id().await,
+        Some(Command::Peers {
+            gossip,
+            rpc,
+            depth,
+            max_peers,
+            timeout,
+            bootstrap,
+            topic,
+            topic_secret,
+            no_default_bootstrap,
+            no_default_topic,
+            replace_defaults,
+            no_relay,
+            no_mdns,
+            node,
+        }) => {
+            let options = PeersOptions {
+                gossip,
+                rpc,
+                depth,
+                max_peers,
+                timeout_secs: timeout,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_relay,
+                no_mdns,
+            };
+            cmd_peers(node, options).await
+        }
         Some(Command::List { node, no_relay }) => cmd_list(node, no_relay).await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {

@@ -90,7 +90,7 @@ mod cli_tests {
 
         // Test help for each subcommand
         for cmd in [
-            "serve", "put", "get", "list", "find", "search", "repl", "cat",
+            "serve", "put", "get", "list", "find", "search", "repl", "cat", "peers", "id",
         ] {
             let output = run_cmd(&[cmd, "--help"], tmp.path());
             assert!(output.status.success(), "Help failed for {cmd}");
@@ -345,6 +345,40 @@ mod id_tests {
         let id2 = run_cmd_success(&["id"], tmp.path());
 
         assert_eq!(id1.trim(), id2.trim());
+    }
+}
+
+mod peers_tests {
+    use super::*;
+
+    #[test]
+    fn test_peers_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Discover and list known peers"));
+        assert!(stdout.contains("--gossip"));
+        assert!(stdout.contains("--rpc"));
+        assert!(stdout.contains("--depth"));
+        assert!(stdout.contains("--max-peers"));
+        assert!(stdout.contains("--timeout"));
+        assert!(stdout.contains("--bootstrap"));
+        assert!(stdout.contains("--topic"));
+        assert!(stdout.contains("--topic-secret"));
+        assert!(stdout.contains("--no-default-bootstrap"));
+        assert!(stdout.contains("--no-default-topic"));
+        assert!(stdout.contains("--replace-defaults"));
+        assert!(stdout.contains("--no-relay"));
+        assert!(stdout.contains("--no-mdns"));
+    }
+
+    #[test]
+    fn test_peers_rpc_no_serve() {
+        // When no serve is running, --rpc should fail
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--rpc"], tmp.path());
+        assert!(!output.status.success());
     }
 }
 

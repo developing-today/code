@@ -74,10 +74,7 @@
 
 use anyhow::{Result, bail};
 use futures_lite::StreamExt;
-use iroh::{
-    address_lookup::{DnsAddressLookup, PkarrPublisher},
-    endpoint::{Endpoint, RelayMode},
-};
+use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 
 use crate::{
@@ -893,10 +890,7 @@ pub async fn cmd_find_matches(
     if let Some(node_str) = node {
         let node_id: EndpointId = node_str.parse()?;
         let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-        let mut builder = Endpoint::builder()
-            .secret_key(client_key)
-            .address_lookup(PkarrPublisher::n0_dns())
-            .address_lookup(DnsAddressLookup::n0_dns());
+        let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
         if no_relay {
             builder = builder.relay_mode(RelayMode::Disabled);
         }
@@ -914,10 +908,12 @@ pub async fn cmd_find_matches(
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
-        match resp {
+        let result = match resp {
             MetaResponse::Find { matches } => Ok(matches),
-            _ => bail!("unexpected response"),
-        }
+            _ => Err(anyhow::anyhow!("unexpected response")),
+        };
+        endpoint.close().await;
+        result
     } else {
         // Local search
         let store = open_store(false).await?;

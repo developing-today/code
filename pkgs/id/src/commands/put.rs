@@ -52,10 +52,7 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use iroh::{
-    address_lookup::{DnsAddressLookup, PkarrPublisher},
-    endpoint::{Endpoint, RelayMode},
-};
+use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobFormat,
@@ -123,6 +120,7 @@ pub async fn cmd_put_hash(source: &str) -> Result<()> {
         blobs_conn.close(0u32.into(), b"done");
 
         println!("{hash}");
+        endpoint.close().await;
         store.shutdown().await?;
     } else {
         let store = open_store(false).await?;
@@ -187,7 +185,7 @@ pub async fn cmd_put_local_file(path: &str, custom_name: Option<String>) -> Resu
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
-        match resp {
+        let result = match resp {
             MetaResponse::Put { success: true } => {
                 let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                 let push_request =
@@ -199,25 +197,28 @@ pub async fn cmd_put_local_file(path: &str, custom_name: Option<String>) -> Resu
                 blobs_conn.close(0u32.into(), b"done");
                 eprintln!("stored: {filename} -> {hash}");
                 store.shutdown().await?;
+                Ok(())
             }
-            MetaResponse::Put { success: false } => bail!("server rejected"),
-            _ => bail!("unexpected response"),
-        }
-    } else {
-        let store = open_store(false).await?;
-        let store_handle = store.as_store();
-
-        let added = store_handle
-            .add_bytes_with_opts(AddBytesOptions {
-                data: data.into(),
-                format: BlobFormat::Raw,
-            })
-            .await?;
-
-        store_handle.tags().set(&filename, added.hash).await?;
-        eprintln!("stored: {} -> {}", filename, added.hash);
-        store.shutdown().await?;
+            MetaResponse::Put { success: false } => Err(anyhow::anyhow!("server rejected")),
+            _ => Err(anyhow::anyhow!("unexpected response")),
+        };
+        endpoint.close().await;
+        return result;
     }
+
+    let store = open_store(false).await?;
+    let store_handle = store.as_store();
+
+    let added = store_handle
+        .add_bytes_with_opts(AddBytesOptions {
+            data: data.into(),
+            format: BlobFormat::Raw,
+        })
+        .await?;
+
+    store_handle.tags().set(&filename, added.hash).await?;
+    eprintln!("stored: {} -> {}", filename, added.hash);
+    store.shutdown().await?;
     Ok(())
 }
 
@@ -259,7 +260,7 @@ pub async fn cmd_put_local_stdin(name: &str) -> Result<()> {
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
-        match resp {
+        let result = match resp {
             MetaResponse::Put { success: true } => {
                 let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
                 let push_request =
@@ -271,25 +272,28 @@ pub async fn cmd_put_local_stdin(name: &str) -> Result<()> {
                 blobs_conn.close(0u32.into(), b"done");
                 eprintln!("stored: {name} -> {hash}");
                 store.shutdown().await?;
+                Ok(())
             }
-            MetaResponse::Put { success: false } => bail!("server rejected"),
-            _ => bail!("unexpected response"),
-        }
-    } else {
-        let store = open_store(false).await?;
-        let store_handle = store.as_store();
-
-        let added = store_handle
-            .add_bytes_with_opts(AddBytesOptions {
-                data: data.into(),
-                format: BlobFormat::Raw,
-            })
-            .await?;
-
-        store_handle.tags().set(name, added.hash).await?;
-        eprintln!("stored: {} -> {}", name, added.hash);
-        store.shutdown().await?;
+            MetaResponse::Put { success: false } => Err(anyhow::anyhow!("server rejected")),
+            _ => Err(anyhow::anyhow!("unexpected response")),
+        };
+        endpoint.close().await;
+        return result;
     }
+
+    let store = open_store(false).await?;
+    let store_handle = store.as_store();
+
+    let added = store_handle
+        .add_bytes_with_opts(AddBytesOptions {
+            data: data.into(),
+            format: BlobFormat::Raw,
+        })
+        .await?;
+
+    store_handle.tags().set(name, added.hash).await?;
+    eprintln!("stored: {} -> {}", name, added.hash);
+    store.shutdown().await?;
     Ok(())
 }
 
@@ -353,10 +357,7 @@ pub async fn cmd_put_one_remote(
     let hash = added.hash;
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder()
-        .secret_key(client_key)
-        .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(DnsAddressLookup::n0_dns());
+    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
     if no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
     }
@@ -374,7 +375,7 @@ pub async fn cmd_put_one_remote(
     let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
     meta_conn.close(0u32.into(), b"done");
 
-    match resp {
+    let result = match resp {
         MetaResponse::Put { success: true } => {
             let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
             let push_request =
@@ -386,11 +387,13 @@ pub async fn cmd_put_one_remote(
             blobs_conn.close(0u32.into(), b"done");
             println!("uploaded: {filename} -> {hash}");
             store.shutdown().await?;
+            Ok(())
         }
-        MetaResponse::Put { success: false } => bail!("server rejected"),
-        _ => bail!("unexpected response"),
-    }
-    Ok(())
+        MetaResponse::Put { success: false } => Err(anyhow::anyhow!("server rejected")),
+        _ => Err(anyhow::anyhow!("unexpected response")),
+    };
+    endpoint.close().await;
+    result
 }
 
 /// Stores multiple files (local or remote).

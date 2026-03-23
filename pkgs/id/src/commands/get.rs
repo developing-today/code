@@ -58,10 +58,7 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use iroh::{
-    address_lookup::{DnsAddressLookup, PkarrPublisher},
-    endpoint::{Endpoint, RelayMode},
-};
+use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, Hash};
 
@@ -116,6 +113,7 @@ pub async fn cmd_gethash(hash_str: &str, output: &str) -> Result<()> {
         blobs_conn.close(0u32.into(), b"done");
 
         export_blob(&store_handle, hash, output).await?;
+        endpoint.close().await;
         store.shutdown().await?;
     } else {
         let store = open_store(false).await?;
@@ -172,8 +170,14 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
 
         let hash = match resp {
             MetaResponse::Get { hash: Some(h) } => h,
-            MetaResponse::Get { hash: None } => bail!("file not found"),
-            _ => bail!("unexpected response"),
+            MetaResponse::Get { hash: None } => {
+                endpoint.close().await;
+                bail!("file not found");
+            }
+            _ => {
+                endpoint.close().await;
+                bail!("unexpected response");
+            }
         };
 
         let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
@@ -184,6 +188,7 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
         blobs_conn.close(0u32.into(), b"done");
 
         export_blob(&store_handle, hash, output).await?;
+        endpoint.close().await;
         store.shutdown().await?;
     } else {
         let store = open_store(false).await?;
@@ -251,6 +256,7 @@ pub async fn cmd_get_one(
                 Ok(_) => {
                     blobs_conn.close(0u32.into(), b"done");
                     export_blob(&store_handle, hash, output).await?;
+                    endpoint.close().await;
                     store.shutdown().await?;
                     return Ok(());
                 }
@@ -258,6 +264,7 @@ pub async fn cmd_get_one(
                     blobs_conn.close(0u32.into(), b"done");
                 }
             }
+            endpoint.close().await;
             store.shutdown().await?;
         } else {
             let store = open_store(false).await?;
@@ -312,10 +319,7 @@ pub async fn cmd_get_one_remote(
     let store_handle = store.as_store();
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder()
-        .secret_key(client_key)
-        .address_lookup(PkarrPublisher::n0_dns())
-        .address_lookup(DnsAddressLookup::n0_dns());
+    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
     if no_relay {
         builder = builder.relay_mode(RelayMode::Disabled);
     }
@@ -334,8 +338,14 @@ pub async fn cmd_get_one_remote(
 
     let hash = match resp {
         MetaResponse::Get { hash: Some(h) } => h,
-        MetaResponse::Get { hash: None } => bail!("file not found on remote"),
-        _ => bail!("unexpected response"),
+        MetaResponse::Get { hash: None } => {
+            endpoint.close().await;
+            bail!("file not found on remote");
+        }
+        _ => {
+            endpoint.close().await;
+            bail!("unexpected response");
+        }
     };
 
     let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
@@ -346,6 +356,7 @@ pub async fn cmd_get_one_remote(
     blobs_conn.close(0u32.into(), b"done");
 
     export_blob(&store_handle, hash, output).await?;
+    endpoint.close().await;
     store.shutdown().await?;
     Ok(())
 }

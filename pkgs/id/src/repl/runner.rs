@@ -89,7 +89,7 @@ use crate::{
 pub async fn run_repl(target_node: Option<String>) -> Result<()> {
     let mut ctx = ReplContext::new(target_node).await?;
     println!("id repl ({})", ctx.mode_str());
-    println!("commands: list, put, get, cat, gethash, help, quit");
+    println!("commands: list, put, get, cat, gethash, peers, help, quit");
     println!("input: $(...), `...`, |>, <<<, <<EOF supported");
 
     let mut rl = DefaultEditor::new()?;
@@ -225,6 +225,9 @@ pub enum ReplAction {
 /// - `rename <FROM> <TO>`: Rename a file
 /// - `copy`, `cp <FROM> <TO>`: Copy a file
 ///
+/// ## Discovery Commands
+/// - `peers`: List discovered peers
+///
 /// ## Search Commands
 /// - `find <QUERY>...`: Find and output matches
 /// - `search <QUERY>...`: List matches
@@ -283,6 +286,10 @@ async fn execute_repl_command(
             ctx.delete_on_node(node, name).await?;
             Ok(ReplAction::Continue)
         }
+        (Some(node), ["peers"]) => {
+            ctx.peers_on_node(node).await?;
+            Ok(ReplAction::Continue)
+        }
         (Some(_node), _) => {
             println!("@NODE_ID not supported for this command");
             Ok(ReplAction::Continue)
@@ -332,6 +339,10 @@ async fn execute_repl_command(
         }
         (None, ["copy" | "cp", from, to]) => {
             ctx.copy(from, to).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["peers"]) => {
+            ctx.peers().await?;
             Ok(ReplAction::Continue)
         }
         (None, ["find", rest @ ..]) => {
@@ -439,6 +450,7 @@ fn print_help() {
     println!("  delete <NAME>          - Delete a file (alias: rm)");
     println!("  rename <FROM> <TO>     - Rename a file");
     println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
+    println!("  peers                  - List discovered peers");
     println!("  find <QUERY>...        - Find & output matches");
     println!("  search <QUERY>...      - List matches");
     println!("  show <QUERY>...        - Find & cat to stdout (alias: view)");
@@ -473,6 +485,7 @@ fn print_help() {
     println!("  get @NODE_ID NAME      - Get file from remote node");
     println!("  cat @NODE_ID NAME      - Print remote file to stdout");
     println!("  delete @NODE_ID NAME   - Delete file on remote node");
+    println!("  peers @NODE_ID         - List peers known to remote node");
     println!();
     println!("input methods:");
     println!("  put $(cmd) name        - Store output of command");

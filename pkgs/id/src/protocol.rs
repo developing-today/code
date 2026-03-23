@@ -7,6 +7,7 @@
 //! - **Tag management**: Create, list, delete, rename, and copy tags on remote nodes
 //! - **Search operations**: Find blobs by name or hash with fuzzy matching
 //! - **Metadata queries**: List all stored items on a remote node
+//! - **Peer discovery**: Query a node's known peers from gossip-based discovery
 //!
 //! # Protocol Architecture
 //!
@@ -63,6 +64,8 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+use crate::discovery::{PeerAnnouncement, PeerDiscovery};
 
 /// Match quality for find/search operations.
 ///
@@ -252,6 +255,17 @@ pub enum MetaRequest {
         /// If `true`, prioritize name matches over hash matches in results.
         prefer_name: bool,
     },
+    /// Request the list of known peers from a remote node.
+    ///
+    /// Returns all peers that the remote node has discovered via gossip.
+    /// If the remote node is not running peer discovery, it returns an
+    /// empty list.
+    ///
+    /// **Wire compatibility note:** This variant MUST remain the last
+    /// variant in the enum. Postcard uses positional discriminants, so
+    /// inserting a new variant before this one would break wire compatibility
+    /// with older nodes.
+    ListPeers,
 }
 
 /// Responses from a remote node via the meta protocol.
@@ -295,6 +309,18 @@ pub enum MetaResponse {
         /// Matching tags, sorted by match quality.
         matches: Vec<FindMatch>,
     },
+    /// Response to [`MetaRequest::ListPeers`].
+    ///
+    /// Contains the list of peers currently known to the node via gossip.
+    /// May be empty if the node is not running peer discovery or has
+    /// not yet discovered any peers.
+    ///
+    /// **Wire compatibility note:** This variant MUST remain the last
+    /// variant in the enum. See [`MetaRequest::ListPeers`] for details.
+    ListPeers {
+        /// Known peers as announcements.
+        peers: Vec<PeerAnnouncement>,
+    },
 }
 
 /// Protocol handler for the meta protocol.
@@ -327,7 +353,7 @@ pub enum MetaResponse {
 /// use iroh_blobs::api::Store;
 ///
 /// let store: Store = /* ... */;
-/// let handler = MetaProtocol::new(&store);
+/// let handler = MetaProtocol::new(&store, None);
 ///
 /// // Register with router using META_ALPN
 /// router.accept(META_ALPN, handler);
@@ -336,6 +362,11 @@ pub enum MetaResponse {
 pub struct MetaProtocol {
     /// The blob store used for tag operations.
     pub store: Store,
+    /// Optional peer discovery table for the `ListPeers` RPC.
+    ///
+    /// When `Some`, the handler returns known peers in response to
+    /// `ListPeers` requests. When `None`, an empty list is returned.
+    pub peer_discovery: Option<PeerDiscovery>,
 }
 
 impl MetaProtocol {
@@ -343,17 +374,27 @@ impl MetaProtocol {
     ///
     /// Returns an `Arc` for easy registration with Iroh's router.
     ///
+    /// The `peer_discovery` parameter is optional. When provided, the
+    /// handler will respond to `ListPeers` requests with the current
+    /// peer table contents. When `None`, `ListPeers` returns an empty list.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
     /// use id::protocol::MetaProtocol;
     ///
-    /// let handler = MetaProtocol::new(&store);
+    /// // Without peer discovery
+    /// let handler = MetaProtocol::new(&store, None);
+    ///
+    /// // With peer discovery
+    /// let discovery = PeerDiscovery::new();
+    /// let handler = MetaProtocol::new(&store, Some(discovery));
     /// router.accept(META_ALPN, handler);
     /// ```
-    pub fn new(store: &Store) -> Arc<Self> {
+    pub fn new(store: &Store, peer_discovery: Option<PeerDiscovery>) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
+            peer_discovery,
         })
     }
 
@@ -408,6 +449,7 @@ impl ProtocolHandler for MetaProtocol {
     /// - **Rename**: Moves a tag from one name to another
     /// - **Copy**: Creates a new tag pointing to the same hash
     /// - **Find**: Searches tags by name/hash and returns ranked matches
+    /// - **`ListPeers`**: Returns known peers from the gossip-based peer discovery table
     ///
     /// # Errors
     ///
@@ -557,6 +599,22 @@ impl ProtocolHandler for MetaProtocol {
                     });
 
                     let resp = postcard::to_allocvec(&MetaResponse::Find { matches })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::ListPeers => {
+                    let peers = self
+                        .peer_discovery
+                        .as_ref()
+                        .map(|pd| {
+                            pd.peers()
+                                .into_iter()
+                                .map(|pi| pi.announcement)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let resp = postcard::to_allocvec(&MetaResponse::ListPeers { peers })
                         .map_err(AcceptError::from_err)?;
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
                     send.finish()?;
@@ -872,5 +930,109 @@ mod tests {
         assert_eq!(decoded.name, "serialized.txt");
         assert_eq!(decoded.kind, MatchKind::Contains);
         assert!(decoded.is_hash_match);
+    }
+
+    #[test]
+    fn test_meta_request_list_peers_serialization() {
+        let req = MetaRequest::ListPeers;
+        let bytes = postcard::to_allocvec(&req).unwrap();
+        let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
+        assert!(matches!(decoded, MetaRequest::ListPeers));
+    }
+
+    #[test]
+    fn test_meta_response_list_peers_empty_serialization() {
+        let resp = MetaResponse::ListPeers { peers: vec![] };
+        let bytes = postcard::to_allocvec(&resp).unwrap();
+        let decoded: MetaResponse = postcard::from_bytes(&bytes).unwrap();
+        match decoded {
+            MetaResponse::ListPeers { peers } => assert!(peers.is_empty()),
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_meta_response_list_peers_with_peers_serialization() {
+        use iroh_base::SecretKey;
+
+        let node_id_1 = SecretKey::from_bytes(&[1u8; 32]).public();
+        let node_id_2 = SecretKey::from_bytes(&[2u8; 32]).public();
+
+        let peers = vec![
+            PeerAnnouncement {
+                node_id: node_id_1,
+                name: Some("peer-alpha".to_owned()),
+                blob_count: 42,
+                timestamp_secs: 1_700_000_000,
+            },
+            PeerAnnouncement {
+                node_id: node_id_2,
+                name: None,
+                blob_count: 0,
+                timestamp_secs: 1_700_000_030,
+            },
+        ];
+        let resp = MetaResponse::ListPeers { peers };
+        let bytes = postcard::to_allocvec(&resp).unwrap();
+        let decoded: MetaResponse = postcard::from_bytes(&bytes).unwrap();
+        match decoded {
+            MetaResponse::ListPeers {
+                peers: decoded_peers,
+            } => {
+                assert_eq!(decoded_peers.len(), 2);
+                assert_eq!(decoded_peers[0].node_id, node_id_1);
+                assert_eq!(decoded_peers[0].name, Some("peer-alpha".to_owned()));
+                assert_eq!(decoded_peers[0].blob_count, 42);
+                assert_eq!(decoded_peers[1].node_id, node_id_2);
+                assert_eq!(decoded_peers[1].name, None);
+                assert_eq!(decoded_peers[1].blob_count, 0);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_list_peers_is_last_discriminant() {
+        // Verify that ListPeers has the highest discriminant value.
+        // This test will fail at compile time if a new variant is added
+        // after ListPeers (the match won't compile), reminding developers
+        // to keep ListPeers last.
+        let req = MetaRequest::ListPeers;
+        let bytes = postcard::to_allocvec(&req).unwrap();
+        // ListPeers should be discriminant 7 (0-indexed: Put=0, Get=1, List=2,
+        // Delete=3, Rename=4, Copy=5, Find=6, ListPeers=7)
+        assert_eq!(
+            bytes[0], 7,
+            "ListPeers should be the 8th variant (discriminant 7)"
+        );
+
+        let resp = MetaResponse::ListPeers { peers: vec![] };
+        let bytes = postcard::to_allocvec(&resp).unwrap();
+        assert_eq!(
+            bytes[0], 7,
+            "ListPeers response should be the 8th variant (discriminant 7)"
+        );
+    }
+
+    #[test]
+    fn test_existing_variants_unchanged_after_list_peers() {
+        // Verify adding ListPeers didn't shift existing discriminants.
+        // This is critical for wire compatibility.
+        let put_bytes = postcard::to_allocvec(&MetaRequest::Put {
+            filename: "x".to_owned(),
+            hash: Hash::from_bytes([0u8; 32]),
+        })
+        .unwrap();
+        assert_eq!(put_bytes[0], 0, "Put should still be discriminant 0");
+
+        let list_bytes = postcard::to_allocvec(&MetaRequest::List).unwrap();
+        assert_eq!(list_bytes[0], 2, "List should still be discriminant 2");
+
+        let find_bytes = postcard::to_allocvec(&MetaRequest::Find {
+            query: "x".to_owned(),
+            prefer_name: false,
+        })
+        .unwrap();
+        assert_eq!(find_bytes[0], 6, "Find should still be discriminant 6");
     }
 }
