@@ -225,3 +225,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - websocket sends empty string message instead of ping was this deleted
 - grey out offline isn't working
 - ensure binary messagepack
+
+---
+
+- nym transport ?

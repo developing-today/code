@@ -473,6 +473,7 @@ in
       home-manager
 
       # Media and design tools
+      ffmpeg
       gimp
       vlc
       wineWowPackages.stable

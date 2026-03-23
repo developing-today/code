@@ -205,18 +205,18 @@ web-assets-dev:
 
 # Run CLI with arguments (lib variant)
 run *ARGS:
-    RUST_LOG="${RUST_LOG:-debug}" cargo run -- {{ARGS}}
+    cargo run -- {{ARGS}}
 
 # Serve with web UI (default) [bun]
 serve *ARGS: web (serve-web ARGS)
 
 # Serve with web UI (no asset build) [bun]
 serve-web *ARGS:
-    RUST_LOG="${RUST_LOG:-debug}" cargo run --features web -- serve --web {{ARGS}}
+    cargo run --features web -- serve --web {{ARGS}}
 
 # Serve without web UI
 serve-lib *ARGS:
-    RUST_LOG="${RUST_LOG:-debug}" cargo run -- serve {{ARGS}}
+    cargo run -- serve {{ARGS}}
 
 # Build and serve with web UI (alias for serve) [bun]
 build-serve *ARGS: build (serve ARGS)
@@ -234,7 +234,7 @@ kill-serve *ARGS: kill sleep (serve ARGS)
 
 # Run the REPL
 repl:
-    RUST_LOG="${RUST_LOG:-debug}" cargo run -- repl
+    cargo run -- repl
 
 # =============================================================================
 # Watch Commands

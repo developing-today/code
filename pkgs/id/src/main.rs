@@ -56,14 +56,19 @@ fn get_log_level(cli: &Cli) -> String {
 }
 
 /// Per-module overrides to suppress noisy third-party modules.
-/// These are appended to whatever base level is active. Users can still
-/// override via `RUST_LOG` (e.g. `RUST_LOG=debug,mainline::rpc=trace`).
+/// These are appended to whatever base level is active, unless the user
+/// explicitly sets a level for that module in `RUST_LOG`
+/// (e.g. `RUST_LOG=debug,mainline::rpc=trace` keeps mainline::rpc at trace).
 const NOISY_MODULE_FILTERS: &[&str] = &[
-    "mainline::rpc=warn",
-    "distributed_topic_tracker::crypto::record=warn",
-    "rustls=warn",
-    "hickory_proto::error=warn",
-    "hickory_proto::udp::udp_client_stream=warn",
+    "mainline::rpc=info",
+    "distributed_topic_tracker::crypto::record=info",
+    "rustls=info",
+    "hickory_proto::error=info",
+    "hickory_proto::udp::udp_client_stream=info",
+    "swarm_discovery::receiver=info",
+    "acto::tokio=info",
+    "swarm_discovery::sender=info",
+    "swarm_discovery::socket=info"
 ];
 
 #[tokio::main]
@@ -74,27 +79,34 @@ async fn main() -> Result<()> {
     // Initialize tracing with the determined log level
     let log_level = get_log_level(&cli);
 
-    if log_level.is_empty() {
-        // RUST_LOG is set, use EnvFilter's default behavior
-        tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
-            )
-            .init();
+    // Resolve the base filter string: either from RUST_LOG or our computed level
+    let base = if log_level.is_empty() {
+        // RUST_LOG is set — use it as the base
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "debug".to_owned())
     } else {
-        // Append noisy-module filters to the base level
-        let mut filter = log_level.clone();
+        log_level.clone()
+    };
+
+    // Append noisy-module filters, unless:
+    // - the base level is "trace" (user wants everything), or
+    // - the user explicitly set a level for that module
+    //   (e.g. RUST_LOG=debug,mainline::rpc=trace).
+    let mut filter = base.clone();
+    let skip_noisy = base.trim() == "trace";
+    if !skip_noisy {
         for module_filter in NOISY_MODULE_FILTERS {
-            filter.push(',');
-            filter.push_str(module_filter);
+            // module_filter is "module::path=level"; extract the module prefix
+            let module_prefix = module_filter.split('=').next().unwrap_or(module_filter);
+            if !filter.contains(module_prefix) {
+                filter.push(',');
+                filter.push_str(module_filter);
+            }
         }
-        tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_env_filter(tracing_subscriber::EnvFilter::new(&filter))
-            .init();
     }
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::new(&filter))
+        .init();
 
     match cli.command {
         None => run_repl(None).await,
