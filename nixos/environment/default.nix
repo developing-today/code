@@ -500,6 +500,7 @@ in
       # Testing and development tools
       #beekeeper-studio # electron 31 eol
       cypress # Functional testing framework using headless chrome
+      chromium
       chromedriver
       playwright-driver
       direnv
