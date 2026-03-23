@@ -257,7 +257,11 @@
         whitelist = {
           prefix = [
             "~/.local/share/opencode/worktree"
+            "/home/user/.local/share/opencode/worktree"
+            "/root/.local/share/opencode/worktree"
             "~/code"
+            "/home/user/code"
+            "/root/code"
           ];
         };
       };
