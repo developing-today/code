@@ -518,6 +518,7 @@
     };
     sessionPath = [
       "$HOME/.local/bin"
+      "$HOME/.cache/.bun/bin"
     ];
     # pointerCursor = {
     #   package = pkgs.vanilla-dmz;

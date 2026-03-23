@@ -1,0 +1,63 @@
+{
+  "sessionID": "ses_2e673e01dffeua0AdpMja2B6mW",
+  "slots": {
+    "error": [],
+    "decision": [],
+    "todo": [],
+    "dependency": []
+  },
+  "pool": [
+    {
+      "id": "wm_1774250110419_hevxgy0",
+      "type": "file-path",
+      "content": ".hydra.js",
+      "source": "tool:read",
+      "timestamp": 1774250110418,
+      "relevanceScore": 2.11531875,
+      "mentions": 1,
+      "lastEventCounter": 5
+    },
+    {
+      "id": "wm_1774250110419_4kioxvh",
+      "type": "file-path",
+      "content": "ANDROID-CONNECTIVITY.md",
+      "source": "tool:read",
+      "timestamp": 1774250110418,
+      "relevanceScore": 1.900375,
+      "mentions": 1,
+      "lastEventCounter": 5
+    },
+    {
+      "id": "wm_1774250110419_xs2wa3j",
+      "type": "file-path",
+      "content": "COPYRIGHT.md",
+      "source": "tool:read",
+      "timestamp": 1774250110418,
+      "relevanceScore": 1.6475,
+      "mentions": 1,
+      "lastEventCounter": 5
+    },
+    {
+      "id": "wm_1774250110419_5gsfaw6",
+      "type": "file-path",
+      "content": "opencode.js",
+      "source": "tool:read",
+      "timestamp": 1774250110418,
+      "relevanceScore": 1.35,
+      "mentions": 1,
+      "lastEventCounter": 5
+    },
+    {
+      "id": "wm_1774250110419_pnc4nk5",
+      "type": "file-path",
+      "content": "package-lock.js",
+      "source": "tool:read",
+      "timestamp": 1774250110418,
+      "relevanceScore": 1,
+      "mentions": 1,
+      "lastEventCounter": 5
+    }
+  ],
+  "eventCounter": 5,
+  "updatedAt": "2026-03-23T07:15:10.419Z"
+}
