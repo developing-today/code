@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_019RTNm6VQ4fXNZCQS2fZU5F",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "bash",
+  "fullOutput": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('devShells',{}), indent=2))\n                       ~~~~~~~~~^^^^^^^^^^^\n  File \"/nix/store/cfapjd2rvqrpry4grb0kljnp8bvnvfxz-python3-3.13.8/lib/python3.13/json/__init__.py\", line 293, in load\n    return loads(fp.read(),\n        cls=cls, object_hook=object_hook,\n        parse_float=parse_float, parse_int=parse_int,\n        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)\n  File \"/nix/store/cfapjd2rvqrpry4grb0kljnp8bvnvfxz-python3-3.13.8/lib/python3.13/json/__init__.py\", line 346, in loads\n    return _default_decoder.decode(s)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^\n  File \"/nix/store/cfapjd2rvqrpry4grb0kljnp8bvnvfxz-python3-3.13.8/lib/python3.13/json/decoder.py\", line 345, in decode\n    obj, end = self.raw_decode(s, idx=_w(s, 0).end())\n               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/nix/store/cfapjd2rvqrpry4grb0kljnp8bvnvfxz-python3-3.13.8/lib/python3.13/json/decoder.py\", line 363, in raw_decode\n    raise JSONDecodeError(\"Expecting value\", s, err.value) from None\njson.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)\nEVAL FAILED\n",
+  "timestamp": 1774254691877
+}

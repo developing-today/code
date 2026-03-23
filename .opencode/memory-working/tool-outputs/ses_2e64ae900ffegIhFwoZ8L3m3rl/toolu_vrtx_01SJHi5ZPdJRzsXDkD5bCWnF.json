@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01SJHi5ZPdJRzsXDkD5bCWnF",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "todowrite",
+  "fullOutput": "[\n  {\n    \"content\": \"Understand how src/id flake devShell works and uses shell.nix\",\n    \"status\": \"in_progress\",\n    \"priority\": \"high\"\n  },\n  {\n    \"content\": \"Update root flake.nix devShells to use shell.nix (like src/id does)\",\n    \"status\": \"pending\",\n    \"priority\": \"high\"\n  },\n  {\n    \"content\": \"Ensure shell.nix shellHook makes HM sessionPath available (devshell first, HM fallback)\",\n    \"status\": \"pending\",\n    \"priority\": \"high\"\n  },\n  {\n    \"content\": \"Ensure btca (bun global package) works everywhere: ~, ~/code, ~/code/src/id\",\n    \"status\": \"pending\",\n    \"priority\": \"high\"\n  }\n]",
+  "timestamp": 1774254578118
+}

@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_019y7LrJESmPAdbFqLSDoXMk",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "read",
+  "fullOutput": "<path>/home/user/code/lib/default.nix</path>\n<type>file</type>\n<content>431:       devShells =\n432:         inputs.clan-core.inputs.nixpkgs.lib.genAttrs\n433:           [ \"x86_64-linux\" \"aarch64-linux\" \"aarch64-darwin\" \"x86_64-darwin\" ]\n434:           (\n435:             system:\n436:             let\n437:               pkgs = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system};\n438:             in\n439:             {\n440:               default = pkgs.mkShell {\n441:                 inputsFrom = [ (import ../shell.nix { inherit pkgs; }) ];\n442:                 packages = [ inputs.clan-core.packages.${system}.clan-cli ];\n443:               };\n444:             }\n445:           );\n446:     };\n447: \n448:   _self = merge [\n449:     lib\n450:     {\n\n(Showing lines 431-450 of 493. Use offset=451 to continue.)\n</content>",
+  "timestamp": 1774255115346
+}

@@ -94,5 +94,16 @@
     echo "════════════════════════════════════════════════════════════"
 
     export RUST_BACKTRACE=1
+
+    # Append Home Manager session paths (devshell paths take priority, HM paths as fallback)
+    _devshell_path="$PATH"
+    unset __HM_SESS_VARS_SOURCED
+    . "$HOME/.profile" 2>/dev/null || true
+    # .profile prepends HM sessionPath entries to PATH — move devshell paths back to front
+    _hm_prefix="''${PATH%:$_devshell_path}"
+    if [ "$_hm_prefix" != "$PATH" ]; then
+      export PATH="$_devshell_path:$_hm_prefix"
+    fi
+    unset _devshell_path _hm_prefix
   '';
 }

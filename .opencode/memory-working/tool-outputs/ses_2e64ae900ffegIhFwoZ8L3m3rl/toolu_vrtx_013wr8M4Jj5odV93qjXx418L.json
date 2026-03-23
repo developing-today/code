@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_013wr8M4Jj5odV93qjXx418L",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "bash",
+  "fullOutput": "{\n  \"devShells\": {\n    \"aarch64-darwin\": {\n      \"default\": {}\n    },\n    \"aarch64-linux\": {\n      \"default\": {}\n    },\n    \"x86_64-darwin\": {\n      \"default\": {}\n    },\n    \"x86_64-linux\": {\n      \"default\": {\n        \"description\": \"\",\n        \"name\": \"nix-shell\",\n        \"type\": \"derivation\"\n      }\n    }\n  }\n}\n",
+  "timestamp": 1774254230504
+}

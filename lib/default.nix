@@ -431,11 +431,27 @@ let
       devShells =
         inputs.clan-core.inputs.nixpkgs.lib.genAttrs
           [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
-          (system: {
-            default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {
-              packages = [ inputs.clan-core.packages.${system}.clan-cli ];
-            };
-          });
+          (
+            system:
+            let
+              pkgs = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system};
+              # Import shared configuration (same as shell.nix)
+              nixCommon = import ../nix-common.nix { inherit pkgs; };
+            in
+            {
+              default = pkgs.mkShell {
+                inherit (nixCommon)
+                  NIX_CONFIG
+                  nativeBuildInputs
+                  shellHook
+                  ;
+                # Shared packages + clan-cli (only available via flake input)
+                packages = nixCommon.packages ++ [
+                  inputs.clan-core.packages.${system}.clan-cli
+                ];
+              };
+            }
+          );
     };
 
   _self = merge [

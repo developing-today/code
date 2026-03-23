@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_0188CN3MauS4Q51ieVYrhTst",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "bash",
+  "fullOutput": "evaluating 'devShells.x86_64-linux.default'...\n\u001b[32;1m│       └───\u001b[0m\u001b[1mdefault\u001b[0m: development environment 'nix-shell'\nevaluating 'enableColorschemes'...\n",
+  "timestamp": 1774254700674
+}
