@@ -42,6 +42,8 @@ in
     variables = {
       EDITOR = "nvim";
       NIX_REMOTE = "daemon";
+      PLAYWRIGHT_BROWSERS_PATH = "${inputs.nixpkgs-master.legacyPackages.${system}.playwright-driver.browsers
+      }";
     };
     # things should end up in systempackages if
     # they are required for boot or login or
