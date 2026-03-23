@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_018K4PDtN39Y4eVTiPBJ6aYf",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "bash",
+  "fullOutput": "    \"dep:axum\",\n    \"dep:serde_json\",\n    \"dep:rmp-serde\",\nserde = { version = \"1\", features = [\"derive\"] }\naxum = { version = \"0.7\", features = [\"ws\"], optional = true }\nserde_json = { version = \"1\", optional = true }\nrmp-serde = { version = \"1\", optional = true }\nunused_lifetimes = \"warn\"\n",
+  "timestamp": 1774163715400
+}

@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01CA5aemYMJ99Jxr5pU9bFvh",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "bash",
+  "fullOutput": "   Compiling code v0.1.0 (/home/user/.local/share/opencode/worktree/code/new-file-and-save)\nerror: couldn't read `.src/main.rs`: No such file or directory (os error 2)\n\nerror: could not compile `code` (bin \"code\") due to 1 previous error\n",
+  "timestamp": 1774164067688
+}

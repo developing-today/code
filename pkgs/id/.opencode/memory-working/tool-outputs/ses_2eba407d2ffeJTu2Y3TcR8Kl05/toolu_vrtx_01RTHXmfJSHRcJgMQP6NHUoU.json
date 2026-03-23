@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01RTHXmfJSHRcJgMQP6NHUoU",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "bash",
+  "fullOutput": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web\npackage.json\n{\n  \"name\": \"id-web\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"description\": \"Web interface for id P2P file sharing\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"build\": \"bun run build:js && bun run build:css && bun run build:manifest\",\n    \"build:js\": \"bun build src/main.ts --outdir=dist --minify --sourcemap=external --entry-naming=[name].[hash].js\",\n    \"build:css\": \"bun run scripts/build-css.ts\",\n",
+  "timestamp": 1774164400527
+}

@@ -204,6 +204,9 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - theme doesn't automatically update which is ok but when you hit alt+t and the local theme is same color as the next alt+t it doesn't do anything.
 - when you make debug/testing logs dont delete them when you are done, just ensure they aren't still triggerred if info.
 - victoriametrics
+- footer for raw/media should match markdown. download should be in the bottom right of all per-page toolbars
+- allow save back update hash, allow download saved which downloads last saved copy and download which downloads current file as-is. maybe allow download json for active documents too which is same as download except its the prosemirror json.
+
 
 ---
 

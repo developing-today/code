@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01Ut3Sphjo5SyJhp1WgAxNDE",
+  "sessionID": "ses_2e723e607ffe2h5EVVaGYhf9Km",
+  "tool": "glob",
+  "fullOutput": "/home/user/code/pkgs/id/flake.nix\n/home/user/code/flake.nix\n/home/user/code/pkgs/roc/platforms/rust-basic-cli-template/flake.nix\n/home/user/code/pkgs/roc/platforms/rust-basic-cli/flake.nix\n/home/user/code/pkgs/roc/platforms/rust-minimal-cli/flake.nix",
+  "timestamp": 1774238575294
+}

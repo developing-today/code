@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01SXTeZUhDxaMvg8n3SmdJui",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "read",
+  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/routes.rs</path>\n<type>file</type>\n<content>625: \n626: /// Extract raw text from a `ProseMirror` doc with `code_block` nodes.\n627: ///\n628: /// Used for code and config files where the content is a single `code_block`.\n629: fn extract_raw_text(doc: &serde_json::Value) -> String {\n630:     let mut parts = Vec::new();\n631: \n632:     if let Some(content) = doc.get(\"content\").and_then(|c| c.as_array()) {\n633:         for node in content {\n634:             let node_type = node.get(\"type\").and_then(|t| t.as_str()).unwrap_or(\"\");\n635:             if node_type == \"code_block\"\n636:                 && let Some(inline_content) = node.get(\"content\").and_then(|c| c.as_array()) {\n637:                     for inline in inline_content {\n638:                         if let Some(text) = inline.get(\"text\").and_then(|t| t.as_str()) {\n639:                             parts.push(text.to_owned());\n640:                         }\n641:                     }\n642:                 }\n643:         }\n644:     }\n645: \n646:     parts.join(\"\\n\")\n647: }\n648: \n649: /// Archive the original tag by creating a timestamped copy.\n\n(Showing lines 625-649 of 699. Use offset=650 to continue.)\n</content>",
+  "timestamp": 1774164549477
+}

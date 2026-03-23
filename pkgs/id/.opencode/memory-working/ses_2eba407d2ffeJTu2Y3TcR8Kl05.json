@@ -1,0 +1,291 @@
+{
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "slots": {
+    "error": [
+      {
+        "id": "wm_1774164704303_6wp8dn9",
+        "type": "error",
+        "content": "test result: FAILED. 51 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.98s",
+        "source": "tool:bash",
+        "timestamp": 1774164704302,
+        "relevanceScore": 0,
+        "mentions": 1
+      },
+      {
+        "id": "wm_1774164704303_q5t7gjy",
+        "type": "error",
+        "content": "error: test failed, to rerun pass `--test cli_integration`",
+        "source": "tool:bash",
+        "timestamp": 1774164704302,
+        "relevanceScore": 0,
+        "mentions": 1
+      },
+      {
+        "id": "wm_1774164704303_qbc16b5",
+        "type": "error",
+        "content": "error: Recipe `test` failed on line 54 with exit code 101",
+        "source": "tool:bash",
+        "timestamp": 1774164704302,
+        "relevanceScore": 0,
+        "mentions": 1
+      }
+    ],
+    "decision": [],
+    "todo": [],
+    "dependency": []
+  },
+  "pool": [
+    {
+      "id": "wm_1774163604733_4c7gntl",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/routes.rs",
+      "source": "tool:glob",
+      "timestamp": 1774164549477,
+      "relevanceScore": 6.3593162702103445,
+      "mentions": 7,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163763404_4iwe2jl",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/main.ts",
+      "source": "tool:read",
+      "timestamp": 1774164035596,
+      "relevanceScore": 5.923645613661988,
+      "mentions": 6,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163605530_fh1o6tx",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/editor.ts",
+      "source": "tool:glob",
+      "timestamp": 1774163819648,
+      "relevanceScore": 4.93696924707438,
+      "mentions": 5,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163604732_12mdync",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/markdown.rs",
+      "source": "tool:glob",
+      "timestamp": 1774163815302,
+      "relevanceScore": 3.9496035574641857,
+      "mentions": 4,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163604732_kawbcfb",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/templates.rs",
+      "source": "tool:glob",
+      "timestamp": 1774163963426,
+      "relevanceScore": 3.949515335160487,
+      "mentions": 4,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163604733_fshsm89",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/mod.rs",
+      "source": "tool:glob",
+      "timestamp": 1774163647167,
+      "relevanceScore": 1.9748249383575645,
+      "mentions": 2,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163604733_jwgdjau",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/content_mode.rs",
+      "source": "tool:glob",
+      "timestamp": 1774163604731,
+      "relevanceScore": 0.9874165188666321,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163605529_qah3ruw",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/tsconfig.js",
+      "source": "tool:glob",
+      "timestamp": 1774163605529,
+      "relevanceScore": 0.987415752474497,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163605530_t6c75ji",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/vitest.config.ts",
+      "source": "tool:glob",
+      "timestamp": 1774163605529,
+      "relevanceScore": 0.9874154019836103,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163605530_iqu6q69",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/theme.ts",
+      "source": "tool:glob",
+      "timestamp": 1774163605529,
+      "relevanceScore": 0.9874149896413907,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163605530_ft23ih9",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/editor.test.ts",
+      "source": "tool:glob",
+      "timestamp": 1774163605529,
+      "relevanceScore": 0.9874139338170222,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163647168_5js7f4p",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/collab.rs",
+      "source": "tool:grep",
+      "timestamp": 1774163647167,
+      "relevanceScore": 0.9874076503557004,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163665204_vq0a71o",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/store.rs",
+      "source": "tool:read",
+      "timestamp": 1774163665204,
+      "relevanceScore": 0.9874058700791437,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163764021_qlp11qy",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/collab.ts",
+      "source": "tool:read",
+      "timestamp": 1774163764021,
+      "relevanceScore": 0.9874013115855385,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163957766_ttw74ex",
+      "type": "file-path",
+      "content": "Modified: /home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/templates.rs",
+      "source": "tool:edit",
+      "timestamp": 1774163957763,
+      "relevanceScore": 0.9873574539099699,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774163963449_ja33voz",
+      "type": "file-path",
+      "content": "filename.md",
+      "source": "tool:read",
+      "timestamp": 1774163963426,
+      "relevanceScore": 0.9873342995866818,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164061960_655z8us",
+      "type": "file-path",
+      "content": ".src/main.rs",
+      "source": "tool:read",
+      "timestamp": 1774164061960,
+      "relevanceScore": 0.9872399132648957,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164365578_drw1gva",
+      "type": "file-path",
+      "content": "package.js",
+      "source": "tool:read",
+      "timestamp": 1774164365578,
+      "relevanceScore": 0.986538884369749,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164365578_mmu0jev",
+      "type": "file-path",
+      "content": "README.md",
+      "source": "tool:read",
+      "timestamp": 1774164365578,
+      "relevanceScore": 0.9833968068895416,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164365578_6qotypx",
+      "type": "file-path",
+      "content": "tsconfig.js",
+      "source": "tool:read",
+      "timestamp": 1774164365578,
+      "relevanceScore": 0.9797002451481212,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164365578_owz56ln",
+      "type": "file-path",
+      "content": "vitest.config.ts",
+      "source": "tool:read",
+      "timestamp": 1774164365578,
+      "relevanceScore": 0.975351348981744,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164368392_1ikvvgt",
+      "type": "file-path",
+      "content": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/package.js",
+      "source": "tool:read",
+      "timestamp": 1774164368392,
+      "relevanceScore": 0.9702350005507121,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164368393_s7cuwjq",
+      "type": "file-path",
+      "content": "src/main.ts",
+      "source": "tool:read",
+      "timestamp": 1774164368392,
+      "relevanceScore": 0.9642157671024394,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164368393_edbd79s",
+      "type": "file-path",
+      "content": "scripts/build-css.ts",
+      "source": "tool:read",
+      "timestamp": 1774164368392,
+      "relevanceScore": 0.9571343159868244,
+      "mentions": 1,
+      "lastEventCounter": 92
+    },
+    {
+      "id": "wm_1774164368393_8kdnc5g",
+      "type": "file-path",
+      "content": "scripts/build-manifest.ts",
+      "source": "tool:read",
+      "timestamp": 1774164368392,
+      "relevanceScore": 0.9488031970272774,
+      "mentions": 1,
+      "lastEventCounter": 92
+    }
+  ],
+  "eventCounter": 98,
+  "updatedAt": "2026-03-22T07:31:44.303Z"
+}

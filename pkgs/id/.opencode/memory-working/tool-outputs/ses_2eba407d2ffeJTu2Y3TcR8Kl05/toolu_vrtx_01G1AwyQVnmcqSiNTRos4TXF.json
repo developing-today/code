@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01G1AwyQVnmcqSiNTRos4TXF",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "grep",
+  "fullOutput": "Found 4 matches\n/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/markdown.rs:\n  Line 89: pub fn markdown_to_prosemirror(markdown: &str) -> Value {\n  Line 472: pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {\n  Line 668: pub fn plain_text_to_prosemirror(text: &str) -> Value {\n  Line 697: pub fn raw_text_to_prosemirror(text: &str) -> Value {",
+  "timestamp": 1774163815301
+}

@@ -1,0 +1,25 @@
+{
+  "sessionID": "ses_2ebd4f376ffeUEUL0yVX5nP0FA",
+  "modelID": "claude-opus-4.6",
+  "providerID": "github-copilot",
+  "limits": {
+    "context": 144000,
+    "input": 128000,
+    "output": 64000
+  },
+  "calculated": {
+    "maxOutputTokens": 32000,
+    "reserved": 20000,
+    "usable": 108000
+  },
+  "current": {
+    "totalTokens": 52771,
+    "pressure": 0.48862037037037037,
+    "level": "safe"
+  },
+  "thresholds": {
+    "moderate": 81000,
+    "high": 97200
+  },
+  "updatedAt": "2026-03-22T06:32:33.977Z"
+}

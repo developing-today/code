@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_012itS5zPaN6crjmuzKbZT1n",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "workspaces",
+  "fullOutput": "Found 4 workspace(s):\n\n**Worktrees** (4):\n  [worktree] code/new-file-and-save (0d ago)\n  [worktree] 8cbee1e7ffeabef84f780e2eb5cf5d44b24c27a8/silent-rocket (0d ago)\n  [worktree] 8cbee1e7ffeabef84f780e2eb5cf5d44b24c27a8/neon-comet (0d ago) [18 uncommitted]\n  [worktree] 8cbee1e7ffeabef84f780e2eb5cf5d44b24c27a8/glowing-comet (0d ago)\n\nUse `/workspaces cleanup` to find stale workspaces.",
+  "timestamp": 1774163165563
+}

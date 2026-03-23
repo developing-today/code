@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01UNHNbPDtPAnCsLUNkaCTY9",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "read",
+  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/routes.rs</path>\n<type>file</type>\n<content>1: //! HTTP route handlers for the web interface.\n2: //!\n3: //! Defines all the Axum routes and their handlers for serving the web UI.\n4: \n5: use axum::{\n6:     Router,\n7:     body::Body,\n8:     extract::{Path, Query, State},\n9:     http::{HeaderMap, StatusCode, header},\n10:     response::{Html, IntoResponse, Response},\n11:     routing::get,\n12: };\n13: use serde::Deserialize;\n14: \n15: use super::AppState;\n16: use super::content_mode::{ContentMode, detect_mode_with_content, get_content_type};\n17: use super::templates::{\n18:     render_binary_viewer, render_editor, render_editor_page, render_file_list,\n19:     render_main_page_wrapper, render_media_viewer, render_page, render_settings,\n20: };\n\n(Showing lines 1-20 of 288. Use offset=21 to continue.)\n</content>",
+  "timestamp": 1774163852699
+}

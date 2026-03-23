@@ -14,7 +14,8 @@ let
   my-helmfile = pkgs.helmfile-wrapped.override { inherit (my-kubernetes-helm) pluginsDir; };
 
   # # Fix opencode-desktop: upstream flake is missing outputHashes for git dependencies
-  # and has TypeScript errors in auth.set calls (auth -> body)
+  # ref: https://github.com/Vishal2002/opencode/tree/fix/auth-to-body-provider-dialogs
+  # NOTE: auth->body sed patches removed; SDK types expect `auth` and tsgo -b fails with `body`
   opencode-desktop = inputs.opencode.packages.${system}.desktop.overrideAttrs (old: {
     cargoDeps = pkgs.rustPlatform.importCargoLock {
       lockFile = inputs.opencode + "/packages/desktop/src-tauri/Cargo.lock";
@@ -24,10 +25,6 @@ let
         "tauri-specta-2.0.0-rc.21" = "sha256-n2VJ+B1nVrh6zQoZyfMoctqP+Csh7eVHRXwUQuiQjaQ=";
       };
     };
-    postPatch = (old.postPatch or "") + ''
-      sed -i "s/        auth: {$/        body: {/" packages/app/src/components/dialog-connect-provider.tsx
-      sed -i "s/          auth: {$/          body: {/" packages/app/src/components/dialog-custom-provider.tsx
-    '';
   });
 in
 {
@@ -123,6 +120,8 @@ in
       presenterm
       kondo
       # bob-nvim
+      bun
+      nodejs # npm, npx
       mise # rtx
       espanso
 

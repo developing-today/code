@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01SgtwYu1ULpGoCXHbQ8MapU",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "read",
+  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/editor.ts</path>\n<type>file</type>\n<content>298: export function getEditorState(view: EditorView): {\n299:   version: number;\n300:   doc: unknown;\n301:   steps: unknown[] | null;\n302: } {\n303:   const state = view.state;\n304:   const sendable = sendableSteps(state);\n305:   \n306:   return {\n307:     version: getVersion(state),\n308:     doc: state.doc.toJSON(),\n309:     steps: sendable ? sendable.steps.map(s => s.toJSON()) : null,\n310:   };\n311: }\n312: \n313: /**\n314:  * Get sendable steps from the editor for transmission to server.\n315:  */\n316: export function getSendableSteps(view: EditorView): {\n317:   version: number;\n318:   steps: unknown[];\n319:   clientID: string | number;\n320: } | null {\n321:   const sendable = sendableSteps(view.state);\n322:   if (!sendable) return null;\n323:   \n324:   return {\n325:     version: getVersion(view.state),\n326:     steps: sendable.steps.map(s => s.toJSON()),\n327:     clientID: sendable.clientID,\n328:   };\n329: }\n330: \n331: export { getVersion };\n\n(End of file - total 331 lines)\n</content>",
+  "timestamp": 1774163819648
+}

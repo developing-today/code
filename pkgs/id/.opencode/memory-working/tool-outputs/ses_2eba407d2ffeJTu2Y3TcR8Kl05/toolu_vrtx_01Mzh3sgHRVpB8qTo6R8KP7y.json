@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01Mzh3sgHRVpB8qTo6R8KP7y",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "grep",
+  "fullOutput": "Found 3 matches\n/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/src/web/routes.rs:\n  Line 385:     let tag = iroh_blobs::Tag::from(req.name.clone());\n  Line 443:     let tag = iroh_blobs::Tag::from(req.name.clone());\n  Line 684:     let archive_tag = iroh_blobs::Tag::from(archive_name.clone());",
+  "timestamp": 1774164341805
+}

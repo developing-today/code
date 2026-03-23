@@ -1,0 +1,73 @@
+{
+  "sessionID": "ses_2ebd4f376ffeUEUL0yVX5nP0FA",
+  "slots": {
+    "error": [],
+    "decision": [],
+    "todo": [],
+    "dependency": []
+  },
+  "pool": [
+    {
+      "id": "wm_1774160726763_txjuwun",
+      "type": "file-path",
+      "content": "//opencode.ai/config.js",
+      "source": "tool:read",
+      "timestamp": 1774161083520,
+      "relevanceScore": 5.572209417005859,
+      "mentions": 3,
+      "lastEventCounter": 11
+    },
+    {
+      "id": "wm_1774160726764_bif0jls",
+      "type": "file-path",
+      "content": "/.config/opencode/plugin/shell-strategy/shell_strategy.md",
+      "source": "tool:read",
+      "timestamp": 1774161083520,
+      "relevanceScore": 4.7908346082421875,
+      "mentions": 3,
+      "lastEventCounter": 11
+    },
+    {
+      "id": "wm_1774160726763_yvubj1c",
+      "type": "file-path",
+      "content": "/home/user/.config/opencode/opencode.js",
+      "source": "tool:read",
+      "timestamp": 1774161083520,
+      "relevanceScore": 4.16020972320498,
+      "mentions": 2,
+      "lastEventCounter": 11
+    },
+    {
+      "id": "wm_1774160727042_1vdqcat",
+      "type": "file-path",
+      "content": "/home/user/.config/opencode/tui.js",
+      "source": "tool:read",
+      "timestamp": 1774160727042,
+      "relevanceScore": 2.58532012734375,
+      "mentions": 1,
+      "lastEventCounter": 11
+    },
+    {
+      "id": "wm_1774160727042_mkayjdf",
+      "type": "file-path",
+      "content": "//opencode.ai/tui.js",
+      "source": "tool:read",
+      "timestamp": 1774160727042,
+      "relevanceScore": 2.453317796875,
+      "mentions": 1,
+      "lastEventCounter": 11
+    },
+    {
+      "id": "wm_1774160732969_t2zo409",
+      "type": "file-path",
+      "content": "/home/user/code/.opencode/opencode.js",
+      "source": "tool:read",
+      "timestamp": 1774160732969,
+      "relevanceScore": 2.2980209375,
+      "mentions": 1,
+      "lastEventCounter": 11
+    }
+  ],
+  "eventCounter": 11,
+  "updatedAt": "2026-03-22T06:31:23.521Z"
+}

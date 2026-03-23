@@ -1,0 +1,33 @@
+{
+  "sessionID": "ses_2e723e607ffe2h5EVVaGYhf9Km",
+  "slots": {
+    "error": [],
+    "decision": [],
+    "todo": [],
+    "dependency": []
+  },
+  "pool": [
+    {
+      "id": "wm_1774238578692_e2ubxx5",
+      "type": "file-path",
+      "content": "//cache.m7.rs",
+      "source": "tool:read",
+      "timestamp": 1774238578691,
+      "relevanceScore": 1.35,
+      "mentions": 1,
+      "lastEventCounter": 2
+    },
+    {
+      "id": "wm_1774238578696_e1q77gy",
+      "type": "file-path",
+      "content": "cache.m7.rs",
+      "source": "tool:read",
+      "timestamp": 1774238578691,
+      "relevanceScore": 1,
+      "mentions": 1,
+      "lastEventCounter": 2
+    }
+  ],
+  "eventCounter": 2,
+  "updatedAt": "2026-03-23T04:02:58.696Z"
+}

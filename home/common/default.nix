@@ -516,10 +516,9 @@
       # XDG_DATA_HOME = "$HOME/.local/share";
       # XDG_STATE_HOME = "$HOME/.local/state";
     };
-    # sessionPath = [
-    #   "$HOME/bin"
-    #   "$HOME/.local/bin"
-    # ];
+    sessionPath = [
+      "$HOME/.local/bin"
+    ];
     # pointerCursor = {
     #   package = pkgs.vanilla-dmz;
     #   name = "Vanilla-DMZ";

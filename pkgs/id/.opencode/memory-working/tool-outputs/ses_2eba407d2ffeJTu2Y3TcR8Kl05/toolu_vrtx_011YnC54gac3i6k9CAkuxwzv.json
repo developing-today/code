@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_011YnC54gac3i6k9CAkuxwzv",
+  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
+  "tool": "bash",
+  "fullOutput": "justfile\nNo justfile\nCargo.toml\nclippy.toml\nrust-toolchain.toml\n",
+  "timestamp": 1774164253805
+}
