@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01DaD5mZGSYAcZQc2WoeNbjR",
+  "sessionID": "ses_2e6fcf769ffeI2E42XNTicMaTi",
+  "tool": "glob",
+  "fullOutput": "/home/user/code/flake.lock\n/home/user/code/pkgs/id/flake.nix\n/home/user/code/flake.nix\n/home/user/code/pkgs/id/flake.lock\n/home/user/code/pkgs/roc/platforms/rust-basic-cli-template/flake.nix\n/home/user/code/pkgs/roc/platforms/rust-basic-cli/flake.nix\n/home/user/code/pkgs/roc/platforms/rust-minimal-cli/flake.nix\n/home/user/code/pkgs/roc/platforms/rust-minimal-cli/flake.lock\n/home/user/code/pkgs/roc/platforms/rust-basic-cli/flake.lock\n/home/user/code/pkgs/roc/platforms/rust-basic-cli-template/flake.lock\n/home/user/code/pkgs/map/flake.todo.nix\n/home/user/code/pkgs/launcher/flake.todo.nix\n/home/user/code/pkgs/graph/flake.todo.nix\n/home/user/code/pkgs/import/flake.todo.nix\n/home/user/code/pkgs/map/flake.lock\n/home/user/code/pkgs/launcher/flake.lock\n/home/user/code/pkgs/import/flake.lock\n/home/user/code/pkgs/graph/flake.lock",
+  "timestamp": 1774241126630
+}

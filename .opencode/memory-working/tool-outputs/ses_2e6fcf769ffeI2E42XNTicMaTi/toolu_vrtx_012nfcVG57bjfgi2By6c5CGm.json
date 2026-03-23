@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_012nfcVG57bjfgi2By6c5CGm",
+  "sessionID": "ses_2e6fcf769ffeI2E42XNTicMaTi",
+  "tool": "read",
+  "fullOutput": "<path>/home/user/code/nixos/nixpkgs/default.nix</path>\n<type>file</type>\n<content>1: { inputs, system, ... }:\n2: {\n3:   nixpkgs.pkgs = import inputs.nixpkgs {\n4:     inherit system;\n5:     config = {\n6:       allowBroken = true;\n7:       allowUnfree = true;\n8:       allowUnfreePredicate = _: true;\n9:       permittedInsecurePackages = [\n10:         \"olm-3.2.16\"\n11:         \"electron\"\n12:         \"qtwebkit-5.212.0-alpha4\"\n13:       ];\n14:     };\n15:     overlays = [\n16:       inputs.self.vimOverlay.${system}\n17:       inputs.yazi.overlays.default\n18:       # inputs.waybar.overlays.default # ?? !! style.css\n19:       # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })\n20:     ];\n21:   };\n22: }\n\n(End of file - total 22 lines)\n</content>",
+  "timestamp": 1774241145828
+}

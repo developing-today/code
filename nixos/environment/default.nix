@@ -499,6 +499,7 @@ in
       #beekeeper-studio # electron 31 eol
       cypress # Functional testing framework using headless chrome
       chromedriver
+      playwright-driver
       direnv
       rofi
       rofi-calc
