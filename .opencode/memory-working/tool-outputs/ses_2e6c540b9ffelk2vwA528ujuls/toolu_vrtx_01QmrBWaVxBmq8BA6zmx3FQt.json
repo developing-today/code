@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01QmrBWaVxBmq8BA6zmx3FQt",
+  "sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
+  "tool": "bash",
+  "fullOutput": "{\n  \"$schema\": \"https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json\"\n}\n",
+  "timestamp": 1774244802277
+}

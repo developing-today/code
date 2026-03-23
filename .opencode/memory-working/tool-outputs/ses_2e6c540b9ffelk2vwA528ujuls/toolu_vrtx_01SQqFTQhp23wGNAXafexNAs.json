@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01SQqFTQhp23wGNAXafexNAs",
+  "sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
+  "tool": "bash",
+  "fullOutput": "{\n  \"_id\": \"chrome-devtools-mcp@0.20.3\",\n  \"_rev\": \"48-8faf5daecb2a951b96a2ed4330b914fa\",\n  \"name\": \"chrome-devtools-mcp\",\n  \"dist-tags\": {\n    \"latest\": \"0.20.3\"\n  },\n  \"versions\": [\n    \"0.0.1\",\n    \"0.0.2\",\n    \"0.1.0\",\n    \"0.2.0\",\n    \"0.2.1\",\n    \"0.2.2\",\n    \"0.2.3\",\n    \"0.2.4\",\n    \"0.2.5\",\n    \"0.2.6\",\n    \"0.2.7\",\n    \"0.3.0\",\n    \"0.4.0\",\n    \"0.5.0\",\n    \"0.5.1\",\n    \"0.6.0\",\n    \"0.6.1\",\n    \"0.7.0\",\n    \"0.7.1\",\n    \"0.8.0\",\n    \"0.8.1\",\n    \"0.9.0\",\n",
+  "timestamp": 1774244791559
+}
