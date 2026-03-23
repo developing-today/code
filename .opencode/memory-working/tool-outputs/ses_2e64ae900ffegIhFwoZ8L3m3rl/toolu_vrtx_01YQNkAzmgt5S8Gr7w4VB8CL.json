@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01YQNkAzmgt5S8Gr7w4VB8CL",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "look_at",
+  "fullOutput": "## flake.nix\n**Size**: 18KB | **Lines**: 405\n\n## File Preview (405 lines)\n\n### First 10 lines:\nrec {\n  outputs =\n    inputs: # flake-parts.lib.mkFlake\n    let\n      lib = import ./lib inputs;\n    in\n    lib.merge [\n      rec {\n        inherit lib nixConfig description;\n        hosts = import ./nixos/hosts inputs; # inputs.host?\n\n### Last 5 lines:\n\n#TODO:\n# make optional https://git.clan.lol/clan/clan-core/src/branch/main/flake.nix#L115\n# make private/local https://git.clan.lol/clan/clan-core/src/branch/main/flake.nix#L53\n\n\n---\n*Use Read tool with line offset/limit for specific sections*",
+  "timestamp": 1774252865879
+}

@@ -32,7 +32,10 @@ pkgs.mkShell {
     pkgs.glib
   ];
   shellHook = ''
-    # Add any shell initialization commands here, for instance:
+    # Re-source Home Manager session vars so sessionPath entries survive devshell PATH reset
+    unset __HM_SESS_VARS_SOURCED
+    . "$HOME/.profile"
+
     echo "Welcome to the development shell!"
   '';
 }

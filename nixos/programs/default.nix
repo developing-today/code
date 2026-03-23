@@ -1,5 +1,7 @@
 {
   programs = {
+    # Run dynamically linked binaries from non-nix package managers (bun, npm, etc.)
+    nix-ld.enable = true;
     # bash.enable = true;
     fish.enable = true;
     zsh.enable = true;

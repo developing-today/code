@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_019WXe9Bxn2MEGjPieC66Ejo",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "read",
+  "fullOutput": "<path>/home/user/code/nixos/programs/default.nix</path>\n<type>file</type>\n<content>1: {\n2:   programs = {\n3:     # bash.enable = true;\n4:     fish.enable = true;\n5:     zsh.enable = true;\n6:     git = {\n7:       enable = true;\n8:       config = {\n9:         safe.directory = [ \"*\" ];\n10:       };\n11:     };\n12:     partition-manager.enable = true;\n13:     steam = {\n14:       enable = true;\n15:       remotePlay.openFirewall = true; # Open ports in the firewall for Steam Remote Play\n16:       dedicatedServer.openFirewall = true; # Open ports in the firewall for Source Dedicated Server\n17:     };\n18:     kdeconnect = {\n19:       enable = true;\n20:     };\n21:   };\n22: }\n\n(End of file - total 22 lines)\n</content>",
+  "timestamp": 1774253230066
+}

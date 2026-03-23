@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01UgYxjDN8CWxjgbJoggTehc",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "bash",
+  "fullOutput": "# include .profile if it exists\n[[ -f ~/.profile ]] && . ~/.profile\n\n# include .bashrc if it exists\n[[ -f ~/.bashrc ]] && . ~/.bashrc\n",
+  "timestamp": 1774252827608
+}

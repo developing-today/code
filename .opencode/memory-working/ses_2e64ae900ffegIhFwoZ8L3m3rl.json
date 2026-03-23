@@ -1,0 +1,71 @@
+{
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "slots": {
+    "error": [
+      {
+        "id": "wm_1774252826034_vm62zl1",
+        "type": "error",
+        "content": "  PS1=\"$(/nix/store/1jkhybg3wvp9k3n1db24k4if5si0zy4z-powerline-go-1.25/bin/powerline-go -error $old_exit_status -shell bash",
+        "source": "tool:bash",
+        "timestamp": 1774252826034,
+        "relevanceScore": 0,
+        "mentions": 1
+      },
+      {
+        "id": "wm_1774253187489_ai4a03v",
+        "type": "error",
+        "content": "\tconsole.error('[btca] This CLI requires Bun. Install it: https://bun.sh');",
+        "source": "tool:bash",
+        "timestamp": 1774253187489,
+        "relevanceScore": 0,
+        "mentions": 1
+      },
+      {
+        "id": "wm_1774253187489_2ic8m8l",
+        "type": "error",
+        "content": "\tconsole.error('       Then run: bun install -g btca');",
+        "source": "tool:bash",
+        "timestamp": 1774253187489,
+        "relevanceScore": 0,
+        "mentions": 1
+      }
+    ],
+    "decision": [],
+    "todo": [],
+    "dependency": []
+  },
+  "pool": [
+    {
+      "id": "wm_1774252874596_ilm10k7",
+      "type": "file-path",
+      "content": "pkgs.py",
+      "source": "tool:read",
+      "timestamp": 1774252874595,
+      "relevanceScore": 1.6475,
+      "mentions": 1,
+      "lastEventCounter": 4
+    },
+    {
+      "id": "wm_1774252874597_z38wrib",
+      "type": "file-path",
+      "content": "python312Packages.py",
+      "source": "tool:read",
+      "timestamp": 1774252874595,
+      "relevanceScore": 1.35,
+      "mentions": 1,
+      "lastEventCounter": 4
+    },
+    {
+      "id": "wm_1774252874598_j9z8j4v",
+      "type": "file-path",
+      "content": "pkgs.go",
+      "source": "tool:read",
+      "timestamp": 1774252874595,
+      "relevanceScore": 1,
+      "mentions": 1,
+      "lastEventCounter": 4
+    }
+  ],
+  "eventCounter": 6,
+  "updatedAt": "2026-03-23T08:06:27.489Z"
+}
