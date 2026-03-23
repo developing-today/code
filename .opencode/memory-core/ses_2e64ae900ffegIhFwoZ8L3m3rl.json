@@ -1,0 +1,21 @@
+{
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "blocks": {
+    "goal": {
+      "value": "",
+      "charLimit": 1000,
+      "lastModified": "2026-03-23T09:04:20.754Z"
+    },
+    "progress": {
+      "value": "✅ All nix-common.nix shellHook work complete in both flakes\n✅ Uses NIX_PROFILES to split devshell/system, .profile for HM vars\n✅ __DEVSHELL_HM_PATH_DONE guard prevents duplication from multiple use flake\n✅ Graceful fallback for non-NixOS/non-HM\n✅ nix-ld enabled\n✅ Both flakes evaluate\n\nKnown limitation: /run/wrappers/bin and direct nix store paths from system env (rbenv, hyprland-qtutils, nodejs etc.) can't be identified as \"system\" by NIX_PROFILES check — they end up in devshell bucket. Harmless but means HM paths appear after them rather than immediately after devshell packages.",
+      "charLimit": 2000,
+      "lastModified": "2026-03-23T09:33:35.249Z"
+    },
+    "context": {
+      "value": "Key files being edited:\n- /home/user/code/nix-common.nix — root shared nix config (DONE)\n- /home/user/code/shell.nix — imports nix-common.nix (DONE)\n- /home/user/code/lib/default.nix — flake devShells use nix-common.nix + clan-cli (DONE)\n- /home/user/code/src/id/nix-common.nix — NEEDS same shellHook update\n- /home/user/code/nixos/programs/default.nix — nix-ld enabled (DONE)\n\nPattern: Both flakes follow src/id pattern: nix-common.nix shared core, shell.nix + flake.nix import it.\nPATH order: devshell → HM → system (uses NIX_PROFILES to split devshell from system)",
+      "charLimit": 1500,
+      "lastModified": "2026-03-23T09:04:28.111Z"
+    }
+  },
+  "updatedAt": "2026-03-23T09:33:35.249Z"
+}

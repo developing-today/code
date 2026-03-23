@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_011BymJa9X99xS82QoRLjubU",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "   Compiling nix v0.29.0\n   Compiling redb v2.6.3\n   Compiling actor-helper v0.2.0\n   Compiling reflink-copy v0.1.28\n   Compiling hyper-util v0.1.18\n   Compiling fd-lock v4.0.4\n   Compiling iroh-tickets v0.3.0\n   Compiling nested_enum_utils v0.2.3\n   Compiling home v0.5.12\n   Compiling unicode-width v0.2.2\n   Compiling tempfile v3.23.0\n   Compiling clap v4.5.60\n   Compiling rustyline v15.0.0\n   Compiling hyper-rustls v0.27.7\n   Compiling igd-next v0.16.2\n   Compiling reqwest v0.12.24\n   Compiling hickory-resolver v0.25.2\n   Compiling irpc v0.12.0\n   Compiling portmapper v0.12.0\n   Compiling portmapper v0.13.0\n   Compiling pkarr v5.0.0\n   Compiling iroh-relay v0.95.1\n   Compiling iroh v0.95.1\n   Compiling iroh v0.96.0\n   Compiling iroh-blobs v0.98.0\n   Compiling iroh-gossip v0.96.0\n   Compiling iroh-gossip v0.95.0\n   Compiling distributed-topic-tracker v0.2.5 (https://github.com/rustonbsd/distributed-topic-tracker#c9bb5e67)\n   Compiling id v0.1.0 (/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 18s\n",
-  "timestamp": 1774164169598
-}

@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01XmciqhWfsy7RkXHyahfsLr",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "bun install v1.3.10 (30e609e0)\n[0.47ms] migrated lockfile from package-lock.json\nSaved lockfile\n\n+ prettier-plugin-toml@2.0.1\n\n4 packages installed [1273.00ms]\nerror: Script not found \"build\"\n",
-  "timestamp": 1774164359429
-}

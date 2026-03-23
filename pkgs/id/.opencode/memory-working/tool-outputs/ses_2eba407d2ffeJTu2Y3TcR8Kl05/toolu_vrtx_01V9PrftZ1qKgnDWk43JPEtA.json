@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01V9PrftZ1qKgnDWk43JPEtA",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "   3: cli_integration::serve_tests::test_serve_parallel_isolation_b\n             at ./tests/cli_integration.rs:1242:9\n   4: cli_integration::serve_tests::test_serve_parallel_isolation_b::{{closure}}\n             at ./tests/cli_integration.rs:1234:41\n   5: core::ops::function::FnOnce::call_once\n             at /rustc/29483883eed69d5fb4db01964cdf2af4d86e9cb2/library/core/src/ops/function.rs:250:5\n   6: core::ops::function::FnOnce::call_once\n             at /rustc/29483883eed69d5fb4db01964cdf2af4d86e9cb2/library/core/src/ops/function.rs:250:5\nnote: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.\n\n\nfailures:\n    serve_tests::test_serve_parallel_isolation_b\n    serve_tests::test_serve_web_multiple_random_ports\n    serve_tests::test_serve_web_random_port\n\ntest result: FAILED. 51 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.98s\n\nerror: test failed, to rerun pass `--test cli_integration`\nerror: Recipe `test` failed on line 54 with exit code 101\n",
-  "timestamp": 1774164704302
-}

@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_0166gMgX9yJNRxwtBfQsBbtn",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "    type: \"tui.prompt.append\";\n    properties: {\n        text: string;\n    };\n};\nexport type EventTuiCommandExecute = {\n",
+  "timestamp": 1774260769001
+}

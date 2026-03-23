@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_017F9qNTejGdzdp4FyxbdwSq",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "read",
-  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/main.ts</path>\n<type>file</type>\n<content>330:       \n331:       if (this.collab) {\n332:         // Disconnect first (closes WebSocket, removes event listeners)\n333:         // This must happen before destroying the view to avoid dispatch errors\n334:         this.collab.disconnect();\n335:         // Then destroy the editor view\n336:         if (this.collab.editor) {\n337:           this.collab.editor.view.destroy();\n338:         }\n339:         this.collab = null;\n340:       }\n341:       updateStatus('disconnected');\n342:     },\n343:   };\n344:   \n\n(Showing lines 330-344 of 445. Use offset=345 to continue.)\n</content>",
-  "timestamp": 1774163986291
-}

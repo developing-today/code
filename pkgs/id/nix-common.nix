@@ -95,15 +95,41 @@
 
     export RUST_BACKTRACE=1
 
-    # Append Home Manager session paths (devshell paths take priority, HM paths as fallback)
-    _devshell_path="$PATH"
-    unset __HM_SESS_VARS_SOURCED
-    . "$HOME/.profile" 2>/dev/null || true
-    # .profile prepends HM sessionPath entries to PATH — move devshell paths back to front
-    _hm_prefix="''${PATH%:$_devshell_path}"
-    if [ "$_hm_prefix" != "$PATH" ]; then
-      export PATH="$_devshell_path:$_hm_prefix"
+    # nix develop reconstructs PATH, losing HM session paths.
+    # Restore them: devshell → HM → system
+    # Guard: only do PATH reordering once (multiple use flake in .envrc)
+    if [ -z "$__DEVSHELL_HM_PATH_DONE" ]; then
+      export __DEVSHELL_HM_PATH_DONE=1
+
+      # Source HM session vars and extract any PATH additions
+      _pre_profile_path="$PATH"
+      unset __HM_SESS_VARS_SOURCED
+      . "$HOME/.profile" 2>/dev/null || true
+      _hm_paths="''${PATH%:$_pre_profile_path}"
+      [ "$_hm_paths" = "$PATH" ] && _hm_paths=""
+
+      # Separate devshell from system using NIX_PROFILES (NixOS env var)
+      # Non-NixOS: NIX_PROFILES is unset, everything stays in devshell, PATH unchanged
+      _devshell_only=""
+      _system_only=""
+      _remaining="$_pre_profile_path"
+      while [ -n "$_remaining" ]; do
+        _e="''${_remaining%%:*}"
+        [ "$_e" = "$_remaining" ] && _remaining="" || _remaining="''${_remaining#*:}"
+        _is_sys=0
+        for _p in $NIX_PROFILES; do
+          case "$_e" in "$_p"/*) _is_sys=1; break ;; esac
+        done
+        if [ "$_is_sys" = 1 ]; then
+          _system_only="$_system_only''${_system_only:+:}$_e"
+        else
+          _devshell_only="$_devshell_only''${_devshell_only:+:}$_e"
+        fi
+      done
+
+      # Reconstruct: devshell → HM → system
+      export PATH="$_devshell_only''${_hm_paths:+:$_hm_paths}''${_system_only:+:$_system_only}"
+      unset _pre_profile_path _hm_paths _devshell_only _system_only _remaining _e _is_sys _p
     fi
-    unset _devshell_path _hm_prefix
   '';
 }

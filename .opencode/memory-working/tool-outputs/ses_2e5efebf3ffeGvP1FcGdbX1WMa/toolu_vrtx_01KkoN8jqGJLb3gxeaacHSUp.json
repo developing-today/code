@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01KkoN8jqGJLb3gxeaacHSUp",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "opencode debug\n\ndebugging and troubleshooting tools\n\nCommands:\n  opencode debug config        show resolved configuration\n  opencode debug lsp           LSP debugging utilities\n  opencode debug rg            ripgrep debugging utilities\n  opencode debug file          file system debugging utilities\n  opencode debug scrap         list all known projects\n  opencode debug skill         list all available skills\n  opencode debug snapshot      snapshot debugging utilities\n  opencode debug agent <name>  show agent configuration details\n  opencode debug paths         show global paths (data, config, cache, state)\n  opencode debug wait          wait indefinitely (for debugging)\n\nOptions:\n  -h, --help        show help                                                              [boolean]\n  -v, --version     show version number                                                    [boolean]\n      --print-logs  print logs to stderr                                                   [boolean]\n      --log-level   log level                   [string] [choices: \"DEBUG\", \"INFO\", \"WARN\", \"ERROR\"]\n",
+  "timestamp": 1774258804458
+}

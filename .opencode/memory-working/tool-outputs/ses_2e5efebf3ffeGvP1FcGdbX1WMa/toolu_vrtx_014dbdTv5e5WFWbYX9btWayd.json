@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_014dbdTv5e5WFWbYX9btWayd",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "fd898e4 docs: update README hook name to experimental.chat.system.transform\nb61dbdd fix(plugin): use experimental.chat.system.transform hook\n088c98f fix(plugin): use correct Plugin API export format\n",
+  "timestamp": 1774260855617
+}

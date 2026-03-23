@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01SdX3Dq7xNhbH97V1Y8iHvX",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "-rwxr-xr-x 1 user users  218 Mar 22 02:05 Cargo.toml\n-rw-r--r-- 1 user users 5443 Mar 22 02:05 pkgs/id/Cargo.toml\n[package]\nname = \"code\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n",
-  "timestamp": 1774164058626
-}

@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01EK6i1mcSfDrHzawuEAY3S1",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "error: Failed to read justfile at `/home/user/.local/share/opencode/worktree/code/new-file-and-save/justfile`: No such file or directory (os error 2)\n",
-  "timestamp": 1774164284972
-}

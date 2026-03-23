@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01Ffsfr2RdTXZeB3wm3kJNMg",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/.opencode-wrapped: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /nix/store/l0l2ll1lmylczj1ihqn351af2kyp5x19-glibc-2.42-51/lib/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, BuildID[sha1]=a477da0b9818f428c590c3428a7431d282bfcab9, not stripped\n",
+  "timestamp": 1774258834565
+}

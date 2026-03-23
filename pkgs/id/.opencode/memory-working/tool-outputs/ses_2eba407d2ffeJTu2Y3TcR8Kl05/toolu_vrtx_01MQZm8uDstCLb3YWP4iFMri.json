@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01MQZm8uDstCLb3YWP4iFMri",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "read",
-  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web</path>\n<type>directory</type>\n<entries>\nbun.lock\npackage.json\nREADME.md\nscripts/\nsrc/\nstyles/\ntsconfig.json\nvitest.config.ts\n\n(8 entries)\n</entries>",
-  "timestamp": 1774164365578
-}

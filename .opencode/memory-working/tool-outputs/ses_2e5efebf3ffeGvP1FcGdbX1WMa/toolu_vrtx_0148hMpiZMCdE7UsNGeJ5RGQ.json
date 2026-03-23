@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_0148hMpiZMCdE7UsNGeJ5RGQ",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "/home/user/.config/opencode/node_modules/@opencode-ai/sdk/dist/client.d.ts\n/home/user/.config/opencode/node_modules/@opencode-ai/sdk/dist/v2/client.d.ts\n/home/user/.config/opencode/node_modules/@opencode-ai/sdk/dist/v2/gen/client.gen.d.ts\n/home/user/.config/opencode/node_modules/@opencode-ai/sdk/dist/v2/gen/client/client.gen.d.ts\n/home/user/.config/opencode/node_modules/@opencode-ai/sdk/dist/v2/gen/client/utils.gen.d.ts\n",
+  "timestamp": 1774260753802
+}

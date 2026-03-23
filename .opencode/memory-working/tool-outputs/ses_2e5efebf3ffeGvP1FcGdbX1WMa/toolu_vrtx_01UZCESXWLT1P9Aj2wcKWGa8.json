@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01UZCESXWLT1P9Aj2wcKWGa8",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "=== Project .opencode ===\ntotal 28\ndrwxr-xr-x 2 user users  4096 Mar 22 01:08 .\ndrwxr-xr-x 3 user users  4096 Mar 22 01:08 ..\n-rw-r--r-- 1 user users 16928 Mar 22 01:08 SKILL.md\n-rw-r--r-- 1 user users 2928 Mar 22 01:08 /home/user/code/.opencode/commands/autoresearch.md\n\n=== Global ~/.config/opencode ===\ntotal 28\ndrwxr-xr-x 2 user users  4096 Mar 22 00:45 .\ndrwxr-xr-x 3 user users  4096 Mar 22 00:45 ..\n-rw-r--r-- 1 user users 16928 Mar 22 00:45 SKILL.md\n-rw-r--r-- 1 user users 2928 Mar 22 00:45 /home/user/.config/opencode/commands/autoresearch.md\n",
+  "timestamp": 1774259765989
+}

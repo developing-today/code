@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01G7bAzZDgcaW6VCiEXKoBk7",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "    type: \"local\",\n    command: [\"npx\", \"-y\", \"firecrawl-mcp\"],\n  };\n}\n\nconst OpenCodeConfigPlugin: Plugin = async (ctx) => {\n  // Validate external tool dependencies at startup\n  const astGrepStatus = await checkAstGrepAvailable();\n  if (!astGrepStatus.available) {\n    console.warn(`[micode] ${astGrepStatus.message}`);\n  }\n\n  const btcaStatus = await checkBtcaAvailable();\n  if (!btcaStatus.available) {\n    console.warn(`[micode] ${btcaStatus.message}`);\n  }\n--\n      await fetchTrackerHook.event({ event });\n    },\n  };\n};\n\nexport default OpenCodeConfigPlugin;\n",
+  "timestamp": 1774259152375
+}

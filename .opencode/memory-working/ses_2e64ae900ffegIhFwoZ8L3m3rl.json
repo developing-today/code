@@ -1,121 +1,12 @@
 {
   "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
   "slots": {
-    "error": [
-      {
-        "id": "wm_1774254691877_624ypw6",
-        "type": "error",
-        "content": "    raise JSONDecodeError(\"Expecting value\", s, err.value) from None",
-        "source": "tool:bash",
-        "timestamp": 1774254691877,
-        "relevanceScore": 0,
-        "mentions": 1
-      },
-      {
-        "id": "wm_1774254691878_w31e0nj",
-        "type": "error",
-        "content": "json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)",
-        "source": "tool:bash",
-        "timestamp": 1774254691877,
-        "relevanceScore": 0,
-        "mentions": 1
-      },
-      {
-        "id": "wm_1774254691878_y9utng1",
-        "type": "error",
-        "content": "EVAL FAILED",
-        "source": "tool:bash",
-        "timestamp": 1774254691877,
-        "relevanceScore": 0,
-        "mentions": 1
-      }
-    ],
+    "error": [],
     "decision": [],
     "todo": [],
     "dependency": []
   },
-  "pool": [
-    {
-      "id": "wm_1774252874596_ilm10k7",
-      "type": "file-path",
-      "content": "pkgs.py",
-      "source": "tool:read",
-      "timestamp": 1774255073131,
-      "relevanceScore": 8.228298526940812,
-      "mentions": 4,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774252874597_z38wrib",
-      "type": "file-path",
-      "content": "python312Packages.py",
-      "source": "tool:read",
-      "timestamp": 1774255073131,
-      "relevanceScore": 7.755904401160326,
-      "mentions": 4,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774252874598_j9z8j4v",
-      "type": "file-path",
-      "content": "pkgs.go",
-      "source": "tool:read",
-      "timestamp": 1774255073131,
-      "relevanceScore": 7.200146606124461,
-      "mentions": 4,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774254677925_4xifzxy",
-      "type": "file-path",
-      "content": "/home/user/code/src/id/AGENTS.md",
-      "source": "tool:read",
-      "timestamp": 1774254677922,
-      "relevanceScore": 2.08404144195498,
-      "mentions": 1,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774254677926_4f9zkjd",
-      "type": "file-path",
-      "content": "src/cli.rs",
-      "source": "tool:read",
-      "timestamp": 1774254677922,
-      "relevanceScore": 2.002975510755859,
-      "mentions": 1,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774254677926_3ur85b6",
-      "type": "file-path",
-      "content": "main.rs",
-      "source": "tool:read",
-      "timestamp": 1774254677922,
-      "relevanceScore": 1.9076038269921873,
-      "mentions": 1,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774254677926_8kruaz6",
-      "type": "file-path",
-      "content": "lib.rs",
-      "source": "tool:read",
-      "timestamp": 1774254677922,
-      "relevanceScore": 1.7954018460937498,
-      "mentions": 1,
-      "lastEventCounter": 23
-    },
-    {
-      "id": "wm_1774254677926_qeeikcs",
-      "type": "file-path",
-      "content": "cli.rs",
-      "source": "tool:read",
-      "timestamp": 1774254677922,
-      "relevanceScore": 1.6633995156249999,
-      "mentions": 1,
-      "lastEventCounter": 23
-    }
-  ],
-  "eventCounter": 23,
-  "updatedAt": "2026-03-23T08:37:53.132Z"
+  "pool": [],
+  "eventCounter": 0,
+  "updatedAt": "2026-03-23T09:34:01.842Z"
 }

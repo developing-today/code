@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_017wTbAqYodXWQTyqdpgyPdd",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "read",
-  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/main.ts</path>\n<type>file</type>\n<content>306:           docId,\n307:           filename,\n308:           updateStatus,\n309:           (editor: EditorInstance) => {\n310:             console.log('[id] Editor initialized with server version, mode:', editor.mode);\n311:             // Initialize scroll-show header after editor is ready\n312:             scrollCleanup = initScrollShowHeader();\n313:             // Update back link based on navigation history\n314:             updateBackLink(this.navHistory, this.currentPath);\n315:           }\n316:         );\n317:         console.log('[id] Collab connection initiated');\n318:       } catch (err) {\n319:         console.error('[id] Error initializing editor:', err);\n320:         updateStatus('error');\n\n(Showing lines 306-320 of 643. Use offset=321 to continue.)\n</content>",
-  "timestamp": 1774164035595
-}

@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01M8Sx9U6HmaQFUpbrQHuHM8",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "Performing one time database migration, may take a few minutes...\nsqlite-migration:0\nsqlite-migration:17\nsqlite-migration:22\nsqlite-migration:39\nsqlite-migration:56\nsqlite-migration:73\nsqlite-migration:90\nsqlite-migration:99\nsqlite-migration:100\nsqlite-migration:100\nsqlite-migration:done\nDatabase migration complete.\nhome       /home/user\ndata       /home/user/.local/share/opencode\nbin        /home/user/.cache/opencode/bin\nlog        /home/user/.local/share/opencode/log\ncache      /home/user/.cache/opencode\nconfig     /home/user/.config/opencode\nstate      /home/user/.local/state/opencode\n\nreal\t0m1.021s\nuser\t0m1.182s\nsys\t0m0.387s\n",
+  "timestamp": 1774258857276
+}

@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_019SeZGTYUbBHHraGxUjtnP4",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "          constraintReviewerHook.cleanupSession(sessionId);\n          fetchTrackerHook.cleanupSession(sessionId);\n\n          // Cleanup octto sessions\n          const octtoSessions = octtoSessionsMap.get(sessionId);\n          if (octtoSessions) {\n            for (const octtoSessionId of octtoSessions) {\n              await octtoSessionStore.endSession(octtoSessionId).catch(() => {});\n            }\n            octtoSessionsMap.delete(sessionId);\n          }\n        }\n      }\n\n      // Run all event hooks\n      await autoCompactHook.event({ event });\n      await sessionRecoveryHook.event({ event });\n      await tokenAwareTruncationHook.event({ event });\n      await contextWindowMonitorHook.event({ event });\n\n      // File ops tracker cleanup\n      await fileOpsTrackerHook.event({ event });\n\n      // Fetch tracker cleanup\n      await fetchTrackerHook.event({ event });\n    },\n  };\n};\n\nexport default OpenCodeConfigPlugin;\n",
+  "timestamp": 1774259149178
+}

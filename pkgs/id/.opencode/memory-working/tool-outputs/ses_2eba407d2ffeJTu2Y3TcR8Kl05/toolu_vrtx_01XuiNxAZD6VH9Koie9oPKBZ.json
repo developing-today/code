@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01XuiNxAZD6VH9Koie9oPKBZ",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "worktree",
-  "fullOutput": "Created worktree for code/new-file-and-save\nWorkspace: /home/user/.local/share/opencode/worktree/code/new-file-and-save\n\nAll bash commands will run in this worktree directory.\nGitignored files (secrets, .env) have been copied from main repo.\nUse `/worktree off` to disable.",
-  "timestamp": 1774163148962
-}

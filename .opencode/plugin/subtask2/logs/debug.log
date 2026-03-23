@@ -1,0 +1,10 @@
+[2026-03-23T11:01:00.077Z] Plugin initialized: 6 commands [
+  "worktree",
+  "plannotator-last",
+  "devcontainer",
+  "workspaces",
+  "plannotator-annotate",
+  "plannotator-review"
+]
+[2026-03-23T11:04:56.866Z] tool.before: callID=toolu_vrtx_013JqhRujfUTNbJqFujk9MPa, cmd=undefined, desc="Find NixOS/HM config structure", mainCmd=undefined
+[2026-03-23T11:07:07.947Z] tool.after: callID=toolu_vrtx_013JqhRujfUTNbJqFujk9MPa, cmd=undefined, wasTracked=false

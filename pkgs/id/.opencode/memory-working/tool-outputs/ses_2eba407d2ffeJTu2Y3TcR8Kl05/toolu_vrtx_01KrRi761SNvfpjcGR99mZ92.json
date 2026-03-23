@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01KrRi761SNvfpjcGR99mZ92",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "bun install v1.3.10 (30e609e0)\n\nChecked 4 installs across 5 packages (no changes) [2.00ms]\nerror: Script not found \"build\"\n",
-  "timestamp": 1774164429513
-}

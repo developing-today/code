@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01HjGDaWNYjJj8D1sGxg3iVg",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "grep",
-  "fullOutput": "Found 1 matches\n/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web/src/editor.ts:\n  Line 298: export function getEditorState(view: EditorView): {",
-  "timestamp": 1774163816369
-}

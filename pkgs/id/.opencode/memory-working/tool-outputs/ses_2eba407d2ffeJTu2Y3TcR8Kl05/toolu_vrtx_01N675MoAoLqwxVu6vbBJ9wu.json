@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01N675MoAoLqwxVu6vbBJ9wu",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web\nbun install v1.3.10 (30e609e0)\n\n+ @types/node@20.19.37\n+ happy-dom@17.6.3\n+ typescript@5.9.3\n+ vitest@3.2.4\n+ htmx.org@1.9.12\n+ msgpackr@1.11.9\n+ prosemirror-collab@1.3.1\n+ prosemirror-commands@1.7.1\n+ prosemirror-example-setup@1.2.3\n+ prosemirror-history@1.5.0\n+ prosemirror-keymap@1.2.3\n+ prosemirror-model@1.25.4\n+ prosemirror-schema-basic@1.2.4\n+ prosemirror-schema-list@1.5.1\n+ prosemirror-state@1.4.4\n+ prosemirror-view@1.41.6\n\n82 packages installed [146.00ms]\n",
-  "timestamp": 1774164485165
-}

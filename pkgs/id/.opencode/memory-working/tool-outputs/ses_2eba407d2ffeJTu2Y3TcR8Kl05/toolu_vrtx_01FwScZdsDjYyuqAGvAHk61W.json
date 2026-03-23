@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01FwScZdsDjYyuqAGvAHk61W",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "ls: cannot access 'node_modules': No such file or directory\nno node_modules dir\n",
-  "timestamp": 1774164452490
-}

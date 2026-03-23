@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01LCUJmuoGgVPw6dNya7ga8R",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "/home/user/.local/share/opencode/worktree/code/new-file-and-save/pkgs/id/web\n$ bun run build:js && bun run build:css && bun run build:manifest\n$ bun build src/main.ts --outdir=dist --minify --sourcemap=external --entry-naming=[name].[hash].js\nBundled 30 modules in 32ms\n\n  main.qta5pwtr.js      0.39 MB  (entry point)\n  main.qta5pwtr.js.map  1.36 MB  (source map)\n\n$ bun run scripts/build-css.ts\n  styles.2f9e5463.css  40.7 KB\n$ bun run scripts/build-manifest.ts\n  manifest.json: {\n  \"main.js\": \"main.qta5pwtr.js\",\n  \"styles.css\": \"styles.2f9e5463.css\",\n}\n",
-  "timestamp": 1774164508003
-}

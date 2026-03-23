@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01XqDPzwJ3iyGD4HLLY9GXRU",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "btca_ask",
+  "fullOutput": "Error: ERROR\n  Unrecognized flag: -t in command btca ask\n\n  Did you mean this?\n    -q\n    -r",
+  "timestamp": 1774259122354
+}

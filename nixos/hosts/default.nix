@@ -13,6 +13,7 @@ in
     users = [
       "user"
       "backup"
+      "root"
     ];
     wireless = "us-wi-1";
   };
@@ -34,6 +35,7 @@ in
     users = [
       "user"
       "backup"
+      "root"
     ];
     wireless = [
       "us-wi-1"

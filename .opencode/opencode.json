@@ -14,7 +14,10 @@
     "opencode-pty@latest",
     "opencode-devcontainers@latest",
     "opencode-pilot@latest",
-    "@franlol/opencode-md-table-formatter@latest"
+    "@franlol/opencode-md-table-formatter@latest",
+    "true-mem@latest",
+    "@knikolov/opencode-plugin-simple-memory@latest",
+    "opencode-mem@latest"
   ],
   "enabled_providers": ["github-copilot"],
   "default_agent": "commander",

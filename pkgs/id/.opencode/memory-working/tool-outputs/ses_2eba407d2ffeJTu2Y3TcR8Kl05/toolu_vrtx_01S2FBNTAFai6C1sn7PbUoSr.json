@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01S2FBNTAFai6C1sn7PbUoSr",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "bash",
-  "fullOutput": "cli.rs\ncommands\nhelpers.rs\nlib.rs\nmain.rs\nprotocol.rs\nrepl\nstore.rs\nweb\n",
-  "timestamp": 1774163645687
-}

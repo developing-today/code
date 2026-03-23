@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01GZmof9gMW8oTnJWhyz8E7j",
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "tool": "bash",
+  "fullOutput": "/home/user/.cache/opencode/node_modules/micode/dist/index.js\n/home/user/.cache/opencode/node_modules/micode/src/config-loader.test.ts\n/home/user/.cache/opencode/node_modules/micode/src/index.ts\n/home/user/.cache/opencode/node_modules/micode/src/config-loader.ts\n",
+  "timestamp": 1774259131808
+}

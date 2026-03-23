@@ -1,0 +1,21 @@
+{
+  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+  "blocks": {
+    "goal": {
+      "value": "Fix autoresearch-opencode plugin: update to correct opencode Plugin API, deploy to both ~/.config/opencode/plugins/ and ~/code/.opencode/plugins/, commit+push on fork branch fix/plugin-export-format",
+      "charLimit": 1000,
+      "lastModified": "2026-03-23T10:03:31.233Z"
+    },
+    "progress": {
+      "value": "✅ COMPLETED: autoresearch-opencode plugin fix\n- Fixed plugin API: named export + experimental.chat.system.transform hook\n- Deployed to ~/code/.opencode/plugins/, ~/.config/opencode/plugins/, fork repo\n- 3 commits on fix/plugin-export-format: 088c98f (initial fix), b61dbdd (hook upgrade), fd898e4 (README)\n- PR: https://github.com/dezren39/autoresearch-opencode/compare/fix/plugin-export-format\n- Plugin verified loading cleanly, no errors",
+      "charLimit": 2000,
+      "lastModified": "2026-03-23T10:05:34.879Z"
+    },
+    "context": {
+      "value": "",
+      "charLimit": 1500,
+      "lastModified": "2026-03-23T10:03:31.233Z"
+    }
+  },
+  "updatedAt": "2026-03-23T10:05:34.879Z"
+}

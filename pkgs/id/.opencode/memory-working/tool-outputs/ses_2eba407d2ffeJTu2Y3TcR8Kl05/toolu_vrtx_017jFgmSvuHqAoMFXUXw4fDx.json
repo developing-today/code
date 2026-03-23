@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_017jFgmSvuHqAoMFXUXw4fDx",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "start_session",
-  "fullOutput": "## Session Started\n\n| Field | Value |\n|-------|-------|\n| Session ID | ses_u29w0kx3 |\n| URL | http://127.0.0.1:43337 |\n| Questions | 5 loaded |\n\n**Question IDs:** q_3rpoi47s, q_glbmg1il, q_eb4fk26r, q_u68e0r6y, q_6kusmmwq\n\nBrowser opened with 5 questions ready.\nUse get_next_answer(session_id, block=true) to get answers as user responds.",
-  "timestamp": 1774163264647
-}

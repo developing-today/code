@@ -1,0 +1,7 @@
+{
+  "callID": "toolu_vrtx_01YX12fWqD65GiiCaPTV2UdG",
+  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+  "tool": "bash",
+  "fullOutput": "## On-Call\n\nFind below the list of permissions for the on-call assets:\n\nName\n\nDescription\n\nDefault Role\n\nOn-Call Read  \n(`on_call_read`)\n\nView On-Call teams, schedules, escalation policies and overrides.\n\nDatadog Read Only Role\n\nOn-Call Write  \n(`on_call_write`)\n\nCreate, update, and delete On-Call teams, schedules and escalation policies.\n",
+  "timestamp": 1774257395322
+}

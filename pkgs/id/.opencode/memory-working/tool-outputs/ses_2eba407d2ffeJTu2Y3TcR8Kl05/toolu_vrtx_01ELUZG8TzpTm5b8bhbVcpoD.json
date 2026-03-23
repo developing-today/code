@@ -1,7 +1,0 @@
-{
-  "callID": "toolu_vrtx_01ELUZG8TzpTm5b8bhbVcpoD",
-  "sessionID": "ses_2eba407d2ffeJTu2Y3TcR8Kl05",
-  "tool": "read",
-  "fullOutput": "<path>/home/user/.local/share/opencode/worktree/code/new-file-and-save/Cargo.toml</path>\n<type>file</type>\n<content>1: [package]\n2: name = \"code\"\n3: version = \"0.1.0\"\n4: edition = \"2021\"\n5: \n6: [[bin]]\n7: name = \"code\"\n8: path = \".src/main.rs\"\n9: \n10: # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html\n11: \n12: [dependencies]\n\n(End of file - total 12 lines)\n</content>",
-  "timestamp": 1774164061960
-}
