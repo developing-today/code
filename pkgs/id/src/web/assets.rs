@@ -8,7 +8,7 @@
 
 use axum::{
     body::Body,
-    http::{header, HeaderValue, Response, StatusCode},
+    http::{HeaderValue, Response, StatusCode, header},
 };
 use rust_embed::Embed;
 

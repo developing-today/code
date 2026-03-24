@@ -10,6 +10,7 @@
 use std::fmt::Write;
 
 use super::content_mode::MediaType;
+use super::routes::{FileInfo, FileKind};
 
 /// Asset URLs for templates.
 ///
@@ -131,44 +132,92 @@ pub fn render_main_page_wrapper(content: &str) -> String {
 /// # Returns
 ///
 /// HTML fragment for the file list.
-pub fn render_file_list(files: &[(String, String, u64)]) -> String {
-    let mut html = String::from("<div class=\"card\"><div class=\"card-header\">Files</div>");
+pub fn render_file_list(files: &[FileInfo]) -> String {
+    let mut html = String::with_capacity(4096);
+
+    // New file form — above the file list, styled like the filter bar
+    html.push_str("<div class=\"card\">");
+    html.push_str("<div class=\"card-header\">New File</div>");
+    html.push_str("<div class=\"file-filter\">");
+    html.push_str("<form id=\"new-file-form\" onsubmit=\"window.idApp?.createFile?.(event); return false;\" style=\"display: contents;\">");
+    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" placeholder=\"filename.md\" required class=\"file-search\" />");
+    html.push_str("<button type=\"submit\" class=\"header-btn\">create</button>");
+    html.push_str("</form>");
+    html.push_str("</div>");
+    html.push_str("</div>");
+
+    // File list card
+    html.push_str("<div class=\"card mt-md\"><div class=\"card-header\">Files</div>");
+
+    // Search/filter bar
+    html.push_str("<div class=\"file-filter\" id=\"file-filter\">");
+    html.push_str("<input type=\"text\" id=\"file-search\" class=\"file-search\" placeholder=\"search files...\" autocomplete=\"off\" />");
+    html.push_str("<label class=\"file-toggle\"><input type=\"checkbox\" id=\"show-auto\" /> show auto/archive</label>");
+    html.push_str("</div>");
 
     if files.is_empty() {
         html.push_str("<p class=\"text-muted\" style=\"padding: 1rem;\">No files stored yet.</p>");
     } else {
         html.push_str("<ul class=\"file-list\">");
-        for (name, hash, size) in files {
-            let name_escaped = html_escape(name);
-            let hash_escaped = html_escape(hash);
-            let size_formatted = format_size(*size);
-            let short_hash = &hash[..12.min(hash.len())];
+        for file in files {
+            let name_escaped = html_escape(&file.name);
+            let hash_escaped = html_escape(&file.hash);
+            let short_hash = &file.hash[..12.min(file.hash.len())];
+
+            let kind_attr = match file.kind {
+                FileKind::Primary => "primary",
+                FileKind::Auto => "auto",
+                FileKind::Archive => "archive",
+            };
+
+            // Badge text
+            let badge = match &file.kind {
+                FileKind::Auto => {
+                    let parent = file.parent_name.as_deref().unwrap_or("?");
+                    format!(
+                        "<span class=\"file-badge auto\">auto: {}</span>",
+                        html_escape(parent)
+                    )
+                }
+                FileKind::Archive => {
+                    let parent = file.parent_name.as_deref().unwrap_or("?");
+                    format!(
+                        "<span class=\"file-badge archive\">archive: {}</span>",
+                        html_escape(parent)
+                    )
+                }
+                FileKind::Primary => String::new(),
+            };
+
+            // Timestamp display — prefer modified_at (from MetaDoc), fall back to tag-parsed timestamp
+            let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
+            let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
+            let date_html = if date_str.is_empty() {
+                String::new()
+            } else {
+                format!("<span class=\"file-date\">{}</span>", date_str)
+            };
+
+            // Use /file/{name} link for primary files, /edit/{hash} for others
+            let href = match file.kind {
+                FileKind::Primary => format!("/file/{}", urlencoding::encode(&file.name)),
+                _ => format!("/edit/{}", hash_escaped),
+            };
 
             let _ = write!(
                 html,
-                "<li class=\"file-item\">\
+                "<li class=\"file-item\" data-kind=\"{}\" data-name=\"{}\">\
                     <span class=\"file-icon\">[F]</span>\
-                    <a class=\"file-name\" href=\"/edit/{}\" hx-get=\"/edit/{}\" hx-target=\"#main\" hx-push-url=\"true\">{}</a>\
-                    <span class=\"file-size\">{}</span>\
+                    <a class=\"file-name\" href=\"{}\" hx-get=\"{}\" hx-target=\"#main\" hx-push-url=\"true\">{}</a>\
+                    {}{}\
                     <code class=\"file-hash\">{}</code>\
                 </li>",
-                hash_escaped, hash_escaped, name_escaped, size_formatted, short_hash,
+                kind_attr, name_escaped, href, href, name_escaped, badge, date_html, short_hash,
             );
         }
         html.push_str("</ul>");
     }
 
-    html.push_str("</div>");
-
-    // New file form
-    html.push_str("<div class=\"card mt-md\">");
-    html.push_str("<div class=\"card-header\">New File</div>");
-    html.push_str("<div class=\"new-file-form\" style=\"padding: 0.75rem;\">");
-    html.push_str("<form id=\"new-file-form\" onsubmit=\"window.idApp?.createFile?.(event); return false;\" style=\"display: flex; gap: 0.5rem; align-items: center;\">");
-    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" placeholder=\"filename.md\" required style=\"flex: 1; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 0.25rem 0.5rem; font-family: inherit; font-size: inherit;\" />");
-    html.push_str("<button type=\"submit\" class=\"header-btn\">create</button>");
-    html.push_str("</form>");
-    html.push_str("</div>");
     html.push_str("</div>");
 
     html
@@ -223,6 +272,8 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     );
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
+    // Rename button
+    html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
     html.push_str("            <a href=\"/peers\" hx-get=\"/peers\" hx-target=\"#main\" hx-push-url=\"true\">peers</a>\n");
     html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
@@ -527,7 +578,67 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Format a unix timestamp as a short date string (YYYY-MM-DD HH:MM).
+#[allow(clippy::cast_possible_truncation)]
+fn format_unix_timestamp(ts: u64) -> String {
+    // Simple UTC conversion without pulling in chrono
+    let secs = ts;
+    let mins = secs / 60;
+    let hours = mins / 60;
+    let days_total = hours / 24;
+
+    let hour = hours % 24;
+    let minute = mins % 60;
+
+    // Calculate year/month/day from days since epoch
+    let mut y: i64 = 1970;
+    #[allow(clippy::cast_possible_wrap)] // days since 1970 won't exceed i64::MAX
+    let mut remaining = days_total as i64;
+
+    loop {
+        let days_in_year: i64 = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md {
+            m = i;
+            break;
+        }
+        remaining -= md;
+    }
+    let day = remaining + 1;
+    let month = m + 1;
+
+    format!("{y:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
 /// Format a file size in human-readable form.
+#[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -598,11 +709,19 @@ mod tests {
 
     #[test]
     fn test_render_file_list_with_files() {
-        let files = vec![("test.txt".to_owned(), "abc123def456".to_owned(), 1024)];
+        let files = vec![FileInfo {
+            name: "test.txt".to_owned(),
+            hash: "abc123def456".to_owned(),
+            size: 1024,
+            kind: FileKind::Primary,
+            parent_name: None,
+            timestamp: None,
+            created_at: None,
+            modified_at: None,
+        }];
         let html = render_file_list(&files);
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
-        assert!(html.contains("1.0 KB"));
     }
 
     #[test]

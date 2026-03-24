@@ -538,6 +538,139 @@ button.primary:hover {
   font-family: var(--font-mono);
 }
 
+.file-date {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-left: var(--space-sm);
+  white-space: nowrap;
+}
+
+.file-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: var(--border-radius);
+  margin-left: var(--space-xs);
+}
+
+.file-badge.auto {
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.file-badge.archive {
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  opacity: 0.7;
+}
+
+/* ============================================================================
+   File Filter / Search Bar
+   ============================================================================ */
+
+.file-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+
+.file-filter input[type="text"] {
+  flex: 1;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.file-filter input[type="text"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--glow-color);
+}
+
+.file-filter label {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.file-filter input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+/* ============================================================================
+   Header Buttons (compact variant for editor/inline headers)
+   ============================================================================ */
+
+.header-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+  border: 1px solid var(--accent);
+  background-color: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.header-btn:hover {
+  background-color: var(--accent);
+  color: var(--bg-primary);
+}
+
+.header-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================================================
+   Dropdown Menus (download dropdown in editor)
+   ============================================================================ */
+
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 1100;
+  min-width: 80px;
+  padding: 2px 0;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.dropdown-menu.show {
+  display: block;
+}
+
+.dropdown-menu button {
+  display: block;
+  width: 100%;
+  padding: 2px 8px;
+  font-size: 10px;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.dropdown-menu button:hover {
+  background-color: var(--accent-dim);
+  color: var(--accent);
+}
+
 /* ============================================================================
    Loading States
    ============================================================================ */

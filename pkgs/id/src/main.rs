@@ -58,7 +58,7 @@ fn get_log_level(cli: &Cli) -> String {
 /// Per-module overrides to suppress noisy third-party modules.
 /// These are appended to whatever base level is active, unless the user
 /// explicitly sets a level for that module in `RUST_LOG`
-/// (e.g. `RUST_LOG=debug,mainline::rpc=trace` keeps mainline::rpc at trace).
+/// (e.g. `RUST_LOG=debug,mainline::rpc=trace` keeps `mainline::rpc` at trace).
 const NOISY_MODULE_FILTERS: &[&str] = &[
     "mainline::rpc=info",
     "distributed_topic_tracker::crypto::record=info",
@@ -68,7 +68,7 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
     "swarm_discovery::receiver=info",
     "acto::tokio=info",
     "swarm_discovery::sender=info",
-    "swarm_discovery::socket=info"
+    "swarm_discovery::socket=info",
 ];
 
 #[tokio::main]

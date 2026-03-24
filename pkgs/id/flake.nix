@@ -125,7 +125,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "distributed-topic-tracker-0.2.5" = "sha256-9wMDB1PGHuzxWiZeRQpGs1m9mTTcjbB7y3kSJomNjeY=";
+                "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
               };
             };
 
@@ -168,7 +168,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "distributed-topic-tracker-0.2.5" = "sha256-9wMDB1PGHuzxWiZeRQpGs1m9mTTcjbB7y3kSJomNjeY=";
+                "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
               };
             };
 

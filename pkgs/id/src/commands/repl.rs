@@ -690,7 +690,35 @@ impl ReplContext {
                 .get(from)
                 .await?
                 .ok_or_else(|| anyhow!("not found: {from}"))?;
-            store_handle.tags().set(to, tag.hash).await?;
+            let hash = tag.hash;
+
+            // Archive replaced file if target already exists
+            if let Ok(Some(existing)) = store_handle.tags().get(to).await {
+                let ts = crate::tags::now_unix();
+                let archive_name = format!("{to}.archive.{ts}");
+                let _ = store_handle.tags().set(&archive_name, existing.hash).await;
+            }
+
+            store_handle.tags().set(to, hash).await?;
+
+            // Archive original
+            {
+                let ts = crate::tags::now_unix();
+                let archive_name = format!("{from}.archive.{ts}");
+                let _ = store_handle.tags().set(&archive_name, hash).await;
+            }
+
+            // Update metadata tags
+            {
+                if let Ok(mut meta) = crate::tags::load_meta(&store_handle).await {
+                    crate::tags::transfer_tags(&mut meta, from, to);
+                    let hash_str = hash.to_string();
+                    let archive_name = format!("{from}.archive.{}", crate::tags::now_unix());
+                    crate::tags::add_archive_tag(&mut meta, from, &archive_name, &hash_str, "rename");
+                    let _ = crate::tags::save_meta(&store_handle, &meta).await;
+                }
+            }
+
             store_handle.tags().delete(from).await?;
             println!("renamed: {from} -> {to}");
         }

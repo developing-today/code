@@ -25,6 +25,7 @@ interface IdApp {
   saveFile: () => Promise<void>;
   createFile: (event: Event) => Promise<void>;
   downloadFile: (format: string) => Promise<void>;
+  renameFile: () => Promise<void>;
   navHistory: string[];
   currentPath: string;
   lastFilename: string | null;
@@ -233,6 +234,53 @@ function updateBackLink(navHistory: string[], currentPath: string): void {
     backLink.removeAttribute('hx-push-url');
     backLink.setAttribute('onclick', 'history.back(); return false;');
   }
+}
+
+/**
+ * Initialize file filter: search input and show-auto checkbox.
+ * Filters .file-item elements based on data-name and data-kind attributes.
+ */
+function initFileFilter(): void {
+  const searchInput = document.getElementById('file-search') as HTMLInputElement | null;
+  const showAutoCheckbox = document.getElementById('show-auto') as HTMLInputElement | null;
+  
+  if (!searchInput && !showAutoCheckbox) return;
+  
+  const applyFilter = (): void => {
+    const query = (searchInput?.value || '').toLowerCase();
+    const showAuto = showAutoCheckbox?.checked || false;
+    const items = document.querySelectorAll('.file-item[data-kind]');
+    
+    items.forEach((el) => {
+      const item = el as HTMLElement;
+      const kind = item.getAttribute('data-kind') || '';
+      const name = (item.getAttribute('data-name') || '').toLowerCase();
+      
+      // Hide auto/archive unless checkbox is checked
+      if ((kind === 'auto' || kind === 'archive') && !showAuto) {
+        item.style.display = 'none';
+        return;
+      }
+      
+      // Filter by search query
+      if (query && !name.includes(query)) {
+        item.style.display = 'none';
+        return;
+      }
+      
+      item.style.display = '';
+    });
+  };
+  
+  if (searchInput) {
+    searchInput.addEventListener('input', applyFilter);
+  }
+  if (showAutoCheckbox) {
+    showAutoCheckbox.addEventListener('change', applyFilter);
+  }
+  
+  // Apply filter immediately (auto files hidden by default)
+  applyFilter();
 }
 
 // Track cleanup function for scroll handler
@@ -506,6 +554,78 @@ function init(): void {
         console.error('[id] Download error:', err);
       }
     },
+
+    async renameFile(): Promise<void> {
+      const editorContainer = document.getElementById('editor-container');
+      if (!editorContainer) return;
+
+      const filenameEncoded = editorContainer.dataset.filename;
+      const currentName = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+      if (!currentName) {
+        console.error('[id] No filename for rename');
+        return;
+      }
+
+      const newName = prompt(`Rename "${currentName}" to:`, currentName);
+      if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+
+      const trimmedName = newName.trim();
+      const archive = confirm('Archive the original name as a backup?');
+
+      const renameBtn = document.getElementById('rename-btn') as HTMLButtonElement | null;
+
+      try {
+        if (renameBtn) {
+          renameBtn.disabled = true;
+          renameBtn.textContent = 'renaming...';
+        }
+
+        const response = await fetch('/api/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: currentName,
+            new_name: trimmedName,
+            archive,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[id] Rename failed:', errorText);
+          if (renameBtn) renameBtn.textContent = 'error!';
+          setTimeout(() => { if (renameBtn) renameBtn.textContent = 'rename'; }, 2000);
+          return;
+        }
+
+        const result = await response.json() as {
+          name: string;
+          hash: string;
+          archived_original: string | null;
+          archived_replaced: string | null;
+        };
+        console.log('[id] File renamed:', result);
+
+        if (renameBtn) {
+          renameBtn.textContent = 'renamed!';
+        }
+
+        // Navigate to the new file name
+        const fileUrl = `/file/${encodeURIComponent(result.name)}`;
+        if (window.htmx) {
+          window.htmx.ajax('GET', fileUrl, { target: '#main', swap: 'innerHTML' });
+          window.history.pushState(null, '', fileUrl);
+        } else {
+          window.location.href = fileUrl;
+        }
+      } catch (err) {
+        console.error('[id] Rename error:', err);
+        if (renameBtn) {
+          renameBtn.textContent = 'error!';
+          setTimeout(() => { if (renameBtn) renameBtn.textContent = 'rename'; }, 2000);
+        }
+      }
+    },
   };
   
   window.idApp = app;
@@ -599,6 +719,8 @@ function init(): void {
         updateBackLink(app.navHistory, app.currentPath);
         // Update header subtitle (show last filename if we have history)
         updateHeaderSubtitle(app.lastFilename, app.lastFilePath, app.navHistory.length > 0);
+        // Re-initialize file filter after swap to file list
+        initFileFilter();
       }
     }
   });
@@ -626,6 +748,9 @@ function init(): void {
   if (mainHeader) {
     scrollCleanup = initScrollShowHeader('.inline-header', '.inline-footer');
   }
+  
+  // Initialize file filter on main page (if file list is present)
+  initFileFilter();
   
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById('editor-container');

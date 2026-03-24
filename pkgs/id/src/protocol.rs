@@ -524,7 +524,33 @@ impl ProtocolHandler for MetaProtocol {
                 MetaRequest::Rename { from, to } => {
                     let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
                         let hash = tag.hash;
+                        // Archive replaced file if target already exists
+                        if let Ok(Some(existing)) = self.store.tags().get(&to).await {
+                            let ts = crate::tags::now_unix();
+                            let archive_name = format!("{to}.archive.{ts}");
+                            let _ = self.store.tags().set(&archive_name, existing.hash).await;
+                        }
                         if self.store.tags().set(&to, hash).await.is_ok() {
+                            // Archive original
+                            {
+                                let ts = crate::tags::now_unix();
+                                let archive_name = format!("{from}.archive.{ts}");
+                                let _ = self.store.tags().set(&archive_name, hash).await;
+                            }
+                            // Update metadata tags
+                            {
+                                if let Ok(mut meta) = crate::tags::load_meta(&self.store).await
+                                {
+                                    crate::tags::transfer_tags(&mut meta, &from, &to);
+                                    let hash_str = hash.to_string();
+                                    let ts = crate::tags::now_unix();
+                                    let archive_name = format!("{from}.archive.{ts}");
+                                    crate::tags::add_archive_tag(
+                                        &mut meta, &from, &archive_name, &hash_str, "rename",
+                                    );
+                                    let _ = crate::tags::save_meta(&self.store, &meta).await;
+                                }
+                            }
                             self.store.tags().delete(&from).await.is_ok()
                         } else {
                             false

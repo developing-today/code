@@ -23,6 +23,75 @@
   "default_agent": "commander",
   "model": "github-copilot/claude-opus-4.6",
   "small_model": "github-copilot/claude-sonnet-4.6",
+  "provider": {
+    "github-copilot": {
+      "models": {
+        "claude-haiku-4.5": {
+          "limit": { "context": 200000, "output": 64000 }, // 0.33x
+        },
+        "claude-opus-4.5": {
+          "limit": { "context": 200000, "output": 32000 }, // 3x
+        },
+        "claude-opus-4.6": {
+          "limit": { "context": 200000, "output": 32000 }, // 3x
+        },
+        "claude-sonnet-4": {
+          "limit": { "context": 216000, "output": 16000 }, // 1x
+        },
+        "claude-sonnet-4.5": {
+          "limit": { "context": 200000, "output": 32000 }, // 1x
+        },
+        "claude-sonnet-4.6": {
+          "limit": { "context": 200000, "output": 32000 }, // 1x
+        },
+        "gemini-2.5-pro": {
+          "limit": { "context": 173000, "output": 64000 }, // 1x
+        },
+        "gemini-3-flash-preview": {
+          "limit": { "context": 173000, "output": 64000 }, // 0.33x
+        },
+        "gemini-3-pro-preview": {
+          "limit": { "context": 200000, "output": 64000 }, // 1x
+        },
+        "gemini-3.1-pro-preview": {
+          "limit": { "context": 200000, "output": 64000 }, // 1x
+        },
+        "gpt-4.1": {
+          "limit": { "context": 128000, "output": 16384 }, // 0x
+        },
+        "gpt-4o": {
+          "limit": { "context": 128000, "output": 4096 }, // 0x
+        },
+        "gpt-5-mini": {
+          "limit": { "context": 264000, "output": 64000 }, // 0x
+        },
+        "gpt-5.1": {
+          "limit": { "context": 264000, "output": 64000 }, // 1x
+        },
+        "gpt-5.1-codex": {
+          "limit": { "context": 400000, "output": 128000 }, // 1x
+        },
+        "gpt-5.1-codex-max": {
+          "limit": { "context": 400000, "output": 128000 }, // 1x
+        },
+        "gpt-5.2": {
+          "limit": { "context": 400000, "output": 128000 }, // 1x
+        },
+        "gpt-5.2-codex": {
+          "limit": { "context": 400000, "output": 128000 }, // 1x
+        },
+        "gpt-5.3-codex": {
+          "limit": { "context": 400000, "output": 128000 }, // 1x
+        },
+        "gpt-5.4": {
+          "limit": { "context": 400000, "output": 128000 }, // 1x
+        },
+        "grok-code-fast-1": {
+          "limit": { "context": 256000, "output": 64000 }, // 0.25x
+        },
+      },
+    },
+  },
   "agent": {
     "commander": {
       "variant": "thinking",

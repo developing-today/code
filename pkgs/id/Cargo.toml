@@ -21,7 +21,6 @@ web = [
     "dep:tower-http",
     "dep:rust-embed",
     "dep:mime_guess",
-    "dep:serde_json",
     "dep:futures",
     "dep:rmp-serde",
     "dep:comrak",
@@ -43,6 +42,7 @@ postcard = { version = "1", features = ["alloc"] }
 rand = "0.9"
 rustyline = "15"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -54,7 +54,6 @@ tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip"], optional = true }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
-serde_json = { version = "1", optional = true }
 futures = { version = "0.3.32", optional = true }
 rmp-serde = { version = "1", optional = true }
 comrak = { version = "0.51", default-features = false, optional = true }
