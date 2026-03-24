@@ -156,6 +156,7 @@ pub mod protocol;
 pub mod repl;
 pub mod store;
 pub mod tags;
+pub mod tuple;
 
 #[cfg(feature = "web")]
 pub mod web;
