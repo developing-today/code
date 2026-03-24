@@ -61,22 +61,20 @@ Replace the current single-blob `MetaDoc` system (`src/tags.rs`) with an **iroh-
 ### Type tags and sort order
 
 ```
-0x00  Null / terminator
-0x01  Bytes    → raw bytes, 0x00 escaped as 0x00 0xFF, terminated by 0x00
-0x02  String   → same as bytes but typed as UTF-8
-0x05  Nested tuple/array start → elements inside, 0x00 = end
-0x0C  Negative int, 8 bytes (ones-complement big-endian)
-0x0D  Negative int, 7 bytes
-...
-0x13  Negative int, 1 byte
-0x14  Integer zero
-0x15  Positive int, 1 byte (big-endian)
-0x16  Positive int, 2 bytes
-...
-0x1C  Positive int, 8 bytes
+Tag(s)      Type         Payload
+0x00        Null         none (escaped to 0x00 0xFF inside nested tuples)
+0x01        Bytes        raw + escape(0x00→0x00 0xFF) + 0x00 terminator
+0x02        String       same as bytes, typed as UTF-8
+0x05        Tuple/Array  recursive elements + 0x00 end
+0x06        False        none
+0x07        True         none
+0x0C–0x13   Neg int      8–1 bytes ones-complement big-endian
+0x14        Zero         none
+0x15–0x1C   Pos int      1–8 bytes big-endian
+0x21        Float64      8 bytes sort-adjusted IEEE 754
 ```
 
-Types sort in byte order: `null < bytes < string < negative ints (large→small) < zero < positive ints (small→large) < nested tuple`.
+Sort order: `null < bytes < string < tuple < false < true < -big…-small < 0 < small…big < float`
 
 ### Encoding examples
 
@@ -84,7 +82,14 @@ Types sort in byte order: `null < bytes < string < negative ints (large→small)
 ```
 "readme"   → [02, r, e, a, d, m, e, 00]
 "read"     → [02, r, e, a, d, 00]
-"re\0ad"   → [02, r, e, 00, FF, a, d, 00]    // \0 escaped
+"re\0ad"   → [02, r, e, 00, FF, a, d, 00]    // \0 escaped as 0x00 0xFF
+""         → [02, 00]                          // just type tag + terminator
+```
+
+**Booleans** — zero-byte payload:
+```
+false      → [06]
+true       → [07]
 ```
 
 **Integers** — big-endian, byte count in type tag:
@@ -93,88 +98,126 @@ Types sort in byte order: `null < bytes < string < negative ints (large→small)
 1          → [15, 01]
 255        → [15, FF]
 256        → [16, 01, 00]
--1         → [13, FE]                         // ones-complement
--256       → [12, FE, FF]
+-1         → [13, FE]                         // ones-complement of 0x01
+-256       → [12, FE, FF]                     // ones-complement of [0x01, 0x00]
+-1000      → [12, FC, 17]                     // ones-complement of [0x03, 0xE8]
+i64::MIN   → [0C, 7F, FF, FF, FF, FF, FF, FF, FF]
+i64::MAX   → [1C, 7F, FF, FF, FF, FF, FF, FF, FF]
+```
+
+**Float64** — sort-adjusted IEEE 754:
+```
+Positive: flip sign bit only    → 0.0 < 1.0 < inf ✓
+Negative: flip ALL bits         → -inf < -1.0 < -0.0 ✓
+-0.0 canonicalized to +0.0
+NaN rejected (encode returns error)
 ```
 
 **Nested tuples/arrays:**
 ```
-("a", [1, 2]) → [02, a, 00,  05, 15, 01, 15, 02, 00]
-                  ^^^^^^^^    ^^  ^^^^^^  ^^^^^^  ^^
-                  "a"         [   1       2       ]
+("a", [1, 2]) → [02, 61, 00,  05, 15, 01, 15, 02, 00]
+                  ^^^^^^^^     ^^  ^^^^^^  ^^^^^^  ^^
+                  "a"          [   1       2       ]
+
+[null, 1]     → [05, 00, FF, 15, 01, 00]
+                  ^^  ^^^^^  ^^^^^^  ^^
+                  [   null   1       ]
+                  (null escaped as 0x00 0xFF inside nested tuple)
+```
+
+**Structs** — positional encoding (field names from schema, not encoded):
+```
+{a: 1, b: [0,1,2,3], c: null} →
+  [15, 01,  05, 14, 15, 01, 15, 02, 15, 03, 00,  00]
+   ^^^^^^   ^^  ^^  ^^^^^^  ^^^^^^  ^^^^^^  ^^   ^^
+   a=1      [   0   1       2       3       ]    null
 ```
 
 ### Prefix query patterns
 
 ```
-// Field-boundary prefix (exact field match, then match any suffix):
+// Field-boundary prefix (exact field match, then any suffix):
 all tags for "README.md":
   prefix = [02, R,E,A,D,M,E,.,m,d, 00]      // complete string + terminator
 
 // Mid-field prefix (partial string match):
 all files starting with "READ":
-  prefix = [02, R,E,A,D]                      // string tag + partial bytes, NO terminator
+  prefix = [02, R,E,A,D]                      // string tag + partial, NO terminator
 
 // Multi-field prefix:
 all "label" tags for "README.md":
   prefix = [02, R,E,A,D,M,E,.,m,d, 00,  02, l,a,b,e,l, 00]
 
-// Partial second field:
-all tags starting with "cat" for "README.md":
-  prefix = [02, R,E,A,D,M,E,.,m,d, 00,  02, c,a,t]
+// Mid-array prefix (inside nested array, before end marker):
+a=1, b starts with [0, 1]:
+  prefix = [15, 01,  05, 14, 15, 01]         // int(1) + array_start + int(0) + int(1)
+  matches {a:1, b:[0,1,2,3]} and {a:1, b:[0,1,5]}
 ```
+
+### Null disambiguation inside nested tuples
+
+Inside a nested tuple, `0x00` is ambiguous (null element vs end-of-tuple):
+- `0x00 0xFF` = null element (escaped)
+- bare `0x00` = end of nested tuple
+
+This uses the same escape mechanism as strings/bytes. The decoder tracks nesting depth.
 
 ### Rust API
 
 ```rust
-/// Values that can be encoded into tuple keys.
-pub enum TupleValue<'a> {
+/// A decoded tuple element (owned).
+pub enum TupleValue {
     Null,
-    Bytes(&'a [u8]),
-    String(&'a str),
+    Bytes(Vec<u8>),
+    String(String),
+    Tuple(Vec<TupleValue>),
+    Bool(bool),
     Int(i64),
-    Tuple(Vec<TupleValue<'a>>),
+    Float(f64),
 }
 
 /// Builder for encoding tuple keys.
-pub struct TupleEncoder {
-    buf: Vec<u8>,
-}
+pub struct TupleEncoder { buf: Vec<u8>, nested: bool }
 
 impl TupleEncoder {
     pub fn new() -> Self;
 
-    // Complete field encoding (with type tag + terminator where applicable)
+    // Full field encoding (type tag + payload + terminator)
     pub fn null(&mut self) -> &mut Self;
-    pub fn string(&mut self, s: &str) -> &mut Self;
     pub fn bytes(&mut self, b: &[u8]) -> &mut Self;
+    pub fn string(&mut self, s: &str) -> &mut Self;
+    pub fn bool(&mut self, v: bool) -> &mut Self;
     pub fn int(&mut self, v: i64) -> &mut Self;
-    pub fn tuple(&mut self, f: impl FnOnce(&mut TupleEncoder)) -> &mut Self;
+    pub fn float(&mut self, v: f64) -> Result<&mut Self>;  // rejects NaN
+    pub fn array(&mut self, f: impl FnOnce(&mut Self)) -> &mut Self;
 
-    // Partial field encoding (NO terminator) — for "starts with" prefix queries
+    // Prefix encoding (no terminator/end marker — for "starts with" queries)
     pub fn string_prefix(&mut self, s: &str) -> &mut Self;
     pub fn bytes_prefix(&mut self, b: &[u8]) -> &mut Self;
+    pub fn array_prefix(&mut self, f: impl FnOnce(&mut Self)) -> &mut Self;
 
     pub fn build(self) -> Vec<u8>;
 }
 
-/// Decode tuple key bytes back into values.
-pub fn decode(bytes: &[u8]) -> Result<Vec<TupleValue<'_>>>;
-
-/// Decode owned values (for when lifetime management is needed).
-pub fn decode_owned(bytes: &[u8]) -> Result<Vec<OwnedTupleValue>>;
+/// Decode all elements from tuple-encoded bytes.
+pub fn decode(bytes: &[u8]) -> Result<Vec<TupleValue>>;
 ```
+
+Accessor methods on `TupleValue`: `as_str()`, `as_bytes()`, `as_int()`, `as_float()`, `as_bool()`, `as_tuple()`, `is_null()`.
 
 ### Implementation scope
 
-~250-300 lines of Rust in `src/tuple.rs`. Zero new dependencies. Needs thorough tests:
-- Encode/decode roundtrip for all types
-- Sort order verification (encoded bytes sort same as semantic values)
-- Prefix query correctness at field boundaries and mid-field
-- Edge cases: empty strings, zero, negative numbers, nested tuples, strings containing `\0`
-- Cross-type sort order verification
+~500-600 lines of Rust in `src/tuple.rs`. Zero new dependencies. Thorough tests:
+- Encode/decode roundtrip for all types (null, bytes, string, bool, int, float, tuple)
+- Integer boundaries (0, 1, -1, 255, 256, i64::MIN, i64::MAX)
+- String edge cases (empty, contains `\0`, unicode)
+- Float edge cases (+0.0, -0.0 canonical, ±inf, NaN rejected)
+- Nested tuples (empty, with nulls, deeply nested)
+- Sort order within types and across type boundaries
+- Prefix query correctness (field-boundary, mid-field, mid-array)
+- Struct encoding ({a: 1, b: [0,1,2,3], c: null})
 
-### File
+### Files
 
 | File | Change |
 |------|--------|
