@@ -63,6 +63,7 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
     "mainline::rpc=info",
     "distributed_topic_tracker::crypto::record=info",
     "rustls=info",
+    "rustyline=info",
     "hickory_proto::error=info",
     "hickory_proto::udp::udp_client_stream=info",
     "swarm_discovery::receiver=info",

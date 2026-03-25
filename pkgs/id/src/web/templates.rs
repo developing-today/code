@@ -151,6 +151,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
 
     // Search/filter bar — server-side search via HTMX
     let search_value = page.search.as_deref().map(html_escape).unwrap_or_default();
+    let show_deleted_checked = if page.show_deleted { " checked" } else { "" };
     html.push_str("<div class=\"file-filter\" id=\"file-filter\">");
     let _ = write!(
         html,
@@ -158,10 +159,17 @@ pub fn render_file_list(page: &FileListPage) -> String {
          placeholder=\"search files & tags...\" autocomplete=\"off\" \
          value=\"{}\" \
          hx-get=\"/api/files\" hx-trigger=\"keyup changed delay:300ms, search\" \
-         hx-target=\"#file-list-content\" hx-include=\"[name='search']\" />",
+         hx-target=\"#file-list-content\" hx-include=\"[name='search'],[name='show_deleted']\" />",
         search_value
     );
     html.push_str("<label class=\"file-toggle\"><input type=\"checkbox\" id=\"show-auto\" /> show auto/archive</label>");
+    let _ = write!(
+        html,
+        "<label class=\"file-toggle\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"{} \
+         hx-get=\"/api/files\" hx-trigger=\"change\" hx-target=\"#file-list-content\" \
+         hx-include=\"[name='search'],[name='show_deleted']\" /> show deleted</label>",
+        show_deleted_checked
+    );
     html.push_str("</div>");
 
     // Inner content (list + pagination) — replaceable by HTMX
@@ -193,6 +201,17 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             );
         }
     } else {
+        // Bulk action bar (hidden by default, shown when files are selected)
+        html.push_str(
+            "<div class=\"bulk-action-bar\" id=\"bulk-action-bar\" style=\"display:none;\">",
+        );
+        html.push_str("<span class=\"bulk-count\" id=\"bulk-count\">0 selected</span>");
+        html.push_str("<input type=\"text\" id=\"bulk-tag-key\" class=\"bulk-tag-input\" placeholder=\"key\" />");
+        html.push_str("<input type=\"text\" id=\"bulk-tag-value\" class=\"bulk-tag-input\" placeholder=\"value (optional)\" />");
+        html.push_str("<button class=\"header-btn\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<button class=\"header-btn\" onclick=\"window.idApp?.bulkClearSelection?.()\" style=\"border-color:var(--text-muted);color:var(--text-muted)\">clear</button>");
+        html.push_str("</div>");
+
         html.push_str("<ul class=\"file-list\">");
         for file in files {
             let name_escaped = html_escape(&file.name);
@@ -204,6 +223,9 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 FileKind::Auto => "auto",
                 FileKind::Archive => "archive",
             };
+
+            // Deleted class
+            let deleted_class = if file.is_deleted { " file-deleted" } else { "" };
 
             // Badge text
             let badge = match &file.kind {
@@ -224,6 +246,41 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 FileKind::Primary => String::new(),
             };
 
+            // Deleted badge
+            let deleted_badge = if file.is_deleted {
+                "<span class=\"file-badge deleted\">deleted</span>".to_owned()
+            } else {
+                String::new()
+            };
+
+            // Tag pills — user-visible tags
+            let mut tag_pills = String::new();
+            for (key, value) in &file.tags {
+                let key_esc = html_escape(key);
+                match value {
+                    Some(v) => {
+                        let val_esc = html_escape(v);
+                        let _ = write!(
+                            tag_pills,
+                            "<span class=\"tag-pill\" data-key=\"{}\" data-value=\"{}\">{}: {}</span>",
+                            key_esc, val_esc, key_esc, val_esc
+                        );
+                    }
+                    None => {
+                        let _ = write!(
+                            tag_pills,
+                            "<span class=\"tag-pill\" data-key=\"{}\">{}</span>",
+                            key_esc, key_esc
+                        );
+                    }
+                }
+            }
+            let tags_html = if tag_pills.is_empty() {
+                String::new()
+            } else {
+                format!("<span class=\"file-tags\">{}</span>", tag_pills)
+            };
+
             // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
             let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
             let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
@@ -241,13 +298,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
 
             let _ = write!(
                 html,
-                "<li class=\"file-item\" data-kind=\"{}\" data-name=\"{}\">\
+                "<li class=\"file-item{}\" data-kind=\"{}\" data-name=\"{}\">\
+                    <input type=\"checkbox\" class=\"file-select\" data-name=\"{}\" />\
                     <span class=\"file-icon\">[F]</span>\
                     <a class=\"file-name\" href=\"{}\" hx-get=\"{}\" hx-target=\"#main\" hx-push-url=\"true\">{}</a>\
-                    {}{}\
+                    {}{}{}{}\
                     <code class=\"file-hash\">{}</code>\
                 </li>",
-                kind_attr, name_escaped, href, href, name_escaped, badge, date_html, short_hash,
+                deleted_class,
+                kind_attr,
+                name_escaped,
+                name_escaped,
+                href,
+                href,
+                name_escaped,
+                badge,
+                deleted_badge,
+                tags_html,
+                date_html,
+                short_hash,
             );
         }
         html.push_str("</ul>");
@@ -377,6 +446,19 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
     html.push_str("            </span>\n");
     html.push_str("        </nav>\n");
+    html.push_str("    </div>\n");
+
+    // Tag panel — inline tag display and editing for this file
+    html.push_str("    <div class=\"editor-tag-panel\" id=\"editor-tag-panel\" data-filename=\"");
+    html.push_str(name_urlencoded.as_ref());
+    html.push_str("\">\n");
+    html.push_str("        <span class=\"tag-panel-label\">tags:</span>\n");
+    html.push_str("        <span class=\"tag-panel-list\" id=\"editor-tag-list\"></span>\n");
+    html.push_str("        <span class=\"tag-panel-add\" id=\"tag-add-inline\">\n");
+    html.push_str("            <input type=\"text\" id=\"tag-add-key\" class=\"tag-add-input\" placeholder=\"key\" />\n");
+    html.push_str("            <input type=\"text\" id=\"tag-add-value\" class=\"tag-add-input\" placeholder=\"value\" />\n");
+    html.push_str("            <button class=\"header-btn\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
+    html.push_str("        </span>\n");
     html.push_str("    </div>\n");
 
     let _ = write!(
@@ -805,6 +887,7 @@ mod tests {
             page: 1,
             per_page: 50,
             search: None,
+            show_deleted: false,
         };
         let html = render_file_list(&page);
         assert!(html.contains("No files stored yet"));
@@ -821,6 +904,8 @@ mod tests {
             timestamp: None,
             created_at: None,
             modified_at: None,
+            tags: vec![],
+            is_deleted: false,
         }];
         let page = FileListPage {
             total: files.len(),
@@ -828,6 +913,7 @@ mod tests {
             page: 1,
             per_page: 50,
             search: None,
+            show_deleted: false,
         };
         let html = render_file_list(&page);
         assert!(html.contains("test.txt"));

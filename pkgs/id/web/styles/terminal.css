@@ -563,6 +563,168 @@ button.primary:hover {
   opacity: 0.7;
 }
 
+.file-badge.deleted {
+  color: var(--error);
+  border: 1px solid var(--error);
+  opacity: 0.8;
+}
+
+/* Deleted file styling */
+.file-item.file-deleted .file-name {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.file-item.file-deleted .file-icon,
+.file-item.file-deleted .file-hash,
+.file-item.file-deleted .file-date {
+  opacity: 0.4;
+}
+
+/* File select checkbox (for bulk operations) */
+.file-select {
+  width: 14px;
+  height: 14px;
+  margin-right: var(--space-xs);
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Tag pills (inline next to filenames) */
+.file-tags {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.tag-pill {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background-color: var(--accent-dim, rgba(0, 170, 255, 0.1));
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  opacity: 0.7;
+  white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tag-pill:hover {
+  opacity: 1;
+}
+
+/* Tag pill with remove button (editor page) */
+.tag-pill-removable {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background-color: var(--accent-dim, rgba(0, 170, 255, 0.1));
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  opacity: 0.8;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.tag-pill-removable:hover {
+  opacity: 1;
+}
+
+.tag-remove-btn {
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 1px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.tag-remove-btn:hover {
+  opacity: 1;
+}
+
+/* Bulk action bar */
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px var(--space-md);
+  border-bottom: 1px solid var(--accent);
+  background-color: var(--accent-dim, rgba(0, 170, 255, 0.05));
+  font-size: var(--font-size-sm);
+}
+
+.bulk-count {
+  color: var(--accent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.bulk-tag-input {
+  padding: 1px 4px;
+  font-size: 10px;
+  width: 80px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.bulk-tag-input:focus {
+  border-color: var(--accent);
+}
+
+/* Editor tag panel */
+.editor-tag-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 2px var(--space-md);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  min-height: 20px;
+  flex-wrap: wrap;
+}
+
+.tag-panel-label {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tag-panel-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+}
+
+.tag-panel-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.tag-add-input {
+  padding: 1px 4px;
+  font-size: 10px;
+  width: 60px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.tag-add-input:focus {
+  border-color: var(--accent);
+}
+
 /* ============================================================================
    File Filter / Search Bar
    ============================================================================ */

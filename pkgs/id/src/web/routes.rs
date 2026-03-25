@@ -35,6 +35,8 @@ pub struct FileListQuery {
     pub per_page: Option<usize>,
     /// Search query — matches filenames and tag keys/values.
     pub search: Option<String>,
+    /// Whether to show soft-deleted files. Defaults to false.
+    pub show_deleted: Option<bool>,
 }
 
 /// Paginated file list result.
@@ -49,6 +51,8 @@ pub struct FileListPage {
     pub per_page: usize,
     /// The search query (if any).
     pub search: Option<String>,
+    /// Whether deleted files are shown.
+    pub show_deleted: bool,
 }
 
 /// Classification of a file based on its tag name pattern.
@@ -82,6 +86,10 @@ pub struct FileInfo {
     pub created_at: Option<u64>,
     /// Last modification timestamp from metadata tags (unix seconds).
     pub modified_at: Option<u64>,
+    /// User-visible tags (excludes system tags like created/modified/deleted/archive.*).
+    pub tags: Vec<(String, Option<String>)>,
+    /// Whether this file is soft-deleted.
+    pub is_deleted: bool,
 }
 
 /// Classify a tag name into a `FileKind` and extract an optional timestamp.
@@ -520,18 +528,27 @@ async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
     super::assets::static_handler(&path)
 }
 
+/// System tag keys that are excluded from user-visible tags display.
+const SYSTEM_TAG_KEYS: &[&str] = &["created", "modified", "deleted"];
+
+/// Check if a tag key is a system/internal key that shouldn't be shown in tag pills.
+fn is_system_tag_key(key: &str) -> bool {
+    SYSTEM_TAG_KEYS.contains(&key) || key.starts_with("archive.")
+}
+
 /// Get list of files from the store with classification metadata.
 ///
-/// Returns a list of `FileInfo` structs with file kind, parent name, and timestamp.
+/// Returns a list of `FileInfo` structs with file kind, parent name, timestamp, and user tags.
 /// Files are sorted: primary files first (alphabetically), then auto, then archive.
 /// Internal tags (starting with `.`) are excluded.
+/// Soft-deleted files are included but marked with `is_deleted = true`.
 async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     use futures_lite::StreamExt;
     use std::collections::HashMap;
 
     let mut files = Vec::new();
 
-    // Load all tags from the global namespace for created/modified lookups.
+    // Load all tags from the global namespace for created/modified/user-tag lookups.
     let all_meta_tags = state
         .tag_store
         .list_all(&state.tag_store.global)
@@ -540,6 +557,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     let mut created_map: HashMap<String, u64> = HashMap::new();
     let mut modified_map: HashMap<String, u64> = HashMap::new();
     let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut user_tags_map: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
     for tag in &all_meta_tags {
         if tag.key == "created" {
             if let Some(ref v) = tag.value
@@ -555,6 +573,13 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
             }
         } else if tag.key == "deleted" {
             deleted_set.insert(tag.subject.clone());
+        }
+        // Collect user-visible tags (not system tags)
+        if !is_system_tag_key(&tag.key) {
+            user_tags_map
+                .entry(tag.subject.clone())
+                .or_default()
+                .push((tag.key.clone(), tag.value.clone()));
         }
     }
 
@@ -586,11 +611,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
 
     // Second pass: build FileInfo with parent_name resolution and metadata dates
     for (name, hash, size) in raw_tags {
-        // Skip soft-deleted files
-        if deleted_set.contains(&name) {
-            continue;
-        }
-
+        let is_deleted = deleted_set.contains(&name);
         let (kind, timestamp) = classify_tag(&name);
 
         let parent_name = if kind == FileKind::Primary {
@@ -601,6 +622,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
 
         let created_at = created_map.get(&name).copied();
         let modified_at = modified_map.get(&name).copied();
+        let tags = user_tags_map.remove(&name).unwrap_or_default();
 
         files.push(FileInfo {
             name,
@@ -611,6 +633,8 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
             timestamp,
             created_at,
             modified_at,
+            tags,
+            is_deleted,
         });
     }
 
@@ -641,8 +665,17 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
 /// When `search` is provided, matches against:
 /// 1. Filename (case-insensitive substring)
 /// 2. Tag keys/values for the file in the global namespace
+///
+/// When `show_deleted` is false (default), soft-deleted files are hidden.
 async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
     let mut files = get_file_list(state).await;
+
+    let show_deleted = query.show_deleted.unwrap_or(false);
+
+    // Filter out deleted files unless show_deleted is set
+    if !show_deleted {
+        files.retain(|f| !f.is_deleted);
+    }
 
     // Apply search filter
     let search = query
@@ -696,6 +729,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         page,
         per_page,
         search,
+        show_deleted,
     }
 }
 

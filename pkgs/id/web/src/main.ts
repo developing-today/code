@@ -29,6 +29,13 @@ interface IdApp {
   renameFile: () => Promise<void>;
   connectTagsWs: () => void;
   disconnectTagsWs: () => void;
+  loadFileTags: (filename: string) => Promise<void>;
+  renderEditorTags: (tags: Array<{ key: string; value: string | null }>) => void;
+  addTagInline: () => Promise<void>;
+  removeTag: (subject: string, key: string, value: string | null) => Promise<void>;
+  bulkAddTag: () => Promise<void>;
+  bulkClearSelection: () => void;
+  initBulkSelect: () => void;
   navHistory: string[];
   currentPath: string;
   lastFilename: string | null;
@@ -244,29 +251,20 @@ function updateBackLink(navHistory: string[], currentPath: string): void {
  * Filters .file-item elements based on data-name and data-kind attributes.
  */
 function initFileFilter(): void {
-  const searchInput = document.getElementById('file-search') as HTMLInputElement | null;
   const showAutoCheckbox = document.getElementById('show-auto') as HTMLInputElement | null;
   
-  if (!searchInput && !showAutoCheckbox) return;
+  if (!showAutoCheckbox) return;
   
   const applyFilter = (): void => {
-    const query = (searchInput?.value || '').toLowerCase();
     const showAuto = showAutoCheckbox?.checked || false;
     const items = document.querySelectorAll('.file-item[data-kind]');
     
     items.forEach((el) => {
       const item = el as HTMLElement;
       const kind = item.getAttribute('data-kind') || '';
-      const name = (item.getAttribute('data-name') || '').toLowerCase();
       
       // Hide auto/archive unless checkbox is checked
       if ((kind === 'auto' || kind === 'archive') && !showAuto) {
-        item.style.display = 'none';
-        return;
-      }
-      
-      // Filter by search query
-      if (query && !name.includes(query)) {
         item.style.display = 'none';
         return;
       }
@@ -275,11 +273,10 @@ function initFileFilter(): void {
     });
   };
   
-  if (searchInput) {
-    searchInput.addEventListener('input', applyFilter);
-  }
-  if (showAutoCheckbox) {
+  // Guard against duplicate listeners (element persists across HTMX swaps)
+  if (!showAutoCheckbox.dataset.filterInit) {
     showAutoCheckbox.addEventListener('change', applyFilter);
+    showAutoCheckbox.dataset.filterInit = '1';
   }
   
   // Apply filter immediately (auto files hidden by default)
@@ -348,19 +345,26 @@ function init(): void {
             if (now - lastRefresh > 500) {
               (window as unknown as Record<string, number>).__tagRefreshTs = now;
               const searchInput = document.getElementById('file-search') as HTMLInputElement | null;
+              const showDeletedCheckbox = document.getElementById('show-deleted') as HTMLInputElement | null;
               const query = searchInput?.value || '';
-              const url = query ? `/api/files?search=${encodeURIComponent(query)}` : '/api/files';
+              const showDeleted = showDeletedCheckbox?.checked || false;
+              const params = new URLSearchParams();
+              if (query) params.set('search', query);
+              if (showDeleted) params.set('show_deleted', 'true');
+              const qs = params.toString();
+              const url = qs ? `/api/files?${qs}` : '/api/files';
               window.htmx.ajax('GET', url, { target: '#file-list-content', swap: 'innerHTML' });
             }
           }
 
-          // On editor page, show a notification for the current file's tags
+          // On editor page, refresh tags for the current file
           const editorContainer = document.getElementById('editor-container');
-          if (editorContainer && data.type === 'Set' && data.subject) {
+          if (editorContainer && data.subject) {
             const filenameEncoded = editorContainer.dataset.filename;
             const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
             if (filename && data.subject === filename) {
               console.log('[id] Tag changed for current file:', data.key, '=', data.value);
+              this.loadFileTags(filename);
             }
           }
         } catch {
@@ -386,6 +390,208 @@ function init(): void {
         this.tagsWs.close();
         this.tagsWs = null;
       }
+    },
+
+    /**
+     * Load tags for a file from the REST API and render them in the editor tag panel.
+     */
+    async loadFileTags(filename: string): Promise<void> {
+      try {
+        const response = await fetch(`/api/tags?subject=${encodeURIComponent(filename)}`);
+        if (!response.ok) return;
+        const raw = await response.json();
+        // API may return { tags: [...] } or a flat array
+        const tags: Array<{ key: string; value: string | null }> = Array.isArray(raw) ? raw : (raw.tags || []);
+        // Filter out system tags (created, modified, deleted, archive.*)
+        const userTags = tags.filter((t: { key: string }) =>
+          t.key !== 'created' && t.key !== 'modified' && t.key !== 'deleted' && !t.key.startsWith('archive.')
+        );
+        this.renderEditorTags(userTags);
+      } catch (err) {
+        console.warn('[id] Failed to load file tags:', err);
+      }
+    },
+
+    /**
+     * Render tag pills in the editor tag panel.
+     */
+    renderEditorTags(tags: Array<{ key: string; value: string | null }>): void {
+      const list = document.getElementById('editor-tag-list');
+      if (!list) return;
+
+      const panel = document.getElementById('editor-tag-panel');
+      const filename = panel?.dataset.filename ? decodeURIComponent(panel.dataset.filename) : null;
+
+      list.innerHTML = '';
+      for (const tag of tags) {
+        const pill = document.createElement('span');
+        pill.className = 'tag-pill-removable';
+        const label = tag.value ? `${tag.key}: ${tag.value}` : tag.key;
+        pill.textContent = label;
+
+        // Add remove button
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'tag-remove-btn';
+        removeBtn.textContent = '\u00d7';
+        removeBtn.title = 'Remove tag';
+        removeBtn.onclick = (e) => {
+          e.preventDefault();
+          if (filename) {
+            this.removeTag(filename, tag.key, tag.value);
+          }
+        };
+        pill.appendChild(removeBtn);
+        list.appendChild(pill);
+      }
+
+      if (tags.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'text-muted';
+        empty.textContent = 'none';
+        empty.style.fontSize = '9px';
+        list.appendChild(empty);
+      }
+    },
+
+    /**
+     * Add a tag from the inline inputs on the editor page.
+     */
+    async addTagInline(): Promise<void> {
+      const keyInput = document.getElementById('tag-add-key') as HTMLInputElement | null;
+      const valueInput = document.getElementById('tag-add-value') as HTMLInputElement | null;
+      const panel = document.getElementById('editor-tag-panel');
+      const filename = panel?.dataset.filename ? decodeURIComponent(panel.dataset.filename) : null;
+
+      if (!keyInput || !filename) return;
+      const key = keyInput.value.trim();
+      if (!key) return;
+      const value = valueInput?.value.trim() || null;
+
+      try {
+        const body: Record<string, string> = { subject: filename, key };
+        if (value) body.value = value;
+
+        const response = await fetch('/api/tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (response.ok) {
+          keyInput.value = '';
+          if (valueInput) valueInput.value = '';
+          // Tags WS will trigger a refresh, but also reload immediately
+          this.loadFileTags(filename);
+        } else {
+          console.error('[id] Failed to add tag:', await response.text());
+        }
+      } catch (err) {
+        console.error('[id] Add tag error:', err);
+      }
+    },
+
+    /**
+     * Remove a tag via the REST API.
+     */
+    async removeTag(subject: string, key: string, value: string | null): Promise<void> {
+      try {
+        const body: Record<string, string | null> = { subject, key };
+        if (value !== null) body.value = value;
+
+        const response = await fetch('/api/tags', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (response.ok) {
+          // Reload tags
+          this.loadFileTags(subject);
+        } else {
+          console.error('[id] Failed to remove tag:', await response.text());
+        }
+      } catch (err) {
+        console.error('[id] Remove tag error:', err);
+      }
+    },
+
+    /**
+     * Bulk add a tag to all selected files on the home page.
+     */
+    async bulkAddTag(): Promise<void> {
+      const keyInput = document.getElementById('bulk-tag-key') as HTMLInputElement | null;
+      const valueInput = document.getElementById('bulk-tag-value') as HTMLInputElement | null;
+      if (!keyInput) return;
+
+      const key = keyInput.value.trim();
+      if (!key) return;
+      const value = valueInput?.value.trim() || null;
+
+      const checkboxes = document.querySelectorAll('.file-select:checked') as NodeListOf<HTMLInputElement>;
+      const subjects: string[] = [];
+      checkboxes.forEach(cb => {
+        const name = cb.dataset.name;
+        if (name) subjects.push(name);
+      });
+
+      if (subjects.length === 0) return;
+
+      let successCount = 0;
+      for (const subject of subjects) {
+        try {
+          const body: Record<string, string> = { subject, key };
+          if (value) body.value = value;
+
+          const response = await fetch('/api/tags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (response.ok) successCount++;
+        } catch {
+          // continue with others
+        }
+      }
+
+      console.log(`[id] Bulk tag: added "${key}" to ${successCount}/${subjects.length} files`);
+      keyInput.value = '';
+      if (valueInput) valueInput.value = '';
+      // Tags WS will refresh the file list
+    },
+
+    /**
+     * Clear all file selection checkboxes on the home page.
+     */
+    bulkClearSelection(): void {
+      const checkboxes = document.querySelectorAll('.file-select:checked') as NodeListOf<HTMLInputElement>;
+      checkboxes.forEach(cb => { cb.checked = false; });
+      const bar = document.getElementById('bulk-action-bar');
+      if (bar) bar.style.display = 'none';
+    },
+
+    /**
+     * Initialize bulk select checkbox listeners on file list items.
+     */
+    initBulkSelect(): void {
+      // Use event delegation on the file list content
+      const container = document.getElementById('file-list-content');
+      if (!container) return;
+
+      container.addEventListener('change', (event: Event) => {
+        const target = event.target as HTMLInputElement;
+        if (!target.classList.contains('file-select')) return;
+
+        const checked = document.querySelectorAll('.file-select:checked');
+        const bar = document.getElementById('bulk-action-bar');
+        const countEl = document.getElementById('bulk-count');
+
+        if (checked.length > 0) {
+          if (bar) bar.style.display = 'flex';
+          if (countEl) countEl.textContent = `${checked.length} selected`;
+        } else {
+          if (bar) bar.style.display = 'none';
+        }
+      });
     },
     
     async openEditor(docId: string): Promise<void> {
@@ -438,6 +644,10 @@ function init(): void {
             // Enable save button
             const saveBtn = document.getElementById('save-btn') as HTMLButtonElement | null;
             if (saveBtn) saveBtn.disabled = false;
+            // Load tags for the current file
+            if (filename) {
+              this.loadFileTags(filename);
+            }
           }
         );
         console.log('[id] Collab connection initiated');
@@ -743,12 +953,25 @@ function init(): void {
     }
   });
 
-  // Ctrl+S to save
+  // Ctrl+S to save, Enter to submit tags
   document.addEventListener('keydown', (event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 's') {
       event.preventDefault();
       if (app.collab?.editor) {
         app.saveFile();
+      }
+      return;
+    }
+
+    // Enter key on tag inputs submits the tag
+    if (event.key === 'Enter') {
+      const target = event.target as HTMLElement;
+      if (target.id === 'tag-add-key' || target.id === 'tag-add-value') {
+        event.preventDefault();
+        app.addTagInline();
+      } else if (target.id === 'bulk-tag-key' || target.id === 'bulk-tag-value') {
+        event.preventDefault();
+        app.bulkAddTag();
       }
     }
   });
@@ -796,7 +1019,14 @@ function init(): void {
         updateHeaderSubtitle(app.lastFilename, app.lastFilePath, app.navHistory.length > 0);
         // Re-initialize file filter after swap to file list
         initFileFilter();
+        // Re-initialize bulk select checkboxes
+        app.initBulkSelect();
       }
+    }
+    
+    // Re-apply show-auto filter after file-list-content swaps (e.g. tag WS events, search, pagination)
+    if (target?.id === 'file-list-content') {
+      initFileFilter();
     }
   });
   
@@ -829,6 +1059,8 @@ function init(): void {
   
   // Initialize file filter on main page (if file list is present)
   initFileFilter();
+  // Initialize bulk select checkboxes on main page
+  app.initBulkSelect();
   
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById('editor-container');
