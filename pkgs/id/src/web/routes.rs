@@ -19,8 +19,37 @@ use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, ge
 use super::markdown::prosemirror_to_markdown;
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
-    render_main_page_wrapper, render_media_viewer, render_page, render_peers, render_settings,
+    render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
+    render_peers, render_settings,
 };
+
+/// Default number of files per page.
+const DEFAULT_PER_PAGE: usize = 50;
+
+/// Query parameters for the file list (pagination + search).
+#[derive(Debug, Deserialize, Default)]
+pub struct FileListQuery {
+    /// Current page (1-indexed). Defaults to 1.
+    pub page: Option<usize>,
+    /// Items per page. Defaults to [`DEFAULT_PER_PAGE`].
+    pub per_page: Option<usize>,
+    /// Search query — matches filenames and tag keys/values.
+    pub search: Option<String>,
+}
+
+/// Paginated file list result.
+pub struct FileListPage {
+    /// Files for the current page.
+    pub files: Vec<FileInfo>,
+    /// Total number of files (after filtering, before pagination).
+    pub total: usize,
+    /// Current page (1-indexed).
+    pub page: usize,
+    /// Items per page.
+    pub per_page: usize,
+    /// The search query (if any).
+    pub search: Option<String>,
+}
 
 /// Classification of a file based on its tag name pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,8 +186,20 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/new", post(new_file_handler))
         .route("/api/rename", post(rename_handler))
         .route("/api/download", post(download_handler))
+        .route("/api/delete", post(delete_handler))
+        .route("/api/restore", post(restore_handler))
+        .route("/api/hard-delete", post(hard_delete_handler))
+        // Tag REST API
+        .route(
+            "/api/tags",
+            get(super::tags_ws::get_tags_handler)
+                .post(super::tags_ws::set_tag_handler)
+                .delete(super::tags_ws::del_tag_handler),
+        )
         // WebSocket for collaboration
         .route("/ws/collab/:doc_id", get(super::collab::ws_collab_handler))
+        // WebSocket for live tag updates
+        .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
         .route("/assets/*path", get(assets_handler))
         .with_state(state)
@@ -172,9 +213,13 @@ fn is_htmx_request(headers: &HeaderMap) -> bool {
 }
 
 /// Index page handler - shows file list.
-async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let files = get_file_list(&state.store).await;
-    let content = render_file_list(&files);
+async fn index_handler(
+    State(state): State<AppState>,
+    Query(query): Query<FileListQuery>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let page = get_file_list_page(&state, &query).await;
+    let content = render_file_list(&page);
     if is_htmx_request(&headers) {
         // HTMX request - return wrapped content with header/footer
         Html(render_main_page_wrapper(&content))
@@ -461,9 +506,13 @@ async fn blob_handler(
 }
 
 /// API handler for file list (HTMX partial).
-async fn files_list_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let files = get_file_list(&state.store).await;
-    Html(render_file_list(&files))
+async fn files_list_handler(
+    State(state): State<AppState>,
+    Query(query): Query<FileListQuery>,
+) -> impl IntoResponse {
+    let page = get_file_list_page(&state, &query).await;
+    // Return just the inner content (list + pagination) for HTMX partial replacement
+    Html(render_file_list_content(&page))
 }
 
 /// Static assets handler.
@@ -476,20 +525,44 @@ async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
 /// Returns a list of `FileInfo` structs with file kind, parent name, and timestamp.
 /// Files are sorted: primary files first (alphabetically), then auto, then archive.
 /// Internal tags (starting with `.`) are excluded.
-async fn get_file_list(store: &iroh_blobs::api::Store) -> Vec<FileInfo> {
+async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     use futures_lite::StreamExt;
     use std::collections::HashMap;
 
     let mut files = Vec::new();
 
-    // Load metadata document for created/modified dates
-    let meta_doc = crate::tags::load_meta(store).await.unwrap_or_default();
+    // Load all tags from the global namespace for created/modified lookups.
+    let all_meta_tags = state
+        .tag_store
+        .list_all(&state.tag_store.global)
+        .await
+        .unwrap_or_default();
+    let mut created_map: HashMap<String, u64> = HashMap::new();
+    let mut modified_map: HashMap<String, u64> = HashMap::new();
+    let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for tag in &all_meta_tags {
+        if tag.key == "created" {
+            if let Some(ref v) = tag.value
+                && let Ok(ts) = v.parse::<u64>()
+            {
+                created_map.insert(tag.subject.clone(), ts);
+            }
+        } else if tag.key == "modified" {
+            if let Some(ref v) = tag.value
+                && let Ok(ts) = v.parse::<u64>()
+            {
+                modified_map.insert(tag.subject.clone(), ts);
+            }
+        } else if tag.key == "deleted" {
+            deleted_set.insert(tag.subject.clone());
+        }
+    }
 
     // First pass: collect all tags and build hash→primary-name map
     let mut hash_to_primary: HashMap<String, String> = HashMap::new();
     let mut raw_tags: Vec<(String, String, u64)> = Vec::new();
 
-    let Ok(mut tags) = store.tags().list().await else {
+    let Ok(mut tags) = state.store.tags().list().await else {
         return files;
     };
     while let Some(Ok(tag_info)) = tags.next().await {
@@ -513,6 +586,11 @@ async fn get_file_list(store: &iroh_blobs::api::Store) -> Vec<FileInfo> {
 
     // Second pass: build FileInfo with parent_name resolution and metadata dates
     for (name, hash, size) in raw_tags {
+        // Skip soft-deleted files
+        if deleted_set.contains(&name) {
+            continue;
+        }
+
         let (kind, timestamp) = classify_tag(&name);
 
         let parent_name = if kind == FileKind::Primary {
@@ -521,8 +599,8 @@ async fn get_file_list(store: &iroh_blobs::api::Store) -> Vec<FileInfo> {
             hash_to_primary.get(&hash).cloned()
         };
 
-        let created_at = crate::tags::get_created_time(&meta_doc, &name);
-        let modified_at = crate::tags::get_modified_time(&meta_doc, &name);
+        let created_at = created_map.get(&name).copied();
+        let modified_at = modified_map.get(&name).copied();
 
         files.push(FileInfo {
             name,
@@ -556,6 +634,69 @@ async fn get_file_list(store: &iroh_blobs::api::Store) -> Vec<FileInfo> {
     });
 
     files
+}
+
+/// Get a paginated, optionally filtered file list.
+///
+/// When `search` is provided, matches against:
+/// 1. Filename (case-insensitive substring)
+/// 2. Tag keys/values for the file in the global namespace
+async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
+    let mut files = get_file_list(state).await;
+
+    // Apply search filter
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+
+    if let Some(ref needle) = search {
+        let needle_lower = needle.to_lowercase();
+
+        // Collect subjects that match via tags (key or value contains needle)
+        let mut tag_matches: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Ok(all_tags) = state.tag_store.list_all(&state.tag_store.global).await {
+            for tag in &all_tags {
+                // Skip internal/system tags for search
+                if tag.key.starts_with("archive.") {
+                    continue;
+                }
+                if tag.key.to_lowercase().contains(&needle_lower)
+                    || tag
+                        .value
+                        .as_deref()
+                        .is_some_and(|v| v.to_lowercase().contains(&needle_lower))
+                {
+                    tag_matches.insert(tag.subject.clone());
+                }
+            }
+        }
+
+        files.retain(|f| {
+            f.name.to_lowercase().contains(&needle_lower) || tag_matches.contains(&f.name)
+        });
+    }
+
+    let total = files.len();
+    let per_page = query.per_page.unwrap_or(DEFAULT_PER_PAGE).max(1);
+    let page = query.page.unwrap_or(1).max(1);
+    let start = (page - 1) * per_page;
+
+    let page_files = if start < total {
+        files[start..(start + per_page).min(total)].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    FileListPage {
+        files: page_files,
+        total,
+        page,
+        per_page,
+        search,
+    }
 }
 
 /// Get the human-readable name for a hash, preferring primary file names.
@@ -700,12 +841,29 @@ struct DownloadRequest {
 /// Converts the `ProseMirror` JSON to the appropriate format based on filename,
 /// creates a new blob, archives the original under a timestamped name, and
 /// updates the tag to point to the new blob.
+///
+/// Rate-limited: rejects saves within the cooldown period (default 5s) per file.
 async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest>) -> Response {
     tracing::info!(
         "[routes] save_handler: doc_id={}, name={}",
         req.doc_id,
         req.name
     );
+
+    // Check save rate limit
+    if let Err(remaining) = state.save_limiter.check(&req.name).await {
+        let secs = remaining.as_secs_f64().ceil() as u64;
+        tracing::info!(
+            "[routes] Save rate limited for '{}': {}s remaining",
+            req.name,
+            secs
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Save rate limited. Try again in {secs}s."),
+        )
+            .into_response();
+    }
 
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
@@ -738,16 +896,47 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update tag").into_response();
     }
 
-    // Update metadata: set created (if first save) and modified
-    if let Ok(mut meta_doc) = crate::tags::load_meta(&state.store).await {
-        crate::tags::set_created(&mut meta_doc, &req.name);
-        crate::tags::set_modified(&mut meta_doc, &req.name);
-        if let Some(ref archive) = archive_name {
-            crate::tags::add_archive_tag(&mut meta_doc, &req.name, archive, &new_hash_str, "save");
-        }
-        if let Err(err) = crate::tags::save_meta(&state.store, &meta_doc).await {
-            tracing::warn!("[routes] Failed to save metadata: {}", err);
-        }
+    // Update metadata tags: set created (if first save) and modified
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_if_absent(
+            &state.tag_store.global,
+            &req.name,
+            "created",
+            Some(&now_str),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            &req.name,
+            "modified",
+            Some(&now_str),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set modified tag: {:#}", err);
+    }
+    if let Some(ref archive) = archive_name
+        && let Err(err) = state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                &req.name,
+                "archive.save",
+                Some(archive),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set archive tag: {}", err);
     }
 
     tracing::info!(
@@ -756,6 +945,15 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         new_hash_str,
         archive_name
     );
+
+    // Notify collab clients editing the old hash about the new version
+    state
+        .collab
+        .notify_new_version(&req.doc_id, &new_hash_str, &req.name)
+        .await;
+
+    // Record successful save for rate limiting
+    state.save_limiter.record(&req.name).await;
 
     Json(SaveResponse {
         hash: new_hash_str,
@@ -809,13 +1007,33 @@ async fn new_file_handler(
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set file name").into_response();
     }
 
-    // Set metadata: created + modified
-    if let Ok(mut meta_doc) = crate::tags::load_meta(&state.store).await {
-        crate::tags::set_created(&mut meta_doc, &req.name);
-        crate::tags::set_modified(&mut meta_doc, &req.name);
-        if let Err(err) = crate::tags::save_meta(&state.store, &meta_doc).await {
-            tracing::warn!("[routes] Failed to save metadata: {}", err);
-        }
+    // Set metadata tags: created + modified
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_if_absent(
+            &state.tag_store.global,
+            &req.name,
+            "created",
+            Some(&now_str),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            &req.name,
+            "modified",
+            Some(&now_str),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set modified tag: {:#}", err);
     }
 
     tracing::info!(
@@ -933,18 +1151,41 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         tracing::error!("[routes] Failed to delete original tag: {}", err);
     }
 
-    // Update metadata: transfer tags from old name to new, record archives
-    if let Ok(mut meta_doc) = crate::tags::load_meta(&state.store).await {
-        crate::tags::transfer_tags(&mut meta_doc, &req.name, &new_name);
-        if let Some(ref archive) = archived_original {
-            crate::tags::add_archive_tag(&mut meta_doc, &new_name, archive, &hash_str, "rename");
-        }
-        if let Some(ref archive) = archived_replaced {
-            crate::tags::add_archive_tag(&mut meta_doc, &new_name, archive, &hash_str, "replace");
-        }
-        if let Err(err) = crate::tags::save_meta(&state.store, &meta_doc).await {
-            tracing::warn!("[routes] Failed to save metadata: {}", err);
-        }
+    // Update metadata tags: transfer from old name to new, record archives
+    if let Err(err) = state
+        .tag_store
+        .transfer_all_tags(&state.tag_store.global, &req.name, &new_name)
+        .await
+    {
+        tracing::warn!("[routes] Failed to transfer tags: {}", err);
+    }
+    if let Some(ref archive) = archived_original
+        && let Err(err) = state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                &new_name,
+                "archive.rename",
+                Some(archive),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set archive.rename tag: {}", err);
+    }
+    if let Some(ref archive) = archived_replaced
+        && let Err(err) = state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                &new_name,
+                "archive.replace",
+                Some(archive),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set archive.replace tag: {}", err);
     }
 
     tracing::info!(
@@ -1039,6 +1280,164 @@ async fn download_handler(Json(req): Json<DownloadRequest>) -> Response {
         )
             .into_response(),
     }
+}
+
+/// Request body for soft-deleting or hard-deleting a file.
+#[derive(Debug, Deserialize)]
+struct DeleteRequest {
+    /// File name to delete.
+    name: String,
+}
+
+/// Response from deleting a file.
+#[derive(Debug, Serialize)]
+struct DeleteResponse {
+    /// File name that was deleted.
+    name: String,
+    /// Whether this was a soft or hard delete.
+    hard: bool,
+}
+
+/// Soft-delete a file by adding a "deleted" tag.
+///
+/// The file remains in the store and can be restored by removing the "deleted" tag.
+/// Soft-deleted files are hidden from the file list.
+async fn delete_handler(State(state): State<AppState>, Json(req): Json<DeleteRequest>) -> Response {
+    tracing::info!("[routes] delete_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Verify the file exists
+    match state.store.tags().get(&req.name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(err) => {
+            tracing::error!("[routes] Failed to look up tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to look up file").into_response();
+        }
+    }
+
+    // Add "deleted" tag with timestamp
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            &req.name,
+            "deleted",
+            Some(&now_str),
+            b"",
+        )
+        .await
+    {
+        tracing::error!("[routes] Failed to set deleted tag: {}", err);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to mark file as deleted",
+        )
+            .into_response();
+    }
+
+    tracing::info!("[routes] File soft-deleted: name={}", req.name);
+
+    Json(DeleteResponse {
+        name: req.name,
+        hard: false,
+    })
+    .into_response()
+}
+
+/// Restore a soft-deleted file by removing the "deleted" tag.
+async fn restore_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Response {
+    tracing::info!("[routes] restore_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Remove the "deleted" tag (all values for this key)
+    if let Err(err) = state
+        .tag_store
+        .del_by_key(&state.tag_store.global, &req.name, "deleted")
+        .await
+    {
+        tracing::error!("[routes] Failed to remove deleted tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to restore file").into_response();
+    }
+
+    tracing::info!("[routes] File restored: name={}", req.name);
+
+    Json(DeleteResponse {
+        name: req.name,
+        hard: false,
+    })
+    .into_response()
+}
+
+/// Hard-delete a file (admin only).
+///
+/// Removes the blob tag, all archive tags for this file, and all metadata tags.
+/// The blob data itself may be garbage-collected later by iroh-blobs.
+async fn hard_delete_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Response {
+    tracing::info!("[routes] hard_delete_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Delete the blob tag
+    if let Err(err) = state.store.tags().delete(&req.name).await {
+        tracing::error!("[routes] Failed to delete tag: {}", err);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to delete file tag",
+        )
+            .into_response();
+    }
+
+    // Delete all metadata tags for this subject
+    if let Err(err) = state
+        .tag_store
+        .del_all_tags(&state.tag_store.global, &req.name)
+        .await
+    {
+        tracing::warn!("[routes] Failed to delete metadata tags: {}", err);
+    }
+
+    // Delete any archive tags that reference this file
+    // (archive tags are named like "name.archive.timestamp")
+    if let Ok(mut tags) = state.store.tags().list().await {
+        use futures_lite::StreamExt;
+        let prefix = format!("{}.archive.", req.name);
+        while let Some(Ok(tag_info)) = tags.next().await {
+            let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+            if tag_name.starts_with(&prefix)
+                && let Err(err) = state.store.tags().delete(&tag_name).await
+            {
+                tracing::warn!(
+                    "[routes] Failed to delete archive tag {}: {}",
+                    tag_name,
+                    err
+                );
+            }
+        }
+    }
+
+    tracing::info!("[routes] File hard-deleted: name={}", req.name);
+
+    Json(DeleteResponse {
+        name: req.name,
+        hard: true,
+    })
+    .into_response()
 }
 
 /// Convert a `ProseMirror` document JSON to bytes in the appropriate file format.

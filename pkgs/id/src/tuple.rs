@@ -45,7 +45,7 @@
 //! assert!(key.starts_with(&prefix));
 //! ```
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 
 // ============================================================================
 // Type tag constants
@@ -107,7 +107,7 @@ impl TupleValue {
     }
 
     /// Extract integer value.
-    pub fn as_int(&self) -> Option<i64> {
+    pub const fn as_int(&self) -> Option<i64> {
         if let Self::Int(v) = self {
             Some(*v)
         } else {
@@ -116,7 +116,7 @@ impl TupleValue {
     }
 
     /// Extract float value.
-    pub fn as_float(&self) -> Option<f64> {
+    pub const fn as_float(&self) -> Option<f64> {
         if let Self::Float(v) = self {
             Some(*v)
         } else {
@@ -125,7 +125,7 @@ impl TupleValue {
     }
 
     /// Extract boolean value.
-    pub fn as_bool(&self) -> Option<bool> {
+    pub const fn as_bool(&self) -> Option<bool> {
         if let Self::Bool(v) = self {
             Some(*v)
         } else {
@@ -134,7 +134,7 @@ impl TupleValue {
     }
 
     /// Extract tuple/array elements.
-    pub fn as_tuple(&self) -> Option<&[TupleValue]> {
+    pub fn as_tuple(&self) -> Option<&[Self]> {
         if let Self::Tuple(v) = self {
             Some(v)
         } else {
@@ -143,7 +143,7 @@ impl TupleValue {
     }
 
     /// Check if null.
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 }
@@ -190,7 +190,7 @@ pub struct TupleEncoder {
 impl TupleEncoder {
     /// Create a new encoder.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             buf: Vec::new(),
             nested: false,
@@ -308,9 +308,9 @@ fn push_esc(buf: &mut Vec<u8>, data: &[u8]) {
 }
 
 /// Minimum bytes to represent a nonzero u64 in big-endian.
-fn byte_len(v: u64) -> usize {
+const fn byte_len(v: u64) -> usize {
     let bits = 64 - v.leading_zeros() as usize;
-    (bits + 7) / 8
+    bits.div_ceil(8)
 }
 
 /// Encode a signed 64-bit integer into `buf`.
@@ -437,7 +437,10 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
             be[8 - n..].copy_from_slice(&data[*pos..*pos + n]);
             *pos += n;
             let v = u64::from_be_bytes(be);
-            ensure!(v <= i64::MAX as u64, "positive integer exceeds i64::MAX");
+            ensure!(
+                i64::try_from(v).is_ok(),
+                "positive integer exceeds i64::MAX"
+            );
             Ok(Some(TupleValue::Int(v as i64)))
         }
 
@@ -825,7 +828,7 @@ mod tests {
 
     #[test]
     fn test_sort_strings() {
-        let values = vec!["", "a", "aa", "ab", "b", "hello", "world"];
+        let values = ["", "a", "aa", "ab", "b", "hello", "world"];
         let mut encoded: Vec<Vec<u8>> = values
             .iter()
             .map(|s| TupleEncoder::new().string(s).build())
@@ -887,7 +890,9 @@ mod tests {
         encoded.sort();
         assert_eq!(
             encoded,
-            vec![&null, &bytes, &string, &tuple, &f, &t, &neg, &zero, &pos, &float],
+            vec![
+                &null, &bytes, &string, &tuple, &f, &t, &neg, &zero, &pos, &float
+            ],
             "cross-type sort order mismatch"
         );
     }

@@ -49,6 +49,7 @@ mod collab;
 mod content_mode;
 mod markdown;
 mod routes;
+mod tags_ws;
 mod templates;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
@@ -59,19 +60,70 @@ pub use markdown::{
 
 use axum::Router;
 use iroh_blobs::api::Store;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use crate::discovery::PeerDiscovery;
+use crate::tags::TagStore;
 
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use routes::create_router;
 pub use templates::{AssetUrls, render_page};
 
+/// Default save rate limit cooldown period.
+pub const DEFAULT_SAVE_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Per-file save rate limiter.
+///
+/// Tracks the last save time for each file (by name) and rejects saves
+/// that happen within the cooldown period. This prevents rapid-fire saves
+/// from creating excessive archive entries.
+#[derive(Debug, Clone)]
+pub struct SaveRateLimiter {
+    /// Map of filename → last save time.
+    last_save: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Minimum time between saves for the same file.
+    pub cooldown: Duration,
+}
+
+impl SaveRateLimiter {
+    /// Create a new rate limiter with the given cooldown duration.
+    pub fn new(cooldown: Duration) -> Self {
+        Self {
+            last_save: Arc::new(Mutex::new(HashMap::new())),
+            cooldown,
+        }
+    }
+
+    /// Check if a save is allowed for the given filename.
+    ///
+    /// Returns `Ok(())` if the save is allowed, or `Err(remaining)` with
+    /// the time remaining until the next save is allowed.
+    pub async fn check(&self, name: &str) -> Result<(), Duration> {
+        let map = self.last_save.lock().await;
+        if let Some(last) = map.get(name) {
+            let elapsed = last.elapsed();
+            if elapsed < self.cooldown {
+                return Err(self.cooldown - elapsed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a successful save for the given filename.
+    pub async fn record(&self, name: &str) {
+        let mut map = self.last_save.lock().await;
+        map.insert(name.to_owned(), Instant::now());
+    }
+}
+
 /// Shared application state for web handlers.
 ///
 /// Contains references to the blob store, collaborative editing state,
-/// and optional peer discovery table.
+/// tag metadata store, and optional peer discovery table.
 #[derive(Clone)]
 pub struct AppState {
     /// The blob store for accessing files.
@@ -84,6 +136,10 @@ pub struct AppState {
     pub peers: Option<PeerDiscovery>,
     /// This node's public ID (hex-encoded).
     pub node_id: String,
+    /// Tag metadata store (α/Ω namespace pairs backed by iroh-docs).
+    pub tag_store: Arc<TagStore>,
+    /// Per-file save rate limiter.
+    pub save_limiter: SaveRateLimiter,
 }
 
 impl std::fmt::Debug for AppState {
@@ -94,19 +150,28 @@ impl std::fmt::Debug for AppState {
             .field("assets", &self.assets)
             .field("peers", &self.peers.is_some())
             .field("node_id", &self.node_id)
+            .field("tag_store", &"<TagStore>")
+            .field("save_limiter", &self.save_limiter)
             .finish()
     }
 }
 
 impl AppState {
     /// Create a new application state.
-    pub fn new(store: Store, peers: Option<PeerDiscovery>, node_id: String) -> Self {
+    pub fn new(
+        store: Store,
+        peers: Option<PeerDiscovery>,
+        node_id: String,
+        tag_store: Arc<TagStore>,
+    ) -> Self {
         Self {
             store,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
             node_id,
+            tag_store,
+            save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
         }
     }
 }
@@ -166,12 +231,18 @@ fn load_asset_urls() -> AssetUrls {
 /// * `store` - The blob store to use for file operations
 /// * `peers` - Optional peer discovery table for the `/peers` page
 /// * `node_id` - This node's public ID (hex-encoded)
+/// * `tag_store` - The tag metadata store (α/Ω namespace pairs)
 ///
 /// # Returns
 ///
 /// An Axum router ready to be merged with the serve endpoint.
-pub fn web_router(store: Store, peers: Option<PeerDiscovery>, node_id: String) -> Router {
-    let state = AppState::new(store, peers, node_id);
+pub fn web_router(
+    store: Store,
+    peers: Option<PeerDiscovery>,
+    node_id: String,
+    tag_store: Arc<TagStore>,
+) -> Router {
+    let state = AppState::new(store, peers, node_id, tag_store);
     create_router(state)
 }
 

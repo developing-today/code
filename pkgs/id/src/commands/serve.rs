@@ -50,6 +50,10 @@
 //! id serve --no-relay
 //! ```
 
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use anyhow::Result;
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
 use futures_lite::StreamExt;
@@ -60,8 +64,8 @@ use iroh::{
 };
 use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
+use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
@@ -71,6 +75,7 @@ use crate::discovery::{
 };
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
+use crate::tags::TagStore;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
 /// Information about a running serve instance.
@@ -277,25 +282,44 @@ pub async fn cmd_serve(
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
 
-    // Build router — gossip ALPN is only registered when gossip is enabled
-    let meta = MetaProtocol::new(&store_handle, Some(peer_discovery.clone()));
+    // Always create Gossip — iroh-docs needs it even if peer discovery is off
+    let gossip = Gossip::builder().spawn(endpoint.clone());
+
+    // Initialize iroh-docs for tag metadata storage
+    let docs = if ephemeral {
+        Docs::memory()
+            .spawn(endpoint.clone(), store_handle.clone(), gossip.clone())
+            .await?
+    } else {
+        let docs_path = PathBuf::from(STORE_PATH).join("docs");
+        std::fs::create_dir_all(&docs_path)?;
+        Docs::persistent(docs_path)
+            .spawn(endpoint.clone(), store_handle.clone(), gossip.clone())
+            .await?
+    };
+
+    // Initialize TagStore (creates α/Ω namespace pairs)
+    let tag_store = TagStore::init(&docs, &node_id.to_string()).await?;
+    let tag_store = Arc::new(tag_store);
+    info!("tags: initialized (α/Ω global + node namespaces)");
+
+    // Build router — gossip ALPN is always registered (needed by iroh-docs),
+    // but peer discovery gossip topic only joins when gossip is enabled
+    let meta = MetaProtocol::new(
+        &store_handle,
+        Some(peer_discovery.clone()),
+        Some(tag_store.clone()),
+    );
     let blobs = BlobsProtocol::new(&store_handle, None);
 
-    let router = if no_gossip {
-        Router::builder(endpoint)
-            .accept(META_ALPN, meta)
-            .accept(BLOBS_ALPN, blobs)
-            .spawn()
-    } else {
-        // Create gossip instance (synchronous)
-        let gossip = Gossip::builder().spawn(endpoint.clone());
+    let router = Router::builder(endpoint)
+        .accept(META_ALPN, meta)
+        .accept(BLOBS_ALPN, blobs)
+        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
+        .accept(iroh_docs::net::ALPN, docs.clone())
+        .spawn();
 
-        let router = Router::builder(endpoint)
-            .accept(META_ALPN, meta)
-            .accept(BLOBS_ALPN, blobs)
-            .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-            .spawn();
-
+    if !no_gossip {
         // Resolve effective config from defaults + CLI flags
         let config = resolve_config(
             &bootstrap,
@@ -360,9 +384,7 @@ pub async fn cmd_serve(
         });
 
         println!("peers: gossip enabled (topic: {})", config.topic);
-
-        router
-    };
+    }
 
     let serve_node_id = router.endpoint().id();
     let bound_addrs = router.endpoint().bound_sockets();
@@ -405,6 +427,7 @@ pub async fn cmd_serve(
             store_handle.clone(),
             Some(peer_discovery.clone()),
             node_id.to_string(),
+            tag_store.clone(),
         );
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = tokio::net::TcpListener::bind(addr).await?;

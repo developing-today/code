@@ -19,6 +19,7 @@ declare global {
 
 interface IdApp {
   collab: CollabConnection | null;
+  tagsWs: WebSocket | null;
   setTheme: (theme: Theme) => void;
   openEditor: (docId: string) => Promise<void>;
   closeEditor: () => void;
@@ -26,6 +27,8 @@ interface IdApp {
   createFile: (event: Event) => Promise<void>;
   downloadFile: (format: string) => Promise<void>;
   renameFile: () => Promise<void>;
+  connectTagsWs: () => void;
+  disconnectTagsWs: () => void;
   navHistory: string[];
   currentPath: string;
   lastFilename: string | null;
@@ -307,11 +310,83 @@ function init(): void {
   // Create app API
   const app: IdApp = {
     collab: null,
+    tagsWs: null,
     setTheme,
     navHistory: [],
     currentPath: window.location.pathname,
     lastFilename: null,
     lastFilePath: null,
+
+    /**
+     * Connect to the tags WebSocket for live tag change notifications.
+     * On tag events, refresh the file list on the home page.
+     */
+    connectTagsWs(): void {
+      if (this.tagsWs && this.tagsWs.readyState <= WebSocket.OPEN) return;
+
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${window.location.host}/ws/tags`;
+      console.log('[id] Tags WS connecting:', wsUrl);
+      const ws = new WebSocket(wsUrl);
+      this.tagsWs = ws;
+
+      ws.onopen = () => {
+        console.log('[id] Tags WS connected');
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data as string);
+          console.log('[id] Tag event:', data);
+
+          // On any tag change, refresh the file list if we're on the home page
+          const fileListContent = document.getElementById('file-list-content');
+          if (fileListContent && window.htmx) {
+            // Debounce: don't refresh more than once per 500ms
+            const now = Date.now();
+            const lastRefresh = (window as unknown as Record<string, number>).__tagRefreshTs || 0;
+            if (now - lastRefresh > 500) {
+              (window as unknown as Record<string, number>).__tagRefreshTs = now;
+              const searchInput = document.getElementById('file-search') as HTMLInputElement | null;
+              const query = searchInput?.value || '';
+              const url = query ? `/api/files?search=${encodeURIComponent(query)}` : '/api/files';
+              window.htmx.ajax('GET', url, { target: '#file-list-content', swap: 'innerHTML' });
+            }
+          }
+
+          // On editor page, show a notification for the current file's tags
+          const editorContainer = document.getElementById('editor-container');
+          if (editorContainer && data.type === 'Set' && data.subject) {
+            const filenameEncoded = editorContainer.dataset.filename;
+            const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+            if (filename && data.subject === filename) {
+              console.log('[id] Tag changed for current file:', data.key, '=', data.value);
+            }
+          }
+        } catch {
+          // Ignore non-JSON messages
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('[id] Tags WS disconnected, reconnecting in 3s');
+        this.tagsWs = null;
+        setTimeout(() => this.connectTagsWs(), 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.warn('[id] Tags WS error:', err);
+        ws.close();
+      };
+    },
+
+    disconnectTagsWs(): void {
+      if (this.tagsWs) {
+        this.tagsWs.onclose = null; // Prevent auto-reconnect
+        this.tagsWs.close();
+        this.tagsWs = null;
+      }
+    },
     
     async openEditor(docId: string): Promise<void> {
       // Guard against double initialization
@@ -739,6 +814,9 @@ function init(): void {
   });
   
   console.log('[id] Web interface initialized');
+  
+  // Connect tags WebSocket for live updates (global — stays connected across pages)
+  app.connectTagsWs();
   
   // Initialize back button on main page
   updateBackLink(app.navHistory, app.currentPath);

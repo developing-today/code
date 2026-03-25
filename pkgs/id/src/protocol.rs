@@ -66,6 +66,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::discovery::{PeerAnnouncement, PeerDiscovery};
+use crate::tags::TagStore;
 
 /// Match quality for find/search operations.
 ///
@@ -255,6 +256,38 @@ pub enum MetaRequest {
         /// If `true`, prioritize name matches over hash matches in results.
         prefer_name: bool,
     },
+    /// Set a metadata tag on the remote node.
+    ///
+    /// Creates or updates a tag in the global `TagStore` namespace.
+    SetTag {
+        /// The subject (usually a filename) to tag.
+        subject: String,
+        /// The tag key (e.g. "author", "status").
+        key: String,
+        /// Optional tag value.
+        value: Option<String>,
+    },
+    /// Delete a metadata tag from the remote node.
+    DelTag {
+        /// The subject (usually a filename).
+        subject: String,
+        /// The tag key to delete.
+        key: String,
+        /// Optional specific value to delete (None = delete all values for key).
+        value: Option<String>,
+    },
+    /// List metadata tags for a subject on the remote node.
+    GetTags {
+        /// The subject (filename) to list tags for. None = list all.
+        subject: Option<String>,
+    },
+    /// Search metadata tags by key and/or value.
+    SearchTags {
+        /// Optional key to filter by.
+        key: Option<String>,
+        /// Optional value to filter by.
+        value: Option<String>,
+    },
     /// Request the list of known peers from a remote node.
     ///
     /// Returns all peers that the remote node has discovered via gossip.
@@ -308,6 +341,26 @@ pub enum MetaResponse {
     Find {
         /// Matching tags, sorted by match quality.
         matches: Vec<FindMatch>,
+    },
+    /// Response to [`MetaRequest::SetTag`].
+    SetTag {
+        /// Whether the tag was successfully set.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::DelTag`].
+    DelTag {
+        /// Whether the tag was successfully deleted.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::GetTags`].
+    GetTags {
+        /// Tags as (subject, key, value) tuples.
+        tags: Vec<(String, String, Option<String>)>,
+    },
+    /// Response to [`MetaRequest::SearchTags`].
+    SearchTags {
+        /// Matching tags as (subject, key, value) tuples.
+        tags: Vec<(String, String, Option<String>)>,
     },
     /// Response to [`MetaRequest::ListPeers`].
     ///
@@ -367,6 +420,12 @@ pub struct MetaProtocol {
     /// When `Some`, the handler returns known peers in response to
     /// `ListPeers` requests. When `None`, an empty list is returned.
     pub peer_discovery: Option<PeerDiscovery>,
+    /// Optional `TagStore` for metadata operations (rename, put, delete).
+    ///
+    /// When `Some`, tag metadata (created, modified, archives) is managed
+    /// via the iroh-docs–backed `TagStore`. When `None`, falls back to legacy
+    /// `MetaDoc` blob-based metadata.
+    pub tag_store: Option<Arc<TagStore>>,
 }
 
 impl MetaProtocol {
@@ -391,10 +450,15 @@ impl MetaProtocol {
     /// let handler = MetaProtocol::new(&store, Some(discovery));
     /// router.accept(META_ALPN, handler);
     /// ```
-    pub fn new(store: &Store, peer_discovery: Option<PeerDiscovery>) -> Arc<Self> {
+    pub fn new(
+        store: &Store,
+        peer_discovery: Option<PeerDiscovery>,
+        tag_store: Option<Arc<TagStore>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
             peer_discovery,
+            tag_store,
         })
     }
 
@@ -476,6 +540,25 @@ impl ProtocolHandler for MetaProtocol {
                         .set(&filename, hash)
                         .await
                         .map_err(AcceptError::from_err)?;
+
+                    // Set created/modified tags via TagStore if available
+                    if let Some(ts) = &self.tag_store {
+                        let now_str = crate::tags::now_unix().to_string();
+                        let ns = &ts.global;
+                        if let Err(e) = ts
+                            .set_if_absent(ns, &filename, "created", Some(&now_str), b"")
+                            .await
+                        {
+                            tracing::warn!("Failed to set created tag: {e:#}");
+                        }
+                        if let Err(e) = ts
+                            .set_singleton(ns, &filename, "modified", Some(&now_str), b"")
+                            .await
+                        {
+                            tracing::warn!("Failed to set modified tag: {e:#}");
+                        }
+                    }
+
                     let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })
                         .map_err(AcceptError::from_err)?;
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
@@ -537,19 +620,30 @@ impl ProtocolHandler for MetaProtocol {
                                 let archive_name = format!("{from}.archive.{ts}");
                                 let _ = self.store.tags().set(&archive_name, hash).await;
                             }
-                            // Update metadata tags
-                            {
-                                if let Ok(mut meta) = crate::tags::load_meta(&self.store).await
-                                {
-                                    crate::tags::transfer_tags(&mut meta, &from, &to);
-                                    let hash_str = hash.to_string();
-                                    let ts = crate::tags::now_unix();
-                                    let archive_name = format!("{from}.archive.{ts}");
-                                    crate::tags::add_archive_tag(
-                                        &mut meta, &from, &archive_name, &hash_str, "rename",
-                                    );
-                                    let _ = crate::tags::save_meta(&self.store, &meta).await;
+                            // Update metadata tags via TagStore or legacy
+                            if let Some(ts) = &self.tag_store {
+                                let ns = &ts.global;
+                                if let Err(e) = ts.transfer_all_tags(ns, &from, &to).await {
+                                    tracing::warn!("Failed to transfer tags: {e:#}");
                                 }
+                                let archive_name =
+                                    format!("{from}.archive.{}", crate::tags::now_unix());
+                                let _ = ts
+                                    .set_tag(ns, &to, "archive.rename", Some(&archive_name), b"")
+                                    .await;
+                            } else if let Ok(mut meta) = crate::tags::load_meta(&self.store).await {
+                                crate::tags::transfer_tags(&mut meta, &from, &to);
+                                let hash_str = hash.to_string();
+                                let ts = crate::tags::now_unix();
+                                let archive_name = format!("{from}.archive.{ts}");
+                                crate::tags::add_archive_tag(
+                                    &mut meta,
+                                    &from,
+                                    &archive_name,
+                                    &hash_str,
+                                    "rename",
+                                );
+                                let _ = crate::tags::save_meta(&self.store, &meta).await;
                             }
                             self.store.tags().delete(&from).await.is_ok()
                         } else {
@@ -625,6 +719,85 @@ impl ProtocolHandler for MetaProtocol {
                     });
 
                     let resp = postcard::to_allocvec(&MetaResponse::Find { matches })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::SetTag {
+                    subject,
+                    key,
+                    value,
+                } => {
+                    let success = if let Some(ts) = &self.tag_store {
+                        ts.set_tag(&ts.global, &subject, &key, value.as_deref(), b"")
+                            .await
+                            .is_ok()
+                    } else {
+                        false
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::SetTag { success })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::DelTag {
+                    subject,
+                    key,
+                    value,
+                } => {
+                    let success = if let Some(ts) = &self.tag_store {
+                        ts.del_tag(&ts.global, &subject, &key, value.as_deref())
+                            .await
+                            .is_ok()
+                    } else {
+                        false
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::DelTag { success })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::GetTags { subject } => {
+                    let tags = if let Some(ts) = &self.tag_store {
+                        let result = if let Some(subj) = &subject {
+                            ts.get_tags(&ts.global, subj).await
+                        } else {
+                            ts.list_all(&ts.global).await
+                        };
+                        match result {
+                            Ok(list) => list
+                                .into_iter()
+                                .map(|t| (t.subject, t.key, t.value))
+                                .collect(),
+                            Err(_) => vec![],
+                        }
+                    } else {
+                        vec![]
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::GetTags { tags })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::SearchTags { key, value } => {
+                    let tags = if let Some(ts) = &self.tag_store {
+                        let result = match (&key, &value) {
+                            (Some(k), Some(v)) => ts.find_by_key_value(&ts.global, k, v).await,
+                            (Some(k), None) => ts.find_by_key(&ts.global, k).await,
+                            (None, Some(v)) => ts.find_by_value(&ts.global, v).await,
+                            (None, None) => ts.list_all(&ts.global).await,
+                        };
+                        match result {
+                            Ok(list) => list
+                                .into_iter()
+                                .map(|t| (t.subject, t.key, t.value))
+                                .collect(),
+                            Err(_) => vec![],
+                        }
+                    } else {
+                        vec![]
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::SearchTags { tags })
                         .map_err(AcceptError::from_err)?;
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
                     send.finish()?;
@@ -1025,18 +1198,19 @@ mod tests {
         // to keep ListPeers last.
         let req = MetaRequest::ListPeers;
         let bytes = postcard::to_allocvec(&req).unwrap();
-        // ListPeers should be discriminant 7 (0-indexed: Put=0, Get=1, List=2,
-        // Delete=3, Rename=4, Copy=5, Find=6, ListPeers=7)
+        // ListPeers should be discriminant 11 (0-indexed: Put=0, Get=1, List=2,
+        // Delete=3, Rename=4, Copy=5, Find=6, SetTag=7, DelTag=8, GetTags=9,
+        // SearchTags=10, ListPeers=11)
         assert_eq!(
-            bytes[0], 7,
-            "ListPeers should be the 8th variant (discriminant 7)"
+            bytes[0], 11,
+            "ListPeers should be the 12th variant (discriminant 11)"
         );
 
         let resp = MetaResponse::ListPeers { peers: vec![] };
         let bytes = postcard::to_allocvec(&resp).unwrap();
         assert_eq!(
-            bytes[0], 7,
-            "ListPeers response should be the 8th variant (discriminant 7)"
+            bytes[0], 11,
+            "ListPeers response should be the 12th variant (discriminant 11)"
         );
     }
 

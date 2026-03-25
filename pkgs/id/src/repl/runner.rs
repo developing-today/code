@@ -353,6 +353,38 @@ async fn execute_repl_command(
             handle_search_command(ctx, rest).await?;
             Ok(ReplAction::Continue)
         }
+        (None, ["tag", "set", subject, key]) => {
+            ctx.set_tag(subject, key, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag", "set", subject, key, value]) => {
+            ctx.set_tag(subject, key, Some(value)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag", "del" | "rm", subject, key]) => {
+            ctx.del_tag(subject, key, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag", "del" | "rm", subject, key, value]) => {
+            ctx.del_tag(subject, key, Some(value)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tags"]) => {
+            ctx.get_tags(None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tags", subject]) => {
+            ctx.get_tags(Some(subject)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag", "search", key]) => {
+            ctx.search_tags(Some(key), None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag", "search", key, value]) => {
+            ctx.search_tags(Some(key), Some(value)).await?;
+            Ok(ReplAction::Continue)
+        }
         (None, ["show" | "view", rest @ ..]) => {
             handle_show_command(ctx, rest).await?;
             Ok(ReplAction::Continue)
@@ -453,6 +485,10 @@ fn print_help() {
     println!("  peers                  - List discovered peers");
     println!("  find <QUERY>...        - Find & output matches");
     println!("  search <QUERY>...      - List matches");
+    println!("  tags [FILE]            - List all tags (or tags for FILE)");
+    println!("  tag set <FILE> <KEY> [VALUE] - Set a metadata tag");
+    println!("  tag del <FILE> <KEY> [VALUE] - Delete a metadata tag");
+    println!("  tag search <KEY> [VALUE]     - Search tags by key/value");
     println!("  show <QUERY>...        - Find & cat to stdout (alias: view)");
     println!("  peek <QUERY>...        - Preview with head/tail display");
     println!("  !<cmd>                 - Run shell command");

@@ -714,7 +714,13 @@ impl ReplContext {
                     crate::tags::transfer_tags(&mut meta, from, to);
                     let hash_str = hash.to_string();
                     let archive_name = format!("{from}.archive.{}", crate::tags::now_unix());
-                    crate::tags::add_archive_tag(&mut meta, from, &archive_name, &hash_str, "rename");
+                    crate::tags::add_archive_tag(
+                        &mut meta,
+                        from,
+                        &archive_name,
+                        &hash_str,
+                        "rename",
+                    );
                     let _ = crate::tags::save_meta(&store_handle, &meta).await;
                 }
             }
@@ -867,6 +873,225 @@ impl ReplContext {
         } else {
             None
         }
+    }
+
+    /// Set a metadata tag on a file.
+    ///
+    /// In connected mode, sends a `SetTag` request to the server.
+    /// In local mode, uses the legacy `MetaDoc` system.
+    ///
+    /// # Arguments
+    ///
+    /// * `subject` - The file name to tag
+    /// * `key` - The tag key
+    /// * `value` - Optional tag value
+    pub async fn set_tag(&mut self, subject: &str, key: &str, value: Option<&str>) -> Result<()> {
+        if self.is_connected() {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::SetTag {
+                subject: subject.to_owned(),
+                key: key.to_owned(),
+                value: value.map(String::from),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            match resp {
+                MetaResponse::SetTag { success } => {
+                    if success {
+                        if let Some(v) = value {
+                            println!("tag set: {subject} [{key}={v}]");
+                        } else {
+                            println!("tag set: {subject} [{key}]");
+                        }
+                    } else {
+                        println!("failed to set tag (server has no TagStore)");
+                    }
+                }
+                _ => bail!("unexpected response"),
+            }
+        } else {
+            // Local mode: use legacy MetaDoc
+            let store = self.store_handle();
+            let mut meta = crate::tags::load_meta(&store).await?;
+            let now = crate::tags::now_unix();
+            crate::tags::add_tag(&mut meta, subject, key, value, None);
+            crate::tags::save_meta(&store, &meta).await?;
+            if let Some(v) = value {
+                println!("tag set: {subject} [{key}={v}] (legacy, ts={now})");
+            } else {
+                println!("tag set: {subject} [{key}] (legacy, ts={now})");
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a metadata tag from a file.
+    ///
+    /// In connected mode, sends a `DelTag` request to the server.
+    /// In local mode, uses the legacy `MetaDoc` system.
+    pub async fn del_tag(&mut self, subject: &str, key: &str, value: Option<&str>) -> Result<()> {
+        if self.is_connected() {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::DelTag {
+                subject: subject.to_owned(),
+                key: key.to_owned(),
+                value: value.map(String::from),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            match resp {
+                MetaResponse::DelTag { success } => {
+                    if success {
+                        println!("tag deleted: {subject} [{key}]");
+                    } else {
+                        println!("failed to delete tag");
+                    }
+                }
+                _ => bail!("unexpected response"),
+            }
+        } else {
+            println!("tag delete not supported in local mode (no TagStore)");
+        }
+        Ok(())
+    }
+
+    /// List metadata tags for a file or all files.
+    ///
+    /// In connected mode, sends a `GetTags` request to the server.
+    /// In local mode, uses the legacy `MetaDoc` system.
+    pub async fn get_tags(&mut self, subject: Option<&str>) -> Result<()> {
+        if self.is_connected() {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::GetTags {
+                subject: subject.map(String::from),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(1024 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            match resp {
+                MetaResponse::GetTags { tags } => {
+                    if tags.is_empty() {
+                        if let Some(s) = subject {
+                            println!("(no tags for {s})");
+                        } else {
+                            println!("(no tags)");
+                        }
+                    } else {
+                        for (subj, key, value) in &tags {
+                            if let Some(v) = value {
+                                println!("  {subj}  [{key}={v}]");
+                            } else {
+                                println!("  {subj}  [{key}]");
+                            }
+                        }
+                        println!("{} tag(s)", tags.len());
+                    }
+                }
+                _ => bail!("unexpected response"),
+            }
+        } else {
+            // Local mode: use legacy MetaDoc
+            let store = self.store_handle();
+            let meta = crate::tags::load_meta(&store).await?;
+            let tags: Vec<_> = if let Some(subj) = subject {
+                meta.tags.iter().filter(|t| t.subject == subj).collect()
+            } else {
+                meta.tags.iter().collect()
+            };
+            if tags.is_empty() {
+                if let Some(s) = subject {
+                    println!("(no tags for {s})");
+                } else {
+                    println!("(no tags)");
+                }
+            } else {
+                for t in &tags {
+                    if let Some(v) = &t.value {
+                        println!("  {}  [{}={}]", t.subject, t.key, v);
+                    } else {
+                        println!("  {}  [{}]", t.subject, t.key);
+                    }
+                }
+                println!("{} tag(s)", tags.len());
+            }
+        }
+        Ok(())
+    }
+
+    /// Search tags by key and/or value.
+    ///
+    /// In connected mode, sends a `SearchTags` request to the server.
+    pub async fn search_tags(&mut self, key: Option<&str>, value: Option<&str>) -> Result<()> {
+        if self.is_connected() {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::SearchTags {
+                key: key.map(String::from),
+                value: value.map(String::from),
+            })?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(1024 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            match resp {
+                MetaResponse::SearchTags { tags } => {
+                    if tags.is_empty() {
+                        println!("(no matching tags)");
+                    } else {
+                        for (subj, k, v) in &tags {
+                            if let Some(val) = v {
+                                println!("  {subj}  [{k}={val}]");
+                            } else {
+                                println!("  {subj}  [{k}]");
+                            }
+                        }
+                        println!("{} tag(s)", tags.len());
+                    }
+                }
+                _ => bail!("unexpected response"),
+            }
+        } else {
+            // Local mode: limited search via MetaDoc
+            let store = self.store_handle();
+            let meta = crate::tags::load_meta(&store).await?;
+            let tags: Vec<_> = meta
+                .tags
+                .iter()
+                .filter(|t| {
+                    let key_match =
+                        key.is_none_or(|k| t.key.to_lowercase().contains(&k.to_lowercase()));
+                    let val_match = value.is_none_or(|v| {
+                        t.value
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&v.to_lowercase())
+                    });
+                    key_match && val_match
+                })
+                .collect();
+            if tags.is_empty() {
+                println!("(no matching tags)");
+            } else {
+                for t in &tags {
+                    if let Some(v) = &t.value {
+                        println!("  {}  [{}={}]", t.subject, t.key, v);
+                    } else {
+                        println!("  {}  [{}]", t.subject, t.key);
+                    }
+                }
+                println!("{} tag(s)", tags.len());
+            }
+        }
+        Ok(())
     }
 
     /// List files on a specific remote node using @`NODE_ID` syntax.

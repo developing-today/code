@@ -49,6 +49,7 @@ use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 use crate::tuple::{TupleEncoder, decode};
 
@@ -196,6 +197,49 @@ pub struct Tag {
 }
 
 // ============================================================================
+// Tag events (broadcast to WebSocket clients)
+// ============================================================================
+
+/// A tag change event broadcast to WebSocket subscribers.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum TagEvent {
+    /// A tag was set or updated.
+    #[serde(rename = "set")]
+    Set {
+        /// Namespace name ("global", "node", or custom name).
+        ns: String,
+        subject: String,
+        key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+    },
+    /// A tag was deleted.
+    #[serde(rename = "del")]
+    Del {
+        ns: String,
+        subject: String,
+        key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+    },
+    /// All tags for a subject were deleted.
+    #[serde(rename = "del_all")]
+    DelAll { ns: String, subject: String },
+    /// Tags were transferred from one subject to another.
+    #[serde(rename = "transfer")]
+    Transfer {
+        ns: String,
+        from: String,
+        to: String,
+        count: usize,
+    },
+}
+
+/// Capacity of the tag event broadcast channel.
+const TAG_BROADCAST_CAPACITY: usize = 256;
+
+// ============================================================================
 // Tag store
 // ============================================================================
 
@@ -222,6 +266,8 @@ pub struct TagStore {
     pub author: AuthorId,
     /// Path to the registry file.
     registry_path: PathBuf,
+    /// Broadcast sender for tag change events.
+    broadcast: broadcast::Sender<TagEvent>,
 }
 
 impl std::fmt::Debug for TagStore {
@@ -232,6 +278,44 @@ impl std::fmt::Debug for TagStore {
             .field("custom_count", &self.custom.len())
             .field("author", &self.author)
             .finish()
+    }
+}
+
+impl TagStore {
+    /// Subscribe to tag change events.
+    ///
+    /// Returns a broadcast receiver that yields [`TagEvent`]s when tags are
+    /// set, deleted, or transferred. Used by the WebSocket handler to push
+    /// live updates to connected clients.
+    pub fn subscribe(&self) -> broadcast::Receiver<TagEvent> {
+        self.broadcast.subscribe()
+    }
+
+    /// Emit a tag event to all subscribers.
+    ///
+    /// Silently ignores send failures (no subscribers connected).
+    fn emit(&self, event: TagEvent) {
+        let _ = self.broadcast.send(event);
+    }
+
+    /// Resolve which namespace name a given pair belongs to.
+    ///
+    /// Returns `"global"`, `"node"`, or the custom namespace name.
+    pub fn ns_name(&self, ns: &NamespacePair) -> String {
+        if ns.alpha_id == self.global.alpha_id {
+            "global".to_owned()
+        } else if ns.alpha_id == self.node.alpha_id {
+            "node".to_owned()
+        } else {
+            for (name, custom) in &self.custom {
+                if let CustomNamespace::Paired(pair) = custom
+                    && pair.alpha_id == ns.alpha_id
+                {
+                    return name.clone();
+                }
+            }
+            "unknown".to_owned()
+        }
     }
 }
 
@@ -430,12 +514,15 @@ impl TagStore {
         // Save registry (may have created new namespace IDs).
         save_registry(&registry_path, &registry).await?;
 
+        let (broadcast, _) = broadcast::channel(TAG_BROADCAST_CAPACITY);
+
         Ok(Self {
             global,
             node,
             custom,
             author,
             registry_path,
+            broadcast,
         })
     }
 
@@ -538,20 +625,30 @@ impl TagStore {
         let alpha_key = encode_alpha_key(subject, key, value);
         let omega_key = encode_omega_key(subject, key, value);
 
+        // iroh-docs rejects empty entries, so use a single null byte as placeholder
+        let payload: &[u8] = if data.is_empty() { &[0] } else { data };
+
         // Write to α first, get the content hash.
         let hash = ns
             .alpha
-            .set_bytes(self.author, alpha_key, data.to_vec())
+            .set_bytes(self.author, alpha_key, payload.to_vec())
             .await
             .context("writing α entry")?;
 
         // Write Ω with the same content hash.
         #[allow(clippy::cast_possible_truncation)]
-        let size = data.len() as u64;
+        let size = payload.len() as u64;
         ns.omega
             .set_hash(self.author, omega_key, hash, size)
             .await
             .context("writing Ω entry")?;
+
+        self.emit(TagEvent::Set {
+            ns: self.ns_name(ns),
+            subject: subject.to_owned(),
+            key: key.to_owned(),
+            value: value.map(str::to_owned),
+        });
 
         Ok(())
     }
@@ -577,6 +674,13 @@ impl TagStore {
             .del(self.author, omega_key)
             .await
             .context("deleting Ω entry")?;
+
+        self.emit(TagEvent::Del {
+            ns: self.ns_name(ns),
+            subject: subject.to_owned(),
+            key: key.to_owned(),
+            value: value.map(str::to_owned),
+        });
 
         Ok(())
     }
@@ -605,6 +709,96 @@ impl TagStore {
             .del(self.author, alpha_prefix)
             .await
             .context("deleting α entries for subject")?;
+
+        if count > 0 {
+            self.emit(TagEvent::DelAll {
+                ns: self.ns_name(ns),
+                subject: subject.to_owned(),
+            });
+        }
+
+        Ok(count)
+    }
+
+    /// Delete all tags for a subject+key, regardless of value.
+    ///
+    /// Queries for all entries with the given subject+key, then deletes each
+    /// from both α and Ω. Returns the number of tags deleted.
+    pub async fn del_by_key(&self, ns: &NamespacePair, subject: &str, key: &str) -> Result<usize> {
+        let existing = self.get_by_key(ns, subject, key).await?;
+        let count = existing.len();
+        for tag in existing {
+            self.del_tag(ns, subject, key, tag.value.as_deref()).await?;
+        }
+        Ok(count)
+    }
+
+    /// Set a singleton tag — replaces any existing tags with the same subject+key.
+    ///
+    /// Removes all existing entries for `(subject, key, *)` before setting the new
+    /// value. Use for tags where only one value should exist per subject+key pair,
+    /// such as "created" or "modified" timestamps.
+    pub async fn set_singleton(
+        &self,
+        ns: &NamespacePair,
+        subject: &str,
+        key: &str,
+        value: Option<&str>,
+        data: &[u8],
+    ) -> Result<()> {
+        let existing = self.get_by_key(ns, subject, key).await?;
+        for tag in existing {
+            self.del_tag(ns, subject, key, tag.value.as_deref()).await?;
+        }
+        self.set_tag(ns, subject, key, value, data).await
+    }
+
+    /// Set a tag only if no tag exists for this subject+key.
+    ///
+    /// Returns `true` if the tag was set, `false` if one already existed.
+    pub async fn set_if_absent(
+        &self,
+        ns: &NamespacePair,
+        subject: &str,
+        key: &str,
+        value: Option<&str>,
+        data: &[u8],
+    ) -> Result<bool> {
+        let existing = self.get_by_key(ns, subject, key).await?;
+        if existing.is_empty() {
+            self.set_tag(ns, subject, key, value, data).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Transfer all tags from one subject to another.
+    ///
+    /// Copies each tag to the new subject, then deletes all tags from the old.
+    /// Returns the number of tags transferred.
+    pub async fn transfer_all_tags(
+        &self,
+        ns: &NamespacePair,
+        from: &str,
+        to: &str,
+    ) -> Result<usize> {
+        let tags = self.get_tags(ns, from).await?;
+        let count = tags.len();
+        for tag in &tags {
+            self.set_tag(ns, to, &tag.key, tag.value.as_deref(), b"")
+                .await?;
+        }
+        self.del_all_tags(ns, from).await?;
+
+        // Emit a single transfer event (the individual set/del events are already emitted
+        // by set_tag and del_all_tags above, so this is a higher-level summary).
+        self.emit(TagEvent::Transfer {
+            ns: self.ns_name(ns),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            count,
+        });
 
         Ok(count)
     }
@@ -681,12 +875,22 @@ impl TagStore {
     /// List all tags in an α namespace.
     pub async fn list_all(&self, ns: &NamespacePair) -> Result<Vec<Tag>> {
         let query = Query::all().build();
-        let mut entries = ns.alpha.get_many(query).await?;
+        let entries = ns.alpha.get_many(query).await?;
+        tokio::pin!(entries);
         let mut tags = Vec::new();
         while let Some(entry) = entries.try_next().await? {
             tags.push(entry_to_tag_alpha(&entry)?);
         }
         Ok(tags)
+    }
+
+    /// Find all tags with a specific key across all subjects.
+    ///
+    /// Performs a full α scan and filters in-memory. Suitable for small to
+    /// moderate datasets (hundreds to low thousands of tags).
+    pub async fn find_by_key(&self, ns: &NamespacePair, key: &str) -> Result<Vec<Tag>> {
+        let all = self.list_all(ns).await?;
+        Ok(all.into_iter().filter(|t| t.key == key).collect())
     }
 }
 
@@ -696,8 +900,9 @@ impl TagStore {
 
 /// Query an α document by key prefix and decode results.
 async fn query_alpha_prefix(doc: &Doc, prefix: &[u8]) -> Result<Vec<Tag>> {
-    let query = Query::key_prefix(prefix.to_vec()).build();
-    let mut entries = doc.get_many(query).await?;
+    let query = Query::key_prefix(prefix).build();
+    let entries = doc.get_many(query).await?;
+    tokio::pin!(entries);
     let mut tags = Vec::new();
     while let Some(entry) = entries.try_next().await? {
         tags.push(entry_to_tag_alpha(&entry)?);
@@ -707,8 +912,9 @@ async fn query_alpha_prefix(doc: &Doc, prefix: &[u8]) -> Result<Vec<Tag>> {
 
 /// Query an Ω document by key prefix and decode results.
 async fn query_omega_prefix(doc: &Doc, prefix: &[u8]) -> Result<Vec<Tag>> {
-    let query = Query::key_prefix(prefix.to_vec()).build();
-    let mut entries = doc.get_many(query).await?;
+    let query = Query::key_prefix(prefix).build();
+    let entries = doc.get_many(query).await?;
+    tokio::pin!(entries);
     let mut tags = Vec::new();
     while let Some(entry) = entries.try_next().await? {
         tags.push(entry_to_tag_omega(&entry)?);
@@ -792,76 +998,249 @@ fn parse_namespace_id(hex: &str) -> Result<NamespaceId> {
 ///
 /// If `pair_ids` is `None`, creates both docs and sets it to `Some(...)`.
 /// If `pair_ids` is `Some(...)` with valid IDs, opens the existing docs.
+/// If the docs no longer exist in the store (e.g., ephemeral mode restart),
+/// creates fresh ones and updates the IDs.
 async fn ensure_pair(docs: &Docs, pair_ids: &mut Option<PairIds>) -> Result<NamespacePair> {
-    match pair_ids {
-        Some(ids) if !ids.alpha.is_empty() && !ids.omega.is_empty() => {
-            let alpha_id = parse_namespace_id(&ids.alpha)?;
-            let omega_id = parse_namespace_id(&ids.omega)?;
-            let alpha = docs
-                .open(alpha_id)
-                .await?
-                .context("global α document not found in store")?;
-            let omega = docs
-                .open(omega_id)
-                .await?
-                .context("global Ω document not found in store")?;
-            Ok(NamespacePair {
-                alpha,
-                omega,
-                alpha_id,
-                omega_id,
-            })
+    if let Some(ids) = pair_ids
+        && !ids.alpha.is_empty()
+        && !ids.omega.is_empty()
+    {
+        if let Ok(alpha_id) = parse_namespace_id(&ids.alpha)
+            && let Ok(omega_id) = parse_namespace_id(&ids.omega)
+        {
+            // Try to open existing — if either is missing, fall through to create
+            if let Ok(Some(alpha)) = docs.open(alpha_id).await
+                && let Ok(Some(omega)) = docs.open(omega_id).await
+            {
+                return Ok(NamespacePair {
+                    alpha,
+                    omega,
+                    alpha_id,
+                    omega_id,
+                });
+            }
         }
-        _ => {
-            let alpha = docs.create().await?;
-            let omega = docs.create().await?;
-            let alpha_id = alpha.id();
-            let omega_id = omega.id();
-            *pair_ids = Some(PairIds {
-                alpha: alpha_id.to_string(),
-                omega: omega_id.to_string(),
-            });
-            Ok(NamespacePair {
+        tracing::info!("namespace pair not found in store, creating fresh pair");
+    }
+
+    // Create fresh pair
+    let alpha = docs.create().await?;
+    let omega = docs.create().await?;
+    let alpha_id = alpha.id();
+    let omega_id = omega.id();
+    *pair_ids = Some(PairIds {
+        alpha: alpha_id.to_string(),
+        omega: omega_id.to_string(),
+    });
+    Ok(NamespacePair {
+        alpha,
+        omega,
+        alpha_id,
+        omega_id,
+    })
+}
+
+/// Ensure an α/Ω pair from mutable `PairIds`, creating new docs if IDs are empty
+/// or if the referenced namespaces no longer exist in the store.
+async fn ensure_pair_from_ids(docs: &Docs, ids: &mut PairIds) -> Result<NamespacePair> {
+    if !ids.alpha.is_empty() && !ids.omega.is_empty() {
+        if let Ok(alpha_id) = parse_namespace_id(&ids.alpha)
+            && let Ok(omega_id) = parse_namespace_id(&ids.omega)
+            && let Ok(Some(alpha)) = docs.open(alpha_id).await
+            && let Ok(Some(omega)) = docs.open(omega_id).await
+        {
+            return Ok(NamespacePair {
                 alpha,
                 omega,
                 alpha_id,
                 omega_id,
-            })
+            });
+        }
+        tracing::info!("node namespace pair not found in store, creating fresh pair");
+    }
+
+    // Create fresh pair
+    let alpha = docs.create().await?;
+    let omega = docs.create().await?;
+    ids.alpha = alpha.id().to_string();
+    ids.omega = omega.id().to_string();
+    Ok(NamespacePair {
+        alpha_id: alpha.id(),
+        omega_id: omega.id(),
+        alpha,
+        omega,
+    })
+}
+
+// ============================================================================
+// Legacy MetaDoc system (backward compatibility)
+// ============================================================================
+// These functions maintain the old JSON-blob metadata system stored in the
+// `.meta` iroh-blobs tag. They coexist with the new iroh-docs system during
+// migration. Callers should migrate to TagStore methods over time.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use iroh_blobs::api::Store;
+
+/// Reserved iroh-blobs tag name for the legacy metadata document.
+const META_TAG: &str = ".meta";
+
+/// Current legacy metadata document version.
+const LEGACY_META_VERSION: u32 = 1;
+
+/// The legacy metadata document stored as a JSON blob.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetaDoc {
+    /// Schema version for forward compatibility.
+    pub version: u32,
+    /// All metadata tags.
+    pub tags: Vec<MetaTag>,
+}
+
+/// A single legacy metadata tag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaTag {
+    /// Subject this tag describes (usually a filename like "README.md").
+    pub subject: String,
+    /// Tag key (e.g., "created", "category", "author").
+    pub key: String,
+    /// Optional value. `None` for key-only tags like "pinned".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Optional link to another entity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<MetaLink>,
+    /// When this tag was created (unix seconds).
+    pub created_at: u64,
+    /// When this tag was last modified (unix seconds).
+    pub modified_at: u64,
+}
+
+/// A link target — points to a content hash or a filename.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "target")]
+pub enum MetaLink {
+    /// Points to a content hash (hex string).
+    Hash(String),
+    /// Points to a filename / tag name.
+    Name(String),
+}
+
+/// Get current unix timestamp in seconds.
+pub fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Load the legacy metadata document from the store.
+///
+/// Returns an empty `MetaDoc` if the `.meta` tag doesn't exist yet.
+pub async fn load_meta(store: &Store) -> Result<MetaDoc> {
+    let Some(tag_info) = store.tags().get(META_TAG).await? else {
+        return Ok(MetaDoc::default());
+    };
+
+    let bytes = store.blobs().get_bytes(tag_info.hash).await?;
+    let doc: MetaDoc = serde_json::from_slice(&bytes)?;
+    Ok(doc)
+}
+
+/// Save the legacy metadata document to the store.
+pub async fn save_meta(store: &Store, doc: &MetaDoc) -> Result<()> {
+    let json = serde_json::to_vec(doc)?;
+    let outcome = store.blobs().add_bytes(json).await?;
+    store.tags().set(META_TAG, outcome.hash).await?;
+    Ok(())
+}
+
+/// Check if a tag name is internal (starts with `.`).
+pub fn is_internal_tag(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+/// Add a new tag to the legacy metadata document.
+pub fn add_tag(
+    doc: &mut MetaDoc,
+    subject: &str,
+    key: &str,
+    value: Option<&str>,
+    link: Option<MetaLink>,
+) {
+    let now = now_unix();
+    doc.tags.push(MetaTag {
+        subject: subject.to_owned(),
+        key: key.to_owned(),
+        value: value.map(ToOwned::to_owned),
+        link,
+        created_at: now,
+        modified_at: now,
+    });
+}
+
+/// Get created time for a subject from the legacy metadata.
+pub fn get_created_time(doc: &MetaDoc, subject: &str) -> Option<u64> {
+    doc.tags
+        .iter()
+        .find(|t| t.subject == subject && t.key == "created")
+        .and_then(|t| t.value.as_deref().and_then(|v| v.parse().ok()))
+}
+
+/// Get modified time for a subject from the legacy metadata.
+pub fn get_modified_time(doc: &MetaDoc, subject: &str) -> Option<u64> {
+    doc.tags
+        .iter()
+        .find(|t| t.subject == subject && t.key == "modified")
+        .and_then(|t| t.value.as_deref().and_then(|v| v.parse().ok()))
+}
+
+/// Set the `created` timestamp for a subject (only if not already set).
+pub fn set_created(doc: &mut MetaDoc, subject: &str) {
+    let exists = doc
+        .tags
+        .iter()
+        .any(|t| t.subject == subject && t.key == "created");
+    if !exists {
+        let now = now_unix();
+        add_tag(doc, subject, "created", Some(&now.to_string()), None);
+    }
+}
+
+/// Set/update the `modified` timestamp for a subject.
+pub fn set_modified(doc: &mut MetaDoc, subject: &str) {
+    let now = now_unix();
+    // Remove existing modified tag
+    doc.tags
+        .retain(|t| !(t.subject == subject && t.key == "modified"));
+    add_tag(doc, subject, "modified", Some(&now.to_string()), None);
+}
+
+/// Transfer all tags from one subject to another.
+pub fn transfer_tags(doc: &mut MetaDoc, from: &str, to: &str) {
+    for tag in &mut doc.tags {
+        if tag.subject == from {
+            tag.subject = to.to_owned();
         }
     }
 }
 
-/// Ensure an α/Ω pair from mutable `PairIds`, creating new docs if IDs are empty.
-async fn ensure_pair_from_ids(docs: &Docs, ids: &mut PairIds) -> Result<NamespacePair> {
-    if ids.alpha.is_empty() || ids.omega.is_empty() {
-        let alpha = docs.create().await?;
-        let omega = docs.create().await?;
-        ids.alpha = alpha.id().to_string();
-        ids.omega = omega.id().to_string();
-        Ok(NamespacePair {
-            alpha_id: alpha.id(),
-            omega_id: omega.id(),
-            alpha,
-            omega,
-        })
-    } else {
-        let alpha_id = parse_namespace_id(&ids.alpha)?;
-        let omega_id = parse_namespace_id(&ids.omega)?;
-        let alpha = docs
-            .open(alpha_id)
-            .await?
-            .context("node α document not found in store")?;
-        let omega = docs
-            .open(omega_id)
-            .await?
-            .context("node Ω document not found in store")?;
-        Ok(NamespacePair {
-            alpha,
-            omega,
-            alpha_id,
-            omega_id,
-        })
-    }
+/// Add an archive tag linking a subject to its archived copy.
+pub fn add_archive_tag(
+    doc: &mut MetaDoc,
+    subject: &str,
+    archive_name: &str,
+    hash: &str,
+    reason: &str,
+) {
+    add_tag(
+        doc,
+        subject,
+        &format!("archive.{reason}"),
+        Some(archive_name),
+        Some(MetaLink::Hash(hash.to_owned())),
+    );
 }
 
 // ============================================================================

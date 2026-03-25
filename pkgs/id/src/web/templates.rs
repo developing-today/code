@@ -10,7 +10,7 @@
 use std::fmt::Write;
 
 use super::content_mode::MediaType;
-use super::routes::{FileInfo, FileKind};
+use super::routes::{FileKind, FileListPage};
 
 /// Asset URLs for templates.
 ///
@@ -132,7 +132,7 @@ pub fn render_main_page_wrapper(content: &str) -> String {
 /// # Returns
 ///
 /// HTML fragment for the file list.
-pub fn render_file_list(files: &[FileInfo]) -> String {
+pub fn render_file_list(page: &FileListPage) -> String {
     let mut html = String::with_capacity(4096);
 
     // New file form — above the file list, styled like the filter bar
@@ -149,14 +149,49 @@ pub fn render_file_list(files: &[FileInfo]) -> String {
     // File list card
     html.push_str("<div class=\"card mt-md\"><div class=\"card-header\">Files</div>");
 
-    // Search/filter bar
+    // Search/filter bar — server-side search via HTMX
+    let search_value = page.search.as_deref().map(html_escape).unwrap_or_default();
     html.push_str("<div class=\"file-filter\" id=\"file-filter\">");
-    html.push_str("<input type=\"text\" id=\"file-search\" class=\"file-search\" placeholder=\"search files...\" autocomplete=\"off\" />");
+    let _ = write!(
+        html,
+        "<input type=\"text\" id=\"file-search\" class=\"file-search\" name=\"search\" \
+         placeholder=\"search files & tags...\" autocomplete=\"off\" \
+         value=\"{}\" \
+         hx-get=\"/api/files\" hx-trigger=\"keyup changed delay:300ms, search\" \
+         hx-target=\"#file-list-content\" hx-include=\"[name='search']\" />",
+        search_value
+    );
     html.push_str("<label class=\"file-toggle\"><input type=\"checkbox\" id=\"show-auto\" /> show auto/archive</label>");
     html.push_str("</div>");
 
+    // Inner content (list + pagination) — replaceable by HTMX
+    html.push_str("<div id=\"file-list-content\">");
+    html.push_str(&render_file_list_content(page));
+    html.push_str("</div>");
+
+    html.push_str("</div>"); // card
+
+    html
+}
+
+/// Render just the file list items and pagination controls.
+///
+/// This is the HTMX-replaceable inner content of the file list card.
+/// Used by `/api/files` for search and pagination partial updates.
+pub fn render_file_list_content(page: &FileListPage) -> String {
+    let files = &page.files;
+    let mut html = String::with_capacity(2048);
+
     if files.is_empty() {
-        html.push_str("<p class=\"text-muted\" style=\"padding: 1rem;\">No files stored yet.</p>");
+        if page.search.is_some() {
+            html.push_str(
+                "<p class=\"text-muted\" style=\"padding: 1rem;\">No files match your search.</p>",
+            );
+        } else {
+            html.push_str(
+                "<p class=\"text-muted\" style=\"padding: 1rem;\">No files stored yet.</p>",
+            );
+        }
     } else {
         html.push_str("<ul class=\"file-list\">");
         for file in files {
@@ -189,7 +224,7 @@ pub fn render_file_list(files: &[FileInfo]) -> String {
                 FileKind::Primary => String::new(),
             };
 
-            // Timestamp display — prefer modified_at (from MetaDoc), fall back to tag-parsed timestamp
+            // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
             let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
             let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
             let date_html = if date_str.is_empty() {
@@ -218,7 +253,66 @@ pub fn render_file_list(files: &[FileInfo]) -> String {
         html.push_str("</ul>");
     }
 
-    html.push_str("</div>");
+    // Pagination controls
+    let total_pages = (page.total + page.per_page - 1) / page.per_page.max(1);
+    if total_pages > 1 {
+        let search_param = page
+            .search
+            .as_deref()
+            .map(|s| format!("&search={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+
+        html.push_str("<div class=\"file-pagination\">");
+
+        // Info text
+        let start = (page.page - 1) * page.per_page + 1;
+        let end = (start + page.files.len()).saturating_sub(1);
+        let _ = write!(
+            html,
+            "<span class=\"pagination-info\">{}-{} of {}</span>",
+            start, end, page.total
+        );
+
+        html.push_str("<span class=\"pagination-btns\">");
+
+        // Previous button
+        if page.page > 1 {
+            let _ = write!(
+                html,
+                "<a class=\"header-btn\" hx-get=\"/api/files?page={}&per_page={}{}\" \
+                 hx-target=\"#file-list-content\" hx-swap=\"innerHTML\">&laquo; prev</a>",
+                page.page - 1,
+                page.per_page,
+                search_param
+            );
+        } else {
+            html.push_str("<span class=\"header-btn\" style=\"opacity:0.3\">&laquo; prev</span>");
+        }
+
+        // Page indicator
+        let _ = write!(
+            html,
+            "<span class=\"pagination-page\">{} / {}</span>",
+            page.page, total_pages
+        );
+
+        // Next button
+        if page.page < total_pages {
+            let _ = write!(
+                html,
+                "<a class=\"header-btn\" hx-get=\"/api/files?page={}&per_page={}{}\" \
+                 hx-target=\"#file-list-content\" hx-swap=\"innerHTML\">next &raquo;</a>",
+                page.page + 1,
+                page.per_page,
+                search_param
+            );
+        } else {
+            html.push_str("<span class=\"header-btn\" style=\"opacity:0.3\">next &raquo;</span>");
+        }
+
+        html.push_str("</span>"); // pagination-btns
+        html.push_str("</div>"); // file-pagination
+    }
 
     html
 }
@@ -661,6 +755,8 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    use crate::web::routes::FileInfo;
+
     #[test]
     fn test_html_escape() {
         assert_eq!(html_escape("<script>"), "&lt;script&gt;");
@@ -703,7 +799,14 @@ mod tests {
 
     #[test]
     fn test_render_file_list_empty() {
-        let html = render_file_list(&[]);
+        let page = FileListPage {
+            files: vec![],
+            total: 0,
+            page: 1,
+            per_page: 50,
+            search: None,
+        };
+        let html = render_file_list(&page);
         assert!(html.contains("No files stored yet"));
     }
 
@@ -719,7 +822,14 @@ mod tests {
             created_at: None,
             modified_at: None,
         }];
-        let html = render_file_list(&files);
+        let page = FileListPage {
+            total: files.len(),
+            files,
+            page: 1,
+            per_page: 50,
+            search: None,
+        };
+        let html = render_file_list(&page);
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
     }

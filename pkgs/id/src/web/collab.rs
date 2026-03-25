@@ -13,6 +13,7 @@
 //! - `[4, clientID, head, anchor, name?, idleSecs?]` - Cursor position
 //! - `[5, error]` - Error message
 //! - `[6, clientID]` - Cursor removed (client disconnected)
+//! - `[7, hash, name]` - New version saved (reload available)
 //! - `""` (empty text) - Ping/pong for inactive tab cursor refresh
 //!
 //! ## Content Modes
@@ -76,6 +77,7 @@ mod msg {
     pub const CURSOR: u8 = 4;
     pub const ERROR: u8 = 5;
     pub const CURSOR_REMOVE: u8 = 6;
+    pub const NEW_VERSION: u8 = 7;
 }
 
 /// Query parameters for WebSocket connection.
@@ -333,6 +335,30 @@ impl CollabState {
         write.remove(doc_id);
         tracing::info!("[collab] Document '{}' cleaned up", doc_id);
     }
+
+    /// Notify clients editing a document that a new version was saved.
+    ///
+    /// Called by `save_handler` when a file is saved with a new hash.
+    /// Broadcasts `NewVersion` to all clients connected to the old hash session.
+    pub async fn notify_new_version(&self, old_doc_id: &str, new_hash: &str, filename: &str) {
+        let read = self.documents.read().await;
+        if let Some(doc) = read.get(old_doc_id) {
+            let msg = CollabMessage::NewVersion {
+                hash: new_hash.to_owned(),
+                name: filename.to_owned(),
+            };
+            let receivers = doc.broadcast.send(msg).unwrap_or(0);
+            if receivers > 0 {
+                tracing::info!(
+                    "[collab] Notified {} client(s) about new version of '{}': {} -> {}",
+                    receivers,
+                    filename,
+                    old_doc_id,
+                    new_hash
+                );
+            }
+        }
+    }
 }
 
 /// Messages sent over the WebSocket connection.
@@ -373,6 +399,9 @@ pub enum CollabMessage {
     Error { error: String },
     /// `[6, clientID]` - Cursor removed (client disconnected).
     CursorRemove { client_id: u64 },
+    /// `[7, hash, name]` - New version of the file was saved.
+    /// Tells clients editing the old hash that a newer version exists.
+    NewVersion { hash: String, name: String },
 }
 
 impl CollabMessage {
@@ -405,6 +434,9 @@ impl CollabMessage {
             Self::Error { error } => to_vec(&(msg::ERROR, error)).unwrap_or_default(),
             Self::CursorRemove { client_id } => {
                 to_vec(&(msg::CURSOR_REMOVE, client_id)).unwrap_or_default()
+            }
+            Self::NewVersion { hash, name } => {
+                to_vec(&(msg::NEW_VERSION, hash, name)).unwrap_or_default()
             }
         }
     }
@@ -479,6 +511,10 @@ impl CollabMessage {
 
         if let Ok((msg::ERROR, error)) = from_slice::<(u8, String)>(data) {
             return Some(Self::Error { error });
+        }
+
+        if let Ok((msg::NEW_VERSION, hash, name)) = from_slice::<(u8, String, String)>(data) {
+            return Some(Self::NewVersion { hash, name });
         }
 
         None
@@ -1116,6 +1152,25 @@ mod tests {
                 assert_eq!(error, "Version mismatch");
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_new_version_roundtrip() {
+        let msg = CollabMessage::NewVersion {
+            hash: "abc123def456".to_owned(),
+            name: "README.md".to_owned(),
+        };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::NewVersion { hash, name } => {
+                assert_eq!(hash, "abc123def456");
+                assert_eq!(name, "README.md");
+            }
+            _ => panic!("Expected NewVersion message"),
         }
     }
 
