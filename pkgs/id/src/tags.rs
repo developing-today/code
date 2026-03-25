@@ -17,7 +17,7 @@
 //!
 //! # Key encoding
 //!
-//! Keys use [`TupleEncoder`](crate::tuple::TupleEncoder) for sort-preserving
+//! Keys use [`TupleEncoder`] for sort-preserving
 //! binary encoding. A tag `(subject="README.md", key="label", value="rust")`
 //! becomes:
 //!
@@ -209,29 +209,45 @@ pub enum TagEvent {
     Set {
         /// Namespace name ("global", "node", or custom name).
         ns: String,
+        /// Subject (file/entity) this tag belongs to.
         subject: String,
+        /// Tag key (e.g. "label", "status").
         key: String,
+        /// Optional tag value.
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<String>,
     },
     /// A tag was deleted.
     #[serde(rename = "del")]
     Del {
+        /// Namespace name.
         ns: String,
+        /// Subject the tag was deleted from.
         subject: String,
+        /// Tag key that was deleted.
         key: String,
+        /// Optional tag value that was deleted.
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<String>,
     },
     /// All tags for a subject were deleted.
     #[serde(rename = "del_all")]
-    DelAll { ns: String, subject: String },
+    DelAll {
+        /// Namespace name.
+        ns: String,
+        /// Subject whose tags were all deleted.
+        subject: String,
+    },
     /// Tags were transferred from one subject to another.
     #[serde(rename = "transfer")]
     Transfer {
+        /// Namespace name.
         ns: String,
+        /// Source subject.
         from: String,
+        /// Destination subject.
         to: String,
+        /// Number of tags transferred.
         count: usize,
     },
 }
@@ -800,6 +816,19 @@ impl TagStore {
             count,
         });
 
+        Ok(count)
+    }
+
+    /// Copy all tags from one subject to another without deleting the originals.
+    ///
+    /// Returns the number of tags copied.
+    pub async fn copy_all_tags(&self, ns: &NamespacePair, from: &str, to: &str) -> Result<usize> {
+        let tags = self.get_tags(ns, from).await?;
+        let count = tags.len();
+        for tag in &tags {
+            self.set_tag(ns, to, &tag.key, tag.value.as_deref(), b"")
+                .await?;
+        }
         Ok(count)
     }
 }
@@ -1443,6 +1472,167 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ========================================================================
+    // TagEvent serialization tests
+    // ========================================================================
+
+    #[test]
+    fn test_tag_event_set_serialization() {
+        let event = TagEvent::Set {
+            ns: "global".to_owned(),
+            subject: "README.md".to_owned(),
+            key: "label".to_owned(),
+            value: Some("rust".to_owned()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"set\""));
+        assert!(json.contains("\"ns\":\"global\""));
+        assert!(json.contains("\"subject\":\"README.md\""));
+        assert!(json.contains("\"key\":\"label\""));
+        assert!(json.contains("\"value\":\"rust\""));
+    }
+
+    #[test]
+    fn test_tag_event_set_without_value() {
+        let event = TagEvent::Set {
+            ns: "global".to_owned(),
+            subject: "README.md".to_owned(),
+            key: "pinned".to_owned(),
+            value: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        // value should be skipped when None
+        assert!(!json.contains("\"value\""));
+        assert!(json.contains("\"key\":\"pinned\""));
+    }
+
+    #[test]
+    fn test_tag_event_del_serialization() {
+        let event = TagEvent::Del {
+            ns: "node".to_owned(),
+            subject: "file.txt".to_owned(),
+            key: "status".to_owned(),
+            value: Some("draft".to_owned()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"del\""));
+        assert!(json.contains("\"ns\":\"node\""));
+        assert!(json.contains("\"subject\":\"file.txt\""));
+    }
+
+    #[test]
+    fn test_tag_event_del_all_serialization() {
+        let event = TagEvent::DelAll {
+            ns: "global".to_owned(),
+            subject: "old-file.md".to_owned(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"del_all\""));
+        assert!(json.contains("\"subject\":\"old-file.md\""));
+        // Should not have key or value fields
+        assert!(!json.contains("\"key\""));
+        assert!(!json.contains("\"value\""));
+    }
+
+    #[test]
+    fn test_tag_event_transfer_serialization() {
+        let event = TagEvent::Transfer {
+            ns: "global".to_owned(),
+            from: "old.md".to_owned(),
+            to: "new.md".to_owned(),
+            count: 5,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"transfer\""));
+        assert!(json.contains("\"from\":\"old.md\""));
+        assert!(json.contains("\"to\":\"new.md\""));
+        assert!(json.contains("\"count\":5"));
+    }
+
+    // ========================================================================
+    // Special characters and edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_encode_decode_special_chars_in_subject() {
+        let subjects = [
+            "file with spaces.txt",
+            "file/with/slashes.md",
+            "emoji_🦀.rs",
+            "dots...multiple...dots",
+            "",
+        ];
+        for subject in subjects {
+            let encoded = encode_alpha_key(subject, "key", Some("val"));
+            let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+            assert_eq!(s, subject, "subject roundtrip failed for: {subject:?}");
+            assert_eq!(k, "key");
+            assert_eq!(v, Some("val".to_owned()));
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_special_chars_in_key() {
+        let keys = [
+            "key-with-dashes",
+            "key.with.dots",
+            "key_with_underscores",
+            "",
+        ];
+        for key in keys {
+            let encoded = encode_alpha_key("file.txt", key, Some("val"));
+            let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+            assert_eq!(s, "file.txt");
+            assert_eq!(k, key, "key roundtrip failed for: {key:?}");
+            assert_eq!(v, Some("val".to_owned()));
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_special_chars_in_value() {
+        let values = [
+            Some("value with spaces"),
+            Some("value/with/slashes"),
+            Some(""),
+            None,
+        ];
+        for value in &values {
+            let encoded = encode_alpha_key("file.txt", "key", *value);
+            let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+            assert_eq!(s, "file.txt");
+            assert_eq!(k, "key");
+            assert_eq!(
+                v.as_deref(),
+                *value,
+                "value roundtrip failed for: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_alpha_key_prefix_isolation() {
+        // Keys for "file.txt" should NOT match prefix for "file.txt.bak"
+        let key = encode_alpha_key("file.txt", "label", Some("v1"));
+        let prefix = encode_alpha_subject_prefix("file.txt.bak");
+        assert!(!key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn test_omega_key_different_values_sort_correctly() {
+        // Omega keys group by value, so same value different subjects should be adjacent
+        let k1 = encode_omega_key("a.txt", "label", Some("rust"));
+        let k2 = encode_omega_key("z.txt", "label", Some("rust"));
+        let k3 = encode_omega_key("a.txt", "label", Some("python"));
+
+        // rust > python alphabetically, so k3 (python) < k1 (rust)
+        assert!(k3 < k1, "python < rust in Ω order");
+        // Same value (rust), different subjects should both match same value prefix
+        let prefix = encode_omega_value_prefix("rust");
+        assert!(k1.starts_with(&prefix));
+        assert!(k2.starts_with(&prefix));
+        assert!(!k3.starts_with(&prefix));
     }
 
     #[test]

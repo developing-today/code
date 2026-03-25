@@ -437,6 +437,8 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str("            </span>\n");
     // Rename button
     html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    // Copy button
+    html.push_str("            <button class=\"header-btn\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
     html.push_str("            <a href=\"/peers\" hx-get=\"/peers\" hx-target=\"#main\" hx-push-url=\"true\">peers</a>\n");
     html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
@@ -584,13 +586,19 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     }
 
     html.push_str("    </div>\n");
-    html.push_str("    <div class=\"flex justify-between mt-md\">\n");
+    html.push_str("    <div class=\"flex justify-between mt-md viewer-actions\" data-filename=\"");
+    html.push_str(name_urlencoded.as_ref());
+    html.push_str("\">\n");
     html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
+    html.push_str("        <span class=\"viewer-btns\">\n");
+    html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"header-btn\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
-        "        <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
+        "            <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
         blob_url, name_escaped
     );
+    html.push_str("        </span>\n");
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
 
@@ -628,13 +636,19 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     );
     html.push_str("        <p class=\"text-muted\">Download it to view with an appropriate application.</p>\n");
     html.push_str("    </div>\n");
-    html.push_str("    <div class=\"flex justify-between mt-md\">\n");
+    html.push_str("    <div class=\"flex justify-between mt-md viewer-actions\" data-filename=\"");
+    html.push_str(name_urlencoded.as_ref());
+    html.push_str("\">\n");
     html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
+    html.push_str("        <span class=\"viewer-btns\">\n");
+    html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"header-btn\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
-        "        <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
+        "            <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
         blob_url, name_escaped
     );
+    html.push_str("        </span>\n");
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
 
@@ -837,6 +851,7 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    use crate::web::content_mode::MediaType;
     use crate::web::routes::FileInfo;
 
     #[test]
@@ -949,5 +964,235 @@ mod tests {
         assert_eq!(format_age(90), "1m ago");
         assert_eq!(format_age(7200), "2h ago");
         assert_eq!(format_age(172_800), "2d ago");
+    }
+
+    // ========================================================================
+    // Editor page rename/copy button tests
+    // ========================================================================
+
+    #[test]
+    fn test_render_editor_has_rename_button() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>");
+        assert!(
+            html.contains("id=\"rename-btn\""),
+            "editor should have rename button"
+        );
+        assert!(
+            html.contains("renameFile"),
+            "rename button should call renameFile"
+        );
+    }
+
+    #[test]
+    fn test_render_editor_has_copy_button() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>");
+        assert!(
+            html.contains("id=\"copy-btn\""),
+            "editor should have copy button"
+        );
+        assert!(
+            html.contains("copyFile"),
+            "copy button should call copyFile"
+        );
+    }
+
+    #[test]
+    fn test_render_editor_has_data_filename() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>");
+        assert!(
+            html.contains("data-filename=\"test.md\""),
+            "editor should have data-filename attribute"
+        );
+    }
+
+    #[test]
+    fn test_render_editor_escapes_filename() {
+        let html = render_editor("abc123", "file with spaces.md", "<p>content</p>");
+        // URL-encoded filename in data attribute
+        assert!(
+            html.contains("data-filename=\"file%20with%20spaces.md\""),
+            "editor should URL-encode filename in data attribute"
+        );
+    }
+
+    // ========================================================================
+    // Media viewer rename/copy button tests
+    // ========================================================================
+
+    #[test]
+    fn test_render_media_viewer_has_rename_button() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("id=\"rename-btn\""),
+            "media viewer should have rename button"
+        );
+        assert!(
+            html.contains("renameFile"),
+            "rename button should call renameFile"
+        );
+    }
+
+    #[test]
+    fn test_render_media_viewer_has_copy_button() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("id=\"copy-btn\""),
+            "media viewer should have copy button"
+        );
+        assert!(
+            html.contains("copyFile"),
+            "copy button should call copyFile"
+        );
+    }
+
+    #[test]
+    fn test_render_media_viewer_has_data_filename() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("data-filename=\"photo.jpg\""),
+            "media viewer should have data-filename attribute"
+        );
+    }
+
+    #[test]
+    fn test_render_media_viewer_has_viewer_actions_class() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("viewer-actions"),
+            "media viewer should have viewer-actions class for JS lookup"
+        );
+    }
+
+    #[test]
+    fn test_render_media_viewer_image() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(html.contains("<img"), "image type should render img tag");
+        assert!(
+            html.contains("media-content"),
+            "should have media-content class"
+        );
+    }
+
+    #[test]
+    fn test_render_media_viewer_video() {
+        let html = render_media_viewer("abc123", "clip.mp4", MediaType::Video);
+        assert!(
+            html.contains("<video"),
+            "video type should render video tag"
+        );
+        assert!(html.contains("controls"), "video should have controls");
+    }
+
+    #[test]
+    fn test_render_media_viewer_audio() {
+        let html = render_media_viewer("abc123", "song.mp3", MediaType::Audio);
+        assert!(
+            html.contains("<audio"),
+            "audio type should render audio tag"
+        );
+        assert!(html.contains("controls"), "audio should have controls");
+    }
+
+    #[test]
+    fn test_render_media_viewer_pdf() {
+        let html = render_media_viewer("abc123", "doc.pdf", MediaType::Pdf);
+        assert!(html.contains("<embed"), "pdf type should render embed tag");
+        assert!(
+            html.contains("application/pdf"),
+            "embed should have pdf type"
+        );
+    }
+
+    #[test]
+    fn test_render_media_viewer_download_link() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("Download"),
+            "media viewer should have download link"
+        );
+        assert!(
+            html.contains("/blob/abc123"),
+            "download should link to blob URL"
+        );
+    }
+
+    // ========================================================================
+    // Binary viewer rename/copy button tests
+    // ========================================================================
+
+    #[test]
+    fn test_render_binary_viewer_has_rename_button() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("id=\"rename-btn\""),
+            "binary viewer should have rename button"
+        );
+        assert!(
+            html.contains("renameFile"),
+            "rename button should call renameFile"
+        );
+    }
+
+    #[test]
+    fn test_render_binary_viewer_has_copy_button() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("id=\"copy-btn\""),
+            "binary viewer should have copy button"
+        );
+        assert!(
+            html.contains("copyFile"),
+            "copy button should call copyFile"
+        );
+    }
+
+    #[test]
+    fn test_render_binary_viewer_has_data_filename() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("data-filename=\"data.bin\""),
+            "binary viewer should have data-filename attribute"
+        );
+    }
+
+    #[test]
+    fn test_render_binary_viewer_has_viewer_actions_class() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("viewer-actions"),
+            "binary viewer should have viewer-actions class for JS lookup"
+        );
+    }
+
+    #[test]
+    fn test_render_binary_viewer_download_link() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("Download"),
+            "binary viewer should have download link"
+        );
+        assert!(
+            html.contains("/blob/abc123"),
+            "download should link to blob URL"
+        );
+    }
+
+    #[test]
+    fn test_render_binary_viewer_cannot_display_message() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("cannot be displayed"),
+            "binary viewer should show cannot-display message"
+        );
+    }
+
+    #[test]
+    fn test_render_binary_viewer_escapes_filename() {
+        let html = render_binary_viewer("abc123", "file<script>.bin");
+        // HTML-escaped name in card header
+        assert!(
+            html.contains("file&lt;script&gt;.bin"),
+            "binary viewer should HTML-escape filename in header"
+        );
     }
 }

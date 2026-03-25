@@ -1349,3 +1349,204 @@ mod serve_tests {
         server2.stop();
     }
 }
+
+// =============================================================================
+// Tag CLI integration tests
+// =============================================================================
+
+/// Tests for the `tag` subcommand and its aliases (label, link).
+/// These tests verify CLI parsing and help output without needing a running node.
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn test_tag_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag --help should succeed");
+        assert!(
+            stdout.contains("set") && stdout.contains("del") && stdout.contains("list"),
+            "tag help should list subcommands: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_set_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "set", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag set --help should succeed");
+        assert!(
+            stdout.contains("file") && stdout.contains("key"),
+            "tag set help should describe file and key args: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_del_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "del", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag del --help should succeed");
+        assert!(
+            stdout.contains("file") && stdout.contains("key"),
+            "tag del help should describe file and key args: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_list_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "list", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag list --help should succeed");
+        assert!(
+            stdout.contains("file"),
+            "tag list help should mention file arg: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag search --help should succeed");
+        assert!(
+            stdout.contains("key"),
+            "tag search help should mention key arg: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_label_alias_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "'label' alias should show help: {stdout}"
+        );
+        assert!(
+            stdout.contains("set") && stdout.contains("del"),
+            "label help should list subcommands: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_link_alias_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["link", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "'link' alias should show help: {stdout}"
+        );
+        assert!(
+            stdout.contains("set") && stdout.contains("del"),
+            "link help should list subcommands: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_set_requires_file_and_key() {
+        let tmp = TempDir::new().unwrap();
+        // Missing all required args
+        let output = run_cmd(&["tag", "set"], tmp.path());
+        assert!(!output.status.success(), "tag set without args should fail");
+    }
+
+    #[test]
+    fn test_tag_del_requires_file_and_key() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "del"], tmp.path());
+        assert!(!output.status.success(), "tag del without args should fail");
+    }
+
+    #[test]
+    fn test_tag_search_requires_key() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search"], tmp.path());
+        assert!(
+            !output.status.success(),
+            "tag search without key should fail"
+        );
+    }
+
+    #[test]
+    fn test_label_set_help() {
+        // Verify label set --help works like tag set --help
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "set", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "label set --help should succeed");
+        assert!(
+            stdout.contains("file") && stdout.contains("key"),
+            "label set help should show file and key: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_link_list_help() {
+        // Verify link list --help works like tag list --help
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["link", "list", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "link list --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_del_alias_rm() {
+        // Verify 'rm' alias shows help correctly
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "rm", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "tag rm --help should succeed: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_del_alias_remove() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "remove", "--help"], tmp.path());
+        assert!(output.status.success(), "tag remove --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_del_alias_delete() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "delete", "--help"], tmp.path());
+        assert!(output.status.success(), "tag delete --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_del_alias_unset() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "unset", "--help"], tmp.path());
+        assert!(output.status.success(), "tag unset --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_list_alias_ls() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "ls", "--help"], tmp.path());
+        assert!(output.status.success(), "tag ls --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_search_alias_find() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "find", "--help"], tmp.path());
+        assert!(output.status.success(), "tag find --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_set_alias_add() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "add", "--help"], tmp.path());
+        assert!(output.status.success(), "tag add --help should succeed");
+    }
+}

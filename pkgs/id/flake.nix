@@ -2,9 +2,33 @@
   description = "id - A peer-to-peer file sharing CLI built with Iroh";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "github:NixOS/nixpkgs";
+    # nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    systems = {
+      url = "github:nix-systems/default";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    flake-utils = {
+      url = "github:numtide/flake-utils";
+      inputs.systems.follows = "systems";
+    };
+    import-tree.url = "github:vic/import-tree";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+    bun2nix = {
+      url = "github:nix-community/bun2nix";
+      inputs = {
+        flake-parts.follows = "flake-parts";
+        input-tree.follows = "input-tree";
+        nixpkgs.follows = "nixpkgs";
+        systems.follows = "systems";
+      };
+    };
   };
 
   outputs =
@@ -13,6 +37,9 @@
       nixpkgs,
       rust-overlay,
       flake-utils,
+      bun2nix,
+      # TODO: consider use systems here?
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -30,20 +57,63 @@
         inherit (nixCommon) buildInputs opensslEnv;
         nativeBuildInputs = [ rustToolchain ] ++ nixCommon.nativeBuildInputs;
 
+        # Pre-fetch cargo dependencies for sandbox builds (no network access)
+        cargoDeps = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./Cargo.lock;
+          outputHashes = {
+            "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
+          };
+        };
+
+        # Pre-fetch bun dependencies for sandbox builds (no network access)
+        bun2nixPkg = bun2nix.packages.${system}.default;
+        bunDeps = bun2nixPkg.fetchBunDeps {
+          bunNix = ./web/bun.nix;
+        };
+
         # Helper to create a check that runs a just command
         mkCheck =
           name: justCmd:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
             src = ./.;
-            inherit buildInputs nativeBuildInputs;
+            inherit buildInputs;
+            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
             OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
             OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
             OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
             PKG_CONFIG_PATH = opensslEnv.PKG_CONFIG_PATH;
+
+            # bun2nix hook: install web deps offline via pre-fetched cache
+            inherit bunDeps;
+            bunRoot = "web";
+            bunInstallFlags = [ "--linker=hoisted" ];
+            dontUseBunBuild = true;
+            dontUseBunCheck = true;
+            dontUseBunInstall = true;
+
             buildPhase = ''
               export HOME=$(mktemp -d)
               export CARGO_HOME=$HOME/.cargo
+
+              # Configure cargo to use vendored dependencies (nix sandbox has no network)
+              cat >> .cargo/config.toml << EOF
+
+              [source.crates-io]
+              replace-with = "vendored-sources"
+
+              [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
+              git = "https://github.com/developing-today-forks/distributed-topic-tracker"
+              branch = "main"
+              replace-with = "vendored-sources"
+
+              [source.vendored-sources]
+              directory = "${cargoDeps}"
+              EOF
+
+              # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
+              (cd web && bun run build)
+
               just ${justCmd}
             '';
             installPhase = ''
@@ -102,10 +172,10 @@
           # Individual checks
           fmt-check = mkCheck "fmt-check" "fmt-check";
           lint = mkCheck "lint" "lint";
-          test = mkCheck "test" "test";
+          test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
-          test-int = mkCheck "test-int" "test-int";
-          test-web = mkCheck "test-web" "test-web";
+          test-int = mkCheck "test-int" "test-int-sandbox";
+          test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
@@ -134,16 +204,24 @@
               pkgs.pkg-config
               rustToolchain
               pkgs.bun
+              bun2nixPkg.hook
             ];
+
+            # bun2nix: offline web dependency installation
+            inherit bunDeps;
+            bunRoot = "web";
+            bunInstallFlags = [ "--linker=hoisted" ];
+            dontUseBunBuild = true;
+            dontUseBunCheck = true;
+            dontUseBunInstall = true;
 
             OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
             OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
             OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
 
             preBuild = ''
-              # Build web assets with Bun
+              # Build web assets (bun2nix hook already installed node_modules)
               cd web
-              bun install --frozen-lockfile
               bun run build
               cd ..
             '';
@@ -236,13 +314,22 @@
           # ─────────────────────────────────────────────────────────────────────
 
           test = mkApp (mkScript "test" "just test");
+          test-sandbox = mkApp (mkScript "test-sandbox" "just test-sandbox");
           test-unit = mkApp (mkScript "test-unit" "just test-unit");
           test-int = mkApp (mkScript "test-int" "just test-int");
+          test-int-sandbox = mkApp (mkScript "test-int-sandbox" "just test-int-sandbox");
           test-one = mkApp (mkScript "test-one" ''just test-one "$@"'');
           test-web = mkApp (mkScript "test-web" "just test-web");
+          test-web-sandbox = mkApp (mkScript "test-web-sandbox" "just test-web-sandbox");
           test-web-unit = mkApp (mkScript "test-web-unit" "just test-web-unit");
           test-web-typecheck = mkApp (mkScript "test-web-typecheck" "just test-web-typecheck");
           test-verbose = mkApp (mkScript "test-verbose" "just test-verbose");
+
+          # E2E tests (Playwright - requires network, not run in sandbox)
+          test-e2e = mkApp (mkScript "test-e2e" "just test-e2e");
+          test-e2e-chromium = mkApp (mkScript "test-e2e-chromium" "just test-e2e-chromium");
+          test-e2e-firefox = mkApp (mkScript "test-e2e-firefox" "just test-e2e-firefox");
+          test-e2e-report = mkApp (mkScript "test-e2e-report" "just test-e2e-report");
 
           # ─────────────────────────────────────────────────────────────────────
           # Documentation

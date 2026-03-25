@@ -14,6 +14,9 @@
 
 set -euo pipefail
 
+# Default log level to info unless explicitly set
+export RUST_LOG="${RUST_LOG:-info}"
+
 VARIANT="${1:-web}"
 PROFILE="${2:-debug}"
 

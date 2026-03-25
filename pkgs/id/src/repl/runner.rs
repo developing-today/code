@@ -353,36 +353,61 @@ async fn execute_repl_command(
             handle_search_command(ctx, rest).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag", "set", subject, key]) => {
+        (None, ["tag" | "label" | "link", "set" | "add", subject, key]) => {
             ctx.set_tag(subject, key, None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag", "set", subject, key, value]) => {
+        (None, ["tag" | "label" | "link", "set" | "add", subject, key, value]) => {
             ctx.set_tag(subject, key, Some(value)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag", "del" | "rm", subject, key]) => {
+        (
+            None,
+            [
+                "tag" | "label" | "link",
+                "del" | "rm" | "remove" | "rem" | "delete" | "unset",
+                subject,
+                key,
+            ],
+        ) => {
             ctx.del_tag(subject, key, None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag", "del" | "rm", subject, key, value]) => {
+        (
+            None,
+            [
+                "tag" | "label" | "link",
+                "del" | "rm" | "remove" | "rem" | "delete" | "unset",
+                subject,
+                key,
+                value,
+            ],
+        ) => {
             ctx.del_tag(subject, key, Some(value)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tags"]) => {
+        (None, ["tags" | "labels" | "links"]) => {
             ctx.get_tags(None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tags", subject]) => {
+        (None, ["tags" | "labels" | "links", subject]) => {
             ctx.get_tags(Some(subject)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag", "search", key]) => {
+        (None, ["tag" | "label" | "link", "search", key]) => {
             ctx.search_tags(Some(key), None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag", "search", key, value]) => {
+        (None, ["tag" | "label" | "link", "search", key, value]) => {
             ctx.search_tags(Some(key), Some(value)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "list" | "ls"]) => {
+            ctx.get_tags(None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
+            ctx.get_tags(Some(subject)).await?;
             Ok(ReplAction::Continue)
         }
         (None, ["show" | "view", rest @ ..]) => {
@@ -486,9 +511,13 @@ fn print_help() {
     println!("  find <QUERY>...        - Find & output matches");
     println!("  search <QUERY>...      - List matches");
     println!("  tags [FILE]            - List all tags (or tags for FILE)");
-    println!("  tag set <FILE> <KEY> [VALUE] - Set a metadata tag");
+    println!("      aliases: labels, links");
+    println!("  tag set <FILE> <KEY> [VALUE] - Set a metadata tag (alias: add)");
     println!("  tag del <FILE> <KEY> [VALUE] - Delete a metadata tag");
+    println!("      aliases: rm, remove, rem, delete, unset");
+    println!("  tag list [FILE]              - List tags (same as 'tags')");
     println!("  tag search <KEY> [VALUE]     - Search tags by key/value");
+    println!("      note: 'tag' can be replaced with 'label' or 'link'");
     println!("  show <QUERY>...        - Find & cat to stdout (alias: view)");
     println!("  peek <QUERY>...        - Preview with head/tail display");
     println!("  !<cmd>                 - Run shell command");

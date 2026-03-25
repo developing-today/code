@@ -10,6 +10,7 @@
 //! - **[`list`]**: List stored blobs
 //! - **[`id`]**: Print node identity
 //! - **[`peers`]**: Discover and list known peers
+//! - **[`tag`]**: Manage metadata tags (set, del, list, search)
 //! - **[`repl`]**: Interactive REPL context management
 //!
 //! # Command Flow
@@ -63,6 +64,7 @@ pub mod peers;
 pub mod put;
 pub mod repl;
 pub mod serve;
+pub mod tag;
 
 pub use client::create_local_client_endpoint;
 pub use find::{
@@ -80,3 +82,4 @@ pub use repl::{ReplContext, ReplContextInner};
 pub use serve::{
     ServeInfo, cmd_serve, create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
+pub use tag::cmd_tag;

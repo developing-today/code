@@ -762,3 +762,17 @@
 .binary-viewer p {
   margin: var(--space-sm) 0;
 }
+
+/* ============================================================================
+   Viewer Action Buttons (rename/copy on media and binary pages)
+   ============================================================================ */
+
+.viewer-actions {
+  align-items: center;
+}
+
+.viewer-btns {
+  display: inline-flex;
+  gap: var(--space-sm);
+  align-items: center;
+}

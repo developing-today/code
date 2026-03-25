@@ -156,16 +156,17 @@ Built assets are embedded in the Rust binary via `rust-embed`.
 ```
 web/
 ├── src/
-│   ├── main.ts      # Entry point, initializes collab
+│   ├── main.ts      # Entry point, HTMX init, file operations (rename, copy)
 │   ├── editor.ts    # ProseMirror setup, schema, menu
 │   ├── collab.ts    # WebSocket client, MessagePack protocol
 │   ├── cursors.ts   # Cursor/selection plugin with fade
 │   └── theme.ts     # Theme switching
 ├── styles/
-│   ├── editor.css   # ProseMirror styles, cursor tooltips
-│   ├── terminal.css # Base terminal aesthetic
-│   └── themes.css   # Theme CSS variables
+│   ├── editor.css   # ProseMirror styles, cursor tooltips, viewer buttons
+│   ├── terminal.css # Base terminal aesthetic, file list
+│   └── themes.css   # Theme CSS variables (sneak/arch/mech)
 ├── dist/            # Built output (git-ignored)
+├── bun.nix          # Offline npm dependency fetching for nix sandbox
 └── package.json
 ```
 
@@ -224,3 +225,62 @@ function clientColor(id: number): string {
   return `hsl(${hue}, 70%, 50%)`;
 }
 ```
+
+## File Management API
+
+The web UI provides rename and copy operations via HTTP POST endpoints. Both operations are available on all file viewer pages (editor, media viewer, binary viewer) via buttons in the page header.
+
+### Rename (`POST /api/rename`)
+
+```json
+// Request
+{ "name": "old-file.txt", "new_name": "new-file.txt", "archive": true }
+
+// Response
+{
+  "name": "new-file.txt",
+  "hash": "abc123...",
+  "archived_original": "old-file.txt.archive.1711234567",
+  "archived_replaced": "target.archive.1711234567"
+}
+```
+
+- If `archive` is true, the original name is archived as `{name}.archive.{timestamp}`
+- If the target name already exists, the existing file is archived as `{new_name}.archive.{timestamp}`
+- All metadata tags are transferred from old name to new name
+
+### Copy (`POST /api/copy`)
+
+```json
+// Request
+{ "name": "source.txt", "new_name": "copy-of-source.txt" }
+
+// Response
+{ "name": "copy-of-source.txt", "hash": "abc123..." }
+```
+
+- Creates a new tag pointing to the same content hash
+- If the target name already exists, the existing file is archived
+- All metadata tags are copied from source to destination
+
+## Tags WebSocket
+
+The `/ws/tags` endpoint provides real-time tag change notifications. Clients receive JSON messages when tags are modified anywhere in the system.
+
+### Event Types
+
+```json
+{"type": "Set", "ns": "global", "subject": "readme.md", "key": "author", "value": "Jane"}
+{"type": "Del", "ns": "global", "subject": "readme.md", "key": "author"}
+{"type": "DelAll", "ns": "global", "subject": "readme.md"}
+{"type": "Transfer", "ns": "global", "from_subject": "old.md", "to_subject": "new.md"}
+```
+
+| Event    | Description                                    |
+|----------|------------------------------------------------|
+| `Set`    | A tag was added or updated                     |
+| `Del`    | A specific tag was removed                     |
+| `DelAll` | All tags were removed from a subject           |
+| `Transfer` | Tags were moved from one subject to another |
+
+The `value` field is omitted from `Set` events when the tag has no value (key-only tags). The `ns` field indicates the namespace (`global` for the default namespace).

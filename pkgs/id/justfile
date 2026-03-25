@@ -26,7 +26,7 @@ check: fix ci
     @echo "✓ All checks passed!"
 
 # CI-safe checks (read-only, no modifications) [bun]
-ci: fmt-check cargo-check lint test test-web-unit test-web-typecheck doc
+ci: fmt-check cargo-check lint test-sandbox test-web-unit test-web-typecheck doc
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -57,6 +57,10 @@ lint-fix:
 test:
     cargo test --all-features
 
+# Run all Rust tests (sandbox-safe: excludes tests requiring network)
+test-sandbox:
+    cargo test --all-features -- --skip serve_tests
+
 # Run unit tests only (fast)
 test-unit:
     cargo test --all-features --lib
@@ -64,6 +68,10 @@ test-unit:
 # Run integration tests only
 test-int:
     cargo test --all-features --test cli_integration
+
+# Run integration tests (sandbox-safe: excludes serve_tests requiring network)
+test-int-sandbox:
+    cargo test --all-features --test cli_integration -- --skip serve_tests
 
 # Run tests with output shown
 test-verbose:
@@ -77,6 +85,10 @@ test-one NAME:
 test-web: test test-web-unit test-web-typecheck
     @echo "✓ All web tests passed!"
 
+# [bun] Run web tests (sandbox-safe: excludes serve_tests requiring network)
+test-web-sandbox: test-sandbox test-web-unit test-web-typecheck
+    @echo "✓ All web tests passed (sandbox)!"
+
 # [bun] Run TypeScript unit tests only
 test-web-unit:
     cd web && bun test
@@ -84,6 +96,26 @@ test-web-unit:
 # [bun] Run TypeScript type checking only
 test-web-typecheck:
     cd web && bun run typecheck
+
+# =============================================================================
+# E2E Tests (Playwright - requires built web variant + network)
+# =============================================================================
+
+# [bun] Run Playwright E2E tests (both chromium and firefox)
+test-e2e: build
+    cd e2e && bun install --frozen-lockfile && bunx playwright test
+
+# [bun] Run Playwright E2E tests (chromium only)
+test-e2e-chromium: build
+    cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium
+
+# [bun] Run Playwright E2E tests (firefox only)
+test-e2e-firefox: build
+    cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox
+
+# [bun] Show Playwright test report
+test-e2e-report:
+    cd e2e && bunx playwright show-report
 
 # Build Rust documentation
 doc:

@@ -1,96 +1,69 @@
 ---
 session: ses_2e48
-updated: 2026-03-25T01:03:46.266Z
+updated: 2026-03-25T03:09:53.251Z
 ---
 
 
 
-## Summary of All Work Done
+## Summary of Current Session
 
-### Project
-**id** — P2P file sharing CLI tool (Rust + Iroh) with web UI
+### Task
+Add `id tag` CLI subcommand (1:1 with REPL), add REPL aliases (set→add, del→unset/delete/remove/rem/rm), update REPL help text, update all docs/docstrings/README to be current.
 
-### Task: Tags v2 System + Tag UI
+### Architecture Answers Provided to User
 
-#### Phase 1: Core Tags v2 Backend (COMPLETE ✅)
-Built a full metadata tagging system on top of iroh-docs:
+1. **iroh-blobs vs iroh-docs**: Two separate systems. iroh-blobs tags = file names → content hashes (file storage). iroh-docs = metadata tags (key/value pairs about files) via TagStore in `src/tags.rs`.
 
-1. **`src/tuple.rs`** (1090 lines, 42 tests) — FoundationDB-style tuple encoding for ordered key construction
-2. **`src/tags.rs`** (1430+ lines) — TagStore backed by iroh-docs with α/Ω namespace pairs (primary + inverted key order), TagEvent broadcast, registry persistence, convenience methods (set_singleton, set_if_absent, transfer_all_tags, find_by_key, del_by_key)
-3. **`Cargo.toml`** — added `iroh-docs = "0.97"`
-4. **`src/commands/serve.rs`** — always create Gossip, init Docs (persistent/memory), init TagStore, create_dir_all fix
-5. **`src/web/mod.rs`** — AppState with TagStore, SaveRateLimiter (5s cooldown), tags_ws module
-6. **`src/web/routes.rs`** — migrated from MetaDoc to TagStore API, save rate limiting (429), soft-delete/restore/hard-delete endpoints, collab version notification on save, pagination (per_page=50), search (filename + tag key/value)
-7. **`src/web/tags_ws.ts`** — WebSocket `/ws/tags` + REST API GET/POST/DELETE `/api/tags`
-8. **`src/web/collab.rs`** — NewVersion CollabMessage broadcast on save
-9. **`src/web/templates.rs`** — render_file_list with search bar, render_file_list_content with pagination
+2. **Regular blob access**: Still fully available. All blob operations (put/get/get-hash/list/delete/rename/copy/find/search) work through iroh-blobs directly.
 
-#### Phase 2: CLI/REPL Integration (COMPLETE ✅)
-10. **`src/protocol.rs`** — 4 new MetaRequest variants: SetTag, DelTag, GetTags, SearchTags + matching responses
-11. **`src/commands/repl.rs`** — `tag set/del`, `tags [FILE]`, `tag search` methods
-12. **`src/repl/runner.rs`** — REPL command patterns + help text
+3. **File storage locations**: `.iroh-store/` (SQLite blobs), `.iroh-meta/` (iroh-docs tag registry), `.iroh-key`/`.iroh-key-client` (keypairs).
 
-#### Phase 3: Frontend Tags WebSocket (COMPLETE ✅)
-13. **`web/src/main.ts`** — `connectTagsWs()` with auto-reconnect, debounced file list refresh on tag events
+4. **Tag storage architecture**: TagStore uses iroh-docs CRDT documents with α/Ω namespace pairs. α = primary key order `(subject, key, value|null)`, Ω = inverted `(value|null, key, subject)`. Keys encoded with FoundationDB-style tuple encoding for sort-preserving prefix queries. Three namespace types: Global, Node, Custom. Legacy MetaDoc (JSON blob in `.meta` iroh-blobs tag) used as fallback.
 
-#### Bug Fixes Applied
-- iroh-docs rejects `b""` (empty entries) → uses `&[0]` placeholder in `set_tag()`
-- Ephemeral mode: `Docs::memory()` + graceful stale registry handling
-- `del_by_key()` method for restore (deleted tag has value, not null)
-- Error format `{}` → `{:#}` in tag warnings
-- FileInfo import moved into `#[cfg(test)]` block for clippy
-- Web assets: cleaned old hashed files, fixed manifest
+5. **Binary support**: TupleEncoder supports full binary (Null, Bytes, String, Tuple/Array, Bool, integers, Float64). But tag system surface currently only exposes string key/value pairs. The `data: &[u8]` payload parameter exists but all callers pass `b""`.
 
-#### Phase 4: Tag UI (IN PROGRESS ⏳)
-Currently implementing Tag UI across 4 files:
+### Completed Work
 
-**Changes made so far in this session:**
+1. **REPL aliases added** (`src/repl/runner.rs`):
+   - `tag set` → also accepts `add`
+   - `tag del` → also accepts `rm`, `remove`, `rem`, `delete`, `unset`
 
-**`src/web/routes.rs`:**
-- Added `tags: Vec<(String, Option<String>)>` and `is_deleted: bool` fields to `FileInfo`
-- Added `show_deleted: Option<bool>` to `FileListQuery`
-- Added `show_deleted: bool` to `FileListPage`
-- Added `SYSTEM_TAG_KEYS` constant and `is_system_tag_key()` helper
-- `get_file_list()` now populates `user_tags_map` for each file (excludes system keys), includes deleted files marked with `is_deleted: true`
-- `get_file_list_page()` filters deleted files unless `show_deleted` is set
+2. **REPL help text updated** (`src/repl/runner.rs` ~line 489):
+   - Shows `(alias: add)` for set
+   - Shows `aliases: rm, remove, rem, delete, unset` for del
 
-**`src/web/templates.rs`:**
-- `render_file_list_content()`: Added tag pills (`<span class="tag-pill">`), deleted badge, bulk action bar with key/value inputs, file selection checkboxes per row, deleted file class
-- `render_file_list()`: Added "show deleted" toggle checkbox with HTMX, includes `show_deleted` in hx-include
-- `render_editor()`: Added tag panel below editor header (`editor-tag-panel`) with tag list container, inline add inputs (key + value + button)
-- Updated test FileListPage/FileInfo constructors for new fields
+3. **CLI `Tag` subcommand added** (`src/cli.rs`):
+   - `TagCommand` enum with `Set` (alias: add), `Del` (aliases: rm/remove/rem/delete/unset), `List` (alias: ls), `Search` (alias: find)
+   - `Command::Tag(TagCommand)` variant added to main enum
 
-**`web/styles/terminal.css`:**
-- `.file-badge.deleted` — red error color
-- `.file-item.file-deleted` — strikethrough name, reduced opacity
-- `.file-select` — checkbox styling
-- `.file-tags` / `.tag-pill` — inline tag pills (9px, accent border, truncated)
-- `.tag-pill-removable` — editor tag pills with remove button
-- `.tag-remove-btn` — × button styling
-- `.bulk-action-bar` — flexbox bar with count, key/value inputs, add/clear buttons
-- `.editor-tag-panel` — inline tag panel below editor header
-- `.tag-panel-label/list/add` — tag panel sub-components
-- `.tag-add-input` — small inline inputs
+4. **CLI tag command handler created** (`src/commands/tag.rs` — new file):
+   - `cmd_tag()` dispatches to `tag_set`, `tag_del`, `tag_list`, `tag_search`
+   - Each handler: tries connecting to running serve via MetaProtocol first, falls back to legacy MetaDoc for local-only mode
+   - 1:1 feature parity with REPL tag commands
 
-**`web/src/main.ts`:**
-- Added to IdApp interface: `loadFileTags`, `renderEditorTags`, `addTagInline`, `removeTag`, `bulkAddTag`, `bulkClearSelection`, `initBulkSelect`
-- `loadFileTags(filename)`: GET `/api/tags?subject=...`, filters system tags, calls `renderEditorTags`
-- `renderEditorTags(tags)`: Renders tag pills with × remove buttons in `#editor-tag-list`
-- `addTagInline()`: POST `/api/tags` from editor inline inputs, reloads tags
-- `removeTag(subject, key, value)`: DELETE `/api/tags`, reloads tags
-- `bulkAddTag()`: POST `/api/tags` for each selected file checkbox
-- `bulkClearSelection()`: Unchecks all, hides bulk bar
-- `initBulkSelect()`: Event delegation on file-list-content for checkbox change → show/hide bulk bar + count
-- Tags WS `onmessage`: Now also calls `loadFileTags(filename)` when tag event matches current editor file
-- `openEditor` callback: Now calls `loadFileTags(filename)` after editor init
+5. **Wiring completed**:
+   - `src/commands/mod.rs`: Added `pub mod tag;` and `pub use tag::cmd_tag;`
+   - `src/lib.rs`: Added `TagCommand` to exports and `cmd_tag` to re-exports
+   - `src/main.rs`: Added `cmd_tag` import and `Some(Command::Tag(tag_cmd)) => cmd_tag(tag_cmd).await` match arm
 
-### What Still Needs To Be Done
-1. **Add `initBulkSelect()` call** in the htmx:afterSwap handler (when navigating to home page)
-2. **Build web assets** with `bun` and rebuild Rust binary
-3. **Run `just check`** — verify fmt, check, clippy, tests pass
-4. **Browser test** — verify tag pills on home, editor tag panel, bulk select, show deleted toggle
-5. **Optional remaining user prefs**: rename/copy/move button on editor page, allow rename to existing file (archives existing)
+6. **Build verified**: `cargo check` passes (15 pre-existing warnings only), 340 unit tests pass.
 
-### Build Status (before current changes)
-- `just check`: fmt ✅, check ✅, clippy ✅, 433 unit + 53 integration tests ✅
-- 3 pre-existing failures: `test_serve_parallel_isolation_b` (flaky), 2 web asset tests (need bun)
+### Remaining Work
+
+- Update `cli.rs` module docstring header to include `tag` command in the CLI structure comment
+- Update `lib.rs` module docs and architecture diagram to mention tags/TagStore
+- Update `commands/mod.rs` docstring to list `tag` module
+- Update README (currently just design notes, not actual id docs — may need a real README)
+- Run `just check` (full: fmt, check, clippy, all tests)
+- Verify `id tag --help`, `id tag set --help` etc. work correctly
+
+### Key Files Modified
+- `src/repl/runner.rs` — REPL aliases + help text
+- `src/cli.rs` — `TagCommand` enum + `Command::Tag` variant
+- `src/commands/tag.rs` — **NEW** command handler
+- `src/commands/mod.rs` — module registration + export
+- `src/lib.rs` — re-exports
+- `src/main.rs` — dispatch wiring
+
+### Prior Session Context (from core_memory)
+All Tags V2 web UI work is complete and browser-verified. Tag pills, bulk select, editor panel, WS live updates, search without flicker, enter-key submission all confirmed working. Web assets at `main.f3vn39ft.js` / `styles.a6a95585.css`.

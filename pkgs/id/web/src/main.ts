@@ -27,6 +27,7 @@ interface IdApp {
   createFile: (event: Event) => Promise<void>;
   downloadFile: (format: string) => Promise<void>;
   renameFile: () => Promise<void>;
+  copyFile: () => Promise<void>;
   connectTagsWs: () => void;
   disconnectTagsWs: () => void;
   loadFileTags: (filename: string) => Promise<void>;
@@ -841,10 +842,10 @@ function init(): void {
     },
 
     async renameFile(): Promise<void> {
+      // Find filename from editor page or viewer page
       const editorContainer = document.getElementById('editor-container');
-      if (!editorContainer) return;
-
-      const filenameEncoded = editorContainer.dataset.filename;
+      const viewerActions = document.querySelector('.viewer-actions') as HTMLElement | null;
+      const filenameEncoded = editorContainer?.dataset.filename ?? viewerActions?.dataset.filename;
       const currentName = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
       if (!currentName) {
         console.error('[id] No filename for rename');
@@ -908,6 +909,73 @@ function init(): void {
         if (renameBtn) {
           renameBtn.textContent = 'error!';
           setTimeout(() => { if (renameBtn) renameBtn.textContent = 'rename'; }, 2000);
+        }
+      }
+    },
+
+    async copyFile(): Promise<void> {
+      // Find filename from editor page or viewer page
+      const editorContainer = document.getElementById('editor-container');
+      const viewerActions = document.querySelector('.viewer-actions') as HTMLElement | null;
+      const filenameEncoded = editorContainer?.dataset.filename ?? viewerActions?.dataset.filename;
+      const currentName = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+      if (!currentName) {
+        console.error('[id] No filename for copy');
+        return;
+      }
+
+      const newName = prompt(`Copy "${currentName}" to:`, currentName);
+      if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+
+      const trimmedName = newName.trim();
+      const copyBtn = document.getElementById('copy-btn') as HTMLButtonElement | null;
+
+      try {
+        if (copyBtn) {
+          copyBtn.disabled = true;
+          copyBtn.textContent = 'copying...';
+        }
+
+        const response = await fetch('/api/copy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: currentName,
+            new_name: trimmedName,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[id] Copy failed:', errorText);
+          if (copyBtn) copyBtn.textContent = 'error!';
+          setTimeout(() => { if (copyBtn) copyBtn.textContent = 'copy'; }, 2000);
+          return;
+        }
+
+        const result = await response.json() as {
+          name: string;
+          hash: string;
+        };
+        console.log('[id] File copied:', result);
+
+        if (copyBtn) {
+          copyBtn.textContent = 'copied!';
+        }
+
+        // Navigate to the copied file
+        const fileUrl = `/file/${encodeURIComponent(result.name)}`;
+        if (window.htmx) {
+          window.htmx.ajax('GET', fileUrl, { target: '#main', swap: 'innerHTML' });
+          window.history.pushState(null, '', fileUrl);
+        } else {
+          window.location.href = fileUrl;
+        }
+      } catch (err) {
+        console.error('[id] Copy error:', err);
+        if (copyBtn) {
+          copyBtn.textContent = 'error!';
+          setTimeout(() => { if (copyBtn) copyBtn.textContent = 'copy'; }, 2000);
         }
       }
     },

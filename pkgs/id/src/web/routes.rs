@@ -193,6 +193,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/save", post(save_handler))
         .route("/api/new", post(new_file_handler))
         .route("/api/rename", post(rename_handler))
+        .route("/api/copy", post(copy_handler))
         .route("/api/download", post(download_handler))
         .route("/api/delete", post(delete_handler))
         .route("/api/restore", post(restore_handler))
@@ -859,6 +860,24 @@ struct RenameResponse {
     archived_replaced: Option<String>,
 }
 
+/// Request body for copying a file.
+#[derive(Debug, Deserialize)]
+struct CopyRequest {
+    /// Source file name to copy from.
+    name: String,
+    /// New file name for the copy.
+    new_name: String,
+}
+
+/// Response from copying a file.
+#[derive(Debug, Serialize)]
+struct CopyResponse {
+    /// New file name.
+    name: String,
+    /// Content hash (same as source).
+    hash: String,
+}
+
 /// Request body for downloading editor content.
 #[derive(Debug, Deserialize)]
 struct DownloadRequest {
@@ -1236,6 +1255,96 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         hash: hash_str,
         archived_original,
         archived_replaced,
+    })
+    .into_response()
+}
+
+/// Copy a file by creating a new tag pointing to the same content hash.
+///
+/// If the destination name already exists, the existing file at that name
+/// is archived as `{new_name}.archive.{timestamp}` before the copy.
+async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest>) -> Response {
+    tracing::info!(
+        "[routes] copy_handler: name={}, new_name={}",
+        req.name,
+        req.new_name
+    );
+
+    let new_name = req.new_name.trim().to_owned();
+    if new_name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response();
+    }
+    if req.name == new_name {
+        return (
+            StatusCode::BAD_REQUEST,
+            "New name must differ from current name",
+        )
+            .into_response();
+    }
+
+    // Look up the hash for the source file
+    let tag_info = match state.store.tags().get(&req.name).await {
+        Ok(Some(info)) => info,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Source file not found").into_response(),
+        Err(err) => {
+            tracing::error!("[routes] Failed to look up source tag: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to look up source file",
+            )
+                .into_response();
+        }
+    };
+    let hash = tag_info.hash;
+    let hash_str = hash.to_string();
+
+    // If target name already exists, archive the existing file
+    if let Ok(Some(existing)) = state.store.tags().get(&new_name).await {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let archive_name = format!("{new_name}.archive.{timestamp}");
+        if let Err(err) = state.store.tags().set(&archive_name, existing.hash).await {
+            tracing::error!("[routes] Failed to archive replaced file: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to archive replaced file",
+            )
+                .into_response();
+        }
+        tracing::info!(
+            "[routes] Archived replaced file: {} -> {}",
+            new_name,
+            archive_name
+        );
+    }
+
+    // Set the new tag pointing to the same hash
+    if let Err(err) = state.store.tags().set(&new_name, hash).await {
+        tracing::error!("[routes] Failed to set copy tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response();
+    }
+
+    // Copy metadata tags from source to destination
+    if let Err(err) = state
+        .tag_store
+        .copy_all_tags(&state.tag_store.global, &req.name, &new_name)
+        .await
+    {
+        tracing::warn!("[routes] Failed to copy metadata tags: {}", err);
+    }
+
+    tracing::info!(
+        "[routes] File copied: {} -> {}, hash={}",
+        req.name,
+        new_name,
+        hash_str
+    );
+
+    Json(CopyResponse {
+        name: new_name,
+        hash: hash_str,
     })
     .into_response()
 }
@@ -1749,6 +1858,48 @@ mod tests {
         let parts: Vec<&str> = tag.splitn(2, ".archive.").collect();
         assert_eq!(parts[0], "README.md");
     }
+
+    // ========================================================================
+    // CopyRequest / CopyResponse serde tests
+    // ========================================================================
+
+    #[test]
+    fn test_copy_request_deserialization() {
+        let json = r#"{"name":"source.md","new_name":"dest.md"}"#;
+        let req: CopyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "source.md");
+        assert_eq!(req.new_name, "dest.md");
+    }
+
+    #[test]
+    fn test_copy_request_missing_field() {
+        let json = r#"{"name":"source.md"}"#;
+        let result: Result<CopyRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_copy_response_serialization() {
+        let resp = CopyResponse {
+            name: "dest.md".to_owned(),
+            hash: "abc123def".to_owned(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"name\":\"dest.md\""));
+        assert!(json.contains("\"hash\":\"abc123def\""));
+    }
+
+    #[test]
+    fn test_copy_request_with_special_chars() {
+        let json = r#"{"name":"file with spaces.txt","new_name":"新しいファイル.txt"}"#;
+        let req: CopyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "file with spaces.txt");
+        assert_eq!(req.new_name, "新しいファイル.txt");
+    }
+
+    // ========================================================================
+    // Existing rename tests
+    // ========================================================================
 
     #[test]
     fn test_rename_request_deserialization() {

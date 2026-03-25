@@ -43,6 +43,10 @@
     # Web development tools
     bun # JavaScript bundler and runtime (required for web builds)
     nodePackages.typescript # TypeScript for type checking
+
+    # E2E testing (Playwright)
+    chromium # Browser for Playwright E2E tests
+    firefox # Browser for Playwright E2E tests
   ];
 
   # OpenSSL environment variables
@@ -81,6 +85,7 @@
     echo "  Testing & Quality:"
     echo "    just test            - Run all tests"
     echo "    just test-lib        - Run unit tests only (fast)"
+    echo "    just test-e2e        - Run Playwright E2E tests"
     echo "    just lint            - Run clippy linting"
     echo "    just coverage        - Generate coverage report"
     echo ""
@@ -94,6 +99,11 @@
     echo "════════════════════════════════════════════════════════════"
 
     export RUST_BACKTRACE=1
+
+    # Playwright E2E testing: use Nix-provided browsers
+    export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+    export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="${pkgs.chromium}/bin/chromium"
+    export PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH="${pkgs.firefox}/bin/firefox"
 
     # nix develop reconstructs PATH, losing HM session paths.
     # Restore them: devshell → HM → system

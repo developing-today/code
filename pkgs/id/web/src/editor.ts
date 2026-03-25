@@ -20,7 +20,7 @@ import { baseKeymap } from 'prosemirror-commands';
 import { history } from 'prosemirror-history';
 import { dropCursor } from 'prosemirror-dropcursor';
 import { gapCursor } from 'prosemirror-gapcursor';
-import { undoItem, redoItem, blockTypeItem, icons } from 'prosemirror-menu';
+import { undoItem, redoItem, blockTypeItem, icons, liftItem, selectParentNodeItem } from 'prosemirror-menu';
 import { createCursorPlugin, type SendCursorFn } from './cursors';
 
 /**
@@ -191,8 +191,8 @@ export function initEditor(
         menuItems.wrapBulletList,
         menuItems.wrapOrderedList,
         menuItems.wrapBlockQuote,
-        menuItems.liftItem,
-        menuItems.selectParentNodeItem,
+        liftItem,
+        selectParentNodeItem,
       ]),
     ];
     

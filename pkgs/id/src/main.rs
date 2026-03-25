@@ -10,7 +10,7 @@ use clap::Parser;
 use id::{
     Cli, Command, PeekOptions, PeersOptions, SearchOptions, cmd_find, cmd_get_multi, cmd_gethash,
     cmd_id, cmd_list, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_multi, cmd_search, cmd_serve,
-    cmd_show, run_repl,
+    cmd_show, cmd_tag, run_repl,
 };
 
 /// Determine the log level based on CLI flags and environment variables.
@@ -63,6 +63,7 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
     "mainline::rpc=info",
     "distributed_topic_tracker::crypto::record=info",
     "rustls=info",
+    "iroh::address_lookup::mdns=info",
     "rustyline=info",
     "hickory_proto::error=info",
     "hickory_proto::udp::udp_client_stream=info",
@@ -177,6 +178,7 @@ async fn main() -> Result<()> {
             cmd_peers(node, options).await
         }
         Some(Command::List { node, no_relay }) => cmd_list(node, no_relay).await,
+        Some(Command::Tag(tag_cmd)) => cmd_tag(tag_cmd).await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {
             files,

@@ -25,10 +25,13 @@
 //! │  (main.rs - command dispatch, repl/runner.rs - interactive)    │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │                      Command Handlers                           │
-//! │  put.rs │ get.rs │ find.rs │ list.rs │ serve.rs │ id.rs        │
+//! │  put.rs │ get.rs │ find.rs │ list.rs │ serve.rs │ id.rs │ tag.rs│
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │              Protocol Layer (protocol.rs)                       │
 //! │  MetaRequest/Response │ FindMatch │ MetaProtocol               │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │            Metadata Tags (tags.rs / tuple.rs)                   │
+//! │  TagStore │ NamespacePair │ TagEvent │ TupleEncoder             │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │               Storage Layer (store.rs)                          │
 //! │  StoreType (Persistent/Ephemeral) │ Keypair Management          │
@@ -41,9 +44,10 @@
 //! ## Modules
 //!
 //! - [`cli`] - Command-line argument parsing with clap
-//! - [`commands`] - Command implementations (put, get, find, list, serve, etc.)
+//! - [`commands`] - Command implementations (put, get, find, list, serve, tag, etc.)
 //! - [`protocol`] - Network protocol types for metadata exchange
 //! - [`store`] - Blob storage and keypair management
+//! - [`tags`] - Metadata tag storage using iroh-docs CRDT documents
 //! - [`repl`] - Interactive REPL with shell-like features
 //! - [`helpers`] - Utility functions for parsing and formatting
 //!
@@ -162,14 +166,14 @@ pub mod tuple;
 pub mod web;
 
 // Re-export commonly used types for convenience
-pub use cli::{Cli, Command};
+pub use cli::{Cli, Command, TagCommand};
 pub use commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo, cmd_find,
     cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash,
     cmd_id, cmd_list, cmd_list_remote, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_local_file,
     cmd_put_local_stdin, cmd_put_multi, cmd_put_one, cmd_put_one_remote, cmd_search, cmd_serve,
-    cmd_show, create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive,
-    remove_serve_lock,
+    cmd_show, cmd_tag, create_local_client_endpoint, create_serve_lock, get_serve_info,
+    is_process_alive, remove_serve_lock,
 };
 pub use discovery::{
     ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,

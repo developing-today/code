@@ -24,6 +24,7 @@
 //!   list       List all stored files
 //!   id         Print node ID
 //!   peers      Discover and list known peers
+//!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //! ```
 //!
 //! # Search Filtering Flags
@@ -773,6 +774,38 @@ pub enum Command {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Manage metadata tags on files.
+    ///
+    /// Tags are key/value pairs attached to files for organization,
+    /// filtering, and search. Backed by iroh-docs CRDT documents
+    /// for conflict-free replication.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Set a tag
+    /// id tag set README.md priority high
+    ///
+    /// # Set a key-only tag (no value)
+    /// id tag set README.md pinned
+    ///
+    /// # Delete a tag
+    /// id tag del README.md priority high
+    ///
+    /// # List all tags
+    /// id tag list
+    ///
+    /// # List tags for a specific file
+    /// id tag list README.md
+    ///
+    /// # Search tags by key
+    /// id tag search priority
+    ///
+    /// # Search tags by key and value
+    /// id tag search priority high
+    /// ```
+    #[command(subcommand, aliases = ["label", "link"])]
+    Tag(TagCommand),
     /// Print the local node's public ID.
     ///
     /// The node ID is derived from the keypair and is needed for
@@ -888,6 +921,84 @@ pub enum Command {
         /// local serve instance.
         #[arg(required = false)]
         node: Option<String>,
+    },
+}
+
+/// Subcommands for `id tag`.
+///
+/// Manage metadata tags (key/value pairs) attached to files.
+/// Tags are stored in iroh-docs CRDT documents and support
+/// conflict-free replication across peers.
+#[derive(Subcommand, Debug)]
+pub enum TagCommand {
+    /// Set a metadata tag on a file.
+    ///
+    /// Creates or adds a key/value pair on the specified file.
+    /// Multiple values can exist per key.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag set README.md priority high
+    /// id tag set README.md pinned
+    /// ```
+    #[command(alias = "add")]
+    Set {
+        /// The file to tag.
+        file: String,
+        /// The tag key.
+        key: String,
+        /// Optional tag value.
+        value: Option<String>,
+    },
+    /// Delete a metadata tag from a file.
+    ///
+    /// Removes a specific key (and optionally value) from the file's tags.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag del README.md priority high
+    /// id tag del README.md pinned
+    /// ```
+    #[command(aliases = ["rm", "remove", "rem", "delete", "unset"])]
+    Del {
+        /// The file to untag.
+        file: String,
+        /// The tag key to remove.
+        key: String,
+        /// Optional specific value to remove.
+        value: Option<String>,
+    },
+    /// List metadata tags.
+    ///
+    /// Lists all tags, or tags for a specific file.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag list
+    /// id tag list README.md
+    /// ```
+    #[command(alias = "ls")]
+    List {
+        /// File to list tags for (omit for all).
+        file: Option<String>,
+    },
+    /// Search metadata tags by key and/or value.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag search priority
+    /// id tag search priority high
+    /// ```
+    #[command(alias = "find")]
+    Search {
+        /// Tag key to search for.
+        key: String,
+        /// Optional value to filter by.
+        value: Option<String>,
     },
 }
 
@@ -1951,5 +2062,204 @@ mod tests {
             }
             _ => panic!("Expected Peers command"),
         }
+    }
+
+    // ========================================================================
+    // Tag command and alias tests
+    // ========================================================================
+
+    #[test]
+    fn test_cli_parse_tag_set() {
+        let cli = Cli::parse_from(["id", "tag", "set", "README.md", "priority", "high"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+                assert_eq!(file, "README.md");
+                assert_eq!(key, "priority");
+                assert_eq!(value, Some("high".to_owned()));
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_without_value() {
+        let cli = Cli::parse_from(["id", "tag", "set", "README.md", "pinned"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+                assert_eq!(file, "README.md");
+                assert_eq!(key, "pinned");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_alias_add() {
+        let cli = Cli::parse_from(["id", "tag", "add", "file.txt", "label", "rust"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "label");
+                assert_eq!(value, Some("rust".to_owned()));
+            }
+            _ => panic!("Expected Tag Set (via add alias)"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_del() {
+        let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "label", "rust"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Del { file, key, value })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "label");
+                assert_eq!(value, Some("rust".to_owned()));
+            }
+            _ => panic!("Expected Tag Del command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_del_without_value() {
+        let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "pinned"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Del { file, key, value })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "pinned");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Tag Del command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_del_aliases() {
+        for alias in ["del", "rm", "remove", "rem", "delete", "unset"] {
+            let cli = Cli::parse_from(["id", "tag", alias, "file.txt", "key"]);
+            assert!(
+                matches!(cli.command, Some(Command::Tag(TagCommand::Del { .. }))),
+                "alias '{alias}' should parse as Tag Del"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_list() {
+        let cli = Cli::parse_from(["id", "tag", "list"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::List { file })) => {
+                assert!(file.is_none());
+            }
+            _ => panic!("Expected Tag List command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_list_with_file() {
+        let cli = Cli::parse_from(["id", "tag", "list", "README.md"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::List { file })) => {
+                assert_eq!(file, Some("README.md".to_owned()));
+            }
+            _ => panic!("Expected Tag List command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_list_alias_ls() {
+        let cli = Cli::parse_from(["id", "tag", "ls"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::List { .. }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search() {
+        let cli = Cli::parse_from(["id", "tag", "search", "priority"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Search { key, value })) => {
+                assert_eq!(key, "priority");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Tag Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search_with_value() {
+        let cli = Cli::parse_from(["id", "tag", "search", "priority", "high"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Search { key, value })) => {
+                assert_eq!(key, "priority");
+                assert_eq!(value, Some("high".to_owned()));
+            }
+            _ => panic!("Expected Tag Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search_alias_find() {
+        let cli = Cli::parse_from(["id", "tag", "find", "label"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::Search { .. }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_label_alias() {
+        // "label" should work as alias for "tag"
+        let cli = Cli::parse_from(["id", "label", "set", "file.txt", "key", "val"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "key");
+                assert_eq!(value, Some("val".to_owned()));
+            }
+            _ => panic!("Expected Tag Set via 'label' alias"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_link_alias() {
+        // "link" should work as alias for "tag"
+        let cli = Cli::parse_from(["id", "link", "set", "file.txt", "key", "val"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "key");
+                assert_eq!(value, Some("val".to_owned()));
+            }
+            _ => panic!("Expected Tag Set via 'link' alias"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_label_del() {
+        let cli = Cli::parse_from(["id", "label", "del", "file.txt", "key"]);
+        assert!(
+            matches!(cli.command, Some(Command::Tag(TagCommand::Del { .. }))),
+            "label del should parse as Tag Del"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_link_list() {
+        let cli = Cli::parse_from(["id", "link", "list"]);
+        assert!(
+            matches!(cli.command, Some(Command::Tag(TagCommand::List { .. }))),
+            "link list should parse as Tag List"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_label_search() {
+        let cli = Cli::parse_from(["id", "label", "search", "priority"]);
+        assert!(
+            matches!(cli.command, Some(Command::Tag(TagCommand::Search { .. }))),
+            "label search should parse as Tag Search"
+        );
     }
 }

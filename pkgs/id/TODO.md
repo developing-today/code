@@ -199,6 +199,42 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
+- update all nix flake check commands to have -L nix flake check -L
+- just test-all which runs all tests including e2e. make check all too
+- enable running multiple servers on different ports if possible.
+- ensure integration tests can run in nix flake check, ensure nix flake check can run integration/web non-unit tests. i believe this would involve  making a virtual machine and wait for open port. maybe you need to make a nixos service for 'id' ?
+  - https://blakesmith.me/2024/03/11/how-to-run-nixos-tests-flake-edition.html
+  - https://nixcademy.com/posts/nixos-integration-test-on-github/
+  - https://github.com/tfc/nixos-integration-test-example
+  - https://blog.thalheim.io/2023/01/08/how-to-use-nixos-testing-framework-with-flakes/
+- build a check id github workflow which uses magic nix cache and runs nix flake check against the id flake
+
+---
+
+- also add bun2nix in the main flake.nix ensure i can run bun2nix without needing to use bunx. (package install should be done in environment/default.nix like other inputs)
+- ensure bun2nix is available from nix-common, as a command, and add a just command just bun2nix which automatically builds the bun.nix file. alias lockfiles to call bun2nix. rename just fmt to cargo-fmt with just fmt alis to call only just cargo-fmt. rename lint to clippy-lint and alias lint to clippy-lint. fix should call lockfiles fmt lint
+- update deploy.sh to run bun2nix any time the bun lockfile changes. ensure flake.nix has appropriate apps to just bun2nix like all the other just commands. can bun2nix also be a 'formatter' that is ran? can you have all formatters run with nix fmt r is it just one? if multiple allowed then make them different.
+- install formatting/linting for bun, make web-fmt web-lint make fmt call cargo-fmt web-fmt. make lint call web-lint cargo-lint. if there is an autofix for the linter then web-lint-fix and use that in lint-fix. make web-fmt-check and call that in ci: along with web-lint. if there are multiple useful formatters or linters, choose the fastest modern formatter and similar for linter though you could allow multiple linters if they don't conflict.
+- ci: should also build debug&&release versions of the app, just build and just release.
+- fix all new web lints.
+- if deploy.sh is running any other commands that exist in `justfile` then update deploy.sh to use those just commands. ensure 1:1 between justfile and flake.nix is maintained.
+  - calls to cargo bun bun2nix etc. should be handled by justfile. deploy.sh should handle setting correct vars/toggles when required. minimal changes to justfile commands to allow needed env/flag is allowed here, but if you can just set env vars without needing other changes then do that. you shouldn't use nix in this script, only just bun2nix to ensure nix _should_ work.
+- nix fmt and nix flake check should both work. you may need to ensure that bun2nix is integrated to handle this.
+
+---
+
+- make a new plan file, it should cover each of these todos. make a todo covering each of these. reorder and rephrase your todos as needed, but put this entire prompt in a section of the plan so one can refer back to the original requests. your plan should cover architecture changes, before/after, design/intent, exact steps to be taken and the expected end result. your plan file should have your final todo list too in it's own section. use `just` commands to manage build/test. just check for all testing. just kill-serve will build and then deploy the server, at the very end `nix flake check` should be ran and it should pass just like `just check` and if it doesn't then fix.
+- repl and cli should be 1:1, ensure any diff in one is copied into the other, such as the aliases etc.
+- ensure docs keys can be bytes/binary allowing structured data. either key or value can be bytes and not just string.  review the original tags v2 plan at .opencode/plans/2026-03-24-tags-v2-iroh-docs.md
+- ensure tag keys and values can be any length and any kind of bytes, but try to parse as utf8. cutoff in the ui/etc after a certain length. if it doesn't parse as utf8 then exclude as binary without a flag.
+- allow searching keys and values in the ui. strings ending with : mean keys, starting with : mean values key:value means that specific key. allow quotes to do regular search so ":key" looks for any file/key/value that is literally ":key". "key:":":value" looks for a key named "key:" with a value ":value". a file uploaded should automatically tag name,file,path tags to the file. all name/file/path keys should show as the name in the ui, but they should dedupe if they have the exact same hash, tag values, name of the file. make a migrate flag that automatically adds the name/file/path labels for all existing files which don't have them. 
+- when you are done add appropriate unit/integration/playwright tests as-needed.
+- when you are done review all .md files across the repo and ensure they are up-to-date.
+- when you are done, nix flake check should pass 100%. fix any errors even if you dont think you made them.
+- when you are done, update all docstrings, comments, help text for all functions and objects in rust and typescript.
+- 
+---
+
 - if reconnect and new server has new css then reload new css/html
 - header is too large, make it smaller and hide it except on hover when on an editor page. foot
 - theme doesn't automatically update which is ok but when you hit alt+t and the local theme is same color as the next alt+t it doesn't do anything.
@@ -229,3 +265,143 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 ---
 
 - nym transport ?
+- veilid transport ?
+- veilid alternative network ?
+- tor ?
+- mycelium ? 
+- zerotier ? no because licenses?
+- yggdrasil ?
+- tinc ?
+- headscale/tailscale ?
+- implement iroh in clan? (unrelated to this project, really)
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
