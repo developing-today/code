@@ -174,7 +174,7 @@ just check             # Fix + CI (run before committing)
 ```bash
 nix build              # Build web variant
 nix build .#id-lib     # Build lib variant
-nix flake check        # Run all CI checks in sandbox
+nix flake check -L     # Run all CI checks in sandbox
 ```
 
 ## Project Structure

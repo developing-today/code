@@ -398,7 +398,7 @@ nix run .#test-web-unit
 
 ### Known Limitations
 
-1. **`nix flake check` in sandboxed builds**: Fails due to network isolation (can't reach crates.io/GitHub). This is expected Nix sandbox behavior, not a code issue. Evaluation succeeds; only network-dependent builds fail.
+1. **`nix flake check -L` in sandboxed builds**: Fails due to network isolation (can't reach crates.io/GitHub). This is expected Nix sandbox behavior, not a code issue. Evaluation succeeds; only network-dependent builds fail.
 
 2. **CSS animation duration transitions**: Some browsers may briefly reset animation on duration change. Accepted as minor visual artifact.
 

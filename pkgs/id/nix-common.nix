@@ -93,7 +93,7 @@
     echo "    nix run .#<cmd>      - Run any just command via Nix"
     echo "    nix run .#just <cmd> - Run just (fallback for missing apps)"
     echo "    nix fmt              - Run formatter (just fix)"
-    echo "    nix flake check      - Run all Nix checks"
+    echo "    nix flake check -L   - Run all Nix checks"
     echo "    nix build            - Build web-enabled package (default)"
     echo "    nix build .#id-lib   - Build library-only package"
     echo "════════════════════════════════════════════════════════════"

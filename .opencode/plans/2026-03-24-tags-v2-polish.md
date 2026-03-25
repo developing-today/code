@@ -6,7 +6,7 @@
 
 ## Overview
 
-Complete the Tags V2 work with: REPL/CLI aliases (`tag`/`label`/`link`), comprehensive test coverage (unit + integration + Playwright E2E), Nix infrastructure for browser testing, fix nix flake check to 100%, documentation updates, and build.sh log level fix.
+Complete the Tags V2 work with: REPL/CLI aliases (`tag`/`label`/`link`), comprehensive test coverage (unit + integration + Playwright E2E), Nix infrastructure for browser testing, fix nix flake check -L to 100%, documentation updates, and build.sh log level fix.
 
 ---
 
@@ -38,9 +38,9 @@ Complete the Tags V2 work with: REPL/CLI aliases (`tag`/`label`/`link`), compreh
 
 ---
 
-## Task 2: Fix Nix Flake Check (Critical - Unblocks Everything)
+## Task 2: Fix nix flake check -L (Critical - Unblocks Everything)
 
-**Goal:** Get `nix flake check` to 100% pass.
+**Goal:** Get `nix flake check -L` to 100% pass.
 
 ### Root cause
 `src/commands/tag.rs` is locally present but **untracked** by git. Nix copies only git-tracked files (`src = ./.;`), so `mod tag` in `commands/mod.rs` fails to resolve.
@@ -52,7 +52,7 @@ git add src/tags.rs src/tuple.rs  # Track other new files
 # Also track all other new/modified files from Tags V2 work
 ```
 
-Then run `nix flake check` and fix any remaining failures iteratively. Pre-existing failures must be fixed (not deleted), tests can be rewritten if incorrect.
+Then run `nix flake check -L` and fix any remaining failures iteratively. Pre-existing failures must be fixed (not deleted), tests can be rewritten if incorrect.
 
 ---
 
@@ -278,7 +278,7 @@ git add -A  # Track everything (respecting .gitignore)
 ### 8b. Run full verification
 ```bash
 just check          # Primary quality gate
-nix flake check     # Nix-level verification
+nix flake check -L  # Nix-level verification
 ```
 
 ### 8c. Commit
@@ -292,7 +292,7 @@ feat(tags): complete tags v2 with aliases, copy UI, tests, and docs
 - Set up Playwright E2E tests with Chromium + Firefox
 - Add unit tests for tag commands, copy handler, aliases
 - Add integration tests for tag CLI commands
-- Fix nix flake check (track all new files)
+- Fix nix flake check -L (track all new files)
 - Create ARCHITECTURE.md, proper README.md
 - Update WEB.md, web/README.md with new features
 - Set RUST_LOG default to info in build.sh

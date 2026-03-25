@@ -162,7 +162,7 @@
         '';
 
         # =======================================================================
-        # Checks: nix flake check
+        # Checks: nix flake check -L
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
