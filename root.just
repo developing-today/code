@@ -107,6 +107,17 @@ just-recipes:
 [group('deps')]
 lockfiles: just-recipes
 
+# Run treefmt (cached)
+[group('format')]
+treefmt:
+    treefmt
+
+# Run treefmt without cache (format all files)
+[group('format')]
+treefmt-no-cache:
+    treefmt --no-cache
+alias treefmt-uncached := treefmt-no-cache
+
 # Strip trailing whitespace from all tracked text files
 [group('format')]
 strip-whitespace:
