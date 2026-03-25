@@ -263,11 +263,7 @@ describe("estimateTooltipWidth", () => {
 // ============================================================================
 
 describe("groupCursorsByPosition", () => {
-  const makeCursor = (
-    clientID: string,
-    head: number,
-    lastUpdate: number,
-  ): CursorForMerge => ({
+  const makeCursor = (clientID: string, head: number, lastUpdate: number): CursorForMerge => ({
     clientID,
     head,
     anchor: head,
@@ -294,10 +290,7 @@ describe("groupCursorsByPosition", () => {
     });
 
     it("groups cursors at same position", () => {
-      const cursors = [
-        makeCursor("alice", 10, 1000),
-        makeCursor("bob", 10, 2000),
-      ];
+      const cursors = [makeCursor("alice", 10, 1000), makeCursor("bob", 10, 2000)];
       const groups = groupCursorsByPosition(cursors);
 
       expect(groups).toHaveLength(1);
@@ -306,10 +299,7 @@ describe("groupCursorsByPosition", () => {
     });
 
     it("creates separate groups for different positions", () => {
-      const cursors = [
-        makeCursor("alice", 10, 1000),
-        makeCursor("bob", 20, 2000),
-      ];
+      const cursors = [makeCursor("alice", 10, 1000), makeCursor("bob", 20, 2000)];
       const groups = groupCursorsByPosition(cursors);
 
       expect(groups).toHaveLength(2);
@@ -335,11 +325,7 @@ describe("groupCursorsByPosition", () => {
 
   describe("sorting groups by position", () => {
     it("sorts groups by position ascending", () => {
-      const cursors = [
-        makeCursor("alice", 50, 1000),
-        makeCursor("bob", 10, 2000),
-        makeCursor("carol", 30, 3000),
-      ];
+      const cursors = [makeCursor("alice", 50, 1000), makeCursor("bob", 10, 2000), makeCursor("carol", 30, 3000)];
       const groups = groupCursorsByPosition(cursors);
 
       expect(groups[0].position).toBe(10);
@@ -477,19 +463,12 @@ describe("doGroupsOverlap", () => {
       // posDiff = 40, 40 < 40 is FALSE = no overlap... need closer
       // "Alexander" at 0, "Benjamin" at 3 (30px)
       // 30 < 40 = TRUE = overlap
-      const groups = [
-        makeGroup(0, ["Alexander"]),
-        makeGroup(3, ["Benjamin"]),
-      ];
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(3, ["Benjamin"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(true);
     });
 
     it("returns false if no consecutive pairs overlap", () => {
-      const groups = [
-        makeGroup(0, ["A"]),
-        makeGroup(50, ["B"]),
-        makeGroup(100, ["C"]),
-      ];
+      const groups = [makeGroup(0, ["A"]), makeGroup(50, ["B"]), makeGroup(100, ["C"])];
       expect(doGroupsOverlap(groups, mockGetLeftCoord)).toBe(false);
     });
   });
@@ -605,11 +584,7 @@ describe("clusterOverlappingGroups", () => {
 
     it("creates separate clusters for non-overlapping groups on same line", () => {
       // A at 0, B at 50, C at 100 - all well spaced
-      const groups = [
-        makeGroup(0, ["A"]),
-        makeGroup(50, ["B"]),
-        makeGroup(100, ["C"]),
-      ];
+      const groups = [makeGroup(0, ["A"]), makeGroup(50, ["B"]), makeGroup(100, ["C"])];
       const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
       expect(result).toHaveLength(3);
       expect(result[0].groups).toHaveLength(1);
@@ -620,11 +595,7 @@ describe("clusterOverlappingGroups", () => {
     it("clusters only actually overlapping groups", () => {
       // "Alexander" at 0 (width ~60px, threshold 40px), B at 3 (30px) = overlap
       // C at 100 (no overlap)
-      const groups = [
-        makeGroup(0, ["Alexander"]),
-        makeGroup(3, ["B"]),
-        makeGroup(100, ["C"]),
-      ];
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(3, ["B"]), makeGroup(100, ["C"])];
       const result = clusterOverlappingGroups(groups, mockGetLeftCoord);
       expect(result).toHaveLength(2);
       expect(result[0].groups).toHaveLength(2); // Alexander and B merged
@@ -691,15 +662,15 @@ describe("clusterOverlappingGroups", () => {
 
   describe("error handling", () => {
     it("puts groups in separate clusters on coordinate error", () => {
-      let callCount = 0;
+      let _callCount = 0;
       const errorOnFirst = (): number => {
-        callCount++;
+        _callCount++;
         throw new Error("coord error");
       };
 
       const groups = [makeGroup(0, ["A"]), makeGroup(50, ["B"])];
       const result = clusterOverlappingGroups(groups, errorOnFirst);
-      
+
       // Should return separate clusters due to error
       expect(result).toHaveLength(2);
     });
@@ -717,7 +688,7 @@ describe("clusterOverlappingGroups", () => {
         makeGroup(1, ["B"]), // This should cluster with A
         makeGroup(50, ["C"]), // Error here
       ];
-      
+
       const result = clusterOverlappingGroups(groups, errorOnThird);
       // Should still return valid clusters
       expect(result.length).toBeGreaterThan(0);

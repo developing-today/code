@@ -1,39 +1,39 @@
 /**
  * ProseMirror editor setup for collaborative document editing.
  * Uses prosemirror-example-setup for baseline functionality.
- * 
+ *
  * Supports multiple content modes:
  * - "rich" / "markdown" / "plain" - Full editor with toolbar
  * - "raw" - Minimal editor for code/config (no toolbar, no formatting shortcuts)
  * - "media" / "binary" - Not editable (handled elsewhere)
  */
 
-import { EditorState, type Transaction, type Plugin, TextSelection } from 'prosemirror-state';
-import { EditorView } from 'prosemirror-view';
-import { Schema, DOMParser, Node } from 'prosemirror-model';
-import { schema as basicSchema } from 'prosemirror-schema-basic';
-import { addListNodes } from 'prosemirror-schema-list';
-import { exampleSetup, buildMenuItems } from 'prosemirror-example-setup';
-import { collab, sendableSteps, getVersion } from 'prosemirror-collab';
-import { keymap } from 'prosemirror-keymap';
-import { baseKeymap } from 'prosemirror-commands';
-import { history } from 'prosemirror-history';
-import { dropCursor } from 'prosemirror-dropcursor';
-import { gapCursor } from 'prosemirror-gapcursor';
-import { undoItem, redoItem, blockTypeItem, icons, liftItem, selectParentNodeItem } from 'prosemirror-menu';
-import { createCursorPlugin, type SendCursorFn } from './cursors';
+import { EditorState, type Transaction, type Plugin, TextSelection } from "prosemirror-state";
+import { EditorView } from "prosemirror-view";
+import { Schema, Node } from "prosemirror-model";
+import { schema as basicSchema } from "prosemirror-schema-basic";
+import { addListNodes } from "prosemirror-schema-list";
+import { exampleSetup, buildMenuItems } from "prosemirror-example-setup";
+import { collab, sendableSteps, getVersion } from "prosemirror-collab";
+import { keymap } from "prosemirror-keymap";
+import { baseKeymap } from "prosemirror-commands";
+import { history } from "prosemirror-history";
+import { dropCursor } from "prosemirror-dropcursor";
+import { gapCursor } from "prosemirror-gapcursor";
+import { undoItem, redoItem, blockTypeItem, liftItem, selectParentNodeItem } from "prosemirror-menu";
+import { createCursorPlugin, type SendCursorFn } from "./cursors";
 
 /**
  * Content mode types matching server-side enum.
  * Determines how the editor is configured.
  */
-export type ContentMode = 'rich' | 'markdown' | 'plain' | 'raw' | 'media' | 'binary';
+export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "binary";
 
 /**
  * Full schema with list support for rich/markdown/plain modes.
  */
 export const richSchema = new Schema({
-  nodes: addListNodes(basicSchema.spec.nodes, 'paragraph block*', 'block'),
+  nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block"),
   marks: basicSchema.spec.marks,
 });
 
@@ -44,16 +44,18 @@ export const richSchema = new Schema({
  */
 export const rawSchema = new Schema({
   nodes: {
-    doc: { content: 'code_block+' },
-    text: { group: 'inline' },
+    doc: { content: "code_block+" },
+    text: { group: "inline" },
     code_block: {
-      content: 'text*',
-      marks: '',
-      group: 'block',
+      content: "text*",
+      marks: "",
+      group: "block",
       code: true,
       defining: true,
-      parseDOM: [{ tag: 'pre', preserveWhitespace: 'full' }],
-      toDOM() { return ['pre', ['code', 0]]; },
+      parseDOM: [{ tag: "pre", preserveWhitespace: "full" }],
+      toDOM() {
+        return ["pre", ["code", 0]];
+      },
     },
   },
   marks: {},
@@ -66,21 +68,21 @@ export { richSchema as schema };
  * Get the schema for a content mode.
  */
 export function getSchema(mode: ContentMode): Schema {
-  return mode === 'raw' ? rawSchema : richSchema;
+  return mode === "raw" ? rawSchema : richSchema;
 }
 
 /**
  * Check if a mode uses the full editor with toolbar.
  */
 export function hasToolbar(mode: ContentMode): boolean {
-  return mode === 'rich' || mode === 'markdown' || mode === 'plain';
+  return mode === "rich" || mode === "markdown" || mode === "plain";
 }
 
 /**
  * Check if a mode is editable.
  */
 export function isEditable(mode: ContentMode): boolean {
-  return mode !== 'media' && mode !== 'binary';
+  return mode !== "media" && mode !== "binary";
 }
 
 export interface EditorInstance {
@@ -97,7 +99,7 @@ export interface CollabState {
 
 /**
  * Initialize a ProseMirror editor in the given container.
- * 
+ *
  * @param container - The DOM element to mount the editor in
  * @param initialDoc - Optional initial document as ProseMirror JSON
  * @param collabVersion - Starting version for collaboration (default 0)
@@ -109,68 +111,74 @@ export function initEditor(
   container: HTMLElement,
   initialDoc?: unknown,
   collabVersion: number = 0,
-  mode: ContentMode = 'raw',
-  sendCursor?: SendCursorFn
+  mode: ContentMode = "raw",
+  sendCursor?: SendCursorFn,
 ): EditorInstance {
-  console.log('[editor] initEditor called with mode:', mode, 'collabVersion:', collabVersion);
-  console.log('[editor] initialDoc:', initialDoc ? JSON.stringify(initialDoc).slice(0, 300) : 'undefined');
-  
+  console.log("[editor] initEditor called with mode:", mode, "collabVersion:", collabVersion);
+  console.log("[editor] initialDoc:", initialDoc ? JSON.stringify(initialDoc).slice(0, 300) : "undefined");
+
   // Generate a random client ID for this session
-  const clientID = Math.floor(Math.random() * 0xFFFFFFFF);
-  
+  const clientID = Math.floor(Math.random() * 0xffffffff);
+
   // Select schema based on mode
   const editorSchema = getSchema(mode);
-  console.log('[editor] Using schema for mode:', mode, 'hasToolbar:', hasToolbar(mode));
-  
+  console.log("[editor] Using schema for mode:", mode, "hasToolbar:", hasToolbar(mode));
+
   // Parse initial document from JSON if provided, otherwise create empty
   let doc: Node;
-  if (initialDoc && typeof initialDoc === 'object') {
+  if (initialDoc && typeof initialDoc === "object") {
     try {
-      console.log('[editor] Parsing initialDoc with Node.fromJSON');
+      console.log("[editor] Parsing initialDoc with Node.fromJSON");
       doc = Node.fromJSON(editorSchema, initialDoc);
-      console.log('[editor] Parsed doc successfully, content:', doc.toString().slice(0, 200));
+      console.log("[editor] Parsed doc successfully, content:", doc.toString().slice(0, 200));
     } catch (err) {
-      console.error('[editor] Failed to parse initial doc JSON, using empty doc:', err);
-      doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node('doc');
+      console.error("[editor] Failed to parse initial doc JSON, using empty doc:", err);
+      doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node("doc");
     }
   } else {
-    console.log('[editor] No initialDoc, creating empty doc');
-    doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node('doc');
+    console.log("[editor] No initialDoc, creating empty doc");
+    doc = editorSchema.topNodeType.createAndFill() ?? editorSchema.node("doc");
   }
 
   // Build plugins list based on mode
   const plugins: Plugin[] = [];
-  
+
   if (hasToolbar(mode)) {
     // Build custom menu that flattens the Type dropdown into inline buttons
     const menuItems = buildMenuItems(editorSchema);
-    
+
     // Filter out null/undefined items
     const cut = <T>(arr: (T | null | undefined)[]): T[] => arr.filter((x): x is T => x != null);
-    
+
     // Create compact block type items with short labels
     const paragraph = editorSchema.nodes.paragraph;
     const codeBlock = editorSchema.nodes.code_block;
     const heading = editorSchema.nodes.heading;
-    
-    const makeParagraph = paragraph && blockTypeItem(paragraph, {
-      title: 'Change to paragraph',
-      label: '¶',
-    });
-    const makeCodeBlock = codeBlock && blockTypeItem(codeBlock, {
-      title: 'Change to code block',
-      label: '</>',
-    });
-    
+
+    const makeParagraph =
+      paragraph &&
+      blockTypeItem(paragraph, {
+        title: "Change to paragraph",
+        label: "¶",
+      });
+    const makeCodeBlock =
+      codeBlock &&
+      blockTypeItem(codeBlock, {
+        title: "Change to code block",
+        label: "</>",
+      });
+
     // Create heading items H1-H6 with compact labels
-    const makeHeadings = heading ? [1, 2, 3, 4, 5, 6].map(level => 
-      blockTypeItem(heading, {
-        title: `Change to heading ${level}`,
-        label: `H${level}`,
-        attrs: { level },
-      })
-    ) : [];
-    
+    const makeHeadings = heading
+      ? [1, 2, 3, 4, 5, 6].map((level) =>
+          blockTypeItem(heading, {
+            title: `Change to heading ${level}`,
+            label: `H${level}`,
+            attrs: { level },
+          }),
+        )
+      : [];
+
     // Build flattened menu structure:
     // Row 1: inline formatting (bold, italic, code, link)
     // Row 2: block types (paragraph, code, H1-H6) + undo/redo
@@ -179,13 +187,7 @@ export function initEditor(
       // Inline formatting
       cut([menuItems.toggleStrong, menuItems.toggleEm, menuItems.toggleCode, menuItems.toggleLink]),
       // Block types flattened + undo/redo
-      cut([
-        makeParagraph,
-        makeCodeBlock,
-        ...makeHeadings,
-        undoItem,
-        redoItem,
-      ]),
+      cut([makeParagraph, makeCodeBlock, ...makeHeadings, undoItem, redoItem]),
       // Block structure tools
       cut([
         menuItems.wrapBulletList,
@@ -195,24 +197,21 @@ export function initEditor(
         selectParentNodeItem,
       ]),
     ];
-    
-    plugins.push(...exampleSetup({ 
-      schema: editorSchema, 
-      menuContent: customMenu,
-    }));
+
+    plugins.push(
+      ...exampleSetup({
+        schema: editorSchema,
+        menuContent: customMenu,
+      }),
+    );
   } else {
     // Minimal setup for raw mode - just basic editing, no menu/toolbar
-    plugins.push(
-      history(),
-      dropCursor(),
-      gapCursor(),
-      keymap(baseKeymap),
-    );
+    plugins.push(history(), dropCursor(), gapCursor(), keymap(baseKeymap));
   }
-  
+
   // Always add collab plugin
   plugins.push(collab({ version: collabVersion, clientID }));
-  
+
   // Add cursor plugin if sendCursor callback provided
   if (sendCursor) {
     plugins.push(createCursorPlugin(clientID, sendCursor));
@@ -225,7 +224,7 @@ export function initEditor(
   });
 
   // Add mode-specific CSS class
-  const editorClass = hasToolbar(mode) ? 'id-editor id-editor-rich' : 'id-editor id-editor-raw';
+  const editorClass = hasToolbar(mode) ? "id-editor id-editor-rich" : "id-editor id-editor-raw";
 
   // Create editor view
   const view = new EditorView(container, {
@@ -233,22 +232,21 @@ export function initEditor(
     dispatchTransaction(transaction: Transaction) {
       const newState = view.state.apply(transaction);
       view.updateState(newState);
-      
+
       // Dispatch custom event for collab sync
       // Only for LOCAL changes - remote changes have 'addToHistory' set to false by receiveTransaction
       // We also check that the transaction wasn't created by the collab plugin itself
-      const isLocalChange = transaction.docChanged && 
-        transaction.getMeta('addToHistory') !== false;
-      
+      const isLocalChange = transaction.docChanged && transaction.getMeta("addToHistory") !== false;
+
       if (isLocalChange) {
-        console.log('[editor] Local document change, dispatching editor:change event');
-        const event = new CustomEvent('editor:change', {
+        console.log("[editor] Local document change, dispatching editor:change event");
+        const event = new CustomEvent("editor:change", {
           detail: { transaction, state: newState },
           bubbles: true,
         });
         container.dispatchEvent(event);
       } else if (transaction.docChanged) {
-        console.log('[editor] Remote document change (from collab), not dispatching event');
+        console.log("[editor] Remote document change (from collab), not dispatching event");
       }
     },
     handleKeyDown(view, event) {
@@ -256,24 +254,24 @@ export function initEditor(
       // The browser's native caret can be positioned at end of previous line
       // (visually same as start of current line), causing Up to move from there.
       // We detect this case and manually compute the correct target position.
-      if (event.key === 'ArrowUp') {
+      if (event.key === "ArrowUp") {
         const { $head } = view.state.selection;
-        
+
         // Check if we're at the start of a visual line:
         // - parentOffset is 0 (start of block), OR
         // - character before cursor is a newline
         const textBefore = $head.parent.textContent.slice(0, $head.parentOffset);
-        const isAtVisualLineStart = $head.parentOffset === 0 || textBefore.endsWith('\n');
-        
+        const isAtVisualLineStart = $head.parentOffset === 0 || textBefore.endsWith("\n");
+
         if (isAtVisualLineStart) {
           // Get current visual coordinates
           const coords = view.coordsAtPos($head.pos);
           const lineHeight = coords.bottom - coords.top;
-          
+
           // Move up by half a line height to ensure we're in the previous line
           const targetY = coords.top - lineHeight / 2;
           const targetPos = view.posAtCoords({ left: coords.left, top: targetY });
-          
+
           if (targetPos && targetPos.pos < $head.pos) {
             const tr = view.state.tr.setSelection(TextSelection.create(view.state.doc, targetPos.pos));
             view.dispatch(tr);
@@ -285,7 +283,7 @@ export function initEditor(
     },
     attributes: {
       class: editorClass,
-      spellcheck: 'false',
+      spellcheck: "false",
     },
   });
 
@@ -302,11 +300,11 @@ export function getEditorState(view: EditorView): {
 } {
   const state = view.state;
   const sendable = sendableSteps(state);
-  
+
   return {
     version: getVersion(state),
     doc: state.doc.toJSON(),
-    steps: sendable ? sendable.steps.map(s => s.toJSON()) : null,
+    steps: sendable ? sendable.steps.map((s) => s.toJSON()) : null,
   };
 }
 
@@ -320,10 +318,10 @@ export function getSendableSteps(view: EditorView): {
 } | null {
   const sendable = sendableSteps(view.state);
   if (!sendable) return null;
-  
+
   return {
     version: getVersion(view.state),
-    steps: sendable.steps.map(s => s.toJSON()),
+    steps: sendable.steps.map((s) => s.toJSON()),
     clientID: sendable.clientID,
   };
 }

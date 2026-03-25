@@ -40,10 +40,7 @@ test.describe("Home Page", () => {
   test("has search input", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#file-search")).toBeVisible();
-    await expect(page.locator("#file-search")).toHaveAttribute(
-      "placeholder",
-      /search/i
-    );
+    await expect(page.locator("#file-search")).toHaveAttribute("placeholder", /search/i);
   });
 
   test("has show deleted checkbox", async ({ page }) => {
@@ -53,17 +50,13 @@ test.describe("Home Page", () => {
 
   test("has theme toggle in footer", async ({ page }) => {
     await page.goto("/");
-    await expect(
-      page.locator("footer a", { hasText: "theme" })
-    ).toBeVisible();
+    await expect(page.locator("footer a", { hasText: "theme" })).toBeVisible();
   });
 
   test("shows empty state when no files", async ({ page }) => {
     await page.goto("/");
     // Fresh ephemeral server has no files
-    await expect(
-      page.locator(".text-muted", { hasText: /no files|empty/i })
-    ).toBeVisible();
+    await expect(page.locator(".text-muted", { hasText: /no files|empty/i })).toBeVisible();
   });
 });
 

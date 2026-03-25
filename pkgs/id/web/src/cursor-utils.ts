@@ -193,10 +193,7 @@ export function groupCursorsByPosition(cursors: CursorForMerge[]): PositionGroup
  * @param getLeftCoord - Function to get left pixel coordinate for a position
  * @returns true if any consecutive groups would have overlapping tooltips
  */
-export function doGroupsOverlap(
-  groups: PositionGroup[],
-  getLeftCoord: ((pos: number) => number) | null,
-): boolean {
+export function doGroupsOverlap(groups: PositionGroup[], getLeftCoord: ((pos: number) => number) | null): boolean {
   if (groups.length <= 1 || !getLeftCoord) return false;
 
   const MIN_GAP = 2; // Only merge when tooltips would actually overlap (with 2px buffer)
@@ -206,10 +203,7 @@ export function doGroupsOverlap(
     const next = groups[i + 1];
 
     // Calculate total width of current group's tooltips
-    const currWidth = curr.cursors.reduce(
-      (sum, c) => sum + estimateTooltipWidth(c.name),
-      0,
-    );
+    const currWidth = curr.cursors.reduce((sum, c) => sum + estimateTooltipWidth(c.name), 0);
 
     // Get pixel distance between positions
     try {
@@ -220,10 +214,7 @@ export function doGroupsOverlap(
       if (posDiff < currWidth + MIN_GAP) {
         return true;
       }
-    } catch {
-      // If coords fail, assume no overlap
-      continue;
-    }
+    } catch {}
   }
   return false;
 }
@@ -266,10 +257,7 @@ export function clusterOverlappingGroups(
   // Calculate initial right edge of first group's tooltip
   try {
     const firstLeft = getLeftCoord(groups[0].position);
-    const firstWidth = groups[0].cursors.reduce(
-      (sum, c) => sum + estimateTooltipWidth(c.name),
-      0,
-    );
+    const firstWidth = groups[0].cursors.reduce((sum, c) => sum + estimateTooltipWidth(c.name), 0);
     clusterRightEdge = firstLeft + firstWidth;
   } catch {
     // If coords fail, put everything in separate clusters
@@ -284,10 +272,7 @@ export function clusterOverlappingGroups(
 
     try {
       const groupLeft = getLeftCoord(group.position);
-      const groupWidth = group.cursors.reduce(
-        (sum, c) => sum + estimateTooltipWidth(c.name),
-        0,
-      );
+      const groupWidth = group.cursors.reduce((sum, c) => sum + estimateTooltipWidth(c.name), 0);
 
       // Check if this group overlaps with the current cluster      // Check if this group overlaps with the current cluster
       if (groupLeft < clusterRightEdge + MIN_GAP) {
@@ -313,10 +298,7 @@ export function clusterOverlappingGroups(
       currentCluster = [group];
       try {
         const left = getLeftCoord(group.position);
-        const width = group.cursors.reduce(
-          (sum, c) => sum + estimateTooltipWidth(c.name),
-          0,
-        );
+        const width = group.cursors.reduce((sum, c) => sum + estimateTooltipWidth(c.name), 0);
         clusterRightEdge = left + width;
       } catch {
         clusterRightEdge = 0;

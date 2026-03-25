@@ -3,10 +3,10 @@
  * Initializes HTMX, the ProseMirror editor, and theme switching.
  */
 
-import htmx from 'htmx.org';
-import { type EditorInstance, getEditorState } from './editor';
-import { initCollab, type CollabConnection } from './collab';
-import { initTheme, setTheme, cycleTheme, type Theme } from './theme';
+import htmx from "htmx.org";
+import { type EditorInstance, getEditorState } from "./editor";
+import { initCollab, type CollabConnection } from "./collab";
+import { initTheme, setTheme, cycleTheme, type Theme } from "./theme";
 
 // Expose htmx globally for HTMX attributes in HTML
 declare global {
@@ -46,48 +46,58 @@ interface IdApp {
 /**
  * Update the editor status indicator.
  */
-function updateStatus(status: 'connecting' | 'connected' | 'disconnected' | 'error'): void {
-  const statusEl = document.getElementById('editor-status');
+function updateStatus(status: "connecting" | "connected" | "disconnected" | "error"): void {
+  const statusEl = document.getElementById("editor-status");
   if (!statusEl) return;
-  
+
   const statusText: Record<string, string> = {
-    connecting: 'connecting...',
-    connected: 'connected',
-    disconnected: 'disconnected',
-    error: 'error',
+    connecting: "connecting...",
+    connected: "connected",
+    disconnected: "disconnected",
+    error: "error",
   };
-  
+
   statusEl.textContent = statusText[status] || status;
   statusEl.className = `editor-status status-${status}`;
 }
 
 /**
  * Initialize scroll-show behavior for inline header and footer.
- * 
- * Header: In normal flow at top. When scrolled past, becomes fixed and 
+ *
+ * Header: In normal flow at top. When scrolled past, becomes fixed and
  *         shows on scroll-up, hides on scroll-down.
- * 
+ *
  * Footer: In normal flow at bottom. When not at bottom, becomes fixed and
  *         shows on scroll-up (with header), hides on scroll-down.
  *         Also shows when at top (with header).
  */
-function initScrollShowHeader(headerSelector: string = '.editor-inline-header', footerSelector: string = '.editor-inline-footer'): (() => void) | null {
+function initScrollShowHeader(
+  headerSelector: string = ".editor-inline-header",
+  footerSelector: string = ".editor-inline-footer",
+): (() => void) | null {
   const header = document.querySelector(headerSelector) as HTMLElement | null;
   const footer = document.querySelector(footerSelector) as HTMLElement | null;
-  
+
   if (!header) {
-    console.log('[id] scroll-show: header not found for selector:', headerSelector);
+    console.log("[id] scroll-show: header not found for selector:", headerSelector);
     return null;
   }
-  
-  console.log('[id] scroll-show: initializing for', headerSelector, 'footer selector:', footerSelector, 'footer found:', !!footer);
-  
+
+  console.log(
+    "[id] scroll-show: initializing for",
+    headerSelector,
+    "footer selector:",
+    footerSelector,
+    "footer found:",
+    !!footer,
+  );
+
   const headerHeight = header.offsetHeight;
   const footerHeight = footer?.offsetHeight || 18;
-  console.log('[id] scroll-show: headerHeight:', headerHeight, 'footerHeight:', footerHeight);
+  console.log("[id] scroll-show: headerHeight:", headerHeight, "footerHeight:", footerHeight);
   let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
   let ticking = false;
-  
+
   const handleScroll = (): void => {
     const scrollTop = window.scrollY || document.documentElement.scrollTop;
     const windowHeight = window.innerHeight;
@@ -96,56 +106,56 @@ function initScrollShowHeader(headerSelector: string = '.editor-inline-header', 
     const isScrollingUp = scrollTop < lastScrollTop;
     const atTop = scrollTop <= headerHeight;
     const atBottom = scrollBottom <= footerHeight;
-    
+
     if (!ticking) {
       window.requestAnimationFrame(() => {
         // === HEADER ===
         if (atTop) {
           // At the very top - in normal document flow
-          header.classList.remove('floating', 'visible');
+          header.classList.remove("floating", "visible");
         } else {
           // Scrolled past header - floating behavior
-          if (!header.classList.contains('floating')) {
-            header.classList.add('floating');
+          if (!header.classList.contains("floating")) {
+            header.classList.add("floating");
           }
           if (isScrollingUp) {
-            header.classList.add('visible');
+            header.classList.add("visible");
           } else {
-            header.classList.remove('visible');
+            header.classList.remove("visible");
           }
         }
-        
+
         // === FOOTER ===
         if (footer) {
           if (atBottom) {
             // At the very bottom - in normal document flow
-            footer.classList.remove('floating', 'visible');
+            footer.classList.remove("floating", "visible");
           } else if (atTop) {
             // At the very top - show footer floating (with header visible)
-            if (!footer.classList.contains('floating')) {
-              footer.classList.add('floating');
+            if (!footer.classList.contains("floating")) {
+              footer.classList.add("floating");
             }
-            footer.classList.add('visible');
+            footer.classList.add("visible");
           } else {
             // In the middle - floating behavior
-            if (!footer.classList.contains('floating')) {
-              footer.classList.add('floating');
+            if (!footer.classList.contains("floating")) {
+              footer.classList.add("floating");
             }
             if (isScrollingUp) {
-              footer.classList.add('visible');
+              footer.classList.add("visible");
             } else {
-              footer.classList.remove('visible');
+              footer.classList.remove("visible");
             }
           }
         }
-        
+
         lastScrollTop = scrollTop;
         ticking = false;
       });
       ticking = true;
     }
   };
-  
+
   // Initial state check
   const scrollTop = window.scrollY || document.documentElement.scrollTop;
   const windowHeight = window.innerHeight;
@@ -153,8 +163,8 @@ function initScrollShowHeader(headerSelector: string = '.editor-inline-header', 
   const scrollBottom = docHeight - scrollTop - windowHeight;
   const atTop = scrollTop <= headerHeight;
   const atBottom = scrollBottom <= footerHeight;
-  
-  console.log('[id] scroll-show initial state:', {
+
+  console.log("[id] scroll-show initial state:", {
     scrollTop,
     headerHeight,
     footerHeight,
@@ -163,33 +173,33 @@ function initScrollShowHeader(headerSelector: string = '.editor-inline-header', 
     scrollBottom,
     atTop,
     atBottom,
-    footer: footer ? 'found' : 'not found',
+    footer: footer ? "found" : "not found",
   });
-  
+
   if (footer) {
     if (atBottom) {
       // At bottom - footer in normal flow
-      console.log('[id] scroll-show: footer at bottom - normal flow');
-      footer.classList.remove('floating', 'visible');
+      console.log("[id] scroll-show: footer at bottom - normal flow");
+      footer.classList.remove("floating", "visible");
     } else if (atTop) {
       // At top - footer floating and visible
-      console.log('[id] scroll-show: footer at top - floating visible');
-      footer.classList.add('floating', 'visible');
+      console.log("[id] scroll-show: footer at top - floating visible");
+      footer.classList.add("floating", "visible");
     } else {
       // Middle - footer floating and hidden
-      console.log('[id] scroll-show: footer in middle - floating hidden');
-      footer.classList.add('floating');
-      footer.classList.remove('visible');
+      console.log("[id] scroll-show: footer in middle - floating hidden");
+      footer.classList.add("floating");
+      footer.classList.remove("visible");
     }
   }
-  
-  window.addEventListener('scroll', handleScroll, { passive: true });
-  
+
+  window.addEventListener("scroll", handleScroll, { passive: true });
+
   // Return cleanup function
   return () => {
-    window.removeEventListener('scroll', handleScroll);
-    header.classList.remove('floating', 'visible');
-    footer?.classList.remove('floating', 'visible');
+    window.removeEventListener("scroll", handleScroll);
+    header.classList.remove("floating", "visible");
+    footer?.classList.remove("floating", "visible");
   };
 }
 
@@ -198,9 +208,9 @@ function initScrollShowHeader(headerSelector: string = '.editor-inline-header', 
  * Shows "p2p file sharing" on initial load, or last filename as link after navigation.
  */
 function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string | null, hasHistory: boolean): void {
-  const subtitle = document.getElementById('header-subtitle');
+  const subtitle = document.getElementById("header-subtitle");
   if (!subtitle) return;
-  
+
   if (lastFilename && lastFilePath && hasHistory) {
     // Create a link to the last file
     subtitle.innerHTML = `// <a href="${lastFilePath}" hx-get="${lastFilePath}" hx-target="#main" hx-push-url="true">${lastFilename}</a>`;
@@ -209,7 +219,7 @@ function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string 
       window.htmx.process(subtitle);
     }
   } else {
-    subtitle.textContent = '// p2p file sharing';
+    subtitle.textContent = "// p2p file sharing";
   }
 }
 
@@ -218,32 +228,32 @@ function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string 
  * If there's history, use HTMX to navigate. Otherwise, grey out but still allow browser back.
  */
 function updateBackLink(navHistory: string[], currentPath: string): void {
-  const backLink = document.getElementById('back-link');
+  const backLink = document.getElementById("back-link");
   if (!backLink) return;
-  
+
   // Find previous path (not current)
   const prevPath = navHistory.length > 0 ? navHistory[navHistory.length - 1] : null;
-  
+
   if (prevPath && prevPath !== currentPath) {
     // Has app history - use HTMX navigation
-    backLink.classList.remove('disabled');
-    backLink.setAttribute('href', prevPath);
-    backLink.setAttribute('hx-get', prevPath);
-    backLink.setAttribute('hx-target', '#main');
-    backLink.setAttribute('hx-push-url', 'true');
-    backLink.removeAttribute('onclick');
+    backLink.classList.remove("disabled");
+    backLink.setAttribute("href", prevPath);
+    backLink.setAttribute("hx-get", prevPath);
+    backLink.setAttribute("hx-target", "#main");
+    backLink.setAttribute("hx-push-url", "true");
+    backLink.removeAttribute("onclick");
     // Re-process with HTMX
     if (window.htmx) {
       window.htmx.process(backLink);
     }
   } else {
     // No app history - grey out but use browser back as fallback
-    backLink.classList.add('disabled');
-    backLink.setAttribute('href', '#');
-    backLink.removeAttribute('hx-get');
-    backLink.removeAttribute('hx-target');
-    backLink.removeAttribute('hx-push-url');
-    backLink.setAttribute('onclick', 'history.back(); return false;');
+    backLink.classList.add("disabled");
+    backLink.setAttribute("href", "#");
+    backLink.removeAttribute("hx-get");
+    backLink.removeAttribute("hx-target");
+    backLink.removeAttribute("hx-push-url");
+    backLink.setAttribute("onclick", "history.back(); return false;");
   }
 }
 
@@ -252,34 +262,34 @@ function updateBackLink(navHistory: string[], currentPath: string): void {
  * Filters .file-item elements based on data-name and data-kind attributes.
  */
 function initFileFilter(): void {
-  const showAutoCheckbox = document.getElementById('show-auto') as HTMLInputElement | null;
-  
+  const showAutoCheckbox = document.getElementById("show-auto") as HTMLInputElement | null;
+
   if (!showAutoCheckbox) return;
-  
+
   const applyFilter = (): void => {
     const showAuto = showAutoCheckbox?.checked || false;
-    const items = document.querySelectorAll('.file-item[data-kind]');
-    
+    const items = document.querySelectorAll(".file-item[data-kind]");
+
     items.forEach((el) => {
       const item = el as HTMLElement;
-      const kind = item.getAttribute('data-kind') || '';
-      
+      const kind = item.getAttribute("data-kind") || "";
+
       // Hide auto/archive unless checkbox is checked
-      if ((kind === 'auto' || kind === 'archive') && !showAuto) {
-        item.style.display = 'none';
+      if ((kind === "auto" || kind === "archive") && !showAuto) {
+        item.style.display = "none";
         return;
       }
-      
-      item.style.display = '';
+
+      item.style.display = "";
     });
   };
-  
+
   // Guard against duplicate listeners (element persists across HTMX swaps)
   if (!showAutoCheckbox.dataset.filterInit) {
-    showAutoCheckbox.addEventListener('change', applyFilter);
-    showAutoCheckbox.dataset.filterInit = '1';
+    showAutoCheckbox.addEventListener("change", applyFilter);
+    showAutoCheckbox.dataset.filterInit = "1";
   }
-  
+
   // Apply filter immediately (auto files hidden by default)
   applyFilter();
 }
@@ -293,18 +303,18 @@ let scrollCleanup: (() => void) | null = null;
 function init(): void {
   // Initialize HTMX
   window.htmx = htmx;
-  
+
   // Expose cycleTheme globally for onclick handlers
   window.cycleTheme = cycleTheme;
-  
+
   // Configure HTMX
-  htmx.config.defaultSwapStyle = 'innerHTML';
+  htmx.config.defaultSwapStyle = "innerHTML";
   htmx.config.historyCacheSize = 10;
   htmx.config.refreshOnHistoryMiss = true;
-  
+
   // Initialize theme system
   initTheme();
-  
+
   // Create app API
   const app: IdApp = {
     collab: null,
@@ -322,49 +332,49 @@ function init(): void {
     connectTagsWs(): void {
       if (this.tagsWs && this.tagsWs.readyState <= WebSocket.OPEN) return;
 
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${wsProtocol}//${window.location.host}/ws/tags`;
-      console.log('[id] Tags WS connecting:', wsUrl);
+      console.log("[id] Tags WS connecting:", wsUrl);
       const ws = new WebSocket(wsUrl);
       this.tagsWs = ws;
 
       ws.onopen = () => {
-        console.log('[id] Tags WS connected');
+        console.log("[id] Tags WS connected");
       };
 
       ws.onmessage = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data as string);
-          console.log('[id] Tag event:', data);
+          console.log("[id] Tag event:", data);
 
           // On any tag change, refresh the file list if we're on the home page
-          const fileListContent = document.getElementById('file-list-content');
+          const fileListContent = document.getElementById("file-list-content");
           if (fileListContent && window.htmx) {
             // Debounce: don't refresh more than once per 500ms
             const now = Date.now();
             const lastRefresh = (window as unknown as Record<string, number>).__tagRefreshTs || 0;
             if (now - lastRefresh > 500) {
               (window as unknown as Record<string, number>).__tagRefreshTs = now;
-              const searchInput = document.getElementById('file-search') as HTMLInputElement | null;
-              const showDeletedCheckbox = document.getElementById('show-deleted') as HTMLInputElement | null;
-              const query = searchInput?.value || '';
+              const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
+              const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
+              const query = searchInput?.value || "";
               const showDeleted = showDeletedCheckbox?.checked || false;
               const params = new URLSearchParams();
-              if (query) params.set('search', query);
-              if (showDeleted) params.set('show_deleted', 'true');
+              if (query) params.set("search", query);
+              if (showDeleted) params.set("show_deleted", "true");
               const qs = params.toString();
-              const url = qs ? `/api/files?${qs}` : '/api/files';
-              window.htmx.ajax('GET', url, { target: '#file-list-content', swap: 'innerHTML' });
+              const url = qs ? `/api/files?${qs}` : "/api/files";
+              window.htmx.ajax("GET", url, { target: "#file-list-content", swap: "innerHTML" });
             }
           }
 
           // On editor page, refresh tags for the current file
-          const editorContainer = document.getElementById('editor-container');
+          const editorContainer = document.getElementById("editor-container");
           if (editorContainer && data.subject) {
             const filenameEncoded = editorContainer.dataset.filename;
             const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
             if (filename && data.subject === filename) {
-              console.log('[id] Tag changed for current file:', data.key, '=', data.value);
+              console.log("[id] Tag changed for current file:", data.key, "=", data.value);
               this.loadFileTags(filename);
             }
           }
@@ -374,13 +384,13 @@ function init(): void {
       };
 
       ws.onclose = () => {
-        console.log('[id] Tags WS disconnected, reconnecting in 3s');
+        console.log("[id] Tags WS disconnected, reconnecting in 3s");
         this.tagsWs = null;
         setTimeout(() => this.connectTagsWs(), 3000);
       };
 
       ws.onerror = (err) => {
-        console.warn('[id] Tags WS error:', err);
+        console.warn("[id] Tags WS error:", err);
         ws.close();
       };
     },
@@ -402,14 +412,15 @@ function init(): void {
         if (!response.ok) return;
         const raw = await response.json();
         // API may return { tags: [...] } or a flat array
-        const tags: Array<{ key: string; value: string | null }> = Array.isArray(raw) ? raw : (raw.tags || []);
+        const tags: Array<{ key: string; value: string | null }> = Array.isArray(raw) ? raw : raw.tags || [];
         // Filter out system tags (created, modified, deleted, archive.*)
-        const userTags = tags.filter((t: { key: string }) =>
-          t.key !== 'created' && t.key !== 'modified' && t.key !== 'deleted' && !t.key.startsWith('archive.')
+        const userTags = tags.filter(
+          (t: { key: string }) =>
+            t.key !== "created" && t.key !== "modified" && t.key !== "deleted" && !t.key.startsWith("archive."),
         );
         this.renderEditorTags(userTags);
       } catch (err) {
-        console.warn('[id] Failed to load file tags:', err);
+        console.warn("[id] Failed to load file tags:", err);
       }
     },
 
@@ -417,24 +428,24 @@ function init(): void {
      * Render tag pills in the editor tag panel.
      */
     renderEditorTags(tags: Array<{ key: string; value: string | null }>): void {
-      const list = document.getElementById('editor-tag-list');
+      const list = document.getElementById("editor-tag-list");
       if (!list) return;
 
-      const panel = document.getElementById('editor-tag-panel');
+      const panel = document.getElementById("editor-tag-panel");
       const filename = panel?.dataset.filename ? decodeURIComponent(panel.dataset.filename) : null;
 
-      list.innerHTML = '';
+      list.innerHTML = "";
       for (const tag of tags) {
-        const pill = document.createElement('span');
-        pill.className = 'tag-pill-removable';
+        const pill = document.createElement("span");
+        pill.className = "tag-pill-removable";
         const label = tag.value ? `${tag.key}: ${tag.value}` : tag.key;
         pill.textContent = label;
 
         // Add remove button
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'tag-remove-btn';
-        removeBtn.textContent = '\u00d7';
-        removeBtn.title = 'Remove tag';
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "tag-remove-btn";
+        removeBtn.textContent = "\u00d7";
+        removeBtn.title = "Remove tag";
         removeBtn.onclick = (e) => {
           e.preventDefault();
           if (filename) {
@@ -446,10 +457,10 @@ function init(): void {
       }
 
       if (tags.length === 0) {
-        const empty = document.createElement('span');
-        empty.className = 'text-muted';
-        empty.textContent = 'none';
-        empty.style.fontSize = '9px';
+        const empty = document.createElement("span");
+        empty.className = "text-muted";
+        empty.textContent = "none";
+        empty.style.fontSize = "9px";
         list.appendChild(empty);
       }
     },
@@ -458,9 +469,9 @@ function init(): void {
      * Add a tag from the inline inputs on the editor page.
      */
     async addTagInline(): Promise<void> {
-      const keyInput = document.getElementById('tag-add-key') as HTMLInputElement | null;
-      const valueInput = document.getElementById('tag-add-value') as HTMLInputElement | null;
-      const panel = document.getElementById('editor-tag-panel');
+      const keyInput = document.getElementById("tag-add-key") as HTMLInputElement | null;
+      const valueInput = document.getElementById("tag-add-value") as HTMLInputElement | null;
+      const panel = document.getElementById("editor-tag-panel");
       const filename = panel?.dataset.filename ? decodeURIComponent(panel.dataset.filename) : null;
 
       if (!keyInput || !filename) return;
@@ -472,22 +483,22 @@ function init(): void {
         const body: Record<string, string> = { subject: filename, key };
         if (value) body.value = value;
 
-        const response = await fetch('/api/tags', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/tags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
 
         if (response.ok) {
-          keyInput.value = '';
-          if (valueInput) valueInput.value = '';
+          keyInput.value = "";
+          if (valueInput) valueInput.value = "";
           // Tags WS will trigger a refresh, but also reload immediately
           this.loadFileTags(filename);
         } else {
-          console.error('[id] Failed to add tag:', await response.text());
+          console.error("[id] Failed to add tag:", await response.text());
         }
       } catch (err) {
-        console.error('[id] Add tag error:', err);
+        console.error("[id] Add tag error:", err);
       }
     },
 
@@ -499,9 +510,9 @@ function init(): void {
         const body: Record<string, string | null> = { subject, key };
         if (value !== null) body.value = value;
 
-        const response = await fetch('/api/tags', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/tags", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
 
@@ -509,10 +520,10 @@ function init(): void {
           // Reload tags
           this.loadFileTags(subject);
         } else {
-          console.error('[id] Failed to remove tag:', await response.text());
+          console.error("[id] Failed to remove tag:", await response.text());
         }
       } catch (err) {
-        console.error('[id] Remove tag error:', err);
+        console.error("[id] Remove tag error:", err);
       }
     },
 
@@ -520,17 +531,17 @@ function init(): void {
      * Bulk add a tag to all selected files on the home page.
      */
     async bulkAddTag(): Promise<void> {
-      const keyInput = document.getElementById('bulk-tag-key') as HTMLInputElement | null;
-      const valueInput = document.getElementById('bulk-tag-value') as HTMLInputElement | null;
+      const keyInput = document.getElementById("bulk-tag-key") as HTMLInputElement | null;
+      const valueInput = document.getElementById("bulk-tag-value") as HTMLInputElement | null;
       if (!keyInput) return;
 
       const key = keyInput.value.trim();
       if (!key) return;
       const value = valueInput?.value.trim() || null;
 
-      const checkboxes = document.querySelectorAll('.file-select:checked') as NodeListOf<HTMLInputElement>;
+      const checkboxes = document.querySelectorAll(".file-select:checked") as NodeListOf<HTMLInputElement>;
       const subjects: string[] = [];
-      checkboxes.forEach(cb => {
+      checkboxes.forEach((cb) => {
         const name = cb.dataset.name;
         if (name) subjects.push(name);
       });
@@ -543,9 +554,9 @@ function init(): void {
           const body: Record<string, string> = { subject, key };
           if (value) body.value = value;
 
-          const response = await fetch('/api/tags', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          const response = await fetch("/api/tags", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
           if (response.ok) successCount++;
@@ -555,8 +566,8 @@ function init(): void {
       }
 
       console.log(`[id] Bulk tag: added "${key}" to ${successCount}/${subjects.length} files`);
-      keyInput.value = '';
-      if (valueInput) valueInput.value = '';
+      keyInput.value = "";
+      if (valueInput) valueInput.value = "";
       // Tags WS will refresh the file list
     },
 
@@ -564,10 +575,12 @@ function init(): void {
      * Clear all file selection checkboxes on the home page.
      */
     bulkClearSelection(): void {
-      const checkboxes = document.querySelectorAll('.file-select:checked') as NodeListOf<HTMLInputElement>;
-      checkboxes.forEach(cb => { cb.checked = false; });
-      const bar = document.getElementById('bulk-action-bar');
-      if (bar) bar.style.display = 'none';
+      const checkboxes = document.querySelectorAll(".file-select:checked") as NodeListOf<HTMLInputElement>;
+      checkboxes.forEach((cb) => {
+        cb.checked = false;
+      });
+      const bar = document.getElementById("bulk-action-bar");
+      if (bar) bar.style.display = "none";
     },
 
     /**
@@ -575,96 +588,89 @@ function init(): void {
      */
     initBulkSelect(): void {
       // Use event delegation on the file list content
-      const container = document.getElementById('file-list-content');
+      const container = document.getElementById("file-list-content");
       if (!container) return;
 
-      container.addEventListener('change', (event: Event) => {
+      container.addEventListener("change", (event: Event) => {
         const target = event.target as HTMLInputElement;
-        if (!target.classList.contains('file-select')) return;
+        if (!target.classList.contains("file-select")) return;
 
-        const checked = document.querySelectorAll('.file-select:checked');
-        const bar = document.getElementById('bulk-action-bar');
-        const countEl = document.getElementById('bulk-count');
+        const checked = document.querySelectorAll(".file-select:checked");
+        const bar = document.getElementById("bulk-action-bar");
+        const countEl = document.getElementById("bulk-count");
 
         if (checked.length > 0) {
-          if (bar) bar.style.display = 'flex';
+          if (bar) bar.style.display = "flex";
           if (countEl) countEl.textContent = `${checked.length} selected`;
         } else {
-          if (bar) bar.style.display = 'none';
+          if (bar) bar.style.display = "none";
         }
       });
     },
-    
+
     async openEditor(docId: string): Promise<void> {
       // Guard against double initialization
       if (this.collab) {
-        console.log('[id] Editor already initialized');
+        console.log("[id] Editor already initialized");
         return;
       }
-      
-      const editorContainer = document.getElementById('editor-container');
-      const container = document.getElementById('editor');
+
+      const editorContainer = document.getElementById("editor-container");
+      const container = document.getElementById("editor");
       if (!container || !editorContainer) {
-        console.error('[id] Editor container not found');
+        console.error("[id] Editor container not found");
         return;
       }
-      
+
       try {
         // Get filename from data attribute (URL-encoded by server)
         const filenameEncoded = editorContainer.dataset.filename;
         const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : undefined;
-        console.log('[id] Filename:', filename);
-        
+        console.log("[id] Filename:", filename);
+
         // Track the filename and path for header subtitle
         if (filename) {
           this.lastFilename = filename;
           this.lastFilePath = this.currentPath;
         }
-        
+
         // Clear container - server doc comes via WebSocket Init message
-        container.innerHTML = '';
-        
+        container.innerHTML = "";
+
         // Connect to collab server - editor will be initialized after receiving server doc
-        updateStatus('connecting');
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        updateStatus("connecting");
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         const wsUrl = `${wsProtocol}//${window.location.host}/ws/collab/${docId}`;
-        console.log('[id] Connecting to WebSocket:', wsUrl);
-        
-        this.collab = initCollab(
-          wsUrl,
-          container,
-          docId,
-          filename,
-          updateStatus,
-          (editor: EditorInstance) => {
-            console.log('[id] Editor initialized with server version, mode:', editor.mode);
-            // Initialize scroll-show header after editor is ready
-            scrollCleanup = initScrollShowHeader();
-            // Update back link based on navigation history
-            updateBackLink(this.navHistory, this.currentPath);
-            // Enable save button
-            const saveBtn = document.getElementById('save-btn') as HTMLButtonElement | null;
-            if (saveBtn) saveBtn.disabled = false;
-            // Load tags for the current file
-            if (filename) {
-              this.loadFileTags(filename);
-            }
+        console.log("[id] Connecting to WebSocket:", wsUrl);
+
+        this.collab = initCollab(wsUrl, container, docId, filename, updateStatus, (editor: EditorInstance) => {
+          console.log("[id] Editor initialized with server version, mode:", editor.mode);
+          // Initialize scroll-show header after editor is ready
+          scrollCleanup = initScrollShowHeader();
+          // Update back link based on navigation history
+          updateBackLink(this.navHistory, this.currentPath);
+          // Enable save button
+          const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
+          if (saveBtn) saveBtn.disabled = false;
+          // Load tags for the current file
+          if (filename) {
+            this.loadFileTags(filename);
           }
-        );
-        console.log('[id] Collab connection initiated');
+        });
+        console.log("[id] Collab connection initiated");
       } catch (err) {
-        console.error('[id] Error initializing editor:', err);
-        updateStatus('error');
+        console.error("[id] Error initializing editor:", err);
+        updateStatus("error");
       }
     },
-    
+
     closeEditor(): void {
       // Clean up scroll handler
       if (scrollCleanup) {
         scrollCleanup();
         scrollCleanup = null;
       }
-      
+
       if (this.collab) {
         // Disconnect first (closes WebSocket, removes event listeners)
         // This must happen before destroying the view to avoid dispatch errors
@@ -675,16 +681,16 @@ function init(): void {
         }
         this.collab = null;
       }
-      updateStatus('disconnected');
+      updateStatus("disconnected");
     },
 
     async saveFile(): Promise<void> {
       if (!this.collab?.editor) {
-        console.warn('[id] No editor to save');
+        console.warn("[id] No editor to save");
         return;
       }
 
-      const editorContainer = document.getElementById('editor-container');
+      const editorContainer = document.getElementById("editor-container");
       if (!editorContainer) return;
 
       const docId = editorContainer.dataset.docId;
@@ -692,23 +698,23 @@ function init(): void {
       const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
 
       if (!docId || !filename) {
-        console.error('[id] Missing doc_id or filename for save');
+        console.error("[id] Missing doc_id or filename for save");
         return;
       }
 
       // Get current editor state
       const state = getEditorState(this.collab.editor.view);
-      const saveBtn = document.getElementById('save-btn') as HTMLButtonElement | null;
+      const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
 
       try {
         if (saveBtn) {
           saveBtn.disabled = true;
-          saveBtn.textContent = 'saving...';
+          saveBtn.textContent = "saving...";
         }
 
-        const response = await fetch('/api/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             doc_id: docId,
             name: filename,
@@ -718,94 +724,100 @@ function init(): void {
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.error('[id] Save failed:', errorText);
-          if (saveBtn) saveBtn.textContent = 'error!';
-          setTimeout(() => { if (saveBtn) saveBtn.textContent = 'save'; }, 2000);
+          console.error("[id] Save failed:", errorText);
+          if (saveBtn) saveBtn.textContent = "error!";
+          setTimeout(() => {
+            if (saveBtn) saveBtn.textContent = "save";
+          }, 2000);
           return;
         }
 
-        const result = await response.json() as { hash: string; name: string; archive_name: string | null };
-        console.log('[id] File saved:', result);
+        const result = (await response.json()) as { hash: string; name: string; archive_name: string | null };
+        console.log("[id] File saved:", result);
 
         // Update the doc_id in the container to the new hash
         editorContainer.dataset.docId = result.hash;
 
         // Update the URL to reflect the new hash
         const newUrl = `/edit/${result.hash}`;
-        window.history.replaceState(null, '', newUrl);
+        window.history.replaceState(null, "", newUrl);
 
         if (saveBtn) {
-          saveBtn.textContent = 'saved!';
-          setTimeout(() => { if (saveBtn) saveBtn.textContent = 'save'; }, 2000);
+          saveBtn.textContent = "saved!";
+          setTimeout(() => {
+            if (saveBtn) saveBtn.textContent = "save";
+          }, 2000);
         }
       } catch (err) {
-        console.error('[id] Save error:', err);
+        console.error("[id] Save error:", err);
         if (saveBtn) {
-          saveBtn.textContent = 'error!';
-          setTimeout(() => { if (saveBtn) saveBtn.textContent = 'save'; }, 2000);
+          saveBtn.textContent = "error!";
+          setTimeout(() => {
+            if (saveBtn) saveBtn.textContent = "save";
+          }, 2000);
         }
       }
     },
 
     async createFile(event: Event): Promise<void> {
       event.preventDefault();
-      const input = document.getElementById('new-file-name') as HTMLInputElement | null;
+      const input = document.getElementById("new-file-name") as HTMLInputElement | null;
       if (!input) return;
 
       const name = input.value.trim();
       if (!name) return;
 
       try {
-        const response = await fetch('/api/new', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/new", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
         });
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.error('[id] Create file failed:', errorText);
+          console.error("[id] Create file failed:", errorText);
           return;
         }
 
-        const result = await response.json() as { hash: string; name: string };
-        console.log('[id] File created:', result);
+        const result = (await response.json()) as { hash: string; name: string };
+        console.log("[id] File created:", result);
 
         // Clear input
-        input.value = '';
+        input.value = "";
 
         // Navigate to the new file's editor
         const editUrl = `/edit/${result.hash}`;
         if (window.htmx) {
-          window.htmx.ajax('GET', editUrl, { target: '#main', swap: 'innerHTML' });
-          window.history.pushState(null, '', editUrl);
+          window.htmx.ajax("GET", editUrl, { target: "#main", swap: "innerHTML" });
+          window.history.pushState(null, "", editUrl);
         } else {
           window.location.href = editUrl;
         }
       } catch (err) {
-        console.error('[id] Create file error:', err);
+        console.error("[id] Create file error:", err);
       }
     },
 
     async downloadFile(format: string): Promise<void> {
       if (!this.collab?.editor) {
-        console.warn('[id] No editor for download');
+        console.warn("[id] No editor for download");
         return;
       }
 
-      const editorContainer = document.getElementById('editor-container');
+      const editorContainer = document.getElementById("editor-container");
       if (!editorContainer) return;
 
       const filenameEncoded = editorContainer.dataset.filename;
-      const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : 'download';
+      const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : "download";
 
       // Get current editor state
       const state = getEditorState(this.collab.editor.view);
 
       try {
-        const response = await fetch('/api/download', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             doc: state.doc,
             name: filename,
@@ -814,12 +826,12 @@ function init(): void {
         });
 
         if (!response.ok) {
-          console.error('[id] Download failed:', await response.text());
+          console.error("[id] Download failed:", await response.text());
           return;
         }
 
         // Get filename from Content-Disposition header or use default
-        const disposition = response.headers.get('Content-Disposition');
+        const disposition = response.headers.get("Content-Disposition");
         let dlFilename = filename;
         if (disposition) {
           const match = disposition.match(/filename="?([^"]+)"?/);
@@ -829,7 +841,7 @@ function init(): void {
         // Create blob and trigger download
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
+        const a = document.createElement("a");
         a.href = url;
         a.download = dlFilename;
         document.body.appendChild(a);
@@ -837,38 +849,38 @@ function init(): void {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } catch (err) {
-        console.error('[id] Download error:', err);
+        console.error("[id] Download error:", err);
       }
     },
 
     async renameFile(): Promise<void> {
       // Find filename from editor page or viewer page
-      const editorContainer = document.getElementById('editor-container');
-      const viewerActions = document.querySelector('.viewer-actions') as HTMLElement | null;
+      const editorContainer = document.getElementById("editor-container");
+      const viewerActions = document.querySelector(".viewer-actions") as HTMLElement | null;
       const filenameEncoded = editorContainer?.dataset.filename ?? viewerActions?.dataset.filename;
       const currentName = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
       if (!currentName) {
-        console.error('[id] No filename for rename');
+        console.error("[id] No filename for rename");
         return;
       }
 
       const newName = prompt(`Rename "${currentName}" to:`, currentName);
-      if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+      if (!newName || newName.trim() === "" || newName.trim() === currentName) return;
 
       const trimmedName = newName.trim();
-      const archive = confirm('Archive the original name as a backup?');
+      const archive = confirm("Archive the original name as a backup?");
 
-      const renameBtn = document.getElementById('rename-btn') as HTMLButtonElement | null;
+      const renameBtn = document.getElementById("rename-btn") as HTMLButtonElement | null;
 
       try {
         if (renameBtn) {
           renameBtn.disabled = true;
-          renameBtn.textContent = 'renaming...';
+          renameBtn.textContent = "renaming...";
         }
 
-        const response = await fetch('/api/rename', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: currentName,
             new_name: trimmedName,
@@ -878,67 +890,71 @@ function init(): void {
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.error('[id] Rename failed:', errorText);
-          if (renameBtn) renameBtn.textContent = 'error!';
-          setTimeout(() => { if (renameBtn) renameBtn.textContent = 'rename'; }, 2000);
+          console.error("[id] Rename failed:", errorText);
+          if (renameBtn) renameBtn.textContent = "error!";
+          setTimeout(() => {
+            if (renameBtn) renameBtn.textContent = "rename";
+          }, 2000);
           return;
         }
 
-        const result = await response.json() as {
+        const result = (await response.json()) as {
           name: string;
           hash: string;
           archived_original: string | null;
           archived_replaced: string | null;
         };
-        console.log('[id] File renamed:', result);
+        console.log("[id] File renamed:", result);
 
         if (renameBtn) {
-          renameBtn.textContent = 'renamed!';
+          renameBtn.textContent = "renamed!";
         }
 
         // Navigate to the new file name
         const fileUrl = `/file/${encodeURIComponent(result.name)}`;
         if (window.htmx) {
-          window.htmx.ajax('GET', fileUrl, { target: '#main', swap: 'innerHTML' });
-          window.history.pushState(null, '', fileUrl);
+          window.htmx.ajax("GET", fileUrl, { target: "#main", swap: "innerHTML" });
+          window.history.pushState(null, "", fileUrl);
         } else {
           window.location.href = fileUrl;
         }
       } catch (err) {
-        console.error('[id] Rename error:', err);
+        console.error("[id] Rename error:", err);
         if (renameBtn) {
-          renameBtn.textContent = 'error!';
-          setTimeout(() => { if (renameBtn) renameBtn.textContent = 'rename'; }, 2000);
+          renameBtn.textContent = "error!";
+          setTimeout(() => {
+            if (renameBtn) renameBtn.textContent = "rename";
+          }, 2000);
         }
       }
     },
 
     async copyFile(): Promise<void> {
       // Find filename from editor page or viewer page
-      const editorContainer = document.getElementById('editor-container');
-      const viewerActions = document.querySelector('.viewer-actions') as HTMLElement | null;
+      const editorContainer = document.getElementById("editor-container");
+      const viewerActions = document.querySelector(".viewer-actions") as HTMLElement | null;
       const filenameEncoded = editorContainer?.dataset.filename ?? viewerActions?.dataset.filename;
       const currentName = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
       if (!currentName) {
-        console.error('[id] No filename for copy');
+        console.error("[id] No filename for copy");
         return;
       }
 
       const newName = prompt(`Copy "${currentName}" to:`, currentName);
-      if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+      if (!newName || newName.trim() === "" || newName.trim() === currentName) return;
 
       const trimmedName = newName.trim();
-      const copyBtn = document.getElementById('copy-btn') as HTMLButtonElement | null;
+      const copyBtn = document.getElementById("copy-btn") as HTMLButtonElement | null;
 
       try {
         if (copyBtn) {
           copyBtn.disabled = true;
-          copyBtn.textContent = 'copying...';
+          copyBtn.textContent = "copying...";
         }
 
-        const response = await fetch('/api/copy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/copy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: currentName,
             new_name: trimmedName,
@@ -947,83 +963,87 @@ function init(): void {
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.error('[id] Copy failed:', errorText);
-          if (copyBtn) copyBtn.textContent = 'error!';
-          setTimeout(() => { if (copyBtn) copyBtn.textContent = 'copy'; }, 2000);
+          console.error("[id] Copy failed:", errorText);
+          if (copyBtn) copyBtn.textContent = "error!";
+          setTimeout(() => {
+            if (copyBtn) copyBtn.textContent = "copy";
+          }, 2000);
           return;
         }
 
-        const result = await response.json() as {
+        const result = (await response.json()) as {
           name: string;
           hash: string;
         };
-        console.log('[id] File copied:', result);
+        console.log("[id] File copied:", result);
 
         if (copyBtn) {
-          copyBtn.textContent = 'copied!';
+          copyBtn.textContent = "copied!";
         }
 
         // Navigate to the copied file
         const fileUrl = `/file/${encodeURIComponent(result.name)}`;
         if (window.htmx) {
-          window.htmx.ajax('GET', fileUrl, { target: '#main', swap: 'innerHTML' });
-          window.history.pushState(null, '', fileUrl);
+          window.htmx.ajax("GET", fileUrl, { target: "#main", swap: "innerHTML" });
+          window.history.pushState(null, "", fileUrl);
         } else {
           window.location.href = fileUrl;
         }
       } catch (err) {
-        console.error('[id] Copy error:', err);
+        console.error("[id] Copy error:", err);
         if (copyBtn) {
-          copyBtn.textContent = 'error!';
-          setTimeout(() => { if (copyBtn) copyBtn.textContent = 'copy'; }, 2000);
+          copyBtn.textContent = "error!";
+          setTimeout(() => {
+            if (copyBtn) copyBtn.textContent = "copy";
+          }, 2000);
         }
       }
     },
   };
-  
+
   window.idApp = app;
-  
+
   // Event delegation for theme buttons (handles both header and settings page buttons)
-  document.body.addEventListener('click', (event: MouseEvent) => {
+  document.body.addEventListener("click", (event: MouseEvent) => {
     const target = event.target as HTMLElement;
     // Handle theme buttons with data-theme attribute
-    const themeBtn = target.closest('[data-theme]');
-    if (themeBtn && themeBtn.classList.contains('theme-btn')) {
-      const theme = themeBtn.getAttribute('data-theme');
-      if (theme === 'sneak' || theme === 'arch' || theme === 'mech') {
+    const themeBtn = target.closest("[data-theme]");
+    if (themeBtn?.classList.contains("theme-btn")) {
+      const theme = themeBtn.getAttribute("data-theme");
+      if (theme === "sneak" || theme === "arch" || theme === "mech") {
         setTheme(theme);
       }
     }
 
     // Handle download format buttons
-    const dlBtn = target.closest('[data-dl-format]');
+    const dlBtn = target.closest("[data-dl-format]");
     if (dlBtn) {
-      const format = dlBtn.getAttribute('data-dl-format');
+      const format = dlBtn.getAttribute("data-dl-format");
       if (format) {
         app.downloadFile(format);
       }
     }
 
     // Toggle download dropdown
-    const downloadBtn = target.closest('#download-btn');
+    const downloadBtn = target.closest("#download-btn");
     if (downloadBtn) {
-      const menu = document.getElementById('download-menu');
+      const menu = document.getElementById("download-menu");
       if (menu) {
-        menu.classList.toggle('show');
+        menu.classList.toggle("show");
       }
     } else {
       // Close dropdown when clicking outside
-      const dropdown = target.closest('#download-dropdown');
+      const dropdown = target.closest("#download-dropdown");
       if (!dropdown) {
-        const menu = document.getElementById('download-menu');
-        if (menu) menu.classList.remove('show');
+        const menu = document.getElementById("download-menu");
+        if (menu) menu.classList.remove("show");
       }
     }
   });
 
   // Ctrl+S to save, Enter to submit tags
-  document.addEventListener('keydown', (event: KeyboardEvent) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+  document.addEventListener("keydown", (event: KeyboardEvent) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
       event.preventDefault();
       if (app.collab?.editor) {
         app.saveFile();
@@ -1032,27 +1052,27 @@ function init(): void {
     }
 
     // Enter key on tag inputs submits the tag
-    if (event.key === 'Enter') {
+    if (event.key === "Enter") {
       const target = event.target as HTMLElement;
-      if (target.id === 'tag-add-key' || target.id === 'tag-add-value') {
+      if (target.id === "tag-add-key" || target.id === "tag-add-value") {
         event.preventDefault();
         app.addTagInline();
-      } else if (target.id === 'bulk-tag-key' || target.id === 'bulk-tag-value') {
+      } else if (target.id === "bulk-tag-key" || target.id === "bulk-tag-value") {
         event.preventDefault();
         app.bulkAddTag();
       }
     }
   });
-  
+
   // Listen for HTMX events to handle editor initialization
-  document.body.addEventListener('htmx:afterSwap', (event: Event) => {
+  document.body.addEventListener("htmx:afterSwap", (event: Event) => {
     const detail = (event as CustomEvent).detail;
     const target = detail?.target;
-    console.log('[id] htmx:afterSwap fired, target:', target?.id, 'detail:', detail);
+    console.log("[id] htmx:afterSwap fired, target:", target?.id, "detail:", detail);
     // After swap into #main, check if editor-container exists
-    if (target?.id === 'main') {
+    if (target?.id === "main") {
       const newPath = window.location.pathname;
-      
+
       // Track navigation: push previous path to history
       if (app.currentPath && app.currentPath !== newPath) {
         app.navHistory.push(app.currentPath);
@@ -1062,25 +1082,25 @@ function init(): void {
         }
       }
       app.currentPath = newPath;
-      console.log('[id] Navigation: path=', newPath, 'history=', app.navHistory);
-      
-      const editorContainer = document.getElementById('editor-container');
+      console.log("[id] Navigation: path=", newPath, "history=", app.navHistory);
+
+      const editorContainer = document.getElementById("editor-container");
       const docId = editorContainer?.dataset.docId;
-      console.log('[id] afterSwap: editorContainer=', editorContainer, 'docId=', docId, 'app.collab=', app.collab);
-      
+      console.log("[id] afterSwap: editorContainer=", editorContainer, "docId=", docId, "app.collab=", app.collab);
+
       // Clean up previous scroll handler
       if (scrollCleanup) {
         scrollCleanup();
         scrollCleanup = null;
       }
-      
+
       if (docId && !app.collab) {
-        console.log('[id] afterSwap: calling openEditor for docId:', docId);
+        console.log("[id] afterSwap: calling openEditor for docId:", docId);
         app.openEditor(docId);
       } else {
-        console.log('[id] afterSwap: NOT calling openEditor - docId:', docId, 'app.collab:', app.collab);
+        console.log("[id] afterSwap: NOT calling openEditor - docId:", docId, "app.collab:", app.collab);
         // Initialize scroll handler for main page
-        scrollCleanup = initScrollShowHeader('.inline-header', '.inline-footer');
+        scrollCleanup = initScrollShowHeader(".inline-header", ".inline-footer");
         // Update back button on main page
         updateBackLink(app.navHistory, app.currentPath);
         // Update header subtitle (show last filename if we have history)
@@ -1091,57 +1111,57 @@ function init(): void {
         app.initBulkSelect();
       }
     }
-    
+
     // Re-apply show-auto filter after file-list-content swaps (e.g. tag WS events, search, pagination)
-    if (target?.id === 'file-list-content') {
+    if (target?.id === "file-list-content") {
       initFileFilter();
     }
   });
-  
+
   // Also listen for htmx:beforeSwap to see what's happening
-  document.body.addEventListener('htmx:beforeSwap', (event: Event) => {
+  document.body.addEventListener("htmx:beforeSwap", (event: Event) => {
     const detail = (event as CustomEvent).detail;
-    console.log('[id] htmx:beforeSwap fired, target:', detail?.target?.id, 'xhr status:', detail?.xhr?.status);
+    console.log("[id] htmx:beforeSwap fired, target:", detail?.target?.id, "xhr status:", detail?.xhr?.status);
   });
-  
+
   // Handle navigation away from editor
-  document.body.addEventListener('htmx:beforeRequest', () => {
+  document.body.addEventListener("htmx:beforeRequest", () => {
     if (app.collab) {
       app.closeEditor();
     }
   });
-  
-  console.log('[id] Web interface initialized');
-  
+
+  console.log("[id] Web interface initialized");
+
   // Connect tags WebSocket for live updates (global — stays connected across pages)
   app.connectTagsWs();
-  
+
   // Initialize back button on main page
   updateBackLink(app.navHistory, app.currentPath);
-  
+
   // Initialize scroll-show header for main page
-  const mainHeader = document.getElementById('main-header');
+  const mainHeader = document.getElementById("main-header");
   if (mainHeader) {
-    scrollCleanup = initScrollShowHeader('.inline-header', '.inline-footer');
+    scrollCleanup = initScrollShowHeader(".inline-header", ".inline-footer");
   }
-  
+
   // Initialize file filter on main page (if file list is present)
   initFileFilter();
   // Initialize bulk select checkboxes on main page
   app.initBulkSelect();
-  
+
   // Check if we're on an editor page (direct navigation)
-  const editorContainer = document.getElementById('editor-container');
+  const editorContainer = document.getElementById("editor-container");
   const docId = editorContainer?.dataset.docId;
   if (docId) {
-    console.log('[id] Found editor container, initializing for doc:', docId);
+    console.log("[id] Found editor container, initializing for doc:", docId);
     app.openEditor(docId);
   }
 }
 
 // Initialize when DOM is ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
 } else {
   init();
 }

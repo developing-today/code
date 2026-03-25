@@ -1,0 +1,30 @@
+# treefmt.toml - Multi-language formatter configuration
+# Used by `nix fmt` (via treefmt) and `just fmt`
+#
+# Formatters:
+#   rustfmt  - Rust source files
+#   biome    - TypeScript and CSS files
+
+[global]
+excludes = [
+  "target/**",
+  "web/dist/**",
+  "web/node_modules/**",
+  "e2e/node_modules/**",
+  "e2e/test-results/**",
+  "e2e/playwright-report/**",
+  "*.nix",
+  "web/bun.nix",
+  "flake.lock",
+]
+
+[formatter.rustfmt]
+command = "rustfmt"
+options = ["--edition", "2021"]
+includes = ["*.rs"]
+
+[formatter.biome]
+command = "biome"
+options = ["format", "--write"]
+includes = ["*.ts", "*.css"]
+excludes = ["web/dist/**", "web/node_modules/**", "e2e/node_modules/**"]

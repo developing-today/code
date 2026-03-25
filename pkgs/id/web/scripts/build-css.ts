@@ -3,9 +3,9 @@
  * Concatenates all CSS files and outputs with a hash in the filename.
  */
 
-import { createHash } from "crypto";
-import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
-import { join } from "path";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 
 const cssFiles = [
   "node_modules/prosemirror-view/style/prosemirror.css",
@@ -17,9 +17,7 @@ const cssFiles = [
 ];
 
 // Read and concatenate all CSS
-const css = cssFiles
-  .map((file) => readFileSync(file, "utf-8"))
-  .join("\n");
+const css = cssFiles.map((file) => readFileSync(file, "utf-8")).join("\n");
 
 // Generate content hash (first 8 chars of SHA256)
 const hash = createHash("sha256").update(css).digest("hex").slice(0, 8);

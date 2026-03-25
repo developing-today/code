@@ -3,8 +3,8 @@
  * This is read by the Rust server to inject correct asset URLs into HTML.
  */
 
-import { readdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const distDir = "dist";
 const manifest: Record<string, string> = {};
@@ -14,7 +14,7 @@ for (const file of readdirSync(distDir)) {
   // Bun uses base36 hashes (alphanumeric), CSS build uses hex hashes
   const jsMatch = file.match(/^(main)\.([a-z0-9]+)\.js$/);
   const cssMatch = file.match(/^(styles)\.([a-f0-9]+)\.css$/);
-  
+
   if (jsMatch) {
     manifest["main.js"] = file;
   } else if (cssMatch) {

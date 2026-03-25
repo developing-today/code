@@ -36,8 +36,7 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         launchOptions: {
-          executablePath:
-            process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
         },
       },
     },
@@ -46,8 +45,7 @@ export default defineConfig({
       use: {
         ...devices["Desktop Firefox"],
         launchOptions: {
-          executablePath:
-            process.env.PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH || undefined,
+          executablePath: process.env.PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH || undefined,
         },
       },
     },

@@ -1492,7 +1492,7 @@ mod tag_tests {
         // Verify link list --help works like tag list --help
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["link", "list", "--help"], tmp.path());
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let _stdout = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success(), "link list --help should succeed");
     }
 

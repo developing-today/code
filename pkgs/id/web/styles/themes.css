@@ -34,7 +34,10 @@
 }
 
 [data-theme="arch"] .accent-glow {
-  text-shadow: 0 0 10px var(--accent), 0 0 20px var(--accent), 0 0 30px var(--accent);
+  text-shadow:
+    0 0 10px var(--accent),
+    0 0 20px var(--accent),
+    0 0 30px var(--accent);
 }
 
 [data-theme="arch"] button:hover {
@@ -43,7 +46,9 @@
 
 [data-theme="arch"] input:focus,
 [data-theme="arch"] textarea:focus {
-  box-shadow: 0 0 0 2px var(--glow-color), 0 0 15px var(--glow-color);
+  box-shadow:
+    0 0 0 2px var(--glow-color),
+    0 0 15px var(--glow-color);
 }
 
 /* ============================================================================
@@ -79,7 +84,9 @@
 }
 
 [data-theme="mech"] .accent-glow {
-  text-shadow: 0 0 10px var(--accent), 0 0 20px var(--glow-color);
+  text-shadow:
+    0 0 10px var(--accent),
+    0 0 20px var(--glow-color);
 }
 
 [data-theme="mech"] h1,
@@ -136,9 +143,15 @@
 }
 
 @keyframes flicker {
-  0% { opacity: 0.97; }
-  50% { opacity: 1; }
-  100% { opacity: 0.98; }
+  0% {
+    opacity: 0.97;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.98;
+  }
 }
 
 /* ============================================================================
@@ -157,7 +170,9 @@
   border-radius: 50%;
   border: 2px solid var(--border);
   cursor: pointer;
-  transition: transform var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .theme-btn:hover {

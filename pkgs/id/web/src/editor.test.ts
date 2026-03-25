@@ -4,14 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import {
-  richSchema,
-  rawSchema,
-  getSchema,
-  hasToolbar,
-  isEditable,
-  type ContentMode,
-} from "./editor";
+import { richSchema, rawSchema, getSchema, hasToolbar, isEditable } from "./editor";
 
 // ============================================================================
 // Content Mode Type Tests

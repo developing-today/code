@@ -26,32 +26,79 @@ check: fix ci
     @echo "✓ All checks passed!"
 
 # CI-safe checks (read-only, no modifications) [bun]
-ci: fmt-check cargo-check lint test-sandbox test-web-unit test-web-typecheck doc
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
-fix: fmt lint-fix
+fix: lockfiles fmt lint-fix
     @echo "✓ Fixed what could be fixed"
 
+# =============================================================================
+# Formatting
+# =============================================================================
+
+# Format all code (Rust + web)
+fmt: cargo-fmt web-fmt
+
+# Check all formatting (no changes)
+fmt-check: cargo-fmt-check web-fmt-check
+
 # Format Rust code
-fmt:
+cargo-fmt:
     cargo fmt
 
 # Check Rust formatting (no changes)
-fmt-check:
+cargo-fmt-check:
     cargo fmt -- --check
+
+# [biome] Format web code (TypeScript + CSS)
+web-fmt:
+    biome format --write web/src/ web/scripts/ web/styles/ e2e/
+
+# [biome] Check web formatting (no changes)
+web-fmt-check:
+    biome format web/src/ web/scripts/ web/styles/ e2e/
+
+# =============================================================================
+# Linting
+# =============================================================================
+
+# Run all linters (Rust + web)
+lint: clippy-lint web-lint
+
+# Run all linters with auto-fix
+lint-fix: clippy-lint-fix web-lint-fix
 
 # Run cargo check (type checking, all targets and features)
 cargo-check:
     cargo check --all-targets --all-features
 
 # Run clippy linting
-lint:
+clippy-lint:
     cargo clippy --all-targets --all-features
 
 # Run clippy with auto-fix
-lint-fix:
+clippy-lint-fix:
     cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged
+
+# [biome] Lint web code (TypeScript + CSS)
+web-lint:
+    biome lint web/src/ web/scripts/ web/styles/ e2e/
+
+# [biome] Lint web code with auto-fix
+web-lint-fix:
+    biome lint --write web/src/ web/scripts/ web/styles/ e2e/
+
+# =============================================================================
+# Lockfiles
+# =============================================================================
+
+# Regenerate all lockfiles (bun2nix)
+lockfiles: bun2nix
+
+# Regenerate web/bun.nix from web/bun.lock for offline nix builds
+bun2nix:
+    bun2nix --lock-file web/bun.lock --output-file web/bun.nix
 
 # Run all Rust tests
 test:

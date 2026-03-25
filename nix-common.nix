@@ -19,6 +19,7 @@
     nix
     home-manager
     git
+    just
     sops
     ssh-to-age
     gnupg
@@ -79,7 +80,9 @@
       export PATH="$_devshell_only''${_hm_paths:+:$_hm_paths}''${_system_only:+:$_system_only}"
       unset _pre_profile_path _hm_paths _devshell_only _system_only _remaining _e _is_sys _p
     fi
-
+    echo ""
+    just --list
+    echo ""
     echo "Welcome to the development shell!"
   '';
 }

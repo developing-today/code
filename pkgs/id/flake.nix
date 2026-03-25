@@ -144,7 +144,8 @@
       {
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
-          inherit buildInputs nativeBuildInputs;
+          inherit buildInputs;
+          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg ];
           inherit (nixCommon) shellHook;
 
           OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
@@ -155,10 +156,16 @@
 
         # =======================================================================
         # Formatter: nix fmt
-        # Runs 'just fix' to format Rust and web code
+        # Uses treefmt to orchestrate rustfmt + biome
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
-          exec ${pkgs.just}/bin/just fix
+          export PATH="${
+            pkgs.lib.makeBinPath [
+              rustToolchain
+              pkgs.biome
+            ]
+          }:$PATH"
+          exec ${pkgs.treefmt}/bin/treefmt "$@"
         '';
 
         # =======================================================================
@@ -166,12 +173,14 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): fmt-check lint test test-web-unit test-web-typecheck doc
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
           default = mkCheck "ci" "ci";
 
           # Individual checks
-          fmt-check = mkCheck "fmt-check" "fmt-check";
-          lint = mkCheck "lint" "lint";
+          cargo-fmt-check = mkCheck "cargo-fmt-check" "cargo-fmt-check";
+          web-fmt-check = mkCheck "web-fmt-check" "web-fmt-check";
+          clippy-lint = mkCheck "clippy-lint" "clippy-lint";
+          web-lint = mkCheck "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
           test-int = mkCheck "test-int" "test-int-sandbox";
@@ -305,9 +314,24 @@
           fix = mkApp (mkScript "fix" "just fix");
           fmt = mkApp (mkScript "fmt" "just fmt");
           fmt-check = mkApp (mkScript "fmt-check" "just fmt-check");
+          cargo-fmt = mkApp (mkScript "cargo-fmt" "just cargo-fmt");
+          cargo-fmt-check = mkApp (mkScript "cargo-fmt-check" "just cargo-fmt-check");
           lint = mkApp (mkScript "lint" "just lint");
           lint-fix = mkApp (mkScript "lint-fix" "just lint-fix");
+          clippy-lint = mkApp (mkScript "clippy-lint" "just clippy-lint");
+          clippy-lint-fix = mkApp (mkScript "clippy-lint-fix" "just clippy-lint-fix");
+          web-fmt = mkApp (mkScript "web-fmt" "just web-fmt");
+          web-fmt-check = mkApp (mkScript "web-fmt-check" "just web-fmt-check");
+          web-lint = mkApp (mkScript "web-lint" "just web-lint");
+          web-lint-fix = mkApp (mkScript "web-lint-fix" "just web-lint-fix");
           cargo-check = mkApp (mkScript "cargo-check" "just cargo-check");
+
+          # ─────────────────────────────────────────────────────────────────────
+          # Lockfiles
+          # ─────────────────────────────────────────────────────────────────────
+
+          lockfiles = mkApp (mkScript "lockfiles" "just lockfiles");
+          bun2nix = mkApp (mkScript "bun2nix" "just bun2nix");
 
           # ─────────────────────────────────────────────────────────────────────
           # Tests

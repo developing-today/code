@@ -39,10 +39,12 @@
     jq
     tokei
     hyperfine
+    treefmt # Multi-language formatter orchestrator (used by nix fmt)
 
     # Web development tools
     bun # JavaScript bundler and runtime (required for web builds)
     nodePackages.typescript # TypeScript for type checking
+    biome # Fast formatter and linter for TypeScript/CSS
 
     # E2E testing (Playwright)
     chromium # Browser for Playwright E2E tests
@@ -59,45 +61,6 @@
 
   # Shared shell hook for both nix-shell and nix develop
   shellHook = ''
-    echo "════════════════════════════════════════════════════════════"
-    echo "  id - P2P File Sharing CLI Development Environment"
-    echo "════════════════════════════════════════════════════════════"
-    echo ""
-    echo "  Toolchain:"
-    echo "    Rust:  $(rustc --version 2>/dev/null || echo 'not found')"
-    echo "    Cargo: $(cargo --version 2>/dev/null || echo 'not found')"
-    echo "    Bun:   $(bun --version 2>/dev/null || echo 'not found')"
-    echo ""
-    echo "  Quick commands:"
-    echo "    just                 - List all available tasks"
-    echo "    just check           - Run fix + ci (primary check)"
-    echo "    just ci              - Run read-only checks (CI-safe)"
-    echo "    just build           - Build with web UI [bun]"
-    echo "    just build-lib       - Build Rust only (no web/bun)"
-    echo "    just serve           - Build and serve with web UI"
-    echo "    just serve-lib       - Serve without web UI"
-    echo ""
-    echo "  Web development:"
-    echo "    just web-build       - Build web assets with Bun"
-    echo "    just web-dev         - Start web dev server with hot reload"
-    echo "    just serve-web 3000  - Serve with web UI on port 3000"
-    echo ""
-    echo "  Testing & Quality:"
-    echo "    just test            - Run all tests"
-    echo "    just test-lib        - Run unit tests only (fast)"
-    echo "    just test-e2e        - Run Playwright E2E tests"
-    echo "    just lint            - Run clippy linting"
-    echo "    just coverage        - Generate coverage report"
-    echo ""
-    echo "  Nix commands:"
-    echo "    nix run .#<cmd>      - Run any just command via Nix"
-    echo "    nix run .#just <cmd> - Run just (fallback for missing apps)"
-    echo "    nix fmt              - Run formatter (just fix)"
-    echo "    nix flake check -L   - Run all Nix checks"
-    echo "    nix build            - Build web-enabled package (default)"
-    echo "    nix build .#id-lib   - Build library-only package"
-    echo "════════════════════════════════════════════════════════════"
-
     export RUST_BACKTRACE=1
 
     # Playwright E2E testing: use Nix-provided browsers
@@ -141,5 +104,49 @@
       export PATH="$_devshell_only''${_hm_paths:+:$_hm_paths}''${_system_only:+:$_system_only}"
       unset _pre_profile_path _hm_paths _devshell_only _system_only _remaining _e _is_sys _p
     fi
+
+    echo ""
+    just --list
+    echo ""
+    echo "════════════════════════════════════════════════════════════"
+    echo "  id - P2P File Sharing CLI Development Environment"
+    echo "════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Toolchain:"
+    echo "    Rust:  $(rustc --version 2>/dev/null || echo 'not found')"
+    echo "    Cargo: $(cargo --version 2>/dev/null || echo 'not found')"
+    echo "    Bun:   $(bun --version 2>/dev/null || echo 'not found')"
+    echo ""
+    echo "  Quick commands:"
+    echo "    just                 - List all available tasks"
+    echo "    just check           - Run fix + ci (primary check)"
+    echo "    just ci              - Run read-only checks (CI-safe)"
+    echo "    just build           - Build with web UI [bun]"
+    echo "    just build-lib       - Build Rust only (no web/bun)"
+    echo "    just serve           - Build and serve with web UI"
+    echo "    just serve-lib       - Serve without web UI"
+    echo ""
+    echo "  Web development:"
+    echo "    just web-build       - Build web assets with Bun"
+    echo "    just web-dev         - Start web dev server with hot reload"
+    echo "    just serve-web 3000  - Serve with web UI on port 3000"
+    echo ""
+    echo "  Testing & Quality:"
+    echo "    just test            - Run all tests"
+    echo "    just test-lib        - Run unit tests only (fast)"
+    echo "    just test-e2e        - Run Playwright E2E tests"
+    echo "    just lint            - Run clippy linting"
+    echo "    just coverage        - Generate coverage report"
+    echo ""
+    echo "  Nix commands:"
+    echo "    nix run .#<cmd>      - Run any just command via Nix"
+    echo "    nix run .#just <cmd> - Run just (fallback for missing apps)"
+    echo "    nix fmt              - Run formatter (just fix)"
+    echo "    nix flake check -L   - Run all Nix checks"
+    echo "    nix build            - Build web-enabled package (default)"
+    echo "    nix build .#id-lib   - Build library-only package"
+    echo "════════════════════════════════════════════════════════════"
+    echo ""
+    echo "Welcome to the id development shell!"
   '';
 }

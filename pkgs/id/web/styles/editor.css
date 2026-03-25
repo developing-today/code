@@ -9,13 +9,13 @@
 
 /* Editor main - no padding, full height */
 .editor-main {
-  padding: 0 !important;
+  padding: 0;
   min-height: 100vh;
 }
 
 /* When main contains editor-page via HTMX, remove padding */
 .main:has(.editor-page) {
-  padding: 0 !important;
+  padding: 0;
 }
 
 .editor-page {
@@ -54,7 +54,9 @@
   z-index: 1000;
   transform: translateY(100%);
   opacity: 0;
-  transition: transform 0.15s ease, opacity 0.15s ease;
+  transition:
+    transform 0.15s ease,
+    opacity 0.15s ease;
   pointer-events: none;
 }
 
@@ -335,8 +337,13 @@
 }
 
 @keyframes cursor-strobe {
-  0%, 100% { opacity: var(--base-opacity); }
-  50% { opacity: calc(var(--base-opacity) * 0.7); }
+  0%,
+  100% {
+    opacity: var(--base-opacity);
+  }
+  50% {
+    opacity: calc(var(--base-opacity) * 0.7);
+  }
 }
 
 .collab-cursor-label {
@@ -351,7 +358,9 @@
   user-select: none;
   z-index: 10;
   opacity: 0.85;
-  transition: opacity 0.3s ease, z-index 0s;
+  transition:
+    opacity 0.3s ease,
+    z-index 0s;
   pointer-events: auto;
   cursor: default;
 }
@@ -362,16 +371,16 @@
   z-index: 100;
   /* Override animation - full opacity, no strobe */
   animation: none;
-  opacity: 1 !important;
+  opacity: 1;
 }
 
 .collab-cursor.collab-cursor-hovered .collab-cursor-label {
-  opacity: 1 !important;
+  opacity: 1;
   z-index: 100;
 }
 
 .collab-cursor-label:hover {
-  opacity: 1 !important;
+  opacity: 1;
 }
 
 /* Own cursor - visually distinct, no label */
@@ -380,7 +389,7 @@
   z-index: 5;
   /* No strobe for own cursor - solid */
   animation: none;
-  opacity: 1 !important;
+  opacity: 1;
 }
 
 /* Merged cursor (multiple users at same/nearby positions) */
@@ -420,7 +429,7 @@
 }
 
 .collab-cursor-bar-segment:hover {
-  opacity: 1 !important;
+  opacity: 1;
   animation: none;
 }
 
@@ -457,39 +466,39 @@
   position: absolute;
   top: -1px;
   right: -1px;
-  left: auto !important;
+  left: auto;
   z-index: 100;
-  
+
   /* Only as wide as content, never wrap */
   width: fit-content;
   white-space: nowrap;
-  
+
   /* Layout - stretch for full-height clickable areas */
   display: flex;
   flex-wrap: nowrap;
   align-items: stretch;
   gap: 0;
-  padding: 0 !important;
-  
+  padding: 0;
+
   /* Appearance - same as header/footer */
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border);
-  min-height: 0 !important;
+  min-height: 0;
   color: var(--text-secondary);
-  
+
   /* Match header size: font-size 10px */
   font-size: 10px;
-  line-height: 1 !important;
-  
+  line-height: 1;
+
   /* Prevent content from escaping */
   overflow: hidden;
 }
 
 /* When ProseMirror sets position:fixed for floating, keep it on right with proper offset */
 .editor-wrapper .ProseMirror-menubar[style*="position: fixed"] {
-  left: auto !important;
-  right: 0 !important;
-  top: 0 !important;
+  left: auto;
+  right: 0;
+  top: 0;
 }
 
 /* Fallback for non-editor contexts */
@@ -500,11 +509,11 @@
   justify-content: flex-end;
   gap: 0;
   padding: 0;
-  background-color: var(--bg-tertiary) !important;
-  border: 1px solid var(--border) !important;
-  border-bottom: 1px solid var(--border) !important;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   min-height: 0;
-  color: var(--text-secondary) !important;
+  color: var(--text-secondary);
   flex-shrink: 0;
   font-size: 10px;
   line-height: 1.2;
@@ -527,33 +536,33 @@
 
 /* Icon buttons in menu - override ProseMirror defaults */
 .ProseMirror-icon {
-  display: inline-flex !important;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 3px !important;
-  margin: 0 !important;
-  background: transparent !important;
-  border: none !important;
+  padding: 0 3px;
+  margin: 0;
+  background: transparent;
+  border: none;
   border-radius: 0;
-  color: var(--text-secondary) !important;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all var(--transition-fast);
-  vertical-align: baseline !important;
-  line-height: 1 !important;
-  white-space: nowrap !important;
+  vertical-align: baseline;
+  line-height: 1;
+  white-space: nowrap;
   flex-shrink: 0;
   /* Stretch for full clickable area */
   align-self: stretch;
 }
 
 .ProseMirror-icon:hover {
-  background-color: var(--bg-secondary) !important;
-  color: var(--text-primary) !important;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 /* SVG icons in menu */
 .ProseMirror-icon svg {
-  fill: currentColor !important;
+  fill: currentColor;
   height: 1em;
   width: auto;
   vertical-align: baseline;
@@ -563,21 +572,21 @@
 
 /* Text labels in icons - prevent wrapping */
 .ProseMirror-icon span {
-  display: inline !important;
-  vertical-align: baseline !important;
-  color: inherit !important;
-  white-space: nowrap !important;
-  line-height: 1 !important;
+  display: inline;
+  vertical-align: baseline;
+  color: inherit;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 /* Menu item buttons - override base button styles */
 .ProseMirror-menuitem button {
-  padding: 0 3px !important;
-  border: none !important;
-  background: transparent !important;
-  color: inherit !important;
-  font-size: inherit !important;
-  line-height: 1 !important;
+  padding: 0 3px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -590,31 +599,31 @@
 .ProseMirror-menuitem {
   display: inline-flex;
   align-items: center;
-  margin: 0 !important;
-  padding: 0 !important;
-  line-height: 1 !important;
+  margin: 0;
+  padding: 0;
+  line-height: 1;
 }
 
 /* Menu group container */
 .ProseMirror-menu {
   display: inline-flex;
   align-items: center;
-  margin: 0 !important;
-  padding: 0 !important;
-  line-height: 1 !important;
+  margin: 0;
+  padding: 0;
+  line-height: 1;
 }
 
 /* Dropdown wrapper - remove padding */
 .ProseMirror-menu-dropdown-wrap {
-  padding: 0 !important;
+  padding: 0;
   display: inline-flex;
   align-items: center;
 }
 
 /* Active state for icons */
 .ProseMirror-menu-active {
-  background-color: var(--accent-dim) !important;
-  color: var(--accent) !important;
+  background-color: var(--accent-dim);
+  color: var(--accent);
   border-radius: var(--border-radius);
 }
 
@@ -630,7 +639,7 @@
   height: 1em;
   align-self: center;
   background-color: var(--border);
-  margin: 0 1px !important;
+  margin: 0 1px;
   border: none;
 }
 
