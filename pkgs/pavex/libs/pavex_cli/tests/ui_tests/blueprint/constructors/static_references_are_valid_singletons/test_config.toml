@@ -2,5 +2,3 @@ description = "pavex supports using static references as singletons"
 
 [expectations]
 codegen = "pass"
-
-

@@ -47,15 +47,17 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        # Rust toolchain from rust-toolchain.toml
-        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-
-        # Import shared configuration
+        # Import shared configuration (includes rustToolchain from rust-overlay)
         nixCommon = import ./nix-common.nix { inherit pkgs; };
 
         # Inherit from shared config
-        inherit (nixCommon) buildInputs opensslEnv;
-        nativeBuildInputs = [ rustToolchain ] ++ nixCommon.nativeBuildInputs;
+        inherit (nixCommon)
+          buildInputs
+          opensslEnv
+          rustToolchain
+          fmtBins
+          ;
+        inherit (nixCommon) nativeBuildInputs;
 
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
@@ -79,10 +81,10 @@
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
-            OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
-            OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
-            OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
-            PKG_CONFIG_PATH = opensslEnv.PKG_CONFIG_PATH;
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+            inherit (opensslEnv) PKG_CONFIG_PATH;
 
             # bun2nix hook: install web deps offline via pre-fetched cache
             inherit bunDeps;
@@ -181,32 +183,20 @@
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
           nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg ];
-          inherit (nixCommon) shellHook;
+          inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_FILE;
 
-          OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
-          OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
-          OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
-          PKG_CONFIG_PATH = opensslEnv.PKG_CONFIG_PATH;
-
-          # Anchor treefmt to this flake's directory (not the git root)
-          # so it works correctly when nested inside a parent repo.
-          TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
+          inherit (opensslEnv) OPENSSL_DIR;
+          inherit (opensslEnv) OPENSSL_LIB_DIR;
+          inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+          inherit (opensslEnv) PKG_CONFIG_PATH;
         };
 
         # =======================================================================
         # Formatter: nix fmt
-        # Uses treefmt to orchestrate rustfmt + biome
+        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
-          export PATH="${
-            pkgs.lib.makeBinPath [
-              rustToolchain
-              pkgs.biome
-              pkgs.just
-              pkgs.gnused
-              pkgs.findutils
-            ]
-          }:$PATH"
+          export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
           # Strip trailing whitespace from all source files (fixes rustfmt errors)
           find . -type f \( -name '*.rs' -o -name '*.nix' -o -name '*.toml' -o -name '*.json' \
             -o -name '*.md' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \
@@ -256,17 +246,120 @@
           treefmt-check = pkgs.stdenv.mkDerivation {
             name = "id-treefmt-check";
             src = ./.;
-            nativeBuildInputs = [
-              rustToolchain
-              pkgs.biome
-              pkgs.treefmt
-            ];
+            nativeBuildInputs = fmtBins;
             buildPhase = ''
-              treefmt --ci --tree-root-file treefmt.toml --allow-missing-formatter 2>&1 || true
+              treefmt --ci --tree-root-file treefmt.toml 2>&1 || true
             '';
             installPhase = ''
               mkdir -p $out
               echo "treefmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
+
+          # Per-formatter checks (read-only validation)
+          biome-check = pkgs.stdenv.mkDerivation {
+            name = "id-biome-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.biome ];
+            buildPhase = ''
+              biome format --check --config-path . \
+                --files-ignore-unknown=true \
+                $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
+                  -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
+                  -not -path '*/node_modules/*' -not -path '*/target/*' \
+                  -not -path '*/dist/*') \
+                || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "biome-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          rustfmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-rustfmt-check";
+            src = ./.;
+            nativeBuildInputs = [ rustToolchain ];
+            buildPhase = ''
+              find . -name '*.rs' -not -path '*/target/*' \
+                -exec rustfmt --check --edition 2024 {} + \
+                || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "rustfmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          statix-check = pkgs.stdenv.mkDerivation {
+            name = "id-statix-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.statix ];
+            buildPhase = ''
+              find . -name '*.nix' -print0 | while IFS= read -r -d "" f; do
+                statix check -- "$f" || true
+              done
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "statix-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          shfmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-shfmt-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.shfmt ];
+            buildPhase = ''
+              find . -name '*.sh' -not -path '*/node_modules/*' \
+                -exec shfmt -d -i 2 -s {} + \
+                || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "shfmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          shellcheck-check = pkgs.stdenv.mkDerivation {
+            name = "id-shellcheck-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.shellcheck ];
+            buildPhase = ''
+              find . -name '*.sh' -not -path '*/node_modules/*' \
+                -exec shellcheck {} + \
+                || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "shellcheck-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          taplo-check = pkgs.stdenv.mkDerivation {
+            name = "id-taplo-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.taplo ];
+            buildPhase = ''
+              find . -name '*.toml' -not -path '*/target/*' \
+                -exec taplo check {} + \
+                || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "taplo-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          prettier-check = pkgs.stdenv.mkDerivation {
+            name = "id-prettier-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.nodePackages.prettier ];
+            buildPhase = ''
+              find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
+                -o -name '*.scss' -o -name '*.yaml' \) \
+                -not -path '*/node_modules/*' -not -path '*/target/*' \
+                -not -path '*/dist/*' \
+                -exec prettier --check {} + \
+                || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "prettier-check passed at $(date)" > $out/result.txt
             '';
           };
         }
@@ -315,9 +408,9 @@
             dontUseBunCheck = true;
             dontUseBunInstall = true;
 
-            OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
-            OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
-            OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
 
             preBuild = ''
               # Build web assets (bun2nix hook already installed node_modules)
@@ -355,9 +448,9 @@
               rustToolchain
             ];
 
-            OPENSSL_DIR = opensslEnv.OPENSSL_DIR;
-            OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
-            OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
 
             doCheck = true;
 

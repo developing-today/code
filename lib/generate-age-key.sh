@@ -24,5 +24,5 @@ echo "Ensuring able to sudo"
 sudo whoami
 
 echo "Generating age key"
-echo "$(sudo ssh-to-age -private-key -i /etc/ssh/ssh_host_ed25519_key)" > $age_key_file
+echo "$(sudo ssh-to-age -private-key -i /etc/ssh/ssh_host_ed25519_key)" >$age_key_file
 echo "age key generated"

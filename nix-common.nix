@@ -11,43 +11,83 @@
 
 { pkgs }:
 
-{
-  NIX_CONFIG = "extra-experimental-features = nix-command flakes ca-derivations";
-  TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
+let
+  # Rust toolchain from rust-toolchain.toml (includes rustc, cargo, rustfmt, clippy)
+  # Works because both shell.nix and flake.nix apply rust-overlay before importing
+  # Uses pkgs/id path directly (root symlink not tracked by git, won't be in Nix store)
+  rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./pkgs/id/rust-toolchain.toml;
 
-  # Native build inputs (tools)
-  nativeBuildInputs = with pkgs; [
-    nix
-    home-manager
-    git
-    just
-    sops
-    ssh-to-age
-    gnupg
-    age
-
-    # Python/uv (used by scripts)
-    uv
-
-    # Formatters and linters (keep in sync with treefmt.toml)
+  # Formatter binaries (keep in sync with treefmt.toml)
+  # Used by formatter wrapper (nix fmt), nix flake checks, and devShell PATH
+  fmtBins = [
+    # Rust toolchain (includes rustfmt)
+    rustToolchain
+  ]
+  ++ (with pkgs; [
+    # Formatter orchestrator
     treefmt
+    # Formatters and linters (keep in sync with treefmt.toml)
     nixfmt
     statix
-    deadnix
+    biome
     nodePackages.prettier
     shfmt
-    rustfmt
     shellcheck
     ruff
-    biome
     rufo
     elmPackages.elm-format
     go
     haskellPackages.ormolu
-  ];
+    taplo
+    # Utilities needed by formatter wrapper
+    just
+    gnused
+    findutils
+    bash
+  ]);
 
-  # Additional packages
-  packages = [
+  # Native build inputs (tools) — used by nativeBuildInputs and packages
+  nativeBuildInputs =
+    fmtBins
+    ++ (with pkgs; [
+      # Build dependencies (Rust compilation)
+      pkg-config
+      openssl
+
+      nix
+      home-manager
+      git
+      sops
+      ssh-to-age
+      gnupg
+      age
+
+      # Python/uv (used by scripts)
+      uv
+
+      # Manual linters (not in treefmt, run manually)
+      deadnix
+    ]);
+in
+{
+  inherit rustToolchain fmtBins nativeBuildInputs;
+
+  NIX_CONFIG = "extra-experimental-features = nix-command flakes ca-derivations";
+  TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
+
+  # Build inputs (libraries for Rust compilation)
+  buildInputs = with pkgs; [ openssl ];
+
+  # OpenSSL environment variables
+  opensslEnv = {
+    OPENSSL_DIR = "${pkgs.openssl.dev}";
+    OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+    OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+    PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+  };
+
+  # Packages for shell.nix / nix develop (nativeBuildInputs + extra runtime deps)
+  packages = nativeBuildInputs ++ [
     (pkgs.python3.withPackages (
       python-pkgs: with python-pkgs; [
         pydbus
@@ -56,8 +96,6 @@
         dbus-python
       ]
     ))
-  ]
-  ++ [
     pkgs.gobject-introspection
     pkgs.glib
   ];

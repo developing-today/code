@@ -2,5 +2,3 @@ description = "pavex supports trait methods as constructors"
 
 [expectations]
 codegen = "pass"
-
-

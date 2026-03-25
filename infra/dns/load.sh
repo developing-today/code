@@ -8,8 +8,8 @@ if [ -n "${SKIP_LOAD:-}" ]; then
 fi
 
 script_name="$0"
-while [[ "$script_name" == -* ]]; do
-    script_name="${script_name#-}"
+while [[ $script_name == -* ]]; do
+  script_name="${script_name#-}"
 done
 
 dir="$(dirname -- "$(which -- "$script_name" 2>/dev/null || realpath -- "$script_name")")"
@@ -38,5 +38,5 @@ fi
 echo "terraform.tfstate.enc exists and is not empty, continuing..."
 
 echo "Decrypting with sops: terraform.tfstate.enc -> terraform.tfstate"
-sops -d "$dir/terraform.tfstate.enc" > "$dir/terraform.tfstate"
+sops -d "$dir/terraform.tfstate.enc" >"$dir/terraform.tfstate"
 echo "Decrypted with sops: terraform.tfstate.enc -> terraform.tfstate"

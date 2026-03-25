@@ -21,34 +21,34 @@ expected_root_device_alias="NVMe"
 expected_root_device_type="/dev/nvme"
 
 print_usage() {
-    echo "Usage: $0 [prefix] [-force]"
-    echo "  prefix: Optional prefix for ISO file matching"
-    echo "  -force: Skip confirmation prompt"
+  echo "Usage: $0 [prefix] [-force]"
+  echo "  prefix: Optional prefix for ISO file matching"
+  echo "  -force: Skip confirmation prompt"
 }
 
 process_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -force)
-        force=true
-        shift
-        ;;
-      # iso_type
-      -*)
-        echo "Error: Unknown flag $1"
+    -force)
+      force=true
+      shift
+      ;;
+    # iso_type
+    -*)
+      echo "Error: Unknown flag $1"
+      print_usage
+      exit 1
+      ;;
+    *)
+      if [[ -z $prefix ]]; then
+        prefix="$1"
+      else
+        echo "Error: Too many arguments"
         print_usage
         exit 1
-        ;;
-      *)
-        if [[ -z $prefix ]]; then
-          prefix="$1"
-        else
-          echo "Error: Too many arguments"
-          print_usage
-          exit 1
-        fi
-        shift
-        ;;
+      fi
+      shift
+      ;;
     esac
   done
 }
@@ -146,7 +146,7 @@ echo ""
 echo "$flash_device_alias drives:"
 ls "$flash_device_type"*
 
-if ls "$expected_root_device_type"* > /dev/null 2>&1; then
+if ls "$expected_root_device_type"* >/dev/null 2>&1; then
   echo ""
   echo "$expected_root_device_alias drives:"
   ls "$expected_root_device_type"*
@@ -175,7 +175,7 @@ echo "$iso_file"
 echo ""
 echo "This will erase all data on: $flash_device"
 
-if [[ "$force" = "true" ]]; then
+if [[ $force == "true" ]]; then
   echo "Force flag set, skipping confirmation prompt."
 else
   read -p "Type 'yes' to continue: " -r

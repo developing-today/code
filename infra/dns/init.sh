@@ -9,8 +9,8 @@ fi
 
 echo "\$0=$0"
 script_name="$0"
-while [[ "$script_name" == -* ]]; do
-    script_name="${script_name#-}"
+while [[ $script_name == -* ]]; do
+  script_name="${script_name#-}"
 done
 
 dir="$(dirname -- "$(readlink -f -- "$script_name")")"
@@ -35,7 +35,6 @@ function cleanup() {
   echo "done cleaning up"
 }
 trap cleanup EXIT
-
 
 echo "initializing tofu..."
 tofu -chdir="$dir" init -upgrade -backend-config="path=$dir/terraform.tfstate" "$@"

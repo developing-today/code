@@ -2,5 +2,3 @@ description = "Checking the error message returne by Pavex when it cannot resolv
 
 [expectations]
 codegen = "fail"
-
-

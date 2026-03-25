@@ -25,35 +25,35 @@ print_usage() {
 process_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -t|--time)
-        if [[ -n $2 && $2 =~ ^[0-9]+$ ]]; then
-          sleep_time=$2
-          shift 2
-        else
-          echo "Error: --time requires a numeric argument"
-          print_usage
-          exit 1
-        fi
-        ;;
-      -h|--help)
-        print_usage
-        exit 0
-        ;;
-      -*)
-        echo "Error: Unknown option $1"
+    -t | --time)
+      if [[ -n $2 && $2 =~ ^[0-9]+$ ]]; then
+        sleep_time=$2
+        shift 2
+      else
+        echo "Error: --time requires a numeric argument"
         print_usage
         exit 1
-        ;;
-      *)
-        if [[ -z "$command" || "$command" == "$default_command" ]]; then
-          command="$1"
-        else
-          echo "Error: Unexpected argument $1"
-          print_usage
-          exit 1
-        fi
-        shift
-        ;;
+      fi
+      ;;
+    -h | --help)
+      print_usage
+      exit 0
+      ;;
+    -*)
+      echo "Error: Unknown option $1"
+      print_usage
+      exit 1
+      ;;
+    *)
+      if [[ -z $command || $command == "$default_command" ]]; then
+        command="$1"
+      else
+        echo "Error: Unexpected argument $1"
+        print_usage
+        exit 1
+      fi
+      shift
+      ;;
     esac
   done
 }
@@ -118,7 +118,7 @@ else
   while [ $sleep_time -gt 0 ]; do
     echo -ne "\r\033[K$sleep_time\n"
     sleep 1
-    sleep_time=$(($sleep_time - 1))
+    sleep_time=$((sleep_time - 1))
   done
   set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   echo "Done waiting ${sleep_time} seconds."

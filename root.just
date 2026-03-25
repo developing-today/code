@@ -101,6 +101,7 @@ update-nixpkgs-unstable-only:
 [group('deps')]
 just-recipes:
     just --dump --dump-format json > just-recipes.json
+    biome format --write --config-path . just-recipes.json
 
 # Regenerate all lockfiles (just-recipes.json)
 [group('deps')]

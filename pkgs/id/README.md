@@ -98,45 +98,45 @@ id peers                # List discovered peers
 
 ## CLI Commands
 
-| Command    | Aliases              | Description                                      |
-|------------|----------------------|--------------------------------------------------|
-| `serve`    |                      | Start server for peer requests                   |
-| `repl`     | `shell`              | Interactive REPL with pipes and subshells         |
-| `put`      | `in`, `add`, `store`, `import` | Store files in blob store                |
-| `put-hash` |                      | Store content by hash only (no named tag)        |
-| `get`      |                      | Retrieve files by name or hash                   |
-| `get-hash` |                      | Retrieve file by hash with explicit output path  |
-| `cat`      | `output`, `out`      | Output file content to stdout                    |
-| `show`     | `view`               | Find file by pattern and output content          |
-| `peek`     |                      | Preview with configurable head/tail lines        |
-| `find`     |                      | Find files by query, optionally output content   |
-| `search`   |                      | Search files and list all matches                |
-| `list`     | `ls`                 | List all stored files                            |
-| `tag`      | `label`, `link`      | Manage metadata tags on files                    |
-| `migrate-tags` | `migrate`       | Add name/file auto-tags to existing files        |
-| `id`       |                      | Print local node public ID                       |
-| `peers`    |                      | Discover and list known peers                    |
+| Command        | Aliases                        | Description                                     |
+| -------------- | ------------------------------ | ----------------------------------------------- |
+| `serve`        |                                | Start server for peer requests                  |
+| `repl`         | `shell`                        | Interactive REPL with pipes and subshells       |
+| `put`          | `in`, `add`, `store`, `import` | Store files in blob store                       |
+| `put-hash`     |                                | Store content by hash only (no named tag)       |
+| `get`          |                                | Retrieve files by name or hash                  |
+| `get-hash`     |                                | Retrieve file by hash with explicit output path |
+| `cat`          | `output`, `out`                | Output file content to stdout                   |
+| `show`         | `view`                         | Find file by pattern and output content         |
+| `peek`         |                                | Preview with configurable head/tail lines       |
+| `find`         |                                | Find files by query, optionally output content  |
+| `search`       |                                | Search files and list all matches               |
+| `list`         | `ls`                           | List all stored files                           |
+| `tag`          | `label`, `link`                | Manage metadata tags on files                   |
+| `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files       |
+| `id`           |                                | Print local node public ID                      |
+| `peers`        |                                | Discover and list known peers                   |
 
 ### Tag Subcommands
 
-| Subcommand | Aliases                                    | Description                        |
-|------------|--------------------------------------------|------------------------------------|
-| `set`      | `add`                                      | Set a tag on a file                |
-| `del`      | `rm`, `remove`, `rem`, `delete`, `unset`   | Delete a tag from a file           |
-| `list`     | `ls`                                       | List tags (supports `--hex`, `--binary`, `--no-truncate`) |
-| `search`   | `find`                                     | Search tags with structured query syntax |
+| Subcommand | Aliases                                  | Description                                               |
+| ---------- | ---------------------------------------- | --------------------------------------------------------- |
+| `set`      | `add`                                    | Set a tag on a file                                       |
+| `del`      | `rm`, `remove`, `rem`, `delete`, `unset` | Delete a tag from a file                                  |
+| `list`     | `ls`                                     | List tags (supports `--hex`, `--binary`, `--no-truncate`) |
+| `search`   | `find`                                   | Search tags with structured query syntax                  |
 
 #### Search Syntax
 
 Search uses structured query terms (space-separated, ANDed together):
 
-| Syntax       | Meaning                                     | Example                  |
-|-------------|---------------------------------------------|--------------------------|
-| `key:`      | Filter by key name                          | `author:`                |
-| `:value`    | Filter by value                             | `:Jane`                  |
-| `key:value` | Filter by exact key-value pair              | `author:Jane`            |
-| `"literal"` | Search all fields for literal text          | `"key:value"`            |
-| `bare`      | Case-insensitive search across all fields   | `readme`                 |
+| Syntax      | Meaning                                   | Example       |
+| ----------- | ----------------------------------------- | ------------- |
+| `key:`      | Filter by key name                        | `author:`     |
+| `:value`    | Filter by value                           | `:Jane`       |
+| `key:value` | Filter by exact key-value pair            | `author:Jane` |
+| `"literal"` | Search all fields for literal text        | `"key:value"` |
+| `bare`      | Case-insensitive search across all fields | `readme`      |
 
 Quoted strings work in key:value position: `"key:":":value"` matches key `key:` with value `:value`.
 
@@ -163,10 +163,10 @@ id repl
 
 ## Build Variants
 
-| Variant | Command         | Description                    | Requires |
-|---------|-----------------|--------------------------------|----------|
-| `lib`   | `just build-lib`| Rust CLI only                  | Rust     |
-| `web`   | `just build`    | CLI with embedded web UI       | Rust, Bun|
+| Variant | Command          | Description              | Requires  |
+| ------- | ---------------- | ------------------------ | --------- |
+| `lib`   | `just build-lib` | Rust CLI only            | Rust      |
+| `web`   | `just build`     | CLI with embedded web UI | Rust, Bun |
 
 ## Development
 

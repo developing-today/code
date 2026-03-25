@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/roc_env",
-    "crates/roc_host",
-    "crates/roc_host_lib",
-    "crates/roc_host_bin",
-    "crates/roc_io_error",
-    "crates/roc_stdio",
+  "crates/roc_env",
+  "crates/roc_host",
+  "crates/roc_host_lib",
+  "crates/roc_host_bin",
+  "crates/roc_io_error",
+  "crates/roc_stdio",
 ]
 
 [workspace.package]
@@ -32,16 +32,16 @@ roc_io_error = { path = "crates/roc_io_error" }
 roc_stdio = { path = "crates/roc_stdio" }
 memchr = "=2.7.4"
 hyper = { version = "=1.6.0", default-features = false, features = [
-    "http1",
-    "client",
+  "http1",
+  "client",
 ] }
 hyper-util = "=0.1.12"
 hyper-rustls = { version = "=0.27.6", default-features = false, features = [
-    "http1",
-    "tls12",
-    "native-tokio",
-    "rustls-native-certs", # required for with_native_roots
-    "ring", # required for with_native_roots
+  "http1",
+  "tls12",
+  "native-tokio",
+  "rustls-native-certs", # required for with_native_roots
+  "ring",                # required for with_native_roots
 ] }
 http-body-util = "=0.1.3"
 tokio = { version = "=1.45.0", default-features = false }

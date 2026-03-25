@@ -28,6 +28,6 @@ gpg --batch --generate-key gpg-batch
 rm gpg-batch
 
 # Export the public key
-gpg --armor --export $EMAIL > public_key.asc
+gpg --armor --export $EMAIL >public_key.asc
 
 echo "GPG key pair generated. Public key exported to public_key.asc"ch

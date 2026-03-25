@@ -12,30 +12,30 @@ prefix=""
 iso_type="bootstrap_unattended-installer_offline"
 
 print_usage() {
-    echo "Usage: $0 [prefix]"
-    echo "  prefix: Optional prefix for output ISO file"
+  echo "Usage: $0 [prefix]"
+  echo "  prefix: Optional prefix for output ISO file"
 }
 
 process_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      # -prefix
-      -*)
-        echo "Error: Unknown flag $1"
+    # -prefix
+    -*)
+      echo "Error: Unknown flag $1"
+      print_usage
+      exit 1
+      ;;
+    # iso_type
+    *) # files/dirs to copy recursively
+      if [[ -z $prefix ]]; then
+        prefix="$1"
+      else
+        echo "Error: Too many arguments"
         print_usage
         exit 1
-        ;;
-      # iso_type
-      *) # files/dirs to copy recursively
-        if [[ -z $prefix ]]; then
-          prefix="$1"
-        else
-          echo "Error: Too many arguments"
-          print_usage
-          exit 1
-        fi
-        shift
-        ;;
+      fi
+      shift
+      ;;
     esac
   done
 }
@@ -100,7 +100,6 @@ if [ -n "$prefix" ]; then
 else
   echo "No prefix specified."
 fi
-
 
 count_isos() {
   local pattern="$1"

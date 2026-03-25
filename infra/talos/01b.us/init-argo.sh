@@ -86,7 +86,6 @@ kubectl get service -n default
 # argocd app get $APP --auth-token $JWT
 # argocd proj role get $PROJ $ROLE
 
-
 # argocd proj role get $PROJ $ROLE
 # # Revoking the JWT token
 # argocd proj role delete-token $PROJ $ROLE <id field from the last command>

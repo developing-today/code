@@ -2,5 +2,3 @@ description = "pavex knows how to deal with shared references, no matter the lif
 
 [expectations]
 codegen = "pass"
-
-

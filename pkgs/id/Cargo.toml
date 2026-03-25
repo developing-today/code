@@ -16,15 +16,15 @@ categories = ["command-line-utilities", "network-programming"]
 [features]
 default = []
 web = [
-    "dep:axum",
-    "dep:tower",
-    "dep:tower-http",
-    "dep:rust-embed",
-    "dep:mime_guess",
-    "dep:futures",
-    "dep:rmp-serde",
-    "dep:comrak",
-    "dep:urlencoding",
+  "dep:axum",
+  "dep:tower",
+  "dep:tower-http",
+  "dep:rust-embed",
+  "dep:mime_guess",
+  "dep:futures",
+  "dep:rmp-serde",
+  "dep:comrak",
+  "dep:urlencoding",
 ]
 
 [dependencies]
@@ -52,7 +52,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Web feature dependencies (optional)
 axum = { version = "0.7", features = ["ws"], optional = true }
 tower = { version = "0.5", optional = true }
-tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip"], optional = true }
+tower-http = { version = "0.6", features = [
+  "fs",
+  "cors",
+  "compression-gzip",
+], optional = true }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 futures = { version = "0.3.32", optional = true }

@@ -21,15 +21,15 @@ All messages are encoded as MessagePack arrays with a type tag as the first elem
 
 ### Message Types
 
-| Tag | Name   | Direction      | Format                                           |
-|-----|--------|----------------|--------------------------------------------------|
-| 0   | Init   | Server->Client | `[0, version, doc]`                              |
-| 1   | Steps  | Client->Server | `[1, version, steps, clientID]`                  |
-| 2   | Update | Server->Client | `[2, steps, clientIDs]`                          |
-| 3   | Ack    | Server->Client | `[3, version]`                                   |
-| 4   | Cursor | Bidirectional  | `[4, clientID, head, anchor, name?, idleSecs?]`  |
-| 5   | Error  | Server->Client | `[5, errorMessage]`                              |
-| -   | Empty  | Bidirectional  | `""` (empty text, see below)                     |
+| Tag | Name   | Direction      | Format                                          |
+| --- | ------ | -------------- | ----------------------------------------------- |
+| 0   | Init   | Server->Client | `[0, version, doc]`                             |
+| 1   | Steps  | Client->Server | `[1, version, steps, clientID]`                 |
+| 2   | Update | Server->Client | `[2, steps, clientIDs]`                         |
+| 3   | Ack    | Server->Client | `[3, version]`                                  |
+| 4   | Cursor | Bidirectional  | `[4, clientID, head, anchor, name?, idleSecs?]` |
+| 5   | Error  | Server->Client | `[5, errorMessage]`                             |
+| -   | Empty  | Bidirectional  | `""` (empty text, see below)                    |
 
 ### Field Types
 
@@ -58,12 +58,14 @@ All messages are encoded as MessagePack arrays with a type tag as the first elem
 WebSocket Ping control frames are handled silently by browsers and don't trigger JavaScript's `onmessage`. To allow cursor decoration refresh in inactive tabs (where `setInterval` is throttled), the server sends empty text messages (`""`) every 60 seconds instead of Ping frames.
 
 When the client receives an empty text message, it:
+
 1. Responds with an empty text message (as pong)
 2. Refreshes cursor decorations (recalculates opacity based on `lastUpdate`)
 
 ### Cursor Opacity
 
 Cursors fade based on inactivity to indicate staleness:
+
 - **0-30s**: Full opacity (1.0), fast strobing (1s cycle)
 - **30-60s**: Fades linearly to 0.3, strobing slows to 3s cycle
 - **60s-5m**: Stays at 0.3 opacity, no strobing
@@ -74,6 +76,7 @@ The `idleSecs` field in Cursor messages is only sent when the server sends exist
 ### Cursor Hover Behavior
 
 When a user hovers over a cursor (label or cursor line):
+
 - Cursor immediately becomes fully visible (100% opacity)
 - Strobing animation stops
 - The entire cursor group at that position is brought to the top (highest z-index)
@@ -84,6 +87,7 @@ Hovering on the cursor line (not just the label) also triggers full visibility. 
 ### Tooltip Stacking
 
 When multiple cursors are at the same document position:
+
 - Labels stack horizontally (not vertically)
 - Order is by activity: most recently active on left, longest inactive on right
 - Labels grow to the right, anchored at the cursor position
@@ -92,6 +96,7 @@ When multiple cursors are at the same document position:
 ### Cursor Line Color Cycling
 
 When multiple cursors share the same position, the cursor line (vertical bar) cycles through all cursor colors:
+
 - Colors cycle left-to-right through the tooltip order (most recent to oldest)
 - Cycle interval: 1.5 seconds per color
 - On new cursor activity: immediately shows that cursor's color, then resumes cycling
@@ -101,6 +106,7 @@ When multiple cursors share the same position, the cursor line (vertical bar) cy
 ### User Cursor Interaction
 
 If the user's cursor (caret) is at the same position as remote cursors:
+
 - Those remote cursors become fully visible (100% opacity, no strobing)
 - This helps users see who else is editing at the same location
 
@@ -111,11 +117,13 @@ This allows users to inspect faded cursors without permanently changing their st
 Cursor behavior changes based on WebSocket connection state:
 
 **When disconnected:**
+
 - All cursors keep their current opacity
 - All strobing animations stop (cursors appear static)
 - Reconnect cleanup is cancelled if in progress
 
 **When reconnecting (on Init message):**
+
 1. Client starts a 1-second cleanup timer
 2. As cursor updates arrive from server, those cursors are marked "fresh"
 3. After 1 second (if still connected), cursors not marked fresh are removed
@@ -177,7 +185,7 @@ web/
 Use `msgpackr` with `useRecords: false` for array format:
 
 ```typescript
-import { Packr, Unpackr } from 'msgpackr';
+import { Packr, Unpackr } from "msgpackr";
 
 const packr = new Packr({ useRecords: false });
 const unpackr = new Unpackr({ useRecords: false });
@@ -211,6 +219,7 @@ view.dispatch(tr);
 ```
 
 The collab plugin automatically:
+
 - Confirms your pending steps when they come back
 - Applies remote steps from other clients
 - Rebases any unconfirmed local steps
@@ -276,11 +285,11 @@ The `/ws/tags` endpoint provides real-time tag change notifications. Clients rec
 {"type": "Transfer", "ns": "global", "from_subject": "old.md", "to_subject": "new.md"}
 ```
 
-| Event    | Description                                    |
-|----------|------------------------------------------------|
-| `Set`    | A tag was added or updated                     |
-| `Del`    | A specific tag was removed                     |
-| `DelAll` | All tags were removed from a subject           |
+| Event      | Description                                 |
+| ---------- | ------------------------------------------- |
+| `Set`      | A tag was added or updated                  |
+| `Del`      | A specific tag was removed                  |
+| `DelAll`   | All tags were removed from a subject        |
 | `Transfer` | Tags were moved from one subject to another |
 
 The `value` field is omitted from `Set` events when the tag has no value (key-only tags). The `ns` field indicates the namespace (`global` for the default namespace).
@@ -289,28 +298,28 @@ The `value` field is omitted from `Set` events when the tag has no value (key-on
 
 In addition to the WebSocket stream, tags can be queried and modified via REST:
 
-| Method   | Endpoint            | Description                          |
-|----------|---------------------|--------------------------------------|
-| `GET`    | `/api/tags`         | List/filter tags (query params below)|
-| `GET`    | `/api/tags/search`  | Search tags with structured syntax   |
-| `POST`   | `/api/tags`         | Set a tag                            |
-| `DELETE` | `/api/tags`         | Delete a tag or all tags for subject |
+| Method   | Endpoint           | Description                           |
+| -------- | ------------------ | ------------------------------------- |
+| `GET`    | `/api/tags`        | List/filter tags (query params below) |
+| `GET`    | `/api/tags/search` | Search tags with structured syntax    |
+| `POST`   | `/api/tags`        | Set a tag                             |
+| `DELETE` | `/api/tags`        | Delete a tag or all tags for subject  |
 
 #### GET /api/tags Query Parameters
 
-| Parameter | Description                              |
-|-----------|------------------------------------------|
-| `subject` | Filter by subject (filename)             |
-| `key`     | Filter by tag key                        |
-| `value`   | Filter by value (requires `key`)         |
-| `ns`      | Namespace (default: `global`)            |
+| Parameter | Description                      |
+| --------- | -------------------------------- |
+| `subject` | Filter by subject (filename)     |
+| `key`     | Filter by tag key                |
+| `value`   | Filter by value (requires `key`) |
+| `ns`      | Namespace (default: `global`)    |
 
 #### GET /api/tags/search
 
-| Parameter | Description                              |
-|-----------|------------------------------------------|
-| `q`       | Search query string (required)           |
-| `ns`      | Namespace (default: `global`)            |
+| Parameter | Description                    |
+| --------- | ------------------------------ |
+| `q`       | Search query string (required) |
+| `ns`      | Namespace (default: `global`)  |
 
 Query syntax: `key:` (key only), `:value` (value only), `key:value` (pair), `"literal"` (quoted), bare word (search all). Multiple terms are space-separated and ANDed.
 

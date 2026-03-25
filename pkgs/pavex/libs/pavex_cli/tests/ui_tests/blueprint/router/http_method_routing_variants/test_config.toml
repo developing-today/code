@@ -2,5 +2,3 @@ description = "Exercise the code generation for all the supported routing option
 
 [expectations]
 codegen = "pass"
-
-

@@ -11,47 +11,84 @@
 
 { pkgs }:
 
-{
-  # Build inputs (libraries)
-  buildInputs = with pkgs; [ openssl ];
+let
+  # Rust toolchain from rust-toolchain.toml (includes rustc, cargo, rustfmt, clippy)
+  # Works because both shell.nix and flake.nix apply rust-overlay before importing
+  rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+
+  # Formatter binaries (keep in sync with treefmt.toml)
+  # Used by formatter wrapper (nix fmt), nix flake checks, and devShell PATH
+  fmtBins = [
+    # Rust toolchain (includes rustfmt)
+    rustToolchain
+  ]
+  ++ (with pkgs; [
+    # Formatter orchestrator
+    treefmt
+    # Formatters and linters (keep in sync with treefmt.toml)
+    biome
+    nodePackages.prettier
+    nixfmt
+    statix
+    shfmt
+    shellcheck
+    taplo
+    # Utilities needed by formatter wrapper
+    bash
+    just
+    gnused
+    findutils
+  ]);
 
   # Native build inputs (tools, compilers)
-  # Note: rustToolchain should be added separately as it's defined differently
-  # in flake.nix vs shell.nix
-  nativeBuildInputs = with pkgs; [
-    # Build dependencies
-    pkg-config
+  nativeBuildInputs =
+    fmtBins
+    ++ (with pkgs; [
+      # Build dependencies
+      pkg-config
+      openssl
 
-    # Cargo plugins
-    cargo-watch
-    cargo-nextest
-    cargo-llvm-cov
-    cargo-audit
-    cargo-outdated
-    cargo-machete
-    cargo-edit
+      # Cargo plugins
+      cargo-watch
+      cargo-nextest
+      cargo-llvm-cov
+      cargo-audit
+      cargo-outdated
+      cargo-machete
+      cargo-edit
 
-    # Development tools
-    just
-    git
-    ripgrep
-    fd
-    jq
-    uv
-    tokei
-    hyperfine
-    treefmt # Multi-language formatter orchestrator (used by nix fmt)
+      # Development tools
+      git
+      ripgrep
+      fd
+      jq
+      uv
+      tokei
+      hyperfine
 
-    # Web development tools
-    bun # JavaScript bundler and runtime (required for web builds)
-    nodePackages.typescript # TypeScript for type checking
-    biome # Fast formatter and linter for TypeScript/CSS
+      # Web development tools
+      bun # JavaScript bundler and runtime (required for web builds)
+      nodePackages.typescript # TypeScript for type checking
 
-    # E2E testing (Playwright) — use playwright-driver.browsers for
-    # pre-patched browser binaries that work with Playwright's CDP protocol.
-    # Pin @playwright/test in e2e/package.json to match this version.
-    playwright-driver.browsers
-  ];
+      # E2E testing (Playwright) — use playwright-driver.browsers for
+      # pre-patched browser binaries that work with Playwright's CDP protocol.
+      # Pin @playwright/test in e2e/package.json to match this version.
+      playwright-driver.browsers
+
+      # Manual linters (not in treefmt, run manually)
+      deadnix
+    ]);
+in
+{
+  inherit rustToolchain fmtBins nativeBuildInputs;
+
+  # Build inputs (libraries for Rust compilation)
+  buildInputs = with pkgs; [ openssl ];
+
+  TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
+
+  # Packages for shell.nix / nix develop (nativeBuildInputs = all tools)
+  packages = nativeBuildInputs;
 
   # OpenSSL environment variables
   opensslEnv = {

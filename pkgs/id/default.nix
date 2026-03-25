@@ -17,7 +17,7 @@ let
   cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
   pname = cargoToml.package.name;
-  version = cargoToml.package.version;
+  inherit (cargoToml.package) version;
 
 in
 {

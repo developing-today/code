@@ -4,8 +4,8 @@ TF_PARALLELISM="${TF_PARALLELISM:-1}"
 echo "TF_PARALLELISM: $TF_PARALLELISM"
 echo "\$0=$0"
 script_name="$0"
-while [[ "$script_name" == -* ]]; do
-    script_name="${script_name#-}"
+while [[ $script_name == -* ]]; do
+  script_name="${script_name#-}"
 done
 dir="$(dirname -- "$(which -- "$script_name" 2>/dev/null || realpath -- "$script_name")")"
 echo "dir: $dir"
@@ -13,29 +13,29 @@ echo "dir: $dir"
 tfPlan=""
 REFRESH_STATE="false"
 while [[ $# -gt 0 ]]; do
-    case $1 in
-        -*)
-            if [[ "$1" == "--refresh" ]]; then
-                REFRESH_STATE="true"
-            fi
-            ;;
-        *)
-            if [[ -z "$tfPlan" ]]; then
-                tfPlan="$1"
-            elif [[ "$1" == "refresh" ]]; then
-                REFRESH_STATE="true"
-            fi
-            ;;
-    esac
-    shift
+  case $1 in
+  -*)
+    if [[ $1 == "--refresh" ]]; then
+      REFRESH_STATE="true"
+    fi
+    ;;
+  *)
+    if [[ -z $tfPlan ]]; then
+      tfPlan="$1"
+    elif [[ $1 == "refresh" ]]; then
+      REFRESH_STATE="true"
+    fi
+    ;;
+  esac
+  shift
 done
 
 tfPlan="${tfPlan:-"$dir/terraform.tfplan"}"
 echo "tfplan: $tfPlan"
 echo "REFRESH_STATE: $REFRESH_STATE"
 
-if [[ "$REFRESH_STATE" == "false" ]]; then
-    echo "No refresh argument provided, only removing terraform.tfstate backup files"
+if [[ $REFRESH_STATE == "false" ]]; then
+  echo "No refresh argument provided, only removing terraform.tfstate backup files"
 fi
 
 if [ -n "${SKIP_PLAN:-}" ]; then

@@ -22,27 +22,27 @@ create_xinitrc() {
     exit 1
   fi
 
-  if [[ ! -d "${home_dir}" ]]; then
+  if [[ ! -d ${home_dir} ]]; then
     echo "Directory ${home_dir} does not exist"
     exit 1
   fi
 
   target_file="$home_dir/.xinitrc"
 
-  if [[ -e "$target_file" ]]; then
+  if [[ -e $target_file ]]; then
     printf "Error: %s file already exists\n" "$target_file" >&2
     exit 1
   else
-    printf "#!/usr/bin/env bash\n\n# Remap Caps Lock to Escape\nsetxkbmap -option caps:escape\n" > "$target_file"
+    printf "#!/usr/bin/env bash\n\n# Remap Caps Lock to Escape\nsetxkbmap -option caps:escape\n" >"$target_file"
     chmod +x "$target_file"
   fi
 }
 
-if [[ "$#" -eq 0 ]]; then
+if [[ $# -eq 0 ]]; then
   create_xinitrc "$USER"
 else
   for user in "$@"; do
-    if [[ "$user" != "$USER" && "$EUID" -ne 0 ]]; then
+    if [[ $user != "$USER" && $EUID -ne 0 ]]; then
       sudo "$0" "$user"
     else
       create_xinitrc "$user"
@@ -51,4 +51,3 @@ else
 fi
 
 printf "%s\n" "done: setup-xinitrc-for-user script"
-

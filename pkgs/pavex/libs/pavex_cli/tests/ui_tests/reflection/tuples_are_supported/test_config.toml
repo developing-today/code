@@ -2,5 +2,3 @@ description = "pavex supports tuple types as input parameters"
 
 [expectations]
 codegen = "pass"
-
-

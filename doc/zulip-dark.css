@@ -7,166 +7,162 @@
 
 /* fewer borders please */
 *:not(blockquote, .user-circle) {
-	border: 0 !important;
+  border: 0 !important;
 }
 
 :root {
-	--color-shadow-sidebar-row-hover: transparent !important;
-	--color-selected-message-outline: transparent !important;
-	--message-box-link-focus-ring-block-padding: 0 !important;
+  --color-shadow-sidebar-row-hover: transparent !important;
+  --color-selected-message-outline: transparent !important;
+  --message-box-link-focus-ring-block-padding: 0 !important;
 }
 
 #message_view_header,
 #navbar-middle .column-middle-inner,
 .header {
-	box-shadow: none !important;
+  box-shadow: none !important;
 }
 
 .selected_message {
-	background: color-mix(in srgb, var(--message-bg), black 10%) !important;
+  background: color-mix(in srgb, var(--message-bg), black 10%) !important;
 }
 
 .message_row {
-	--message-bg: var(--color-background-stream-message-content);
+  --message-bg: var(--color-background-stream-message-content);
 
-	&.private-message {
-		--message-bg: var(--color-background-private-message-content);
-	}
+  &.private-message {
+    --message-bg: var(--color-background-private-message-content);
+  }
 
-	&.direct_mention {
-		--message-bg: var(--color-background-direct-mention);
-	}
+  &.direct_mention {
+    --message-bg: var(--color-background-direct-mention);
+  }
 
-	&.group_mention {
-		--message-bg: var(--color-background-group-mention);
-	}
+  &.group_mention {
+    --message-bg: var(--color-background-group-mention);
+  }
 }
 
 .selected_message::before {
-	content: "" !important;
-	grid-area: date_unread_marker !important;
-	background: var(--message-bg) !important;
+  content: "" !important;
+  grid-area: date_unread_marker !important;
+  background: var(--message-bg) !important;
 }
 
 .selected_message .date_row {
-	background: var(--message-bg) !important;
+  background: var(--message-bg) !important;
 }
 
 /* inline mini avatars, names, times */
 .messagebox-content {
-	display: block !important;
+  display: block !important;
 }
 
 .message_sender {
-	float: left !important;
-	position: relative !important;
-	z-index: 1 !important;
-	line-height: var(--base-line-height-unitless) !important;
-	margin-right: 0.5em !important;
+  float: left !important;
+  position: relative !important;
+  z-index: 1 !important;
+  line-height: var(--base-line-height-unitless) !important;
+  margin-right: 0.5em !important;
 }
 
 .inline-profile-picture-wrapper,
 .inline_profile_picture {
-	width: 1em !important;
-	height: 1em !important;
-	margin-top: 0 !important;
+  width: 1em !important;
+  height: 1em !important;
+  margin-top: 0 !important;
 }
 
 .message-avatar {
-	float: left !important;
-	line-height: var(--base-line-height-unitless) !important;
-	z-index: 1 !important;
-	height: 1lh !important;
-	align-items: center !important;
-	position: relative !important;
-	display: flex !important;
-	margin-right: 0.25em !important;
-	/* display: none !important; */
+  float: left !important;
+  line-height: var(--base-line-height-unitless) !important;
+  z-index: 1 !important;
+  height: 1lh !important;
+  align-items: center !important;
+  position: relative !important;
+  display: flex !important;
+  margin-right: 0.25em !important;
+  /* display: none !important; */
 }
 
 .message-time {
-	float: right !important;
-	position: relative !important;
-	z-index: 1 !important;
-	line-height: var(--base-line-height-unitless) !important;
+  float: right !important;
+  position: relative !important;
+  z-index: 1 !important;
+  line-height: var(--base-line-height-unitless) !important;
 }
 
 .messagebox-content .message_content {
-	display: inline !important;
+  display: inline !important;
 }
 
 .rendered_markdown > :first-child:is(blockquote, ol, ul) {
-	clear: left;
+  clear: left;
 }
 
 /* fewer layers of padding on compose box */
 #compose-content {
-	padding: 0 !important;
-	overflow: hidden !important;
+  padding: 0 !important;
+  overflow: hidden !important;
 }
 
 #compose_buttons {
-	#new_direct_message_button,
-	#left_bar_compose_reply_button_big,
-	#new_conversation_button {
-		border-radius: 0 !important;
-	}
+  #new_direct_message_button,
+  #left_bar_compose_reply_button_big,
+  #new_conversation_button {
+    border-radius: 0 !important;
+  }
 }
 
 .reply_button_container {
-	display: contents !important;
+  display: contents !important;
 }
 
 .compose_reply_button {
-	background: var(--color-background-compose-new-message-button) !important;
+  background: var(--color-background-compose-new-message-button) !important;
 }
 
 #new_conversation_button {
-	margin: 0 !important;
-	color: unset !important;
-	background: var(--color-background-compose-new-message-button) !important;
+  margin: 0 !important;
+  color: unset !important;
+  background: var(--color-background-compose-new-message-button) !important;
 }
 
 /* floating message controls */
 .messagebox-content {
-	position: relative !important;
+  position: relative !important;
 }
 
 .message_controls {
-	display: none !important;
-	position: absolute !important;
-	bottom: 100% !important;
-	right: 0 !important;
-	background-color: var(--color-background-stream-message-content) !important;
-	z-index: 5 !important;
-	height: unset !important;
-	padding: 3px !important;
-	border-radius: 7px !important;
-	box-shadow: var(--box-shadow-popover-menu) !important;
+  display: none !important;
+  position: absolute !important;
+  bottom: 100% !important;
+  right: 0 !important;
+  background-color: var(--color-background-stream-message-content) !important;
+  z-index: 5 !important;
+  height: unset !important;
+  padding: 3px !important;
+  border-radius: 7px !important;
+  box-shadow: var(--box-shadow-popover-menu) !important;
 }
 
 .messagebox:hover .message_controls,
-.messagebox:has(
-		.active-emoji-picker-reference,
-		.active-playground-links-reference
-	)
-	.message_controls,
+.messagebox:has(.active-emoji-picker-reference, .active-playground-links-reference) .message_controls,
 .has_actions_popover .message_controls {
-	display: flex !important;
+  display: flex !important;
 }
 
 .message_control_button {
-	opacity: 1 !important;
-	visibility: visible !important;
+  opacity: 1 !important;
+  visibility: visible !important;
 }
 
 /* fix this so it works with any background */
 .rendered_markdown .message_embed .data-container {
-	mask-image: linear-gradient(to bottom, white 90%, transparent);
+  mask-image: linear-gradient(to bottom, white 90%, transparent);
 }
 
 .rendered_markdown .message_embed .data-container::after {
-	display: none !important;
+  display: none !important;
 }
 
 /* dark theme base */
@@ -174,10 +170,10 @@
 :root.dark-theme *,
 :root.dark-theme *::before,
 :root.dark-theme *::after {
-	background-color: #000 !important;
-	box-shadow: none !important;
-	border-color: #000 !important;
-	outline-color: #000 !important;
+  background-color: #000 !important;
+  box-shadow: none !important;
+  border-color: #000 !important;
+  outline-color: #000 !important;
 }
 
 /* brutalize recent topics table (all states) */
@@ -191,25 +187,14 @@
 :root.dark-theme #recent_topics_table tbody tr.active,
 :root.dark-theme #recent_topics_table tbody tr.selected,
 :root.dark-theme #recent_topics_table tbody tr:focus-within {
-	background: #000 !important;
+  background: #000 !important;
 }
 
 :root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(odd),
-:root.dark-theme
-	#recent_topics_table.table-striped
-	> tbody
-	> tr:nth-child(even),
-:root.dark-theme
-	#recent_topics_table.table-striped
-	> tbody
-	> tr:nth-child(odd)
-	> td,
-:root.dark-theme
-	#recent_topics_table.table-striped
-	> tbody
-	> tr:nth-child(even)
-	> td {
-	background: #000 !important;
+:root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(even),
+:root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(odd) > td,
+:root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(even) > td {
+  background: #000 !important;
 }
 
 /* sidebars, header, navbar */
@@ -222,7 +207,7 @@
 :root.dark-theme .column-middle,
 :root.dark-theme .column-right,
 :root.dark-theme #navbar-middle .column-middle-inner {
-	background: #000 !important;
+  background: #000 !important;
 }
 
 /* messages, selections, pills */
@@ -239,7 +224,7 @@
 :root.dark-theme .topic-box,
 :root.dark-theme .user-mention,
 :root.dark-theme .alert-word {
-	background: #000 !important;
+  background: #000 !important;
 }
 
 /* inputs, editors, menus, popovers */
@@ -258,7 +243,7 @@
 :root.dark-theme .modal__container,
 :root.dark-theme .modal-backdrop,
 :root.dark-theme div.overlay {
-	background: #000 !important;
+  background: #000 !important;
 }
 
 /* buttons (all states) */
@@ -271,7 +256,7 @@
 :root.dark-theme .btn-primary:active,
 :root.dark-theme #new_conversation_button,
 :root.dark-theme .compose_reply_button {
-	background: #000 !important;
+  background: #000 !important;
 }
 
 /* kill stray gradients/masks/stripes */
@@ -279,7 +264,7 @@
 :root.dark-theme .gradient,
 :root.dark-theme .table-striped tbody tr td,
 :root.dark-theme .table-striped tbody tr:nth-child(n) td {
-	background: #000 !important;
+  background: #000 !important;
 }
 
 /* emoji: preserve images and native color fonts */
@@ -288,7 +273,7 @@
 :root.dark-theme .message_reaction .emoji,
 :root.dark-theme .popover .emoji,
 :root.dark-theme .emoji-picker .emoji {
-	background-color: transparent !important;
+  background-color: transparent !important;
 }
 
 /* code blocks: very dark green */
@@ -297,7 +282,7 @@
 :root.dark-theme .rendered_markdown pre code,
 :root.dark-theme .message_content pre,
 :root.dark-theme .message_content pre code {
-	background-color: #001a00 !important;
+  background-color: #001a00 !important;
 }
 
 /* scrollbar */
@@ -305,12 +290,12 @@
 :root.dark-theme *::-webkit-scrollbar-track,
 :root.dark-theme *::-webkit-scrollbar-thumb,
 :root.dark-theme *::-webkit-scrollbar-corner {
-	background: #000 !important;
-	border: none !important;
+  background: #000 !important;
+  border: none !important;
 }
 
 @supports (scrollbar-color: auto) {
-	:root.dark-theme {
-		scrollbar-color: #000 #000 !important;
-	}
+  :root.dark-theme {
+    scrollbar-color: #000 #000 !important;
+  }
 }

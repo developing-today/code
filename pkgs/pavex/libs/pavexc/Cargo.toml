@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [build-dependencies]
-vergen = { version = "8.0.0", features = [ "build", "git", "gitcl" ]}
+vergen = { version = "8.0.0", features = ["build", "git", "gitcl"] }
 
 [dependencies]
 pavex = { path = "../pavex" }
@@ -16,7 +16,10 @@ serde_stacker = "0.1"
 anyhow = "1.0.58"
 fs-err = "2.7.0"
 indexmap = { version = "1.9.1", features = ["serde-1"] }
-petgraph = { version = "0.6.2", default-features = false, features = ["graphmap", "stable_graph"] }
+petgraph = { version = "0.6.2", default-features = false, features = [
+  "graphmap",
+  "stable_graph",
+] }
 bimap = "0.6.2"
 prettyplease = "0.2"
 quote = "1.0.20"

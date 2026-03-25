@@ -3,6 +3,7 @@
 ---
 
 ## **Warning For Agents & Onlookers**
+
 > This is for future implementation.
 >
 > It's fine to read this file but don't make any significant decisions based on anything here.
@@ -51,6 +52,7 @@
 - fix so meta attribute is on all nix flake sections that need it.
 - just ci is running multiple tests in a row, i see it repeated the 237 test blocks and it may be repeating more tests in some of the smaller groups like the 54/14 tests. does the just command need changes?
 - nix flake check -L fails because clippy has to build and tries to download files. find a way to ensure that no network access is needed. if just ci needs to have different commands then ensure just check still runs all of them. if you can fix it by updating the build or something then do that.
+
 ```
 ❯ nix flake check -L
 warning: Git tree '/home/user/code' is dirty
@@ -186,7 +188,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
-- make a tui using ratatui or whatever the highest performance tui rust crate is. aim for high performance, it should work locally without running other servers, or connect to the local server if it's running or connect to a remote server. use iroh for network communication not ssh, consider the most efficient way to handle this so that it is very performant. we want high fps, ability to make complex graphs, possibly transmit kitty image protocol images, coloring blocks, all the tui things you might want from something like ratatui, but ideally you wouldn't be sending all the terminal inputs from the server to the client. there should be a way to send a custom protocol in an iroh postcard or whatever, where you say what you want to do provide the new bytes, and then the client handles. like 'heres the bytes for the image, put the image in the screen at 64x 16y on the screen and let the image be 256*256' and then the client can display the picture without the server needing to actually move the cursor, delete/redraw in the terminal, etc. server could say 'draw the level map at <blob> across the entire screen' and then the client would handle getting the blob itself. you wouldn't want a second round trip if they don't have it cached locally, so some thought would need to be put there. the tui should cover things like the website, except native access without upload boxes and with full control of the box. it should be a tui program, doesn't need to be ssh--- someone can ssh into the server and run the tui. maybe 3 panels, room/object selector/search/find/pin-favorites || the interactive room/document or other meta configuration or search pages || a chatroom for a given room or topic
+- make a tui using ratatui or whatever the highest performance tui rust crate is. aim for high performance, it should work locally without running other servers, or connect to the local server if it's running or connect to a remote server. use iroh for network communication not ssh, consider the most efficient way to handle this so that it is very performant. we want high fps, ability to make complex graphs, possibly transmit kitty image protocol images, coloring blocks, all the tui things you might want from something like ratatui, but ideally you wouldn't be sending all the terminal inputs from the server to the client. there should be a way to send a custom protocol in an iroh postcard or whatever, where you say what you want to do provide the new bytes, and then the client handles. like 'heres the bytes for the image, put the image in the screen at 64x 16y on the screen and let the image be 256\*256' and then the client can display the picture without the server needing to actually move the cursor, delete/redraw in the terminal, etc. server could say 'draw the level map at <blob> across the entire screen' and then the client would handle getting the blob itself. you wouldn't want a second round trip if they don't have it cached locally, so some thought would need to be put there. the tui should cover things like the website, except native access without upload boxes and with full control of the box. it should be a tui program, doesn't need to be ssh--- someone can ssh into the server and run the tui. maybe 3 panels, room/object selector/search/find/pin-favorites || the interactive room/document or other meta configuration or search pages || a chatroom for a given room or topic
 
 ---
 
@@ -196,18 +198,11 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 - rust/js linters, clippy with all runs, run rustfmt, etc. (youtube video that mentioned what to run? there was another in addition to clippy..)
 
+---
 
 ---
 
-
-
 ---
-
-
-
----
-
-
 
 ---
 
@@ -218,7 +213,6 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - victoriametrics
 - footer for raw/media should match markdown. download should be in the bottom right of all per-page toolbars
 - allow save back update hash, allow download saved which downloads last saved copy and download which downloads current file as-is. maybe allow download json for active documents too which is same as download except its the prosemirror json.
-
 
 ---
 
@@ -253,174 +247,88 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
-
 ---
 
-
-
 ---
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
 
 ---

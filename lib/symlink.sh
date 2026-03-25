@@ -95,7 +95,7 @@ process_symlinks() {
 
   printf "info: find output:\n%s\n" "${find_output}"
 
-  mapfile -t directories <<< "${find_output}"
+  mapfile -t directories <<<"${find_output}"
 
   printf "done: symlinks directory list generated for file '%s', relative symlink '%s', directories '%s'\n" "${file_path}" "${is_relative_symlink}" "${directories[*]}"
   printf "start: symlinks creation process for file '%s', relative symlink '%s', directories '%s'\n" "${file_path}" "${is_relative_symlink}" "${directories[*]}"

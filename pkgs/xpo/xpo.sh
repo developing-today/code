@@ -25,11 +25,11 @@ echo "Forwarding :$l_port" >&2
 
 # If port was supplied
 if [ -n "${3:-}" ]; then
-    r_port="$3"
-    ssh -S "$socket" -O forward -R "*:$r_port:localhost:$l_port" xpo
+  r_port="$3"
+  ssh -S "$socket" -O forward -R "*:$r_port:localhost:$l_port" xpo
 else
-    # Forward port and record it
-    r_port="$(ssh -S "$socket" -O forward -R "*:0:localhost:$l_port" xpo)"
+  # Forward port and record it
+  r_port="$(ssh -S "$socket" -O forward -R "*:0:localhost:$l_port" xpo)"
 fi
 
 echo "$server:$r_port"

@@ -233,6 +233,7 @@ A quick way to certify a PR you forgot to "Signed-off-by" is as follows:
     I certify from <first-sha> to this commit adheres to the DCO.
     ```
   - Option 2
+
     ```
     dco-certify: <first-sha>..<last-sha>
     ```

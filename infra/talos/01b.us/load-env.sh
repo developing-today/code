@@ -21,30 +21,30 @@ trap cleanup EXIT
 
 set +x
 # if [[ # GIT_TOKEN is empty
-if [[ -z "$GIT_TOKEN" ]]; then
+if [[ -z $GIT_TOKEN ]]; then
   echo '++ export GIT_TOKEN="$(cat $HOME/auth)" # <redacted>'
   export GIT_TOKEN="$(cat $HOME/auth)"
 else
   echo '++ echo "GIT_TOKEN is already set"'
   echo 'GIT_TOKEN is already set'
 fi
-if [[ -z "$GIT_TOKEN" ]]; then
+if [[ -z $GIT_TOKEN ]]; then
   echo '++ echo "GIT_TOKEN is empty"'
   echo 'GIT_TOKEN is empty'
   exit 1
 fi
 set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
-if [[ -z "$GIT_REPO" ]]; then
+if [[ -z $GIT_REPO ]]; then
   export GIT_REPO=https://github.com/developing-today/code
 else
   echo "GIT_REPO=$GIT_REPO"
 fi
-if [[ -z "$KUBECONFIG" ]]; then
+if [[ -z $KUBECONFIG ]]; then
   export KUBECONFIG=secrets/kubeconfig
 else
   echo "KUBECONFIG=$KUBECONFIG"
 fi
-if [[ -z "$TALOSCONFIG" ]]; then
+if [[ -z $TALOSCONFIG ]]; then
   export TALOSCONFIG=secrets/talosconfig
 else
   echo "TALOSCONFIG=$TALOSCONFIG"

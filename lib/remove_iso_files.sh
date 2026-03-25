@@ -5,35 +5,35 @@ force=false
 prefix=""
 
 print_usage() {
-    echo "Usage: $0 [prefix] [-force]"
-    echo "  prefix: Optional prefix for ISO file matching"
-    echo "  -force: Skip confirmation prompt"
+  echo "Usage: $0 [prefix] [-force]"
+  echo "  prefix: Optional prefix for ISO file matching"
+  echo "  -force: Skip confirmation prompt"
 }
 
 process_args() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -force)
-                force=true
-                shift
-                ;;
-            -*)
-                echo "Error: Unknown flag $1"
-                print_usage
-                exit 1
-                ;;
-            *)
-                if [[ -z $prefix ]]; then
-                    prefix="$1"
-                else
-                    echo "Error: Too many arguments"
-                    print_usage
-                    exit 1
-                fi
-                shift
-                ;;
-        esac
-    done
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+    -force)
+      force=true
+      shift
+      ;;
+    -*)
+      echo "Error: Unknown flag $1"
+      print_usage
+      exit 1
+      ;;
+    *)
+      if [[ -z $prefix ]]; then
+        prefix="$1"
+      else
+        echo "Error: Too many arguments"
+        print_usage
+        exit 1
+      fi
+      shift
+      ;;
+    esac
+  done
 }
 
 process_args "$@"

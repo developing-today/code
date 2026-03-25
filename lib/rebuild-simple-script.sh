@@ -19,7 +19,7 @@ git add flake.lock
 set +e
 current=$(nixos-rebuild list-generations | grep current)
 set -e
-if [[ -z "$current" ]]; then
+if [[ -z $current ]]; then
   current="$(nixos-rebuild list-generations --json | jq -r 'to_entries[] | select(.value.current == true) | "\(.value.generation)"')"
 fi
 hostname=$(hostname)

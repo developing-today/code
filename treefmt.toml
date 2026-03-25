@@ -3,9 +3,9 @@
 # Exclude pkgs/id/ — it has its own treefmt/formatter
 [global]
 excludes = [
-  "pkgs/id/**",    # has its own treefmt/formatter
-  "pkgs/dht/**",   # WIP package with syntax errors
-  ".opencode/**",  # managed by opencode, may have permission issues
+  "pkgs/id/**",   # has its own treefmt/formatter
+  "pkgs/dht/**",  # WIP package with syntax errors
+  ".opencode/**", # managed by opencode, may have permission issues
 ]
 
 # [formatter.<name>]
@@ -37,26 +37,12 @@ includes = ["*.nix"]
 
 [formatter.biome]
 command = "biome"
-includes = [
-  "*.js",
-  "*.jsx",
-  "*.ts",
-  "*.tsx",
-  "*.css",
-  "*.json",
-  "*.graphql",
-]
+includes = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.css", "*.json", "*.graphql"]
 options = ["format", "--write", "--config-path", "."]
 
 [formatter.prettier]
 command = "prettier"
-includes = [
-  "*.html",
-  "*.md",
-  "*.mdx",
-  "*.scss",
-  "*.yaml",
-]
+includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml"]
 options = ["--write"]
 
 [formatter.shfmt]
@@ -69,9 +55,10 @@ command = "rustfmt"
 options = ["--edition", "2024"]
 includes = ["*.rs"]
 
-[formatter.shellcheck]
-command = "shellcheck"
-includes = ["*.sh"]
+[formatter.taplo]
+command = "taplo"
+options = ["fmt"]
+includes = ["*.toml"]
 
 [formatter.ruby]
 command = "rufo"

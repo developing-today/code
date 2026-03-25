@@ -27,8 +27,8 @@ cargo update
 cargo build --release -p pavex_cli
 
 cargo install sqlx-cli \
-    --no-default-features \
-    --features native-tls,postgres \
-    --version 0.7.0-alpha.3
+  --no-default-features \
+  --features native-tls,postgres \
+  --version 0.7.0-alpha.3
 
 printf "%s\n" "done: install-cargo-px script"

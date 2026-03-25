@@ -9,6 +9,7 @@ Guidelines for AI coding agents working on the `id` peer-to-peer file sharing CL
 **NEVER use `git restore`, `git checkout -- <file>`, or any command that overwrites pre-existing unstaged changes.**
 
 Only discard unstaged work if:
+
 1. The user explicitly instructs you to discard it, OR
 2. You ask and receive specific approval to do so
 
@@ -25,6 +26,7 @@ This applies to all files with uncommitted modifications—assume the user has i
 This enables running commands without entering a dev shell (`nix run .#ci`), CI/CD pipelines with pure Nix evaluation, and reproducible execution across systems.
 
 When adding a new just command:
+
 1. Add the recipe to `justfile`
 2. Add corresponding app in `flake.nix` `apps` section
 3. For CI-verifiable commands, add a check in `flake.nix` `checks` section
@@ -97,6 +99,7 @@ nix build                               # Nix package (handles assets automatica
 See [`justfile`](justfile) for all recipes (`just` with no args lists them).
 
 **Essential commands:**
+
 ```bash
 just check      # Primary quality check - RUN BEFORE COMPLETING WORK
 just ci         # CI-safe read-only checks (no modifications)
@@ -144,13 +147,14 @@ tests/cli_integration.rs       # Integration tests
 3. Add integration tests in `tests/cli_integration.rs` for CLI behavior
 4. Run `just check` before completing
 
-When tests fail: ensure failure relates to your change, make tests *correct* not just passing, update tests if behavior changed intentionally.
+When tests fail: ensure failure relates to your change, make tests _correct_ not just passing, update tests if behavior changed intentionally.
 
 ## Documenting Design & Architecture Decisions
 
 For significant changes, **document first, then implement**. See [`docs/DOCUMENTATION_PROTOCOL.md`](docs/DOCUMENTATION_PROTOCOL.md) for the full protocol.
 
 **When to create docs** (load the protocol if any apply):
+
 - New features affecting system behavior or adding new commands
 - Architectural changes or major refactors
 - Design decisions with non-obvious trade-offs

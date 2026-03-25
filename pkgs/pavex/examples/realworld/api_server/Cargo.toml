@@ -16,11 +16,16 @@ conduit_core = { path = "../conduit_core" }
 
 # Configuration
 figment = { version = "0.10", features = ["env", "yaml"] }
-serde = { version = "1", features = ["derive"]}
+serde = { version = "1", features = ["derive"] }
 
 # Telemetry
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "smallvec", "std", "registry"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "env-filter",
+  "smallvec",
+  "std",
+  "registry",
+] }
 tracing-log = "0.1"
 tracing-bunyan-formatter = "0.3"
 

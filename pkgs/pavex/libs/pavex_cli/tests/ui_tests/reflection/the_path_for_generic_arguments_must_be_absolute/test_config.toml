@@ -2,5 +2,3 @@ description = "pavex cannot resolve concrete generic parameters if they are not 
 
 [expectations]
 codegen = "fail"
-
-

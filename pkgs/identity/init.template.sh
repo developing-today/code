@@ -46,7 +46,7 @@ if [ -z "$NO_INSTALL" ] || [ "$NO_INSTALL" == "0" ]; then
   set +e
   /boot/dietpi/dietpi-software uninstall 103 104 # ramlog dropbear
   /boot/dietpi/dietpi-software install 188       # go (git by dependency)
-  set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
+  set -Eeuxo pipefail                            # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
   if [ -f /etc/bash.bashrc ]; then
     echo "Sourcing /etc/bash.bashrc"
     source /etc/bash.bashrc

@@ -3,8 +3,8 @@ set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo
 
 echo "\$0=$0"
 script_name="$0"
-while [[ "$script_name" == -* ]]; do
-    script_name="${script_name#-}"
+while [[ $script_name == -* ]]; do
+  script_name="${script_name#-}"
 done
 
 dir="$(dirname -- "$(readlink -f -- "$script_name")")"
@@ -36,13 +36,13 @@ if [ ! -d "$log_dir" ]; then
 fi
 
 # Iterate over each subdirectory in the log directory
-for first_level_dir in "$log_dir"/*/ ; do
+for first_level_dir in "$log_dir"/*/; do
   if [ -d "$first_level_dir" ]; then
     first_level_name=$(basename "$first_level_dir")
     echo "Processing first-level directory: $first_level_name"
 
     # Iterate over each subdirectory in the first-level directory
-    for second_level_dir in "$first_level_dir"/*/ ; do
+    for second_level_dir in "$first_level_dir"/*/; do
       if [ -d "$second_level_dir" ]; then
         second_level_name=$(basename "$second_level_dir")
         echo "Compressing directory: $first_level_name/$second_level_name"
