@@ -126,6 +126,7 @@ async fn main() -> Result<()> {
             no_default_topic,
             replace_defaults,
             no_mdns,
+            iroh_port,
         }) => {
             cmd_serve(
                 ephemeral,
@@ -140,6 +141,7 @@ async fn main() -> Result<()> {
                 no_default_topic,
                 replace_defaults,
                 no_mdns,
+                iroh_port,
             )
             .await
         }

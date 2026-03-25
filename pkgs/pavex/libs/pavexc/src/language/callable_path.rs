@@ -143,9 +143,9 @@ impl CallPath {
                             GenericArgument::Type(t) => {
                                 CallPathGenericArgument::Type(Self::parse_type(t)?)
                             }
-                            GenericArgument::Lifetime(l) => {
-                                CallPathGenericArgument::Lifetime(CallPathLifetime::new(l.ident.to_string()))
-                            }
+                            GenericArgument::Lifetime(l) => CallPathGenericArgument::Lifetime(
+                                CallPathLifetime::new(l.ident.to_string()),
+                            ),
                             GenericArgument::AssocType(_)
                             | GenericArgument::AssocConst(_)
                             | GenericArgument::Constraint(_)

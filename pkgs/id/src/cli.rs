@@ -248,6 +248,13 @@ pub enum Command {
         /// environments where multicast traffic is blocked or unwanted.
         #[arg(long)]
         no_mdns: bool,
+        /// Port for the Iroh QUIC endpoint (peer-to-peer protocol).
+        ///
+        /// By default, the OS assigns a random available port (0).
+        /// Set a specific port to allow firewall rules or when running
+        /// multiple servers that need predictable port assignments.
+        #[arg(long, default_value = "0")]
+        iroh_port: u16,
     },
     /// Start an interactive REPL for issuing commands.
     ///
@@ -1114,6 +1121,7 @@ mod tests {
                 no_default_topic,
                 replace_defaults,
                 no_mdns,
+                iroh_port,
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);
@@ -1127,6 +1135,7 @@ mod tests {
                 assert!(!no_default_topic);
                 assert!(!replace_defaults);
                 assert!(!no_mdns);
+                assert_eq!(iroh_port, 0);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -1149,6 +1158,7 @@ mod tests {
                 no_default_topic,
                 replace_defaults,
                 no_mdns,
+                iroh_port,
             }) => {
                 assert!(ephemeral);
                 assert!(no_relay);
@@ -1162,6 +1172,7 @@ mod tests {
                 assert!(!no_default_topic);
                 assert!(!replace_defaults);
                 assert!(!no_mdns);
+                assert_eq!(iroh_port, 0);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -1173,6 +1184,17 @@ mod tests {
         match cli.command {
             Some(Command::Serve { bootstrap, .. }) => {
                 assert_eq!(bootstrap, vec!["abc123", "def456"]);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_iroh_port() {
+        let cli = Cli::parse_from(["id", "serve", "--iroh-port", "7777"]);
+        match cli.command {
+            Some(Command::Serve { iroh_port, .. }) => {
+                assert_eq!(iroh_port, 7777);
             }
             _ => panic!("Expected Serve command"),
         }

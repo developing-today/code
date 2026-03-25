@@ -2,9 +2,9 @@
 #[tokio::main]
 async fn main() {
     println!("Hello!");
-    use axum::{routing::post, Router};
+    use axum::{Router, routing::post};
     use leptos::*;
-    use leptos_axum::{generate_route_list, LeptosRoutes};
+    use leptos_axum::{LeptosRoutes, generate_route_list};
     use start_axum::app::*;
     use start_axum::fileserv::file_and_error_handler;
 

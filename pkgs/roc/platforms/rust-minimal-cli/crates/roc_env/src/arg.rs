@@ -1,4 +1,4 @@
-use roc_std::{roc_refcounted_noop_impl, RocList, RocRefcounted};
+use roc_std::{RocList, RocRefcounted, roc_refcounted_noop_impl};
 use std::ffi::OsString;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]

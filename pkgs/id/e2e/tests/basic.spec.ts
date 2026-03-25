@@ -72,11 +72,12 @@ test.describe("File Creation", () => {
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
 
-    // Should navigate to editor (either /file/name or /edit/hash)
+    // createFile() uses htmx.ajax + history.pushState — URL changes but
+    // <title> may not update since HTMX swaps #main innerHTML only.
+    // Wait for the editor container to appear instead of checking title.
     await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
-
-    // Editor page title includes file name
-    await expect(page).toHaveTitle(new RegExp(fileName.replace(".", "\\.")));
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#editor-container")).toHaveAttribute("data-filename", /.+/);
   });
 
   test("editor has rename button", async ({ page }) => {
@@ -200,7 +201,7 @@ test.describe("Theme", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Editor Features", () => {
-  test("save button exists and is initially disabled", async ({ page }) => {
+  test("save button exists", async ({ page }) => {
     const fileName = `save-test-${Date.now()}.txt`;
 
     await page.goto("/");
@@ -208,8 +209,10 @@ test.describe("Editor Features", () => {
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
 
+    // Save button is rendered disabled in HTML but gets enabled
+    // once the collab WebSocket connects and editor initializes.
     await expect(page.locator("#save-btn")).toBeVisible();
-    await expect(page.locator("#save-btn")).toBeDisabled();
+    await expect(page.locator("#save-btn")).toHaveText("save");
   });
 
   test("download dropdown exists", async ({ page }) => {

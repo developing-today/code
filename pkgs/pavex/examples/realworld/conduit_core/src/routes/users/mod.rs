@@ -1,6 +1,6 @@
 use pavex::blueprint::constructor::Lifecycle;
 use pavex::blueprint::router::{POST, PUT};
-use pavex::blueprint::{router::GET, Blueprint};
+use pavex::blueprint::{Blueprint, router::GET};
 use pavex::f;
 
 pub(crate) fn users_bp() -> Blueprint {

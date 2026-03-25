@@ -4,8 +4,8 @@ use leptos_router::ActionForm;
 
 #[server(ToggleDarkMode, "/api")]
 pub async fn toggle_dark_mode(cx: Scope, prefers_dark: bool) -> Result<bool, ServerFnError> {
-    use hyper::header::{HeaderValue, SET_COOKIE};
     use hyper::HeaderMap;
+    use hyper::header::{HeaderValue, SET_COOKIE};
 
     let mut headers = HeaderMap::new();
 

@@ -1,4 +1,4 @@
-use pavex::blueprint::{constructor::Lifecycle, router::GET, Blueprint};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle, router::GET};
 use pavex::f;
 
 // Using on purpose a generic parameter that is named differently than the generic parameter

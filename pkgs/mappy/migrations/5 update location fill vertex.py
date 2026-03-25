@@ -15,7 +15,7 @@ def run_migration_parallel(conn, **options):
     max_workers = options.get("max_workers", 2048)
 
     print(
-        f"START | Running update to create {length}^3={length*length*length} vertices. |"
+        f"START | Running update to create {length}^3={length * length * length} vertices. |"
     )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -29,7 +29,7 @@ def run_migration_parallel(conn, **options):
             future.result()
 
     print(
-        f"DONE  | Bulk vertex creation {length}^3={length*length*length} completed. |"
+        f"DONE  | Bulk vertex creation {length}^3={length * length * length} completed. |"
     )
 
 

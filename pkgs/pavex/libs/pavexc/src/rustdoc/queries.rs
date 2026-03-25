@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 
 use ahash::{HashMap, HashMapExt};
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use elsa::FrozenMap;
 use guppy::graph::PackageGraph;
 use guppy::{PackageId, Version};
@@ -12,10 +12,10 @@ use indexmap::IndexSet;
 use rustdoc_types::{ExternalCrate, Item, ItemEnum, ItemKind, ItemSummary, Visibility};
 use tracing::Span;
 
-use crate::rustdoc::{compute::compute_crate_docs, utils, CannotGetCrateData, TOOLCHAIN_CRATES};
 use crate::rustdoc::{ALLOC_PACKAGE_ID, CORE_PACKAGE_ID, STD_PACKAGE_ID};
+use crate::rustdoc::{CannotGetCrateData, TOOLCHAIN_CRATES, compute::compute_crate_docs, utils};
 
-use super::compute::{batch_compute_crate_docs, RustdocCacheKey, RustdocGlobalFsCache};
+use super::compute::{RustdocCacheKey, RustdocGlobalFsCache, batch_compute_crate_docs};
 
 /// The main entrypoint for accessing the documentation of the crates
 /// in a specific `PackageGraph`.
@@ -802,7 +802,8 @@ impl Crate {
         Err(anyhow::anyhow!(
             "Failed to find an importable path for the type id `{:?}` in the index I computed for `{:?}`. \
             This is likely to be a bug in pavex's handling of rustdoc's JSON output or in rustdoc itself.",
-            type_id, self.core.package_id.repr()
+            type_id,
+            self.core.package_id.repr()
         ))
     }
 }
@@ -1122,16 +1123,18 @@ pub fn compute_package_id_for_crate_id(
         return Ok(package_id.clone());
     }
 
-    let (external_crate, external_crate_version) =
-        get_external_crate_name(external_crate_index, crate_id)
-            .ok_or_else(|| {
-                anyhow!(
+    let (external_crate, external_crate_version) = get_external_crate_name(
+        external_crate_index,
+        crate_id,
+    )
+    .ok_or_else(|| {
+        anyhow!(
             "There is no external crate associated with id `{}` in the JSON documentation for `{}`",
             crate_id,
             package_id.repr()
         )
-            })
-            .unwrap();
+    })
+    .unwrap();
     if TOOLCHAIN_CRATES.contains(&external_crate.name.as_str()) {
         return Ok(PackageId::new(external_crate.name.clone()));
     }
@@ -1191,19 +1194,17 @@ pub fn compute_package_id_for_crate_id(
             .id
             .to_owned())
     } else {
-        Err(
-            anyhow!(
-                "There are multiple packages named `{}` among the dependencies of {}. \
+        Err(anyhow!(
+            "There are multiple packages named `{}` among the dependencies of {}. \
                 In order to disambiguate among them, I need to know their versions.\n\
                 Unfortunately, I couldn't extract the expected version for `{}` from HTML root URL included in the \
                 JSON documentation for `{}`.\n\
                 This due to a limitation in `rustdoc` itself: follow https://github.com/rust-lang/compiler-team/issues/622 \
                 to track progress on this issue.",
-                expected_link_name,
-                package_id.repr(),
-                expected_link_name,
-                package_id.repr()
-            )
-        )
+            expected_link_name,
+            package_id.repr(),
+            expected_link_name,
+            package_id.repr()
+        ))
     }
 }

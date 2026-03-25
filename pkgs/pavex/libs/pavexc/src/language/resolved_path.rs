@@ -16,7 +16,7 @@ use pavex::blueprint::reflection::RawCallableIdentifiers;
 use crate::language::callable_path::{CallPathGenericArgument, CallPathLifetime, CallPathType};
 use crate::language::resolved_type::{GenericArgument, Lifetime, ScalarPrimitive, Slice};
 use crate::language::{CallPath, InvalidCallPath, ResolvedType, Tuple, TypeReference};
-use crate::rustdoc::{CrateCollection, CORE_PACKAGE_ID};
+use crate::rustdoc::{CORE_PACKAGE_ID, CrateCollection};
 use crate::rustdoc::{ResolvedItemWithParent, TOOLCHAIN_CRATES};
 
 /// A resolved import path.

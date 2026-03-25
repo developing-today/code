@@ -1,6 +1,6 @@
 use pavex::blueprint::{
-    router::{MethodGuard, ANY, CONNECT, DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, TRACE},
     Blueprint,
+    router::{ANY, CONNECT, DELETE, GET, HEAD, MethodGuard, OPTIONS, PATCH, POST, PUT, TRACE},
 };
 use pavex::f;
 

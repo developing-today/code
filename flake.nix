@@ -19,6 +19,8 @@ rec {
       }
       (lib.make-vim)
       (lib.make-clan)
+      (lib.make-root-apps)
+      (lib.make-id)
     ];
   inputs = {
     nixgl = {
@@ -152,9 +154,6 @@ rec {
       # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.hercules-ci-effects.follows = "hercules-ci-effects";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.git-hooks.follows = "git-hooks";
       inputs.neovim-src.follows = "neovim-src";
     };
     git-hooks = {
@@ -180,13 +179,7 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.home-manager.follows = "home-manager";
-      inputs.devshell.follows = "devshell";
-      inputs.flake-compat.follows = "flake-compat";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.git-hooks.follows = "git-hooks";
-      inputs.treefmt-nix.follows = "treefmt-nix";
-      inputs.nix-darwin.follows = "nix-darwin";
     };
     nix-darwin = {
       # TODO: use this?
@@ -272,6 +265,26 @@ rec {
       url = "github:anomalyco/opencode";
       # inputs.nixpkgs.follows = "nixpkgs-master";
     };
+    # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
+    id-nixpkgs.follows = "nixpkgs-master";
+    id-systems.follows = "systems";
+    id-rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "id-nixpkgs";
+    };
+    id-flake-utils.follows = "flake-utils";
+    id-import-tree.url = "github:vic/import-tree";
+    id-flake-parts.follows = "flake-parts";
+    id-bun2nix = {
+      url = "github:nix-community/bun2nix";
+      inputs = {
+        flake-parts.follows = "id-flake-parts";
+        import-tree.follows = "id-import-tree";
+        nixpkgs.follows = "id-nixpkgs";
+        systems.follows = "id-systems";
+      };
+    };
+    # --- END id sub-flake inputs ---
     # nix-colors.url = "github:misterio77/nix-colors"; # bertof/nix-rice # TODO: use this?
     # firefox-addons = { # TODO: use this?
     #   url = "gitlab:rycee/nur-expressions?dir=pkgs/firefox-addons&shallow=1";

@@ -1,5 +1,9 @@
 [formatter]
 
+# Exclude pkgs/id/ — it has its own treefmt/formatter
+[global]
+excludes = ["pkgs/id/**"]
+
 # [formatter.<name>]
 # command = "<formatter-command>"
 # options = [“<formatter-option-1>”...]
@@ -7,28 +11,48 @@
 #command = "alejandra"
 #includes = ["*.nix"]
 [formatter.nixfmt]
-command = "nixfmt -s -v"
+command = "nixfmt"
 includes = ["*.nix"]
+
+[formatter.statix]
+command = "statix"
+options = ["fix"]
+includes = ["*.nix"]
+
+#[formatter.deadnix]
+# Kept as manual tool only — auto-edit risks removing intentional unused bindings
+# Run `deadnix` to check, `deadnix --edit` to fix
+#command = "deadnix"
+#options = ["--edit"]
+#includes = ["*.nix"]
 
 # todo make options etc
 #[formatter.flake-checker]
 #command = "nix run github:DeterminateSystems/flake-checker"
 #includes = ["flake.lock"]
 
+[formatter.biome]
+command = "biome"
+includes = [
+  "*.js",
+  "*.jsx",
+  "*.ts",
+  "*.tsx",
+  "*.css",
+  "*.json",
+  "*.graphql",
+]
+options = ["format", "--write"]
+
 [formatter.prettier]
 command = "prettier"
 includes = [
-  "*.css",
   "*.html",
-  "*.js",
-  "*.json",
-  "*.jsx",
   "*.md",
   "*.mdx",
   "*.scss",
-  "*.ts",
   "*.yaml",
-  "*.toml"
+  "*.toml",
 ]
 options = ["--plugin", "prettier-plugin-toml", "--write"]
 
@@ -39,7 +63,7 @@ options = ["-i", "2", "-s", "-w"]
 
 [formatter.rustfmt]
 command = "rustfmt"
-options = ["--edition", "2021"]
+options = ["--edition", "2024"]
 includes = ["*.rs"]
 
 [formatter.shellcheck]
@@ -52,7 +76,8 @@ options = ["-x"]
 includes = ["*.rb"]
 
 [formatter.python]
-command = "black"
+command = "ruff"
+options = ["format"]
 includes = ["*.py"]
 
 [formatter.elm]

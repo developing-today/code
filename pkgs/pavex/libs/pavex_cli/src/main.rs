@@ -6,10 +6,10 @@ use std::str::FromStr;
 use clap::{Parser, Subcommand};
 use owo_colors::OwoColorize;
 use tracing_chrome::{ChromeLayerBuilder, FlushGuard};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 use pavex::blueprint::Blueprint;
 use pavexc::App;

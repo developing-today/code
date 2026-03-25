@@ -60,8 +60,8 @@ async fn route_request(
             .unwrap(),
     }
 }
-pub async fn route_handler_0(
-) -> http::Response<http_body::combinators::BoxBody<bytes::Bytes, pavex::Error>> {
+pub async fn route_handler_0()
+-> http::Response<http_body::combinators::BoxBody<bytes::Bytes, pavex::Error>> {
     let v0 = app::json();
     let v1 = app::json();
     let v2 = app::handler(v1, v0);

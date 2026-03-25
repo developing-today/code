@@ -1,7 +1,7 @@
 use crate::blueprint::internals::RegisteredCallable;
 use crate::blueprint::{
-    reflection::{RawCallable, RawCallableIdentifiers},
     Blueprint,
+    reflection::{RawCallable, RawCallableIdentifiers},
 };
 
 /// The type returned by [`Blueprint::route`].

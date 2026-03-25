@@ -8,7 +8,7 @@ use pavex::blueprint::constructor::CloningStrategy;
 use pavex::blueprint::internals::{NestedBlueprint, RegisteredRoute};
 use pavex::blueprint::router::AllowedMethods;
 use pavex::blueprint::{
-    constructor::Lifecycle, reflection::Location, reflection::RawCallableIdentifiers, Blueprint,
+    Blueprint, constructor::Lifecycle, reflection::Location, reflection::RawCallableIdentifiers,
 };
 
 use crate::compiler::analyses::user_components::router_key::RouterKey;

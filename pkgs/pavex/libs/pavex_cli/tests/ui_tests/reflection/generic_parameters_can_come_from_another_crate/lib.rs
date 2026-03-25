@@ -1,4 +1,4 @@
-use pavex::blueprint::{router::GET, Blueprint};
+use pavex::blueprint::{Blueprint, router::GET};
 use pavex::f;
 use pavex::response::IntoResponse;
 use pavex::response::Response;

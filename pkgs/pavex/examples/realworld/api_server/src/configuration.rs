@@ -3,8 +3,8 @@ use std::env::VarError;
 use anyhow::Context;
 use conduit_core::configuration::Config;
 use figment::{
-    providers::{Env, Format, Yaml},
     Figment,
+    providers::{Env, Format, Yaml},
 };
 
 /// Retrieve the application configuration by merging together multiple configuration sources.

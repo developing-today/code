@@ -454,6 +454,152 @@ let
           );
     };
 
+  make-root-apps = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
+      mkJustApp =
+        name:
+        let
+          script = pkgs.writeShellScriptBin name ''
+            exec ${pkgs.just}/bin/just ${name} "$@"
+          '';
+        in
+        {
+          type = "app";
+          program = "${script}/bin/${name}";
+        };
+      justCmds = [
+        "update-input"
+        "update-inputs-all"
+        "update-nixpkgs-all"
+        "update-nixpkgs-master"
+        "update-nixpkgs-unstable"
+        "update-nixpkgs"
+        "update-nixpkgs-all-only"
+        "update-nixpkgs-master-only"
+        "update-nixpkgs-unstable-only"
+      ];
+    in
+    {
+      apps = builtins.listToAttrs (
+        map (name: {
+          inherit name;
+          value = mkJustApp name;
+        }) justCmds
+      );
+    }
+  );
+
+  make-id =
+    let
+      idFlake = import ../pkgs/id/flake.nix;
+      idInputNames = builtins.attrNames idFlake.inputs;
+      idInputs = builtins.listToAttrs (
+        map (name: {
+          inherit name;
+          value = inputs.${"id-${name}"};
+        }) idInputNames
+      );
+      idOutputs =
+        let
+          result = idFlake.outputs (
+            idInputs
+            // {
+              self = result // {
+                outPath = "${inputs.self}/pkgs/id";
+              };
+            }
+          );
+        in
+        result;
+      prefixAttr =
+        attr: excludes:
+        if builtins.hasAttr attr idOutputs then
+          {
+            ${attr} = builtins.mapAttrs (
+              system: items:
+              builtins.listToAttrs (
+                builtins.concatMap (
+                  name:
+                  if builtins.elem name excludes then
+                    [ ]
+                  else
+                    [
+                      {
+                        name = "id-${name}";
+                        value = items.${name};
+                      }
+                    ]
+                ) (builtins.attrNames items)
+              )
+            ) idOutputs.${attr};
+          }
+        else
+          { };
+    in
+    merge [
+      (prefixAttr "apps" [
+        "default"
+        "just"
+      ])
+      (prefixAttr "checks" [ "default" ])
+      # 'id' app: runs the id binary
+      {
+        apps = builtins.mapAttrs (system: _: {
+          id = idOutputs.apps.${system}.default;
+        }) idOutputs.apps;
+      }
+      # Root formatter: format root + pkgs/id
+      (inputs.flake-utils.lib.eachDefaultSystem (
+        system:
+        let
+          pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
+          fmtBins = with pkgs; [
+            treefmt
+            nixfmt
+            statix
+            deadnix
+            nodePackages.prettier
+            shfmt
+            rustfmt
+            shellcheck
+            ruff
+            biome
+            rufo
+            elmPackages.elm-format
+            go
+            haskellPackages.ormolu
+          ];
+        in
+        {
+          formatter = pkgs.writeShellScriptBin "formatter" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            # Format root project
+            treefmt "$@"
+            # Format id sub-project (always full tree, ignores passed paths)
+            if [ -d pkgs/id ]; then
+              (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter --tree-root .)
+            fi
+          '';
+          checks = {
+            nix-fmt-check = pkgs.stdenv.mkDerivation {
+              name = "nix-fmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.nixfmt ];
+              buildPhase = ''
+                find . -name '*.nix' | xargs nixfmt -s -v
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "nix-fmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+          };
+        }
+      ))
+    ];
+
   _self = merge [
     lib
     {
@@ -495,6 +641,8 @@ let
         make-nixos-configurations
         make-vim
         make-clan
+        make-root-apps
+        make-id
         ;
     }
   ];

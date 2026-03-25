@@ -24,6 +24,25 @@
     ssh-to-age
     gnupg
     age
+
+    # Python/uv (used by scripts)
+    uv
+
+    # Formatters and linters (keep in sync with treefmt.toml)
+    treefmt
+    nixfmt
+    statix
+    deadnix
+    nodePackages.prettier
+    shfmt
+    rustfmt
+    shellcheck
+    ruff
+    biome
+    rufo
+    elmPackages.elm-format
+    go
+    haskellPackages.ormolu
   ];
 
   # Additional packages
@@ -84,5 +103,6 @@
     just --list
     echo ""
     echo "Welcome to the development shell!"
+    echo ""
   '';
 }

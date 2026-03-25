@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use pavex::blueprint::{constructor::Lifecycle, router::GET, Blueprint};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle, router::GET};
 use pavex::f;
 use pavex::{extract::route::RouteParams, response::Response};
 

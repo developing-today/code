@@ -2,10 +2,10 @@
 //!
 //! This module is not meant to be used directly by users of the framework. It is only meant to be
 //! used by Pavex's CLI.
+use super::Blueprint;
 use super::constructor::{CloningStrategy, Lifecycle};
 use super::reflection::{Location, RawCallableIdentifiers};
 use super::router::MethodGuard;
-use super::Blueprint;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 /// A route registered against a [`Blueprint`] via [`Blueprint::route`].

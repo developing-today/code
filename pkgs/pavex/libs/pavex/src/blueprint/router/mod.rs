@@ -6,7 +6,7 @@
 pub use http::Method;
 
 pub use method_guard::{
-    AllowedMethods, MethodGuard, ANY, CONNECT, DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, TRACE,
+    ANY, AllowedMethods, CONNECT, DELETE, GET, HEAD, MethodGuard, OPTIONS, PATCH, POST, PUT, TRACE,
 };
 pub use route::Route;
 

@@ -5,8 +5,8 @@ use guppy::graph::PackageGraph;
 use indexmap::IndexSet;
 use itertools::Itertools;
 use miette::Report;
-use petgraph::graph::NodeIndex;
 use petgraph::Direction;
+use petgraph::graph::NodeIndex;
 use rustdoc_types::{ItemEnum, StructKind};
 
 use crate::compiler::analyses::call_graph::{CallGraphNode, RawCallGraph};
@@ -187,11 +187,11 @@ fn report_non_existing_route_parameters(
         let source_span = diagnostic::get_f_macro_invocation_span(&source, location);
         if route_parameter_names.is_empty() {
             let error = anyhow!(
-                    "`{}` is trying to extract route parameters using `RouteParams<{extracted_type:?}>`.\n\
+                "`{}` is trying to extract route parameters using `RouteParams<{extracted_type:?}>`.\n\
                     But there are no route parameters in `{}`, the corresponding route template!",
-                    raw_identifiers.fully_qualified_path().join("::"),
-                    router_key.path,
-                );
+                raw_identifiers.fully_qualified_path().join("::"),
+                router_key.path,
+            );
             let d = CompilerDiagnostic::builder(source, error)
                 .optional_label(source_span.labeled(format!(
                     "The {callable_type} asking for `RouteParams<{extracted_type:?}>`"
@@ -230,13 +230,13 @@ fn report_non_existing_route_parameters(
                 .map(|p| format!("- `{}`", p))
                 .join("\n");
             let error = anyhow!(
-                    "`{}` is trying to extract route parameters using `RouteParams<{extracted_type:?}>`.\n\
+                "`{}` is trying to extract route parameters using `RouteParams<{extracted_type:?}>`.\n\
                     Every struct field in `{extracted_type:?}` must be named after one of the route \
                     parameters that appear in `{}`:\n{route_parameters}\n\n\
                     {missing_msg}. This is going to cause a runtime error!",
-                    raw_identifiers.fully_qualified_path().join("::"),
-                    router_key.path,
-                );
+                raw_identifiers.fully_qualified_path().join("::"),
+                router_key.path,
+            );
             let d = CompilerDiagnostic::builder(source, error)
                 .optional_label(source_span.labeled(format!(
                     "The {callable_type} asking for `RouteParams<{extracted_type:?}>`"

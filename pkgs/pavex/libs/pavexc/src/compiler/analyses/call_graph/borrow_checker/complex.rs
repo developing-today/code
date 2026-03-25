@@ -1,8 +1,8 @@
 use guppy::graph::PackageGraph;
 use indexmap::IndexSet;
 use miette::NamedSource;
-use petgraph::graph::NodeIndex;
 use petgraph::Direction;
+use petgraph::graph::NodeIndex;
 
 use crate::compiler::analyses::call_graph::borrow_checker::clone::get_clone_component_id;
 use crate::compiler::analyses::call_graph::borrow_checker::ownership_relationship::OwnershipRelationships;
@@ -286,19 +286,19 @@ fn emit_borrow_checking_error(
 
         if let Some(component_id) = component_id {
             let error = anyhow::anyhow!(
-                    "I can't generate code that will pass the borrow checker *and* match \
+                "I can't generate code that will pass the borrow checker *and* match \
                     the instructions in your blueprint.\n\
                     There are a few different ways to unblock me: check out the help messages below!\n\
                     You only need to follow *one* of them."
-                );
+            );
             let dummy_source = NamedSource::new("", "");
             let mut diagnostic = CompilerDiagnostic::builder(dummy_source, error);
 
             if let Some(user_component_id) = component_db.user_component_id(component_id) {
                 let help_msg = format!(
-                        "Allow me to clone `{type_:?}` in order to satisfy the borrow checker.\n\
+                    "Allow me to clone `{type_:?}` in order to satisfy the borrow checker.\n\
                         You can do so by invoking `.cloning(CloningStrategy::CloneIfNecessary)` on the type returned by `.constructor`.",
-                    );
+                );
                 let location = component_db
                     .user_component_db()
                     .get_location(user_component_id);
@@ -334,10 +334,10 @@ fn emit_borrow_checking_error(
                 .computation()
             {
                 let help_msg = format!(
-                        "Considering changing the signature of `{}`.\n\
+                    "Considering changing the signature of `{}`.\n\
                         It takes `{type_:?}` by value. Would a shared reference, `&{type_:?}`, be enough?",
-                        callable.path
-                    );
+                    callable.path
+                );
                 let help = HelpWithSnippet::new(
                     help_msg,
                     AnnotatedSnippet::new_with_labels(NamedSource::new("", ""), vec![]),

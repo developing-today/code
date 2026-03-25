@@ -11,11 +11,11 @@ use miette::miette;
 use proc_macro2::Ident;
 use quote::format_ident;
 
-use pavex::blueprint::{constructor::Lifecycle, Blueprint};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle};
 
 use crate::compiler::analyses::call_graph::{
-    application_state_call_graph, handler_call_graph, ApplicationStateCallGraph, OrderedCallGraph,
-    RawCallGraphExt,
+    ApplicationStateCallGraph, OrderedCallGraph, RawCallGraphExt, application_state_call_graph,
+    handler_call_graph,
 };
 use crate::compiler::analyses::components::{ComponentDb, ComponentId, HydratedComponent};
 use crate::compiler::analyses::computations::ComputationDb;
@@ -25,7 +25,7 @@ use crate::compiler::analyses::user_components::{RouterKey, UserComponentDb};
 use crate::compiler::computation::Computation;
 use crate::compiler::generated_app::GeneratedApp;
 use crate::compiler::resolvers::CallableResolutionError;
-use crate::compiler::traits::{assert_trait_is_implemented, MissingTraitImplementationError};
+use crate::compiler::traits::{MissingTraitImplementationError, assert_trait_is_implemented};
 use crate::compiler::utils::process_framework_path;
 use crate::compiler::{codegen, route_parameter_validation};
 use crate::diagnostic;

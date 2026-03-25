@@ -10,10 +10,10 @@ use bimap::BiHashMap;
 use guppy::PackageId;
 use indexmap::IndexSet;
 use pavex::blueprint::constructor::Lifecycle;
+use petgraph::Direction;
 use petgraph::prelude::{StableDiGraph, StableGraph};
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::Dfs;
-use petgraph::Direction;
 
 use crate::language::{ResolvedType, TypeReference};
 

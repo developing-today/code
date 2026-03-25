@@ -1,10 +1,10 @@
 use anyhow::Context;
-use tracing::subscriber::set_global_default;
 use tracing::Subscriber;
+use tracing::subscriber::set_global_default;
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_log::LogTracer;
 use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
 /// Perform all the required setup steps for our telemetry:
 ///

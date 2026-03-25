@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use ahash::HashMap;
 use bimap::{BiBTreeMap, BiHashMap};
 use cargo_manifest::{Dependency, DependencyDetail, Edition};
-use guppy::graph::{ExternalSource, PackageSource};
 use guppy::PackageId;
+use guppy::graph::{ExternalSource, PackageSource};
 use indexmap::{IndexMap, IndexSet};
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
@@ -159,7 +159,9 @@ pub(crate) fn codegen_app(
                         .entry(router_key.path.clone())
                         .or_insert_with(|| CodegenRouterEntry::MethodSubRouter(BTreeMap::new()));
                     let CodegenRouterEntry::MethodSubRouter(sub_router) = sub_router else {
-                        unreachable!("Cannot have a catch-all handler and a method sub-router for the same path");
+                        unreachable!(
+                            "Cannot have a catch-all handler and a method sub-router for the same path"
+                        );
                     };
                     for method in methods {
                         sub_router.insert(method, handler.clone());

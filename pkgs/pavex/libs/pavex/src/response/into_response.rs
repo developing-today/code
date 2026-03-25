@@ -30,7 +30,7 @@ use bytes::Bytes;
 use http::StatusCode;
 use http_body::Empty;
 
-use super::{body::raw::boxed, Response, ResponseHead};
+use super::{Response, ResponseHead, body::raw::boxed};
 
 /// Convert a type into a [`Response`].
 ///
