@@ -24,7 +24,7 @@
       url = "github:nix-community/bun2nix";
       inputs = {
         flake-parts.follows = "flake-parts";
-        input-tree.follows = "input-tree";
+        import-tree.follows = "import-tree";
         nixpkgs.follows = "nixpkgs";
         systems.follows = "systems";
       };
