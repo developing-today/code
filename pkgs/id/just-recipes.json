@@ -25,7 +25,6 @@
   "modules": {
     "root": {
       "aliases": {
-        "fix": { "attributes": [], "name": "fix", "target": "lockfiles" },
         "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
         "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" }
       },
@@ -91,6 +90,22 @@
           "namepath": "root::chown",
           "shebang": true
         },
+        "fix": {
+          "attributes": [{ "group": "format" }],
+          "body": [],
+          "dependencies": [
+            { "arguments": [], "recipe": "strip-whitespace" },
+            { "arguments": [], "recipe": "lockfiles" }
+          ],
+          "doc": "Run all fixers: strip whitespace, regenerate lockfiles",
+          "name": "fix",
+          "parameters": [],
+          "priors": 2,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::fix",
+          "shebang": false
+        },
         "just-recipes": {
           "attributes": [{ "group": "deps" }],
           "body": [
@@ -132,6 +147,27 @@
           "quiet": false,
           "namepath": "root::lockfiles",
           "shebang": false
+        },
+        "strip-whitespace": {
+          "attributes": [{ "group": "format" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["files=$(git grep -rl '[[:space:]]$' 2>/dev/null || true)"],
+            ["if [ -n \"$files\" ]; then"],
+            ["    echo \"$files\" | xargs sed -i 's/[[:space:]]*$//'"],
+            ["    echo \"Stripped trailing whitespace from $(echo \"$files\" | wc -l) files\""],
+            ["fi"]
+          ],
+          "dependencies": [],
+          "doc": "Strip trailing whitespace from all tracked text files",
+          "name": "strip-whitespace",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::strip-whitespace",
+          "shebang": true
         },
         "update-input": {
           "attributes": [{ "group": "flake" }],
@@ -832,6 +868,7 @@
       "attributes": [{ "group": "check" }],
       "body": [["@echo \"✓ Fixed what could be fixed\""]],
       "dependencies": [
+        { "arguments": [], "recipe": "strip-whitespace" },
         { "arguments": [], "recipe": "lockfiles" },
         { "arguments": [], "recipe": "fmt" },
         { "arguments": [], "recipe": "lint-fix" }
@@ -839,7 +876,7 @@
       "doc": "Auto-fix formatting and lint issues",
       "name": "fix",
       "parameters": [],
-      "priors": 3,
+      "priors": 4,
       "private": false,
       "quiet": false,
       "namepath": "fix",
@@ -1300,6 +1337,27 @@
       "quiet": false,
       "namepath": "sleep",
       "shebang": false
+    },
+    "strip-whitespace": {
+      "attributes": [{ "group": "format" }],
+      "body": [
+        ["#!/usr/bin/env bash"],
+        ["set -euo pipefail"],
+        ["files=$(git grep -rl '[[:space:]]$' 2>/dev/null || true)"],
+        ["if [ -n \"$files\" ]; then"],
+        ["    echo \"$files\" | xargs sed -i 's/[[:space:]]*$//'"],
+        ["    echo \"Stripped trailing whitespace from $(echo \"$files\" | wc -l) files\""],
+        ["fi"]
+      ],
+      "dependencies": [],
+      "doc": "Strip trailing whitespace from all tracked text files",
+      "name": "strip-whitespace",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "strip-whitespace",
+      "shebang": true
     },
     "test": {
       "attributes": [{ "group": "test" }],

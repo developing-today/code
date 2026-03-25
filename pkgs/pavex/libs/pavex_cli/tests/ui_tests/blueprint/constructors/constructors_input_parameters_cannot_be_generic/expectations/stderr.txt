@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I am not smart enough to figure out the concrete type for all the generic
   [31m│[0m parameters in `app::generic_constructor`.
   [31m│[0m I can only infer the type of an unassigned generic parameter if it appears
@@ -26,7 +26,7 @@
   [31m│[0m         |    ..
   [31m│[0m         |  )
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I am not smart enough to figure out the concrete type for all the generic
   [31m│[0m parameters in `app::doubly_generic_constructor`.
   [31m│[0m I can only infer the type of an unassigned generic parameter if it appears
@@ -55,7 +55,7 @@
   [31m│[0m         |    ..
   [31m│[0m         |  )
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I am not smart enough to figure out the concrete type for all the generic
   [31m│[0m parameters in `app::triply_generic_constructor`.
   [31m│[0m I can only infer the type of an unassigned generic parameter if it appears

@@ -43,7 +43,7 @@ pkgs.mkShell {
 
   inherit (nixCommon)
     NIX_CONFIG
-    TREEFMT_TREE_ROOT_FILE
+    TREEFMT_TREE_ROOT_CMD
     buildInputs
     nativeBuildInputs
     packages

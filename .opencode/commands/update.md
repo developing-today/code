@@ -42,7 +42,7 @@ Do NOT make changes autonomously. Present findings using the question tool with 
 Proposed AGENTS.md updates:
 
 1. [Structure] src/commands/ now has 3 new files - add to tree? (Y/n)
-2. [Commands] `just check` renamed to `just verify` - update? (Y/n)  
+2. [Commands] `just check` renamed to `just verify` - update? (Y/n)
 3. [Tighten] Error handling section is 15 lines, could be 3 - condense? (Y/n)
 4. [Remove] "Store Access" code example duplicates pattern in store.rs:45 - remove? (Y/n)
 5. [Add] New critical rule needed: never delete .env.example? (y/N)

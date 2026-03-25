@@ -46,7 +46,7 @@ pkgs.mkShell {
     buildInputs
     shellHook
     nativeBuildInputs
-    TREEFMT_TREE_ROOT_FILE
+    TREEFMT_TREE_ROOT_CMD
     ;
 
   # OpenSSL configuration for native builds

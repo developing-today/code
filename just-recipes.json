@@ -1,6 +1,5 @@
 {
   "aliases": {
-    "fix": { "attributes": [], "name": "fix", "target": "lockfiles" },
     "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
     "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" }
   },
@@ -36,7 +35,6 @@
       "modules": {
         "root": {
           "aliases": {
-            "fix": { "attributes": [], "name": "fix", "target": "lockfiles" },
             "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
             "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" }
           },
@@ -102,6 +100,22 @@
               "namepath": "id::root::chown",
               "shebang": true
             },
+            "fix": {
+              "attributes": [{ "group": "format" }],
+              "body": [],
+              "dependencies": [
+                { "arguments": [], "recipe": "strip-whitespace" },
+                { "arguments": [], "recipe": "lockfiles" }
+              ],
+              "doc": "Run all fixers: strip whitespace, regenerate lockfiles",
+              "name": "fix",
+              "parameters": [],
+              "priors": 2,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::fix",
+              "shebang": false
+            },
             "just-recipes": {
               "attributes": [{ "group": "deps" }],
               "body": [
@@ -143,6 +157,23 @@
               "quiet": false,
               "namepath": "id::root::lockfiles",
               "shebang": false
+            },
+            "strip-whitespace": {
+              "attributes": [{ "group": "format" }],
+              "body": [
+                ["#!/usr/bin/env bash"],
+                ["set -euo pipefail"],
+                ["git grep -Irl -z '[[:space:]]$' 2>/dev/null | xargs -0 -r sed -i 's/[[:space:]]*$//' || true"]
+              ],
+              "dependencies": [],
+              "doc": "Strip trailing whitespace from all tracked text files",
+              "name": "strip-whitespace",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::strip-whitespace",
+              "shebang": true
             },
             "update-input": {
               "attributes": [{ "group": "flake" }],
@@ -843,6 +874,7 @@
           "attributes": [{ "group": "check" }],
           "body": [["@echo \"✓ Fixed what could be fixed\""]],
           "dependencies": [
+            { "arguments": [], "recipe": "strip-whitespace" },
             { "arguments": [], "recipe": "lockfiles" },
             { "arguments": [], "recipe": "fmt" },
             { "arguments": [], "recipe": "lint-fix" }
@@ -850,7 +882,7 @@
           "doc": "Auto-fix formatting and lint issues",
           "name": "fix",
           "parameters": [],
-          "priors": 3,
+          "priors": 4,
           "private": false,
           "quiet": false,
           "namepath": "id::fix",
@@ -1314,6 +1346,23 @@
           "quiet": false,
           "namepath": "id::sleep",
           "shebang": false
+        },
+        "strip-whitespace": {
+          "attributes": [{ "group": "format" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["git grep -Irl -z '[[:space:]]$' 2>/dev/null | xargs -0 -r sed -i 's/[[:space:]]*$//' || true"]
+          ],
+          "dependencies": [],
+          "doc": "Strip trailing whitespace from all tracked text files",
+          "name": "strip-whitespace",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::strip-whitespace",
+          "shebang": true
         },
         "test": {
           "attributes": [{ "group": "test" }],
@@ -2021,6 +2070,19 @@
       "namepath": "default",
       "shebang": false
     },
+    "fix": {
+      "attributes": [{ "group": "format" }],
+      "body": [],
+      "dependencies": [{ "arguments": [], "recipe": "strip-whitespace" }, { "arguments": [], "recipe": "lockfiles" }],
+      "doc": "Run all fixers: strip whitespace, regenerate lockfiles",
+      "name": "fix",
+      "parameters": [],
+      "priors": 2,
+      "private": false,
+      "quiet": false,
+      "namepath": "fix",
+      "shebang": false
+    },
     "just-recipes": {
       "attributes": [{ "group": "deps" }],
       "body": [
@@ -2062,6 +2124,23 @@
       "quiet": false,
       "namepath": "lockfiles",
       "shebang": false
+    },
+    "strip-whitespace": {
+      "attributes": [{ "group": "format" }],
+      "body": [
+        ["#!/usr/bin/env bash"],
+        ["set -euo pipefail"],
+        ["git grep -Irl -z '[[:space:]]$' 2>/dev/null | xargs -0 -r sed -i 's/[[:space:]]*$//' || true"]
+      ],
+      "dependencies": [],
+      "doc": "Strip trailing whitespace from all tracked text files",
+      "name": "strip-whitespace",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "strip-whitespace",
+      "shebang": true
     },
     "update-input": {
       "attributes": [{ "group": "flake" }],

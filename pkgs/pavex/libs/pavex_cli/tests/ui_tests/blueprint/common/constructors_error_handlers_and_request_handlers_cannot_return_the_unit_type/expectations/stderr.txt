@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m All constructors must return *something*.
   [31m│[0m This constructor doesn't: it returns the unit type, `()`.
   [31m│[0m
@@ -10,7 +10,7 @@
   [31m│[0m  [2m38[0m │     bp.constructor(
   [31m│[0m     ╰────
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m All fallible constructors must return *something* when successful.
   [31m│[0m This fallible constructor doesn't: it returns the unit type when
   [31m│[0m successful, `Ok(())`.
@@ -23,7 +23,7 @@
   [31m│[0m  [2m40[0m │         Lifecycle::RequestScoped,
   [31m│[0m     ╰────
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m All request handlers must return a type that can be converted into a
   [31m│[0m `pavex::response::Response`.
   [31m│[0m This request handler doesn't: it returns the unit type, `()`. I can't
@@ -37,7 +37,7 @@
   [31m│[0m  [2m46[0m │     bp.route(GET, "/fallible_unit", f!(crate::fallible_unit_handler))
   [31m│[0m     ╰────
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m All request handlers must return a type that can be converted into a
   [31m│[0m `pavex::response::Response`.
   [31m│[0m This request handler doesn't: it returns the unit type, `()`, when
@@ -51,7 +51,7 @@
   [31m│[0m  [2m47[0m │         .error_handler(f!(crate::error_handler));
   [31m│[0m     ╰────
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m All error handlers must return a type that implements
   [31m│[0m `pavex::response::IntoResponse`.
   [31m│[0m This error handler doesn't: it returns the unit type, `()`. I can't
@@ -65,7 +65,7 @@
   [31m│[0m  [2m48[0m │     bp
   [31m│[0m     ╰────
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m All error handlers must return a type that implements
   [31m│[0m `pavex::response::IntoResponse`.
   [31m│[0m This error handler doesn't: it returns the unit type, `()`. I can't

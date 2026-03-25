@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m Singletons can't depend on request-scoped or transient components.
   [31m│[0m They are constructed before the application starts, outside of the
   [31m│[0m request-response lifecycle.
@@ -20,7 +20,7 @@
   [31m│[0m  [2m32[0m │     bp.constructor(f!(crate::c), Lifecycle::Transient);
   [31m│[0m     ╰────
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m Singletons can't depend on request-scoped or transient components.
   [31m│[0m They are constructed before the application starts, outside of the
   [31m│[0m request-response lifecycle.

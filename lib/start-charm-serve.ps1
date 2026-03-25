@@ -9,5 +9,5 @@ if ([string]::IsNullOrEmpty($env:TURSO_AUTH_TOKEN)) {
    throw "TURSO_AUTH_TOKEN environment variable must be set"
 }
 $env:CHARM_SERVER_CONNECTION_STRING="libsql://${env:TURSO_HOST}?authToken=${env:TURSO_AUTH_TOKEN}"
-  	    
+
 charm serve

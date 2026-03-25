@@ -106,7 +106,36 @@ just-recipes:
 # Regenerate all lockfiles (just-recipes.json)
 [group('deps')]
 lockfiles: just-recipes
-alias fix := lockfiles
+
+# Strip trailing whitespace from all tracked text files
+[group('format')]
+strip-whitespace:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git grep -rl '[[:space:]]$' -- \
+      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \
+      ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \
+      ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \
+      ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \
+      ':!*.mp3' ':!*.wav' ':!*.flac' ':!*.aac' ':!*.ogg' ':!*.wma' ':!*.m4a' ':!*.opus' \
+      ':!*.zip' ':!*.tar' ':!*.gz' ':!*.bz2' ':!*.xz' ':!*.zst' ':!*.7z' ':!*.rar' \
+      ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \
+      2>/dev/null | while IFS= read -r f; do
+      case "$f" in
+        */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;
+        */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;
+        */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;
+        */third_party/*|*/third-party/*|*/external/*|*/deps/*|*/Pods/*|*/.bundle/*) continue ;;
+        */bower_components/*|*/.pnp/*|*/.eggs/*|*.egg-info/*|*/site-packages/*) continue ;;
+        */.gradle/*|*/.mvn/*|*/Packages/*) continue ;;
+      esac
+      case "$(file -b --mime-encoding "$f")" in binary) continue ;; esac
+      sed -i 's/[[:space:]]*$//' "$f"
+    done || true
+
+# Run all fixers: strip whitespace, regenerate lockfiles
+[group('format')]
+fix: strip-whitespace lockfiles
 
 # =============================================================================
 # Utilities

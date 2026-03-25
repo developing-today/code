@@ -34,6 +34,7 @@ let
     shellcheck
     taplo
     # Utilities needed by formatter wrapper
+    file
     bash
     just
     gnused
@@ -85,7 +86,9 @@ in
   # Build inputs (libraries for Rust compilation)
   buildInputs = with pkgs; [ openssl ];
 
-  TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
+  # Anchor treefmt to current directory — prevents upward traversal to git root
+  # (pkgs/id has no .git, so treefmt would otherwise walk up to /home/user/code/)
+  TREEFMT_TREE_ROOT_CMD = "pwd";
 
   # Packages for shell.nix / nix develop (nativeBuildInputs = all tools)
   packages = nativeBuildInputs;

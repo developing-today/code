@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I don't know how to handle the type returned by `app::c`.
   [31m│[0m
   [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:9:1]
@@ -9,7 +9,7 @@
   [31m│[0m  [2m11[0m │     bp
   [31m│[0m     ╰────
   [31m│[0m    ╭─[[36;1;4msrc/lib.rs[0m:3:1]
-  [31m│[0m  [2m3[0m │ 
+  [31m│[0m  [2m3[0m │
   [31m│[0m  [2m4[0m │ pub fn c() -> Box<dyn std::error::Error> {
   [31m│[0m    · [35;1m              ─────────────┬────────────[0m
   [31m│[0m    ·                            [35;1m╰── [35;1mThe output type that I can't handle[0m[0m

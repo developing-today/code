@@ -1,6 +1,6 @@
 # Plan: Content Modes, Format Conversion & Media Viewing
 
-**Status**: In Progress  
+**Status**: In Progress
 **Created**: 2026-03-21
 **Last Updated**: 2026-03-21
 
@@ -187,7 +187,7 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
 
 fn json_to_ast<'a>(arena: &'a Arena<AstNode<'a>>, json: &Value) -> Result<&'a AstNode<'a>, ConversionError> {
     let node_type = json["type"].as_str().ok_or(ConversionError::MissingType)?;
-    
+
     let node_value = match node_type {
         "doc" => NodeValue::Document,
         "paragraph" => NodeValue::Paragraph,
@@ -210,9 +210,9 @@ fn json_to_ast<'a>(arena: &'a Arena<AstNode<'a>>, json: &Value) -> Result<&'a As
         // ... handle remaining types
         _ => return Err(ConversionError::UnknownType(node_type.to_string())),
     };
-    
+
     let ast_node = arena.alloc(AstNode::new(Ast::new(node_value)));
-    
+
     // Recursively convert children
     if let Some(content) = json["content"].as_array() {
         for child_json in content {
@@ -220,7 +220,7 @@ fn json_to_ast<'a>(arena: &'a Arena<AstNode<'a>>, json: &Value) -> Result<&'a As
             ast_node.append(child);
         }
     }
-    
+
     Ok(ast_node)
 }
 ```
@@ -443,10 +443,10 @@ async fn save_handler(
         OriginalFormat::ProseMirror => serde_json::to_string(&doc.doc.read().await)?,
         OriginalFormat::Plain | OriginalFormat::Raw => extract_text(&doc.doc.read().await),
     };
-    
+
     let new_hash = store_blob(&state.store, content.as_bytes()).await?;
     update_tag(&state.store, &doc_id, &new_hash).await?;
-    
+
     Ok(Json(SaveResponse { hash: new_hash }))
 }
 ```

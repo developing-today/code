@@ -40,6 +40,7 @@ let
     haskellPackages.ormolu
     taplo
     # Utilities needed by formatter wrapper
+    file
     just
     gnused
     findutils
@@ -73,7 +74,8 @@ in
   inherit rustToolchain fmtBins nativeBuildInputs;
 
   NIX_CONFIG = "extra-experimental-features = nix-command flakes ca-derivations";
-  TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
+  # Anchor treefmt to current directory — prevents upward traversal to git root
+  TREEFMT_TREE_ROOT_CMD = "pwd";
 
   # Build inputs (libraries for Rust compilation)
   buildInputs = with pkgs; [ openssl ];

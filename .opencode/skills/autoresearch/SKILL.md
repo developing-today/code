@@ -117,12 +117,12 @@ Before writing any new experiment result, validate the JSONL file:
 # Validate JSONL file before writing
 validate_jsonl() {
     local jsonl_file="autoresearch.jsonl"
-    
+
     if [[ -f "$jsonl_file" ]]; then
         # Count existing runs
         local run_count=$(grep -c '"run":' "$jsonl_file" 2>/dev/null || echo 0)
         echo "Current runs in JSONL: $run_count" >&2
-        
+
         # Verify last 5 lines are valid JSON
         tail -n 5 "$jsonl_file" 2>/dev/null | while IFS= read -r line; do
             if ! echo "$line" | python3 -m json.tool >/dev/null 2>&1; then
@@ -130,7 +130,7 @@ validate_jsonl() {
                 return 1
             fi
         done
-        
+
         echo "JSONL validation: OK" >&2
         return 0
     fi
@@ -152,27 +152,27 @@ write_jsonl_entry() {
     local entry="$1"
     local jsonl_file="autoresearch.jsonl"
     local temp_file="${jsonl_file}.tmp.$$"
-    
+
     # Create temp file
     cat "$jsonl_file" > "$temp_file" 2>/dev/null || touch "$temp_file"
-    
+
     # Append entry
     echo "$entry" >> "$temp_file"
-    
+
     # Validate the new entry
     if ! echo "$entry" | python3 -m json.tool >/dev/null 2>&1; then
         rm -f "$temp_file"
         echo "  WARNING: Invalid JSON entry, not writing" >&2
         return 1
     fi
-    
+
     # Atomic move (guaranteed all-or-nothing)
     mv "$temp_file" "$jsonl_file"
-    
+
     # Verify write succeeded
     local new_count=$(grep -c '"run":' "$jsonl_file" 2>/dev/null || echo 0)
     echo "Write verification: $new_count runs in JSONL" >&2
-    
+
     return 0
 }
 ```
@@ -185,16 +185,16 @@ After every write operation, verify the data was written correctly:
 verify_write() {
     local expected_run=$1
     local jsonl_file="autoresearch.jsonl"
-    
+
     if [[ -f "$jsonl_file" ]]; then
         local actual_count=$(grep -c '"run":' "$jsonl_file" 2>/dev/null || echo 0)
-        
+
         if [[ "$actual_count" -lt "$expected_run" ]]; then
             echo "  WARNING: Run count mismatch! Expected $expected_run, got $actual_count" >&2
             echo "This may indicate data loss in previous writes." >&2
             return 1
         fi
-        
+
         echo "Write verification: OK (run $expected_run present)" >&2
         return 0
     fi
@@ -212,7 +212,7 @@ Before any user-confirmable action (e.g., manual intervention, major changes, di
 # Backup state before user-confirmable action
 backup_before_confirm() {
     echo "  User confirmation required. Creating backup..." >&2
-    
+
     # Use backup utility if available
     if [[ -f "./scripts/backup-state.sh" ]]; then
         ./scripts/backup-state.sh backup autoresearch.jsonl 2>/dev/null || true
@@ -220,7 +220,7 @@ backup_before_confirm() {
         # Fallback: simple backup
         cp autoresearch.jsonl "autoresearch.jsonl.backup.$(date +%s)" 2>/dev/null || true
     fi
-    
+
     echo "Backup created. Awaiting user confirmation..." >&2
 }
 ```
@@ -409,7 +409,7 @@ ls -t autoresearch.jsonl.bak.* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/nul
    # Check for data loss
    JSONL_COUNT=$(grep -c '"run":' autoresearch.jsonl 2>/dev/null || echo 0)
    WORKLOG_COUNT=$(grep -c "^### Run" experiments/worklog.md 2>/dev/null || echo 0)
-   
+
    if [[ "$JSONL_COUNT" -ne "$WORKLOG_COUNT" ]]; then
        echo "  DATA LOSS DETECTED: JSONL has $JSONL_COUNT runs, worklog has $WORKLOG_COUNT runs" >&2
    fi

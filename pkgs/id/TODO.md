@@ -247,7 +247,23 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
+- technically unrelated to this project
+  - bunx oh-my-openagent install
+  - bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=yes --opencode-go=no --opencode-zen=no --zai-coding-plan=no
+  - https://github.com/kdcokenny/ocx
+  - ocx add kdco/workspace --from https://registry.kdco.dev
+  - ocx add kdco/worktree --from https://registry.kdco.dev
+  - ocx add kdco/background-agents --from https://registry.kdco.dev
+  - ocx add kdco/notify --from https://registry.kdco.dev
+  - https://github.com/NeuralNomadsAI/CodeNomad
+  - https://github.com/morapelker/hive
+  - bun add -g btca opencode-ai
+  - btca connect --provider opencode --model claude-haiku-4-5
+
 ---
+
+- remove chromium/firefox from nix-common since playwright handles, still include them in the nixos config
+- set zen browser as default browser in nixos config
 
 ---
 

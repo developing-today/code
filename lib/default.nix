@@ -445,7 +445,7 @@ let
               default = pkgs.mkShell {
                 inherit (nixCommon)
                   NIX_CONFIG
-                  TREEFMT_TREE_ROOT_FILE
+                  TREEFMT_TREE_ROOT_CMD
                   buildInputs
                   nativeBuildInputs
                   shellHook
@@ -590,19 +590,12 @@ let
         {
           formatter = pkgs.writeShellScriptBin "formatter" ''
             export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-            # Strip trailing whitespace from all source files (fixes rustfmt errors)
-            find . -type f \( -name '*.rs' -o -name '*.nix' -o -name '*.toml' -o -name '*.json' \
-              -o -name '*.md' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \
-              -o -name '*.css' -o -name '*.html' -o -name '*.sh' -o -name '*.yaml' -o -name '*.yml' \
-              -o -name '*.py' -o -name '*.rb' -o -name '*.elm' -o -name '*.go' -o -name '*.hs' \
-              -o -name '*.scss' -o -name '*.graphql' -o -name '*.mdx' \) \
-              -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/target/*' \
-              -not -path '*/.opencode/*' -not -path '*/dist/*' \
-              -exec sed -i 's/[[:space:]]*$//' {} +
-            # Regenerate lockfiles and apply fixes
+            # Clear any stale treefmt env vars
+            unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_FILE TREEFMT_TREE_ROOT_CMD
+            # Regenerate lockfiles, strip whitespace, format, and lint-fix
             just fix
-            # Format root project
-            treefmt --tree-root-file treefmt.toml "$@"
+            # Format root project (explicitly anchored to current directory)
+            treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" "$@"
             # Format id sub-project (always full tree, ignores passed paths)
             if [ -d pkgs/id ]; then
               (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter)
@@ -615,7 +608,7 @@ let
               src = inputs.self;
               nativeBuildInputs = fmtBins;
               buildPhase = ''
-                treefmt --ci --tree-root-file treefmt.toml 2>&1 || true
+                treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
               '';
               installPhase = ''
                 mkdir -p $out

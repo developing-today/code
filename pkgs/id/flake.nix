@@ -137,13 +137,18 @@
           '';
 
         # Helper to create a runnable app with metadata
-        mkApp = drv: description: {
-          type = "app";
-          program = "${drv}/bin/${drv.name}";
-          meta = commonMeta // {
-            inherit description;
+        mkApp =
+          drv:
+          {
+            description ? drv.name,
+          }:
+          {
+            type = "app";
+            program = "${drv}/bin/${drv.name}";
+            meta = commonMeta // {
+              inherit description;
+            };
           };
-        };
 
         # Common metadata for all apps and packages
         commonMeta = {
@@ -168,9 +173,17 @@
           let
             hasParams = (builtins.length (recipe.parameters or [ ])) > 0;
             script = if hasParams then ''just ${name} "$@"'' else "just ${name}";
-            description = if recipe.doc != null then recipe.doc else "Run 'just ${name}'";
+            description = recipe.doc or name;
           in
-          mkApp (mkScript name script) description;
+          mkApp (mkScript name script) { inherit description; };
+
+        # Build a nix app from a just alias (uses target recipe's doc and params)
+        mkAliasApp =
+          name: alias:
+          let
+            targetRecipe = justRecipes.recipes.${alias.target};
+          in
+          mkRecipeApp name targetRecipe;
 
         # Filter: exclude private recipes and 'default' (handled separately)
         publicRecipes = pkgs.lib.filterAttrs (
@@ -183,7 +196,7 @@
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
           nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg ];
-          inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_FILE;
+          inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_CMD;
 
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -197,16 +210,12 @@
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
           export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-          # Strip trailing whitespace from all source files (fixes rustfmt errors)
-          find . -type f \( -name '*.rs' -o -name '*.nix' -o -name '*.toml' -o -name '*.json' \
-            -o -name '*.md' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \
-            -o -name '*.css' -o -name '*.html' -o -name '*.sh' \) \
-            -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/target/*' \
-            -not -path '*/dist/*' \
-            -exec sed -i 's/[[:space:]]*$//' {} +
-          # Regenerate lockfiles and apply fixes
-          just fix
-          exec ${pkgs.treefmt}/bin/treefmt --tree-root-file treefmt.toml "$@"
+          # Clear any stale tree-root env vars (only TREEFMT_TREE_ROOT_CMD should be set)
+          unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_FILE TREEFMT_TREE_ROOT_CMD
+          # Regenerate lockfiles, strip whitespace, format, and lint-fix
+          # just fix
+          # Format with treefmt (explicitly anchored to project root)
+          exec ${pkgs.treefmt}/bin/treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" "$@"
         '';
 
         # =======================================================================
@@ -248,7 +257,7 @@
             src = ./.;
             nativeBuildInputs = fmtBins;
             buildPhase = ''
-              treefmt --ci --tree-root-file treefmt.toml 2>&1 || true
+              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
             '';
             installPhase = ''
               mkdir -p $out
@@ -465,218 +474,27 @@
 
         # =======================================================================
         # Apps: nix run .#<name>
-        # Dynamically generated from justfile recipes (see just-recipes.json)
+        # Dynamically generated from just-recipes.json (recipes + aliases).
+        # Only 'default' and 'just' are manually defined.
         # =======================================================================
-        apps = pkgs.lib.mapAttrs mkRecipeApp publicRecipes // {
-          # Default: run the web-enabled CLI binary
-          default = {
-            type = "app";
-            program = "${self.packages.${system}.default}/bin/id";
-            meta = commonMeta // {
-              description = "Run the id peer-to-peer file sharing CLI";
+        apps =
+          pkgs.lib.mapAttrs mkRecipeApp publicRecipes
+          // pkgs.lib.mapAttrs mkAliasApp (justRecipes.aliases or { })
+          // {
+            # Default: run the web-enabled CLI binary
+            default = {
+              type = "app";
+              program = "${self.packages.${system}.default}/bin/id";
+              meta = commonMeta // {
+                description = "Run the id peer-to-peer file sharing CLI";
+              };
             };
-          };
 
-          # Run just with any arguments (fallback for commands not added as apps)
-          just = mkApp (
-            pkgs.writeShellScriptBin "just-runner" ''
+            # Run just with any arguments (fallback for commands not added as apps)
+            just = mkApp (pkgs.writeShellScriptBin "just-runner" ''
               exec ${pkgs.just}/bin/just "$@"
-            ''
-          );
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Quality checks
-          # ─────────────────────────────────────────────────────────────────────
-
-          check = mkApp (mkScript "check" "just check");
-          ci = mkApp (mkScript "ci" "just ci");
-          fix = mkApp (mkScript "fix" "just fix");
-          fmt = mkApp (mkScript "fmt" "just fmt");
-          fmt-check = mkApp (mkScript "fmt-check" "just fmt-check");
-          cargo-fmt = mkApp (mkScript "cargo-fmt" "just cargo-fmt");
-          cargo-fmt-check = mkApp (mkScript "cargo-fmt-check" "just cargo-fmt-check");
-          lint = mkApp (mkScript "lint" "just lint");
-          lint-fix = mkApp (mkScript "lint-fix" "just lint-fix");
-          clippy-lint = mkApp (mkScript "clippy-lint" "just clippy-lint");
-          clippy-lint-fix = mkApp (mkScript "clippy-lint-fix" "just clippy-lint-fix");
-          web-fmt = mkApp (mkScript "web-fmt" "just web-fmt");
-          web-fmt-check = mkApp (mkScript "web-fmt-check" "just web-fmt-check");
-          web-lint = mkApp (mkScript "web-lint" "just web-lint");
-          web-lint-fix = mkApp (mkScript "web-lint-fix" "just web-lint-fix");
-          cargo-check = mkApp (mkScript "cargo-check" "just cargo-check");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Lockfiles
-          # ─────────────────────────────────────────────────────────────────────
-
-          lockfiles = mkApp (mkScript "lockfiles" "just lockfiles");
-          bun2nix = mkApp (mkScript "bun2nix" "just bun2nix");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Tests
-          # ─────────────────────────────────────────────────────────────────────
-
-          test = mkApp (mkScript "test" "just test");
-          test-sandbox = mkApp (mkScript "test-sandbox" "just test-sandbox");
-          test-unit = mkApp (mkScript "test-unit" "just test-unit");
-          test-int = mkApp (mkScript "test-int" "just test-int");
-          test-int-sandbox = mkApp (mkScript "test-int-sandbox" "just test-int-sandbox");
-          test-one = mkApp (mkScript "test-one" ''just test-one "$@"'');
-          test-web = mkApp (mkScript "test-web" "just test-web");
-          test-web-sandbox = mkApp (mkScript "test-web-sandbox" "just test-web-sandbox");
-          test-web-unit = mkApp (mkScript "test-web-unit" "just test-web-unit");
-          test-web-typecheck = mkApp (mkScript "test-web-typecheck" "just test-web-typecheck");
-          test-verbose = mkApp (mkScript "test-verbose" "just test-verbose");
-
-          # E2E tests (Playwright - requires network, not run in sandbox)
-          test-e2e = mkApp (mkScript "test-e2e" "just test-e2e");
-          test-e2e-chromium = mkApp (mkScript "test-e2e-chromium" "just test-e2e-chromium");
-          test-e2e-firefox = mkApp (mkScript "test-e2e-firefox" "just test-e2e-firefox");
-          test-e2e-report = mkApp (mkScript "test-e2e-report" "just test-e2e-report");
-
-          # All tests (requires network for serve_tests + E2E)
-          test-all = mkApp (mkScript "test-all" "just test-all");
-
-          # NixOS VM integration tests (Linux only, requires KVM)
-          test-nixos = mkApp (mkScript "test-nixos" "just test-nixos");
-          test-nixos-serve = mkApp (mkScript "test-nixos-serve" "just test-nixos-serve");
-          test-nixos-e2e = mkApp (mkScript "test-nixos-e2e" "just test-nixos-e2e");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Documentation
-          # ─────────────────────────────────────────────────────────────────────
-
-          doc = mkApp (mkScript "doc" "just doc");
-          doc-open = mkApp (mkScript "doc-open" "just doc-open");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Coverage
-          # ─────────────────────────────────────────────────────────────────────
-
-          coverage = mkApp (mkScript "coverage" "just coverage");
-          coverage-open = mkApp (mkScript "coverage-open" "just coverage-open");
-          coverage-summary = mkApp (mkScript "coverage-summary" "just coverage-summary");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Build commands
-          # ─────────────────────────────────────────────────────────────────────
-
-          build = mkApp (mkScript "build" "just build");
-          build-lib = mkApp (mkScript "build-lib" "just build-lib");
-          build-force = mkApp (mkScript "build-force" "just build-force");
-          build-lib-force = mkApp (mkScript "build-lib-force" "just build-lib-force");
-          build-web-force = mkApp (mkScript "build-web-force" "just build-web-force");
-          build-cargo = mkApp (mkScript "build-cargo" "just build-cargo");
-          build-web-cargo = mkApp (mkScript "build-web-cargo" "just build-web-cargo");
-          build-lib-cargo = mkApp (mkScript "build-lib-cargo" "just build-lib-cargo");
-          release = mkApp (mkScript "release" "just release");
-          release-lib = mkApp (mkScript "release-lib" "just release-lib");
-          release-force = mkApp (mkScript "release-force" "just release-force");
-          release-lib-force = mkApp (mkScript "release-lib-force" "just release-lib-force");
-          release-web-force = mkApp (mkScript "release-web-force" "just release-web-force");
-          release-web-cargo = mkApp (mkScript "release-web-cargo" "just release-web-cargo");
-          release-lib-cargo = mkApp (mkScript "release-lib-cargo" "just release-lib-cargo");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Web assets
-          # ─────────────────────────────────────────────────────────────────────
-
-          assets = mkApp (mkScript "assets" "just assets");
-          web = mkApp (mkScript "web" "just web");
-          web-assets = mkApp (mkScript "web-assets" "just web-assets");
-          web-force = mkApp (mkScript "web-force" "just web-force");
-          web-assets-force = mkApp (mkScript "web-assets-force" "just web-assets-force");
-          web-dev = mkApp (mkScript "web-dev" "just web-dev");
-          web-assets-dev = mkApp (mkScript "web-assets-dev" "just web-assets-dev");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Run commands
-          # ─────────────────────────────────────────────────────────────────────
-
-          run = mkApp (mkScript "run" ''just run "$@"'');
-          repl = mkApp (mkScript "repl" "just repl");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Serve commands
-          # ─────────────────────────────────────────────────────────────────────
-
-          serve = mkApp (mkScript "serve" ''just serve "$@"'');
-          serve-web = mkApp (mkScript "serve-web" ''just serve-web "$@"'');
-          serve-lib = mkApp (mkScript "serve-lib" ''just serve-lib "$@"'');
-          build-serve = mkApp (mkScript "build-serve" ''just build-serve "$@"'');
-          kill = mkApp (mkScript "kill" "just kill");
-          sleep = mkApp (mkScript "sleep" ''just sleep "$@"'');
-          kill-serve = mkApp (mkScript "kill-serve" ''just kill-serve "$@"'');
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Combined commands
-          # ─────────────────────────────────────────────────────────────────────
-
-          check-serve = mkApp (mkScript "check-serve" ''just check-serve "$@"'');
-          build-check = mkApp (mkScript "build-check" "just build-check");
-          build-check-serve = mkApp (mkScript "build-check-serve" ''just build-check-serve "$@"'');
-          build-check-serve-lib = mkApp (mkScript "build-check-serve-lib" "just build-check-serve-lib");
-          build-serve-lib = mkApp (mkScript "build-serve-lib" "just build-serve-lib");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Watch commands
-          # ─────────────────────────────────────────────────────────────────────
-
-          watch = mkApp (mkScript "watch" "just watch");
-          watch-test = mkApp (mkScript "watch-test" "just watch-test");
-          watch-lint = mkApp (mkScript "watch-lint" "just watch-lint");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Dependency management
-          # ─────────────────────────────────────────────────────────────────────
-
-          outdated = mkApp (mkScript "outdated" "just outdated");
-          audit = mkApp (mkScript "audit" "just audit");
-          machete = mkApp (mkScript "machete" "just machete");
-          update = mkApp (mkScript "update" "just update");
-          tree = mkApp (mkScript "tree" "just tree");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Utilities
-          # ─────────────────────────────────────────────────────────────────────
-
-          clean = mkApp (mkScript "clean" "just clean");
-          loc = mkApp (mkScript "loc" "just loc");
-          chown = mkApp (mkScript "chown" "just chown");
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Flake input management
-          # ─────────────────────────────────────────────────────────────────────
-
-          update-input = mkApp (mkScript "update-input" ''just update-input "$@"'');
-          update-inputs-all = mkApp (mkScript "update-inputs-all" "just update-inputs-all");
-          update-nixpkgs = mkApp (mkScript "update-nixpkgs" "just update-nixpkgs");
-          update-nixpkgs-all = mkApp (mkScript "update-nixpkgs-all" "just update-nixpkgs-all");
-          update-nixpkgs-master = mkApp (mkScript "update-nixpkgs-master" "just update-nixpkgs-master");
-          update-nixpkgs-unstable = mkApp (mkScript "update-nixpkgs-unstable" "just update-nixpkgs-unstable");
-          update-nixpkgs-all-only = mkApp (mkScript "update-nixpkgs-all-only" "just update-nixpkgs-all-only");
-          update-nixpkgs-master-only = mkApp (
-            mkScript "update-nixpkgs-master-only" "just update-nixpkgs-master-only"
-          );
-          update-nixpkgs-unstable-only = mkApp (
-            mkScript "update-nixpkgs-unstable-only" "just update-nixpkgs-unstable-only"
-          );
-
-          # ─────────────────────────────────────────────────────────────────────
-          # Legacy aliases (backwards compatibility)
-          # ─────────────────────────────────────────────────────────────────────
-
-          check-all = mkApp (mkScript "check-all" "just check");
-          check-nix = mkApp (mkScript "check-nix" "just check-nix");
-          test-lib = mkApp (mkScript "test-lib" "just test-unit");
-          build-web = mkApp (mkScript "build-web" "just build");
-          build-web-release = mkApp (mkScript "build-web-release" "just build-web-release");
-          build-release = mkApp (mkScript "build-release" "just release");
-          build-lib-release = mkApp (mkScript "build-lib-release" "just release-lib");
-          web-build = mkApp (mkScript "web-build" "just web");
-          web-typecheck = mkApp (mkScript "web-typecheck" "just test-web");
-          watch-build = mkApp (mkScript "watch-build" "just watch");
-        };
+            '') { description = "Run just with any arguments"; };
+          };
       }
     );
 }
