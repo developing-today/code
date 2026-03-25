@@ -61,7 +61,10 @@ pub(crate) fn resolve_type(
                                         &generic_bindings,
                                     )?
                                 } else {
-                                    anyhow::bail!("Expected `{:?}` to be a generic _type_ parameter, but it wasn't!", provided_arg)
+                                    anyhow::bail!(
+                                        "Expected `{:?}` to be a generic _type_ parameter, but it wasn't!",
+                                        provided_arg
+                                    )
                                 }
                             } else if let Some(default) = default {
                                 resolve_type(
@@ -80,7 +83,10 @@ pub(crate) fn resolve_type(
                         }
                         GenericParamDefKind::Const { .. }
                         | GenericParamDefKind::Lifetime { .. } => {
-                            anyhow::bail!("I can only work with generic type parameters when working with type aliases. I can't handle a `{:?}` yet, sorry!", generic_param_def)
+                            anyhow::bail!(
+                                "I can only work with generic type parameters when working with type aliases. I can't handle a `{:?}` yet, sorry!",
+                                generic_param_def
+                            )
                         }
                     }
                 }
@@ -163,7 +169,9 @@ pub(crate) fn resolve_type(
                                         ));
                                     }
                                     GenericArg::Infer => {
-                                        return Err(anyhow!("I don't support inferred generic arguments in types yet. Sorry!"));
+                                        return Err(anyhow!(
+                                            "I don't support inferred generic arguments in types yet. Sorry!"
+                                        ));
                                     }
                                 };
                                 generics.push(generic_argument);
@@ -497,7 +505,9 @@ pub(crate) enum CallableResolutionError {
 }
 
 #[derive(Debug, thiserror::Error, Clone)]
-#[error("I can work with functions and methods, but `{import_path}` is neither.\nIt is {item_kind} and I don't know how to handle it here.")]
+#[error(
+    "I can work with functions and methods, but `{import_path}` is neither.\nIt is {item_kind} and I don't know how to handle it here."
+)]
 pub(crate) struct UnsupportedCallableKind {
     pub import_path: ResolvedPath,
     pub item_kind: String,
@@ -515,7 +525,9 @@ pub(crate) struct InputParameterResolutionError {
 }
 
 #[derive(Debug, thiserror::Error, Clone)]
-#[error("I can't handle `{generic_type}`, one of the generic parameters you specified for `{callable_path}`.")]
+#[error(
+    "I can't handle `{generic_type}`, one of the generic parameters you specified for `{callable_path}`."
+)]
 pub(crate) struct GenericParameterResolutionError {
     pub callable_path: ResolvedPath,
     pub callable_item: rustdoc_types::Item,

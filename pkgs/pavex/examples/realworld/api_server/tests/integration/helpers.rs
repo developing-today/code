@@ -1,4 +1,4 @@
-use api_server::configuration::{load_configuration, ApplicationProfile};
+use api_server::configuration::{ApplicationProfile, load_configuration};
 use api_server_sdk::{build_application_state, run};
 use conduit_core::configuration::Config;
 use pavex::hyper::Server;

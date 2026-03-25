@@ -2,8 +2,8 @@ use bytes::Bytes;
 use http::header::CONTENT_TYPE;
 use http_body::Empty;
 
-use super::body::raw::{boxed, BoxBody};
 use super::body::TypedBody;
+use super::body::raw::{BoxBody, boxed};
 use crate::http::StatusCode;
 use crate::http::{HeaderMap, Version};
 

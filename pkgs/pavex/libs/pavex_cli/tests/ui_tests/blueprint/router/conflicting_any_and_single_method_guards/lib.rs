@@ -1,6 +1,6 @@
 use pavex::blueprint::{
-    router::{ANY, GET},
     Blueprint,
+    router::{ANY, GET},
 };
 use pavex::f;
 

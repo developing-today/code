@@ -4,10 +4,10 @@ use ahash::{HashMap, HashMapExt};
 use guppy::graph::PackageGraph;
 use indexmap::IndexSet;
 use miette::NamedSource;
+use petgraph::Direction;
 use petgraph::graph::NodeIndex;
 use petgraph::prelude::EdgeRef;
 use petgraph::visit::NodeRef;
-use petgraph::Direction;
 
 use crate::compiler::analyses::call_graph::borrow_checker::clone::get_clone_component_id;
 use crate::compiler::analyses::call_graph::core_graph::{InputParameterSource, RawCallGraph};

@@ -1,8 +1,8 @@
 use ahash::{HashMap, HashMapExt};
 use guppy::graph::PackageGraph;
 use indexmap::IndexSet;
-use petgraph::stable_graph::NodeIndex;
 use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
 
 use crate::compiler::analyses::call_graph::borrow_checker::ancestor_consumes_descendant_borrows::ancestor_consumes_descendant_borrows;
 use crate::compiler::analyses::call_graph::borrow_checker::complex::complex_borrow_check;
@@ -206,7 +206,9 @@ impl OrderedCallGraph {
                 break 'fixed_point;
             }
             if node_id2position.len() == n_finished_nodes {
-                unreachable!("The fixed point algorithm for node ordering is stuck—this should never happen!")
+                unreachable!(
+                    "The fixed point algorithm for node ordering is stuck—this should never happen!"
+                )
             } else {
                 n_finished_nodes = node_id2position.len();
             }

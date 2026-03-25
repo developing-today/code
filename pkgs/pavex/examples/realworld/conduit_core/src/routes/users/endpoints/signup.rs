@@ -6,11 +6,11 @@ use jsonwebtoken::EncodingKey;
 use pavex::{
     extract::body::JsonBody,
     response::{
-        body::{
-            raw::{Bytes, Full},
-            Json,
-        },
         Response,
+        body::{
+            Json,
+            raw::{Bytes, Full},
+        },
     },
 };
 use secrecy::{ExposeSecret, Secret};

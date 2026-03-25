@@ -10,8 +10,8 @@ use indexmap::IndexSet;
 use serde::{Deserializer, Serializer};
 
 use crate::language::resolved_type::generics_equivalence::{
-    compute_generic_argument_equivalence_mapping, generic_arguments_are_equivalent,
-    UnassignedIdGenerator,
+    UnassignedIdGenerator, compute_generic_argument_equivalence_mapping,
+    generic_arguments_are_equivalent,
 };
 use crate::language::{ResolvedPath, ResolvedPathSegment};
 
@@ -301,7 +301,10 @@ impl PathType {
             match (concrete_arg, templated_arg) {
                 (TypeParameter(ResolvedType::Generic(unassigned)), _) => {
                     // You are not allowed to specialize a type with an unassigned type parameter.
-                    unreachable!("Unassigned type parameter (`{:?}`) in the 'concrete' type (`{:?}`) when checking for specialization", unassigned, concrete_type);
+                    unreachable!(
+                        "Unassigned type parameter (`{:?}`) in the 'concrete' type (`{:?}`) when checking for specialization",
+                        unassigned, concrete_type
+                    );
                 }
                 (TypeParameter(assigned), TypeParameter(ResolvedType::Generic(unassigned))) => {
                     // The unassigned type parameter can be assigned to the concrete type
@@ -311,11 +314,11 @@ impl PathType {
                     if let Some(previous_assignment) = previous_assignment {
                         if &previous_assignment != assigned {
                             tracing::trace!(
-                            "Type parameter `{:?}` was already assigned to `{:?}` but is now being assigned to `{:?}`",
-                            unassigned,
-                            previous_assignment,
-                            assigned
-                        );
+                                "Type parameter `{:?}` was already assigned to `{:?}` but is now being assigned to `{:?}`",
+                                unassigned,
+                                previous_assignment,
+                                assigned
+                            );
                             return false;
                         }
                     }

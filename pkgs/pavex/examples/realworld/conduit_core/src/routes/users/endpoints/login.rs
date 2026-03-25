@@ -5,8 +5,8 @@ use pavex::{
     extract::body::JsonBody,
     hyper::body::Bytes,
     response::{
-        body::{raw::Full, Json},
         Response,
+        body::{Json, raw::Full},
     },
 };
 use secrecy::Secret;

@@ -3,8 +3,8 @@ use std::{borrow::Cow, collections::BTreeSet};
 use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use guppy::{
-    graph::{feature::StandardFeatures, PackageGraph, PackageMetadata},
     PackageId,
+    graph::{PackageGraph, PackageMetadata, feature::StandardFeatures},
 };
 use itertools::Itertools;
 use r2d2_sqlite::SqliteConnectionManager;

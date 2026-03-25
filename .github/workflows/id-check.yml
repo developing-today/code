@@ -1,0 +1,53 @@
+# CI for pkgs/id — P2P file sharing CLI
+#
+# Runs on push to main and PRs that touch pkgs/id/ files.
+# Uses nix flake check to run all sandboxed CI checks:
+#   - Rust: fmt, clippy, cargo-check, unit tests, integration tests, doc
+#   - Web: biome fmt, biome lint, bun unit tests, TypeScript typecheck
+#   - Build: debug + release (web variant with embedded assets)
+#   - NixOS VM: serve integration tests, E2E browser tests (require KVM)
+#
+# All checks run in the nix sandbox — no ambient tool installation needed.
+# See pkgs/id/flake.nix checks section for the full list.
+
+name: id
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/id/**"
+      - ".github/workflows/id-check.yml"
+  pull_request:
+    paths:
+      - "pkgs/id/**"
+      - ".github/workflows/id-check.yml"
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Enable KVM for NixOS VM integration tests
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run nix flake check
+        run: nix flake check ./pkgs/id/ -L

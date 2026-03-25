@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use http::response::Parts;
-use pavex::blueprint::{constructor::Lifecycle, router::GET, Blueprint};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle, router::GET};
 use pavex::f;
 use pavex::http::StatusCode;
 use pavex::response::{Response, ResponseHead};

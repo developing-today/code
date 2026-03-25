@@ -1,5 +1,5 @@
-use dep::{new_logger, Logger};
-use pavex::blueprint::{constructor::Lifecycle, router::GET, Blueprint};
+use dep::{Logger, new_logger};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle, router::GET};
 use pavex::f;
 
 pub fn handler(logger: Logger) -> pavex::response::Response {

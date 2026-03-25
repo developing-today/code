@@ -1,4 +1,4 @@
-use pavex::blueprint::{constructor::Lifecycle, Blueprint};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle};
 use pavex::f;
 
 pub type IntermediateAlias = ActualType;

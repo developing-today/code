@@ -16,6 +16,8 @@
 # - llvm-tools: Coverage instrumentation
 
 [toolchain]
-channel = "1.89.0"
+ # WARNING: this may cause rustc to build, ensure nixpkg has cached before committing this change.
+channel = "1.89.0" # WARNING: this may cause rustc to build, ensure nixpkg has cached before committing this change.
+ # WARNING: this may cause rustc to build, ensure nixpkg has cached before committing this change.
 components = ["rustfmt", "clippy", "rust-analyzer", "llvm-tools"]
 profile = "default"

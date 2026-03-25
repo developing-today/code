@@ -199,35 +199,16 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
-- ensure nix-common installs playwright
-- ensure all just test-e2e tests pass. fix/improve testing however you can.
-- just test-all which runs all tests including e2e. make check all too
-- ensure nix flake check passes, fix all problems until it does.
-- enable running multiple servers on different ports if possible.
-- ensure integration tests can run in nix flake check -L, ensure nix flake check -L can run integration/web non-unit tests. i believe this would involve  making a virtual machine and wait for open port. maybe you need to make a nixos service for 'id' ?
-  - https://blakesmith.me/2024/03/11/how-to-run-nixos-tests-flake-edition.html
-  - https://nixcademy.com/posts/nixos-integration-test-on-github/
-  - https://github.com/tfc/nixos-integration-test-example
-  - https://blog.thalheim.io/2023/01/08/how-to-use-nixos-testing-framework-with-flakes/
-- ensure nix flake check passes, including e2e, fix all problems until it does.
-- add just check-nix which runs nix flake check -L include this as a flake app but not as a check because it would cause infinite recursion.
-- build a check id github workflow which uses magic nix cache and runs nix flake check -L against the id flake
-
----
 
 
 ---
 
-- make a new plan file, it should cover each of these todos. make a todo covering each of these. reorder and rephrase your todos as needed, but put this entire prompt in a section of the plan so one can refer back to the original requests. your plan should cover architecture changes, before/after, design/intent, exact steps to be taken and the expected end result. your plan file should have your final todo list too in it's own section. use `just` commands to manage build/test. just check for all testing. just kill-serve will build and then deploy the server, at the very end `nix flake check -L` should be ran and it should pass just like `just check` and if it doesn't then fix.
-- repl and cli should be 1:1, ensure any diff in one is copied into the other, such as the aliases etc.
-- ensure docs keys can be bytes/binary allowing structured data. either key or value can be bytes and not just string.  review the original tags v2 plan at .opencode/plans/2026-03-24-tags-v2-iroh-docs.md
-- ensure tag keys and values can be any length and any kind of bytes, but try to parse as utf8. cutoff in the ui/etc after a certain length. if it doesn't parse as utf8 then exclude as binary without a flag.
-- allow searching keys and values in the ui. strings ending with : mean keys, starting with : mean values key:value means that specific key. allow quotes to do regular search so ":key" looks for any file/key/value that is literally ":key". "key:":":value" looks for a key named "key:" with a value ":value". a file uploaded should automatically tag name,file,path tags to the file. all name/file/path keys should show as the name in the ui, but they should dedupe if they have the exact same hash, tag values, name of the file. make a migrate flag that automatically adds the name/file/path labels for all existing files which don't have them. 
-- when you are done add appropriate unit/integration/playwright tests as-needed.
-- when you are done review all .md files across the repo and ensure they are up-to-date.
-- when you are done, nix flake check -L should pass 100%. fix any errors even if you dont think you made them.
-- when you are done, update all docstrings, comments, help text for all functions and objects in rust and typescript.
-- 
+
+
+---
+
+
+
 ---
 
 - if reconnect and new server has new css then reload new css/html
@@ -273,130 +254,173 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
----
-
 
 ---
 
-
----
 
 
 ---
 
 
+
 ---
 
 
+
 ---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
 
 
 ---

@@ -5,9 +5,9 @@
 //! [`Blueprint::constructor`]: Blueprint::constructor
 pub use lifecycle::Lifecycle;
 
+use crate::blueprint::Blueprint;
 use crate::blueprint::internals::RegisteredCallable;
 use crate::blueprint::reflection::{RawCallable, RawCallableIdentifiers};
-use crate::blueprint::Blueprint;
 
 mod lifecycle;
 

@@ -126,22 +126,32 @@ impl<'a> FallibleConstructor<'a> {
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub(crate) enum ConstructorValidationError {
-    #[error("All constructors must return *something*.\nThis constructor doesn't: it returns the unit type, `()`.")]
+    #[error(
+        "All constructors must return *something*.\nThis constructor doesn't: it returns the unit type, `()`."
+    )]
     CannotReturnTheUnitType,
-    #[error("All fallible constructors must return *something* when successful.\nThis fallible constructor doesn't: it returns the unit type when successful, `Ok(())`.")]
+    #[error(
+        "All fallible constructors must return *something* when successful.\nThis fallible constructor doesn't: it returns the unit type when successful, `Ok(())`."
+    )]
     CannotFalliblyReturnTheUnitType,
-    #[error("Input parameters for a constructor can't have any *unassigned* generic type parameters that appear exclusively in its input parameters.")]
+    #[error(
+        "Input parameters for a constructor can't have any *unassigned* generic type parameters that appear exclusively in its input parameters."
+    )]
     UnderconstrainedGenericParameters { parameters: IndexSet<String> },
-    #[error("The output type of a constructor can't be a naked generic parameters (i.e. `T`).\n\
+    #[error(
+        "The output type of a constructor can't be a naked generic parameters (i.e. `T`).\n\
         Pavex ignores trait bounds when looking at generic parameters, therefore a constructor \
         that returns a generic `T` is a constructor that can build **any** type - which is unlikely \
-        to be the case.")]
+        to be the case."
+    )]
     NakedGenericOutputType { naked_parameter: String },
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub(crate) enum FallibleConstructorValidationError {
-    #[error("Fallible constructors must be infallible.\nThis constructor isn't: it doesn't return a `Result`.")]
+    #[error(
+        "Fallible constructors must be infallible.\nThis constructor isn't: it doesn't return a `Result`."
+    )]
     CannotBeInfallible,
 }
 

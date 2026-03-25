@@ -150,7 +150,9 @@ fn print_backtrace() {
             eprintln!("\t\t{filename}");
         }
     }
-    eprintln!("\nOptimizations can make this list inaccurate! If it looks wrong, try running without `--optimize` and with `--linker=legacy`\n");
+    eprintln!(
+        "\nOptimizations can make this list inaccurate! If it looks wrong, try running without `--optimize` and with `--linker=legacy`\n"
+    );
 }
 fn should_show_in_backtrace(fn_name: &str) -> bool {
     let is_from_rust = fn_name.contains("::");

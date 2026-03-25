@@ -21,12 +21,12 @@ use crate::compiler::error_handlers::{ErrorHandler, ErrorHandlerValidationError}
 use crate::compiler::interner::Interner;
 use crate::compiler::request_handlers::{RequestHandler, RequestHandlerValidationError};
 use crate::compiler::resolvers::CallableResolutionError;
-use crate::compiler::traits::{assert_trait_is_implemented, MissingTraitImplementationError};
+use crate::compiler::traits::{MissingTraitImplementationError, assert_trait_is_implemented};
 use crate::compiler::utils::{get_err_variant, get_ok_variant, is_result, process_framework_path};
 use crate::diagnostic;
 use crate::diagnostic::{
-    convert_proc_macro_span, convert_rustdoc_span, AnnotatedSnippet, CallableType,
-    CompilerDiagnostic, LocationExt, SourceSpanExt,
+    AnnotatedSnippet, CallableType, CompilerDiagnostic, LocationExt, SourceSpanExt,
+    convert_proc_macro_span, convert_rustdoc_span,
 };
 use crate::language::{
     Callable, PathType, ResolvedPath, ResolvedPathQualifiedSelf, ResolvedPathSegment, ResolvedType,
@@ -1637,11 +1637,11 @@ impl ComponentDb {
         let label = diagnostic::get_f_macro_invocation_span(&source, location)
             .map(|s| s.labeled(format!("The fallible {fallible_kind} was registered here")));
         let error = anyhow::anyhow!(
-                "You registered a {fallible_kind} that returns a `Result`, but you did not register an \
+            "You registered a {fallible_kind} that returns a `Result`, but you did not register an \
                  error handler for it. \
                  If I don't have an error handler, I don't know what to do with the error when the \
                  {fallible_kind} fails!",
-            );
+        );
         let diagnostic = CompilerDiagnostic::builder(source, error)
             .optional_label(label)
             .help("Add an error handler via `.error_handler`".to_string())

@@ -3,7 +3,7 @@ use bimap::BiHashMap;
 use guppy::PackageId;
 use petgraph::stable_graph::NodeIndex;
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 
 use crate::compiler::analyses::call_graph::CallGraphEdgeMetadata;
 use crate::language::{Callable, InvocationStyle, ResolvedType, TypeReference};

@@ -1,4 +1,4 @@
-use pavex::blueprint::{reflection::RawCallable, router::POST, Blueprint};
+use pavex::blueprint::{Blueprint, reflection::RawCallable, router::POST};
 
 pub fn my_f() {}
 

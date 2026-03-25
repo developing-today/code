@@ -262,6 +262,7 @@ pub async fn cmd_serve(
     no_default_topic: bool,
     replace_defaults: bool,
     no_mdns: bool,
+    iroh_port: u16,
 ) -> Result<()> {
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
@@ -276,6 +277,12 @@ pub async fn cmd_serve(
     }
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
+    }
+    if iroh_port != 0 {
+        builder = builder.bind_addr(std::net::SocketAddrV4::new(
+            std::net::Ipv4Addr::UNSPECIFIED,
+            iroh_port,
+        ))?;
     }
     let endpoint = builder.bind().await?;
 

@@ -17,8 +17,8 @@ use crate::compiler::analyses::user_components::{
 };
 use crate::diagnostic::{self, ParsedSourceFile};
 use crate::diagnostic::{
-    convert_proc_macro_span, convert_rustdoc_span, read_source_file, AnnotatedSnippet,
-    CompilerDiagnostic, HelpWithSnippet, LocationExt, SourceSpanExt,
+    AnnotatedSnippet, CompilerDiagnostic, HelpWithSnippet, LocationExt, SourceSpanExt,
+    convert_proc_macro_span, convert_rustdoc_span, read_source_file,
 };
 use crate::language::{Callable, ResolvedType};
 use crate::rustdoc::CrateCollection;
@@ -522,10 +522,10 @@ impl ConstructibleDb {
         let label = diagnostic::get_f_macro_invocation_span(&source, location)
             .map(|s| s.labeled(format!("The {component_kind} was registered here")));
         let e = anyhow::anyhow!(
-                "I can't invoke your {component_kind}, `{}`, because it needs an instance \
+            "I can't invoke your {component_kind}, `{}`, because it needs an instance \
                 of `{unconstructible_type:?}` as input, but I can't find a constructor for that type.",
-                callable.path
-            );
+            callable.path
+        );
         let definition_info = get_definition_info(
             callable,
             unconstructible_type_index,

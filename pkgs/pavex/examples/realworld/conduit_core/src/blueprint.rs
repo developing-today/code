@@ -1,5 +1,5 @@
 use crate::routes;
-use pavex::blueprint::{constructor::Lifecycle, router::GET, Blueprint};
+use pavex::blueprint::{Blueprint, constructor::Lifecycle, router::GET};
 use pavex::f;
 
 /// The main API blueprint, containing all the routes, constructors and error handlers

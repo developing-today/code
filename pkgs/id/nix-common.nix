@@ -37,6 +37,7 @@
     ripgrep
     fd
     jq
+    uv
     tokei
     hyperfine
     treefmt # Multi-language formatter orchestrator (used by nix fmt)
@@ -46,9 +47,10 @@
     nodePackages.typescript # TypeScript for type checking
     biome # Fast formatter and linter for TypeScript/CSS
 
-    # E2E testing (Playwright)
-    chromium # Browser for Playwright E2E tests
-    firefox # Browser for Playwright E2E tests
+    # E2E testing (Playwright) — use playwright-driver.browsers for
+    # pre-patched browser binaries that work with Playwright's CDP protocol.
+    # Pin @playwright/test in e2e/package.json to match this version.
+    playwright-driver.browsers
   ];
 
   # OpenSSL environment variables
@@ -65,8 +67,7 @@
 
     # Playwright E2E testing: use Nix-provided browsers
     export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-    export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="${pkgs.chromium}/bin/chromium"
-    export PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH="${pkgs.firefox}/bin/firefox"
+    export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
 
     # nix develop reconstructs PATH, losing HM session paths.
     # Restore them: devshell → HM → system
@@ -148,5 +149,6 @@
     echo "════════════════════════════════════════════════════════════"
     echo ""
     echo "Welcome to the id development shell!"
+    echo ""
   '';
 }

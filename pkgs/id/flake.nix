@@ -174,6 +174,7 @@
         # =======================================================================
         checks = {
           # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
+          # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
           # Individual checks
@@ -189,7 +190,30 @@
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
-        };
+          nix-fmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-nix-fmt-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.nixfmt ];
+            buildPhase = ''
+              find . -name '*.nix' | xargs nixfmt -s -v
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "nix-fmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
+        }
+        // (
+          # NixOS VM integration tests (Linux only — VMs require KVM)
+          pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            nixos-serve = pkgs.testers.runNixOSTest (
+              import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
+            );
+            nixos-e2e = pkgs.testers.runNixOSTest (
+              import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }
+            );
+          }
+        );
 
         # =======================================================================
         # Packages: nix build
@@ -355,6 +379,14 @@
           test-e2e-firefox = mkApp (mkScript "test-e2e-firefox" "just test-e2e-firefox");
           test-e2e-report = mkApp (mkScript "test-e2e-report" "just test-e2e-report");
 
+          # All tests (requires network for serve_tests + E2E)
+          test-all = mkApp (mkScript "test-all" "just test-all");
+
+          # NixOS VM integration tests (Linux only, requires KVM)
+          test-nixos = mkApp (mkScript "test-nixos" "just test-nixos");
+          test-nixos-serve = mkApp (mkScript "test-nixos-serve" "just test-nixos-serve");
+          test-nixos-e2e = mkApp (mkScript "test-nixos-e2e" "just test-nixos-e2e");
+
           # ─────────────────────────────────────────────────────────────────────
           # Documentation
           # ─────────────────────────────────────────────────────────────────────
@@ -457,10 +489,29 @@
           loc = mkApp (mkScript "loc" "just loc");
 
           # ─────────────────────────────────────────────────────────────────────
+          # Flake input management
+          # ─────────────────────────────────────────────────────────────────────
+
+          update-input = mkApp (mkScript "update-input" ''just update-input "$@"'');
+          update-inputs-all = mkApp (mkScript "update-inputs-all" "just update-inputs-all");
+          update-nixpkgs = mkApp (mkScript "update-nixpkgs" "just update-nixpkgs");
+          update-nixpkgs-all = mkApp (mkScript "update-nixpkgs-all" "just update-nixpkgs-all");
+          update-nixpkgs-master = mkApp (mkScript "update-nixpkgs-master" "just update-nixpkgs-master");
+          update-nixpkgs-unstable = mkApp (mkScript "update-nixpkgs-unstable" "just update-nixpkgs-unstable");
+          update-nixpkgs-all-only = mkApp (mkScript "update-nixpkgs-all-only" "just update-nixpkgs-all-only");
+          update-nixpkgs-master-only = mkApp (
+            mkScript "update-nixpkgs-master-only" "just update-nixpkgs-master-only"
+          );
+          update-nixpkgs-unstable-only = mkApp (
+            mkScript "update-nixpkgs-unstable-only" "just update-nixpkgs-unstable-only"
+          );
+
+          # ─────────────────────────────────────────────────────────────────────
           # Legacy aliases (backwards compatibility)
           # ─────────────────────────────────────────────────────────────────────
 
           check-all = mkApp (mkScript "check-all" "just check");
+          check-nix = mkApp (mkScript "check-nix" "just check-nix");
           test-lib = mkApp (mkScript "test-lib" "just test-unit");
           build-web = mkApp (mkScript "build-web" "just build");
           build-web-release = mkApp (mkScript "build-web-release" "just build-web-release");

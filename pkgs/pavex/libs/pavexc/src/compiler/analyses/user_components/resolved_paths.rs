@@ -1,8 +1,8 @@
 use ahash::{HashMap, HashMapExt};
 use guppy::graph::PackageGraph;
 
-use crate::compiler::analyses::user_components::raw_db::RawUserComponentDb;
 use crate::compiler::analyses::user_components::UserComponentId;
+use crate::compiler::analyses::user_components::raw_db::RawUserComponentDb;
 use crate::compiler::interner::Interner;
 use crate::diagnostic;
 use crate::diagnostic::{CompilerDiagnostic, LocationExt, OptionalSourceSpanExt};

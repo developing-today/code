@@ -12,7 +12,7 @@ async fn main() -> std::io::Result<()> {
     use actix_files::Files;
     use actix_web::*;
     use leptos::*;
-    use leptos_actix::{generate_route_list, LeptosRoutes};
+    use leptos_actix::{LeptosRoutes, generate_route_list};
     use leptos_start::app::*;
 
     let conf = get_configuration(None).await.unwrap();

@@ -247,12 +247,12 @@ in
       nil
       guake
       # python3-dbus
+      uv
       python312Packages.pydbus
       python312Packages.pygobject3
       clang
       cowsay
       talosctl
-      deadnix
       e2fsprogs
       emacs.pkgs.fortune-cookie
 
@@ -377,7 +377,20 @@ in
       nix-query-tree-viewer
       nix-tree
       nix-visualize
-      nixfmt-rfc-style
+      # Formatters and linters
+      nixfmt
+      treefmt
+      statix
+      deadnix
+      shfmt
+      shellcheck
+      nodePackages.prettier
+      ruff
+      biome
+      rufo
+      elmPackages.elm-format
+      go
+      haskellPackages.ormolu
       nushell
       nvd
       oils-for-unix # todo: osh default shell?
