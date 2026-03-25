@@ -1,4 +1,4 @@
-//! Specify the routes exposed by your application.  
+//! Specify the routes exposed by your application.
 //!
 //! Check out [`Blueprint::route`] for a brief introduction to request routing in Pavex.
 //!

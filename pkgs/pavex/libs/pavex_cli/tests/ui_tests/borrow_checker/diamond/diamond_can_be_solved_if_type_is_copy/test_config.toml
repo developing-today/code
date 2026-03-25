@@ -1,4 +1,4 @@
-description = """Pavex correctly solves the stalemate in the diamond problem if it 
+description = """Pavex correctly solves the stalemate in the diamond problem if it
 recognise that the contended components are `Copy`"""
 
 [expectations]

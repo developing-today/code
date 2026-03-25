@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy)]
-/// An upper limit on the size of incoming request bodies.  
+/// An upper limit on the size of incoming request bodies.
 ///
 /// Check out the documentation of [`BufferedBody`](crate::extract::body::BufferedBody) for more details.
 pub enum BodySizeLimit {

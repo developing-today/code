@@ -1,4 +1,5 @@
 # samsung firmware
+
 - nvme ssd-990 pro series firmware
   - https://download.semiconductor.samsung.com/resources/software-resources/Samsung_SSD_990_PRO_4B2QJXD7.iso
 

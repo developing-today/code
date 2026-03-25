@@ -1,4 +1,4 @@
-'@':
+"@":
   porkbun:
     01b.us_@_MX_10_0:
       content: monday.mxrouting.net
@@ -869,7 +869,7 @@
       type: TXT
 porkbun:
   01b.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -923,7 +923,7 @@ porkbun:
         - content: 10.10.22.46
         - content: 10.10.6.85
   0x111.dev:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -931,7 +931,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   0x1110.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -939,7 +939,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   0x1110.dev:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -947,7 +947,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   1110x.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -955,7 +955,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   1110x.de:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -965,7 +965,7 @@ porkbun:
     x._domainkey:
       TXT: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAssK7hSU8x/oo2uXqsLEkGQ+rhKz/pViXrWOMrfQ/EMa/0r0ICIeIolkM3H3ZF/P60y1jAPdJ8Fq/G5ZvB5CAbP5k1mea6iq6q3SxNY0vMHOV6vLoha/65YIfAybn0vzHoDI44aSNeqZ16ku0EIv9wPiqGjSzYb+Zb5ZtnwtOe4JnmrPXjHgy4hYojVZd7E+bJqSHYKsAUqIT/1ZQiCQXGbqBISdqNGkW4TkWsOCKZhW1WwKdz/qaZF7S0jK1VEHJOb2c+B+Be+1OIvaQ1rOLWKpe6BV8b6FEV0kXnOsud9WzRg4bPU74QQclLrie7vaCb4wzp2JyIeHPKO32p16ZkwIDAQAB
   1110x.dev:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -973,7 +973,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   15b.org:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -981,7 +981,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   15b.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -989,7 +989,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   32b.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -997,7 +997,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   3dtropic.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1005,7 +1005,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   3dtropics.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1013,7 +1013,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   64b.org:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1021,7 +1021,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   64b.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1029,7 +1029,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   69b.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1037,7 +1037,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   79b.org:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1045,7 +1045,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   79b.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1053,7 +1053,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   carbonfreezeme.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1061,7 +1061,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   default.computer:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1069,7 +1069,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   default.properties:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1077,7 +1077,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   developing-today.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1092,7 +1092,7 @@ porkbun:
     news: dt.smol.pub
     zettel: developing-today.github.io
   developing.today:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1100,7 +1100,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   developingto.day:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1108,7 +1108,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   eau3d.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1116,7 +1116,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   eau3d.dev:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1124,7 +1124,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   eau3d.org:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1132,7 +1132,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   grandnag.us:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1140,7 +1140,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   hax.live:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1148,7 +1148,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   l0x.dev:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1156,7 +1156,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   lair.cloud:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1164,7 +1164,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   o3d.dev:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1172,7 +1172,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   printmy.pictures:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1180,7 +1180,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   printmy3dmodel.com:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1188,7 +1188,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   rom.how:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1196,7 +1196,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   rom.rest:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1204,7 +1204,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   rom.run:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1212,7 +1212,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   s0s.pw:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1220,7 +1220,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   security.cab:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20
@@ -1228,7 +1228,7 @@ porkbun:
           priority: 10
       TXT: v=spf1 include:mxlogin.com -all
   yak.pub:
-    '@':
+    "@":
       MX:
         - content: monday-relay.mxrouting.net
           priority: 20

@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_014ngj6KdMQovjoiDhaT3daW",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "#!/usr/bin/env bun\n\nif (typeof Bun === 'undefined') {\n\tconsole.error('[btca] This CLI requires Bun. Install it: https://bun.sh');\n\tconsole.error('       Then run: bun install -g btca');\n",
-  "timestamp": 1774253187489
+	"callID": "toolu_vrtx_014ngj6KdMQovjoiDhaT3daW",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "#!/usr/bin/env bun\n\nif (typeof Bun === 'undefined') {\n\tconsole.error('[btca] This CLI requires Bun. Install it: https://bun.sh');\n\tconsole.error('       Then run: bun install -g btca');\n",
+	"timestamp": 1774253187489
 }

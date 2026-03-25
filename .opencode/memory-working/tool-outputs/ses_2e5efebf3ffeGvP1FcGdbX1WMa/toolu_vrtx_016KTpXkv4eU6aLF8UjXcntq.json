@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_016KTpXkv4eU6aLF8UjXcntq",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "INFO  2026-03-23T09:47:37 +569ms service=plugin path=file:///home/user/code/.opencode/plugins/autoresearch-context.ts loading plugin\n    \"file:///home/user/code/.opencode/plugins/autoresearch-context.ts\"\n",
-  "timestamp": 1774259257178
+	"callID": "toolu_vrtx_016KTpXkv4eU6aLF8UjXcntq",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "INFO  2026-03-23T09:47:37 +569ms service=plugin path=file:///home/user/code/.opencode/plugins/autoresearch-context.ts loading plugin\n    \"file:///home/user/code/.opencode/plugins/autoresearch-context.ts\"\n",
+	"timestamp": 1774259257178
 }

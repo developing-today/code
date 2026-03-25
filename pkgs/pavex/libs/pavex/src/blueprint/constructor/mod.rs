@@ -1,4 +1,4 @@
-//! Register constructors for the types that can be injected into your request and error handlers.  
+//! Register constructors for the types that can be injected into your request and error handlers.
 //!
 //! Check out [`Blueprint::constructor`] for a brief introduction to dependency injection in Pavex.
 //!
@@ -27,7 +27,7 @@ impl<'a> Constructor<'a> {
     /// Error handlers convert the error type returned by your constructor into an HTTP response.
     ///
     /// Error handlers CANNOT consume the error type, they must take a reference to the
-    /// error as input.  
+    /// error as input.
     /// Error handlers can have additional input parameters alongside the error, as long as there
     /// are constructors registered for those parameter types.
     ///

@@ -20,7 +20,7 @@ pub struct GeneratedApp {
 }
 
 #[derive(Clone, Debug)]
-/// The fields that we *must* control in the manifest for the generated application.  
+/// The fields that we *must* control in the manifest for the generated application.
 pub struct GeneratedManifest {
     /// The non-dev dependencies required by the generated code.
     pub dependencies: BTreeMap<String, Dependency>,

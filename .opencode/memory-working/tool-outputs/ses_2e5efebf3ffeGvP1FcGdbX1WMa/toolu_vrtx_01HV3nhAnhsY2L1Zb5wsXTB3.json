@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01HV3nhAnhsY2L1Zb5wsXTB3",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "fatal: bad revision 'main'\n",
-  "timestamp": 1774259625286
+	"callID": "toolu_vrtx_01HV3nhAnhsY2L1Zb5wsXTB3",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "fatal: bad revision 'main'\n",
+	"timestamp": 1774259625286
 }

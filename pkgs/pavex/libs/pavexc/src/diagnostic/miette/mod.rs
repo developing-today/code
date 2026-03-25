@@ -1,13 +1,13 @@
 use miette::{LabeledSpan, SourceOffset, SourceSpan};
 
-/// Helper methods to reduce boilerplate when working with [`miette::SourceSpan`]s.  
+/// Helper methods to reduce boilerplate when working with [`miette::SourceSpan`]s.
 /// We might eventually want to upstream them.
 pub trait SourceSpanExt {
     fn labeled(self, label_msg: String) -> LabeledSpan;
     fn unlabeled(self) -> LabeledSpan;
 }
 
-/// Helper methods to reduce boilerplate when working with an optional [`miette::SourceSpan`].  
+/// Helper methods to reduce boilerplate when working with an optional [`miette::SourceSpan`].
 pub trait OptionalSourceSpanExt {
     fn labeled(self, label_msg: String) -> Option<LabeledSpan>;
     fn unlabeled(self) -> Option<LabeledSpan>;

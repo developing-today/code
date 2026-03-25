@@ -1,7 +1,7 @@
 { pkgs }:
 {
   gzipJson =
-    { }:
+    _:
     {
       generate =
         name: value:
@@ -18,6 +18,6 @@
             ''
         ) { };
 
-      type = (pkgs.formats.json { }).type;
+      inherit ((pkgs.formats.json { })) type;
     };
 }

@@ -23,18 +23,18 @@ Effective config (ResolvedConfig)
 
 Three negative flags modify which layers participate:
 
-| Flag | Effect |
-|------|--------|
-| `--replace-defaults` | Use **only** `defaults.conf` values for topic/secret, skip hardcoded constants. If `defaults.conf` has no entry for a field, that field is empty. |
-| `--no-default-bootstrap` | Drop all bootstrap nodes from layers 1-2. Only CLI `--bootstrap` nodes survive. |
-| `--no-default-topic` | Drop topic and secret from layers 1-2. Falls back to the hardcoded constants (`DEFAULT_TOPIC` / `DEFAULT_TOPIC_SECRET`). CLI `--topic` / `--topic-secret` still take precedence. |
+| Flag                     | Effect                                                                                                                                                                           |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--replace-defaults`     | Use **only** `defaults.conf` values for topic/secret, skip hardcoded constants. If `defaults.conf` has no entry for a field, that field is empty.                                |
+| `--no-default-bootstrap` | Drop all bootstrap nodes from layers 1-2. Only CLI `--bootstrap` nodes survive.                                                                                                  |
+| `--no-default-topic`     | Drop topic and secret from layers 1-2. Falls back to the hardcoded constants (`DEFAULT_TOPIC` / `DEFAULT_TOPIC_SECRET`). CLI `--topic` / `--topic-secret` still take precedence. |
 
 Kill switches:
 
-| Flag | Command(s) | Effect |
-|------|-----------|--------|
-| `--no-gossip` | `serve` | Disable the entire gossip subsystem. No `Gossip` instance is created, no ALPN is registered, no topic is joined, no announce/receive/cleanup tasks run. The server still accepts blob and RPC connections. |
-| `--no-mdns` | `serve`, `peers` | Disable mDNS-based local network peer discovery. The iroh endpoint is created without `MdnsAddressLookup`. |
+| Flag          | Command(s)       | Effect                                                                                                                                                                                                     |
+| ------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--no-gossip` | `serve`          | Disable the entire gossip subsystem. No `Gossip` instance is created, no ALPN is registered, no topic is joined, no announce/receive/cleanup tasks run. The server still accepts blob and RPC connections. |
+| `--no-mdns`   | `serve`, `peers` | Disable mDNS-based local network peer discovery. The iroh endpoint is created without `MdnsAddressLookup`.                                                                                                 |
 
 ## `defaults.conf` Format
 
@@ -97,10 +97,12 @@ pub fn resolve_config(
 ```
 
 Single merge point called from exactly two sites:
+
 - `cmd_serve()` in `src/commands/serve.rs`
 - `discover_via_gossip()` in `src/commands/peers.rs`
 
 Algorithm:
+
 1. Start with hardcoded `DEFAULT_TOPIC` / `DEFAULT_TOPIC_SECRET`.
 2. If `defaults.conf` has topic/secret, override. If `defaults.conf` has bootstrap entries, collect them.
 3. If `replace_defaults`: skip step 1 entirely -- use only `defaults.conf` values.
@@ -170,6 +172,7 @@ Uses iroh's built-in `address-lookup-mdns` feature flag, which depends on the `s
 **Cargo.toml**: `iroh = { version = "0.97", features = ["address-lookup-mdns"] }`
 
 **Endpoint builder pattern**:
+
 ```rust
 use iroh::address_lookup::MdnsAddressLookup;
 
@@ -182,12 +185,12 @@ let endpoint = builder.bind().await?;
 
 ### Where mDNS is Enabled
 
-| Location | Behavior |
-|----------|----------|
-| `cmd_serve()` | Conditional on `--no-mdns` flag |
-| `discover_via_gossip()` (peers command) | Conditional on `--no-mdns` flag |
-| `query_remote_peers()` (peers command) | Conditional on `--no-mdns` flag |
-| `crawl_peers()` (peers command) | Passes `no_mdns` through to `query_remote_peers()` |
+| Location                                     | Behavior                                              |
+| -------------------------------------------- | ----------------------------------------------------- |
+| `cmd_serve()`                                | Conditional on `--no-mdns` flag                       |
+| `discover_via_gossip()` (peers command)      | Conditional on `--no-mdns` flag                       |
+| `query_remote_peers()` (peers command)       | Conditional on `--no-mdns` flag                       |
+| `crawl_peers()` (peers command)              | Passes `no_mdns` through to `query_remote_peers()`    |
 | `create_local_client_endpoint()` (client.rs) | Always enabled -- mDNS benefits local RPC connections |
 
 ### Relationship to `presets::N0`
@@ -197,12 +200,14 @@ let endpoint = builder.bind().await?;
 ### Startup Output
 
 When `--no-gossip` and `--no-mdns` are not set:
+
 ```
 peers: gossip enabled (topic: id-default)
 mdns: enabled
 ```
 
 With `--no-mdns`:
+
 ```
 peers: gossip enabled (topic: id-default)
 mdns: disabled
@@ -221,17 +226,17 @@ config.bootstrap.retain(|id| seen.insert(id.clone()));
 
 ## Files Changed
 
-| File | Change |
-|------|--------|
-| `src/defaults.conf` | **New** -- build-time defaults file, embedded via `include_str!()` |
-| `Cargo.toml` | Changed `iroh = "0.97"` to `iroh = { version = "0.97", features = ["address-lookup-mdns"] }` |
-| `src/discovery.rs` | Added `Defaults`, `parse_defaults()`, `defaults()`, `DEFAULTS_CONF`, `PARSED_DEFAULTS` (LazyLock), `ResolvedConfig`, `resolve_config()` with bootstrap dedup, 14 new tests |
-| `src/cli.rs` | Added `no_gossip`, `no_default_bootstrap`, `no_default_topic`, `replace_defaults`, `no_mdns` to `Serve`; added `no_default_bootstrap`, `no_default_topic`, `replace_defaults`, `no_mdns` to `Peers`; 11 new tests |
-| `src/main.rs` | Updated `Serve` and `Peers` dispatch to destructure and forward all new fields including `no_mdns` |
-| `src/commands/serve.rs` | Rewrote `cmd_serve()` to accept `no_mdns` param; conditional `MdnsAddressLookup` on endpoint builder; mDNS status in startup output |
-| `src/commands/peers.rs` | Added `no_mdns` to `PeersOptions`; wired into `discover_via_gossip()`, `query_remote_peers()`, and `crawl_peers()` endpoint builders |
-| `src/commands/client.rs` | Added `MdnsAddressLookup` to `create_local_client_endpoint()` (always-on) |
-| `src/lib.rs` | Added re-exports: `Defaults`, `ResolvedConfig`, `defaults`, `parse_defaults`, `resolve_config` |
+| File                     | Change                                                                                                                                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/defaults.conf`      | **New** -- build-time defaults file, embedded via `include_str!()`                                                                                                                                                |
+| `Cargo.toml`             | Changed `iroh = "0.97"` to `iroh = { version = "0.97", features = ["address-lookup-mdns"] }`                                                                                                                      |
+| `src/discovery.rs`       | Added `Defaults`, `parse_defaults()`, `defaults()`, `DEFAULTS_CONF`, `PARSED_DEFAULTS` (LazyLock), `ResolvedConfig`, `resolve_config()` with bootstrap dedup, 14 new tests                                        |
+| `src/cli.rs`             | Added `no_gossip`, `no_default_bootstrap`, `no_default_topic`, `replace_defaults`, `no_mdns` to `Serve`; added `no_default_bootstrap`, `no_default_topic`, `replace_defaults`, `no_mdns` to `Peers`; 11 new tests |
+| `src/main.rs`            | Updated `Serve` and `Peers` dispatch to destructure and forward all new fields including `no_mdns`                                                                                                                |
+| `src/commands/serve.rs`  | Rewrote `cmd_serve()` to accept `no_mdns` param; conditional `MdnsAddressLookup` on endpoint builder; mDNS status in startup output                                                                               |
+| `src/commands/peers.rs`  | Added `no_mdns` to `PeersOptions`; wired into `discover_via_gossip()`, `query_remote_peers()`, and `crawl_peers()` endpoint builders                                                                              |
+| `src/commands/client.rs` | Added `MdnsAddressLookup` to `create_local_client_endpoint()` (always-on)                                                                                                                                         |
+| `src/lib.rs`             | Added re-exports: `Defaults`, `ResolvedConfig`, `defaults`, `parse_defaults`, `resolve_config`                                                                                                                    |
 
 ## Test Coverage
 
@@ -275,13 +280,13 @@ config.bootstrap.retain(|id| seen.insert(id.clone()));
 
 ## Verification
 
-| Check | Result |
-|-------|--------|
-| `cargo fmt` | Clean |
-| `cargo clippy --all-targets --all-features` | 0 warnings |
-| `cargo check --all-features` | Clean (swarm-discovery compiles) |
-| `cargo test --all-features --lib` | 352 passed, 1 pre-existing failure (unrelated bun asset test) |
-| `just check` | Passes (same 1 pre-existing failure) |
+| Check                                       | Result                                                        |
+| ------------------------------------------- | ------------------------------------------------------------- |
+| `cargo fmt`                                 | Clean                                                         |
+| `cargo clippy --all-targets --all-features` | 0 warnings                                                    |
+| `cargo check --all-features`                | Clean (swarm-discovery compiles)                              |
+| `cargo test --all-features --lib`           | 352 passed, 1 pre-existing failure (unrelated bun asset test) |
+| `just check`                                | Passes (same 1 pre-existing failure)                          |
 
 ## Not Yet Implemented
 

@@ -591,12 +591,11 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         // Resolve display name from name/file/path tags (prefer name > file > path)
         if matches!(tag.key.as_bytes(), b"name" | b"file" | b"path") {
             let subj = tag.subject.display_lossy();
-            if !display_name_map.contains_key(&subj) {
-                if let Some(ref v) = tag.value {
-                    if let Some(s) = v.as_str() {
-                        display_name_map.insert(subj, s.to_owned());
-                    }
-                }
+            if !display_name_map.contains_key(&subj)
+                && let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+            {
+                display_name_map.insert(subj, s.to_owned());
             }
         }
         // Collect user-visible tags (not system tags)
@@ -606,7 +605,9 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
                 .or_default()
                 .push((
                     tag.key.display_lossy(),
-                    tag.value.as_ref().map(|v| v.display_lossy()),
+                    tag.value
+                        .as_ref()
+                        .map(super::super::tags::TagValue::display_lossy),
                 ));
         }
     }

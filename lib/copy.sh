@@ -31,7 +31,7 @@ for file in "$source_dir"/*; do
 
     # Get just the filename
     filename=$(basename "$file")
-    
+
     # If the file doesn't exist in the target directory, just move it
     if [ ! -e "$target_dir/$filename" ]; then
         mv "$file" "$target_dir/"

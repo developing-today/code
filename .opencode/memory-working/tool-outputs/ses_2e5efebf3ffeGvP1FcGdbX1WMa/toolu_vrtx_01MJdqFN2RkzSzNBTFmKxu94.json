@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01MJdqFN2RkzSzNBTFmKxu94",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/.opencode-wrapped\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/opencode\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/share/bash-completion/completions/opencode.bash\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/share/zsh/site-functions/_opencode\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/share/opencode/schema.json\n",
-  "timestamp": 1774258809649
+	"callID": "toolu_vrtx_01MJdqFN2RkzSzNBTFmKxu94",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/.opencode-wrapped\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/opencode\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/share/bash-completion/completions/opencode.bash\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/share/zsh/site-functions/_opencode\n/nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/share/opencode/schema.json\n",
+	"timestamp": 1774258809649
 }

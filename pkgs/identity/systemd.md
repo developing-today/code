@@ -20,8 +20,8 @@ ExecStart=/usr/bin/charm serve
 WantedBy=multi-user.target
 ```
 
-* Set the proper `charm` binary path in `ExecStart=`
-* Set where the data should be stored at in `CHARM_SERVER_DATA_DIR`
+- Set the proper `charm` binary path in `ExecStart=`
+- Set where the data should be stored at in `CHARM_SERVER_DATA_DIR`
 
 If you’re using TLS, don’t forget to set the appropriate environment variables
 in the systemd service file as described below.
@@ -30,11 +30,10 @@ in the systemd service file as described below.
 
 See [TLS](README.md#tls) for more information.
 
-***
+---
 
 Part of [Charm](https://charm.sh).
 
 <a href="https://charm.sh/"><img alt="the Charm logo" src="https://stuff.charm.sh/charm-badge-unrounded.jpg" width="400"></a>
 
 Charm热爱开源 • Charm loves open source
-

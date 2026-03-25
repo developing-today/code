@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_016zxaCrLXpYdYsuuYfBXJMw",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "total 80\ndrwxr-xr-x 11 user users 4096 Mar 22 23:02 .\ndrwxr-xr-x 88 user users 4096 Mar 23 03:51 ..\n-rw-r--r--  1 user users  706 Mar 22 23:02 bun.lock\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 command\ndrwxr-xr-x  2 user users 4096 Mar 22 00:45 commands\n-rw-r--r--  1 user users  122 Mar 21 23:24 dcp.jsonc\n-rw-r--r--  1 user users   45 Jan 18 02:50 .gitignore\ndrwxr-xr-x  4 user users 4096 Mar 20 21:12 node_modules\n-rw-r--r--  1 user users 1083 Mar 23 00:47 opencode.json\n-rw-r--r--  1 user users   11 Mar 23 00:07 opencode-notifier-state.json\n-rw-r--r--  1 user users   58 Mar 22 23:02 package.json\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 pilot\ndrwxr-xr-x  4 user users 4096 Mar 22 01:05 plugin\ndrwxr-xr-x  2 user users 4096 Mar 22 00:45 plugins\ndrwxr-xr-x  2 user users 4096 Mar 22 00:45 scripts\n-rw-r--r--  1 user users 2531 Jan 19 00:31 settings.json.bak\ndrwxr-xr-x  3 user users 4096 Mar 22 00:45 skills\n-rw-r--r--  1 user users  349 Mar 22 01:05 subtask2.jsonc\ndrwxr-xr-x  2 user users 4096 Mar 21 23:30 themes\n-rw-r--r--  1 user users   74 Mar 22 01:25 tui.json\n",
-  "timestamp": 1774258772684
+	"callID": "toolu_vrtx_016zxaCrLXpYdYsuuYfBXJMw",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "total 80\ndrwxr-xr-x 11 user users 4096 Mar 22 23:02 .\ndrwxr-xr-x 88 user users 4096 Mar 23 03:51 ..\n-rw-r--r--  1 user users  706 Mar 22 23:02 bun.lock\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 command\ndrwxr-xr-x  2 user users 4096 Mar 22 00:45 commands\n-rw-r--r--  1 user users  122 Mar 21 23:24 dcp.jsonc\n-rw-r--r--  1 user users   45 Jan 18 02:50 .gitignore\ndrwxr-xr-x  4 user users 4096 Mar 20 21:12 node_modules\n-rw-r--r--  1 user users 1083 Mar 23 00:47 opencode.json\n-rw-r--r--  1 user users   11 Mar 23 00:07 opencode-notifier-state.json\n-rw-r--r--  1 user users   58 Mar 22 23:02 package.json\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 pilot\ndrwxr-xr-x  4 user users 4096 Mar 22 01:05 plugin\ndrwxr-xr-x  2 user users 4096 Mar 22 00:45 plugins\ndrwxr-xr-x  2 user users 4096 Mar 22 00:45 scripts\n-rw-r--r--  1 user users 2531 Jan 19 00:31 settings.json.bak\ndrwxr-xr-x  3 user users 4096 Mar 22 00:45 skills\n-rw-r--r--  1 user users  349 Mar 22 01:05 subtask2.jsonc\ndrwxr-xr-x  2 user users 4096 Mar 21 23:30 themes\n-rw-r--r--  1 user users   74 Mar 22 01:25 tui.json\n",
+	"timestamp": 1774258772684
 }

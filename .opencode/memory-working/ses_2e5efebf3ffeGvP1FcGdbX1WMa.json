@@ -1,292 +1,292 @@
 {
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "slots": {
-    "error": [
-      {
-        "id": "wm_1774260281291_3vfjd6x",
-        "type": "error",
-        "content": "      \"prompt\": \"<environment>\\nYou are running as part of the \\\"micode\\\" OpenCode plugin (NOT Claude Code).\\nOpenCode is a different platform with its own agent system.\\nAvailable micode agents: comm",
-        "source": "tool:bash",
-        "timestamp": 1774261086485,
-        "relevanceScore": 0,
-        "mentions": 4
-      },
-      {
-        "id": "wm_1774260281292_16m9uim",
-        "type": "error",
-        "content": "      \"prompt\": \"<environment>\\nYou are running as part of the \\\"micode\\\" OpenCode plugin (NOT Claude Code).\\nYou are a SUBAGENT for analyzing and explaining code behavior.\\n</environment>\\n\\n<purpose",
-        "source": "tool:bash",
-        "timestamp": 1774261086485,
-        "relevanceScore": 0,
-        "mentions": 2
-      }
-    ],
-    "decision": [],
-    "todo": [],
-    "dependency": []
-  },
-  "pool": [
-    {
-      "id": "wm_1774259112947_t8l836j",
-      "type": "file-path",
-      "content": "autoresearch.md",
-      "source": "tool:read",
-      "timestamp": 1774260287143,
-      "relevanceScore": 31.22042650685614,
-      "mentions": 10,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259112947_ji372qk",
-      "type": "file-path",
-      "content": "autoresearch.js",
-      "source": "tool:read",
-      "timestamp": 1774260287143,
-      "relevanceScore": 31.097857423453625,
-      "mentions": 10,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259112948_5xz9enr",
-      "type": "file-path",
-      "content": "experiments/worklog.md",
-      "source": "tool:read",
-      "timestamp": 1774260287143,
-      "relevanceScore": 30.954211141659677,
-      "mentions": 10,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259112948_fxsafks",
-      "type": "file-path",
-      "content": "autoresearch.ideas.md",
-      "source": "tool:read",
-      "timestamp": 1774260287143,
-      "relevanceScore": 27.61142114739733,
-      "mentions": 9,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259112947_v70kkoz",
-      "type": "file-path",
-      "content": "/home/user/code/.opencode/plugins/autoresearch-context.ts",
-      "source": "tool:read",
-      "timestamp": 1774260287143,
-      "relevanceScore": 21.851988466932653,
-      "mentions": 7,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774258766995_qq5y3n7",
-      "type": "file-path",
-      "content": "/home/user/code/.opencode/opencode.js",
-      "source": "tool:glob",
-      "timestamp": 1774258771188,
-      "relevanceScore": 6.348877070460766,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259579843_da1dcr2",
-      "type": "file-path",
-      "content": "/home/user/autoresearch-opencode/plugins/autoresearch-context.ts",
-      "source": "tool:read",
-      "timestamp": 1774259620076,
-      "relevanceScore": 6.344211048196046,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259819212_bk0bpxj",
-      "type": "file-path",
-      "content": "skills/autoresearch/SKILL.md",
-      "source": "tool:read",
-      "timestamp": 1774260311560,
-      "relevanceScore": 5.242843630658498,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259819212_f989j8q",
-      "type": "file-path",
-      "content": "commands/autoresearch.md",
-      "source": "tool:read",
-      "timestamp": 1774260311560,
-      "relevanceScore": 5.0195968179382415,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259819211_9mc9fjt",
-      "type": "file-path",
-      "content": "plugins/autoresearch-context.ts",
-      "source": "tool:read",
-      "timestamp": 1774260311560,
-      "relevanceScore": 4.7611728824082125,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259162922_g591i0b",
-      "type": "file-path",
-      "content": "opencode-ai/plugin/dist/index.d.ts",
-      "source": "tool:read",
-      "timestamp": 1774260747181,
-      "relevanceScore": 4.4606600574499105,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259162923_qbgqr8w",
-      "type": "file-path",
-      "content": "./shell.js",
-      "source": "tool:read",
-      "timestamp": 1774260747181,
-      "relevanceScore": 4.099402371153267,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259162923_i2b7vgs",
-      "type": "file-path",
-      "content": "./tool.js",
-      "source": "tool:read",
-      "timestamp": 1774260747181,
-      "relevanceScore": 3.6743933284513344,
-      "mentions": 2,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774258760333_7ns5vff",
-      "type": "file-path",
-      "content": "/home/user/code/pkgs/id/.opencode/memory-working/tool-outputs/ses_2eba407d2ffeJTu2Y3TcR8Kl05/toolu_vrtx_01MtcAkrXJbZdMc4KpiVMKk3.json",
-      "source": "tool:grep",
-      "timestamp": 1774258760332,
-      "relevanceScore": 3.1744395484203634,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774258760337_vslr3ot",
-      "type": "file-path",
-      "content": "/home/user/code/pkgs/id/.opencode/memory-working/tool-outputs/ses_2eba407d2ffeJTu2Y3TcR8Kl05/toolu_vrtx_01DmmNg9MKszFghQmpp3P5rq.json",
-      "source": "tool:grep",
-      "timestamp": 1774258760332,
-      "relevanceScore": 3.174439365461929,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774258760337_wlaexao",
-      "type": "file-path",
-      "content": "/home/user/code/.opencode/memory-working/tool-outputs/ses_2ebd4f376ffeUEUL0yVX5nP0FA/toolu_vrtx_01Y5zDWMNh1YeU4JrGNi2Ndc.json",
-      "source": "tool:grep",
-      "timestamp": 1774258760332,
-      "relevanceScore": 3.1744391502167137,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774258771188_vu0qs72",
-      "type": "file-path",
-      "content": "//opencode.ai/config.js",
-      "source": "tool:read",
-      "timestamp": 1774258771188,
-      "relevanceScore": 3.174438248578908,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774258771188_guwy3t0",
-      "type": "file-path",
-      "content": "/.config/opencode/plugin/shell-strategy/shell_strategy.md",
-      "source": "tool:read",
-      "timestamp": 1774258771188,
-      "relevanceScore": 3.174437836236688,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259113197_acc8fxm",
-      "type": "file-path",
-      "content": "/home/user/code/.opencode/commands/autoresearch.md",
-      "source": "tool:glob",
-      "timestamp": 1774259113197,
-      "relevanceScore": 3.1744221441513805,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259477817_jwl6vxo",
-      "type": "file-path",
-      "content": "/home/user/code/.opencode/skills/autoresearch/SKILL.md",
-      "source": "tool:read",
-      "timestamp": 1774259477817,
-      "relevanceScore": 3.173988969490243,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259477818_t3t52e7",
-      "type": "file-path",
-      "content": "autoresearch-dashboard.md",
-      "source": "tool:read",
-      "timestamp": 1774259477817,
-      "relevanceScore": 3.1734518282323125,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259819212_yuwcaut",
-      "type": "file-path",
-      "content": "/plugins/autoresearch-context.ts",
-      "source": "tool:read",
-      "timestamp": 1774259819211,
-      "relevanceScore": 3.163641008855589,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774259819212_ulqkes8",
-      "type": "file-path",
-      "content": "/skills/autoresearch/SKILL.md",
-      "source": "tool:read",
-      "timestamp": 1774259819211,
-      "relevanceScore": 3.161711380523057,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774260017734_1rbgbmi",
-      "type": "file-path",
-      "content": "/home/user/.config/opencode/plugins/autoresearch-context.ts",
-      "source": "tool:read",
-      "timestamp": 1774260017734,
-      "relevanceScore": 3.137690419245907,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774260311561_4eg48ee",
-      "type": "file-path",
-      "content": "/home/user/autoresearch-opencode/README.md",
-      "source": "tool:read",
-      "timestamp": 1774260311560,
-      "relevanceScore": 2.58532012734375,
-      "mentions": 1,
-      "lastEventCounter": 91
-    },
-    {
-      "id": "wm_1774260311561_74rsu6h",
-      "type": "file-path",
-      "content": "QUICKSTART.md",
-      "source": "tool:read",
-      "timestamp": 1774260311560,
-      "relevanceScore": 2.453317796875,
-      "mentions": 1,
-      "lastEventCounter": 91
-    }
-  ],
-  "eventCounter": 94,
-  "updatedAt": "2026-03-23T10:18:06.487Z"
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"slots": {
+		"error": [
+			{
+				"id": "wm_1774260281291_3vfjd6x",
+				"type": "error",
+				"content": "      \"prompt\": \"<environment>\\nYou are running as part of the \\\"micode\\\" OpenCode plugin (NOT Claude Code).\\nOpenCode is a different platform with its own agent system.\\nAvailable micode agents: comm",
+				"source": "tool:bash",
+				"timestamp": 1774261086485,
+				"relevanceScore": 0,
+				"mentions": 4
+			},
+			{
+				"id": "wm_1774260281292_16m9uim",
+				"type": "error",
+				"content": "      \"prompt\": \"<environment>\\nYou are running as part of the \\\"micode\\\" OpenCode plugin (NOT Claude Code).\\nYou are a SUBAGENT for analyzing and explaining code behavior.\\n</environment>\\n\\n<purpose",
+				"source": "tool:bash",
+				"timestamp": 1774261086485,
+				"relevanceScore": 0,
+				"mentions": 2
+			}
+		],
+		"decision": [],
+		"todo": [],
+		"dependency": []
+	},
+	"pool": [
+		{
+			"id": "wm_1774259112947_t8l836j",
+			"type": "file-path",
+			"content": "autoresearch.md",
+			"source": "tool:read",
+			"timestamp": 1774260287143,
+			"relevanceScore": 31.22042650685614,
+			"mentions": 10,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259112947_ji372qk",
+			"type": "file-path",
+			"content": "autoresearch.js",
+			"source": "tool:read",
+			"timestamp": 1774260287143,
+			"relevanceScore": 31.097857423453625,
+			"mentions": 10,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259112948_5xz9enr",
+			"type": "file-path",
+			"content": "experiments/worklog.md",
+			"source": "tool:read",
+			"timestamp": 1774260287143,
+			"relevanceScore": 30.954211141659677,
+			"mentions": 10,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259112948_fxsafks",
+			"type": "file-path",
+			"content": "autoresearch.ideas.md",
+			"source": "tool:read",
+			"timestamp": 1774260287143,
+			"relevanceScore": 27.61142114739733,
+			"mentions": 9,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259112947_v70kkoz",
+			"type": "file-path",
+			"content": "/home/user/code/.opencode/plugins/autoresearch-context.ts",
+			"source": "tool:read",
+			"timestamp": 1774260287143,
+			"relevanceScore": 21.851988466932653,
+			"mentions": 7,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774258766995_qq5y3n7",
+			"type": "file-path",
+			"content": "/home/user/code/.opencode/opencode.js",
+			"source": "tool:glob",
+			"timestamp": 1774258771188,
+			"relevanceScore": 6.348877070460766,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259579843_da1dcr2",
+			"type": "file-path",
+			"content": "/home/user/autoresearch-opencode/plugins/autoresearch-context.ts",
+			"source": "tool:read",
+			"timestamp": 1774259620076,
+			"relevanceScore": 6.344211048196046,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259819212_bk0bpxj",
+			"type": "file-path",
+			"content": "skills/autoresearch/SKILL.md",
+			"source": "tool:read",
+			"timestamp": 1774260311560,
+			"relevanceScore": 5.242843630658498,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259819212_f989j8q",
+			"type": "file-path",
+			"content": "commands/autoresearch.md",
+			"source": "tool:read",
+			"timestamp": 1774260311560,
+			"relevanceScore": 5.0195968179382415,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259819211_9mc9fjt",
+			"type": "file-path",
+			"content": "plugins/autoresearch-context.ts",
+			"source": "tool:read",
+			"timestamp": 1774260311560,
+			"relevanceScore": 4.7611728824082125,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259162922_g591i0b",
+			"type": "file-path",
+			"content": "opencode-ai/plugin/dist/index.d.ts",
+			"source": "tool:read",
+			"timestamp": 1774260747181,
+			"relevanceScore": 4.4606600574499105,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259162923_qbgqr8w",
+			"type": "file-path",
+			"content": "./shell.js",
+			"source": "tool:read",
+			"timestamp": 1774260747181,
+			"relevanceScore": 4.099402371153267,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259162923_i2b7vgs",
+			"type": "file-path",
+			"content": "./tool.js",
+			"source": "tool:read",
+			"timestamp": 1774260747181,
+			"relevanceScore": 3.6743933284513344,
+			"mentions": 2,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774258760333_7ns5vff",
+			"type": "file-path",
+			"content": "/home/user/code/pkgs/id/.opencode/memory-working/tool-outputs/ses_2eba407d2ffeJTu2Y3TcR8Kl05/toolu_vrtx_01MtcAkrXJbZdMc4KpiVMKk3.json",
+			"source": "tool:grep",
+			"timestamp": 1774258760332,
+			"relevanceScore": 3.1744395484203634,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774258760337_vslr3ot",
+			"type": "file-path",
+			"content": "/home/user/code/pkgs/id/.opencode/memory-working/tool-outputs/ses_2eba407d2ffeJTu2Y3TcR8Kl05/toolu_vrtx_01DmmNg9MKszFghQmpp3P5rq.json",
+			"source": "tool:grep",
+			"timestamp": 1774258760332,
+			"relevanceScore": 3.174439365461929,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774258760337_wlaexao",
+			"type": "file-path",
+			"content": "/home/user/code/.opencode/memory-working/tool-outputs/ses_2ebd4f376ffeUEUL0yVX5nP0FA/toolu_vrtx_01Y5zDWMNh1YeU4JrGNi2Ndc.json",
+			"source": "tool:grep",
+			"timestamp": 1774258760332,
+			"relevanceScore": 3.1744391502167137,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774258771188_vu0qs72",
+			"type": "file-path",
+			"content": "//opencode.ai/config.js",
+			"source": "tool:read",
+			"timestamp": 1774258771188,
+			"relevanceScore": 3.174438248578908,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774258771188_guwy3t0",
+			"type": "file-path",
+			"content": "/.config/opencode/plugin/shell-strategy/shell_strategy.md",
+			"source": "tool:read",
+			"timestamp": 1774258771188,
+			"relevanceScore": 3.174437836236688,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259113197_acc8fxm",
+			"type": "file-path",
+			"content": "/home/user/code/.opencode/commands/autoresearch.md",
+			"source": "tool:glob",
+			"timestamp": 1774259113197,
+			"relevanceScore": 3.1744221441513805,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259477817_jwl6vxo",
+			"type": "file-path",
+			"content": "/home/user/code/.opencode/skills/autoresearch/SKILL.md",
+			"source": "tool:read",
+			"timestamp": 1774259477817,
+			"relevanceScore": 3.173988969490243,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259477818_t3t52e7",
+			"type": "file-path",
+			"content": "autoresearch-dashboard.md",
+			"source": "tool:read",
+			"timestamp": 1774259477817,
+			"relevanceScore": 3.1734518282323125,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259819212_yuwcaut",
+			"type": "file-path",
+			"content": "/plugins/autoresearch-context.ts",
+			"source": "tool:read",
+			"timestamp": 1774259819211,
+			"relevanceScore": 3.163641008855589,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774259819212_ulqkes8",
+			"type": "file-path",
+			"content": "/skills/autoresearch/SKILL.md",
+			"source": "tool:read",
+			"timestamp": 1774259819211,
+			"relevanceScore": 3.161711380523057,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774260017734_1rbgbmi",
+			"type": "file-path",
+			"content": "/home/user/.config/opencode/plugins/autoresearch-context.ts",
+			"source": "tool:read",
+			"timestamp": 1774260017734,
+			"relevanceScore": 3.137690419245907,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774260311561_4eg48ee",
+			"type": "file-path",
+			"content": "/home/user/autoresearch-opencode/README.md",
+			"source": "tool:read",
+			"timestamp": 1774260311560,
+			"relevanceScore": 2.58532012734375,
+			"mentions": 1,
+			"lastEventCounter": 91
+		},
+		{
+			"id": "wm_1774260311561_74rsu6h",
+			"type": "file-path",
+			"content": "QUICKSTART.md",
+			"source": "tool:read",
+			"timestamp": 1774260311560,
+			"relevanceScore": 2.453317796875,
+			"mentions": 1,
+			"lastEventCounter": 91
+		}
+	],
+	"eventCounter": 94,
+	"updatedAt": "2026-03-23T10:18:06.487Z"
 }

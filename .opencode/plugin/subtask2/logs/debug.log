@@ -1,4 +1,4 @@
-[2026-03-25T15:07:09.555Z] Plugin initialized: 6 commands [
+[2026-03-25T16:15:03.109Z] Plugin initialized: 6 commands [
   "worktree",
   "plannotator-last",
   "devcontainer",
@@ -6,14 +6,3 @@
   "plannotator-annotate",
   "plannotator-review"
 ]
-[2026-03-25T15:09:29.609Z] cmd.before: worktree {
-  "return": [],
-  "parallel": []
-}
-[2026-03-25T15:09:29.609Z] Processing 1 parts for $SESSION refs
-[2026-03-25T15:09:29.609Z] Part type=text, hasPrompt=false, hasText=true
-[2026-03-25T15:09:29.609Z] Text part (first 200): Call the `worktree` tool with:
-- `target`: e2e-nix
-- `workdir`: the current working directory (use the directory you are working in)
-
-If no arguments provided, call `worktree` with no target to show c

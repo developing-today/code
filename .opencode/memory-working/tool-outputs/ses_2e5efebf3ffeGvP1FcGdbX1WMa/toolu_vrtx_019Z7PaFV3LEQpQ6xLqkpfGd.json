@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_019Z7PaFV3LEQpQ6xLqkpfGd",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "/home/user/.config/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/code/pkgs/id/.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/code/.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/.cache/opencode/node_modules/micode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n",
-  "timestamp": 1774260744504
+	"callID": "toolu_vrtx_019Z7PaFV3LEQpQ6xLqkpfGd",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "/home/user/.config/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/code/pkgs/id/.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/code/.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n/home/user/.cache/opencode/node_modules/micode/node_modules/@opencode-ai/plugin/dist/index.d.ts\n",
+	"timestamp": 1774260744504
 }

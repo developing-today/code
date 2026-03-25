@@ -1,66 +1,66 @@
 {
-  "assistant": {
-    "default_model": {
-      "provider": "anthropic",
-      "model": "claude-3-5-sonnet-latest"
-    },
-    "version": "2"
-  },
-  "base_keymap": "SublimeText",
-  "ui_font_size": 12,
-  "buffer_font_size": 16,
-  "theme": {
-    "mode": "dark",
-    "light": "Base16 Windows High Contrast",
-    "dark": "Base16 Windows High Contrast"
-  },
-  "tab_size": 2,
-  "use_autoclose": false,
-  "relative_line_numbers": true,
-  "vertical_scroll_margin": 1,
-  "inlay_hints": {
-    "enabled": true,
-    // "show_background": false,
-    "edit_debounce_ms": 0,
-    "scroll_debounce_ms": 0
-  },
-  "inline_blame": {
-    "enabled": true,
-    "delay_ms": 0,
-    "show_commit_summary": true,
-    "min_column": 0
-  },
-  "features": {
-    // "inline_completion_provider": "supermaven"
-    "inline_completion_provider": "copilot"
-  },
-  "auto_update": false,
-  "terminal": {
-    "line_height": "standard",
-    "detect_venv": "off"
-  },
-  "lsp": {
-    "nil": {
-      "settings": {
-        "formatting": {
-          "command": ["nixfmt", "-s", "-v"]
-        }
-      }
-    }
-  },
-  "project_panel": {
-    "default_width": 180,
-    "dock": "right",
-    "file_icons": true,
-    "folder_icons": false,
-    "git_status": true,
-    "indent_size": 1,
-    "indent_guides": {
-      "show": "never"
-    }
-  },
-  "tabs": {
-    "file_icons": true,
-    "git_status": true
-  }
+	"assistant": {
+		"default_model": {
+			"provider": "anthropic",
+			"model": "claude-3-5-sonnet-latest"
+		},
+		"version": "2"
+	},
+	"base_keymap": "SublimeText",
+	"ui_font_size": 12,
+	"buffer_font_size": 16,
+	"theme": {
+		"mode": "dark",
+		"light": "Base16 Windows High Contrast",
+		"dark": "Base16 Windows High Contrast"
+	},
+	"tab_size": 2,
+	"use_autoclose": false,
+	"relative_line_numbers": true,
+	"vertical_scroll_margin": 1,
+	"inlay_hints": {
+		"enabled": true,
+		// "show_background": false,
+		"edit_debounce_ms": 0,
+		"scroll_debounce_ms": 0
+	},
+	"inline_blame": {
+		"enabled": true,
+		"delay_ms": 0,
+		"show_commit_summary": true,
+		"min_column": 0
+	},
+	"features": {
+		// "inline_completion_provider": "supermaven"
+		"inline_completion_provider": "copilot"
+	},
+	"auto_update": false,
+	"terminal": {
+		"line_height": "standard",
+		"detect_venv": "off"
+	},
+	"lsp": {
+		"nil": {
+			"settings": {
+				"formatting": {
+					"command": ["nixfmt", "-s", "-v"]
+				}
+			}
+		}
+	},
+	"project_panel": {
+		"default_width": 180,
+		"dock": "right",
+		"file_icons": true,
+		"folder_icons": false,
+		"git_status": true,
+		"indent_size": 1,
+		"indent_guides": {
+			"show": "never"
+		}
+	},
+	"tabs": {
+		"file_icons": true,
+		"git_status": true
+	}
 }

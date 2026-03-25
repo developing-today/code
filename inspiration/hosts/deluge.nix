@@ -33,7 +33,7 @@
   sops.secrets.deluge-accounts = {
     sopsFile = ../secrets.yaml;
     owner = config.users.users.deluge.name;
-    group = config.users.users.deluge.group;
+    inherit (config.users.users.deluge) group;
     mode = "0600";
   };
 

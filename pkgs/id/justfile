@@ -471,6 +471,16 @@ tree:
 loc:
     tokei
 
+# Recursively chown all files (including hidden) to current user:group (requires sudo)
+[group('util')]
+chown:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    id
+    user="$(id -u)"
+    group="$(id -g)"
+    sudo chown -R "$user:$group" .
+
 # =============================================================================
 # Flake Input Management
 # =============================================================================

@@ -63,7 +63,7 @@ impl ExtractRouteParamsError {
     /// Convert an [`ExtractRouteParamsError`] into an HTTP response.
     ///
     /// It returns a `500 Internal Server Error` to the caller if the failure was caused by a
-    /// programmer error (e.g. `T` in [`RouteParams<T>`] is an unsupported type).  
+    /// programmer error (e.g. `T` in [`RouteParams<T>`] is an unsupported type).
     /// It returns a `400 Bad Request` for all other cases.
     ///
     /// [`RouteParams<T>`]: struct@crate::extract::route::RouteParams

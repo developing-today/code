@@ -13,6 +13,7 @@
 
 {
   NIX_CONFIG = "extra-experimental-features = nix-command flakes ca-derivations";
+  TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
 
   # Native build inputs (tools)
   nativeBuildInputs = with pkgs; [

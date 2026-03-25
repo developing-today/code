@@ -4,7 +4,7 @@ Type
 CreateType
 - test
 - test2
-- 
+-
 
 # TypeLinkCharacteristics
 # TypeLinkDetails
@@ -48,7 +48,7 @@ CreateFormat
 Content
 CreateContent
 
-# RawContent 
+# RawContent
 # content has a url to data,
 # maybe a hash / format
 # for data platform has interned it could be in rawcontent
@@ -58,7 +58,7 @@ CreateContent
 #   s3 path
 #   websocket call/response or logs
 #   hashmap / in-ram cache
-#   
+#
 
 # Entity
 

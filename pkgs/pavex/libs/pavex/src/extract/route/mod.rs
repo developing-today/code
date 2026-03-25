@@ -38,7 +38,7 @@
 /// for the type that it is applied to.
 ///
 /// Check out [`RouteParams`](struct@RouteParams) for more details on how to work with
-/// route parameters in Pavex.  
+/// route parameters in Pavex.
 /// Check out [`StructuralDeserialize`] if you are curious about the rationale behind this
 /// macro.
 ///

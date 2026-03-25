@@ -48,7 +48,7 @@ in
                   address = "${(networkBase interfaceIndices.${interface}).prefix}.${
                     (networkBase interfaceIndices.${interface}).gateway
                   }";
-                  prefixLength = (networkBase interfaceIndices.${interface}).prefixLength;
+                  inherit ((networkBase interfaceIndices.${interface})) prefixLength;
                 }
               ];
             };
@@ -59,8 +59,8 @@ in
     ) { } internalInterfaces;
     nat = {
       enable = true;
-      externalInterface = externalInterface;
-      internalInterfaces = internalInterfaces;
+      inherit externalInterface;
+      inherit internalInterfaces;
     };
   };
   services = {

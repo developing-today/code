@@ -71,7 +71,7 @@ enum Commands {
         /// the application to the specified path.
         #[clap(long, value_parser)]
         diagnostics: Option<PathBuf>,
-        /// The path to the directory that will contain the manifest and the source code for the generated application crate.  
+        /// The path to the directory that will contain the manifest and the source code for the generated application crate.
         /// If the provided path is relative, it is interpreted as relative to the root of the current workspace.
         #[clap(short, long, value_parser)]
         output: PathBuf,

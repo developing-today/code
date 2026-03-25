@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01EY74FYh4XSauMB4k84zpXx",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "488:export default OpenCodeConfigPlugin;\n",
-  "timestamp": 1774259143120
+	"callID": "toolu_vrtx_01EY74FYh4XSauMB4k84zpXx",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "488:export default OpenCodeConfigPlugin;\n",
+	"timestamp": 1774259143120
 }

@@ -4,14 +4,14 @@ See [original plan](../../.opencode/plans/prosemirror-content-modes.md)
 
 ## Implementation Status
 
-| Phase | Status | Location |
-|-------|--------|----------|
-| Phase 1: Content Mode Infrastructure | ✅ Complete | `src/web/content_mode.rs` |
-| Phase 2: Markdown Conversion | ✅ Complete | `src/web/markdown.rs` |
-| Phase 3: Document Initialization | ✅ Complete | `src/web/collab.rs` |
-| Phase 4: Client Mode Support | ✅ Complete | `web/src/editor.ts`, `web/src/collab.ts` |
-| Phase 5: Media Viewer | ✅ Complete | `src/web/routes.rs`, `src/web/templates.rs` |
-| Phase 6: Save Functionality | 🔜 Deferred | - |
+| Phase                                | Status      | Location                                    |
+| ------------------------------------ | ----------- | ------------------------------------------- |
+| Phase 1: Content Mode Infrastructure | ✅ Complete | `src/web/content_mode.rs`                   |
+| Phase 2: Markdown Conversion         | ✅ Complete | `src/web/markdown.rs`                       |
+| Phase 3: Document Initialization     | ✅ Complete | `src/web/collab.rs`                         |
+| Phase 4: Client Mode Support         | ✅ Complete | `web/src/editor.ts`, `web/src/collab.ts`    |
+| Phase 5: Media Viewer                | ✅ Complete | `src/web/routes.rs`, `src/web/templates.rs` |
+| Phase 6: Save Functionality          | 🔜 Deferred | -                                           |
 
 ## Overview
 
@@ -27,14 +27,14 @@ This feature implements intelligent content handling for the ProseMirror editor 
 
 ## Content Modes
 
-| Mode | Extensions | Description |
-|------|------------|-------------|
-| **Media** | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.mp4`, `.webm`, `.ogg`, `.mp3`, `.wav`, `.pdf` | Native browser rendering, no editing |
-| **Rich** | `.pm.json` | Full editor with native ProseMirror JSON |
-| **Markdown** | `.md`, `.markdown` | Full editor, server converts markdown ↔ PM JSON |
-| **Plain** | `.txt` | Full editor, lines become paragraphs |
-| **Raw** | `.js`, `.ts`, `.rs`, `.py`, `.json`, `.toml`, `.yaml`, etc. | Editor with no toolbar, no formatting shortcuts |
-| **Binary** | Non-UTF8 files | "Cannot display" message + download link |
+| Mode         | Extensions                                                                                        | Description                                      |
+| ------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| **Media**    | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.mp4`, `.webm`, `.ogg`, `.mp3`, `.wav`, `.pdf` | Native browser rendering, no editing             |
+| **Rich**     | `.pm.json`                                                                                        | Full editor with native ProseMirror JSON         |
+| **Markdown** | `.md`, `.markdown`                                                                                | Full editor, server converts markdown ↔ PM JSON |
+| **Plain**    | `.txt`                                                                                            | Full editor, lines become paragraphs             |
+| **Raw**      | `.js`, `.ts`, `.rs`, `.py`, `.json`, `.toml`, `.yaml`, etc.                                       | Editor with no toolbar, no formatting shortcuts  |
+| **Binary**   | Non-UTF8 files                                                                                    | "Cannot display" message + download link         |
 
 ## Architecture
 
@@ -75,31 +75,32 @@ mode: "rich" | "markdown" | "plain" | "raw" | "media" | "binary"
 ### Library: comrak
 
 Using `comrak` for CommonMark parsing and serialization:
+
 - Full CommonMark spec compliance
 - Bidirectional: `parse_document()` and `format_commonmark()`
 - Tree-based AST maps well to ProseMirror's tree structure
 
 ### Node Mapping
 
-| Comrak NodeValue | ProseMirror Node/Mark |
-|------------------|----------------------|
-| `Document` | `doc` |
-| `Paragraph` | `paragraph` |
-| `Heading(level)` | `heading` {level} |
-| `BlockQuote` | `blockquote` |
-| `CodeBlock(info, literal)` | `code_block` {params} |
-| `ThematicBreak` | `horizontal_rule` |
-| `List(Ordered)` | `ordered_list` {order, tight} |
-| `List(Bullet)` | `bullet_list` {tight} |
-| `Item` | `list_item` |
-| `Text` | `text` |
-| `SoftBreak` | (space or ignored) |
-| `LineBreak` | `hard_break` |
-| `Emph` | mark: `em` |
-| `Strong` | mark: `strong` |
-| `Code(literal)` | mark: `code` |
-| `Link(url, title)` | mark: `link` {href, title} |
-| `Image(url, title)` | `image` {src, alt, title} |
+| Comrak NodeValue           | ProseMirror Node/Mark         |
+| -------------------------- | ----------------------------- |
+| `Document`                 | `doc`                         |
+| `Paragraph`                | `paragraph`                   |
+| `Heading(level)`           | `heading` {level}             |
+| `BlockQuote`               | `blockquote`                  |
+| `CodeBlock(info, literal)` | `code_block` {params}         |
+| `ThematicBreak`            | `horizontal_rule`             |
+| `List(Ordered)`            | `ordered_list` {order, tight} |
+| `List(Bullet)`             | `bullet_list` {tight}         |
+| `Item`                     | `list_item`                   |
+| `Text`                     | `text`                        |
+| `SoftBreak`                | (space or ignored)            |
+| `LineBreak`                | `hard_break`                  |
+| `Emph`                     | mark: `em`                    |
+| `Strong`                   | mark: `strong`                |
+| `Code(literal)`            | mark: `code`                  |
+| `Link(url, title)`         | mark: `link` {href, title}    |
+| `Image(url, title)`        | `image` {src, alt, title}     |
 
 ### Mark Accumulation
 
@@ -116,6 +117,7 @@ ProseMirror uses marks on text nodes rather than wrapper elements. The conversio
 ### Unsupported GFM Features (v1)
 
 These features are parsed by comrak but stripped/passed through as text:
+
 - Tables → preserved as pipe-delimited text
 - Strikethrough → text without formatting
 - Task lists → regular list items
@@ -127,12 +129,13 @@ These features are parsed by comrak but stripped/passed through as text:
 ### Editor Modes
 
 ```typescript
-type EditorMode = 'rich' | 'markdown' | 'plain' | 'raw';
+type EditorMode = "rich" | "markdown" | "plain" | "raw";
 ```
 
 ### Raw Mode
 
 For code/config files, the editor uses:
+
 - Minimal schema: `doc` → `code_block` → `text`
 - No marks allowed
 - No toolbar (hidden via CSS)
@@ -147,26 +150,26 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 
 ### New Files (Implemented)
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `src/web/content_mode.rs` | ContentMode enum, extension detection | ✅ Complete (14 tests) |
-| `src/web/markdown.rs` | markdown ↔ ProseMirror JSON conversion | ✅ Complete (20 tests) |
-| `web/src/editor.test.ts` | TypeScript tests for editor mode features | ✅ Complete (39 tests) |
-| `web/styles/viewer.css` | Media viewer styles | ⏳ Pending |
+| File                      | Purpose                                   | Status                 |
+| ------------------------- | ----------------------------------------- | ---------------------- |
+| `src/web/content_mode.rs` | ContentMode enum, extension detection     | ✅ Complete (14 tests) |
+| `src/web/markdown.rs`     | markdown ↔ ProseMirror JSON conversion   | ✅ Complete (20 tests) |
+| `web/src/editor.test.ts`  | TypeScript tests for editor mode features | ✅ Complete (39 tests) |
+| `web/styles/viewer.css`   | Media viewer styles                       | ⏳ Pending             |
 
 ### Modified Files
 
-| File | Changes | Status |
-|------|---------|--------|
-| `Cargo.toml` | Add `comrak`, `urlencoding` dependencies | ✅ Complete |
-| `src/web/mod.rs` | Add modules | ✅ Complete |
-| `src/web/routes.rs` | Add blob handler, refactor edit handler | ⏳ Pending |
-| `src/web/templates.rs` | Add `data-filename` attribute to editor | ✅ Complete |
-| `src/web/collab.rs` | Mode-aware document initialization, Init message with mode | ✅ Complete |
-| `web/src/editor.ts` | Mode-aware editor setup, rawSchema, richSchema | ✅ Complete |
-| `web/src/collab.ts` | Parse mode from Init, pass filename as query param | ✅ Complete |
-| `web/src/main.ts` | Pass filename to initCollab | ✅ Complete |
-| `web/styles/editor.css` | Raw mode toolbar hiding | ⏳ Pending |
+| File                    | Changes                                                    | Status      |
+| ----------------------- | ---------------------------------------------------------- | ----------- |
+| `Cargo.toml`            | Add `comrak`, `urlencoding` dependencies                   | ✅ Complete |
+| `src/web/mod.rs`        | Add modules                                                | ✅ Complete |
+| `src/web/routes.rs`     | Add blob handler, refactor edit handler                    | ⏳ Pending  |
+| `src/web/templates.rs`  | Add `data-filename` attribute to editor                    | ✅ Complete |
+| `src/web/collab.rs`     | Mode-aware document initialization, Init message with mode | ✅ Complete |
+| `web/src/editor.ts`     | Mode-aware editor setup, rawSchema, richSchema             | ✅ Complete |
+| `web/src/collab.ts`     | Parse mode from Init, pass filename as query param         | ✅ Complete |
+| `web/src/main.ts`       | Pass filename to initCollab                                | ✅ Complete |
+| `web/styles/editor.css` | Raw mode toolbar hiding                                    | ⏳ Pending  |
 
 ## Implementation Phases
 
@@ -182,6 +185,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 ### Server-Side Changes (Phase 3)
 
 **`src/web/collab.rs`:**
+
 - Added `ContentMode` to `Document` struct
 - Created `content_to_document()` function that:
   - Detects mode from filename extension and content
@@ -194,14 +198,17 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 - 7 new tests for content conversion
 
 **`src/web/templates.rs`:**
+
 - Added `data-filename` attribute to editor container (URL-encoded)
 
 **`Cargo.toml`:**
+
 - Added `urlencoding = "2"` dependency
 
 ### Client-Side Changes (Phase 4)
 
 **`web/src/editor.ts`:**
+
 - Added `ContentMode` type: `'rich' | 'markdown' | 'plain' | 'raw' | 'media' | 'binary'`
 - Created `rawSchema`: minimal schema for code/config files
   - Only allows: `doc` → `code_block+` → `text*`
@@ -217,6 +224,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 - `EditorInstance` now includes `mode` field
 
 **`web/src/collab.ts`:**
+
 - Updated wire protocol docs to show `[0, version, doc, mode]`
 - Added `filename` parameter to `initCollab()` - appended as `?filename=` query param
 - Added `documentMode` tracking
@@ -226,11 +234,13 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 - Fixed reconnect to preserve filename param
 
 **`web/src/main.ts`:**
+
 - Extracts `data-filename` from editor container (URL-decodes it)
 - Passes filename to `initCollab()`
 - Logs editor mode on initialization
 
 **`web/src/editor.test.ts`:** (new file)
+
 - 39 tests covering:
   - `hasToolbar()` and `isEditable()` for all modes
   - `getSchema()` returns correct schema for each mode
@@ -241,6 +251,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 ### Server-Side Changes (Phase 5)
 
 **`src/web/content_mode.rs`:**
+
 - Added `get_content_type(filename)` function for MIME type resolution
   - Comprehensive mapping for images (png, jpg, gif, webp, svg)
   - Video types (mp4, webm, ogv, mov, avi)
@@ -250,6 +261,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 - 6 new tests for content type detection
 
 **`src/web/routes.rs`:**
+
 - Added `/blob/:hash` route with `blob_handler()`:
   - Serves raw file bytes from blob store
   - Sets Content-Type from filename (via `?filename=` query param or tag lookup)
@@ -262,6 +274,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 - Added `get_file_bytes()` helper returning `Result<Vec<u8>, String>`
 
 **`src/web/templates.rs`:**
+
 - Added `render_media_viewer(doc_id, name, media_type)`:
   - Image: `<img>` with alt text
   - Video: `<video controls>` with fallback message
@@ -273,6 +286,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
   - Download button
 
 **`web/styles/editor.css`:**
+
 - Added `.media-viewer` styles:
   - Centered flexbox container
   - Min-height 400px
@@ -287,6 +301,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 ## Testing Strategy
 
 ### Unit Tests (Rust) ✅ Complete
+
 - Extension → mode detection (14 tests in `content_mode.rs`)
 - Content-type detection (6 tests in `content_mode.rs`)
 - Markdown → PM JSON for all CommonMark nodes (20 tests in `markdown.rs`)
@@ -294,9 +309,11 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 - Edge cases: empty docs, nested structures, mark combinations
 
 ### Unit Tests (TypeScript) ✅ Complete
+
 - 39 tests for mode helpers and schemas (in `editor.test.ts`)
 
 ### Integration Tests ⏳ Pending
+
 - Load `.md` file → verify structure
 - Load `.pm.json` → verify exact preservation
 - Load `.js` → verify raw mode

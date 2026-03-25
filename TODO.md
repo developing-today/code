@@ -2,11 +2,11 @@ If You refer to this SIDEBAR (collapsed) and want to expand it or collapse it wi
 set it in SETTINGS > KEYBOARD SHORTCUTS > go down to SIDEBAR ACTIONS > specify it at TOGGLE SIDEBAR.
 export XDG_DATA_DIRS=$XDG_DATA_DIRS:/usr/share:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share
 systemd.services.flatpak-repo = {
-  wantedBy = [ "multi-user.target" ];
-  path = [ pkgs.flatpak ];
-  script = ''
-    flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-  '';
+wantedBy = [ "multi-user.target" ];
+path = [ pkgs.flatpak ];
+script = ''
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+'';
 
 re is a workaround:
 Right click in your sidebar => compact mode => hide sidebar
@@ -14,9 +14,10 @@ Then go to settings => keyboard shortcuts => toggle compact mode => assign a sho
 This way, you'll be able to hide the sidebar, by entering compact mode.
 v
 
- Toggle Sidebar's Width shortcut in the Other Zen Features section of the keyboard shortcuts
+Toggle Sidebar's Width shortcut in the Other Zen Features section of the keyboard shortcuts
 
 ---
+
 - firefox custom css
 - add outer-margin to mako module
 - oils home manager program?
@@ -38,23 +39,25 @@ v
 - remove specialArgs and use modules somehow https://discourse.nixos.org/t/import-list-in-configuration-nix-vs-import-function/11372/5
 - what is lib.composeManyExtensions and lib.makeExtensible
 - standalone home manager is broken now, fix
--   nix = {
-      # …
-      registry = lib.mapAttrs (_: value: { flake = value; }) inputs;
-      nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
-    };
--   nix = {
-  settings = {
-    allowed-users = [ "@wheel" ];
-    trusted-users = [ "root" "@wheel" ];
-    experimental-features = [ "nix-command" "flakes" ];
+- nix = {
+  # …
+  registry = lib.mapAttrs (\_: value: { flake = value; }) inputs;
+  nixPath = lib.mapAttrsToList (key: value: "${key}=${value.to.path}") config.nix.registry;
   };
-};
+- nix = {
+  settings = {
+  allowed-users = [ "@wheel" ];
+  trusted-users = [ "root" "@wheel" ];
+  experimental-features = [ "nix-command" "flakes" ];
+  };
+  };
 
 # Does not work without channels.
+
 programs.command-not-found.enable = false;
 
 users.mutableUsers = false;
+
 - secrets
   - sops age key from ssh key for desktop use
   - github secret
@@ -76,11 +79,11 @@ users.mutableUsers = false;
   - home directory auto-permission each user
   - allow bootstrap vs regular
     - # TODO: make-bootstrap-versions
-    - bootstrap hosts as <hostname>_bootstrap
+    - bootstrap hosts as <hostname>\_bootstrap
     - rename hosts after bootstrap to <hostname>
     - auto-update from there
-  - bootstrap with _bootstrap suffix hostname and configuration
-    - nixos-rebuild switch "${hostname%_bootstrap}"
+  - bootstrap with \_bootstrap suffix hostname and configuration
+    - nixos-rebuild switch "${hostname%\_bootstrap}"
     - but why? is there a better alternative using peristent and post-install hooks to setup state?
     - or maybe this sets up the system and then waits for user or remote machine to trigger onlining?
     - avoiding a restart would be nice..
@@ -106,6 +109,7 @@ users.mutableUsers = false;
 - ipxe
 
 ---
+
 https://0xda.de/blog/2024/06/framework-and-nixos-secure-boot-day-three/
 https://0xda.de/blog/2024/07/framework-and-nixos-sops-nix-secrets-management/
 https://github.com/clan-lol/clan-core/blob/a95853276605332edd7bf109d9dce87a3c66a02e/nixosModules/clanCore/facts/secret/sops.nix#L44-L46
@@ -130,66 +134,83 @@ https://willbush.dev/blog/impermanent-nixos/
 https://www.tweag.io/blog/2023-02-09-nixos-vm-on-macos/
 
 ---
+
 networking.nftables.enable = true;
 
 ---
+
 system.switch = {
-  enable = false;
-  enableNg = true;
+enable = false;
+enableNg = true;
 };
 
 ---
+
 boot.initrd.systemd
 
 ---
+
 services.pipewire = {
-  enable = true;
-  alsa.enable = true;
-  pulse.enable = true;
-  # jack.enable = true;
+enable = true;
+alsa.enable = true;
+pulse.enable = true;
+
+# jack.enable = true;
+
 };
 
 ---
+
 security.rtkit.enable = true;
 
 ---
+
 # not networkmanager, but compare iwd and wpa_supplicant
+
 networking.networkmanager.wifi.backend = "iwd"
 
 ---
+
 boot.tmp.useTmpfs = true;
 systemd.services.nix-daemon = {
-  environment.TMPDIR = "/var/tmp";
+environment.TMPDIR = "/var/tmp";
 };
 
 ---
+
 zramSwap = {
-  enable = true;
-  algorithm = "zstd"; # lz4 or zstd
+enable = true;
+algorithm = "zstd"; # lz4 or zstd
 };
 
 ---
+
 services.fstrim.enable = true;
 boot.binfmt.emulatedSystems = [ "aarch64-linux" "riscv64-linux" ];
 services.dbus.implementation = "broker"
 services.irqbalance # only for slow things, not 10gbe
 
 ---
+
 nix.gc = {
-  automatic = true;
-  randomizedDelaySec = "14m";
-  options = "--delete-older-than 30d";
+automatic = true;
+randomizedDelaySec = "14m";
+options = "--delete-older-than 30d";
 };
 
 ---
+
 system.autoUpgrade = {
-  # https://nixos.org/manual/nixos/stable/index.html#sec-upgrading-automatic
-  enable = true;
-  allowReboot = true;
+
+# https://nixos.org/manual/nixos/stable/index.html#sec-upgrading-automatic
+
+enable = true;
+allowReboot = true;
 }
 https://github.com/Misterio77/nix-config/blob/74311ba/modules/nixos/hydra-auto-upgrade.nix#L79
 
 ---
+
 nvme0n1
 gpt
 32gb free
@@ -199,78 +220,82 @@ gpt
 1tb /persist
 
 ---
+
 {
-  fileSystems."/" = {
-    device = "none";
-    fsType = "tmpfs";
-    options = [ "defaults" "size=25%" "mode=755" ];
-  };
+fileSystems."/" = {
+device = "none";
+fsType = "tmpfs";
+options = [ "defaults" "size=25%" "mode=755" ];
+};
 
-  fileSystems."/persistent" = {
-    device = "/dev/root_vg/root";
-    neededForBoot = true;
-    fsType = "btrfs";
-    options = [ "subvol=persistent" ];
-  };
+fileSystems."/persistent" = {
+device = "/dev/root_vg/root";
+neededForBoot = true;
+fsType = "btrfs";
+options = [ "subvol=persistent" ];
+};
 
-  fileSystems."/nix" = {
-    device = "/dev/root_vg/root";
-    fsType = "btrfs";
-    options = [ "subvol=nix" ];
-  };
+fileSystems."/nix" = {
+device = "/dev/root_vg/root";
+fsType = "btrfs";
+options = [ "subvol=nix" ];
+};
 
-  fileSystems."/boot" = {
-    device = "/dev/disk/by-uuid/XXXX-XXXX";
-    fsType = "vfat";
-  };
+fileSystems."/boot" = {
+device = "/dev/disk/by-uuid/XXXX-XXXX";
+fsType = "vfat";
+};
 }
 
 ---
+
 fileSystems."/" =
-    { device = "none";
-      fsType = "tmpfs";
-      options = [ "size=3G" "mode=755" ]; # mode=755 so only root can write to those files
-    };
-  fileSystems."/home/username" =
-    { device = "none";
-      fsType = "tmpfs";  # Can be stored on normal drive or on tmpfs as well
-      options = [ "size=4G" "mode=777" ];
-    };
-  fileSystems."/nix" =  # can be LUKS encrypted
-    { device = "/dev/disk/by-uuid/UUID";
-      fsType = "ext4";
-    };
-  fileSystems."/boot" =
-    { device = "/dev/disk/by-uuid/UUID";
-      fsType = "vfat";
-    };
+{ device = "none";
+fsType = "tmpfs";
+options = [ "size=3G" "mode=755" ]; # mode=755 so only root can write to those files
+};
+fileSystems."/home/username" =
+{ device = "none";
+fsType = "tmpfs"; # Can be stored on normal drive or on tmpfs as well
+options = [ "size=4G" "mode=777" ];
+};
+fileSystems."/nix" = # can be LUKS encrypted
+{ device = "/dev/disk/by-uuid/UUID";
+fsType = "ext4";
+};
+fileSystems."/boot" =
+{ device = "/dev/disk/by-uuid/UUID";
+fsType = "vfat";
+};
 
 ---
+
 { config, pkgs, ... }:
 let
-  impermanence = builtins.fetchTarball "https://github.com/nix-community/impermanence/archive/master.tar.gz";
+impermanence = builtins.fetchTarball "https://github.com/nix-community/impermanence/archive/master.tar.gz";
 in
 {
-  imports = [ "${impermanence}/nixos.nix" ];
+imports = [ "${impermanence}/nixos.nix" ];
 
-  environment.persistence."/nix/persist/system" = {
-    hideMounts = true;
-    directories = [
-      "/var/log"
-      "/var/lib/bluetooth"
-      "/var/lib/nixos"
-      "/var/lib/systemd/coredump"
-      "/etc/NetworkManager/system-connections"
-      { directory = "/var/lib/colord"; user = "colord"; group = "colord"; mode = "u=rwx,g=rx,o="; }
-    ];
-    files = [
-      "/etc/machine-id"
-      { file = "/etc/nix/id_rsa"; parentDirectory = { mode = "u=rwx,g=,o="; }; }
-    ];
-  };
+environment.persistence."/nix/persist/system" = {
+hideMounts = true;
+directories = [
+"/var/log"
+"/var/lib/bluetooth"
+"/var/lib/nixos"
+"/var/lib/systemd/coredump"
+"/etc/NetworkManager/system-connections"
+{ directory = "/var/lib/colord"; user = "colord"; group = "colord"; mode = "u=rwx,g=rx,o="; }
+];
+files = [
+"/etc/machine-id"
+{ file = "/etc/nix/id_rsa"; parentDirectory = { mode = "u=rwx,g=,o="; }; }
+];
+};
 }
 
 ---
+
 /boot, /nix, /var/log, /home - self-explanatory
 /tmp - for large builds (so they don't get put on tmpfs), gets cleaned on reboot if you set boot.tmp.cleanOnBoot
 /var/tmp - just a good idea to not have this on tmpfs
@@ -282,21 +307,22 @@ in
 ...as well as the dirs for all the services. You probably want to add /var/db/dhcpcd and /var/db/sudo/lectured.
 
 ---
-{
-  fileSystems."/" = {
-    device = "/dev/root_vg/root";
-    fsType = "btrfs";
-    options = [ "subvol=root" ];
-  };
 
-  boot.initrd.postDeviceCommands = lib.mkAfter ''
-    mkdir /btrfs_tmp
-    mount /dev/root_vg/root /btrfs_tmp
-    if [[ -e /btrfs_tmp/root ]]; then
-        mkdir -p /btrfs_tmp/old_roots
-        timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/root)" "+%Y-%m-%-d_%H:%M:%S")
-        mv /btrfs_tmp/root "/btrfs_tmp/old_roots/$timestamp"
-    fi
+{
+fileSystems."/" = {
+device = "/dev/root_vg/root";
+fsType = "btrfs";
+options = [ "subvol=root" ];
+};
+
+boot.initrd.postDeviceCommands = lib.mkAfter ''
+mkdir /btrfs*tmp
+mount /dev/root_vg/root /btrfs_tmp
+if [[-e /btrfs_tmp/root]]; then
+mkdir -p /btrfs_tmp/old_roots
+timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/root)" "+%Y-%m-%-d*%H:%M:%S")
+mv /btrfs_tmp/root "/btrfs_tmp/old_roots/$timestamp"
+fi
 
     delete_subvolume_recursively() {
         IFS=$'\n'
@@ -312,32 +338,35 @@ in
 
     btrfs subvolume create /btrfs_tmp/root
     umount /btrfs_tmp
-  '';
 
-  fileSystems."/persistent" = {
-    device = "/dev/root_vg/root";
-    neededForBoot = true;
-    fsType = "btrfs";
-    options = [ "subvol=persistent" ];
-  };
+'';
 
-  fileSystems."/nix" = {
-    device = "/dev/root_vg/root";
-    fsType = "btrfs";
-    options = [ "subvol=nix" ];
-  };
+fileSystems."/persistent" = {
+device = "/dev/root_vg/root";
+neededForBoot = true;
+fsType = "btrfs";
+options = [ "subvol=persistent" ];
+};
 
-  fileSystems."/boot" = {
-    device = "/dev/disk/by-uuid/XXXX-XXXX";
-    fsType = "vfat";
-  };
+fileSystems."/nix" = {
+device = "/dev/root_vg/root";
+fsType = "btrfs";
+options = [ "subvol=nix" ];
+};
+
+fileSystems."/boot" = {
+device = "/dev/disk/by-uuid/XXXX-XXXX";
+fsType = "vfat";
+};
 }
 
 ---
+
 https://aldoborrero.com/posts/2023/01/15/setting-up-my-machines-nix-style/
 boot.initrd.systemd.services.persisted-files = {
 
 ---
+
 /
 /home
 /nix
@@ -354,103 +383,125 @@ boot.initrd.systemd.services.persisted-files = {
 ...as well as the dirs for all the services. You probably want to add /var/db/dhcpcd and /var/db/sudo/lectured.
 
 ---
+
 # configure impermanence
+
 environment.persistence."/persist" = {
-  directories = [
-    "/etc/nixos"
-  ];
-  files = [
-    "/etc/machine-id"
-    "/etc/ssh/ssh_host_ed25519_key"
-    "/etc/ssh/ssh_host_ed25519_key.pub"
-    "/etc/ssh/ssh_host_rsa_key"
-    "/etc/ssh/ssh_host_rsa_key.pub"
+directories = [
+"/etc/nixos"
+];
+files = [
+"/etc/machine-id"
+"/etc/ssh/ssh_host_ed25519_key"
+"/etc/ssh/ssh_host_ed25519_key.pub"
+"/etc/ssh/ssh_host_rsa_key"
+"/etc/ssh/ssh_host_rsa_key.pub"
 };
 
 security.sudo.extraConfig = ''
-  # rollback results in sudo lectures after each reboot
-  Defaults lecture = never
+
+# rollback results in sudo lectures after each reboot
+
+Defaults lecture = never
 '';
 
 ---
+
 isoImage.squashfsCompression = "gzip -Xcompression-level 1";
 
 ---
+
 {
-  # …
 
-  # machine-id is used by systemd for the journal, if you don't
-  # persist this file you won't be able to easily use journalctl to
-  # look at journals for previous boots.
-  environment.etc."machine-id".source
-    = "/nix/persist/etc/machine-id";
+# …
 
+# machine-id is used by systemd for the journal, if you don't
 
-  # if you want to run an openssh daemon, you may want to store the
-  # host keys across reboots.
-  #
-  # For this to work you will need to create the directory yourself:
-  # $ mkdir /nix/persist/etc/ssh
-  environment.etc."ssh/ssh_host_rsa_key".source
-    = "/nix/persist/etc/ssh/ssh_host_rsa_key";
-  environment.etc."ssh/ssh_host_rsa_key.pub".source
-    = "/nix/persist/etc/ssh/ssh_host_rsa_key.pub";
-  environment.etc."ssh/ssh_host_ed25519_key".source
-    = "/nix/persist/etc/ssh/ssh_host_ed25519_key";
-  environment.etc."ssh/ssh_host_ed25519_key.pub".source
-    = "/nix/persist/etc/ssh/ssh_host_ed25519_key.pub";
+# persist this file you won't be able to easily use journalctl to
 
-  # …
+# look at journals for previous boots.
+
+environment.etc."machine-id".source
+= "/nix/persist/etc/machine-id";
+
+# if you want to run an openssh daemon, you may want to store the
+
+# host keys across reboots.
+
+#
+
+# For this to work you will need to create the directory yourself:
+
+# $ mkdir /nix/persist/etc/ssh
+
+environment.etc."ssh/ssh_host_rsa_key".source
+= "/nix/persist/etc/ssh/ssh_host_rsa_key";
+environment.etc."ssh/ssh_host_rsa_key.pub".source
+= "/nix/persist/etc/ssh/ssh_host_rsa_key.pub";
+environment.etc."ssh/ssh_host_ed25519_key".source
+= "/nix/persist/etc/ssh/ssh_host_ed25519_key";
+environment.etc."ssh/ssh_host_ed25519_key.pub".source
+= "/nix/persist/etc/ssh/ssh_host_ed25519_key.pub";
+
+# …
+
 }
 
 ---
+
 https://github.com/NixOS/nix/issues/1971
 https://community.frame.work/t/nixos-on-the-framework-laptop-16/46743/48
 https://xeiaso.net/blog/paranoid-nixos-2021-07-18/
 https://mt-caret.github.io/blog/posts/2020-06-29-optin-state.html
 
-
 ---
-{
-  nix = {
-    extraOptions = ''
-      experimental-features = nix-command flakes
-      !include ${config.sops.secrets.nixAccessTokens.path}
-    '';
-  };
 
-  sops.secrets.nixAccessTokens = {
-    mode = "0440";
-    group = config.users.groups.keys.name;
-  };
+{
+nix = {
+extraOptions = ''
+experimental-features = nix-command flakes
+!include ${config.sops.secrets.nixAccessTokens.path}
+'';
+};
+
+sops.secrets.nixAccessTokens = {
+mode = "0440";
+group = config.users.groups.keys.name;
+};
 }
 https://github.com/NixOS/nix/issues/6536#issuecomment-1254858889
 https://lantian.pub/en/article/modify-computer/nixos-low-ram-vps.lantian/
 boot.kernelParams = [
-  # Disable auditing
-  "audit=0"
-  # Do not generate NIC names based on PCIe addresses (e.g. enp1s0, useless for VPS)
-  # Generate names based on orders (e.g. eth0)
-  "net.ifnames=0"
+
+# Disable auditing
+
+"audit=0"
+
+# Do not generate NIC names based on PCIe addresses (e.g. enp1s0, useless for VPS)
+
+# Generate names based on orders (e.g. eth0)
+
+"net.ifnames=0"
 ];
 boot.initrd = {
-  compressor = "zstd";
-  compressorArgs = ["-19" "-T0"];
-  systemd.enable = true;
+compressor = "zstd";
+compressorArgs = ["-19" "-T0"];
+systemd.enable = true;
 };
 boot.loader.grub = {
-  enable = !config.boot.isContainer;
-  default = "saved";
-  devices = ["/dev/vda"];
+enable = !config.boot.isContainer;
+default = "saved";
+devices = ["/dev/vda"];
 };
 
 # Manage networking with systemd-networkd
+
 systemd.network.enable = true;
 services.resolved.enable = false;
 networking.nameservers = [
-  "8.8.8.8"
+"8.8.8.8"
 ];
-      PermitRootLogin = lib.mkForce "prohibit-password";
+PermitRootLogin = lib.mkForce "prohibit-password";
 
       boot.initrd.postDeviceCommands = lib.mkIf (!config.boot.initrd.systemd.enable) ''
         # Set the system time from the hardware clock to work around a
@@ -507,10 +558,10 @@ networking.nameservers = [
          nc -l 1234 | dd of=/dev/sda
          # Run this on local computer
          cat result/main.raw | nc 123.45.678.89 1234
+
 https://nlewo.github.io/nixos-manual-sphinx/configuration/user-mgmt.xml.html
 https://stackoverflow.com/questions/45144662/using-imports-with-argument-given-by-lib-mkoption
 https://ryantm.github.io/nixpkgs/functions/library/lists/#function-library-lib.lists.unique
-
 
 https://dataswamp.org/~solene/2022-08-03-nixos-with-live-usb-router.html
 https://github.com/NixOS/nixos-hardware/blob/master/pcengines/apu/default.nix

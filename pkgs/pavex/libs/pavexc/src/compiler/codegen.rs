@@ -232,10 +232,10 @@ fn server_startup(pavex: &Ident) -> ItemFn {
                 async move {
                     Ok::<_, #pavex::hyper::Error>(#pavex::hyper::service::service_fn(move |request| {
                         let server_state = server_state.clone();
-                        async move { 
+                        async move {
                             let response = route_request(request, server_state).await;
                             let response = #pavex::hyper::Response::from(response);
-                            Ok::<_, #pavex::hyper::Error>(response) 
+                            Ok::<_, #pavex::hyper::Error>(response)
                         }
                     }))
                 }

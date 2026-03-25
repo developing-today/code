@@ -1,4 +1,4 @@
-version: '3'
+version: "3"
 
 services:
   age:
@@ -10,7 +10,16 @@ services:
       - age-data:/var/lib/age
     depends_on:
       - db
-    command: ["age", "--host", "0.0.0.0", "--port", "5432", "--store", "postgresql://postgresUser:postgresPW@db/postgresDB"]
+    command:
+      [
+        "age",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5432",
+        "--store",
+        "postgresql://postgresUser:postgresPW@db/postgresDB",
+      ]
 
   db:
     image: postgres

@@ -25,7 +25,7 @@ For more information on how this works with other frontends/backends, head over 
   ```
 - `pavex_cli`:
   ```bash
-  cd ../../libs && cargo build --release -p pavex_cli  
+  cd ../../libs && cargo build --release -p pavex_cli
   ```
 - `sqlx` CLI:
   ```bash
@@ -36,7 +36,9 @@ For more information on how this works with other frontends/backends, head over 
   ```
 
 ### Setup steps
+
 - Launch a local Postgres instance and run SQL migrations:
+
 ```bash
 ./scripts/init_db.sh
 ```
@@ -58,10 +60,10 @@ APP_PROFILE=dev cargo px run --bin api
 
 ## Configuration
 
-All configuration files are in the `api_server/configuration` folder.  
+All configuration files are in the `api_server/configuration` folder.
 The default settings are stored in `api_server/configuration/base.yml`.
 
-Environment-specific configuration files can be used to override or supply additional values on top the default settings (see `prod.yml`).  
+Environment-specific configuration files can be used to override or supply additional values on top the default settings (see `prod.yml`).
 You must specify the app profile that you want to use by setting the `APP_PROFILE` environment variable to either `dev`, `test` or `prod`; e.g.:
 
 ```bash

@@ -133,7 +133,7 @@ Cursor behavior changes based on WebSocket connection state:
 Three terminal-inspired themes with `#000000` black backgrounds:
 
 - **sneak** (blue) - `#00aaff` accent
-- **arch** (green) - `#00ff00` accent  
+- **arch** (green) - `#00ff00` accent
 - **mech** (orange) - `#ff6600` accent
 
 ## Development

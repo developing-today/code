@@ -229,13 +229,14 @@ A quick way to certify a PR you forgot to "Signed-off-by" is as follows:
 - Edit any file in the PR diff from within the PR UI.
 - Commit the edit back, with a certification message:
   - Option 1
-      ```
-      I certify from <first-sha> to this commit adheres to the DCO.
-      ```
+    ```
+    I certify from <first-sha> to this commit adheres to the DCO.
+    ```
   - Option 2
-      ```
-      dco-certify: <first-sha>..<last-sha>
-      ```
+    ```
+    dco-certify: <first-sha>..<last-sha>
+    ```
+
     - in the second, `<last-sha>` is optional, but `..` is not.
     - no spaces next to `..`.
     - you can space separated include other commits or commit chains.
@@ -304,17 +305,17 @@ If you like, you can put extra tags at the end:
   - https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-on-behalf-of-an-organization
 
 - `Reported-by:` is used to credit someone who found the bug that
-the patch attempts to fix.
+  the patch attempts to fix.
 
 - `Acked-by:` says that the person who is more familiar with the area
-the patch attempts to modify liked the patch.
+  the patch attempts to modify liked the patch.
 
 - `Reviewed-by:`, unlike the other tags, can only be offered by the
-reviewers themselves when they are completely satisfied with the
-patch after a detailed analysis.
+  reviewers themselves when they are completely satisfied with the
+  patch after a detailed analysis.
 
 - `Tested-by:` is used to indicate that the person applied the patch
-and found it to have the desired effect.
+  and found it to have the desired effect.
 
 You can also create your own tag or use one that's in common usage
 such as `Thanks-to:`, `Based-on-patch-by:`, or `Mentored-by:`.

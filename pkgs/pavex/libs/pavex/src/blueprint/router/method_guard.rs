@@ -10,10 +10,10 @@ use http::Method;
 ///
 /// Used by [`Blueprint::route`] to specify which HTTP methods the route should match.
 ///
-/// If you want to match **any** HTTP method, use [`ANY`].  
+/// If you want to match **any** HTTP method, use [`ANY`].
 /// If you want to match a single HTTP method, use the dedicated constants in this
-/// module ([`GET`], [`POST`], [`PATCH`], [`DELETE`], etc.).  
-/// If you want to match a list of HTTP methods, use [`MethodGuard::new`].  
+/// module ([`GET`], [`POST`], [`PATCH`], [`DELETE`], etc.).
+/// If you want to match a list of HTTP methods, use [`MethodGuard::new`].
 ///
 /// [`Blueprint::route`]: crate::blueprint::Blueprint::route
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -36,7 +36,7 @@ impl MethodGuard {
     /// let guard = MethodGuard::new(vec![Method::GET, Method::PUT]);
     /// ```
     ///
-    /// If you want to match **any** HTTP method, use [`ANY`].  
+    /// If you want to match **any** HTTP method, use [`ANY`].
     /// If you want to match a single HTTP method, use the dedicated constants in this
     /// module ([`GET`], [`POST`], [`PATCH`], [`DELETE`], etc.).
     pub fn new(allowed_methods: impl IntoIterator<Item = Method>) -> Self {

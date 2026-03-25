@@ -92,3 +92,31 @@ update-nixpkgs-unstable-only:
         exit 0
     fi
     just update-input $inputs
+
+# =============================================================================
+# Lockfiles
+# =============================================================================
+
+# Regenerate just-recipes.json from justfile for dynamic nix app generation
+[group('deps')]
+just-recipes:
+    just --dump --dump-format json > just-recipes.json
+
+# Regenerate all lockfiles (just-recipes.json)
+[group('deps')]
+lockfiles: just-recipes
+alias fix := lockfiles
+
+# =============================================================================
+# Utilities
+# =============================================================================
+
+# Recursively chown all files (including hidden) to current user:group (requires sudo)
+[group('util')]
+chown:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    id
+    user="$(id -u)"
+    group="$(id -g)"
+    sudo chown -R "$user:$group" .

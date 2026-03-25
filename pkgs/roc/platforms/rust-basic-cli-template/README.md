@@ -9,6 +9,7 @@ If you have any ideas to improve this template, please let me know. 😀
 ### Step 0. Dev environment
 
 Dependencies:
+
 - Nix package manager `nix develop`
 - Otherwise ensure you have Roc and Cargo installed
 

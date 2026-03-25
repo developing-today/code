@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01NUatsDVDAULrftsFgeQ9rz",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "/home/user/code/src/id/shell.nix\n---\n76:        devShells.default = pkgs.mkShell {\n78:          inherit (nixCommon) shellHook;\n",
-  "timestamp": 1774254585002
+	"callID": "toolu_vrtx_01NUatsDVDAULrftsFgeQ9rz",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "/home/user/code/src/id/shell.nix\n---\n76:        devShells.default = pkgs.mkShell {\n78:          inherit (nixCommon) shellHook;\n",
+	"timestamp": 1774254585002
 }

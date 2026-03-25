@@ -49,14 +49,12 @@
           with pkgs;
           lib.optionals stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
 
-        sharedInputs = (
-          with pkgs;
+        sharedInputs = with pkgs;
           [
             rust
             expect
             rocPkgs.cli
-          ]
-        );
+          ];
 
       in
       {

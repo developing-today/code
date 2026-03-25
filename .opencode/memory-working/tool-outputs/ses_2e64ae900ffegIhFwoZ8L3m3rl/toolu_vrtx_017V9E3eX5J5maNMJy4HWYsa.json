@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_017V9E3eX5J5maNMJy4HWYsa",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "compress",
-  "fullOutput": "Compressed 7 messages into [Compressed conversation section].",
-  "timestamp": 1774258439027
+	"callID": "toolu_vrtx_017V9E3eX5J5maNMJy4HWYsa",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "compress",
+	"fullOutput": "Compressed 7 messages into [Compressed conversation section].",
+	"timestamp": 1774258439027
 }

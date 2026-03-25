@@ -188,7 +188,8 @@ pub async fn get_tags_handler(
                 tags.into_iter()
                     .filter(|t| {
                         value.is_none()
-                            || t.value.as_ref().map(|v| v.as_bytes()) == value.map(|v| v.as_bytes())
+                            || t.value.as_ref().map(super::super::tags::TagValue::as_bytes)
+                                == value.map(str::as_bytes)
                     })
                     .collect::<Vec<_>>()
             }),
@@ -247,7 +248,7 @@ pub async fn set_tag_handler(
             ns,
             req.subject.as_bytes(),
             req.key.as_bytes(),
-            req.value.as_ref().map(|v| v.as_bytes()),
+            req.value.as_ref().map(String::as_bytes),
             b"",
         )
         .await
@@ -293,7 +294,7 @@ pub async fn del_tag_handler(
                 ns,
                 req.subject.as_bytes(),
                 req.key.as_bytes(),
-                req.value.as_ref().map(|v| v.as_bytes()),
+                req.value.as_ref().map(String::as_bytes),
             )
             .await
             .map(|()| None)

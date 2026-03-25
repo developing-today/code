@@ -74,11 +74,11 @@ use super::{
 /// # Avoiding allocations
 ///
 /// If you want to minimize memory usage, you can try to avoid unnecessary memory allocations when
-/// deserializing string-like fields from the body of the incoming request.    
+/// deserializing string-like fields from the body of the incoming request.
 /// Pavex supports this use case—you can borrow from the request body instead of having to
 /// allocate a brand new string.
 ///
-/// It is not always possible to avoid allocations, though.  
+/// It is not always possible to avoid allocations, though.
 /// In particular, Pavex *must* allocate a new `String` if the JSON string you are trying to
 /// deserialize contains escape sequences, such as `\n` or `\"`.
 /// Using a `&str` in this case would result in a runtime error when attempting the deserialization.
@@ -103,9 +103,9 @@ use super::{
 /// # Body size limit
 ///
 /// The `JsonBody` extractor buffers the entire body in memory before
-/// attempting to deserialize it.  
+/// attempting to deserialize it.
 ///
-/// To prevent denial-of-service attacks, Pavex enforces an upper limit on the body size.    
+/// To prevent denial-of-service attacks, Pavex enforces an upper limit on the body size.
 /// The limit is enforced by the [`BufferedBody`] extractor,
 /// which is injected as one of the inputs of [`JsonBody::extract`]. Check out [`BufferedBody`]'s
 /// documentation for more details on the size limit (and how to configure it).

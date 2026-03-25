@@ -55,8 +55,7 @@
           with pkgs;
           lib.optionals stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
 
-        sharedInputs = (
-          with pkgs;
+        sharedInputs = with pkgs;
           [
             jq
             rust
@@ -67,8 +66,7 @@
             simple-http-server
             rocPkgs.cli
             ripgrep # for ci/check_all_exposed_funs_tested.roc
-          ]
-        );
+          ];
       in
       {
 

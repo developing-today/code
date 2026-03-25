@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01QNdd88PZkPyMBLWqcUFZWf",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "/run/current-system/sw/bin/opencode\n",
-  "timestamp": 1774258784000
+	"callID": "toolu_vrtx_01QNdd88PZkPyMBLWqcUFZWf",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "/run/current-system/sw/bin/opencode\n",
+	"timestamp": 1774258784000
 }

@@ -1027,7 +1027,7 @@ pub enum TagCommand {
     /// Quoted strings can be used in key:value position:
     /// `"key:":":value"` matches key `key:` with value `:value`.
     ///
-    /// Multiple terms are ANDed together.
+    /// Multiple terms are `ANDed` together.
     ///
     /// # Examples
     ///

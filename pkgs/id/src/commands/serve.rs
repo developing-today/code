@@ -280,7 +280,7 @@ pub async fn cmd_serve(
     }
     if iroh_port != 0 {
         builder = builder.bind_addr(std::net::SocketAddrV4::new(
-            std::net::Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::UNSPECIFIED,
             iroh_port,
         ))?;
     }

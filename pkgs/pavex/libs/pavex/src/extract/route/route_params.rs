@@ -53,14 +53,14 @@ use super::RawRouteParams;
 /// }
 /// ```
 ///
-/// `home_id` will be set to `1` for an incoming `/home/1` request.  
+/// `home_id` will be set to `1` for an incoming `/home/1` request.
 /// Extraction will fail, instead, if we receive an `/home/abc` request.
 ///
 /// # Supported types
 ///
 /// `T` in `RouteParams<T>` must implement [`serde::Deserialize`]—it is automatically derived if
 /// you use the [`RouteParams`](macro@crate::extract::route::RouteParams) attribute macro, the
-/// approach we recommend.  
+/// approach we recommend.
 /// `T` must be a struct with named fields, where each field name matches one of the route parameter
 /// names used in the route's path template.
 ///
@@ -98,9 +98,9 @@ use super::RawRouteParams;
 /// # Unsupported types
 ///
 /// Pavex wants to enable local reasoning: it should be easy to understand what
-/// each extracted route parameter represents.  
+/// each extracted route parameter represents.
 /// Plain structs with named fields are ideal in this regard: by looking at the field name you can
-/// immediately understand _which_ route parameter is being extracted.  
+/// immediately understand _which_ route parameter is being extracted.
 /// The same is not true for other types, e.g. `(String, u64, u32)`, where you have to go and
 /// check the route's path template to understand what each entry represents.
 ///
@@ -180,10 +180,10 @@ use super::RawRouteParams;
 /// # Avoiding allocations
 ///
 /// If you want to squeeze out the last bit of performance from your application, you can try to
-/// avoid memory allocations when extracting string-like route parameters.  
+/// avoid memory allocations when extracting string-like route parameters.
 /// Pavex supports this use case—you can borrow from the request's URL instead of cloning.
 ///
-/// It is not always possible to avoid allocations, though.  
+/// It is not always possible to avoid allocations, though.
 /// In particular, if the route parameter is a URL-encoded string (e.g. `John%20Doe`, the URL-encoded
 /// version of `John Doe`) Pavex must allocate a new `String` to store the decoded version.
 ///

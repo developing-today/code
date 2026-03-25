@@ -73,12 +73,12 @@ pub const TAG_DISPLAY_MAX_BYTES: usize = 256;
 
 impl TagValue {
     /// Create from a string.
-    pub fn from_string(s: String) -> Self {
+    pub const fn from_string(s: String) -> Self {
         Self(s.into_bytes())
     }
 
     /// Create from raw bytes.
-    pub fn from_bytes(b: Vec<u8>) -> Self {
+    pub const fn from_bytes(b: Vec<u8>) -> Self {
         Self(b)
     }
 
@@ -878,8 +878,11 @@ impl TagStore {
 
         // Delete from Ω one by one (each has a different inverted key).
         for tag in &tags {
-            let omega_key =
-                encode_omega_key(subject, &tag.key, tag.value.as_ref().map(|v| v.as_bytes()));
+            let omega_key = encode_omega_key(
+                subject,
+                &tag.key,
+                tag.value.as_ref().map(TagValue::as_bytes),
+            );
             ns.omega
                 .del(self.author, omega_key)
                 .await
@@ -916,7 +919,7 @@ impl TagStore {
         let existing = self.get_by_key(ns, subject, key).await?;
         let count = existing.len();
         for tag in existing {
-            self.del_tag(ns, subject, key, tag.value.as_ref().map(|v| v.as_bytes()))
+            self.del_tag(ns, subject, key, tag.value.as_ref().map(TagValue::as_bytes))
                 .await?;
         }
         Ok(count)
@@ -937,7 +940,7 @@ impl TagStore {
     ) -> Result<()> {
         let existing = self.get_by_key(ns, subject, key).await?;
         for tag in existing {
-            self.del_tag(ns, subject, key, tag.value.as_ref().map(|v| v.as_bytes()))
+            self.del_tag(ns, subject, key, tag.value.as_ref().map(TagValue::as_bytes))
                 .await?;
         }
         self.set_tag(ns, subject, key, value, data).await
@@ -980,7 +983,7 @@ impl TagStore {
                 ns,
                 to,
                 &tag.key,
-                tag.value.as_ref().map(|v| v.as_bytes()),
+                tag.value.as_ref().map(TagValue::as_bytes),
                 b"",
             )
             .await?;
@@ -1010,7 +1013,7 @@ impl TagStore {
                 ns,
                 to,
                 &tag.key,
-                tag.value.as_ref().map(|v| v.as_bytes()),
+                tag.value.as_ref().map(TagValue::as_bytes),
                 b"",
             )
             .await?;
@@ -1044,10 +1047,10 @@ impl TagStore {
             .await?;
 
         // "file" tag = basename (last path component)
-        let basename = Path::new(subject_str.as_ref())
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| subject_str.to_string());
+        let basename = Path::new(subject_str.as_ref()).file_name().map_or_else(
+            || subject_str.to_string(),
+            |f| f.to_string_lossy().to_string(),
+        );
         self.set_if_absent(ns, subject, b"file", Some(basename.as_bytes()), b"")
             .await?;
 
@@ -1218,10 +1221,9 @@ impl TagStore {
                                 .to_lowercase()
                                 .contains(&text_lower)
                                 || t.key.display_lossy().to_lowercase().contains(&text_lower)
-                                || t.value
-                                    .as_ref()
-                                    .map(|v| v.display_lossy().to_lowercase().contains(&text_lower))
-                                    .unwrap_or(false)
+                                || t.value.as_ref().is_some_and(|v| {
+                                    v.display_lossy().to_lowercase().contains(&text_lower)
+                                })
                         })
                         .collect()
                 }
@@ -1353,7 +1355,7 @@ pub enum SearchTerm {
 ///
 /// - `"key:":":value"` → key is literally `key:`, value is literally `:value`
 ///
-/// Multiple terms are ANDed together.
+/// Multiple terms are `ANDed` together.
 pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
     let mut terms = Vec::new();
     let input = input.trim();
@@ -1411,7 +1413,7 @@ fn parse_single_term(s: &str) -> SearchTerm {
             SearchTerm::KeyValue(key, value)
         } else {
             // Both empty — bare colon, treat as bare word
-            SearchTerm::BareWord(s.to_string())
+            SearchTerm::BareWord(s.to_owned())
         }
     } else {
         // No unquoted colon
@@ -1444,7 +1446,7 @@ fn strip_quotes(s: &str) -> String {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         s[1..s.len() - 1].to_string()
     } else {
-        s.to_string()
+        s.to_owned()
     }
 }
 
@@ -1924,7 +1926,7 @@ mod tests {
                     let (s, k, v) = decode_alpha_key(&encoded).unwrap();
                     assert_eq!(s.as_bytes(), *subject);
                     assert_eq!(k.as_bytes(), *key);
-                    assert_eq!(v.as_ref().map(|tv| tv.as_bytes()), value.as_deref());
+                    assert_eq!(v.as_ref().map(TagValue::as_bytes), value.as_deref());
                 }
             }
         }
@@ -1942,7 +1944,7 @@ mod tests {
                     let (s, k, v) = decode_omega_key(&encoded).unwrap();
                     assert_eq!(s.as_bytes(), *subject);
                     assert_eq!(k.as_bytes(), *key);
-                    assert_eq!(v.as_ref().map(|tv| tv.as_bytes()), value.as_deref());
+                    assert_eq!(v.as_ref().map(TagValue::as_bytes), value.as_deref());
                 }
             }
         }
@@ -2078,7 +2080,7 @@ mod tests {
             assert_eq!(s, "file.txt");
             assert_eq!(k, "key");
             assert_eq!(
-                v.as_ref().map(|tv| tv.as_bytes()),
+                v.as_ref().map(TagValue::as_bytes),
                 value.as_deref(),
                 "value roundtrip failed for: {value:?}"
             );
@@ -2312,19 +2314,19 @@ mod tests {
     #[test]
     fn test_parse_search_bare_word() {
         let terms = parse_search_query("hello");
-        assert_eq!(terms, vec![SearchTerm::BareWord("hello".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::BareWord("hello".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_key_only() {
         let terms = parse_search_query("name:");
-        assert_eq!(terms, vec![SearchTerm::KeyOnly("name".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::KeyOnly("name".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_value_only() {
         let terms = parse_search_query(":myfile.txt");
-        assert_eq!(terms, vec![SearchTerm::ValueOnly("myfile.txt".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::ValueOnly("myfile.txt".to_owned())]);
     }
 
     #[test]
@@ -2333,8 +2335,8 @@ mod tests {
         assert_eq!(
             terms,
             vec![SearchTerm::KeyValue(
-                "name".to_string(),
-                "myfile.txt".to_string()
+                "name".to_owned(),
+                "myfile.txt".to_owned()
             )]
         );
     }
@@ -2342,7 +2344,7 @@ mod tests {
     #[test]
     fn test_parse_search_literal() {
         let terms = parse_search_query("\"hello world\"");
-        assert_eq!(terms, vec![SearchTerm::Literal("hello world".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::Literal("hello world".to_owned())]);
     }
 
     #[test]
@@ -2350,7 +2352,7 @@ mod tests {
         // A quoted string containing a colon should be a literal search,
         // not a key:value pair.
         let terms = parse_search_query("\":key\"");
-        assert_eq!(terms, vec![SearchTerm::Literal(":key".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::Literal(":key".to_owned())]);
     }
 
     #[test]
@@ -2359,10 +2361,7 @@ mod tests {
         let terms = parse_search_query("\"key:\":\":value\"");
         assert_eq!(
             terms,
-            vec![SearchTerm::KeyValue(
-                "key:".to_string(),
-                ":value".to_string()
-            )]
+            vec![SearchTerm::KeyValue("key:".to_owned(), ":value".to_owned())]
         );
     }
 
@@ -2372,9 +2371,9 @@ mod tests {
         assert_eq!(
             terms,
             vec![
-                SearchTerm::KeyOnly("name".to_string()),
-                SearchTerm::ValueOnly("high".to_string()),
-                SearchTerm::BareWord("priority".to_string()),
+                SearchTerm::KeyOnly("name".to_owned()),
+                SearchTerm::ValueOnly("high".to_owned()),
+                SearchTerm::BareWord("priority".to_owned()),
             ]
         );
     }
@@ -2385,8 +2384,8 @@ mod tests {
         assert_eq!(
             terms,
             vec![
-                SearchTerm::Literal("hello world".to_string()),
-                SearchTerm::KeyValue("name".to_string(), "foo".to_string()),
+                SearchTerm::Literal("hello world".to_owned()),
+                SearchTerm::KeyValue("name".to_owned(), "foo".to_owned()),
             ]
         );
     }
@@ -2402,7 +2401,7 @@ mod tests {
     fn test_parse_search_empty_key_value() {
         // key: with trailing space
         let terms = parse_search_query("key: ");
-        assert_eq!(terms, vec![SearchTerm::KeyOnly("key".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::KeyOnly("key".to_owned())]);
     }
 
     #[test]
@@ -2411,17 +2410,14 @@ mod tests {
         let terms = parse_search_query("\"key:\":\":value\"");
         assert_eq!(
             terms,
-            vec![SearchTerm::KeyValue(
-                "key:".to_string(),
-                ":value".to_string()
-            )]
+            vec![SearchTerm::KeyValue("key:".to_owned(), ":value".to_owned())]
         );
     }
 
     #[test]
     fn test_parse_search_bare_word_case() {
         let terms = parse_search_query("README");
-        assert_eq!(terms, vec![SearchTerm::BareWord("README".to_string())]);
+        assert_eq!(terms, vec![SearchTerm::BareWord("README".to_owned())]);
     }
 
     #[test]

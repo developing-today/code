@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_0182idsvDhYqLo9nmoNDCthG",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "[fix/plugin-export-format 088c98f] fix(plugin): use correct Plugin API export format\n 1 file changed, 19 insertions(+), 47 deletions(-)\nremote: \nremote: Create a pull request for 'fix/plugin-export-format' on GitHub by visiting:        \nremote:      https://github.com/dezren39/autoresearch-opencode/pull/new/fix/plugin-export-format        \nremote: \nTo https://github.com/dezren39/autoresearch-opencode.git\n * [new branch]      fix/plugin-export-format -> fix/plugin-export-format\nbranch 'fix/plugin-export-format' set up to track 'origin/fix/plugin-export-format'.\n",
-  "timestamp": 1774260064089
+	"callID": "toolu_vrtx_0182idsvDhYqLo9nmoNDCthG",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "[fix/plugin-export-format 088c98f] fix(plugin): use correct Plugin API export format\n 1 file changed, 19 insertions(+), 47 deletions(-)\nremote: \nremote: Create a pull request for 'fix/plugin-export-format' on GitHub by visiting:        \nremote:      https://github.com/dezren39/autoresearch-opencode/pull/new/fix/plugin-export-format        \nremote: \nTo https://github.com/dezren39/autoresearch-opencode.git\n * [new branch]      fix/plugin-export-format -> fix/plugin-export-format\nbranch 'fix/plugin-export-format' set up to track 'origin/fix/plugin-export-format'.\n",
+	"timestamp": 1774260064089
 }

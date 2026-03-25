@@ -218,8 +218,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             let display_name_escaped = file
                 .display_name
                 .as_deref()
-                .map(html_escape)
-                .unwrap_or_else(|| name_escaped.clone());
+                .map_or_else(|| name_escaped.clone(), html_escape);
             let hash_escaped = html_escape(&file.hash);
             let short_hash = &file.hash[..12.min(file.hash.len())];
 

@@ -6,7 +6,7 @@ pub enum Lifecycle {
     /// The constructor for a `Singleton` type is invoked at most once.
     ///
     /// As a consequence, there is at most one instance of `Singleton` types,
-    /// stored inside the server's global state.  
+    /// stored inside the server's global state.
     Singleton,
     /// The constructor for a `RequestScoped` type is invoked at most once for every incoming request.
     ///

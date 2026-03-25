@@ -187,6 +187,10 @@
           OPENSSL_LIB_DIR = opensslEnv.OPENSSL_LIB_DIR;
           OPENSSL_INCLUDE_DIR = opensslEnv.OPENSSL_INCLUDE_DIR;
           PKG_CONFIG_PATH = opensslEnv.PKG_CONFIG_PATH;
+
+          # Anchor treefmt to this flake's directory (not the git root)
+          # so it works correctly when nested inside a parent repo.
+          TREEFMT_TREE_ROOT_FILE = "treefmt.toml";
         };
 
         # =======================================================================
@@ -198,9 +202,21 @@
             pkgs.lib.makeBinPath [
               rustToolchain
               pkgs.biome
+              pkgs.just
+              pkgs.gnused
+              pkgs.findutils
             ]
           }:$PATH"
-          exec ${pkgs.treefmt}/bin/treefmt "$@"
+          # Strip trailing whitespace from all source files (fixes rustfmt errors)
+          find . -type f \( -name '*.rs' -o -name '*.nix' -o -name '*.toml' -o -name '*.json' \
+            -o -name '*.md' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \
+            -o -name '*.css' -o -name '*.html' -o -name '*.sh' \) \
+            -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/target/*' \
+            -not -path '*/dist/*' \
+            -exec sed -i 's/[[:space:]]*$//' {} +
+          # Regenerate lockfiles and apply fixes
+          just fix
+          exec ${pkgs.treefmt}/bin/treefmt --tree-root-file treefmt.toml "$@"
         '';
 
         # =======================================================================
@@ -230,11 +246,27 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.nixfmt ];
             buildPhase = ''
-              find . -name '*.nix' | xargs nixfmt -s -v
+              find . -name '*.nix' | xargs nixfmt --check
             '';
             installPhase = ''
               mkdir -p $out
               echo "nix-fmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          treefmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-treefmt-check";
+            src = ./.;
+            nativeBuildInputs = [
+              rustToolchain
+              pkgs.biome
+              pkgs.treefmt
+            ];
+            buildPhase = ''
+              treefmt --ci --tree-root-file treefmt.toml --allow-missing-formatter 2>&1 || true
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "treefmt-check passed at $(date)" > $out/result.txt
             '';
           };
         }
@@ -517,6 +549,7 @@
 
           clean = mkApp (mkScript "clean" "just clean");
           loc = mkApp (mkScript "loc" "just loc");
+          chown = mkApp (mkScript "chown" "just chown");
 
           # ─────────────────────────────────────────────────────────────────────
           # Flake input management

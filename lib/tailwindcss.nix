@@ -3,8 +3,8 @@
 }:
 
 let
-  stdenv = pkgs.stdenv;
-  lib = pkgs.lib;
+  inherit (pkgs) stdenv;
+  inherit (pkgs) lib;
 in
 
 stdenv.mkDerivation rec {

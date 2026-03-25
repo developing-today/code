@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01GACgLT812Nfq5u5tv8odLa",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "default.nix\n",
-  "timestamp": 1774253208258
+	"callID": "toolu_vrtx_01GACgLT812Nfq5u5tv8odLa",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "default.nix\n",
+	"timestamp": 1774253208258
 }

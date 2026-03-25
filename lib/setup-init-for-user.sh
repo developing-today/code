@@ -21,7 +21,7 @@ create_xinitrc() {
     printf "Error: Failed to retrieve home directory for user %s.\n" "$user" >&2
     exit 1
   fi
-  
+
   if [[ ! -d "${home_dir}" ]]; then
     echo "Directory ${home_dir} does not exist"
     exit 1

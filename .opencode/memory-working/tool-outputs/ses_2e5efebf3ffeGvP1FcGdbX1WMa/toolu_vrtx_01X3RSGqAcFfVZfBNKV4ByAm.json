@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01X3RSGqAcFfVZfBNKV4ByAm",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "[fix/plugin-export-format b61dbdd] fix(plugin): use experimental.chat.system.transform hook\n 1 file changed, 4 insertions(+), 9 deletions(-)\n",
-  "timestamp": 1774260304304
+	"callID": "toolu_vrtx_01X3RSGqAcFfVZfBNKV4ByAm",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "[fix/plugin-export-format b61dbdd] fix(plugin): use experimental.chat.system.transform hook\n 1 file changed, 4 insertions(+), 9 deletions(-)\n",
+	"timestamp": 1774260304304
 }

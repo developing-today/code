@@ -59,13 +59,13 @@ use crate::request::RequestHead;
 ///
 /// # Supported types
 ///
-/// `T` in `QueryParams<T>` must implement [`serde::Deserialize`].  
+/// `T` in `QueryParams<T>` must implement [`serde::Deserialize`].
 /// You can derive this trait automatically by applying `#[derive(serde::Deserialize)]`
 /// to your type.
 ///
 /// ## Sequences
 ///
-/// There is no standard way to represent sequences in query parameters.  
+/// There is no standard way to represent sequences in query parameters.
 /// Pavex supports the [form style](https://swagger.io/docs/specification/serialization/#query), as
 /// specified by OpenAPI:
 ///
@@ -75,7 +75,7 @@ use crate::request::RequestHead;
 /// #[derive(serde::Deserialize)]
 /// pub struct Home {
 ///    // This will convert the query string `?room_id=1&room_id=2&room_id=3`
-///    // into a vector `vec![1, 2, 3]`.  
+///    // into a vector `vec![1, 2, 3]`.
 ///    //
 ///    // Pavex does not perform any pluralization, therefore you must use
 ///    // `serde`'s rename attribute if you want to use a pluralized name
@@ -113,7 +113,7 @@ use crate::request::RequestHead;
 /// You should always prefer a struct with named fields as the type parameter of `QueryParams`.
 ///
 /// When it comes to structs, it's important to keep in mind that `QueryParams` doesn't
-/// support deserializing **nested** structures as query parameters.  
+/// support deserializing **nested** structures as query parameters.
 /// For example, the following can't be deserialized from the wire using `QueryParams`:
 ///
 /// ```rust
@@ -137,11 +137,11 @@ use crate::request::RequestHead;
 /// # Avoiding allocations
 ///
 /// If you want to minimize memory usage, you can try to avoid unnecessary memory allocations when
-/// deserializing string-like fields from the query parameters of the incoming request.    
+/// deserializing string-like fields from the query parameters of the incoming request.
 /// Pavex supports this use case—you can borrow from the query string instead of having to
 /// allocate a brand new string.
 ///
-/// It is not always possible to avoid allocations, though.  
+/// It is not always possible to avoid allocations, though.
 /// In particular, Pavex *must* allocate a new `String` if the parameter you are trying to
 /// deserialize is a URL-encoded string (e.g. `John%20Doe`, the URL-encoded
 /// version of `John Doe`)

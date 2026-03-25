@@ -1,5 +1,5 @@
 description = """
-Pavex handles types whose generic parameter are not defined in the same crate 
+Pavex handles types whose generic parameter are not defined in the same crate
 that defines the base type
 """
 

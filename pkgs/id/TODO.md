@@ -182,7 +182,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - can we add tags to files/nodes and have those tags be searchable in the cli/repl/website? each client/node that added the tag should be linked to the tag so we can show that information in the cli/repl/website and use it for searching/organizing. if 2 clients add the same tag to a node/file, that should be reflected in the cli/repl/website and show that both clients added that tag, in the order they added it with timestamps. (get all files from x node that have the word 'yz' in them etc should be doable, not reinventing sql just allowing extended search/metadata.)
 - can each uploaded file be linked to the node/time that uploaded it? (maybe use tags for this? or whatever is best) implement at least a rudimentary way to show this information in the cli/repl/website, and use it for searching/organizing files. ideally we could also show this information in the file listing in the cli/repl/website, and have a way to sort/filter by upload time/node.
 - can tags/petnames be able to be either local to the client or shared across clients, and can we have a way to specify which when creating/editing a tag/petname? some way to organize/review existing petnames/tags would be good too.
-- allow each node to self-publish information about themselves, their preferred name, maybe just helpers to add public tags to their own node id and then update the various interfaces to be able to poll and pull that info. (priority would be something like "clients private alias for some node, clients public alias, the other node's public alias for themselves, any other public aliases the client/server are aware of, 
+- allow each node to self-publish information about themselves, their preferred name, maybe just helpers to add public tags to their own node id and then update the various interfaces to be able to poll and pull that info. (priority would be something like "clients private alias for some node, clients public alias, the other node's public alias for themselves, any other public aliases the client/server are aware of,
 
 ---
 
@@ -244,7 +244,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - veilid transport ?
 - veilid alternative network ?
 - tor ?
-- mycelium ? 
+- mycelium ?
 - zerotier ? no because licenses?
 - yggdrasil ?
 - tinc ?

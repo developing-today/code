@@ -10,13 +10,13 @@
 
 ## What is Pavex?
 
-Pavex is a new framework to build APIs with Rust.  
+Pavex is a new framework to build APIs with Rust.
 
-Pavex aims to have it all: great ergonomics and high performance.   
-The same **productivity boost** of Ruby on Rails, Spring or ASP.NET Core.  
+Pavex aims to have it all: great ergonomics and high performance.
+The same **productivity boost** of Ruby on Rails, Spring or ASP.NET Core.
 As **fast** as a handwritten solution that strips away all abstractions.
 
-Pavex takes a significantly different approach compared to the current generation of Rust web frameworks: you can think of Pavex as a **specialised compiler** for building Rust APIs.  
+Pavex takes a significantly different approach compared to the current generation of Rust web frameworks: you can think of Pavex as a **specialised compiler** for building Rust APIs.
 It takes as input a high-level description of what your application should do, a `Blueprint`:
 
 ```rust
@@ -35,14 +35,14 @@ to be configured and launched.
 
 ### Great error messages
 
-Pavex operates at the **right level of abstraction**—it understands the specific challenges and requirements of API development.  
+Pavex operates at the **right level of abstraction**—it understands the specific challenges and requirements of API development.
 The intermediate code generation step (`Blueprint` -> runtime code) allows Pavex to perform in-depth static analysis. Potential issues
 are caught at compile-time with an **informative error message**:
 
 ```text
 ERROR:
   × `app::get_home` is trying to extract route parameters using `RouteParams<HomeRouteParams>`.
-  │ Every struct field in `app::HomeRouteParams` must be named after one of the route parameters 
+  │ Every struct field in `app::HomeRouteParams` must be named after one of the route parameters
   | that appear in `/address/:address_id/home/:home_id`:
   │ - `home_id`
   │ - `address_id`
@@ -55,7 +55,7 @@ ERROR:
   │  44 │     bp.route(GET, "/home/:id", f!(crate::get_home));
   │     ·                                ───────────┬──────
   │     ·             The request handler asking for `RouteParams<app::HomeRouteParams>`
-  │  45 │     
+  │  45 │
   │     ╰────
   │   help: Remove or rename the fields that do not map to a valid route parameter.
 ```
@@ -68,9 +68,9 @@ Your `Blueprint` tells Pavex:
 - What components can be built, what inputs they need and what is their lifecycle;
 - How to handle errors.
 
-Pavex uses this information to perform **compile-time dependency injection**.  
+Pavex uses this information to perform **compile-time dependency injection**.
 
-Each endpoint gets its own **call graph** and Pavex makes sure to **exclusively** build what is required to invoke every single endpoint, 
+Each endpoint gets its own **call graph** and Pavex makes sure to **exclusively** build what is required to invoke every single endpoint,
 avoiding unnecessary computations.
 
 ```mermaid
@@ -89,11 +89,11 @@ flowchart TB
     request --&--> path
 ```
 
-You write straight-forward Rust, Pavex takes care of assembling together all the components. 
+You write straight-forward Rust, Pavex takes care of assembling together all the components.
 
 ## Project status
 
-Pavex is under active development and far from being ready for hobby or production usage.  
+Pavex is under active development and far from being ready for hobby or production usage.
 It has not yet been released on crates.io and you can expect breaking changes on every commit to the `main` branch.
 
 We are aiming for an alpha release by the end of summer 2023.
@@ -106,7 +106,6 @@ We publish project updates every 4 weeks:
 - [Progress report #3](https://www.lpalmieri.com/posts/pavex-progress-report-03/) [April 2023]
 - [Progress report #4](https://www.lpalmieri.com/posts/pavex-progress-report-04/) [May 2023]
 - [Progress report #5](https://www.lpalmieri.com/posts/pavex-progress-report-05/) [June 2023]
-
 
 ## Examples
 
@@ -129,7 +128,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md) to learn how Pavex works under the hood.
 
 ## Contributing
 
-This project is not open to unsolicited code contributions (for the time being).  
+This project is not open to unsolicited code contributions (for the time being).
 If you want to play around with it, you can find instructions in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License

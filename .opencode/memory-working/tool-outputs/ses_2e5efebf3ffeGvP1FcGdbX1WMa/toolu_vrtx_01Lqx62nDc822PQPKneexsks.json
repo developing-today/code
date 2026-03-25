@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01Lqx62nDc822PQPKneexsks",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "INFO  2026-03-23T09:59:56 +396ms service=plugin path=file:///home/user/code/.opencode/plugins/autoresearch-context.ts loading plugin\nERROR 2026-03-23T09:59:56 +1ms service=plugin path=file:///home/user/code/.opencode/plugins/autoresearch-context.ts error=fn5 is not a function. (In 'fn5(input)', 'fn5' is an instance of Object) failed to load plugin\n    \"file:///home/user/code/.opencode/plugins/autoresearch-context.ts\"\n",
-  "timestamp": 1774259997060
+	"callID": "toolu_vrtx_01Lqx62nDc822PQPKneexsks",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "INFO  2026-03-23T09:59:56 +396ms service=plugin path=file:///home/user/code/.opencode/plugins/autoresearch-context.ts loading plugin\nERROR 2026-03-23T09:59:56 +1ms service=plugin path=file:///home/user/code/.opencode/plugins/autoresearch-context.ts error=fn5 is not a function. (In 'fn5(input)', 'fn5' is an instance of Object) failed to load plugin\n    \"file:///home/user/code/.opencode/plugins/autoresearch-context.ts\"\n",
+	"timestamp": 1774259997060
 }

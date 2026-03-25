@@ -490,7 +490,7 @@ let
 
   allRecords = lib.flatten (lib.mapAttrsToList generateRecords (removeAttrs DNSConfig [ "@" ]));
 
-  groupByProvider = lib.groupBy (
+  groupByProvider = builtins.groupBy (
     r: DNSConfig.${r.domain}.provider or DNSConfig."@".provider or null
   ) allRecords;
 
@@ -534,7 +534,7 @@ let
     in
     lib.foldl' addRecord { } records;
 
-  finalStructure = lib.mapAttrs (provider: records: structureRecords records) groupByProvider;
+  finalStructure = lib.mapAttrs (provider: structureRecords) groupByProvider;
 
   createCondensedRecords =
     records:
@@ -551,8 +551,8 @@ let
               inherit domain type;
             }
             // (if name != "@" then { inherit name; } else { })
-            // (if ttl != null then { ttl = ttl; } else { })
-            // (if priority != null then { priority = priority; } else { });
+            // (if ttl != null then { inherit ttl; } else { })
+            // (if priority != null then { inherit priority; } else { });
         in
         {
           ${key} = completeRecord;
@@ -577,7 +577,7 @@ let
                     in
                     if priorityA != priorityB then priorityA < priorityB else contentA < contentB
                   ) typeRecords;
-                  groupedByPriority = lib.groupBy (r: toString (r.priority or 0)) sortedRecords;
+                  groupedByPriority = builtins.groupBy (r: toString (r.priority or 0)) sortedRecords;
                   indexedRecords = lib.mapAttrsToList (
                     priority: group:
                     lib.imap0 (

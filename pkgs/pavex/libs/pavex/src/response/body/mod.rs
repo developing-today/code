@@ -37,15 +37,15 @@ mod typed_body {
     /// 2. The low-level representation of your body type
     ///
     /// Let's focus on 2., the trickier bit. You'll be working with the types in
-    /// the [`body::raw`](super::raw) module.  
+    /// the [`body::raw`](super::raw) module.
     ///
     /// ## Buffered body
     ///
     /// [`Full<Bytes>`](super::raw::Full) is the "canonical" choice if your body is fully
-    /// buffered in memory before being transmitted over the network.  
+    /// buffered in memory before being transmitted over the network.
     /// You need to convert your body type into a buffer ([`Bytes`](super::raw::Bytes))
     /// which is then wrapped in [`Full`](super::raw::Full) to signal that the entire
-    /// body is a single "chunk".  
+    /// body is a single "chunk".
     ///
     /// Let's see how you could implement `TypedBody` for a `String` wrapper
     /// as a reference example:
@@ -74,8 +74,8 @@ mod typed_body {
     ///
     /// ## Streaming body
     ///
-    /// Streaming bodies are trickier.  
-    /// You might need to implement [`RawBody`] directly for your body type.  
+    /// Streaming bodies are trickier.
+    /// You might need to implement [`RawBody`] directly for your body type.
     ///
     /// [`Response`]: crate::response::Response
     // TODO: expand guide for streaming bodies.

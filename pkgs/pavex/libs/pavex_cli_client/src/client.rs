@@ -85,7 +85,7 @@ impl Client {
 
     /// Disable debug mode.
     ///
-    /// `pavex_cli` will not print additional debug information when running commands.  
+    /// `pavex_cli` will not print additional debug information when running commands.
     /// This is the default behaviour.
     pub fn no_debug(mut self) -> Self {
         self.debug = false;

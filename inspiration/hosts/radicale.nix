@@ -39,7 +39,7 @@ in
   sops.secrets.radicale-htpasswd = {
     sopsFile = ../secrets.yaml;
     owner = config.users.users.radicale.name;
-    group = config.users.users.radicale.group;
+    inherit (config.users.users.radicale) group;
   };
 
   environment.persistence = {

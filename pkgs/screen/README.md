@@ -1,6 +1,8 @@
 success is making this tutorial using roc
+
 - https://rogueliketutorials.com/tutorials/tcod/v2/part-1/
-with WAN access available for
+  with WAN access available for
+
 ```
 ssh ascii
 ssh unicode
@@ -26,20 +28,20 @@ html (or maybe web?)
 # may need variations for
 #   htmx/sshText equivalents like web-text
 #   things like canvas websockets
-#   full has everything 
+#   full has everything
 htmx # alias for web-htmx or html-htmx
 websocket # NATS
 
 ##
-# possible future things 
-## 
+# possible future things
+##
 # imgui
-# bevy 
+# bevy
 # egui
-# custom client & protocol (or alternate websocket mode?) 
-# s3/seaweed/crud/rest 
-# ?vnc?? 
-# ssh-terminal ?? the gang reverse-shells themselves 
+# custom client & protocol (or alternate websocket mode?)
+# s3/seaweed/crud/rest
+# ?vnc??
+# ssh-terminal ?? the gang reverse-shells themselves
 # rdf triples , ISO/IEC 39075 GQL / opencypher
 # other things in the data formats note for ssh/text
 # other binary/performance types of formats/modes
@@ -53,3 +55,4 @@ websocket # NATS
 # webforum/usenet/phpbb
 # idk godot?
 # charm/ratatui?
+```

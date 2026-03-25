@@ -3,11 +3,10 @@ session: ses_2e48
 updated: 2026-03-25T03:09:53.251Z
 ---
 
-
-
 ## Summary of Current Session
 
 ### Task
+
 Add `id tag` CLI subcommand (1:1 with REPL), add REPL aliases (set→add, del→unset/delete/remove/rem/rm), update REPL help text, update all docs/docstrings/README to be current.
 
 ### Architecture Answers Provided to User
@@ -58,6 +57,7 @@ Add `id tag` CLI subcommand (1:1 with REPL), add REPL aliases (set→add, del→
 - Verify `id tag --help`, `id tag set --help` etc. work correctly
 
 ### Key Files Modified
+
 - `src/repl/runner.rs` — REPL aliases + help text
 - `src/cli.rs` — `TagCommand` enum + `Command::Tag` variant
 - `src/commands/tag.rs` — **NEW** command handler
@@ -66,4 +66,5 @@ Add `id tag` CLI subcommand (1:1 with REPL), add REPL aliases (set→add, del→
 - `src/main.rs` — dispatch wiring
 
 ### Prior Session Context (from core_memory)
+
 All Tags V2 web UI work is complete and browser-verified. Tag pills, bulk select, editor panel, WS live updates, search without flicker, enter-key submission all confirmed working. Web assets at `main.f3vn39ft.js` / `styles.a6a95585.css`.
