@@ -72,6 +72,9 @@ pub enum FileKind {
 pub struct FileInfo {
     /// Tag name (filename).
     pub name: String,
+    /// Display name derived from name/file/path metadata tags.
+    /// Falls back to `name` if no metadata tags exist.
+    pub display_name: Option<String>,
     /// Content hash.
     pub hash: String,
     /// File size in bytes.
@@ -205,6 +208,8 @@ pub fn create_router(state: AppState) -> Router {
                 .post(super::tags_ws::set_tag_handler)
                 .delete(super::tags_ws::del_tag_handler),
         )
+        // Tag search endpoint with structured query syntax
+        .route("/api/tags/search", get(super::tags_ws::search_tags_handler))
         // WebSocket for collaboration
         .route("/ws/collab/:doc_id", get(super::collab::ws_collab_handler))
         // WebSocket for live tag updates
@@ -530,11 +535,16 @@ async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
 }
 
 /// System tag keys that are excluded from user-visible tags display.
-const SYSTEM_TAG_KEYS: &[&str] = &["created", "modified", "deleted"];
+const SYSTEM_TAG_KEYS: &[&str] = &["created", "modified", "deleted", "name", "file", "path"];
 
 /// Check if a tag key is a system/internal key that shouldn't be shown in tag pills.
-fn is_system_tag_key(key: &str) -> bool {
-    SYSTEM_TAG_KEYS.contains(&key) || key.starts_with("archive.")
+fn is_system_tag_key(key: &[u8]) -> bool {
+    // Check against known system keys (all are valid UTF-8)
+    if let Ok(s) = std::str::from_utf8(key) {
+        SYSTEM_TAG_KEYS.contains(&s) || s.starts_with("archive.")
+    } else {
+        false
+    }
 }
 
 /// Get list of files from the store with classification metadata.
@@ -559,28 +569,45 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     let mut modified_map: HashMap<String, u64> = HashMap::new();
     let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut user_tags_map: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+    let mut display_name_map: HashMap<String, String> = HashMap::new();
     for tag in &all_meta_tags {
         if tag.key == "created" {
             if let Some(ref v) = tag.value
-                && let Ok(ts) = v.parse::<u64>()
+                && let Some(s) = v.as_str()
+                && let Ok(ts) = s.parse::<u64>()
             {
-                created_map.insert(tag.subject.clone(), ts);
+                created_map.insert(tag.subject.display_lossy(), ts);
             }
         } else if tag.key == "modified" {
             if let Some(ref v) = tag.value
-                && let Ok(ts) = v.parse::<u64>()
+                && let Some(s) = v.as_str()
+                && let Ok(ts) = s.parse::<u64>()
             {
-                modified_map.insert(tag.subject.clone(), ts);
+                modified_map.insert(tag.subject.display_lossy(), ts);
             }
         } else if tag.key == "deleted" {
-            deleted_set.insert(tag.subject.clone());
+            deleted_set.insert(tag.subject.display_lossy());
+        }
+        // Resolve display name from name/file/path tags (prefer name > file > path)
+        if matches!(tag.key.as_bytes(), b"name" | b"file" | b"path") {
+            let subj = tag.subject.display_lossy();
+            if !display_name_map.contains_key(&subj) {
+                if let Some(ref v) = tag.value {
+                    if let Some(s) = v.as_str() {
+                        display_name_map.insert(subj, s.to_owned());
+                    }
+                }
+            }
         }
         // Collect user-visible tags (not system tags)
         if !is_system_tag_key(&tag.key) {
             user_tags_map
-                .entry(tag.subject.clone())
+                .entry(tag.subject.display_lossy())
                 .or_default()
-                .push((tag.key.clone(), tag.value.clone()));
+                .push((
+                    tag.key.display_lossy(),
+                    tag.value.as_ref().map(|v| v.display_lossy()),
+                ));
         }
     }
 
@@ -624,9 +651,11 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         let created_at = created_map.get(&name).copied();
         let modified_at = modified_map.get(&name).copied();
         let tags = user_tags_map.remove(&name).unwrap_or_default();
+        let display_name = display_name_map.get(&name).cloned();
 
         files.push(FileInfo {
             name,
+            display_name,
             hash,
             size,
             kind,
@@ -636,6 +665,20 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
             modified_at,
             tags,
             is_deleted,
+        });
+    }
+
+    // Deduplicate files with the same hash, display name, and user tags
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        files.retain(|f| {
+            let dedup_key = format!(
+                "{}|{}|{:?}",
+                f.hash,
+                f.display_name.as_deref().unwrap_or(&f.name),
+                f.tags
+            );
+            seen.insert(dedup_key)
         });
     }
 
@@ -694,16 +737,20 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         if let Ok(all_tags) = state.tag_store.list_all(&state.tag_store.global).await {
             for tag in &all_tags {
                 // Skip internal/system tags for search
-                if tag.key.starts_with("archive.") {
+                if tag.key.starts_with(b"archive.") {
                     continue;
                 }
-                if tag.key.to_lowercase().contains(&needle_lower)
+                if tag
+                    .key
+                    .display_lossy()
+                    .to_lowercase()
+                    .contains(&needle_lower)
                     || tag
                         .value
-                        .as_deref()
-                        .is_some_and(|v| v.to_lowercase().contains(&needle_lower))
+                        .as_ref()
+                        .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
                 {
-                    tag_matches.insert(tag.subject.clone());
+                    tag_matches.insert(tag.subject.display_lossy());
                 }
             }
         }
@@ -955,9 +1002,9 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
-            &req.name,
-            "created",
-            Some(&now_str),
+            req.name.as_bytes(),
+            b"created",
+            Some(now_str.as_bytes()),
             b"",
         )
         .await
@@ -968,9 +1015,9 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         .tag_store
         .set_singleton(
             &state.tag_store.global,
-            &req.name,
-            "modified",
-            Some(&now_str),
+            req.name.as_bytes(),
+            b"modified",
+            Some(now_str.as_bytes()),
             b"",
         )
         .await
@@ -982,9 +1029,9 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
             .tag_store
             .set_tag(
                 &state.tag_store.global,
-                &req.name,
-                "archive.save",
-                Some(archive),
+                req.name.as_bytes(),
+                b"archive.save",
+                Some(archive.as_bytes()),
                 b"",
             )
             .await
@@ -1066,9 +1113,9 @@ async fn new_file_handler(
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
-            &req.name,
-            "created",
-            Some(&now_str),
+            req.name.as_bytes(),
+            b"created",
+            Some(now_str.as_bytes()),
             b"",
         )
         .await
@@ -1079,9 +1126,9 @@ async fn new_file_handler(
         .tag_store
         .set_singleton(
             &state.tag_store.global,
-            &req.name,
-            "modified",
-            Some(&now_str),
+            req.name.as_bytes(),
+            b"modified",
+            Some(now_str.as_bytes()),
             b"",
         )
         .await
@@ -1207,7 +1254,11 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
     // Update metadata tags: transfer from old name to new, record archives
     if let Err(err) = state
         .tag_store
-        .transfer_all_tags(&state.tag_store.global, &req.name, &new_name)
+        .transfer_all_tags(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            new_name.as_bytes(),
+        )
         .await
     {
         tracing::warn!("[routes] Failed to transfer tags: {}", err);
@@ -1217,9 +1268,9 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
             .tag_store
             .set_tag(
                 &state.tag_store.global,
-                &new_name,
-                "archive.rename",
-                Some(archive),
+                new_name.as_bytes(),
+                b"archive.rename",
+                Some(archive.as_bytes()),
                 b"",
             )
             .await
@@ -1231,9 +1282,9 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
             .tag_store
             .set_tag(
                 &state.tag_store.global,
-                &new_name,
-                "archive.replace",
-                Some(archive),
+                new_name.as_bytes(),
+                b"archive.replace",
+                Some(archive.as_bytes()),
                 b"",
             )
             .await
@@ -1329,7 +1380,11 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
     // Copy metadata tags from source to destination
     if let Err(err) = state
         .tag_store
-        .copy_all_tags(&state.tag_store.global, &req.name, &new_name)
+        .copy_all_tags(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            new_name.as_bytes(),
+        )
         .await
     {
         tracing::warn!("[routes] Failed to copy metadata tags: {}", err);
@@ -1468,9 +1523,9 @@ async fn delete_handler(State(state): State<AppState>, Json(req): Json<DeleteReq
         .tag_store
         .set_singleton(
             &state.tag_store.global,
-            &req.name,
-            "deleted",
-            Some(&now_str),
+            req.name.as_bytes(),
+            b"deleted",
+            Some(now_str.as_bytes()),
             b"",
         )
         .await
@@ -1506,7 +1561,7 @@ async fn restore_handler(
     // Remove the "deleted" tag (all values for this key)
     if let Err(err) = state
         .tag_store
-        .del_by_key(&state.tag_store.global, &req.name, "deleted")
+        .del_by_key(&state.tag_store.global, req.name.as_bytes(), b"deleted")
         .await
     {
         tracing::error!("[routes] Failed to remove deleted tag: {}", err);
@@ -1549,7 +1604,7 @@ async fn hard_delete_handler(
     // Delete all metadata tags for this subject
     if let Err(err) = state
         .tag_store
-        .del_all_tags(&state.tag_store.global, &req.name)
+        .del_all_tags(&state.tag_store.global, req.name.as_bytes())
         .await
     {
         tracing::warn!("[routes] Failed to delete metadata tags: {}", err);

@@ -82,4 +82,4 @@ pub use repl::{ReplContext, ReplContextInner};
 pub use serve::{
     ServeInfo, cmd_serve, create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
-pub use tag::cmd_tag;
+pub use tag::{cmd_migrate_tags, cmd_tag};

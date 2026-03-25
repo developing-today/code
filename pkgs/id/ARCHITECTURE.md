@@ -50,7 +50,8 @@ Key message types:
 - `List` — enumerate remote files
 - `Find`/`Search` — pattern-based file lookup
 - `Rename`/`Copy`/`Delete` — file management
-- `TagSet`/`TagDel`/`TagGet`/`TagSearch` — metadata operations
+- `SetTag`/`DelTag`/`GetTags`/`SearchTags` — metadata operations (SearchTags uses structured query syntax)
+- `MigrateTags` — add name/file auto-tags to all existing files
 
 ### Store (`store.rs`)
 
@@ -68,13 +69,19 @@ Omega Index: key → value → subject    (search files by tag)
 Both indices are stored as Iroh documents using sort-preserving binary key encoding (`tuple.rs`). Each index is a `NamespacePair` — an alpha doc and omega doc that mirror each other for bidirectional queries.
 
 Key concepts:
+- **TagValue**: Binary-safe value type wrapping `Vec<u8>`, displays as UTF-8 when valid, `<binary N bytes>` otherwise. Supports arbitrary-length keys/values.
 - **Tag**: `(subject, key, value?)` triple — e.g., `("readme.md", "author", "Jane")`
 - **NamespacePair**: Two Iroh docs (alpha + omega) for dual-indexed queries
 - **Registry**: JSON file mapping namespace names to Iroh document IDs
 - **TagEvent**: Broadcast events (`Set`, `Del`, `DelAll`, `Transfer`) for WebSocket subscribers
-- **TupleEncoder**: Sort-preserving binary encoding using length-prefixed segments
+- **TupleEncoder**: Sort-preserving binary encoding with smart type selection (UTF-8 → `string()` type 0x02 for backward compat, non-UTF-8 → `bytes()` type 0x01)
+- **SearchQuery**: Structured search parser — `key:`, `:value`, `key:value`, `"literal"`, bare words. Multiple terms ANDed together.
+- **Auto-tagging**: Files automatically get `name`, `file`, and optionally `path` metadata tags on upload via `auto_tag()`. Existing tags never overwritten (`set_if_absent`).
+- **Migration**: `migrate_tags()` adds auto-tags to all existing files that lack them.
 
-Operations: `set_tag`, `del_tag`, `get_tags`, `search` (by key, value, or both), `transfer_all_tags`, `copy_all_tags`.
+Operations: `set_tag`, `del_tag`, `get_tags`, `search_by_query` (structured syntax), `find_by_key`, `find_by_value`, `find_by_key_value`, `transfer_all_tags`, `copy_all_tags`, `auto_tag`, `migrate_tags`.
+
+Display: Values truncated at 256 bytes by default. CLI supports `--hex`, `--binary`, `--no-truncate` flags. Web UI shows `name`/`file`/`path` tags as display names and deduplicates files with identical (hash, display_name, tags).
 
 ### Discovery (`discovery.rs`)
 

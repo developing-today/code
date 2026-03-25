@@ -93,12 +93,16 @@ web-lint-fix:
 # Lockfiles
 # =============================================================================
 
-# Regenerate all lockfiles (bun2nix)
-lockfiles: bun2nix
+# Regenerate all lockfiles (bun2nix + just-recipes.json)
+lockfiles: bun2nix just-recipes
 
 # Regenerate web/bun.nix from web/bun.lock for offline nix builds
 bun2nix:
     bun2nix --lock-file web/bun.lock --output-file web/bun.nix
+
+# Regenerate just-recipes.json from justfile for dynamic nix app generation
+just-recipes:
+    just --dump --dump-format json > just-recipes.json
 
 # Run all Rust tests
 test:

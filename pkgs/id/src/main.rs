@@ -9,8 +9,8 @@ use clap::Parser;
 // Import from library
 use id::{
     Cli, Command, PeekOptions, PeersOptions, SearchOptions, cmd_find, cmd_get_multi, cmd_gethash,
-    cmd_id, cmd_list, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_multi, cmd_search, cmd_serve,
-    cmd_show, cmd_tag, run_repl,
+    cmd_id, cmd_list, cmd_migrate_tags, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_multi,
+    cmd_search, cmd_serve, cmd_show, cmd_tag, run_repl,
 };
 
 /// Determine the log level based on CLI flags and environment variables.
@@ -179,6 +179,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::List { node, no_relay }) => cmd_list(node, no_relay).await,
         Some(Command::Tag(tag_cmd)) => cmd_tag(tag_cmd).await,
+        Some(Command::MigrateTags) => cmd_migrate_tags().await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {
             files,

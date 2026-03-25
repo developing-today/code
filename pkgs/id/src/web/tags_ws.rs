@@ -15,6 +15,7 @@
 //! - `GET  /api/tags?key=label` — find all files with a given tag key
 //! - `GET  /api/tags?key=label&value=rust` — find files by key+value
 //! - `GET  /api/tags` — list all tags in the global namespace
+//! - `GET  /api/tags/search?q=<query>` — search tags with structured syntax
 //! - `POST /api/tags` — set a tag
 //! - `DELETE /api/tags` — delete a tag
 
@@ -43,6 +44,15 @@ pub struct TagQuery {
     /// Filter by tag value (requires `key`).
     pub value: Option<String>,
     /// Namespace to query (default: "global").
+    pub ns: Option<String>,
+}
+
+/// Query parameters for GET /api/tags/search.
+#[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    /// Search query string (supports: `key:`, `:value`, `key:value`, `"literal"`, bare word).
+    pub q: String,
+    /// Namespace to search (default: "global").
     pub ns: Option<String>,
 }
 
@@ -171,19 +181,27 @@ pub async fn get_tags_handler(
         query.value.as_deref(),
     ) {
         // Subject + key + value → exact lookup
-        (Some(subject), Some(key), value) => {
-            tag_store.get_by_key(ns, subject, key).await.map(|tags| {
+        (Some(subject), Some(key), value) => tag_store
+            .get_by_key(ns, subject.as_bytes(), key.as_bytes())
+            .await
+            .map(|tags| {
                 tags.into_iter()
-                    .filter(|t| value.is_none() || t.value.as_deref() == value)
+                    .filter(|t| {
+                        value.is_none()
+                            || t.value.as_ref().map(|v| v.as_bytes()) == value.map(|v| v.as_bytes())
+                    })
                     .collect::<Vec<_>>()
-            })
-        }
+            }),
         // Subject only → all tags for that file
-        (Some(subject), None, _) => tag_store.get_tags(ns, subject).await,
+        (Some(subject), None, _) => tag_store.get_tags(ns, subject.as_bytes()).await,
         // Key + value (no subject) → search by key+value across all files
-        (None, Some(key), Some(value)) => tag_store.find_by_key_value(ns, key, value).await,
+        (None, Some(key), Some(value)) => {
+            tag_store
+                .find_by_key_value(ns, key.as_bytes(), value.as_bytes())
+                .await
+        }
         // Key only → search by key name across all files
-        (None, Some(key), None) => tag_store.find_by_key(ns, key).await,
+        (None, Some(key), None) => tag_store.find_by_key(ns, key.as_bytes()).await,
         // No filters → list all
         (None, None, _) => tag_store.list_all(ns).await,
     };
@@ -193,9 +211,9 @@ pub async fn get_tags_handler(
             let response: Vec<TagResponse> = tags
                 .into_iter()
                 .map(|t| TagResponse {
-                    subject: t.subject,
-                    key: t.key,
-                    value: t.value,
+                    subject: t.subject.display_lossy(),
+                    key: t.key.display_lossy(),
+                    value: t.value.map(|v| v.display_lossy()),
                     timestamp: t.timestamp,
                 })
                 .collect();
@@ -225,7 +243,13 @@ pub async fn set_tag_handler(
     let ns = &tag_store.global; // TODO: support req.ns
 
     match tag_store
-        .set_tag(ns, &req.subject, &req.key, req.value.as_deref(), b"")
+        .set_tag(
+            ns,
+            req.subject.as_bytes(),
+            req.key.as_bytes(),
+            req.value.as_ref().map(|v| v.as_bytes()),
+            b"",
+        )
         .await
     {
         Ok(()) => (
@@ -259,10 +283,18 @@ pub async fn del_tag_handler(
     let ns = &tag_store.global; // TODO: support req.ns
 
     let result = if req.all {
-        tag_store.del_all_tags(ns, &req.subject).await.map(Some)
+        tag_store
+            .del_all_tags(ns, req.subject.as_bytes())
+            .await
+            .map(Some)
     } else {
         tag_store
-            .del_tag(ns, &req.subject, &req.key, req.value.as_deref())
+            .del_tag(
+                ns,
+                req.subject.as_bytes(),
+                req.key.as_bytes(),
+                req.value.as_ref().map(|v| v.as_bytes()),
+            )
             .await
             .map(|()| None)
     };
@@ -286,6 +318,45 @@ pub async fn del_tag_handler(
                     count: None,
                 }),
             )
+        }
+    }
+}
+
+/// GET /api/tags/search?q=<query> — search tags using structured query syntax.
+///
+/// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
+/// bare word searches. Multiple terms (space-separated) are ANDed together.
+pub async fn search_tags_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> impl IntoResponse {
+    let tag_store = &state.tag_store;
+    let ns = &tag_store.global; // TODO: support query.ns
+
+    match tag_store.search_by_query(ns, &query.q).await {
+        Ok(tags) => {
+            let response: Vec<TagResponse> = tags
+                .into_iter()
+                .map(|t| TagResponse {
+                    subject: t.subject.display_lossy(),
+                    key: t.key.display_lossy(),
+                    value: t.value.map(|v| v.display_lossy()),
+                    timestamp: t.timestamp,
+                })
+                .collect();
+            (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("[tags_ws] Search failed: {e:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    ok: false,
+                    message: Some(format!("{e:#}")),
+                    count: None,
+                }),
+            )
+                .into_response()
         }
     }
 }

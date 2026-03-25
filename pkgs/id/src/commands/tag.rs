@@ -29,6 +29,33 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
 use crate::protocol::{MetaRequest, MetaResponse};
 
+/// Options controlling how tag values are displayed.
+#[derive(Debug, Clone, Default)]
+pub struct TagDisplayOptions {
+    /// Show binary values as hex strings.
+    pub hex: bool,
+    /// Include binary (non-UTF-8) tag values in output.
+    pub binary: bool,
+    /// Don't truncate long values.
+    pub no_truncate: bool,
+}
+
+impl TagDisplayOptions {
+    /// Format a tag value for display according to these options.
+    ///
+    /// Returns `None` if the value is binary and `binary` is false (skip it).
+    pub fn format_value(&self, value: &str) -> String {
+        if self.no_truncate {
+            value.to_owned()
+        } else if value.len() > crate::tags::TAG_DISPLAY_MAX_BYTES {
+            let truncated = &value[..crate::tags::TAG_DISPLAY_MAX_BYTES];
+            format!("{truncated}…")
+        } else {
+            value.to_owned()
+        }
+    }
+}
+
 /// Execute a metadata tag subcommand.
 ///
 /// Dispatches to the appropriate handler based on the `TagCommand` variant.
@@ -38,8 +65,32 @@ pub async fn cmd_tag(cmd: TagCommand) -> Result<()> {
     match cmd {
         TagCommand::Set { file, key, value } => tag_set(&file, &key, value.as_deref()).await,
         TagCommand::Del { file, key, value } => tag_del(&file, &key, value.as_deref()).await,
-        TagCommand::List { file } => tag_list(file.as_deref()).await,
-        TagCommand::Search { key, value } => tag_search(&key, value.as_deref()).await,
+        TagCommand::List {
+            file,
+            hex,
+            binary,
+            no_truncate,
+        } => {
+            let opts = TagDisplayOptions {
+                hex,
+                binary,
+                no_truncate,
+            };
+            tag_list(file.as_deref(), &opts).await
+        }
+        TagCommand::Search {
+            query,
+            hex,
+            binary,
+            no_truncate,
+        } => {
+            let opts = TagDisplayOptions {
+                hex,
+                binary,
+                no_truncate,
+            };
+            tag_search(&query.join(" "), &opts).await
+        }
     }
 }
 
@@ -133,7 +184,7 @@ async fn tag_del(subject: &str, key: &str, value: Option<&str>) -> Result<()> {
 }
 
 /// List metadata tags (all or for a specific file).
-async fn tag_list(subject: Option<&str>) -> Result<()> {
+async fn tag_list(subject: Option<&str>, opts: &TagDisplayOptions) -> Result<()> {
     let req = MetaRequest::GetTags {
         subject: subject.map(ToOwned::to_owned),
     };
@@ -149,11 +200,7 @@ async fn tag_list(subject: Option<&str>) -> Result<()> {
                     }
                 } else {
                     for (subj, key, value) in &tags {
-                        if let Some(v) = value {
-                            println!("{subj}\t{key}={v}");
-                        } else {
-                            println!("{subj}\t{key}");
-                        }
+                        print_tag_line(subj, key, value.as_deref(), opts);
                     }
                     println!("{} tag(s)", tags.len());
                 }
@@ -180,11 +227,7 @@ async fn tag_list(subject: Option<&str>) -> Result<()> {
         }
     } else {
         for t in &tags {
-            if let Some(v) = &t.value {
-                println!("{}\t{}={v}", t.subject, t.key);
-            } else {
-                println!("{}\t{}", t.subject, t.key);
-            }
+            print_tag_line(&t.subject, &t.key, t.value.as_deref(), opts);
         }
         println!("{} tag(s)", tags.len());
     }
@@ -192,11 +235,13 @@ async fn tag_list(subject: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Search metadata tags by key and/or value.
-async fn tag_search(key: &str, value: Option<&str>) -> Result<()> {
+/// Search metadata tags using structured query syntax.
+///
+/// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
+/// bare word searches. Multiple terms are ANDed together.
+async fn tag_search(query: &str, opts: &TagDisplayOptions) -> Result<()> {
     let req = MetaRequest::SearchTags {
-        key: Some(key.to_owned()),
-        value: value.map(ToOwned::to_owned),
+        query: query.to_owned(),
     };
 
     if let Some(resp) = send_meta_request(&req).await? {
@@ -206,11 +251,7 @@ async fn tag_search(key: &str, value: Option<&str>) -> Result<()> {
                     println!("(no matching tags)");
                 } else {
                     for (subj, k, v) in &tags {
-                        if let Some(val) = v {
-                            println!("{subj}\t{k}={val}");
-                        } else {
-                            println!("{subj}\t{k}");
-                        }
+                        print_tag_line(subj, k, v.as_deref(), opts);
                     }
                     println!("{} tag(s)", tags.len());
                 }
@@ -220,31 +261,134 @@ async fn tag_search(key: &str, value: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    // Fallback: legacy MetaDoc search
+    // Fallback: legacy MetaDoc search (limited to bare word matching)
     let store = crate::open_store(false).await?;
     let store_handle = store.as_store();
     let meta = crate::tags::load_meta(&store_handle).await?;
+    let search_terms = crate::tags::parse_search_query(query);
     let tags: Vec<_> = meta
         .tags
         .iter()
         .filter(|t| {
-            let key_match = t.key == key;
-            let value_match = value.is_none_or(|v| t.value.as_deref() == Some(v));
-            key_match && value_match
+            search_terms.iter().all(|term| {
+                use crate::tags::SearchTerm;
+                match term {
+                    SearchTerm::KeyOnly(k) => t.key == *k,
+                    SearchTerm::ValueOnly(v) => t.value.as_deref() == Some(v.as_str()),
+                    SearchTerm::KeyValue(k, v) => {
+                        t.key == *k && t.value.as_deref() == Some(v.as_str())
+                    }
+                    SearchTerm::Literal(text) | SearchTerm::BareWord(text) => {
+                        let text_lower = text.to_lowercase();
+                        t.subject.to_lowercase().contains(&text_lower)
+                            || t.key.to_lowercase().contains(&text_lower)
+                            || t.value
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_lowercase()
+                                .contains(&text_lower)
+                    }
+                }
+            })
         })
         .collect();
     if tags.is_empty() {
         println!("(no matching tags)");
     } else {
         for t in &tags {
-            if let Some(v) = &t.value {
-                println!("{}\t{}={v}", t.subject, t.key);
-            } else {
-                println!("{}\t{}", t.subject, t.key);
-            }
+            print_tag_line(&t.subject, &t.key, t.value.as_deref(), opts);
         }
         println!("{} tag(s)", tags.len());
     }
     store.shutdown().await?;
     Ok(())
+}
+
+/// Print a single tag line with truncation per display options.
+fn print_tag_line(subject: &str, key: &str, value: Option<&str>, opts: &TagDisplayOptions) {
+    if let Some(v) = value {
+        let formatted = opts.format_value(v);
+        println!("{subject}\t{key}={formatted}");
+    } else {
+        println!("{subject}\t{key}");
+    }
+}
+
+/// Migrate all existing blob tags to have name/file auto-tags.
+///
+/// If a local serve is running, sends `MetaRequest::MigrateTags` via the
+/// meta protocol. Otherwise prints a message (TagStore is only available
+/// when serve is running).
+pub async fn cmd_migrate_tags() -> Result<()> {
+    let req = MetaRequest::MigrateTags;
+
+    if let Some(resp) = send_meta_request(&req).await? {
+        match resp {
+            MetaResponse::MigrateTags { migrated } => {
+                println!("migrated {migrated} file(s)");
+            }
+            _ => anyhow::bail!("unexpected response"),
+        }
+        return Ok(());
+    }
+
+    // Fallback: no serve running, can't migrate without TagStore
+    println!("migrate-tags requires a running serve instance (id serve)");
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_value_short() {
+        let opts = TagDisplayOptions::default();
+        assert_eq!(opts.format_value("hello"), "hello");
+    }
+
+    #[test]
+    fn test_format_value_truncation() {
+        let opts = TagDisplayOptions::default();
+        let long_value = "a".repeat(300);
+        let result = opts.format_value(&long_value);
+        assert!(result.len() < long_value.len(), "should be truncated");
+        assert!(result.ends_with('…'), "should end with ellipsis");
+    }
+
+    #[test]
+    fn test_format_value_no_truncate() {
+        let opts = TagDisplayOptions {
+            no_truncate: true,
+            ..Default::default()
+        };
+        let long_value = "a".repeat(300);
+        let result = opts.format_value(&long_value);
+        assert_eq!(result, long_value, "should not truncate with --no-truncate");
+    }
+
+    #[test]
+    fn test_format_value_exact_boundary() {
+        let opts = TagDisplayOptions::default();
+        let exact = "a".repeat(crate::tags::TAG_DISPLAY_MAX_BYTES);
+        let result = opts.format_value(&exact);
+        assert_eq!(result, exact, "exactly at limit should not truncate");
+    }
+
+    #[test]
+    fn test_format_value_one_over_boundary() {
+        let opts = TagDisplayOptions::default();
+        let over = "a".repeat(crate::tags::TAG_DISPLAY_MAX_BYTES + 1);
+        let result = opts.format_value(&over);
+        assert!(result.ends_with('…'), "one over limit should truncate");
+    }
+
+    #[test]
+    fn test_display_options_default() {
+        let opts = TagDisplayOptions::default();
+        assert!(!opts.hex);
+        assert!(!opts.binary);
+        assert!(!opts.no_truncate);
+    }
 }

@@ -215,6 +215,11 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<ul class=\"file-list\">");
         for file in files {
             let name_escaped = html_escape(&file.name);
+            let display_name_escaped = file
+                .display_name
+                .as_deref()
+                .map(html_escape)
+                .unwrap_or_else(|| name_escaped.clone());
             let hash_escaped = html_escape(&file.hash);
             let short_hash = &file.hash[..12.min(file.hash.len())];
 
@@ -253,17 +258,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 String::new()
             };
 
-            // Tag pills — user-visible tags
+            // Tag pills — user-visible tags (values truncated at 256 chars)
             let mut tag_pills = String::new();
             for (key, value) in &file.tags {
                 let key_esc = html_escape(key);
                 match value {
                     Some(v) => {
-                        let val_esc = html_escape(v);
+                        let truncated = if v.len() > crate::tags::TAG_DISPLAY_MAX_BYTES {
+                            format!("{}…", &v[..crate::tags::TAG_DISPLAY_MAX_BYTES])
+                        } else {
+                            v.clone()
+                        };
+                        let val_esc = html_escape(&truncated);
                         let _ = write!(
                             tag_pills,
                             "<span class=\"tag-pill\" data-key=\"{}\" data-value=\"{}\">{}: {}</span>",
-                            key_esc, val_esc, key_esc, val_esc
+                            key_esc,
+                            html_escape(v),
+                            key_esc,
+                            val_esc
                         );
                     }
                     None => {
@@ -311,7 +324,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 name_escaped,
                 href,
                 href,
-                name_escaped,
+                display_name_escaped,
                 badge,
                 deleted_badge,
                 tags_html,
@@ -912,6 +925,7 @@ mod tests {
     fn test_render_file_list_with_files() {
         let files = vec![FileInfo {
             name: "test.txt".to_owned(),
+            display_name: None,
             hash: "abc123def456".to_owned(),
             size: 1024,
             kind: FileKind::Primary,

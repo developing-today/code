@@ -1549,4 +1549,143 @@ mod tag_tests {
         let output = run_cmd(&["tag", "add", "--help"], tmp.path());
         assert!(output.status.success(), "tag add --help should succeed");
     }
+
+    #[test]
+    fn test_tag_search_with_key_value_syntax() {
+        // Verify that search accepts key:value query syntax
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "priority:high"], tmp.path());
+        // Should not error on syntax (may find no results, but command should succeed)
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The command should at least not crash — either success or "not connected"
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search priority:high should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_with_value_only_syntax() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", ":important"], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search :important should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_with_quoted_literal() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "\"key:value\""], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search with quoted literal should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_multiple_terms() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "priority:", ":high", "name"], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search with multiple terms should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_list_with_display_flags() {
+        // Verify --hex, --binary, --no-truncate flags are accepted
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "list", "--hex", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "tag list --hex --help should succeed: {stdout}"
+        );
+
+        let output = run_cmd(&["tag", "list", "--binary", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "tag list --binary --help should succeed"
+        );
+
+        let output = run_cmd(&["tag", "list", "--no-truncate", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "tag list --no-truncate --help should succeed"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_with_display_flags() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("hex") && stdout.contains("binary") && stdout.contains("no-truncate"),
+            "tag search help should mention --hex, --binary, --no-truncate: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_migrate_tags_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["migrate-tags", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "migrate-tags --help should succeed"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.to_lowercase().contains("migrat"),
+            "migrate-tags help should mention migration: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_label_search_alias() {
+        // Verify label search works like tag search
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "search", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "label search --help should succeed"
+        );
+    }
+
+    #[test]
+    fn test_label_find_alias() {
+        // Verify label find works like tag find
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "find", "--help"], tmp.path());
+        assert!(output.status.success(), "label find --help should succeed");
+    }
+
+    #[test]
+    fn test_link_search_alias() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["link", "search", "--help"], tmp.path());
+        assert!(output.status.success(), "link search --help should succeed");
+    }
 }

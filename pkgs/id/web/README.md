@@ -284,3 +284,46 @@ The `/ws/tags` endpoint provides real-time tag change notifications. Clients rec
 | `Transfer` | Tags were moved from one subject to another |
 
 The `value` field is omitted from `Set` events when the tag has no value (key-only tags). The `ns` field indicates the namespace (`global` for the default namespace).
+
+### Tags REST API
+
+In addition to the WebSocket stream, tags can be queried and modified via REST:
+
+| Method   | Endpoint            | Description                          |
+|----------|---------------------|--------------------------------------|
+| `GET`    | `/api/tags`         | List/filter tags (query params below)|
+| `GET`    | `/api/tags/search`  | Search tags with structured syntax   |
+| `POST`   | `/api/tags`         | Set a tag                            |
+| `DELETE` | `/api/tags`         | Delete a tag or all tags for subject |
+
+#### GET /api/tags Query Parameters
+
+| Parameter | Description                              |
+|-----------|------------------------------------------|
+| `subject` | Filter by subject (filename)             |
+| `key`     | Filter by tag key                        |
+| `value`   | Filter by value (requires `key`)         |
+| `ns`      | Namespace (default: `global`)            |
+
+#### GET /api/tags/search
+
+| Parameter | Description                              |
+|-----------|------------------------------------------|
+| `q`       | Search query string (required)           |
+| `ns`      | Namespace (default: `global`)            |
+
+Query syntax: `key:` (key only), `:value` (value only), `key:value` (pair), `"literal"` (quoted), bare word (search all). Multiple terms are space-separated and ANDed.
+
+#### POST /api/tags
+
+```json
+{ "subject": "readme.md", "key": "author", "value": "Jane" }
+```
+
+#### DELETE /api/tags
+
+```json
+{ "subject": "readme.md", "key": "author", "all": false }
+```
+
+Set `"all": true` to delete all tags for the subject.

@@ -6,7 +6,7 @@ A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store,
 
 - **P2P File Sharing**: Store and retrieve files using content-addressed hashes over the Iroh network
 - **Named Tags**: Reference files by human-readable names instead of hashes
-- **Metadata Tags**: Attach arbitrary key-value metadata to files (`tag set myfile.txt author "Jane"`)
+- **Metadata Tags**: Attach arbitrary key-value metadata to files with binary-safe keys/values and structured search syntax
 - **Remote Operations**: Run commands against remote peers by node ID
 - **Collaborative Editor**: Real-time multi-user text editing via WebSocket (web UI)
 - **Interactive REPL**: Shell-like interface with pipes, subshells, and heredocs
@@ -71,7 +71,13 @@ id tag set myfile.txt author "Jane Doe"
 id tag set myfile.txt category notes
 id tag list myfile.txt
 id tag search author
+id tag search author:Jane           # Key-value search
+id tag search :important             # Value-only search
+id tag search "literal:text"         # Quoted literal search
 id tag del myfile.txt category
+
+# Migrate existing files to have name/file auto-tags
+id migrate-tags
 
 # Start a server
 id serve                          # CLI only
@@ -107,6 +113,7 @@ id peers                # List discovered peers
 | `search`   |                      | Search files and list all matches                |
 | `list`     | `ls`                 | List all stored files                            |
 | `tag`      | `label`, `link`      | Manage metadata tags on files                    |
+| `migrate-tags` | `migrate`       | Add name/file auto-tags to existing files        |
 | `id`       |                      | Print local node public ID                       |
 | `peers`    |                      | Discover and list known peers                    |
 
@@ -116,8 +123,22 @@ id peers                # List discovered peers
 |------------|--------------------------------------------|------------------------------------|
 | `set`      | `add`                                      | Set a tag on a file                |
 | `del`      | `rm`, `remove`, `rem`, `delete`, `unset`   | Delete a tag from a file           |
-| `list`     | `ls`                                       | List tags for a file               |
-| `search`   | `find`                                     | Search for files with a tag        |
+| `list`     | `ls`                                       | List tags (supports `--hex`, `--binary`, `--no-truncate`) |
+| `search`   | `find`                                     | Search tags with structured query syntax |
+
+#### Search Syntax
+
+Search uses structured query terms (space-separated, ANDed together):
+
+| Syntax       | Meaning                                     | Example                  |
+|-------------|---------------------------------------------|--------------------------|
+| `key:`      | Filter by key name                          | `author:`                |
+| `:value`    | Filter by value                             | `:Jane`                  |
+| `key:value` | Filter by exact key-value pair              | `author:Jane`            |
+| `"literal"` | Search all fields for literal text          | `"key:value"`            |
+| `bare`      | Case-insensitive search across all fields   | `readme`                 |
+
+Quoted strings work in key:value position: `"key:":":value"` matches key `key:` with value `:value`.
 
 ## REPL
 
@@ -132,6 +153,9 @@ id repl
 > tags myfile.txt                 # List tags (also: labels, links)
 > label set myfile.txt key value  # Same as tag set
 > link set myfile.txt key value   # Same as tag set
+> tag search author:Jane          # Structured search syntax
+> tag find readme                 # find = search alias
+> migrate-tags                    # Add name/file tags to all files
 > cat myfile.txt | head -5        # Pipe output to shell
 > $(id id)                        # Subshell expansion
 > help                            # Show all commands

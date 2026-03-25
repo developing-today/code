@@ -987,6 +987,8 @@ impl ReplContext {
                     } else {
                         for (subj, key, value) in &tags {
                             if let Some(v) = value {
+                                let v = crate::commands::tag::TagDisplayOptions::default()
+                                    .format_value(v);
                                 println!("  {subj}  [{key}={v}]");
                             } else {
                                 println!("  {subj}  [{key}]");
@@ -1015,6 +1017,7 @@ impl ReplContext {
             } else {
                 for t in &tags {
                     if let Some(v) = &t.value {
+                        let v = crate::commands::tag::TagDisplayOptions::default().format_value(v);
                         println!("  {}  [{}={}]", t.subject, t.key, v);
                     } else {
                         println!("  {}  [{}]", t.subject, t.key);
@@ -1026,16 +1029,18 @@ impl ReplContext {
         Ok(())
     }
 
-    /// Search tags by key and/or value.
+    /// Search tags using structured query syntax.
+    ///
+    /// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
+    /// bare word searches. Multiple terms are ANDed together.
     ///
     /// In connected mode, sends a `SearchTags` request to the server.
-    pub async fn search_tags(&mut self, key: Option<&str>, value: Option<&str>) -> Result<()> {
+    pub async fn search_tags(&mut self, query: &str) -> Result<()> {
         if self.is_connected() {
             let meta_conn = self.meta_conn().await?;
             let (mut send, mut recv) = meta_conn.open_bi().await?;
             let req = postcard::to_allocvec(&MetaRequest::SearchTags {
-                key: key.map(String::from),
-                value: value.map(String::from),
+                query: query.to_owned(),
             })?;
             send.write_all(&req).await?;
             send.finish()?;
@@ -1048,6 +1053,8 @@ impl ReplContext {
                     } else {
                         for (subj, k, v) in &tags {
                             if let Some(val) = v {
+                                let val = crate::commands::tag::TagDisplayOptions::default()
+                                    .format_value(val);
                                 println!("  {subj}  [{k}={val}]");
                             } else {
                                 println!("  {subj}  [{k}]");
@@ -1059,23 +1066,34 @@ impl ReplContext {
                 _ => bail!("unexpected response"),
             }
         } else {
-            // Local mode: limited search via MetaDoc
+            // Local mode: search via legacy MetaDoc with search query parser
             let store = self.store_handle();
             let meta = crate::tags::load_meta(&store).await?;
+            let search_terms = crate::tags::parse_search_query(query);
             let tags: Vec<_> = meta
                 .tags
                 .iter()
                 .filter(|t| {
-                    let key_match =
-                        key.is_none_or(|k| t.key.to_lowercase().contains(&k.to_lowercase()));
-                    let val_match = value.is_none_or(|v| {
-                        t.value
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .contains(&v.to_lowercase())
-                    });
-                    key_match && val_match
+                    search_terms.iter().all(|term| {
+                        use crate::tags::SearchTerm;
+                        match term {
+                            SearchTerm::KeyOnly(k) => t.key == *k,
+                            SearchTerm::ValueOnly(v) => t.value.as_deref() == Some(v.as_str()),
+                            SearchTerm::KeyValue(k, v) => {
+                                t.key == *k && t.value.as_deref() == Some(v.as_str())
+                            }
+                            SearchTerm::Literal(text) | SearchTerm::BareWord(text) => {
+                                let text_lower = text.to_lowercase();
+                                t.subject.to_lowercase().contains(&text_lower)
+                                    || t.key.to_lowercase().contains(&text_lower)
+                                    || t.value
+                                        .as_deref()
+                                        .unwrap_or("")
+                                        .to_lowercase()
+                                        .contains(&text_lower)
+                            }
+                        }
+                    })
                 })
                 .collect();
             if tags.is_empty() {
@@ -1083,6 +1101,7 @@ impl ReplContext {
             } else {
                 for t in &tags {
                     if let Some(v) = &t.value {
+                        let v = crate::commands::tag::TagDisplayOptions::default().format_value(v);
                         println!("  {}  [{}={}]", t.subject, t.key, v);
                     } else {
                         println!("  {}  [{}]", t.subject, t.key);
@@ -1090,6 +1109,31 @@ impl ReplContext {
                 }
                 println!("{} tag(s)", tags.len());
             }
+        }
+        Ok(())
+    }
+
+    /// Migrate all existing blob tags to have name/file auto-tags.
+    ///
+    /// In connected mode, sends `MetaRequest::MigrateTags` to the serve
+    /// instance. In local mode, prints a message since TagStore is required.
+    pub async fn migrate_tags(&mut self) -> Result<()> {
+        if self.is_connected() {
+            let meta_conn = self.meta_conn().await?;
+            let (mut send, mut recv) = meta_conn.open_bi().await?;
+            let req = postcard::to_allocvec(&MetaRequest::MigrateTags)?;
+            send.write_all(&req).await?;
+            send.finish()?;
+            let resp_buf = recv.read_to_end(1024 * 1024).await?;
+            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            match resp {
+                MetaResponse::MigrateTags { migrated } => {
+                    println!("migrated {migrated} file(s)");
+                }
+                _ => bail!("unexpected response"),
+            }
+        } else {
+            println!("migrate-tags requires a running serve instance (id serve)");
         }
         Ok(())
     }

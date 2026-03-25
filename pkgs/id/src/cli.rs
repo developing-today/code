@@ -806,6 +806,20 @@ pub enum Command {
     /// ```
     #[command(subcommand, aliases = ["label", "link"])]
     Tag(TagCommand),
+    /// Migrate existing files to have name/file auto-tags.
+    ///
+    /// Scans all blob tags in the store and adds `name` and `file`
+    /// metadata tags for any subject that doesn't already have them.
+    /// Existing tags are never overwritten.
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// id migrate-tags
+    /// # Output: migrated 42 files
+    /// ```
+    #[command(alias = "migrate")]
+    MigrateTags,
     /// Print the local node's public ID.
     ///
     /// The node ID is derived from the keypair and is needed for
@@ -984,21 +998,52 @@ pub enum TagCommand {
     List {
         /// File to list tags for (omit for all).
         file: Option<String>,
+        /// Show binary values as hex strings.
+        #[arg(long)]
+        hex: bool,
+        /// Include binary (non-UTF-8) tag values in output.
+        #[arg(long)]
+        binary: bool,
+        /// Don't truncate long values (default: truncate at 256 bytes).
+        #[arg(long)]
+        no_truncate: bool,
     },
-    /// Search metadata tags by key and/or value.
+    /// Search metadata tags using structured query syntax.
+    ///
+    /// Query syntax:
+    /// - `key:` — filter by key name
+    /// - `:value` — filter by value
+    /// - `key:value` — filter by exact key-value pair
+    /// - `"literal"` — search all fields for literal text
+    /// - `bare` — case-insensitive search across subject/key/value
+    ///
+    /// Quoted strings can be used in key:value position:
+    /// `"key:":":value"` matches key `key:` with value `:value`.
+    ///
+    /// Multiple terms are ANDed together.
     ///
     /// # Examples
     ///
     /// ```bash
+    /// id tag search name:
+    /// id tag search name:myfile.txt
+    /// id tag search :high
     /// id tag search priority
-    /// id tag search priority high
     /// ```
     #[command(alias = "find")]
     Search {
-        /// Tag key to search for.
-        key: String,
-        /// Optional value to filter by.
-        value: Option<String>,
+        /// Search query terms.
+        #[arg(num_args = 1.., required = true)]
+        query: Vec<String>,
+        /// Show binary values as hex strings.
+        #[arg(long)]
+        hex: bool,
+        /// Include binary (non-UTF-8) tag values in output.
+        #[arg(long)]
+        binary: bool,
+        /// Don't truncate long values (default: truncate at 256 bytes).
+        #[arg(long)]
+        no_truncate: bool,
     },
 }
 
@@ -2148,7 +2193,7 @@ mod tests {
     fn test_cli_parse_tag_list() {
         let cli = Cli::parse_from(["id", "tag", "list"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::List { file })) => {
+            Some(Command::Tag(TagCommand::List { file, .. })) => {
                 assert!(file.is_none());
             }
             _ => panic!("Expected Tag List command"),
@@ -2159,7 +2204,7 @@ mod tests {
     fn test_cli_parse_tag_list_with_file() {
         let cli = Cli::parse_from(["id", "tag", "list", "README.md"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::List { file })) => {
+            Some(Command::Tag(TagCommand::List { file, .. })) => {
                 assert_eq!(file, Some("README.md".to_owned()));
             }
             _ => panic!("Expected Tag List command"),
@@ -2179,9 +2224,8 @@ mod tests {
     fn test_cli_parse_tag_search() {
         let cli = Cli::parse_from(["id", "tag", "search", "priority"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Search { key, value })) => {
-                assert_eq!(key, "priority");
-                assert!(value.is_none());
+            Some(Command::Tag(TagCommand::Search { query, .. })) => {
+                assert_eq!(query, vec!["priority"]);
             }
             _ => panic!("Expected Tag Search command"),
         }
@@ -2189,11 +2233,21 @@ mod tests {
 
     #[test]
     fn test_cli_parse_tag_search_with_value() {
-        let cli = Cli::parse_from(["id", "tag", "search", "priority", "high"]);
+        let cli = Cli::parse_from(["id", "tag", "search", "priority:high"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Search { key, value })) => {
-                assert_eq!(key, "priority");
-                assert_eq!(value, Some("high".to_owned()));
+            Some(Command::Tag(TagCommand::Search { query, .. })) => {
+                assert_eq!(query, vec!["priority:high"]);
+            }
+            _ => panic!("Expected Tag Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search_multi_terms() {
+        let cli = Cli::parse_from(["id", "tag", "search", "name:", ":high"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Search { query, .. })) => {
+                assert_eq!(query, vec!["name:", ":high"]);
             }
             _ => panic!("Expected Tag Search command"),
         }

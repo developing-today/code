@@ -394,12 +394,13 @@ async fn execute_repl_command(
             ctx.get_tags(Some(subject)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag" | "label" | "link", "search", key]) => {
-            ctx.search_tags(Some(key), None).await?;
+        (None, ["tag" | "label" | "link", "search" | "find", rest @ ..]) if !rest.is_empty() => {
+            let query = rest.join(" ");
+            ctx.search_tags(&query).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tag" | "label" | "link", "search", key, value]) => {
-            ctx.search_tags(Some(key), Some(value)).await?;
+        (None, ["tag" | "label" | "link", "search" | "find"]) => {
+            ctx.search_tags("").await?;
             Ok(ReplAction::Continue)
         }
         (None, ["tag" | "label" | "link", "list" | "ls"]) => {
@@ -408,6 +409,10 @@ async fn execute_repl_command(
         }
         (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
             ctx.get_tags(Some(subject)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["migrate-tags" | "migrate"]) => {
+            ctx.migrate_tags().await?;
             Ok(ReplAction::Continue)
         }
         (None, ["show" | "view", rest @ ..]) => {
@@ -516,8 +521,11 @@ fn print_help() {
     println!("  tag del <FILE> <KEY> [VALUE] - Delete a metadata tag");
     println!("      aliases: rm, remove, rem, delete, unset");
     println!("  tag list [FILE]              - List tags (same as 'tags')");
-    println!("  tag search <KEY> [VALUE]     - Search tags by key/value");
+    println!("  tag search <QUERY>...        - Search tags (alias: find)");
+    println!("      query syntax: key:  :value  key:value  \"literal\"  bare");
     println!("      note: 'tag' can be replaced with 'label' or 'link'");
+    println!("  migrate-tags                 - Add name/file tags to all existing files");
+    println!("      alias: migrate");
     println!("  show <QUERY>...        - Find & cat to stdout (alias: view)");
     println!("  peek <QUERY>...        - Preview with head/tail display");
     println!("  !<cmd>                 - Run shell command");

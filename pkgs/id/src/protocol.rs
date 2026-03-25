@@ -281,13 +281,19 @@ pub enum MetaRequest {
         /// The subject (filename) to list tags for. None = list all.
         subject: Option<String>,
     },
-    /// Search metadata tags by key and/or value.
+    /// Search metadata tags using structured query syntax.
+    ///
+    /// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
+    /// bare word searches. Multiple terms are ANDed together.
     SearchTags {
-        /// Optional key to filter by.
-        key: Option<String>,
-        /// Optional value to filter by.
-        value: Option<String>,
+        /// The search query string.
+        query: String,
     },
+    /// Migrate all existing blob tags to have name/file/path auto-tags.
+    ///
+    /// Iterates every blob tag in the store and adds `name`, `file`, and
+    /// optionally `path` metadata tags for subjects that lack them.
+    MigrateTags,
     /// Request the list of known peers from a remote node.
     ///
     /// Returns all peers that the remote node has discovered via gossip.
@@ -361,6 +367,11 @@ pub enum MetaResponse {
     SearchTags {
         /// Matching tags as (subject, key, value) tuples.
         tags: Vec<(String, String, Option<String>)>,
+    },
+    /// Response to [`MetaRequest::MigrateTags`].
+    MigrateTags {
+        /// Number of subjects that were updated with auto-tags.
+        migrated: usize,
     },
     /// Response to [`MetaRequest::ListPeers`].
     ///
@@ -546,16 +557,32 @@ impl ProtocolHandler for MetaProtocol {
                         let now_str = crate::tags::now_unix().to_string();
                         let ns = &ts.global;
                         if let Err(e) = ts
-                            .set_if_absent(ns, &filename, "created", Some(&now_str), b"")
+                            .set_if_absent(
+                                ns,
+                                filename.as_bytes(),
+                                b"created",
+                                Some(now_str.as_bytes()),
+                                b"",
+                            )
                             .await
                         {
                             tracing::warn!("Failed to set created tag: {e:#}");
                         }
                         if let Err(e) = ts
-                            .set_singleton(ns, &filename, "modified", Some(&now_str), b"")
+                            .set_singleton(
+                                ns,
+                                filename.as_bytes(),
+                                b"modified",
+                                Some(now_str.as_bytes()),
+                                b"",
+                            )
                             .await
                         {
                             tracing::warn!("Failed to set modified tag: {e:#}");
+                        }
+                        // Auto-tag with name/file metadata
+                        if let Err(e) = ts.auto_tag(ns, filename.as_bytes(), None).await {
+                            tracing::warn!("Failed to auto-tag: {e:#}");
                         }
                     }
 
@@ -623,13 +650,22 @@ impl ProtocolHandler for MetaProtocol {
                             // Update metadata tags via TagStore or legacy
                             if let Some(ts) = &self.tag_store {
                                 let ns = &ts.global;
-                                if let Err(e) = ts.transfer_all_tags(ns, &from, &to).await {
+                                if let Err(e) = ts
+                                    .transfer_all_tags(ns, from.as_bytes(), to.as_bytes())
+                                    .await
+                                {
                                     tracing::warn!("Failed to transfer tags: {e:#}");
                                 }
                                 let archive_name =
                                     format!("{from}.archive.{}", crate::tags::now_unix());
                                 let _ = ts
-                                    .set_tag(ns, &to, "archive.rename", Some(&archive_name), b"")
+                                    .set_tag(
+                                        ns,
+                                        to.as_bytes(),
+                                        b"archive.rename",
+                                        Some(archive_name.as_bytes()),
+                                        b"",
+                                    )
                                     .await;
                             } else if let Ok(mut meta) = crate::tags::load_meta(&self.store).await {
                                 crate::tags::transfer_tags(&mut meta, &from, &to);
@@ -729,9 +765,15 @@ impl ProtocolHandler for MetaProtocol {
                     value,
                 } => {
                     let success = if let Some(ts) = &self.tag_store {
-                        ts.set_tag(&ts.global, &subject, &key, value.as_deref(), b"")
-                            .await
-                            .is_ok()
+                        ts.set_tag(
+                            &ts.global,
+                            subject.as_bytes(),
+                            key.as_bytes(),
+                            value.as_ref().map(|v| v.as_bytes()),
+                            b"",
+                        )
+                        .await
+                        .is_ok()
                     } else {
                         false
                     };
@@ -746,9 +788,14 @@ impl ProtocolHandler for MetaProtocol {
                     value,
                 } => {
                     let success = if let Some(ts) = &self.tag_store {
-                        ts.del_tag(&ts.global, &subject, &key, value.as_deref())
-                            .await
-                            .is_ok()
+                        ts.del_tag(
+                            &ts.global,
+                            subject.as_bytes(),
+                            key.as_bytes(),
+                            value.as_ref().map(|v| v.as_bytes()),
+                        )
+                        .await
+                        .is_ok()
                     } else {
                         false
                     };
@@ -760,14 +807,20 @@ impl ProtocolHandler for MetaProtocol {
                 MetaRequest::GetTags { subject } => {
                     let tags = if let Some(ts) = &self.tag_store {
                         let result = if let Some(subj) = &subject {
-                            ts.get_tags(&ts.global, subj).await
+                            ts.get_tags(&ts.global, subj.as_bytes()).await
                         } else {
                             ts.list_all(&ts.global).await
                         };
                         match result {
                             Ok(list) => list
                                 .into_iter()
-                                .map(|t| (t.subject, t.key, t.value))
+                                .map(|t| {
+                                    (
+                                        t.subject.display_lossy(),
+                                        t.key.display_lossy(),
+                                        t.value.map(|v| v.display_lossy()),
+                                    )
+                                })
                                 .collect(),
                             Err(_) => vec![],
                         }
@@ -779,18 +832,18 @@ impl ProtocolHandler for MetaProtocol {
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
                     send.finish()?;
                 }
-                MetaRequest::SearchTags { key, value } => {
+                MetaRequest::SearchTags { query } => {
                     let tags = if let Some(ts) = &self.tag_store {
-                        let result = match (&key, &value) {
-                            (Some(k), Some(v)) => ts.find_by_key_value(&ts.global, k, v).await,
-                            (Some(k), None) => ts.find_by_key(&ts.global, k).await,
-                            (None, Some(v)) => ts.find_by_value(&ts.global, v).await,
-                            (None, None) => ts.list_all(&ts.global).await,
-                        };
-                        match result {
+                        match ts.search_by_query(&ts.global, &query).await {
                             Ok(list) => list
                                 .into_iter()
-                                .map(|t| (t.subject, t.key, t.value))
+                                .map(|t| {
+                                    (
+                                        t.subject.display_lossy(),
+                                        t.key.display_lossy(),
+                                        t.value.map(|v| v.display_lossy()),
+                                    )
+                                })
                                 .collect(),
                             Err(_) => vec![],
                         }
@@ -798,6 +851,23 @@ impl ProtocolHandler for MetaProtocol {
                         vec![]
                     };
                     let resp = postcard::to_allocvec(&MetaResponse::SearchTags { tags })
+                        .map_err(AcceptError::from_err)?;
+                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
+                    send.finish()?;
+                }
+                MetaRequest::MigrateTags => {
+                    let migrated = if let Some(ts) = &self.tag_store {
+                        match ts.migrate_tags(&self.store, &ts.global).await {
+                            Ok(count) => count,
+                            Err(e) => {
+                                tracing::warn!("Failed to migrate tags: {e:#}");
+                                0
+                            }
+                        }
+                    } else {
+                        0
+                    };
+                    let resp = postcard::to_allocvec(&MetaResponse::MigrateTags { migrated })
                         .map_err(AcceptError::from_err)?;
                     send.write_all(&resp).await.map_err(AcceptError::from_err)?;
                     send.finish()?;
@@ -1198,19 +1268,19 @@ mod tests {
         // to keep ListPeers last.
         let req = MetaRequest::ListPeers;
         let bytes = postcard::to_allocvec(&req).unwrap();
-        // ListPeers should be discriminant 11 (0-indexed: Put=0, Get=1, List=2,
+        // ListPeers should be discriminant 12 (0-indexed: Put=0, Get=1, List=2,
         // Delete=3, Rename=4, Copy=5, Find=6, SetTag=7, DelTag=8, GetTags=9,
-        // SearchTags=10, ListPeers=11)
+        // SearchTags=10, MigrateTags=11, ListPeers=12)
         assert_eq!(
-            bytes[0], 11,
-            "ListPeers should be the 12th variant (discriminant 11)"
+            bytes[0], 12,
+            "ListPeers should be the 13th variant (discriminant 12)"
         );
 
         let resp = MetaResponse::ListPeers { peers: vec![] };
         let bytes = postcard::to_allocvec(&resp).unwrap();
         assert_eq!(
-            bytes[0], 11,
-            "ListPeers response should be the 12th variant (discriminant 11)"
+            bytes[0], 12,
+            "ListPeers response should be the 13th variant (discriminant 12)"
         );
     }
 
