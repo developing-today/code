@@ -38,7 +38,7 @@ includes = ["*.nix"]
 [formatter.biome]
 command = "biome"
 includes = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.css", "*.json", "*.graphql"]
-options = ["format", "--write", "--config-path", "."]
+options = ["format", "--write"]
 
 [formatter.prettier]
 command = "prettier"

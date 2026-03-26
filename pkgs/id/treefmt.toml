@@ -29,7 +29,7 @@ includes = ["*.rs"]
 
 [formatter.biome]
 command = "biome"
-options = ["format", "--write", "--config-path", "."]
+options = ["format", "--write"]
 includes = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.css", "*.json", "*.graphql"]
 excludes = ["web/dist/**", "web/node_modules/**", "e2e/node_modules/**"]
 

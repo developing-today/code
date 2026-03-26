@@ -48,7 +48,10 @@
         pkgs = import nixpkgs { inherit system overlays; };
 
         # Import shared configuration (includes rustToolchain from rust-overlay)
-        nixCommon = import ./nix-common.nix { inherit pkgs; };
+        nixCommon = import ./nix-common.nix {
+          inherit pkgs;
+          extraFmtBins = [ bun2nixPkg ];
+        };
 
         # Inherit from shared config
         inherit (nixCommon)
@@ -195,7 +198,7 @@
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg ];
+          inherit nativeBuildInputs;
           inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_CMD;
 
           inherit (opensslEnv) OPENSSL_DIR;
@@ -210,12 +213,8 @@
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
           export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-          # Clear any stale tree-root env vars (only TREEFMT_TREE_ROOT_CMD should be set)
-          unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_FILE TREEFMT_TREE_ROOT_CMD
-          # Regenerate lockfiles, strip whitespace, format, and lint-fix
-          # just fix
-          # Format with treefmt (explicitly anchored to project root)
-          exec ${pkgs.treefmt}/bin/treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" "$@"
+          # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
+          just fix "$@"
         '';
 
         # =======================================================================

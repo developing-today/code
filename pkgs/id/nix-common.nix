@@ -4,12 +4,15 @@
 # variables, and shell hooks. The flake.lock provides exact version pinning.
 #
 # Usage in flake.nix:
-#   nixCommon = import ./nix-common.nix { inherit pkgs; };
+#   nixCommon = import ./nix-common.nix { inherit pkgs; extraFmtBins = [ bun2nixPkg ]; };
 #
 # Usage in shell.nix:
 #   nixCommon = import ./nix-common.nix { inherit pkgs; };
 
-{ pkgs }:
+{
+  pkgs,
+  extraFmtBins ? [ ],
+}:
 
 let
   # Rust toolchain from rust-toolchain.toml (includes rustc, cargo, rustfmt, clippy)
@@ -39,7 +42,8 @@ let
     just
     gnused
     findutils
-  ]);
+  ])
+  ++ extraFmtBins;
 
   # Native build inputs (tools, compilers)
   nativeBuildInputs =
@@ -86,8 +90,9 @@ in
   # Build inputs (libraries for Rust compilation)
   buildInputs = with pkgs; [ openssl ];
 
-  # Anchor treefmt to current directory — prevents upward traversal to git root
-  # (pkgs/id has no .git, so treefmt would otherwise walk up to /home/user/code/)
+  # Anchor bare treefmt to current directory (for ad-hoc devshell use)
+  # Without this, treefmt walks up to .git root which is wrong for pkgs/id
+  # (just recipes and nix fmt use explicit --config-file/--tree-root instead)
   TREEFMT_TREE_ROOT_CMD = "pwd";
 
   # Packages for shell.nix / nix develop (nativeBuildInputs = all tools)

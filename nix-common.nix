@@ -74,7 +74,8 @@ in
   inherit rustToolchain fmtBins nativeBuildInputs;
 
   NIX_CONFIG = "extra-experimental-features = nix-command flakes ca-derivations";
-  # Anchor treefmt to current directory — prevents upward traversal to git root
+  # Anchor bare treefmt to current directory (for ad-hoc devshell use)
+  # (just recipes and nix fmt use explicit --config-file/--tree-root instead)
   TREEFMT_TREE_ROOT_CMD = "pwd";
 
   # Build inputs (libraries for Rust compilation)

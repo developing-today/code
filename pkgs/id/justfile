@@ -41,22 +41,34 @@ ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox 
 
 # Auto-fix formatting and lint issues
 [group('check')]
-fix: strip-whitespace lockfiles fmt lint-fix
+fix *args: strip-whitespace lockfiles (fmt args) lint-fix
     @echo "✓ Fixed what could be fixed"
 
 # =============================================================================
 # Formatting
 # =============================================================================
 
-# Run treefmt (cached)
+# Run treefmt (cached, finds nearest treefmt.toml from pwd)
 [group('format')]
-treefmt:
-    treefmt
+treefmt *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" {{args}}
 
-# Run treefmt without cache (format all files)
+# Run treefmt without cache (finds nearest treefmt.toml from pwd)
 [group('format')]
-treefmt-no-cache:
-    treefmt --no-cache
+treefmt-no-cache *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" --no-cache {{args}}
 alias treefmt-uncached := treefmt-no-cache
 
 # Strip trailing whitespace from all tracked text files
@@ -85,9 +97,9 @@ strip-whitespace:
       sed -i 's/[[:space:]]*$//' "$f"
     done || true
 
-# Format all code (Rust + web)
+# Format all code (via treefmt)
 [group('format')]
-fmt: cargo-fmt web-fmt
+fmt *args: (treefmt args)
 
 # Check all formatting (no changes)
 [group('format')]

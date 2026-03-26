@@ -10,6 +10,7 @@
     "check-all": { "attributes": [], "name": "check-all", "target": "check" },
     "release-force": { "attributes": [], "name": "release-force", "target": "release-web-force" },
     "test-lib": { "attributes": [], "name": "test-lib", "target": "test-unit" },
+    "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
     "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
     "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" },
     "watch-build": { "attributes": [], "name": "watch-build", "target": "watch" },
@@ -25,6 +26,7 @@
   "modules": {
     "root": {
       "aliases": {
+        "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
         "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
         "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" }
       },
@@ -95,15 +97,53 @@
           "body": [],
           "dependencies": [
             { "arguments": [], "recipe": "strip-whitespace" },
-            { "arguments": [], "recipe": "lockfiles" }
+            { "arguments": [], "recipe": "lockfiles" },
+            { "arguments": [["variable", "args"]], "recipe": "fmt" }
           ],
-          "doc": "Run all fixers: strip whitespace, regenerate lockfiles",
+          "doc": "Run all fixers: strip whitespace, regenerate lockfiles, format",
           "name": "fix",
-          "parameters": [],
-          "priors": 2,
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 3,
           "private": false,
           "quiet": false,
           "namepath": "root::fix",
+          "shebang": false
+        },
+        "fmt": {
+          "attributes": [{ "group": "format" }],
+          "body": [],
+          "dependencies": [{ "arguments": [["variable", "args"]], "recipe": "treefmt" }],
+          "doc": "Format all code (via treefmt)",
+          "name": "fmt",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 1,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::fmt",
           "shebang": false
         },
         "just-recipes": {
@@ -153,11 +193,28 @@
           "body": [
             ["#!/usr/bin/env bash"],
             ["set -euo pipefail"],
-            ["files=$(git grep -rl '[[:space:]]$' 2>/dev/null || true)"],
-            ["if [ -n \"$files\" ]; then"],
-            ["    echo \"$files\" | xargs sed -i 's/[[:space:]]*$//'"],
-            ["    echo \"Stripped trailing whitespace from $(echo \"$files\" | wc -l) files\""],
-            ["fi"]
+            ["git grep -rl '[[:space:]]$' -- \\"],
+            ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
+            ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
+            [
+              "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
+            ],
+            ["  ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \\"],
+            ["  ':!*.mp3' ':!*.wav' ':!*.flac' ':!*.aac' ':!*.ogg' ':!*.wma' ':!*.m4a' ':!*.opus' \\"],
+            ["  ':!*.zip' ':!*.tar' ':!*.gz' ':!*.bz2' ':!*.xz' ':!*.zst' ':!*.7z' ':!*.rar' \\"],
+            ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
+            ["  2>/dev/null | while IFS= read -r f; do"],
+            ["  case \"$f\" in"],
+            ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
+            ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
+            ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
+            ["    */third_party/*|*/third-party/*|*/external/*|*/deps/*|*/Pods/*|*/.bundle/*) continue ;;"],
+            ["    */bower_components/*|*/.pnp/*|*/.eggs/*|*.egg-info/*|*/site-packages/*) continue ;;"],
+            ["    */.gradle/*|*/.mvn/*|*/Packages/*) continue ;;"],
+            ["  esac"],
+            ["  case \"$(file -b --mime-encoding \"$f\")\" in binary) continue ;; esac"],
+            ["  sed -i 's/[[:space:]]*$//' \"$f\""],
+            ["done || true"]
           ],
           "dependencies": [],
           "doc": "Strip trailing whitespace from all tracked text files",
@@ -167,6 +224,75 @@
           "private": false,
           "quiet": false,
           "namepath": "root::strip-whitespace",
+          "shebang": true
+        },
+        "treefmt": {
+          "attributes": [{ "group": "format" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["dir=\"$(pwd)\""],
+            ["while [ \"$dir\" != \"/\" ] && [ ! -f \"$dir/treefmt.toml\" ]; do dir=\"$(dirname \"$dir\")\"; done"],
+            ["if [ ! -f \"$dir/treefmt.toml\" ]; then echo \"error: no treefmt.toml found\" >&2; exit 1; fi"],
+            ["unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE"],
+            ["exec treefmt --config-file \"$dir/treefmt.toml\" --tree-root \"$dir\" ", [["variable", "args"]]]
+          ],
+          "dependencies": [],
+          "doc": "Run treefmt (cached, finds nearest treefmt.toml from pwd)",
+          "name": "treefmt",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::treefmt",
+          "shebang": true
+        },
+        "treefmt-no-cache": {
+          "attributes": [{ "group": "format" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["dir=\"$(pwd)\""],
+            ["while [ \"$dir\" != \"/\" ] && [ ! -f \"$dir/treefmt.toml\" ]; do dir=\"$(dirname \"$dir\")\"; done"],
+            ["if [ ! -f \"$dir/treefmt.toml\" ]; then echo \"error: no treefmt.toml found\" >&2; exit 1; fi"],
+            ["unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE"],
+            [
+              "exec treefmt --config-file \"$dir/treefmt.toml\" --tree-root \"$dir\" --no-cache ",
+              [["variable", "args"]]
+            ]
+          ],
+          "dependencies": [],
+          "doc": "Run treefmt without cache (finds nearest treefmt.toml from pwd)",
+          "name": "treefmt-no-cache",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::treefmt-no-cache",
           "shebang": true
         },
         "update-input": {
@@ -870,12 +996,24 @@
       "dependencies": [
         { "arguments": [], "recipe": "strip-whitespace" },
         { "arguments": [], "recipe": "lockfiles" },
-        { "arguments": [], "recipe": "fmt" },
+        { "arguments": [["variable", "args"]], "recipe": "fmt" },
         { "arguments": [], "recipe": "lint-fix" }
       ],
       "doc": "Auto-fix formatting and lint issues",
       "name": "fix",
-      "parameters": [],
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
       "priors": 4,
       "private": false,
       "quiet": false,
@@ -885,11 +1023,23 @@
     "fmt": {
       "attributes": [{ "group": "format" }],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "cargo-fmt" }, { "arguments": [], "recipe": "web-fmt" }],
-      "doc": "Format all code (Rust + web)",
+      "dependencies": [{ "arguments": [["variable", "args"]], "recipe": "treefmt" }],
+      "doc": "Format all code (via treefmt)",
       "name": "fmt",
-      "parameters": [],
-      "priors": 2,
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 1,
       "private": false,
       "quiet": false,
       "namepath": "fmt",
@@ -1343,11 +1493,28 @@
       "body": [
         ["#!/usr/bin/env bash"],
         ["set -euo pipefail"],
-        ["files=$(git grep -rl '[[:space:]]$' 2>/dev/null || true)"],
-        ["if [ -n \"$files\" ]; then"],
-        ["    echo \"$files\" | xargs sed -i 's/[[:space:]]*$//'"],
-        ["    echo \"Stripped trailing whitespace from $(echo \"$files\" | wc -l) files\""],
-        ["fi"]
+        ["git grep -rl '[[:space:]]$' -- \\"],
+        ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
+        ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
+        [
+          "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
+        ],
+        ["  ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \\"],
+        ["  ':!*.mp3' ':!*.wav' ':!*.flac' ':!*.aac' ':!*.ogg' ':!*.wma' ':!*.m4a' ':!*.opus' \\"],
+        ["  ':!*.zip' ':!*.tar' ':!*.gz' ':!*.bz2' ':!*.xz' ':!*.zst' ':!*.7z' ':!*.rar' \\"],
+        ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
+        ["  2>/dev/null | while IFS= read -r f; do"],
+        ["  case \"$f\" in"],
+        ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
+        ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
+        ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
+        ["    */third_party/*|*/third-party/*|*/external/*|*/deps/*|*/Pods/*|*/.bundle/*) continue ;;"],
+        ["    */bower_components/*|*/.pnp/*|*/.eggs/*|*.egg-info/*|*/site-packages/*) continue ;;"],
+        ["    */.gradle/*|*/.mvn/*|*/Packages/*) continue ;;"],
+        ["  esac"],
+        ["  case \"$(file -b --mime-encoding \"$f\")\" in binary) continue ;; esac"],
+        ["  sed -i 's/[[:space:]]*$//' \"$f\""],
+        ["done || true"]
       ],
       "dependencies": [],
       "doc": "Strip trailing whitespace from all tracked text files",
@@ -1646,6 +1813,72 @@
       "quiet": false,
       "namepath": "tree",
       "shebang": false
+    },
+    "treefmt": {
+      "attributes": [{ "group": "format" }],
+      "body": [
+        ["#!/usr/bin/env bash"],
+        ["set -euo pipefail"],
+        ["dir=\"$(pwd)\""],
+        ["while [ \"$dir\" != \"/\" ] && [ ! -f \"$dir/treefmt.toml\" ]; do dir=\"$(dirname \"$dir\")\"; done"],
+        ["if [ ! -f \"$dir/treefmt.toml\" ]; then echo \"error: no treefmt.toml found\" >&2; exit 1; fi"],
+        ["unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE"],
+        ["exec treefmt --config-file \"$dir/treefmt.toml\" --tree-root \"$dir\" ", [["variable", "args"]]]
+      ],
+      "dependencies": [],
+      "doc": "Run treefmt (cached, finds nearest treefmt.toml from pwd)",
+      "name": "treefmt",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "treefmt",
+      "shebang": true
+    },
+    "treefmt-no-cache": {
+      "attributes": [{ "group": "format" }],
+      "body": [
+        ["#!/usr/bin/env bash"],
+        ["set -euo pipefail"],
+        ["dir=\"$(pwd)\""],
+        ["while [ \"$dir\" != \"/\" ] && [ ! -f \"$dir/treefmt.toml\" ]; do dir=\"$(dirname \"$dir\")\"; done"],
+        ["if [ ! -f \"$dir/treefmt.toml\" ]; then echo \"error: no treefmt.toml found\" >&2; exit 1; fi"],
+        ["unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE"],
+        ["exec treefmt --config-file \"$dir/treefmt.toml\" --tree-root \"$dir\" --no-cache ", [["variable", "args"]]]
+      ],
+      "dependencies": [],
+      "doc": "Run treefmt without cache (finds nearest treefmt.toml from pwd)",
+      "name": "treefmt-no-cache",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "treefmt-no-cache",
+      "shebang": true
     },
     "update": {
       "attributes": [{ "group": "deps" }],

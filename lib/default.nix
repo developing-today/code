@@ -590,13 +590,9 @@ let
         {
           formatter = pkgs.writeShellScriptBin "formatter" ''
             export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-            # Clear any stale treefmt env vars
-            unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_FILE TREEFMT_TREE_ROOT_CMD
-            # Regenerate lockfiles, strip whitespace, format, and lint-fix
-            just fix
-            # Format root project (explicitly anchored to current directory)
-            treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" "$@"
-            # Format id sub-project (always full tree, ignores passed paths)
+            # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
+            just fix "$@"
+            # Format id sub-project
             if [ -d pkgs/id ]; then
               (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter)
             fi

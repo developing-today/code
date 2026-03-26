@@ -107,16 +107,32 @@ just-recipes:
 [group('deps')]
 lockfiles: just-recipes
 
-# Run treefmt (cached)
+# Run treefmt (cached, finds nearest treefmt.toml from pwd)
 [group('format')]
-treefmt:
-    treefmt
+treefmt *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" {{args}}
 
-# Run treefmt without cache (format all files)
+# Run treefmt without cache (finds nearest treefmt.toml from pwd)
 [group('format')]
-treefmt-no-cache:
-    treefmt --no-cache
+treefmt-no-cache *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" --no-cache {{args}}
 alias treefmt-uncached := treefmt-no-cache
+
+# Format all code (via treefmt)
+[group('format')]
+fmt *args: (treefmt args)
 
 # Strip trailing whitespace from all tracked text files
 [group('format')]
@@ -144,9 +160,9 @@ strip-whitespace:
       sed -i 's/[[:space:]]*$//' "$f"
     done || true
 
-# Run all fixers: strip whitespace, regenerate lockfiles
+# Run all fixers: strip whitespace, regenerate lockfiles, format
 [group('format')]
-fix: strip-whitespace lockfiles
+fix *args: strip-whitespace lockfiles (fmt args)
 
 # =============================================================================
 # Utilities
