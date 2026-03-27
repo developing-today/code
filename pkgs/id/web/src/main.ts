@@ -1,17 +1,15 @@
 /**
  * Main entry point for the id web interface.
- * Initializes HTMX, the ProseMirror editor, and theme switching.
+ * Initializes SPA navigation, the ProseMirror editor, and theme switching.
  */
 
-import htmx from "htmx.org";
+import "@starfederation/datastar";
 import { type EditorInstance, getEditorState } from "./editor";
 import { initCollab, type CollabConnection } from "./collab";
 import { initTheme, setTheme, cycleTheme, type Theme } from "./theme";
 
-// Expose htmx globally for HTMX attributes in HTML
 declare global {
   interface Window {
-    htmx: typeof htmx;
     idApp: IdApp;
     cycleTheme: typeof cycleTheme;
   }
@@ -213,11 +211,7 @@ function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string 
 
   if (lastFilename && lastFilePath && hasHistory) {
     // Create a link to the last file
-    subtitle.innerHTML = `// <a href="${lastFilePath}" hx-get="${lastFilePath}" hx-target="#main" hx-push-url="true">${lastFilename}</a>`;
-    // Re-process with HTMX so the link works
-    if (window.htmx) {
-      window.htmx.process(subtitle);
-    }
+    subtitle.innerHTML = `// <a href="${lastFilePath}" data-nav>${lastFilename}</a>`;
   } else {
     subtitle.textContent = "// p2p file sharing";
   }
@@ -225,7 +219,7 @@ function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string 
 
 /**
  * Update back link based on app navigation history.
- * If there's history, use HTMX to navigate. Otherwise, grey out but still allow browser back.
+ * If there's history, use SPA navigation. Otherwise, grey out but still allow browser back.
  */
 function updateBackLink(navHistory: string[], currentPath: string): void {
   const backLink = document.getElementById("back-link");
@@ -235,24 +229,16 @@ function updateBackLink(navHistory: string[], currentPath: string): void {
   const prevPath = navHistory.length > 0 ? navHistory[navHistory.length - 1] : null;
 
   if (prevPath && prevPath !== currentPath) {
-    // Has app history - use HTMX navigation
+    // Has app history - use SPA navigation
     backLink.classList.remove("disabled");
     backLink.setAttribute("href", prevPath);
-    backLink.setAttribute("hx-get", prevPath);
-    backLink.setAttribute("hx-target", "#main");
-    backLink.setAttribute("hx-push-url", "true");
+    backLink.setAttribute("data-nav", "");
     backLink.removeAttribute("onclick");
-    // Re-process with HTMX
-    if (window.htmx) {
-      window.htmx.process(backLink);
-    }
   } else {
     // No app history - grey out but use browser back as fallback
     backLink.classList.add("disabled");
     backLink.setAttribute("href", "#");
-    backLink.removeAttribute("hx-get");
-    backLink.removeAttribute("hx-target");
-    backLink.removeAttribute("hx-push-url");
+    backLink.removeAttribute("data-nav");
     backLink.setAttribute("onclick", "history.back(); return false;");
   }
 }
@@ -284,7 +270,7 @@ function initFileFilter(): void {
     });
   };
 
-  // Guard against duplicate listeners (element persists across HTMX swaps)
+  // Guard against duplicate listeners (element persists across SPA navigation)
   if (!showAutoCheckbox.dataset.filterInit) {
     showAutoCheckbox.addEventListener("change", applyFilter);
     showAutoCheckbox.dataset.filterInit = "1";
@@ -297,20 +283,207 @@ function initFileFilter(): void {
 // Track cleanup function for scroll handler
 let scrollCleanup: (() => void) | null = null;
 
+// Track peers auto-refresh interval
+let peersRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+// Track search debounce timer
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Fetch a URL and replace the innerHTML of a target element.
+ * Used for partial page updates (search, pagination, tags WS refresh, peers auto-refresh).
+ */
+async function fetchPartial(url: string, targetSelector: string): Promise<void> {
+  try {
+    const response = await fetch(url, {
+      headers: { "X-Partial-Request": "true" },
+    });
+    if (!response.ok) {
+      console.error("[id] fetchPartial failed:", response.status, response.statusText);
+      return;
+    }
+    const html = await response.text();
+    const target = document.querySelector(targetSelector);
+    if (target) {
+      target.innerHTML = html;
+      onPartialSwapped(targetSelector);
+    }
+  } catch (err) {
+    console.error("[id] fetchPartial error:", err);
+  }
+}
+
+/**
+ * Navigate to a URL by fetching it as a partial and swapping #main content.
+ * Replaces htmx.ajax() calls and [data-nav] link clicks.
+ */
+async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
+  // Close editor before navigation (replaces htmx:beforeRequest handler)
+  const app = (window as unknown as Record<string, IdApp>).idApp;
+  if (app?.collab) {
+    app.closeEditor();
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: { "X-Partial-Request": "true" },
+    });
+    if (!response.ok) {
+      console.error("[id] navigateTo failed:", response.status, response.statusText);
+      // Fallback to full page navigation
+      window.location.href = url;
+      return;
+    }
+    const html = await response.text();
+    const main = document.getElementById("main");
+    if (main) {
+      main.innerHTML = html;
+      if (pushUrl) {
+        window.history.pushState(null, "", url);
+      }
+      onMainSwapped();
+    } else {
+      // No #main element, fallback
+      window.location.href = url;
+    }
+  } catch (err) {
+    console.error("[id] navigateTo error:", err);
+    window.location.href = url;
+  }
+}
+
+/**
+ * Called after #main content is swapped. Handles re-initialization of UI components.
+ * Extracted from the former htmx:afterSwap handler for #main.
+ */
+function onMainSwapped(): void {
+  const app = (window as unknown as Record<string, IdApp>).idApp;
+  if (!app) return;
+
+  const newPath = window.location.pathname;
+
+  // Track navigation: push previous path to history
+  if (app.currentPath && app.currentPath !== newPath) {
+    app.navHistory.push(app.currentPath);
+    // Limit history size
+    if (app.navHistory.length > 50) {
+      app.navHistory.shift();
+    }
+  }
+  app.currentPath = newPath;
+  console.log("[id] Navigation: path=", newPath, "history=", app.navHistory);
+
+  const editorContainer = document.getElementById("editor-container");
+  const docId = editorContainer?.dataset.docId;
+  console.log("[id] afterSwap: editorContainer=", editorContainer, "docId=", docId, "app.collab=", app.collab);
+
+  // Clean up previous scroll handler
+  if (scrollCleanup) {
+    scrollCleanup();
+    scrollCleanup = null;
+  }
+
+  if (docId && !app.collab) {
+    console.log("[id] afterSwap: calling openEditor for docId:", docId);
+    app.openEditor(docId);
+  } else {
+    console.log("[id] afterSwap: NOT calling openEditor - docId:", docId, "app.collab:", app.collab);
+    // Initialize scroll handler for main page
+    scrollCleanup = initScrollShowHeader(".inline-header", ".inline-footer");
+    // Update back button on main page
+    updateBackLink(app.navHistory, app.currentPath);
+    // Update header subtitle (show last filename if we have history)
+    updateHeaderSubtitle(app.lastFilename, app.lastFilePath, app.navHistory.length > 0);
+    // Re-initialize file filter after swap to file list
+    initFileFilter();
+    // Re-initialize bulk select checkboxes
+    app.initBulkSelect();
+    // Re-initialize search debounce (new DOM elements)
+    initSearchDebounce();
+    // Re-initialize peers auto-refresh if on peers page
+    initPeersAutoRefresh();
+  }
+}
+
+/**
+ * Called after a partial content swap (e.g. #file-list-content).
+ * Extracted from the former htmx:afterSwap handler for #file-list-content.
+ */
+function onPartialSwapped(_targetSelector: string): void {
+  // Re-apply show-auto filter after file-list-content swaps
+  initFileFilter();
+}
+
+/**
+ * Initialize search debounce for file search input and show-deleted checkbox.
+ * Replaces hx-trigger="keyup changed delay:300ms" and hx-trigger="change".
+ */
+function initSearchDebounce(): void {
+  const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
+  const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
+
+  if (!searchInput && !showDeletedCheckbox) return;
+
+  const doSearch = () => {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      const query = searchInput?.value || "";
+      const showDeleted = showDeletedCheckbox?.checked || false;
+      const params = new URLSearchParams();
+      if (query) params.set("search", query);
+      if (showDeleted) params.set("show_deleted", "true");
+      const qs = params.toString();
+      const url = qs ? `/api/files?${qs}` : "/api/files";
+      fetchPartial(url, "#file-list-content");
+    }, 300);
+  };
+
+  if (searchInput) {
+    searchInput.addEventListener("keyup", doSearch);
+    searchInput.addEventListener("search", doSearch); // For clearing via X button
+  }
+  if (showDeletedCheckbox) {
+    showDeletedCheckbox.addEventListener("change", () => {
+      // Immediate on checkbox change (no debounce)
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      const query = searchInput?.value || "";
+      const showDeleted = showDeletedCheckbox?.checked || false;
+      const params = new URLSearchParams();
+      if (query) params.set("search", query);
+      if (showDeleted) params.set("show_deleted", "true");
+      const qs = params.toString();
+      const url = qs ? `/api/files?${qs}` : "/api/files";
+      fetchPartial(url, "#file-list-content");
+    });
+  }
+}
+
+/**
+ * Initialize peers auto-refresh via setInterval.
+ * Replaces hx-trigger="every 10s" on the peers content div.
+ */
+function initPeersAutoRefresh(): void {
+  // Clear any existing interval
+  if (peersRefreshInterval) {
+    clearInterval(peersRefreshInterval);
+    peersRefreshInterval = null;
+  }
+
+  const peersContent = document.querySelector("[data-auto-refresh]");
+  if (!peersContent) return;
+
+  const interval = parseInt(peersContent.getAttribute("data-auto-refresh") || "10", 10) * 1000;
+  peersRefreshInterval = setInterval(() => {
+    fetchPartial("/api/peers", "#peers-content");
+  }, interval);
+}
+
 /**
  * Initialize the application.
  */
 function init(): void {
-  // Initialize HTMX
-  window.htmx = htmx;
-
   // Expose cycleTheme globally for onclick handlers
   window.cycleTheme = cycleTheme;
-
-  // Configure HTMX
-  htmx.config.defaultSwapStyle = "innerHTML";
-  htmx.config.historyCacheSize = 10;
-  htmx.config.refreshOnHistoryMiss = true;
 
   // Initialize theme system
   initTheme();
@@ -349,7 +522,7 @@ function init(): void {
 
           // On any tag change, refresh the file list if we're on the home page
           const fileListContent = document.getElementById("file-list-content");
-          if (fileListContent && window.htmx) {
+          if (fileListContent) {
             // Debounce: don't refresh more than once per 500ms
             const now = Date.now();
             const lastRefresh = (window as unknown as Record<string, number>).__tagRefreshTs || 0;
@@ -364,7 +537,7 @@ function init(): void {
               if (showDeleted) params.set("show_deleted", "true");
               const qs = params.toString();
               const url = qs ? `/api/files?${qs}` : "/api/files";
-              window.htmx.ajax("GET", url, { target: "#file-list-content", swap: "innerHTML" });
+              fetchPartial(url, "#file-list-content");
             }
           }
 
@@ -788,12 +961,7 @@ function init(): void {
 
         // Navigate to the new file's editor
         const editUrl = `/edit/${result.hash}`;
-        if (window.htmx) {
-          window.htmx.ajax("GET", editUrl, { target: "#main", swap: "innerHTML" });
-          window.history.pushState(null, "", editUrl);
-        } else {
-          window.location.href = editUrl;
-        }
+        await navigateTo(editUrl);
       } catch (err) {
         console.error("[id] Create file error:", err);
       }
@@ -912,12 +1080,7 @@ function init(): void {
 
         // Navigate to the new file name
         const fileUrl = `/file/${encodeURIComponent(result.name)}`;
-        if (window.htmx) {
-          window.htmx.ajax("GET", fileUrl, { target: "#main", swap: "innerHTML" });
-          window.history.pushState(null, "", fileUrl);
-        } else {
-          window.location.href = fileUrl;
-        }
+        await navigateTo(fileUrl);
       } catch (err) {
         console.error("[id] Rename error:", err);
         if (renameBtn) {
@@ -983,12 +1146,7 @@ function init(): void {
 
         // Navigate to the copied file
         const fileUrl = `/file/${encodeURIComponent(result.name)}`;
-        if (window.htmx) {
-          window.htmx.ajax("GET", fileUrl, { target: "#main", swap: "innerHTML" });
-          window.history.pushState(null, "", fileUrl);
-        } else {
-          window.location.href = fileUrl;
-        }
+        await navigateTo(fileUrl);
       } catch (err) {
         console.error("[id] Copy error:", err);
         if (copyBtn) {
@@ -1064,71 +1222,34 @@ function init(): void {
     }
   });
 
-  // Listen for HTMX events to handle editor initialization
-  document.body.addEventListener("htmx:afterSwap", (event: Event) => {
-    const detail = (event as CustomEvent).detail;
-    const target = detail?.target;
-    console.log("[id] htmx:afterSwap fired, target:", target?.id, "detail:", detail);
-    // After swap into #main, check if editor-container exists
-    if (target?.id === "main") {
-      const newPath = window.location.pathname;
-
-      // Track navigation: push previous path to history
-      if (app.currentPath && app.currentPath !== newPath) {
-        app.navHistory.push(app.currentPath);
-        // Limit history size
-        if (app.navHistory.length > 50) {
-          app.navHistory.shift();
-        }
+  // SPA navigation: click delegation for [data-nav] links
+  document.addEventListener("click", (event: MouseEvent) => {
+    const link = (event.target as Element)?.closest<HTMLAnchorElement>("a[data-nav]");
+    if (link) {
+      event.preventDefault();
+      const url = link.getAttribute("href");
+      if (url) {
+        navigateTo(url, true);
       }
-      app.currentPath = newPath;
-      console.log("[id] Navigation: path=", newPath, "history=", app.navHistory);
-
-      const editorContainer = document.getElementById("editor-container");
-      const docId = editorContainer?.dataset.docId;
-      console.log("[id] afterSwap: editorContainer=", editorContainer, "docId=", docId, "app.collab=", app.collab);
-
-      // Clean up previous scroll handler
-      if (scrollCleanup) {
-        scrollCleanup();
-        scrollCleanup = null;
-      }
-
-      if (docId && !app.collab) {
-        console.log("[id] afterSwap: calling openEditor for docId:", docId);
-        app.openEditor(docId);
-      } else {
-        console.log("[id] afterSwap: NOT calling openEditor - docId:", docId, "app.collab:", app.collab);
-        // Initialize scroll handler for main page
-        scrollCleanup = initScrollShowHeader(".inline-header", ".inline-footer");
-        // Update back button on main page
-        updateBackLink(app.navHistory, app.currentPath);
-        // Update header subtitle (show last filename if we have history)
-        updateHeaderSubtitle(app.lastFilename, app.lastFilePath, app.navHistory.length > 0);
-        // Re-initialize file filter after swap to file list
-        initFileFilter();
-        // Re-initialize bulk select checkboxes
-        app.initBulkSelect();
-      }
+      return;
     }
 
-    // Re-apply show-auto filter after file-list-content swaps (e.g. tag WS events, search, pagination)
-    if (target?.id === "file-list-content") {
-      initFileFilter();
+    // Pagination links: [data-page-nav] buttons
+    const pageBtn = (event.target as Element)?.closest<HTMLElement>("[data-page-nav]");
+    if (pageBtn) {
+      event.preventDefault();
+      const url = pageBtn.getAttribute("data-page-nav");
+      const target = pageBtn.getAttribute("data-target") || "#file-list-content";
+      if (url) {
+        fetchPartial(url, target);
+      }
     }
   });
 
-  // Also listen for htmx:beforeSwap to see what's happening
-  document.body.addEventListener("htmx:beforeSwap", (event: Event) => {
-    const detail = (event as CustomEvent).detail;
-    console.log("[id] htmx:beforeSwap fired, target:", detail?.target?.id, "xhr status:", detail?.xhr?.status);
-  });
-
-  // Handle navigation away from editor
-  document.body.addEventListener("htmx:beforeRequest", () => {
-    if (app.collab) {
-      app.closeEditor();
-    }
+  // Browser back/forward navigation
+  window.addEventListener("popstate", () => {
+    const url = window.location.pathname + window.location.search;
+    navigateTo(url, false);
   });
 
   console.log("[id] Web interface initialized");
@@ -1149,6 +1270,10 @@ function init(): void {
   initFileFilter();
   // Initialize bulk select checkboxes on main page
   app.initBulkSelect();
+  // Initialize search debounce for file search input
+  initSearchDebounce();
+  // Initialize auto-refresh for peers page
+  initPeersAutoRefresh();
 
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById("editor-container");

@@ -10,7 +10,7 @@
 //! │                      Web Interface                          │
 //! ├─────────────────────────────────────────────────────────────┤
 //! │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
-//! │  │   Axum      │    │   HTMX      │    │ ProseMirror │      │
+//! │  │   Axum      │    │    SPA      │    │ ProseMirror │      │
 //! │  │   Router    │───►│   Views     │───►│   Editor    │      │
 //! │  └─────────────┘    └─────────────┘    └─────────────┘      │
 //! │         │                  │                  │             │
@@ -30,7 +30,7 @@
 //!
 //! # Features
 //!
-//! - **File Browser**: HTMX-powered file listing with lazy loading
+//! - **File Browser**: SPA file listing with lazy loading
 //! - **Collaborative Editor**: Real-time editing with prosemirror-collab
 //! - **Themes**: Matrix (green-on-black) and Evangelion (orange/purple) themes
 //! - **Single Binary**: All assets embedded via rust-embed
