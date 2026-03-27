@@ -1,0 +1,363 @@
+{
+  "session_id": "ses_ifj9uip3",
+  "browser_session_id": "ses_kaq1jfnj",
+  "request": "Migrate pkgs/id web UI from HTMX to Datastar and from custom CSS to DaisyUI/Tailwind",
+  "created_at": 1774584515406,
+  "updated_at": 1774585711746,
+  "branches": {
+    "server_response_arch": {
+      "id": "server_response_arch",
+      "scope": "How to restructure Axum route handlers from HTMX HTML responses to Datastar SSE-based responses",
+      "status": "done",
+      "questions": [
+        {
+          "id": "q_7dsf1nc8",
+          "type": "show_options",
+          "text": "How should we restructure the Axum route handlers for Datastar?\n\nCurrently: Routes check `is_htmx_request()` header → return full HTML page or partial HTML fragment. ~20 routes in routes.rs, templates built via string concatenation in templates.rs (~1200 lines).",
+          "config": {
+            "question": "How should we restructure the Axum route handlers for Datastar?\n\nCurrently: Routes check `is_htmx_request()` header → return full HTML page or partial HTML fragment. ~20 routes in routes.rs, templates built via string concatenation in templates.rs (~1200 lines).",
+            "options": [
+              {
+                "id": "full_sse",
+                "label": "Full SSE: All navigation + updates via Datastar SSE",
+                "description": "Every route returns text/event-stream with datastar-merge-fragments. Initial page load returns shell HTML, then Datastar fetches content via SSE. Navigation triggers @get which streams fragment updates.",
+                "pros": [
+                  "Fully idiomatic Datastar — one consistent pattern everywhere",
+                  "Enables streaming responses (progressive rendering of file lists)",
+                  "Axum has excellent SSE support via axum::response::Sse",
+                  "Simplifies client JS — Datastar handles all DOM updates"
+                ],
+                "cons": [
+                  "Every route handler needs to be rewritten to produce SSE events",
+                  "Debugging SSE streams is harder than inspecting HTML responses",
+                  "Browser back/forward needs explicit handling (Datastar does support URL push)",
+                  "More complex server code — wrapping HTML fragments in SSE event format"
+                ]
+              },
+              {
+                "id": "hybrid_nav",
+                "label": "Hybrid: Full page HTML for navigation, SSE for dynamic updates only",
+                "description": "Page navigation (/, /settings, /peers, /edit/:hash) returns full HTML like today. Only dynamic parts (file list refresh, tag updates, search results) use Datastar SSE. Thin client router handles URL-based nav.",
+                "pros": [
+                  "Simpler initial migration — page routes barely change",
+                  "SEO/accessibility: full pages work without JS",
+                  "Dynamic features (search, tag live updates) get SSE benefits",
+                  "Can migrate route-by-route incrementally"
+                ],
+                "cons": [
+                  "Two response patterns to maintain (HTML pages + SSE fragments)",
+                  "Not idiomatic Datastar — loses SPA-like smoothness for navigation",
+                  "Still need is_htmx-like detection logic, now for Datastar vs full page",
+                  "Client-side nav experience may be worse than current HTMX"
+                ]
+              },
+              {
+                "id": "datastar_fetch_mode",
+                "label": "Datastar fetch mode: Use data-on + fetch for simple swaps, SSE for streams",
+                "description": "Use Datastar's ability to do simple HTML fragment fetches (similar to HTMX) for navigation, only use SSE for genuinely streaming data (file list loading, real-time updates). Minimizes server changes.",
+                "pros": [
+                  "Closest to current HTMX pattern — minimal route handler changes",
+                  "SSE only where it adds value (streaming file lists, live search)",
+                  "Easier mental model — most routes stay as 'return HTML fragment'",
+                  "Fastest migration path for the server side"
+                ],
+                "cons": [
+                  "May not leverage Datastar's core strengths",
+                  "Need to verify Datastar actually supports plain HTML fragment swaps well",
+                  "Mixing patterns could create confusion about when to use which",
+                  "Datastar community examples are mostly SSE-first"
+                ]
+              }
+            ],
+            "recommended": "full_sse",
+            "allowFeedback": true
+          },
+          "answer": {
+            "selected": "full_sse"
+          },
+          "answeredAt": 1774584547363
+        },
+        {
+          "id": "q_lw091eu2",
+          "type": "pick_one",
+          "text": "For the full-SSE approach, how should we structure the Datastar signal/fragment responses in the Axum handlers?\n\nSince you chose full SSE, each route handler will return SSE events with Datastar directives (data-merge-fragments, data-signals, etc.). The key architectural question is how to organize the response building.",
+          "config": {
+            "question": "For the full-SSE approach, how should we structure the Datastar signal/fragment responses in the Axum handlers?\n\nSince you chose full SSE, each route handler will return SSE events with Datastar directives (data-merge-fragments, data-signals, etc.). The key architectural question is how to organize the response building.",
+            "options": [
+              {
+                "id": "typed_builder",
+                "label": "Typed Datastar response builder",
+                "description": "Create a DatastarResponse struct with methods like .fragment(selector, html), .signal(name, value), .execute_script(js). Each handler returns DatastarResponse which serializes to SSE. Strong compile-time guarantees, easy to test."
+              },
+              {
+                "id": "sse_helpers",
+                "label": "Thin SSE helper functions over Axum's Sse type",
+                "description": "Use Axum's built-in Sse<impl Stream> with helper functions like datastar_fragment(), datastar_signal(). Lighter weight, stays closer to Axum idioms, but less structured than a dedicated type."
+              },
+              {
+                "id": "datastar_crate",
+                "label": "Use the datastar Rust SDK crate",
+                "description": "Import the official datastar-rs crate (if mature enough) to handle SSE serialization. Less custom code but adds a dependency and may not perfectly fit your Axum setup."
+              }
+            ],
+            "recommended": "typed_builder",
+            "context": "[How to restructure Axum route handlers from HTMX HTML responses to Datastar SSE-based responses] I'm recommending the typed builder because your templates.rs is already ~1200 lines of string building — replacing that with a structured DatastarResponse type gives you compile-time safety and makes the migration from template functions → response builder methods more mechanical. The datastar-rs crate exists but is young; thin helpers work but tend to accumulate ad-hoc patterns over 20 routes."
+          },
+          "answer": {
+            "selected": "typed_builder"
+          },
+          "answeredAt": 1774585680913
+        }
+      ],
+      "finding": "Restructure all ~20 Axum route handlers from HTMX HTML fragment responses to Datastar SSE-based responses using a typed builder pattern.\n\n**Architecture:**\n\n1. **DatastarResponse Builder** — Create a `DatastarResponse` struct with a builder API that collects SSE events:\n   - `.merge_fragments(selector, html)` — maps to Datastar's `datastar-merge-fragments` SSE event type\n   - `.merge_signals(signals_json)` — maps to `datastar-merge-signals` event type\n   - `.remove_fragments(selector)` — maps to `datastar-remove-fragments` event type\n   - `.execute_script(js)` — maps to `datastar-execute-script` for client-side actions (redirects, etc.)\n   - `.build()` returns an Axum `Sse<impl Stream<Item = Event>>` response with proper `text/event-stream` content type\n   - Each method is chainable, collecting events in a `Vec<DatastarEvent>` internally\n\n2. **Event Types (enum):**\n   ```\n   enum DatastarEvent {\n       MergeFragments { selector: String, html: String, merge_mode: MergeMode, settle_duration: Option<u32> },\n       MergeSignals { signals: serde_json::Value, only_if_missing: bool },\n       RemoveFragments { selector: String },\n       ExecuteScript { script: String, auto_remove: bool },\n   }\n   ```\n   `MergeMode` enum: `morph` (default), `inner`, `outer`, `prepend`, `append`, `before`, `after`, `delete`\n\n3. **Handler Pattern — Each route handler returns `DatastarResponse`:**\n   - No more `is_htmx_request()` checks — every request gets SSE\n   - Initial page load: a single GET route serves a minimal HTML shell (app layout with Datastar JS, CSS link, theme class on `<body>`) — this is the only route that returns plain HTML\n   - All other routes (navigation, form submissions, CRUD operations) return `DatastarResponse` with fragment updates\n   - Template functions in templates.rs change from returning `String` (full HTML) to returning `String` (HTML fragments for specific UI regions identified by `#id` selectors)\n\n4. **Template Organization:**\n   - Keep templates.rs but refactor: instead of building full pages, each function builds a named fragment (e.g., `render_identity_table()`, `render_identity_detail()`, `render_nav()`, `render_toast()`)\n   - Fragment HTML uses DaisyUI/Tailwind classes and Datastar `data-*` attributes (data-on-click, data-signals, data-indicator, etc.)\n   - Fragments are inserted/morphed into the shell page's `<div id=\"main-content\">`, `<div id=\"sidebar\">`, etc.\n\n5. **Signal Management:**\n   - Use `MergeSignals` to push server state to client (e.g., current theme, selected identity, form validation errors)\n   - Datastar signals replace HTMX's hx-vals and event-driven state\n   - Form data flows back via Datastar's `data-on-submit` → `$$get`/`$$post` actions with signals serialized as query params or JSON body\n\n6. **SSE Stream Details:**\n   - Most handlers are 'one-shot SSE' — they open a stream, send 1-3 events, then close\n   - For real-time features (if any), keep the stream open with periodic events\n   - Use `axum::response::sse::Event` with `event:` field set to the Datastar event type name and `data:` lines for the payload\n\n7. **Shell Page Route:**\n   - `GET /` returns the full HTML document: `<!DOCTYPE html>`, `<head>` with CSS/meta, `<body data-signals=\"{theme: 'arch'}\" class=\"arch\">` containing the app layout skeleton and `<script>` tag for Datastar\n   - All subsequent navigation is handled via Datastar actions (`$$get('/identities')`) that receive SSE fragment updates — true SPA-like behavior without a SPA framework\n\n**Migration from current handlers:** Each existing handler that returns `Html(template_fn(...))` or checks `is_htmx_request()` becomes a handler returning `DatastarResponse::new().merge_fragments(\"#main-content\", render_whatever(...)).build()`. The typed builder makes this mechanical and type-safe."
+    },
+    "build_pipeline": {
+      "id": "build_pipeline",
+      "scope": "How to integrate Tailwind CSS v4 + DaisyUI v5 into the Bun-based build and asset pipeline",
+      "status": "done",
+      "questions": [
+        {
+          "id": "q_cm3v3kx7",
+          "type": "show_options",
+          "text": "How should we add Tailwind v4 + DaisyUI v5 to the build pipeline?\n\nCurrent pipeline: Bun bundles TS→JS (with content hash), build-css.ts concatenates CSS files, build-manifest.ts generates manifest.json. Assets are embedded in Rust binary via rust-embed.",
+          "config": {
+            "question": "How should we add Tailwind v4 + DaisyUI v5 to the build pipeline?\n\nCurrent pipeline: Bun bundles TS→JS (with content hash), build-css.ts concatenates CSS files, build-manifest.ts generates manifest.json. Assets are embedded in Rust binary via rust-embed.",
+            "options": [
+              {
+                "id": "tailwind_postcss_bun",
+                "label": "Tailwind v4 PostCSS plugin via Bun",
+                "description": "Use @tailwindcss/postcss as a Bun plugin. Single entry CSS file with @import 'tailwindcss' and @plugin 'daisyui'. Bun processes everything. Replace build-css.ts with Bun's CSS handling.",
+                "pros": [
+                  "Single toolchain (Bun does both JS and CSS)",
+                  "Tailwind v4's CSS-first config — no tailwind.config.js needed",
+                  "DaisyUI v5 loaded as CSS plugin directive",
+                  "Content hashing can still go through build-manifest.ts"
+                ],
+                "cons": [
+                  "Bun's PostCSS support may have edge cases",
+                  "Need to add postcss + @tailwindcss/postcss as dependencies",
+                  "Bun CSS bundling is relatively newer feature"
+                ]
+              },
+              {
+                "id": "tailwind_cli",
+                "label": "Tailwind CLI standalone binary",
+                "description": "Use @tailwindcss/cli to process CSS independently. Run tailwind CLI before Bun bundling. Keep JS bundling in Bun, CSS processing in Tailwind CLI.",
+                "pros": [
+                  "Most reliable — Tailwind's own CLI, well-tested",
+                  "Clean separation of concerns (CSS vs JS pipelines)",
+                  "Easy to add to Nix (standalone binary, no node deps for CSS)",
+                  "Can run CSS build in parallel with JS build"
+                ],
+                "cons": [
+                  "Two separate build steps to orchestrate",
+                  "Need Tailwind CLI in Nix devShell and build",
+                  "Slightly more complex build.sh changes",
+                  "DaisyUI as plugin needs to be configured for CLI mode"
+                ]
+              },
+              {
+                "id": "vite_migration",
+                "label": "Migrate from Bun to Vite (with Tailwind v4 built-in)",
+                "description": "Replace Bun bundler with Vite which has first-class Tailwind v4 support via @tailwindcss/vite plugin. Vite handles TS, CSS, and content hashing in one pipeline.",
+                "pros": [
+                  "Vite has official Tailwind v4 plugin — zero config",
+                  "Unified build pipeline with proper content hashing",
+                  "Better dev experience (HMR for CSS + JS during development)",
+                  "Manifest generation is built into Vite"
+                ],
+                "cons": [
+                  "Adds Vite as new dependency (though Bun can run it)",
+                  "Migration of build scripts and Nix packaging",
+                  "Vite manifest format differs from current custom manifest.json",
+                  "More moving parts to change at once"
+                ]
+              }
+            ],
+            "recommended": "tailwind_cli",
+            "allowFeedback": true
+          },
+          "answer": {
+            "selected": "tailwind_cli"
+          },
+          "answeredAt": 1774584661416
+        }
+      ],
+      "finding": "Use Tailwind CLI v4 standalone binary for CSS processing. The build pipeline should work as follows: (1) Install @tailwindcss/cli and daisyui v5 as Bun dev dependencies, (2) Replace the current build-css.ts concatenation step with a `bunx @tailwindcss/cli -i src/input.css -o dist/style.css --minify` step, (3) The input.css file imports Tailwind and DaisyUI via `@import 'tailwindcss'` and `@plugin 'daisyui'`, (4) The existing build-manifest.ts continues to handle content-hashing the output CSS, (5) rust-embed continues to serve the hashed assets from the dist folder. This keeps the build Bun-based (no Node/npm needed), avoids PostCSS config complexity, and aligns with Tailwind v4's native CSS-first approach where @theme and @plugin directives live in CSS rather than a tailwind.config.js file."
+    },
+    "theme_strategy": {
+      "id": "theme_strategy",
+      "scope": "How to map the 3 custom dark themes to DaisyUI v5's theme system and visual direction",
+      "status": "done",
+      "questions": [
+        {
+          "id": "q_tzq9grp9",
+          "type": "show_options",
+          "text": "How should we migrate the 3 terminal themes (sneak/blue, arch/green, mech/orange) to DaisyUI v5?\n\nCurrent: ~20 CSS custom properties per theme, glow effects, scanline overlays, #000 black backgrounds, monospace everything. DaisyUI v5 uses OKLCH colors, semantic color names (primary, secondary, accent, base-100...), and @plugin 'daisyui/theme' for custom themes.",
+          "config": {
+            "question": "How should we migrate the 3 terminal themes (sneak/blue, arch/green, mech/orange) to DaisyUI v5?\n\nCurrent: ~20 CSS custom properties per theme, glow effects, scanline overlays, #000 black backgrounds, monospace everything. DaisyUI v5 uses OKLCH colors, semantic color names (primary, secondary, accent, base-100...), and @plugin 'daisyui/theme' for custom themes.",
+            "options": [
+              {
+                "id": "exact_port",
+                "label": "Exact port: Replicate current look pixel-for-pixel in DaisyUI",
+                "description": "Map every CSS variable to DaisyUI equivalents. Keep #000 black, monospace everywhere, glow effects via custom CSS on top of DaisyUI. Convert hex colors to OKLCH. Terminal aesthetic stays identical.",
+                "pros": [
+                  "No visual regression — users see the same UI",
+                  "Glow effects and scanlines preserved",
+                  "Can validate migration correctness visually",
+                  "Monospace + black background is the identity of this app"
+                ],
+                "cons": [
+                  "Fighting DaisyUI defaults (it expects base-100 lighter backgrounds)",
+                  "Lots of custom CSS overrides on top of DaisyUI components",
+                  "Monospace everywhere may conflict with DaisyUI component sizing",
+                  "May not benefit much from DaisyUI if overriding most styles"
+                ]
+              },
+              {
+                "id": "modern_terminal",
+                "label": "Modernized terminal: Keep black + monospace core, adopt DaisyUI component patterns",
+                "description": "Keep #000 backgrounds and accent colors but use DaisyUI components (btn, card, table, navbar). Monospace for code/filenames/content, system font for UI chrome. Simplify glow effects. Let DaisyUI handle spacing, borders, focus states.",
+                "pros": [
+                  "Best of both worlds — terminal feel with polished components",
+                  "DaisyUI components handle accessibility (focus, contrast, states)",
+                  "Less custom CSS to maintain",
+                  "Monospace where meaningful, readable system font for UI text"
+                ],
+                "cons": [
+                  "Visual change from current pure-terminal aesthetic",
+                  "Need to decide per-element: monospace or system font",
+                  "Some DaisyUI components may look out of place on black",
+                  "Glow effects harder to integrate with DaisyUI's styling"
+                ]
+              },
+              {
+                "id": "full_daisy",
+                "label": "Full DaisyUI: Adopt DaisyUI design language completely",
+                "description": "Use DaisyUI's dark theme base (base-100: near-black), map accent colors as primary. Use DaisyUI's full component library. Drop custom glow/scanline effects. Monospace only for code blocks.",
+                "pros": [
+                  "Cleanest DaisyUI integration — use it as intended",
+                  "Smallest CSS footprint — mostly just theme config",
+                  "All DaisyUI components work out of the box",
+                  "Easier to maintain long-term"
+                ],
+                "cons": [
+                  "Significant visual departure — loses terminal identity",
+                  "Looks like 'yet another DaisyUI app'",
+                  "Users who chose this app for the aesthetic may be disappointed",
+                  "Black (#000) backgrounds are unusual in DaisyUI ecosystem"
+                ]
+              }
+            ],
+            "recommended": "modern_terminal",
+            "allowFeedback": true
+          },
+          "answer": {
+            "selected": "modern_terminal",
+            "feedback": "use daisy components, but try to findways to make things less round, we want 90 degree angles and don't want tons of fluff or borders, useful information in a compact form. it should look very similar. please be encouraged to be creative so it maintains the terminal feel this is very important. it should be spartan if it's not filled with detailed interface info. like a tui except in the web. you can change the glow but it should be themeable colors with a glow that is reminiscent of older original terminals that had scanlines and crt monitors or were guis running on a oscilloscope display like svgs like tennis for two or spacewars game, or ivan sutherland's sketchpad."
+          },
+          "answeredAt": 1774585154729
+        }
+      ],
+      "finding": "Map the 3 terminal themes (sneak/blue, arch/green, mech/orange) to DaisyUI v5 custom themes using @plugin 'daisyui/theme' with OKLCH colors, but with heavy visual customization to preserve the authentic terminal/CRT aesthetic.\n\n**Theme Mapping Strategy:**\n- Each theme maps its signature color to DaisyUI's `primary` semantic color (blue, green, orange respectively)\n- `base-100` through `base-300` stay near-black (#000–#111–#1a1a1a) to preserve the dark terminal look\n- `base-content` uses the theme's signature color at reduced opacity for body text\n- `accent` = brighter variant of the theme color for highlights/links\n- `neutral` = very dark gray for cards/surfaces\n- `info`, `success`, `warning`, `error` stay functional but tinted toward the theme hue\n\n**Visual Overrides (Global CSS layer on top of DaisyUI):**\n- `border-radius: 0` globally on all DaisyUI components — hard 90° angles everywhere, no roundness\n- Minimal borders: 1px solid theme-color at ~20% opacity, or no borders at all — spartan and clean\n- Remove padding/margin fluff from DaisyUI defaults — compact, TUI-density layout\n- Monospace font stack everywhere (code font for all UI text, not just code blocks)\n- CRT glow effect: subtle `text-shadow` using the theme's primary color (e.g., `0 0 4px oklch(0.7 0.15 hue / 0.4)`) — themeable via CSS custom property `--glow-color`\n- Scanline overlay: thin repeating-linear-gradient (1px transparent / 1px rgba(0,0,0,0.15)) at ~2px intervals over the entire viewport, low opacity so it's felt not seen\n- Optional CRT vignette: radial-gradient darkening at edges, subtle\n- Phosphor bloom: on hover/focus, slightly increase glow intensity — like a CRT pixel brightening\n- No box-shadows except glow effects — shadows feel too 'material design', not terminal\n- Links and interactive elements: underline or bracket-style indicators (`[link]`) rather than color-only\n\n**Compact/Spartan Layout Philosophy:**\n- Information-dense, no decorative whitespace — every pixel earns its place\n- Think `htop`, `ranger`, or `lazygit` — dense data with minimal chrome\n- DaisyUI components used for structure (tables, badges, buttons, modals) but stripped of visual fluff\n- Tables: no zebra striping, just subtle separator lines; compact row height\n- Buttons: ghost or outline style by default, filled only for primary actions\n- Cards: no shadow, no rounded corners, just a thin border or none — content speaks for itself\n\n**Theme Definitions (3 themes via daisyui/theme plugin):**\n1. **sneak** (blue): primary=#00aaff range, cold phosphor glow, IBM 3270 / old Wyse terminal feel\n2. **arch** (green): primary=#00ff88 range, classic green phosphor glow, VT220 / Matrix feel  \n3. **mech** (orange/amber): primary=#ff8800 range, warm amber phosphor glow, vintage amber CRT / oscilloscope feel\n\nAll three share: black backgrounds, monospace text, 90° angles, scanline overlay, CRT glow — differentiated only by hue. The glow color, text-shadow, and accent colors all derive from a single `--theme-hue` custom property per theme, making it trivial to add new color variants later."
+    },
+    "migration_phasing": {
+      "id": "migration_phasing",
+      "scope": "The order and phasing of the migration — big-bang vs incremental, what to tackle first",
+      "status": "done",
+      "questions": [
+        {
+          "id": "q_v0zcmtob",
+          "type": "show_options",
+          "text": "What migration strategy and phase ordering should we use?\n\nContext: Templates are ~1200 lines of Rust string building with inline hx-* attributes. Running HTMX + Datastar simultaneously is problematic (both process DOM attributes). ~1170 lines of TypeScript. 3 CSS files totaling ~1200 lines. 15 E2E tests.",
+          "config": {
+            "question": "What migration strategy and phase ordering should we use?\n\nContext: Templates are ~1200 lines of Rust string building with inline hx-* attributes. Running HTMX + Datastar simultaneously is problematic (both process DOM attributes). ~1170 lines of TypeScript. 3 CSS files totaling ~1200 lines. 15 E2E tests.",
+            "options": [
+              {
+                "id": "pipeline_first",
+                "label": "Phase 1: Build pipeline → Phase 2: CSS/themes → Phase 3: Templates+Datastar → Phase 4: TS cleanup",
+                "description": "Start with build infrastructure (add Tailwind, keep old CSS working alongside). Then migrate CSS file-by-file to Tailwind classes. Then rewrite templates from hx-* to data-* attributes + SSE handlers. Finally clean up/reduce TypeScript.",
+                "pros": [
+                  "Each phase is independently testable",
+                  "Build pipeline changes don't affect runtime behavior",
+                  "CSS migration can happen with existing HTMX still working",
+                  "Templates are the riskiest change — do last with everything else stable"
+                ],
+                "cons": [
+                  "Longest total migration time",
+                  "Maintaining old + new CSS during transition",
+                  "Templates still have hx-* during CSS migration (unused if Datastar loaded)",
+                  "4 phases means 4 potential integration points"
+                ]
+              },
+              {
+                "id": "big_bang",
+                "label": "Big-bang: Rewrite everything in one branch",
+                "description": "Create a feature branch. Rewrite build pipeline, CSS, templates, and TypeScript all at once. Test holistically. Merge when complete.",
+                "pros": [
+                  "No awkward intermediate states",
+                  "Can design templates with Datastar + Tailwind from scratch",
+                  "Fastest calendar time if dedicated to it",
+                  "Clean diff — old code replaced with new code"
+                ],
+                "cons": [
+                  "Long-lived branch with merge conflict risk",
+                  "Hard to test incrementally — many things broken until all pieces land",
+                  "If blocked on one part, everything stalls",
+                  "Harder to review (massive PR)"
+                ]
+              },
+              {
+                "id": "parallel_tracks",
+                "label": "Parallel: CSS+Build on one track, Datastar+Templates on another",
+                "description": "Two parallel workstreams. Track A: Add Tailwind/DaisyUI build pipeline and convert CSS. Track B: Build Datastar SSE infrastructure and convert templates. Merge when both complete.",
+                "pros": [
+                  "Faster if multiple contributors or can context-switch",
+                  "Each track can be tested independently against current app",
+                  "Build pipeline work doesn't block template work",
+                  "Smaller, focused PRs per track"
+                ],
+                "cons": [
+                  "Templates reference CSS classes — tracks must coordinate",
+                  "Final merge of both tracks is the big-bang moment anyway",
+                  "New DaisyUI classes in templates need the build pipeline",
+                  "Integration testing only possible after both tracks merge"
+                ]
+              },
+              {
+                "id": "css_first_coexist",
+                "label": "CSS-first with coexistence: Migrate to Tailwind/DaisyUI while HTMX still works, then swap to Datastar",
+                "description": "Phase 1: Add Tailwind build, convert templates to use Tailwind/DaisyUI classes (still with hx-* attributes, HTMX still loaded). Phase 2: Swap HTMX→Datastar by changing attributes and adding SSE handlers. Each phase has a working app.",
+                "pros": [
+                  "Working app at every step — can ship Phase 1 independently",
+                  "CSS migration validates DaisyUI theme mapping with existing functionality",
+                  "Phase 2 is purely behavioral (HTMX→Datastar), not visual",
+                  "E2E tests can run after each phase"
+                ],
+                "cons": [
+                  "Phase 1 templates have Tailwind classes + hx-* attributes (messy)",
+                  "Some template restructuring needed for DaisyUI components may conflict with HTMX targets",
+                  "Two rounds of template editing (add classes, then change attributes)",
+                  "HTMX attribute removal in Phase 2 touches every template again"
+                ]
+              }
+            ],
+            "recommended": "css_first_coexist",
+            "allowFeedback": true
+          },
+          "answer": {
+            "selected": "css_first_coexist"
+          },
+          "answeredAt": 1774585203248
+        }
+      ],
+      "finding": "Migration should follow a CSS-first coexistence strategy with this phasing:\n\n**Phase 1: Build Pipeline + CSS/Theme (Foundation)**\n- Add Tailwind v4 + DaisyUI v5 to the Bun build pipeline\n- Define the 3 custom themes (sneak, arch, mech) with DaisyUI's @plugin system\n- Add global CSS overrides (border-radius: 0, monospace, CRT glow, scanlines)\n- Migrate existing HTML templates from custom CSS classes to DaisyUI/Tailwind utility classes\n- HTMX stays fully operational during this phase — only styling changes\n- Old CSS files removed once all templates use Tailwind/DaisyUI classes\n- E2E tests should still pass (same behavior, new styling)\n\n**Phase 2: Datastar Migration (Behavior)**\n- Replace HTMX JS with Datastar JS in the asset bundle\n- Swap all hx-* attributes in templates to data-* Datastar directives\n- Convert Axum handlers from HTML fragment responses to SSE-based responses (full-SSE approach)\n- Remove is_htmx_request() checks and HTMX-specific response logic\n- Update/rewrite E2E tests as each route is converted\n- This is effectively a big-bang for the JS interaction layer, but the visual layer is already stable from Phase 1\n\n**Phase 3: Cleanup + Polish**\n- Remove any HTMX remnants (dead code, unused template helpers)\n- Optimize SSE event patterns based on real usage\n- Fine-tune CRT/glow visual effects with the new component structure\n- Final E2E test pass\n\n**Key rationale:** CSS-first coexistence de-risks the migration by separating visual changes from behavioral changes. Phase 1 is low-risk (styling only, no logic changes) and gives a stable DaisyUI foundation. Phase 2 is the harder swap but happens on top of already-correct visuals, so you're only debugging interaction logic, not both styling and behavior simultaneously. The HTMX→Datastar swap is necessarily big-bang within Phase 2 since both libraries claim DOM attributes, but by that point the CSS/theme layer is already proven stable."
+    }
+  },
+  "branch_order": [
+    "server_response_arch",
+    "build_pipeline",
+    "theme_strategy",
+    "migration_phasing"
+  ]
+}
