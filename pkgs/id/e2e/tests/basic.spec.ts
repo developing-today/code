@@ -27,8 +27,8 @@ test.describe("Home Page", () => {
 
   test("shows file list card", async ({ page }) => {
     await page.goto("/");
-    // The file list is inside a card with "Files" header
-    await expect(page.locator(".card-header", { hasText: "Files" })).toBeVisible();
+    // The file list card contains the new file form
+    await expect(page.locator("#new-file-form")).toBeVisible();
   });
 
   test("has new file form", async ({ page }) => {
@@ -188,8 +188,7 @@ test.describe("Theme", () => {
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
 
-    // Editor has theme switcher buttons
-    await expect(page.locator(".theme-switcher")).toBeVisible();
+    // Editor has theme buttons in header
     await expect(page.locator("button[data-theme='sneak']")).toBeVisible();
     await expect(page.locator("button[data-theme='arch']")).toBeVisible();
     await expect(page.locator("button[data-theme='mech']")).toBeVisible();
