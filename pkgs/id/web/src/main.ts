@@ -77,22 +77,11 @@ function initScrollShowHeader(
   const footer = document.querySelector(footerSelector) as HTMLElement | null;
 
   if (!header) {
-    console.log("[id] scroll-show: header not found for selector:", headerSelector);
     return null;
   }
 
-  console.log(
-    "[id] scroll-show: initializing for",
-    headerSelector,
-    "footer selector:",
-    footerSelector,
-    "footer found:",
-    !!footer,
-  );
-
   const headerHeight = header.offsetHeight;
   const footerHeight = footer?.offsetHeight || 18;
-  console.log("[id] scroll-show: headerHeight:", headerHeight, "footerHeight:", footerHeight);
   let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
   let ticking = false;
 
@@ -162,30 +151,12 @@ function initScrollShowHeader(
   const atTop = scrollTop <= headerHeight;
   const atBottom = scrollBottom <= footerHeight;
 
-  console.log("[id] scroll-show initial state:", {
-    scrollTop,
-    headerHeight,
-    footerHeight,
-    windowHeight,
-    docHeight,
-    scrollBottom,
-    atTop,
-    atBottom,
-    footer: footer ? "found" : "not found",
-  });
-
   if (footer) {
     if (atBottom) {
-      // At bottom - footer in normal flow
-      console.log("[id] scroll-show: footer at bottom - normal flow");
       footer.classList.remove("floating", "visible");
     } else if (atTop) {
-      // At top - footer floating and visible
-      console.log("[id] scroll-show: footer at top - floating visible");
       footer.classList.add("floating", "visible");
     } else {
-      // Middle - footer floating and hidden
-      console.log("[id] scroll-show: footer in middle - floating hidden");
       footer.classList.add("floating");
       footer.classList.remove("visible");
     }
@@ -315,10 +286,10 @@ async function fetchPartial(url: string, targetSelector: string): Promise<void> 
 
 /**
  * Navigate to a URL by fetching it as a partial and swapping #main content.
- * Replaces htmx.ajax() calls and [data-nav] link clicks.
+ * Used by [data-nav] link clicks, programmatic navigation, and popstate.
  */
 async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
-  // Close editor before navigation (replaces htmx:beforeRequest handler)
+  // Close editor before navigation
   const app = (window as unknown as Record<string, IdApp>).idApp;
   if (app?.collab) {
     app.closeEditor();
@@ -353,8 +324,8 @@ async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
 }
 
 /**
- * Called after #main content is swapped. Handles re-initialization of UI components.
- * Extracted from the former htmx:afterSwap handler for #main.
+ * Called after #main content is swapped. Handles re-initialization of UI components
+ * including scroll behavior, navigation state, editor, filters, and auto-refresh.
  */
 function onMainSwapped(): void {
   const app = (window as unknown as Record<string, IdApp>).idApp;
@@ -371,11 +342,9 @@ function onMainSwapped(): void {
     }
   }
   app.currentPath = newPath;
-  console.log("[id] Navigation: path=", newPath, "history=", app.navHistory);
 
   const editorContainer = document.getElementById("editor-container");
   const docId = editorContainer?.dataset.docId;
-  console.log("[id] afterSwap: editorContainer=", editorContainer, "docId=", docId, "app.collab=", app.collab);
 
   // Clean up previous scroll handler
   if (scrollCleanup) {
@@ -384,10 +353,8 @@ function onMainSwapped(): void {
   }
 
   if (docId && !app.collab) {
-    console.log("[id] afterSwap: calling openEditor for docId:", docId);
     app.openEditor(docId);
   } else {
-    console.log("[id] afterSwap: NOT calling openEditor - docId:", docId, "app.collab:", app.collab);
     // Initialize scroll handler for main page
     scrollCleanup = initScrollShowHeader(".inline-header", ".inline-footer");
     // Update back button on main page
@@ -407,7 +374,7 @@ function onMainSwapped(): void {
 
 /**
  * Called after a partial content swap (e.g. #file-list-content).
- * Extracted from the former htmx:afterSwap handler for #file-list-content.
+ * Re-initializes filters and other UI state for the swapped content.
  */
 function onPartialSwapped(_targetSelector: string): void {
   // Re-apply show-auto filter after file-list-content swaps
@@ -416,7 +383,7 @@ function onPartialSwapped(_targetSelector: string): void {
 
 /**
  * Initialize search debounce for file search input and show-deleted checkbox.
- * Replaces hx-trigger="keyup changed delay:300ms" and hx-trigger="change".
+ * Search triggers after 300ms of inactivity; checkbox triggers immediately.
  */
 function initSearchDebounce(): void {
   const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
@@ -460,7 +427,7 @@ function initSearchDebounce(): void {
 
 /**
  * Initialize peers auto-refresh via setInterval.
- * Replaces hx-trigger="every 10s" on the peers content div.
+ * Reads interval from the data-auto-refresh attribute (in seconds).
  */
 function initPeersAutoRefresh(): void {
   // Clear any existing interval
@@ -784,7 +751,6 @@ function init(): void {
     async openEditor(docId: string): Promise<void> {
       // Guard against double initialization
       if (this.collab) {
-        console.log("[id] Editor already initialized");
         return;
       }
 

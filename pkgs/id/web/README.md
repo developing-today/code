@@ -1,6 +1,6 @@
 # Web Collaborative Editor
 
-Real-time collaborative text editor for `id serve`, built with HTMX, ProseMirror, and WebSockets.
+Real-time collaborative text editor for `id serve`, built with DaisyUI/Tailwind, ProseMirror, and WebSockets.
 
 ## Architecture
 
@@ -164,15 +164,16 @@ Built assets are embedded in the Rust binary via `rust-embed`.
 ```
 web/
 ├── src/
-│   ├── main.ts      # Entry point, HTMX init, file operations (rename, copy)
+│   ├── main.ts      # Entry point, SPA navigation, file operations (rename, copy)
+│   ├── input.css    # TailwindCSS v4 + DaisyUI entry point
 │   ├── editor.ts    # ProseMirror setup, schema, menu
 │   ├── collab.ts    # WebSocket client, MessagePack protocol
 │   ├── cursors.ts   # Cursor/selection plugin with fade
 │   └── theme.ts     # Theme switching
 ├── styles/
 │   ├── editor.css   # ProseMirror styles, cursor tooltips, viewer buttons
-│   ├── terminal.css # Base terminal aesthetic, file list
-│   └── themes.css   # Theme CSS variables (sneak/arch/mech)
+│   ├── terminal.css # DaisyUI component overrides, file list layout
+│   └── themes.css   # DaisyUI custom themes (sneak/arch/mech)
 ├── dist/            # Built output (git-ignored)
 ├── bun.nix          # Offline npm dependency fetching for nix sandbox
 └── package.json
