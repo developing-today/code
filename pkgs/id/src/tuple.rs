@@ -182,6 +182,7 @@ impl TupleValue {
 ///     .build();
 /// assert!(key.starts_with(&prefix));
 /// ```
+#[derive(Debug)]
 pub struct TupleEncoder {
     buf: Vec<u8>,
     nested: bool,
@@ -315,21 +316,28 @@ const fn byte_len(v: u64) -> usize {
 
 /// Encode a signed 64-bit integer into `buf`.
 fn push_int(buf: &mut Vec<u8>, v: i64) {
-    if v == 0 {
-        buf.push(ZERO);
-    } else if v > 0 {
-        let u = v as u64;
-        let n = byte_len(u);
-        buf.push(POS_INT_1 + n as u8 - 1);
-        let be = u.to_be_bytes();
-        buf.extend_from_slice(&be[8 - n..]);
-    } else {
-        let abs = v.unsigned_abs();
-        let n = byte_len(abs);
-        buf.push(ZERO - n as u8); // tag: 0x13 for 1 byte, 0x0C for 8 bytes
-        let be = abs.to_be_bytes();
-        for &b in &be[8 - n..] {
-            buf.push(!b); // ones-complement
+    use std::cmp::Ordering;
+    match v.cmp(&0) {
+        Ordering::Equal => buf.push(ZERO),
+        Ordering::Greater => {
+            // Safety: v > 0 so cast to u64 is lossless
+            #[allow(clippy::cast_sign_loss)]
+            let u = v as u64;
+            let n = byte_len(u);
+            #[allow(clippy::cast_possible_truncation)]
+            buf.push(POS_INT_1 + n as u8 - 1);
+            let be = u.to_be_bytes();
+            buf.extend_from_slice(&be[8 - n..]);
+        }
+        Ordering::Less => {
+            let abs = v.unsigned_abs();
+            let n = byte_len(abs);
+            #[allow(clippy::cast_possible_truncation)]
+            buf.push(ZERO - n as u8); // tag: 0x13 for 1 byte, 0x0C for 8 bytes
+            let be = abs.to_be_bytes();
+            for &b in &be[8 - n..] {
+                buf.push(!b); // ones-complement
+            }
         }
     }
 }
@@ -441,6 +449,8 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
                 i64::try_from(v).is_ok(),
                 "positive integer exceeds i64::MAX"
             );
+            // Correctness: we verified v ≤ i64::MAX via try_from above
+            #[allow(clippy::cast_possible_wrap)]
             Ok(Some(TupleValue::Int(v as i64)))
         }
 
@@ -456,6 +466,7 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
             let abs = u64::from_be_bytes(be);
             // Negate: handles i64::MIN correctly via wrapping
             // (abs=2^63 → 0u64.wrapping_sub(2^63) = 2^63 as u64 → as i64 = i64::MIN)
+            #[allow(clippy::cast_possible_wrap)]
             let value = 0u64.wrapping_sub(abs) as i64;
             Ok(Some(TupleValue::Int(value)))
         }
@@ -510,7 +521,12 @@ fn decode_esc(data: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
 // ============================================================================
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::approx_constant,
+    trivial_casts
+)]
 mod tests {
     use super::*;
 

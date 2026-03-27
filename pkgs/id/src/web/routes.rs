@@ -953,6 +953,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     // Check save rate limit
     if let Err(remaining) = state.save_limiter.check(&req.name).await {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let secs = remaining.as_secs_f64().ceil() as u64;
         tracing::info!(
             "[routes] Save rate limited for '{}': {}s remaining",

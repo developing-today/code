@@ -110,7 +110,8 @@ in
         # Hardening
         DynamicUser = true;
         StateDirectory = lib.mkIf (!cfg.ephemeral) "id";
-        WorkingDirectory = lib.mkIf (!cfg.ephemeral) "/var/lib/id";
+        RuntimeDirectory = lib.mkIf cfg.ephemeral "id";
+        WorkingDirectory = if cfg.ephemeral then "/run/id" else "/var/lib/id";
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;

@@ -287,7 +287,7 @@ impl std::fmt::Debug for NamespacePair {
         f.debug_struct("NamespacePair")
             .field("alpha_id", &self.alpha_id)
             .field("omega_id", &self.omega_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -434,7 +434,7 @@ impl std::fmt::Debug for TagStore {
             .field("node", &self.node)
             .field("custom_count", &self.custom.len())
             .field("author", &self.author)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1233,17 +1233,17 @@ impl TagStore {
                 None => term_results,
                 Some(existing) => {
                     // AND intersection: keep tags present in both sets
-                    let term_set: std::collections::HashSet<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> =
-                        term_results
-                            .iter()
-                            .map(|t| {
-                                (
-                                    t.subject.as_bytes().to_vec(),
-                                    t.key.as_bytes().to_vec(),
-                                    t.value.as_ref().map(|v| v.as_bytes().to_vec()),
-                                )
-                            })
-                            .collect();
+                    type TagTuple = (Vec<u8>, Vec<u8>, Option<Vec<u8>>);
+                    let term_set: std::collections::HashSet<TagTuple> = term_results
+                        .iter()
+                        .map(|t| {
+                            (
+                                t.subject.as_bytes().to_vec(),
+                                t.key.as_bytes().to_vec(),
+                                t.value.as_ref().map(|v| v.as_bytes().to_vec()),
+                            )
+                        })
+                        .collect();
                     existing
                         .into_iter()
                         .filter(|t| {
@@ -1586,9 +1586,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Reserved iroh-blobs tag name for the legacy metadata document.
 const META_TAG: &str = ".meta";
 
-/// Current legacy metadata document version.
-const LEGACY_META_VERSION: u32 = 1;
-
 /// The legacy metadata document stored as a JSON blob.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetaDoc {
@@ -1721,7 +1718,7 @@ pub fn set_modified(doc: &mut MetaDoc, subject: &str) {
 pub fn transfer_tags(doc: &mut MetaDoc, from: &str, to: &str) {
     for tag in &mut doc.tags {
         if tag.subject == from {
-            tag.subject = to.to_owned();
+            to.clone_into(&mut tag.subject);
         }
     }
 }

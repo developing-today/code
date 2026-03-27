@@ -315,7 +315,7 @@ pub async fn cmd_serve(
     let meta = MetaProtocol::new(
         &store_handle,
         Some(peer_discovery.clone()),
-        Some(tag_store.clone()),
+        Some(Arc::clone(&tag_store)),
     );
     let blobs = BlobsProtocol::new(&store_handle, None);
 
@@ -434,7 +434,7 @@ pub async fn cmd_serve(
             store_handle.clone(),
             Some(peer_discovery.clone()),
             node_id.to_string(),
-            tag_store.clone(),
+            Arc::clone(&tag_store),
         );
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = tokio::net::TcpListener::bind(addr).await?;

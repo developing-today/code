@@ -137,6 +137,7 @@
         "--viewport=800x600",
         "--no-usage-statistics",
         "--no-performance-crux",
+        "--no-category-emulation", // important fix for bad request: bad request errors -- see: https://github.com/anomalyco/opencode/issues/8417
         // "--logFile=...",
         // "--chromeArg=",
         // "--slim",

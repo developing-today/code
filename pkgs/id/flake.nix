@@ -101,6 +101,9 @@
               export HOME=$(mktemp -d)
               export CARGO_HOME=$HOME/.cargo
 
+              # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+              export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
               # Configure cargo to use vendored dependencies (nix sandbox has no network)
               cat >> .cargo/config.toml << EOF
 
@@ -244,7 +247,7 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.nixfmt ];
             buildPhase = ''
-              find . -name '*.nix' | xargs nixfmt --check
+              find . -name '*.nix' -not -path './web/bun.nix' | xargs nixfmt --check
             '';
             installPhase = ''
               mkdir -p $out
@@ -270,13 +273,12 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.biome ];
             buildPhase = ''
-              biome format --check --config-path . \
+              biome format \
                 --files-ignore-unknown=true \
                 $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
                   -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
                   -not -path '*/node_modules/*' -not -path '*/target/*' \
-                  -not -path '*/dist/*') \
-                || true
+                  -not -path '*/dist/*')
             '';
             installPhase = ''
               mkdir -p $out
@@ -393,6 +395,9 @@
             version = "0.1.0";
             src = ./.;
 
+            # Enable the web feature (default features are empty in Cargo.toml)
+            buildFeatures = [ "web" ];
+
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
@@ -422,12 +427,19 @@
 
             preBuild = ''
               # Build web assets (bun2nix hook already installed node_modules)
+              # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+              export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               cd web
               bun run build
               cd ..
             '';
 
             doCheck = true;
+            # serve_tests require networking (bind/listen), unavailable in nix sandbox
+            checkFlags = [
+              "--skip"
+              "serve_tests"
+            ];
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
@@ -461,6 +473,11 @@
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
 
             doCheck = true;
+            # serve_tests require networking (bind/listen), unavailable in nix sandbox
+            checkFlags = [
+              "--skip"
+              "serve_tests"
+            ];
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";

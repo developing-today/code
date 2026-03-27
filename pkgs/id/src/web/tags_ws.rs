@@ -44,6 +44,7 @@ pub struct TagQuery {
     /// Filter by tag value (requires `key`).
     pub value: Option<String>,
     /// Namespace to query (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -53,6 +54,7 @@ pub struct SearchQuery {
     /// Search query string (supports: `key:`, `:value`, `key:value`, `"literal"`, bare word).
     pub q: String,
     /// Namespace to search (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -63,6 +65,7 @@ pub struct SetTagRequest {
     pub key: String,
     pub value: Option<String>,
     /// Namespace to write to (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -76,6 +79,7 @@ pub struct DelTagRequest {
     #[serde(default)]
     pub all: bool,
     /// Namespace (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
