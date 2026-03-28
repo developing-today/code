@@ -88,8 +88,6 @@ export function initCollab(
 ): CollabConnection {
   // Append filename as query parameter if provided
   const finalWsUrl = filename ? `${wsUrl}?filename=${encodeURIComponent(filename)}` : wsUrl;
-  const ws = new WebSocket(finalWsUrl);
-  ws.binaryType = "arraybuffer"; // Receive binary data as ArrayBuffer
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -97,6 +95,8 @@ export function initCollab(
   let connected = false;
   let editorInstance: EditorInstance | null = null;
   let documentMode: ContentMode | null = null;
+  // Mutable reference to the current WebSocket — updated on reconnect
+  let currentWs: WebSocket | null = null;
 
   // Track our clientID (set when editor initializes)
   let myClientID: number | null = null;
@@ -105,40 +105,45 @@ export function initCollab(
     if (onStatus) onStatus(status);
   };
 
-  // Encode and send a message
+  // Encode and send a message (always uses currentWs)
   const send = (msgType: number, ...fields: unknown[]): void => {
     const data = packr.pack([msgType, ...fields]);
-    if (connected && ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
+    if (connected && currentWs && currentWs.readyState === WebSocket.OPEN) {
+      currentWs.send(data);
     } else {
       sendQueue.push(data);
     }
   };
 
   const flushQueue = (): void => {
-    while (sendQueue.length > 0 && ws.readyState === WebSocket.OPEN) {
+    while (sendQueue.length > 0 && currentWs && currentWs.readyState === WebSocket.OPEN) {
       const data = sendQueue.shift();
-      if (data) {
-        ws.send(data);
+      if (data && currentWs) {
+        currentWs.send(data);
       }
     }
   };
 
   const scheduleReconnect = (): void => {
-    if (reconnectAttempts >= 5) {
+    if (reconnectAttempts >= 10) {
       console.error("[collab] Max reconnection attempts reached");
       updateStatus("error");
       return;
     }
 
-    const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
+    // Exponential backoff with jitter: base * 2^attempt + random jitter
+    const baseDelay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
+    const jitter = Math.random() * Math.min(1000, baseDelay * 0.2);
+    const delay = baseDelay + jitter;
     reconnectAttempts++;
 
-    console.log(`[collab] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+    console.log(`[collab] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts}/10)`);
     updateStatus("connecting");
     reconnectTimer = setTimeout(() => {
       const newWs = new WebSocket(finalWsUrl);
       newWs.binaryType = "arraybuffer";
+      // Update the mutable reference so send()/disconnect() use the new socket
+      currentWs = newWs;
       setupWebSocket(newWs);
     }, delay);
   };
@@ -164,9 +169,15 @@ export function initCollab(
   };
 
   const handleMessage = (data: ArrayBuffer): void => {
-    const msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+    let msg: unknown[];
+    try {
+      msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+    } catch (err) {
+      console.error("[collab] Failed to decode MessagePack message:", err);
+      return;
+    }
     const msgType = msg[0] as number;
-    console.log("[collab] handleMessage msgType:", msgType, "full msg:", msg);
+    console.log("[collab] handleMessage msgType:", msgType);
 
     switch (msgType) {
       case MSG.INIT: {
@@ -175,22 +186,12 @@ export function initCollab(
         const doc = msg[2] as { type: string; content?: unknown[] };
         const mode = ((msg[3] as string) || "raw") as ContentMode;
         documentMode = mode;
-        console.log("[collab] Received initial state, version:", version, "mode:", mode);
-        console.log("[collab] Doc type:", doc?.type);
-        console.log("[collab] Doc content length:", doc?.content?.length);
-        if (doc?.content?.[0]) {
-          const firstNode = doc.content[0] as { type?: string; attrs?: unknown };
-          console.log("[collab] First node type:", firstNode?.type, "attrs:", firstNode?.attrs);
-        }
-        console.log("[collab] Full doc:", JSON.stringify(doc).slice(0, 500));
+        console.log("[collab] Received Init, version:", version, "mode:", mode);
 
-        // Initialize the editor with the server's document and mode
         if (!editorInstance) {
+          // First connection — initialize the editor from scratch
           console.log("[collab] Initializing editor with server version:", version, "mode:", mode);
-          console.log("[collab] Container element:", container, "innerHTML before:", container.innerHTML.slice(0, 100));
-          // Pass the server's ProseMirror JSON doc, not the HTML initialContent
           editorInstance = initEditor(container, doc, version, mode, sendCursor);
-          console.log("[collab] Container innerHTML after initEditor:", container.innerHTML.slice(0, 200));
           myClientID = editorInstance.clientID;
           console.log("[collab] Our clientID:", myClientID);
 
@@ -198,6 +199,25 @@ export function initCollab(
           container.addEventListener("editor:change", handleEditorChange);
 
           // Notify that editor is ready
+          if (onEditorReady) {
+            onEditorReady(editorInstance);
+          }
+        } else {
+          // Reconnect — destroy old editor and re-initialize with fresh server state.
+          // The server sends a full Init with potentially different version/doc after
+          // reconnect, so the ProseMirror collab plugin must be re-created to avoid
+          // version mismatch errors.
+          console.log("[collab] Reconnect: re-initializing editor, server version:", version);
+          container.removeEventListener("editor:change", handleEditorChange);
+          editorInstance.view.destroy();
+
+          editorInstance = initEditor(container, doc, version, mode, sendCursor);
+          myClientID = editorInstance.clientID;
+          console.log("[collab] Reconnect: new clientID:", myClientID);
+
+          container.addEventListener("editor:change", handleEditorChange);
+
+          // Re-notify that editor is ready (re-enables save button etc.)
           if (onEditorReady) {
             onEditorReady(editorInstance);
           }
@@ -279,7 +299,19 @@ export function initCollab(
         // [5, error]
         const error = msg[1] as string;
         console.error("[collab] Server error:", error);
-        updateStatus("error");
+
+        // Version mismatch errors are recoverable via reconnect —
+        // the server will send a fresh Init with the correct state
+        if (typeof error === "string" && error.includes("Version mismatch")) {
+          console.log("[collab] Version mismatch — scheduling reconnect to resync");
+          connected = false;
+          if (currentWs) {
+            currentWs.close(4000, "Version mismatch resync");
+          }
+          scheduleReconnect();
+        } else {
+          updateStatus("error");
+        }
         break;
       }
 
@@ -351,8 +383,11 @@ export function initCollab(
     };
   };
 
-  // Set up the WebSocket
-  setupWebSocket(ws);
+  // Set up the initial WebSocket
+  const initialWs = new WebSocket(finalWsUrl);
+  initialWs.binaryType = "arraybuffer";
+  currentWs = initialWs;
+  setupWebSocket(initialWs);
 
   const disconnect = (): void => {
     if (reconnectTimer) {
@@ -362,12 +397,17 @@ export function initCollab(
     // Note: We intentionally don't call setConnectionState here because
     // the view will be destroyed immediately after this function returns.
     // The close code 1000 tells the onclose handler not to try using the view.
-    ws.close(1000, "Client disconnected");
+    if (currentWs) {
+      currentWs.close(1000, "Client disconnected");
+    }
+    currentWs = null;
     updateStatus("disconnected");
   };
 
   return {
-    ws,
+    get ws() {
+      return currentWs as WebSocket;
+    },
     docId,
     disconnect,
     get editor() {

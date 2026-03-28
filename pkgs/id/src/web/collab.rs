@@ -651,12 +651,28 @@ async fn handle_collab_socket(
     let client_id_for_disconnect = Arc::clone(&client_id_for_cleanup);
 
     // Spawn task to forward broadcasts to this client (binary)
+    let doc_id_for_broadcast = doc_id.clone();
     let broadcast_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            let bytes = msg.encode();
-            let mut sender = sender_for_broadcast.lock().await;
-            if sender.send(Message::Binary(bytes)).await.is_err() {
-                break; // Client disconnected
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    let bytes = msg.encode();
+                    let mut sender = sender_for_broadcast.lock().await;
+                    if sender.send(Message::Binary(bytes)).await.is_err() {
+                        break; // Client disconnected
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        doc_id = %doc_id_for_broadcast,
+                        skipped = n,
+                        "Broadcast receiver lagged, skipped messages"
+                    );
+                    // Continue receiving — don't kill the task
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    break; // Channel closed, document cleaned up
+                }
             }
         }
     });

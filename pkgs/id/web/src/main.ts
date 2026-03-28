@@ -18,6 +18,7 @@ declare global {
 interface IdApp {
   collab: CollabConnection | null;
   tagsWs: WebSocket | null;
+  tagsWsReconnectAttempts: number;
   setTheme: (theme: Theme) => void;
   openEditor: (docId: string) => Promise<void>;
   closeEditor: () => void;
@@ -459,6 +460,7 @@ function init(): void {
   const app: IdApp = {
     collab: null,
     tagsWs: null,
+    tagsWsReconnectAttempts: 0,
     setTheme,
     navHistory: [],
     currentPath: window.location.pathname,
@@ -480,6 +482,7 @@ function init(): void {
 
       ws.onopen = () => {
         console.log("[id] Tags WS connected");
+        this.tagsWsReconnectAttempts = 0;
       };
 
       ws.onmessage = (event: MessageEvent) => {
@@ -524,9 +527,14 @@ function init(): void {
       };
 
       ws.onclose = () => {
-        console.log("[id] Tags WS disconnected, reconnecting in 3s");
         this.tagsWs = null;
-        setTimeout(() => this.connectTagsWs(), 3000);
+        const delay = Math.min(3000 * 2 ** this.tagsWsReconnectAttempts, 30000);
+        const jitter = delay * 0.2 * Math.random();
+        this.tagsWsReconnectAttempts++;
+        console.log(
+          `[id] Tags WS disconnected, reconnecting in ${Math.round((delay + jitter) / 1000)}s (attempt ${this.tagsWsReconnectAttempts})`,
+        );
+        setTimeout(() => this.connectTagsWs(), delay + jitter);
       };
 
       ws.onerror = (err) => {
