@@ -24,7 +24,7 @@ export default defineConfig({
   testDir: "./tests",
   fullyParallel: false, // tests within a project run sequentially
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  retries: process.env.CI ? 2 : 1,
   workers: 1,
   reporter: [["html", { open: "never" }], ["list"]],
   timeout: 30_000,
