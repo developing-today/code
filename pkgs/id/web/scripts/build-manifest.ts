@@ -7,13 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  readFileSync,
-  readdirSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const distDir = "dist";

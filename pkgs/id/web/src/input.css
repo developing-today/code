@@ -42,25 +42,25 @@
   color-scheme: dark;
 
   /* Primary: Blue */
-  --color-primary: oklch(0.65 0.20 250);
+  --color-primary: oklch(0.65 0.2 250);
   --color-primary-content: oklch(0.98 0.01 250);
-  --color-secondary: oklch(0.50 0.15 250);
+  --color-secondary: oklch(0.5 0.15 250);
   --color-secondary-content: oklch(0.95 0.01 250);
-  --color-accent: oklch(0.70 0.22 250);
+  --color-accent: oklch(0.7 0.22 250);
   --color-accent-content: oklch(0.98 0.01 250);
 
   /* Neutral: Pure black scale */
-  --color-neutral: oklch(0.20 0.01 250);
+  --color-neutral: oklch(0.2 0.01 250);
   --color-neutral-content: oklch(0.85 0.02 250);
 
   /* Base: Black backgrounds */
-  --color-base-100: oklch(0.0 0.0 0);
+  --color-base-100: oklch(0 0 0);
   --color-base-200: oklch(0.13 0.005 250);
   --color-base-300: oklch(0.18 0.005 250);
   --color-base-content: oklch(0.85 0.02 250);
 
   /* Semantic colors (shared across themes) */
-  --color-info: oklch(0.65 0.20 250);
+  --color-info: oklch(0.65 0.2 250);
   --color-info-content: oklch(0.98 0.01 250);
   --color-success: oklch(0.72 0.22 145);
   --color-success-content: oklch(0.98 0.01 145);
@@ -88,21 +88,21 @@
   --color-primary-content: oklch(0.98 0.01 145);
   --color-secondary: oklch(0.55 0.18 145);
   --color-secondary-content: oklch(0.95 0.01 145);
-  --color-accent: oklch(0.80 0.28 145);
+  --color-accent: oklch(0.8 0.28 145);
   --color-accent-content: oklch(0.98 0.01 145);
 
   /* Neutral: Pure black scale */
-  --color-neutral: oklch(0.20 0.01 145);
+  --color-neutral: oklch(0.2 0.01 145);
   --color-neutral-content: oklch(0.85 0.02 145);
 
   /* Base: Black backgrounds */
-  --color-base-100: oklch(0.0 0.0 0);
+  --color-base-100: oklch(0 0 0);
   --color-base-200: oklch(0.13 0.005 145);
   --color-base-300: oklch(0.18 0.005 145);
   --color-base-content: oklch(0.85 0.02 145);
 
   /* Semantic colors */
-  --color-info: oklch(0.65 0.20 250);
+  --color-info: oklch(0.65 0.2 250);
   --color-info-content: oklch(0.98 0.01 250);
   --color-success: oklch(0.72 0.22 145);
   --color-success-content: oklch(0.98 0.01 145);
@@ -126,7 +126,7 @@
   color-scheme: dark;
 
   /* Primary: Orange */
-  --color-primary: oklch(0.70 0.20 55);
+  --color-primary: oklch(0.7 0.2 55);
   --color-primary-content: oklch(0.98 0.01 55);
   --color-secondary: oklch(0.55 0.15 55);
   --color-secondary-content: oklch(0.95 0.01 55);
@@ -134,17 +134,17 @@
   --color-accent-content: oklch(0.98 0.01 55);
 
   /* Neutral: Pure black scale */
-  --color-neutral: oklch(0.20 0.01 55);
+  --color-neutral: oklch(0.2 0.01 55);
   --color-neutral-content: oklch(0.85 0.02 55);
 
   /* Base: Black backgrounds */
-  --color-base-100: oklch(0.0 0.0 0);
+  --color-base-100: oklch(0 0 0);
   --color-base-200: oklch(0.13 0.005 55);
   --color-base-300: oklch(0.18 0.005 55);
   --color-base-content: oklch(0.85 0.02 55);
 
   /* Semantic colors */
-  --color-info: oklch(0.65 0.20 250);
+  --color-info: oklch(0.65 0.2 250);
   --color-info-content: oklch(0.98 0.01 250);
   --color-success: oklch(0.72 0.22 145);
   --color-success-content: oklch(0.98 0.01 145);
@@ -273,12 +273,16 @@
   /* JS-interop: scroll-show headers/footers (JS adds floating/visible) */
   .inline-header,
   .editor-inline-header {
-    transition: transform 0.2s ease, opacity 0.2s ease;
+    transition:
+      transform 0.2s ease,
+      opacity 0.2s ease;
   }
 
   .inline-footer,
   .editor-inline-footer {
-    transition: transform 0.2s ease, opacity 0.2s ease;
+    transition:
+      transform 0.2s ease,
+      opacity 0.2s ease;
   }
 
   .inline-header.floating,
@@ -364,8 +368,7 @@
 
   /* Global monospace font */
   html {
-    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
-      Consolas, "DejaVu Sans Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
     font-size: 13px;
     line-height: 1.5;
   }
@@ -409,8 +412,4 @@
   }
 }
 
-/* ============================================================================
-   ProseMirror Editor Styles (separate file)
-   ============================================================================ */
-
-@import "./editor-compat.css";
+/* ProseMirror editor styles are imported via @import "./editor-compat.css" at the top of this file */

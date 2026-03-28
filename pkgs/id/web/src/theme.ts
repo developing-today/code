@@ -48,8 +48,9 @@ export function setTheme(theme: Theme): void {
   document.documentElement.setAttribute("data-theme", theme);
 
   // Dispatch event for any listeners
+  // Cast needed: Datastar overrides Document.dispatchEvent to only accept DatastarSignalEvent
   const event = new CustomEvent("theme:change", { detail: { theme } });
-  document.dispatchEvent(event);
+  (document as unknown as EventTarget).dispatchEvent(event);
 
   console.log("[theme] Switched to", theme);
 }

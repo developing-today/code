@@ -121,13 +121,13 @@ test.describe("SPA Navigation", () => {
     await page.goto("/");
 
     // Track if a full navigation occurred
-    let fullNavigation = false;
+    let _fullNavigation = false;
     page.on("framenavigated", () => {
-      fullNavigation = true;
+      _fullNavigation = true;
     });
 
     // Reset after initial load
-    fullNavigation = false;
+    _fullNavigation = false;
 
     // Click settings link via data-nav
     await page.click("a[data-nav][href='/settings']");

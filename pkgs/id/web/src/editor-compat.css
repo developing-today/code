@@ -255,8 +255,7 @@ img.ProseMirror-separator {
   flex: 1;
   padding: 8px;
   outline: none;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
-    "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   font-size: 13px;
   line-height: 1.5;
   caret-color: transparent;
@@ -409,8 +408,7 @@ img.ProseMirror-separator {
   left: -1px;
   font-size: 9px;
   line-height: 1;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
-    "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   padding: 0;
   white-space: nowrap;
   user-select: none;
@@ -463,8 +461,7 @@ img.ProseMirror-separator {
   align-items: stretch;
   font-size: 9px;
   line-height: 1;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
-    "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   white-space: nowrap;
   user-select: none;
   z-index: 10;

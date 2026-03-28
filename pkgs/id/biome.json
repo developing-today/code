@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.2/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.7/schema.json",
   "files": {
     "includes": [
       "**/*.ts",
@@ -8,7 +8,8 @@
       "!**/dist",
       "!**/node_modules",
       "!**/test-results",
-      "!**/playwright-report"
+      "!**/playwright-report",
+      "!**/.iroh-meta"
     ]
   },
   "formatter": {
@@ -46,6 +47,9 @@
     }
   },
   "css": {
+    "parser": {
+      "tailwindDirectives": true
+    },
     "formatter": {
       "enabled": true,
       "indentStyle": "space",
@@ -60,5 +64,20 @@
       "quoteStyle": "double",
       "semicolons": "always"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["web/src/editor-compat.css"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noImportantStyles": "off"
+          },
+          "suspicious": {
+            "noDuplicateProperties": "off"
+          }
+        }
+      }
+    }
+  ]
 }

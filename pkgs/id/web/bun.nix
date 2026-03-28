@@ -517,10 +517,6 @@
     url = "https://registry.npmjs.org/happy-dom/-/happy-dom-17.6.3.tgz";
     hash = "sha512-UVIHeVhxmxedbWPCfgS55Jg2rDfwf2BCKeylcPSqazLz5w3Kri7Q4xdBJubsr/+VUzFLh0VjIvh13RaDA2/Xug==";
   };
-  "htmx.org@1.9.12" = fetchurl {
-    url = "https://registry.npmjs.org/htmx.org/-/htmx.org-1.9.12.tgz";
-    hash = "sha512-VZAohXyF7xPGS52IM8d1T1283y+X4D+Owf3qY1NZ9RuBypyu9l8cGsxUMAG5fEAb/DhT7rDoJ9Hpu5/HxFD3cw==";
-  };
   "is-extglob@2.1.1" = fetchurl {
     url = "https://registry.npmjs.org/is-extglob/-/is-extglob-2.1.1.tgz";
     hash = "sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ==";

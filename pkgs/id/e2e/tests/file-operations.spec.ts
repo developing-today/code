@@ -131,9 +131,7 @@ test.describe("Tag Operations", () => {
     await expect(page.locator("#new-file-form")).toBeVisible({ timeout: 10_000 });
 
     // Verify tag persistence via REST API after navigation
-    const resp = await page.request.get(
-      `${baseURL}/api/tags?subject=${encodeURIComponent(fileName)}`,
-    );
+    const resp = await page.request.get(`${baseURL}/api/tags?subject=${encodeURIComponent(fileName)}`);
     expect(resp.ok()).toBeTruthy();
     const tags = await resp.json();
     const statusTag = tags.find(

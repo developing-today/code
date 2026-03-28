@@ -312,7 +312,11 @@ async fn edit_handler(
     let content_result = get_file_bytes(&state.store, &hash).await;
 
     let is_partial = is_partial_request(&headers);
-    tracing::info!("[routes] edit_handler is_partial={}, name={}", is_partial, name);
+    tracing::info!(
+        "[routes] edit_handler is_partial={}, name={}",
+        is_partial,
+        name
+    );
 
     match content_result {
         Ok(bytes) => {
