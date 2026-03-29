@@ -746,6 +746,19 @@
           "namepath": "id::bun2nix",
           "shebang": false
         },
+        "bun2nix-e2e": {
+          "attributes": [{ "group": "deps" }],
+          "body": [["bun2nix --lock-file e2e/bun.lock --output-file e2e/bun.nix"]],
+          "dependencies": [],
+          "doc": "Regenerate e2e/bun.nix from e2e/bun.lock for offline nix builds",
+          "name": "bun2nix-e2e",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::bun2nix-e2e",
+          "shebang": false
+        },
         "cargo-check": {
           "attributes": [{ "group": "lint" }],
           "body": [["cargo check --all-targets --all-features"]],
@@ -1188,11 +1201,15 @@
         "lockfiles": {
           "attributes": [{ "group": "deps" }],
           "body": [],
-          "dependencies": [{ "arguments": [], "recipe": "bun2nix" }, { "arguments": [], "recipe": "just-recipes" }],
+          "dependencies": [
+            { "arguments": [], "recipe": "bun2nix" },
+            { "arguments": [], "recipe": "bun2nix-e2e" },
+            { "arguments": [], "recipe": "just-recipes" }
+          ],
           "doc": "Regenerate all lockfiles (bun2nix + just-recipes.json)",
           "name": "lockfiles",
           "parameters": [],
-          "priors": 2,
+          "priors": 3,
           "private": false,
           "quiet": false,
           "namepath": "id::lockfiles",
