@@ -18,7 +18,7 @@
     "true-mem@latest",
     "@knikolov/opencode-plugin-simple-memory@latest",
     "opencode-mem@latest",
-    "github:developing-today/opencode-auto-continue",
+    "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz",
   ],
   "enabled_providers": ["github-copilot"],
   "default_agent": "commander",
