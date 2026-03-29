@@ -102,6 +102,11 @@ export function initCollab(
   // causing the browser to fire onclose with code 1006 instead. This flag ensures
   // we don't spuriously reconnect after an intentional disconnect.
   let intentionalClose = false;
+  // App-level connection timeout — if the WS doesn't reach OPEN within this
+  // many ms, we close it and let onclose → scheduleReconnect handle retry.
+  // Browsers default to ~20s TCP timeout which is far too slow for UX.
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
+  const CONNECT_TIMEOUT_MS = 5000;
 
   // Track our clientID (set when editor initializes)
   let myClientID: number | null = null;
@@ -340,7 +345,25 @@ export function initCollab(
   };
 
   const setupWebSocket = (socket: WebSocket): void => {
+    // Start a connection timeout — if the WS doesn't reach OPEN within
+    // CONNECT_TIMEOUT_MS, abort it so onclose fires and triggers reconnect.
+    // Without this, browsers can hang in CONNECTING state for ~20s (Firefox)
+    // waiting for their internal TCP timeout, which is terrible for UX.
+    if (connectTimer) clearTimeout(connectTimer);
+    connectTimer = setTimeout(() => {
+      connectTimer = null;
+      if (socket.readyState === WebSocket.CONNECTING) {
+        console.warn(`[collab] Connection timeout after ${CONNECT_TIMEOUT_MS}ms, aborting`);
+        socket.close(); // triggers onclose → scheduleReconnect
+      }
+    }, CONNECT_TIMEOUT_MS);
+
     socket.onopen = (): void => {
+      // Connection succeeded — cancel the timeout
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
       reconnectAttempts = 0;
@@ -352,6 +375,11 @@ export function initCollab(
     };
 
     socket.onclose = (event): void => {
+      // Clean up any pending connection timeout
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       console.log("[collab] Disconnected:", event.code, event.reason);
       connected = false;
       // Only reconnect if this was NOT an intentional disconnect.
@@ -409,6 +437,10 @@ export function initCollab(
   const disconnect = (): void => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
+    }
+    if (connectTimer) {
+      clearTimeout(connectTimer);
+      connectTimer = null;
     }
     container.removeEventListener("editor:change", handleEditorChange);
     // Note: We intentionally don't call setConnectionState here because

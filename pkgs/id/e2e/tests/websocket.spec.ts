@@ -1,5 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
 
+// WebSocket tests need more headroom than basic tests because Firefox's WS
+// handshake can occasionally hang (~20s browser timeout + 1s reconnect delay).
+// 45s gives enough room for one reconnect cycle within a single test.
+test.setTimeout(45_000);
+
 /**
  * WebSocket & Collab E2E tests for the id web UI.
  *
@@ -97,7 +102,6 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
   // in Firefox — the WS can drop before the Init message arrives, delaying editor ready.
   // SPA navigation keeps JS loaded so WS connects after editor mounts, avoiding the race.
   await page.goto("/");
-  await page.waitForLoadState("networkidle");
   await page.click(`a[data-nav]:has-text("${name}")`);
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
 }

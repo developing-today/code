@@ -83,6 +83,10 @@ if [[ $VARIANT == "web" || $VARIANT == "assets" ]]; then
   fi
 fi
 
+# Track whether frontend was just rebuilt — if so, Rust needs rebuild too
+# (embedded assets changed) without re-scanning web/dist timestamps
+frontend_just_built="$needs_frontend"
+
 # Exit early for assets-only variant
 if [[ $VARIANT == "assets" ]]; then
   exit 0
@@ -99,6 +103,9 @@ if [[ ! -f $BINARY ]]; then
   needs_backend=true
 elif [[ -f $VARIANT_FILE ]] && [[ "$(cat "$VARIANT_FILE")" == "$OTHER_VARIANT" ]]; then
   echo "[rust] Last build was '$OTHER_VARIANT' variant, rebuilding as '$VARIANT'"
+  needs_backend=true
+elif [[ ${frontend_just_built:-false} == "true" ]]; then
+  echo "[rust] Frontend assets were just rebuilt, need to re-embed"
   needs_backend=true
 else
   binary_time=$(stat -c %Y "$BINARY" 2>/dev/null || echo 0)
@@ -118,6 +125,7 @@ else
     echo Cargo.toml
     echo Cargo.lock
     # For web variant, also check embedded assets (exclude .map files - not embedded)
+    # Only scan web/dist when frontend wasn't just rebuilt (that case is handled above)
     if [[ $VARIANT == "web" ]]; then
       find web/dist -type f ! -name '*.map' 2>/dev/null
     fi
@@ -132,6 +140,10 @@ if [[ $needs_backend == "true" ]]; then
   else
     cargo build $CARGO_FLAGS
   fi
+
+  # Touch binary so our timestamp check works even when cargo no-ops
+  # (cargo doesn't re-link when only embedded assets changed but no .rs files did)
+  touch "$BINARY"
 
   mkdir -p target
   echo "$VARIANT" >"$VARIANT_FILE"
