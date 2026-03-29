@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const distDir = "dist";
@@ -20,16 +20,29 @@ for (const file of readdirSync(distDir)) {
   }
 }
 
+// Find the newest JS bundle by mtime and remove stale ones
+const jsFiles: { name: string; mtime: number }[] = [];
 for (const file of readdirSync(distDir)) {
-  // Bun outputs "main.{base36hash}.js" (already hashed)
-  const jsMatch = file.match(/^(main)\.([a-z0-9]+)\.js$/);
+  if (file.match(/^main\.[a-z0-9]+\.js$/)) {
+    const { mtimeMs } = statSync(join(distDir, file));
+    jsFiles.push({ name: file, mtime: mtimeMs });
+  }
+}
+if (jsFiles.length > 0) {
+  jsFiles.sort((a, b) => b.mtime - a.mtime);
+  manifest["main.js"] = jsFiles[0].name;
+  // Remove stale JS bundles and their source maps
+  for (const stale of jsFiles.slice(1)) {
+    unlinkSync(join(distDir, stale.name));
+    try { unlinkSync(join(distDir, `${stale.name}.map`)); } catch {}
+  }
+}
 
+for (const file of readdirSync(distDir)) {
   // Tailwind CLI outputs "styles.css" (unhashed) — compute hash and rename
   const cssExact = file === "styles.css";
 
-  if (jsMatch) {
-    manifest["main.js"] = file;
-  } else if (cssExact) {
+  if (cssExact) {
     const content = readFileSync(join(distDir, file));
     const hash = createHash("sha256").update(content).digest("hex").slice(0, 8);
     const hashedName = `styles.${hash}.css`;

@@ -75,6 +75,9 @@
         bunDeps = bun2nixPkg.fetchBunDeps {
           bunNix = ./web/bun.nix;
         };
+        e2eBunDeps = bun2nixPkg.fetchBunDeps {
+          bunNix = ./e2e/bun.nix;
+        };
 
         # Helper to create a check that runs a just command
         mkCheck =
@@ -242,12 +245,89 @@
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+
+          # Playwright E2E tests (requires building the binary + browser binaries)
+          test-e2e = pkgs.stdenv.mkDerivation {
+            name = "id-test-e2e";
+            src = ./.;
+            inherit buildInputs;
+            nativeBuildInputs = nativeBuildInputs ++ [
+              bun2nixPkg.hook
+              # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
+              # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
+              # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
+              # Tracking: https://github.com/oven-sh/bun/pull/28610
+              pkgs.nodejs
+            ];
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+            inherit (opensslEnv) PKG_CONFIG_PATH;
+
+            # bun2nix hook: install web deps offline via pre-fetched cache
+            inherit bunDeps;
+            bunRoot = "web";
+            bunInstallFlags = [ "--linker=hoisted" ];
+            dontUseBunBuild = true;
+            dontUseBunCheck = true;
+            dontUseBunInstall = true;
+
+            buildPhase = ''
+              export HOME=$(mktemp -d)
+              export CARGO_HOME=$HOME/.cargo
+
+              # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+              export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+              # Configure cargo to use vendored dependencies (nix sandbox has no network)
+              cat >> .cargo/config.toml << EOF
+
+              [source.crates-io]
+              replace-with = "vendored-sources"
+
+              [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
+              git = "https://github.com/developing-today-forks/distributed-topic-tracker"
+              branch = "main"
+              replace-with = "vendored-sources"
+
+              [source.vendored-sources]
+              directory = "${cargoDeps}"
+              EOF
+
+              # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
+              (cd web && bun run build)
+
+              # Build the binary with web feature
+              cargo build --features web
+
+              # Install e2e deps from pre-fetched cache (separate from web deps)
+              E2E_CACHE_DIR=$(mktemp -d)
+              cp -r "${e2eBunDeps}"/share/bun-cache/. "$E2E_CACHE_DIR"
+              (cd e2e && BUN_INSTALL_CACHE_DIR="$E2E_CACHE_DIR" \
+                bun install --frozen-lockfile --linker=hoisted)
+
+              # Configure Playwright to use nix-provided browsers
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+
+              # Run Playwright E2E tests
+              # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
+              # Playwright's .esm.preflight virtual imports for TypeScript config loading.
+              # Tracking: https://github.com/oven-sh/bun/pull/28610
+              (cd e2e && node node_modules/@playwright/test/cli.js test)
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "test-e2e passed at $(date)" > $out/result.txt
+            '';
+          };
+
           nix-fmt-check = pkgs.stdenv.mkDerivation {
             name = "id-nix-fmt-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.nixfmt ];
             buildPhase = ''
-              find . -name '*.nix' -not -path './web/bun.nix' | xargs nixfmt --check
+              find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check
             '';
             installPhase = ''
               mkdir -p $out

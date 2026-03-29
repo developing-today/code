@@ -458,36 +458,36 @@ test.describe("Error Recovery", () => {
     await createFileWithUniqueContent(page, fileName, baseURL!);
     await waitForEditorReady(page);
 
-    // Close cleanly with code 1000 — should NOT trigger reconnect
-    // Note: code 1000 onclose only sets connected=false, does NOT call updateStatus()
+    // Disconnect cleanly via the collab API (sets intentionalClose flag + close(1000))
+    // We use disconnect() instead of raw ws.close(1000) because the WebSocket close
+    // handshake can fail/timeout, causing the browser to fire onclose with code 1006
+    // instead of the requested 1000 — which would spuriously trigger reconnect.
     await page.evaluate(() => {
-      const app = (window as unknown as { idApp: { collab: { ws: WebSocket } } }).idApp;
-      if (app?.collab?.ws) {
-        app.collab.ws.close(1000, "Clean close");
+      const app = (window as unknown as { idApp: { collab: { disconnect: () => void } } }).idApp;
+      if (app?.collab) {
+        app.collab.disconnect();
       }
     });
 
-    // Wait for the WebSocket close handshake to complete (async in Firefox)
-    await page.waitForFunction(
-      () => {
-        const app = (window as unknown as { idApp: { collab: { ws: WebSocket } } }).idApp;
-        const ws = app?.collab?.ws;
-        return !ws || ws.readyState === WebSocket.CLOSED;
-      },
-      { timeout: 5_000 },
-    );
+    // After disconnect(), currentWs is immediately set to null (no async wait needed)
+    await page.waitForTimeout(500);
 
-    // Wait 3s (longer than initial reconnect backoff of 1s) to verify no reconnect attempt
+    // collab.ws getter returns null after disconnect() sets currentWs = null
+    const wsIsNull = await page.evaluate(() => {
+      const app = (window as unknown as { idApp: { collab: { ws: WebSocket | null } | null } }).idApp;
+      return !app?.collab?.ws;
+    });
+    expect(wsIsNull).toBeTruthy();
+
+    // Wait longer than initial reconnect backoff (1s) to verify no reconnect attempt
     await page.waitForTimeout(3_000);
 
-    // Status should still show "connected" (code 1000 doesn't update status)
-    // The key test is that NO reconnect happened — the WS stays closed
-    const wsStillClosed = await page.evaluate(() => {
-      const app = (window as unknown as { idApp: { collab: { ws: WebSocket } } }).idApp;
-      const ws = app?.collab?.ws;
-      return !ws || ws.readyState === WebSocket.CLOSED;
+    // WS should still be null — no reconnect was scheduled
+    const wsStillNull = await page.evaluate(() => {
+      const app = (window as unknown as { idApp: { collab: { ws: WebSocket | null } | null } }).idApp;
+      return !app?.collab?.ws;
     });
-    expect(wsStillClosed).toBeTruthy();
+    expect(wsStillNull).toBeTruthy();
   });
 });
 
@@ -496,12 +496,8 @@ test.describe("Error Recovery", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Multi-User Collab", () => {
-  // Helper to get the base URL for collab tests (can't use page fixture's baseURL)
-  const getBaseURL = () => `http://localhost:${process.env.TEST_PORT || 4173}`;
-
   /** Set up two pages with the same file open in both editors */
-  async function setupCollabPair(browser: import("@playwright/test").Browser) {
-    const baseURL = getBaseURL();
+  async function setupCollabPair(browser: import("@playwright/test").Browser, baseURL: string) {
     const fileName = `collab-${Date.now()}.txt`;
     const context1 = await browser.newContext({ baseURL });
     const context2 = await browser.newContext({ baseURL });
@@ -526,8 +522,8 @@ test.describe("Multi-User Collab", () => {
     return { context1, context2, page1, page2, fileName };
   }
 
-  test("two tabs can open the same file simultaneously", async ({ browser }) => {
-    const { context1, context2, page1, page2 } = await setupCollabPair(browser);
+  test("two tabs can open the same file simultaneously", async ({ browser, baseURL }) => {
+    const { context1, context2, page1, page2 } = await setupCollabPair(browser, baseURL!);
 
     try {
       // Both editors should be connected
@@ -539,8 +535,8 @@ test.describe("Multi-User Collab", () => {
     }
   });
 
-  test("edits from one user appear in other user's editor", async ({ browser }) => {
-    const { context1, context2, page1, page2 } = await setupCollabPair(browser);
+  test("edits from one user appear in other user's editor", async ({ browser, baseURL }) => {
+    const { context1, context2, page1, page2 } = await setupCollabPair(browser, baseURL!);
 
     try {
       // User 1 types something (with delay to allow collab sync per character)
@@ -557,8 +553,8 @@ test.describe("Multi-User Collab", () => {
     }
   });
 
-  test("bidirectional editing works", async ({ browser }) => {
-    const { context1, context2, page1, page2 } = await setupCollabPair(browser);
+  test("bidirectional editing works", async ({ browser, baseURL }) => {
+    const { context1, context2, page1, page2 } = await setupCollabPair(browser, baseURL!);
 
     try {
       // User 1 types first (slow enough for collab to sync each step)

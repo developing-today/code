@@ -168,12 +168,17 @@ web-lint-fix:
 
 # Regenerate all lockfiles (bun2nix + just-recipes.json)
 [group('deps')]
-lockfiles: bun2nix just-recipes
+lockfiles: bun2nix bun2nix-e2e just-recipes
 
 # Regenerate web/bun.nix from web/bun.lock for offline nix builds
 [group('deps')]
 bun2nix:
     bun2nix --lock-file web/bun.lock --output-file web/bun.nix
+
+# Regenerate e2e/bun.nix from e2e/bun.lock for offline nix builds
+[group('deps')]
+bun2nix-e2e:
+    bun2nix --lock-file e2e/bun.lock --output-file e2e/bun.nix
 
 # Regenerate just-recipes.json from justfile for dynamic nix app generation
 [group('deps')]

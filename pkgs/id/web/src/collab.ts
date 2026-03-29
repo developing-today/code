@@ -97,6 +97,11 @@ export function initCollab(
   let documentMode: ContentMode | null = null;
   // Mutable reference to the current WebSocket — updated on reconnect
   let currentWs: WebSocket | null = null;
+  // Flag to track client-initiated disconnects. Calling ws.close(1000) doesn't
+  // guarantee onclose fires with code 1000 — the close handshake can fail/timeout,
+  // causing the browser to fire onclose with code 1006 instead. This flag ensures
+  // we don't spuriously reconnect after an intentional disconnect.
+  let intentionalClose = false;
 
   // Track our clientID (set when editor initializes)
   let myClientID: number | null = null;
@@ -349,9 +354,15 @@ export function initCollab(
     socket.onclose = (event): void => {
       console.log("[collab] Disconnected:", event.code, event.reason);
       connected = false;
-      // Only update connection state if we're not intentionally closing
-      // (the view may be destroyed if this is an intentional disconnect)
-      if (event.code !== 1000 && editorInstance) {
+      // Only reconnect if this was NOT an intentional disconnect.
+      // We check both the intentionalClose flag AND event.code because:
+      // - intentionalClose: covers client-initiated disconnect() calls where the
+      //   close handshake may fail/timeout, causing the browser to fire onclose
+      //   with code 1006 instead of the requested 1000
+      // - event.code === 1000: covers server-initiated clean closes
+      const wasIntentional = intentionalClose;
+      intentionalClose = false;
+      if (!wasIntentional && event.code !== 1000 && editorInstance) {
         setConnectionState(editorInstance.view, "disconnected");
         updateStatus("disconnected");
         scheduleReconnect();
@@ -396,7 +407,9 @@ export function initCollab(
     container.removeEventListener("editor:change", handleEditorChange);
     // Note: We intentionally don't call setConnectionState here because
     // the view will be destroyed immediately after this function returns.
-    // The close code 1000 tells the onclose handler not to try using the view.
+    // Set intentionalClose BEFORE close() so the onclose handler knows not to reconnect
+    // (the browser may fire onclose with code 1006 if the close handshake fails/times out)
+    intentionalClose = true;
     if (currentWs) {
       currentWs.close(1000, "Client disconnected");
     }
