@@ -56,20 +56,22 @@ const browserTypes: Record<string, BrowserType> = { chromium, firefox, webkit };
 // timeout-and-retry cycle that made these tests flaky in Firefox.
 // Chromium is unaffected by the bug but also benefits (no downside).
 // ---------------------------------------------------------------------------
-// In nix sandbox, Chromium needs extra flags (matching playwright.config.ts):
+// In nix sandbox or VM test, Chromium needs extra flags (matching playwright.config.ts):
 //   --no-sandbox, --disable-setuid-sandbox, --no-zygote,
 //   --disable-dev-shm-usage, --disable-gpu, --disable-software-rasterizer
 const IS_NIX_BUILD = !!process.env.NIX_BUILD_TOP;
-const CHROMIUM_NIX_ARGS = IS_NIX_BUILD
-  ? [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--no-zygote",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-software-rasterizer",
-    ]
-  : [];
+const IS_VM_TEST = !!process.env.PLAYWRIGHT_VM_TEST;
+const CHROMIUM_NIX_ARGS =
+  IS_NIX_BUILD || IS_VM_TEST
+    ? [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--no-zygote",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+      ]
+    : [];
 
 const test = base.extend<Record<string, never>, { browser: Browser }>({
   browser: [

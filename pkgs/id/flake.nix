@@ -79,6 +79,26 @@
           bunNix = ./e2e/bun.nix;
         };
 
+        # Pre-built e2e test directory with all dependencies installed.
+        # Used by the NixOS VM Playwright test (nixos-playwright-e2e) where
+        # the test runner needs to be a self-contained nix store path that
+        # gets copied into a writable directory inside the VM.
+        e2eTestRunner = pkgs.stdenv.mkDerivation {
+          name = "id-e2e-runner";
+          src = ./e2e;
+          nativeBuildInputs = [ pkgs.bun ];
+          buildPhase = ''
+            E2E_CACHE_DIR=$(mktemp -d)
+            cp -r "${e2eBunDeps}"/share/bun-cache/. "$E2E_CACHE_DIR"
+            BUN_INSTALL_CACHE_DIR="$E2E_CACHE_DIR" \
+              bun install --frozen-lockfile --linker=hoisted
+          '';
+          installPhase = ''
+            mkdir -p $out
+            cp -r . $out/
+          '';
+        };
+
         # Helper to create a check that runs a just command
         mkCheck =
           name: justCmd:
@@ -467,6 +487,13 @@
             );
             nixos-e2e = pkgs.testers.runNixOSTest (
               import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }
+            );
+            nixos-playwright-e2e = pkgs.testers.runNixOSTest (
+              import ./nix/tests/playwright-e2e-test.nix {
+                idPackage = self.packages.${system}.id-web;
+                inherit e2eTestRunner;
+                playwrightBrowsers = pkgs.playwright-driver.browsers;
+              }
             );
           }
         );
