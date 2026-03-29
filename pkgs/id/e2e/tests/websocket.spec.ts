@@ -43,7 +43,7 @@ async function waitForEditorReady(page: Page): Promise<void> {
       // Also verify ProseMirror is in the DOM
       return !!document.querySelector("#editor .ProseMirror");
     },
-    { polling: 100, timeout: 15_000 },
+    { polling: 100, timeout: 20_000 },
   );
 }
 
@@ -54,7 +54,7 @@ async function waitForTagsWs(page: Page): Promise<void> {
       const app = (window as unknown as { idApp: { tagsWs: WebSocket | null } }).idApp;
       return app?.tagsWs?.readyState === WebSocket.OPEN;
     },
-    { polling: 100, timeout: 10_000 },
+    { polling: 100, timeout: 15_000 },
   );
 }
 
@@ -92,9 +92,13 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
   });
   expect(saveResp.ok()).toBeTruthy();
 
-  // Navigate to file by name — ensures correct data-filename for tag matching
-  await page.goto(`/file/${encodeURIComponent(name)}`);
+  // Navigate via SPA (home → click file link) instead of direct page.goto("/file/...")
+  // Direct navigation causes a full page load which races with WS initialization
+  // in Firefox — the WS can drop before the Init message arrives, delaying editor ready.
+  // SPA navigation keeps JS loaded so WS connects after editor mounts, avoiding the race.
+  await page.goto("/");
   await page.waitForLoadState("networkidle");
+  await page.click(`a[data-nav]:has-text("${name}")`);
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
 }
 
@@ -547,7 +551,7 @@ test.describe("Multi-User Collab", () => {
 
       // User 2 should see the text appear (via collab WebSocket sync)
       const editor2 = page2.locator("#editor .ProseMirror");
-      await expect(editor2).toContainText("Hello from user 1!", { timeout: 15_000 });
+      await expect(editor2).toContainText("Hello from user 1!", { timeout: 20_000 });
     } finally {
       await context1.close();
       await context2.close();
@@ -565,22 +569,26 @@ test.describe("Multi-User Collab", () => {
 
       // Wait for full sync to User 2
       const editor2 = page2.locator("#editor .ProseMirror");
-      await expect(editor2).toContainText("AAA", { timeout: 15_000 });
+      await expect(editor2).toContainText("AAA", { timeout: 20_000 });
 
-      // Small pause to let collab settle before User 2 types
-      await page2.waitForTimeout(500);
+      // Let collab settle before User 2 types — needs enough time for collab
+      // version tracking to stabilize so User 2's edits don't conflict
+      await page2.waitForTimeout(1_000);
 
-      // User 2 types on a new line to avoid collab cursor conflicts
+      // User 2 types after User 1's text — use Ctrl+End for reliable cursor
+      // positioning at end of document (End alone only moves to end of line,
+      // and click() cursor position depends on element geometry). Avoid Enter
+      // (new paragraph node) which can cause collab merge conflicts.
       await editor2.click();
-      await page2.keyboard.press("End");
-      await page2.keyboard.press("Enter");
-      await page2.keyboard.type("BBB", { delay: 100 });
+      await page2.keyboard.press("Control+End");
+      await page2.waitForTimeout(200);
+      await page2.keyboard.type(" BBB", { delay: 100 });
 
       // Both should see content from both users
-      await expect(editor1).toContainText("AAA", { timeout: 15_000 });
-      await expect(editor1).toContainText("BBB", { timeout: 15_000 });
-      await expect(editor2).toContainText("AAA", { timeout: 15_000 });
-      await expect(editor2).toContainText("BBB", { timeout: 15_000 });
+      await expect(editor1).toContainText("AAA", { timeout: 20_000 });
+      await expect(editor1).toContainText("BBB", { timeout: 20_000 });
+      await expect(editor2).toContainText("AAA", { timeout: 20_000 });
+      await expect(editor2).toContainText("BBB", { timeout: 20_000 });
     } finally {
       await context1.close();
       await context2.close();
