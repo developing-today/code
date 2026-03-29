@@ -1,4 +1,71 @@
-import { expect, type Page, test } from "@playwright/test";
+import {
+  test as base,
+  expect,
+  type Browser,
+  type BrowserType,
+  type Page,
+  chromium,
+  firefox,
+  webkit,
+} from "@playwright/test";
+
+const browserTypes: Record<string, BrowserType> = { chromium, firefox, webkit };
+
+// ---------------------------------------------------------------------------
+// Fresh browser fixture — WHY this file overrides Playwright's default browser
+// ---------------------------------------------------------------------------
+//
+// PROBLEM:
+// This test file runs LAST in the Playwright suite (files run alphabetically:
+// basic → file-operations → navigation → websocket). By the time Playwright
+// reaches this file, Firefox's shared browser process has already executed
+// ~54 tests across 3 prior test files — all using the same browser process.
+//
+// After that many sequential page navigations in a single Firefox process,
+// the WebSocket upgrade path SILENTLY DEGRADES: the server receives the HTTP
+// upgrade request, but the WS handshake never completes at the protocol level.
+// Server logs confirm this — a 40+ second gap between the upgrade request
+// arriving and any subsequent activity, with no "Client connected" or
+// "Sending Init" log entries. The connection just hangs at the HTTP layer.
+//
+// Regular HTTP continues to work fine (which is why basic/file-ops/navigation
+// tests pass without issue), but the HTTP→WebSocket protocol switch machinery
+// in Firefox's networking stack breaks down after extended use.
+//
+// EVIDENCE:
+// - Server logs show the upgrade request arrives but WS handshake never
+//   completes (no "Client connected" after the initial connection log)
+// - The client's 2s connect timeout fires, triggering reconnect
+// - The RETRY always succeeds (same browser process, new socket)
+// - But the initial 2s timeout + 30s test timeout = test fails before
+//   the retry can complete
+// - Chromium is completely unaffected by this issue
+// - The problem ONLY occurs after ~40+ prior tests in the same process
+// - A fresh browser process connects instantly every time
+//
+// FIX:
+// Override Playwright's `browser` fixture to launch a FRESH browser instance
+// for this file. Since `browser` is worker-scoped (one per file when
+// workers=1), this gives all WebSocket tests a clean networking stack.
+// The built-in `context` and `page` fixtures automatically inherit from our
+// fresh browser, so NO test code changes are needed — tests keep using
+// `{ page }`, `{ browser, baseURL }`, etc. exactly as before.
+//
+// COST:
+// ~1-2s of browser launch overhead per worker, which eliminates the 30s+
+// timeout-and-retry cycle that made these tests flaky in Firefox.
+// Chromium is unaffected by the bug but also benefits (no downside).
+// ---------------------------------------------------------------------------
+const test = base.extend<{}, { browser: Browser }>({
+  browser: [
+    async ({ browserName }, use) => {
+      const browser = await browserTypes[browserName].launch();
+      await use(browser);
+      await browser.close();
+    },
+    { scope: "worker" },
+  ],
+});
 
 // WebSocket tests need more headroom than basic tests because Firefox's WS
 // handshake can occasionally hang (~20s browser timeout + reconnect delay).
@@ -118,22 +185,7 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
 
 test.describe("WebSocket Connection + Editor Ready", () => {
   test("editor status shows connected after WS handshake", async ({ page, baseURL }) => {
-    // This is the first WS test in the full suite (~test #129). In Firefox,
-    // the browser process accumulates state from ~128 prior tests that can
-    // cause the first WS upgrade request to hang in CONNECTING state. The 2s
-    // connect timeout + fast reconnect (250ms base backoff) in collab.ts
-    // recovers in ~2.5s per attempt, so default 20s waitForEditorReady
-    // easily handles 5+ reconnect cycles without needing test.slow().
-
     const fileName = `ws-connect-${Date.now()}.txt`;
-
-    // Warmup: force Firefox to make a real HTTP request before attempting WS.
-    // The API calls in createFileWithUniqueContent use Playwright's internal
-    // HTTP client (not Firefox), so the browser hasn't made any requests to
-    // this origin yet. Loading "/" first establishes TCP connections and may
-    // help prime Firefox's connection pool for the WS handshake.
-    await page.goto("/");
-    await page.waitForLoadState("domcontentloaded");
 
     // Use unique content to avoid shared collab document under Firefox load
     await createFileWithUniqueContent(page, fileName, baseURL!);
