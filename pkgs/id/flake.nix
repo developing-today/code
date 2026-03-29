@@ -79,6 +79,69 @@
           bunNix = ./e2e/bun.nix;
         };
 
+        # Pre-built integration test binary for NixOS VM tests.
+        # Compiles `cargo test --test cli_integration --no-run` in the sandbox,
+        # producing a standalone test binary that can be executed inside a VM
+        # where networking is available (serve_tests need bind/listen).
+        integrationTestRunner = pkgs.stdenv.mkDerivation {
+          name = "id-integration-test-runner";
+          src = ./.;
+          inherit buildInputs;
+          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          inherit (opensslEnv) OPENSSL_DIR;
+          inherit (opensslEnv) OPENSSL_LIB_DIR;
+          inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+          inherit (opensslEnv) PKG_CONFIG_PATH;
+
+          # bun2nix hook: install web deps offline via pre-fetched cache
+          inherit bunDeps;
+          bunRoot = "web";
+          bunInstallFlags = [ "--linker=hoisted" ];
+          dontUseBunBuild = true;
+          dontUseBunCheck = true;
+          dontUseBunInstall = true;
+
+          buildPhase = ''
+            export HOME=$(mktemp -d)
+            export CARGO_HOME=$HOME/.cargo
+
+            # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            # Configure cargo to use vendored dependencies (nix sandbox has no network)
+            cat >> .cargo/config.toml << EOF
+
+            [source.crates-io]
+            replace-with = "vendored-sources"
+
+            [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
+            git = "https://github.com/developing-today-forks/distributed-topic-tracker"
+            branch = "main"
+            replace-with = "vendored-sources"
+
+            [source.vendored-sources]
+            directory = "${cargoDeps}"
+            EOF
+
+            # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
+            (cd web && bun run build)
+
+            # Build the integration test binary (--no-run: compile only, don't execute)
+            # --all-features includes web feature for serve web port tests
+            cargo test --all-features --test cli_integration --no-run 2>&1
+          '';
+          installPhase = ''
+            mkdir -p $out/bin
+            # The test binary is in target/debug/deps/cli_integration-<hash>
+            TEST_BIN=$(find target/debug/deps -name 'cli_integration-*' -executable -type f | head -1)
+            if [ -z "$TEST_BIN" ]; then
+              echo "ERROR: Could not find cli_integration test binary"
+              exit 1
+            fi
+            cp "$TEST_BIN" $out/bin/cli_integration_test
+          '';
+        };
+
         # Pre-built e2e test directory with all dependencies installed.
         # Used by the NixOS VM Playwright test (nixos-playwright-e2e) where
         # the test runner needs to be a self-contained nix store path that
@@ -493,6 +556,12 @@
                 idPackage = self.packages.${system}.id-web;
                 inherit e2eTestRunner;
                 playwrightBrowsers = pkgs.playwright-driver.browsers;
+              }
+            );
+            nixos-integration = pkgs.testers.runNixOSTest (
+              import ./nix/tests/integration-test.nix {
+                idPackage = self.packages.${system}.id-web;
+                inherit integrationTestRunner;
               }
             );
           }
