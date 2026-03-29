@@ -1,9 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
 
 // WebSocket tests need more headroom than basic tests because Firefox's WS
-// handshake can occasionally hang (~20s browser timeout + 1s reconnect delay).
-// 45s gives enough room for one reconnect cycle within a single test.
-test.setTimeout(45_000);
+// handshake can occasionally hang (~20s browser timeout + reconnect delay).
+// 30s gives enough room for multiple reconnect cycles (2s timeout + 0.25–5s
+// backoff each) within a single test.
+test.setTimeout(30_000);
 
 /**
  * WebSocket & Collab E2E tests for the id web UI.
@@ -98,12 +99,12 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
   expect(saveResp.ok()).toBeTruthy();
 
   // Navigate directly to file — tests that direct URL access works (bookmarks,
-  // link sharing, page refresh). The 5s connect timeout in collab.ts handles
+  // link sharing, page refresh). The 2s connect timeout in collab.ts handles
   // any WS init race on full page load.
   //
   // NOTE: Do NOT use waitForLoadState("networkidle") here. The WS upgrade
   // request counts as a pending connection; if Firefox's handshake hangs,
-  // the 5s connect timeout fires → scheduleReconnect → new pending request,
+  // the 2s connect timeout fires → scheduleReconnect → new pending request,
   // resetting networkidle's 500ms idle counter. This loop eats 30s+ of test
   // budget before networkidle gives up. waitForEditorReady() handles all the
   // real waiting by polling JS/DOM state directly.
@@ -119,11 +120,10 @@ test.describe("WebSocket Connection + Editor Ready", () => {
   test("editor status shows connected after WS handshake", async ({ page, baseURL }) => {
     // This is the first WS test in the full suite (~test #129). In Firefox,
     // the browser process accumulates state from ~128 prior tests that can
-    // cause the first WS upgrade request to hang in CONNECTING state. The 5s
-    // connect timeout + reconnect mechanism in collab.ts handles recovery,
-    // but may need multiple cycles. Mark slow (3x timeout = 135s) to allow
-    // up to ~5 reconnect attempts without timing out.
-    test.slow();
+    // cause the first WS upgrade request to hang in CONNECTING state. The 2s
+    // connect timeout + fast reconnect (250ms base backoff) in collab.ts
+    // recovers in ~2.5s per attempt, so default 20s waitForEditorReady
+    // easily handles 5+ reconnect cycles without needing test.slow().
 
     const fileName = `ws-connect-${Date.now()}.txt`;
 
@@ -138,10 +138,8 @@ test.describe("WebSocket Connection + Editor Ready", () => {
     // Use unique content to avoid shared collab document under Firefox load
     await createFileWithUniqueContent(page, fileName, baseURL!);
 
-    // Wait for editor to be fully ready — generous timeout for first WS
-    // connection which may need multiple reconnect cycles in Firefox.
-    // 5s connect timeout + 1-8s backoff per attempt × up to 5 attempts ≈ 55s
-    await waitForEditorReady(page, 60_000);
+    // Wait for editor to be fully ready
+    await waitForEditorReady(page);
 
     // Verify WebSocket is connected
     const wsConnected = await page.evaluate(() => {

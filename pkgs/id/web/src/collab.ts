@@ -103,10 +103,10 @@ export function initCollab(
   // we don't spuriously reconnect after an intentional disconnect.
   let intentionalClose = false;
   // App-level connection timeout — if the WS doesn't reach OPEN within this
-  // many ms, we close it and let onclose → scheduleReconnect handle retry.
+  // many ms, we close it and schedule reconnect directly.
   // Browsers default to ~20s TCP timeout which is far too slow for UX.
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
-  const CONNECT_TIMEOUT_MS = 5000;
+  const CONNECT_TIMEOUT_MS = 2000;
 
   // Track our clientID (set when editor initializes)
   let myClientID: number | null = null;
@@ -142,8 +142,10 @@ export function initCollab(
     }
 
     // Exponential backoff with jitter: base * 2^attempt + random jitter
-    const baseDelay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
-    const jitter = Math.random() * Math.min(1000, baseDelay * 0.2);
+    // Fast initial retries (250ms) for localhost/LAN; caps at 5s for WAN.
+    // Combined with 2s connect timeout: worst-case cycle ≈ 2.25–7s per attempt.
+    const baseDelay = Math.min(250 * 2 ** reconnectAttempts, 5000);
+    const jitter = Math.random() * Math.min(250, baseDelay * 0.2);
     const delay = baseDelay + jitter;
     reconnectAttempts++;
 
@@ -405,16 +407,21 @@ export function initCollab(
         connectTimer = null;
       }
       console.log("[collab] Disconnected:", event.code, event.reason);
+      const wasConnected = connected;
       connected = false;
       // Only reconnect if this was NOT an intentional disconnect.
       // We check both the intentionalClose flag AND event.code because:
       // - intentionalClose: covers client-initiated disconnect() calls where the
       //   close handshake may fail/timeout, causing the browser to fire onclose
       //   with code 1006 instead of the requested 1000
-      // - event.code === 1000: covers server-initiated clean closes
+      // - event.code === 1000 AND wasConnected: covers server-initiated clean
+      //   closes when we had a working session. We MUST still reconnect if the
+      //   connection dropped before we were fully connected (e.g., immediately
+      //   after WS handshake but before Init message was processed), because
+      //   that indicates a transient failure, not an intentional close.
       const wasIntentional = intentionalClose;
       intentionalClose = false;
-      if (!wasIntentional && event.code !== 1000) {
+      if (!wasIntentional && !(event.code === 1000 && wasConnected)) {
         // Update cursor state if editor was already initialized
         if (editorInstance) {
           setConnectionState(editorInstance.view, "disconnected");
