@@ -97,12 +97,11 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
   });
   expect(saveResp.ok()).toBeTruthy();
 
-  // Navigate via SPA (home → click file link) instead of direct page.goto("/file/...")
-  // Direct navigation causes a full page load which races with WS initialization
-  // in Firefox — the WS can drop before the Init message arrives, delaying editor ready.
-  // SPA navigation keeps JS loaded so WS connects after editor mounts, avoiding the race.
-  await page.goto("/");
-  await page.click(`a[data-nav]:has-text("${name}")`);
+  // Navigate directly to file — tests that direct URL access works (bookmarks,
+  // link sharing, page refresh). The 5s connect timeout in collab.ts handles
+  // any WS init race on full page load.
+  await page.goto(`/file/${encodeURIComponent(name)}`);
+  await page.waitForLoadState("networkidle");
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
 }
 
