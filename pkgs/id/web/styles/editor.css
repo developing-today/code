@@ -13,7 +13,7 @@
   min-height: 100vh;
 }
 
-/* When main contains editor-page via HTMX, remove padding */
+/* When main contains editor-page remove padding */
 .main:has(.editor-page) {
   padding: 0;
 }

@@ -32,8 +32,9 @@ async function createFile(page: Page, name: string): Promise<void> {
 /** Wait for the collab WebSocket to connect and editor to be ready */
 async function waitForEditorReady(page: Page): Promise<void> {
   // Poll JS state directly: collab connected + ProseMirror mounted.
-  // This is more reliable than DOM text checks under Firefox load — the JS
-  // state is set before the DOM is painted, so we avoid race conditions.
+  // Uses explicit interval polling (not rAF) because Firefox throttles
+  // requestAnimationFrame during heavy JS initialization, causing missed
+  // state transitions. 100ms interval is fast enough for test responsiveness.
   await page.waitForFunction(
     () => {
       const app = (window as unknown as { idApp: { collab: { ws: WebSocket; editor: unknown } | null } }).idApp;
@@ -42,7 +43,7 @@ async function waitForEditorReady(page: Page): Promise<void> {
       // Also verify ProseMirror is in the DOM
       return !!document.querySelector("#editor .ProseMirror");
     },
-    { timeout: 30_000 },
+    { polling: 100, timeout: 15_000 },
   );
 }
 
@@ -53,7 +54,7 @@ async function waitForTagsWs(page: Page): Promise<void> {
       const app = (window as unknown as { idApp: { tagsWs: WebSocket | null } }).idApp;
       return app?.tagsWs?.readyState === WebSocket.OPEN;
     },
-    { timeout: 10_000 },
+    { polling: 100, timeout: 10_000 },
   );
 }
 

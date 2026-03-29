@@ -34,13 +34,18 @@ test.describe("Home Page", () => {
   test("has new file form", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#new-file-name")).toBeVisible();
-    await expect(page.locator("#new-file-form button[type='submit']")).toBeVisible();
+    await expect(
+      page.locator("#new-file-form button[type='submit']"),
+    ).toBeVisible();
   });
 
   test("has search input", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#file-search")).toBeVisible();
-    await expect(page.locator("#file-search")).toHaveAttribute("placeholder", /search/i);
+    await expect(page.locator("#file-search")).toHaveAttribute(
+      "placeholder",
+      /search/i,
+    );
   });
 
   test("has show deleted checkbox", async ({ page }) => {
@@ -56,7 +61,9 @@ test.describe("Home Page", () => {
   test("shows empty state when no files", async ({ page }) => {
     await page.goto("/");
     // Fresh ephemeral server has no files
-    await expect(page.locator(".text-muted", { hasText: /no files|empty/i })).toBeVisible();
+    await expect(
+      page.locator(".text-muted", { hasText: /no files|empty/i }),
+    ).toBeVisible();
   });
 });
 
@@ -72,12 +79,17 @@ test.describe("File Creation", () => {
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
 
-    // createFile() uses htmx.ajax + history.pushState — URL changes but
-    // <title> may not update since HTMX swaps #main innerHTML only.
+    // createFile() uses datastar — URL changes but
+    // <title> may not update since datastar swaps #main innerHTML only.
     // Wait for the editor container to appear instead of checking title.
     await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
-    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator("#editor-container")).toHaveAttribute("data-filename", /.+/);
+    await expect(page.locator("#editor-container")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.locator("#editor-container")).toHaveAttribute(
+      "data-filename",
+      /.+/,
+    );
   });
 
   test("editor has rename button", async ({ page }) => {

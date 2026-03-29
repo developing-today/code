@@ -4,8 +4,8 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright E2E test configuration for the id web UI.
  *
  * Locally: runs tests against both Chromium and Firefox.
- * In nix sandbox: runs Firefox only (Chromium has shared-lib issues in the
- * sandboxed build environment).
+ * In nix sandbox: runs both browsers, but Chromium needs --no-sandbox and
+ * --disable-dev-shm-usage flags (no /dev/shm or user namespaces in sandbox).
  *
  * In Nix environments, set PLAYWRIGHT_BROWSERS_PATH to the nix-provided
  * playwright-driver.browsers output (done automatically in nix-common.nix).
@@ -28,64 +28,48 @@ const FIREFOX_PORT = CHROMIUM_PORT + 1;
 const IS_NIX_BUILD = !!process.env.NIX_BUILD_TOP;
 const OFFLINE_FLAGS = IS_NIX_BUILD ? " --no-mdns --no-relay --no-gossip" : "";
 
-// Chromium fails in nix sandbox due to missing shared libraries / /dev/shm.
-// Firefox works reliably, so we skip Chromium in sandboxed nix builds.
-const projects = IS_NIX_BUILD
-  ? [
-      {
-        name: "firefox",
-        use: {
-          ...devices["Desktop Firefox"],
-          baseURL: `http://localhost:${FIREFOX_PORT}`,
-        },
-      },
-    ]
-  : [
-      {
-        name: "chromium",
-        use: {
-          ...devices["Desktop Chrome"],
-          baseURL: `http://localhost:${CHROMIUM_PORT}`,
-        },
-      },
-      {
-        name: "firefox",
-        use: {
-          ...devices["Desktop Firefox"],
-          baseURL: `http://localhost:${FIREFOX_PORT}`,
-        },
-      },
-    ];
+// Chromium in nix sandbox needs --no-sandbox (no user namespaces) and
+// --disable-dev-shm-usage (/dev/shm may be missing or too small).
+const CHROMIUM_NIX_ARGS = IS_NIX_BUILD ? ["--no-sandbox", "--disable-dev-shm-usage"] : [];
 
-const webServers = IS_NIX_BUILD
-  ? [
-      {
-        command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS}`,
-        port: FIREFOX_PORT,
-        reuseExistingServer: false,
-        timeout: 60_000,
-        stdout: "pipe" as const,
-        stderr: "pipe" as const,
-      },
-    ]
-  : [
-      {
-        command: `../target/debug/id serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS}`,
-        port: CHROMIUM_PORT,
-        reuseExistingServer: !process.env.CI,
-        timeout: 60_000,
-        stdout: "pipe" as const,
-        stderr: "pipe" as const,
-      },
-      {
-        command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS}`,
-        port: FIREFOX_PORT,
-        reuseExistingServer: !process.env.CI,
-        timeout: 60_000,
-        stdout: "pipe" as const,
-        stderr: "pipe" as const,
-      },
-    ];
+const projects = [
+  {
+    name: "chromium",
+    use: {
+      ...devices["Desktop Chrome"],
+      baseURL: `http://localhost:${CHROMIUM_PORT}`,
+      ...(CHROMIUM_NIX_ARGS.length > 0 && {
+        launchOptions: { args: CHROMIUM_NIX_ARGS },
+      }),
+    },
+  },
+  {
+    name: "firefox",
+    use: {
+      ...devices["Desktop Firefox"],
+      baseURL: `http://localhost:${FIREFOX_PORT}`,
+    },
+  },
+];
+
+const webServers = [
+  {
+    command: `../target/debug/id serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS}`,
+    port: CHROMIUM_PORT,
+    reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
+    timeout: 60_000,
+    stdout: "pipe" as const,
+    stderr: "pipe" as const,
+  },
+  {
+    command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS}`,
+    port: FIREFOX_PORT,
+    reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
+    timeout: 60_000,
+    stdout: "pipe" as const,
+    stderr: "pipe" as const,
+  },
+];
 
 export default defineConfig({
   testDir: "./tests",

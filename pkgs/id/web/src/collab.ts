@@ -362,9 +362,15 @@ export function initCollab(
       // - event.code === 1000: covers server-initiated clean closes
       const wasIntentional = intentionalClose;
       intentionalClose = false;
-      if (!wasIntentional && event.code !== 1000 && editorInstance) {
-        setConnectionState(editorInstance.view, "disconnected");
+      if (!wasIntentional && event.code !== 1000) {
+        // Update cursor state if editor was already initialized
+        if (editorInstance) {
+          setConnectionState(editorInstance.view, "disconnected");
+        }
         updateStatus("disconnected");
+        // Always schedule reconnect — even if editorInstance is null (WS closed
+        // before Init message arrived). Without this, the client would be stuck
+        // forever with no editor and no reconnect if the first connection drops.
         scheduleReconnect();
       }
     };
