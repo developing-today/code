@@ -19,6 +19,7 @@ excludes = [
   "e2e/test-results/**",
   "e2e/playwright-report/**",
   "web/bun.nix",
+  "e2e/bun.nix",
   "flake.lock",
 ]
 

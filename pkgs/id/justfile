@@ -57,7 +57,15 @@ treefmt *args:
     while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
     if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
     unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
-    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" {{args}}
+    # Translate --check to --fail-on-change (treefmt v2 renamed the flag)
+    translated_args=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) translated_args+=(--fail-on-change) ;;
+        *) translated_args+=("$arg") ;;
+      esac
+    done
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" "${translated_args[@]}"
 
 # Run treefmt without cache (finds nearest treefmt.toml from pwd)
 [group('format')]
@@ -68,7 +76,15 @@ treefmt-no-cache *args:
     while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
     if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
     unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
-    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" --no-cache {{args}}
+    # Translate --check to --fail-on-change (treefmt v2 renamed the flag)
+    translated_args=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) translated_args+=(--fail-on-change) ;;
+        *) translated_args+=("$arg") ;;
+      esac
+    done
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" --no-cache "${translated_args[@]}"
 alias treefmt-uncached := treefmt-no-cache
 
 # Strip trailing whitespace from all tracked text files

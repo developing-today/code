@@ -34,7 +34,9 @@ if (jsFiles.length > 0) {
   // Remove stale JS bundles and their source maps
   for (const stale of jsFiles.slice(1)) {
     unlinkSync(join(distDir, stale.name));
-    try { unlinkSync(join(distDir, `${stale.name}.map`)); } catch {}
+    try {
+      unlinkSync(join(distDir, `${stale.name}.map`));
+    } catch {}
   }
 }
 

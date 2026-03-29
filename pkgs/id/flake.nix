@@ -310,6 +310,12 @@
               export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
               export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
 
+              # Unset LD_LIBRARY_PATH before running Playwright — nix-patched Chromium
+              # has its own RPATH and the extra libstdc++ path (needed for @parcel/watcher
+              # during web build above) can interfere with Chromium's library resolution,
+              # causing it to hang on launch in the nix sandbox.
+              unset LD_LIBRARY_PATH
+
               # Run Playwright E2E tests
               # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
               # Playwright's .esm.preflight virtual imports for TypeScript config loading.
