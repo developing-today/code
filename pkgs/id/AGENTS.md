@@ -83,13 +83,13 @@ just release-lib    # Release build library only
 # Library variant (no web) - works standalone
 cargo build --no-default-features     # Debug build
 cargo build --release --no-default-features  # Release build
-nix build .#id-lib                    # Nix package
+nix build .#id-lib                    # Nix package (or: just build-nix-lib)
 
 # Web variant - requires web assets built first
 cd web && bun install && bun run build && cd ..  # Build web assets
 cargo build                             # Debug build with embedded web UI
 cargo build --release                   # Release build with embedded web UI
-nix build                               # Nix package (handles assets automatically)
+nix build                               # Nix package (or: just build-nix)
 ```
 
 **Build variant tracking:** The build system tracks variants in `target/.build-variant` to detect when rebuild is needed due to variant change.

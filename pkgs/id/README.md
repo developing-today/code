@@ -199,10 +199,10 @@ See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testin
 ### Nix
 
 ```bash
-nix build              # Build web variant
-nix build .#id-lib     # Build lib variant
-just test-nix          # Run all 27 CI checks in sandbox (aliases: test-full, check-nix)
-nix build .#checks.x86_64-linux.nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
+just build-nix                  # Build web variant (nix build)
+just build-nix-lib              # Build lib variant (nix build .#id-lib)
+just test-nix                   # All 27 CI checks in sandbox (nix flake check)
+just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 ```
 
 ## Project Structure

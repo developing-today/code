@@ -270,7 +270,7 @@ test-web-unit:
 test-web-typecheck:
     cd web && bun run typecheck
 
-# Run nix flake check (26 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
+# Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
 [group('test')]
 test-nix:
     nix flake check
@@ -651,22 +651,101 @@ update-nixpkgs-unstable-only:
     just update-input $inputs
 
 # =============================================================================
-# Nix (individual VM tests — prefer test-nix for full suite)
+# Nix Checks (individual flake checks — prefer test-nix for full suite)
 # =============================================================================
 
-# Run NixOS VM serve integration test (requires KVM, Linux only)
+# Run a single nix flake check by name (e.g. just check-one test-unit)
+[group('nix')]
+check-one NAME:
+    nix build -L .#checks.x86_64-linux.{{NAME}}
+
+# Build nix package — web variant (nix build)
+[group('nix')]
+build-nix:
+    nix build
+
+# Build nix package — lib variant, no web (nix build .#id-lib)
+[group('nix')]
+build-nix-lib:
+    nix build .#id-lib
+
+# --- NixOS VM tests (require KVM, Linux only) ---
+
+# Run NixOS VM serve integration test
 [group('nix')]
 test-nixos-serve:
     nix build -L .#checks.x86_64-linux.nixos-serve
 
-# Run NixOS VM E2E browser test (requires KVM, Linux only)
+# Run NixOS VM E2E browser test (Chromium --dump-dom)
 [group('nix')]
 test-nixos-e2e:
     nix build -L .#checks.x86_64-linux.nixos-e2e
 
+# Run NixOS 4-VM Playwright E2E test (both browsers, ~3 min)
+[group('nix')]
+test-nixos-playwright-e2e:
+    nix build -L .#checks.x86_64-linux.nixos-playwright-e2e
+
+# Run NixOS VM integration tests (serve_tests + full test binary)
+[group('nix')]
+test-nixos-integration:
+    nix build -L .#checks.x86_64-linux.nixos-integration
+
 # Run all NixOS VM tests (requires KVM, Linux only)
 [group('nix')]
-test-nixos: test-nixos-serve test-nixos-e2e
+test-nixos: test-nixos-serve test-nixos-e2e test-nixos-playwright-e2e test-nixos-integration
+
+# --- Sandbox format checks (individual) ---
+
+# Run Playwright E2E in nix sandbox (Firefox only — Chromium crashes in sandbox)
+[group('nix')]
+check-test-e2e:
+    nix build -L .#checks.x86_64-linux.test-e2e
+
+# Run nix-fmt-check in sandbox (nixfmt --check on all .nix files)
+[group('nix')]
+check-nix-fmt:
+    nix build -L .#checks.x86_64-linux.nix-fmt-check
+
+# Run treefmt in sandbox (all formatters via treefmt.toml)
+[group('nix')]
+check-treefmt:
+    nix build -L .#checks.x86_64-linux.treefmt-check
+
+# Run biome check in sandbox (JS/TS/CSS linting)
+[group('nix')]
+check-biome:
+    nix build -L .#checks.x86_64-linux.biome-check
+
+# Run rustfmt check in sandbox (Rust formatting)
+[group('nix')]
+check-rustfmt:
+    nix build -L .#checks.x86_64-linux.rustfmt-check
+
+# Run statix check in sandbox (Nix linting)
+[group('nix')]
+check-statix:
+    nix build -L .#checks.x86_64-linux.statix-check
+
+# Run shfmt check in sandbox (shell script formatting)
+[group('nix')]
+check-shfmt:
+    nix build -L .#checks.x86_64-linux.shfmt-check
+
+# Run shellcheck in sandbox (shell script linting)
+[group('nix')]
+check-shellcheck:
+    nix build -L .#checks.x86_64-linux.shellcheck-check
+
+# Run taplo check in sandbox (TOML formatting)
+[group('nix')]
+check-taplo:
+    nix build -L .#checks.x86_64-linux.taplo-check
+
+# Run prettier check in sandbox (Markdown/YAML/JSON formatting)
+[group('nix')]
+check-prettier:
+    nix build -L .#checks.x86_64-linux.prettier-check
 
 # =============================================================================
 # Combined Commands

@@ -19,19 +19,18 @@ just test-nix               # nix flake check (27 checks — runs everything)
 just ci                     # CI check suite (lint + test + build, no E2E)
 just check                  # fix + ci (auto-fix then verify)
 
-# ─── Nix (reproducible, sandboxed) ───────────────────────────────
-nix flake check             # All 27 checks in sandbox (includes test-e2e + NixOS VM tests + VM Playwright + VM integration)
-nix build .#checks.x86_64-linux.test-e2e     # Playwright E2E only (Firefox in sandbox)
-nix build .#checks.x86_64-linux.nixos-e2e    # NixOS VM DOM rendering test (Chromium --dump-dom, NOT Playwright)
-nix build .#checks.x86_64-linux.nixos-serve  # NixOS VM API/HTTP test (curl, no browser)
-nix build .#checks.x86_64-linux.nixos-integration     # NixOS VM: full integration tests including serve_tests
-nix build .#checks.x86_64-linux.nixos-playwright-e2e  # NixOS 4-VM Playwright (both browsers, ~3 min)
+# ─── Nix checks (reproducible, sandboxed) ─────────────────────────
+just test-nix                       # nix flake check — all 27 checks (includes everything)
+just check-test-e2e                 # Playwright E2E (Firefox in sandbox)
+just test-nixos-e2e                 # NixOS VM: Chromium --dump-dom DOM test (NOT Playwright)
+just test-nixos-serve               # NixOS VM: HTTP API test (curl, no browser)
+just test-nixos-integration         # NixOS VM: full integration tests including serve_tests
+just test-nixos-playwright-e2e      # NixOS 4-VM Playwright (both browsers, ~3 min)
+just check-one <name>               # Any individual check (nix build .#checks.x86_64-linux.<name>)
 
-# ─── Nix apps (outside sandbox, uses dev shell tools) ────────────
-nix run .#test-e2e          # Full E2E — both browsers (no sandbox)
-nix run .#test-e2e-chromium # Chromium only
-nix run .#test-e2e-firefox  # Firefox only
-nix run .#ci                # CI suite
+# ─── Without entering dev shell ───────────────────────────────────
+# Every just recipe is also available as: nix run .#<recipe-name>
+# Example: nix run .#test-e2e, nix run .#ci
 ```
 
 ---
@@ -70,8 +69,7 @@ The project has six distinct test layers, from fastest/narrowest to slowest/broa
 **How to run:**
 ```bash
 just test-unit              # cargo test --all-features --lib
-nix run .#test-unit         # Same via nix (no sandbox)
-nix build .#checks.x86_64-linux.test-unit  # Sandboxed
+just check-one test-unit    # Sandboxed (nix build .#checks...test-unit)
 ```
 
 **Runtime:** ~5–10 seconds.
@@ -91,14 +89,14 @@ nix build .#checks.x86_64-linux.test-unit  # Sandboxed
 - REPL: command dispatch, pipe handling, subshell expansion
 - Error handling: invalid arguments, missing files, permission errors
 
-**Network requirement:** The `serve_tests` subset requires network access (bind/listen on loopback). These are **skipped in the sandbox** `test-int` check but **run in the VM** via `nixos-integration` — so `nix flake check` covers everything.
+**Network requirement:** The `serve_tests` subset requires network access (bind/listen on loopback). These are **skipped in the sandbox** `test-int` check but **run in the VM** via `nixos-integration` — so `just test-nix` (`nix flake check`) covers everything.
 
 **How to run:**
 ```bash
 just test-int               # cargo test --all-features --test cli_integration (includes serve_tests)
 just test-int-sandbox       # Same but skip serve_tests (for sandbox environments)
-nix build .#checks.x86_64-linux.test-int  # Sandboxed (skips serve_tests)
-nix build .#checks.x86_64-linux.nixos-integration  # VM (runs serve_tests)
+just check-one test-int     # Sandboxed, skips serve_tests (nix build .#checks...test-int)
+just test-nixos-integration # VM: runs serve_tests (nix build .#checks...nixos-integration)
 ```
 
 **Runtime:** ~15–30 seconds.
@@ -121,7 +119,7 @@ nix build .#checks.x86_64-linux.nixos-integration  # VM (runs serve_tests)
 **How to run:**
 ```bash
 just test-web-unit          # cd web && bun test
-nix build .#checks.x86_64-linux.test-web-unit  # Sandboxed
+just check-one test-web-unit  # Sandboxed (nix build .#checks...test-web-unit)
 ```
 
 **Runtime:** ~2–3 seconds.
@@ -137,7 +135,7 @@ nix build .#checks.x86_64-linux.test-web-unit  # Sandboxed
 **How to run:**
 ```bash
 just test-web-typecheck     # cd web && bun run typecheck
-nix build .#checks.x86_64-linux.test-web-typecheck  # Sandboxed
+just check-one test-web-typecheck  # Sandboxed (nix build .#checks...test-web-typecheck)
 ```
 
 **Runtime:** ~3–5 seconds.
@@ -196,7 +194,7 @@ When `NIX_BUILD_TOP` is set (automatically by nix inside the build sandbox):
 - `webServers = [firefoxServer]` — only Firefox's server starts
 - Offline flags added: `--no-mdns --no-relay --no-gossip`
 
-When NOT set (dev machine, `nix run`, `just`):
+When NOT set (dev machine, `just test-e2e`):
 - Both Chromium and Firefox projects run
 - No offline flags
 
@@ -207,13 +205,8 @@ just test-e2e                   # Builds binary first, then runs Playwright
 just test-e2e-chromium          # Chromium only (73 tests)
 just test-e2e-firefox           # Firefox only (73 tests)
 
-# Nix app (both browsers, no sandbox, 146 tests)
-nix run .#test-e2e
-nix run .#test-e2e-chromium
-nix run .#test-e2e-firefox
-
 # Nix check (Firefox only, sandboxed, 78 tests)
-nix build .#checks.x86_64-linux.test-e2e
+just check-test-e2e                 # nix build .#checks.x86_64-linux.test-e2e
 ```
 
 **Runtime:** ~1.5 minutes (both browsers), ~45 seconds (single browser).
@@ -267,10 +260,10 @@ nix build .#checks.x86_64-linux.test-e2e
 ```bash
 just test-nixos-serve           # nix build -L .#checks.x86_64-linux.nixos-serve
 just test-nixos-e2e             # nix build -L .#checks.x86_64-linux.nixos-e2e
-just test-nixos                 # Both VM tests
+just test-nixos                 # All 4 VM tests (serve + e2e + playwright + integration)
 
 # Also runs as part of:
-nix flake check                 # All 27 checks including VM tests
+just test-nix                   # nix flake check — all 27 checks including VM tests
 ```
 
 **Runtime:** ~3–5 minutes each (VM boot + test execution).
@@ -332,10 +325,10 @@ nix flake check                 # All 27 checks including VM tests
 
 **How to run:**
 ```bash
-nix build .#checks.x86_64-linux.nixos-playwright-e2e --no-link
+just test-nixos-playwright-e2e  # nix build .#checks...nixos-playwright-e2e
 
 # Also runs as part of:
-nix flake check                 # All 27 checks
+just test-nix                   # nix flake check — all 27 checks
 ```
 
 **Runtime:** ~3 minutes (VM boot: ~15s, Chromium tests: ~58s, Firefox tests: ~94s).
@@ -348,13 +341,13 @@ nix flake check                 # All 27 checks
 
 Each cell shows: ✅ works / ⛔ skipped / ❌ crashes / — not applicable
 
-| Test Set | `just test-e2e` | `nix run .#test-e2e` | `nix build .#test-e2e` (sandbox) | `nix build .#nixos-e2e` (VM) | `nix build .#nixos-playwright-e2e` (4-VM) |
-|----------|-----------------|---------------------|--------------------------------|----------------------------|-----------------------------------------|
-| basic.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — | ✅ Chromium ✅ Firefox |
-| websocket.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — | ✅ Chromium ✅ Firefox |
-| nixos-e2e DOM dumps (~10) | — | — | — | ✅ Chromium (`--dump-dom`, not interactive) | — |
-| **Total per-browser** | **38 + 38 = 76** | **38 + 38 = 76** | **0 + 38 = 38** | **~10 Chromium** | **38 + 38 = 76** |
-| **Grand total** | **146** | **146** | **78** (Firefox) | **~10** | **146** (Chromium + Firefox) |
+| Test Set | `just test-e2e` | `just check-test-e2e` (sandbox) | `just test-nixos-e2e` (VM) | `just test-nixos-playwright-e2e` (4-VM) |
+|----------|-----------------|--------------------------------|----------------------------|-----------------------------------------|
+| basic.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — | ✅ Chromium ✅ Firefox |
+| websocket.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — | ✅ Chromium ✅ Firefox |
+| nixos-e2e DOM dumps (~10) | — | — | ✅ Chromium (`--dump-dom`, not interactive) | — |
+| **Total per-browser** | **38 + 38 = 76** | **0 + 38 = 38** | **~10 Chromium** | **38 + 38 = 76** |
+| **Grand total** | **146** | **78** (Firefox) | **~10** | **146** (Chromium + Firefox) |
 
 ### Why Chromium Fails in Nix Build Sandbox
 
@@ -367,13 +360,13 @@ No combination of flags (`--no-sandbox`, `--no-zygote`, `--disable-gpu`, `--disa
 
 **Firefox works** because it uses a simpler process model without Chrome's zygote/renderer architecture.
 
-**Mitigation:** The `nixos-playwright-e2e` 4-VM NixOS test runs the **full interactive Playwright suite** (both Chromium and Firefox, 146 tests) inside VMs where there are no kernel restrictions. The older `nixos-e2e` test validates Chromium DOM rendering via `--dump-dom` for fast smoke testing. For fastest development iteration, `just test-e2e` or `nix run .#test-e2e` run both browsers on the host. `just test-nix` (aliases: `test-full`, `check-nix`) runs `nix flake check` which includes all 27 checks — every test layer is covered.
+**Mitigation:** `just test-nixos-playwright-e2e` runs the **full interactive Playwright suite** (both Chromium and Firefox, 146 tests) inside 4 NixOS VMs where there are no kernel restrictions. `just test-nixos-e2e` validates Chromium DOM rendering via `--dump-dom` for fast smoke testing. For fastest development iteration, `just test-e2e` runs both browsers on the host. `just test-nix` (aliases: `test-full`, `check-nix`) runs `nix flake check` — all 27 checks, every test layer is covered.
 
 ---
 
 ## Lint & Format Checks
 
-These run as part of `just ci` and `nix flake check`:
+These run as part of `just ci` and `just test-nix` (`nix flake check`):
 
 | Check | Tool | What | just command | nix check name |
 |-------|------|------|-------------|----------------|
@@ -398,12 +391,11 @@ These run as part of `just ci` and `nix flake check`:
 |---------|-------------|------|----------|
 | `just check` | `fix` (auto-format) → `ci` | No | Yes (serve_tests) |
 | `just ci` | fmt checks → clippy → web-lint → test-sandbox → web-unit → typecheck → doc → build → release | No | No (sandbox-safe) |
-| `just test-nix` | `nix flake check` (27 checks — runs everything) | Yes (Firefox sandbox + VM both browsers) | No (sandboxed, serve_tests run in VM) |
-| `nix flake check` | All 27 checks (lint + test + E2E Firefox + NixOS VM tests + VM Playwright + VM integration) | Yes (Firefox Playwright + VM Chromium+Firefox Playwright + Chromium DOM dump) | No (sandboxed, serve_tests run in VM) |
+| `just test-nix` | `nix flake check` — all 27 checks (lint + test + E2E Firefox + NixOS VM tests + VM Playwright + VM integration — runs everything) | Yes (Firefox sandbox + VM both browsers + Chromium DOM dump) | No (sandboxed, serve_tests run in VM) |
 
 ---
 
-## nix flake check — Complete Check List
+## `just test-nix` / `nix flake check` — Complete Check List
 
 All 27 checks that run in the nix build sandbox:
 
@@ -441,21 +433,21 @@ All 27 checks that run in the nix build sandbox:
 
 ## Environment Comparison
 
-| Property | `just test-*` (dev shell) | `nix run .#test-*` (nix app) | `nix flake check` | `nix build .#checks.*` (sandbox) | `nix build .#nixos-*` (VM) | `nixos-playwright-e2e` (4-VM) |
-|----------|--------------------------|-----------------------------|--------------------|-------------------------------------|---------------------------|-------------------------------|
-| **Runs in** | Host OS | Host OS | Nix build sandbox | Nix build sandbox | NixOS VM (QEMU/KVM) | 4 NixOS VMs (QEMU/KVM) |
-| **Network** | Full | Full | None | None | Loopback only | Virtual network (inter-VM) |
-| **Filesystem** | Full | Full | Read-only source + tmp | Read-only source + tmp | Full VM filesystem | Full VM filesystem |
-| **Kernel features** | Full | Full | Restricted (namespaces, seccomp) | Restricted (namespaces, seccomp) | Full Linux kernel | Full Linux kernel |
-| **Chromium** | ✅ Works | ✅ Works | ❌ Hangs (kernel restrictions) | ❌ Hangs (kernel restrictions) | ✅ Works (`--dump-dom` only) | ✅ Works (full Playwright) |
-| **Firefox** | ✅ Works | ✅ Works | ✅ Works | ✅ Works | Not installed | ✅ Works (full Playwright) |
-| **What runs** | Individual test sets | Individual test sets | All 27 checks (lint + test + E2E + VM) | Individual check | NixOS VM test | Full Playwright suite (146 tests) |
-| **Binary source** | `cargo build` (local) | `cargo build` (local, via just) | `cargo build` (in sandbox) | `cargo build` (in sandbox) | `nix build .#id-web` (nix package) | `nix build .#id-web` (nix package) |
-| **Browser source** | System/nix dev shell | System/nix dev shell | `playwright-driver.browsers` (nix store) | `playwright-driver.browsers` (nix store) | `pkgs.chromium` (system package) | `playwright-driver.browsers` (nix store) |
-| **Server mode** | `--ephemeral` | `--ephemeral` | `--ephemeral --no-mdns --no-relay --no-gossip` | `--ephemeral --no-mdns --no-relay --no-gossip` | systemd `services.id` (ephemeral, no P2P) | systemd `services.id` (ephemeral, no P2P) |
-| **Reproducible** | No (depends on local state) | Mostly (nix shell tools) | Yes (hermetic) | Yes (hermetic) | Yes (hermetic VM) | Yes (hermetic VM) |
-| **RAM required** | ~500MB | ~500MB | ~2GB+ (cargo build + VM tests) | ~2GB (cargo build) | ~2GB per VM | ~4GB per client VM (×2), ~512MB per server VM (×2) |
-| **Runtime** | ~1.5 min (E2E) | ~1.5 min (E2E) | ~15+ min (all checks + VM tests) | ~10+ min (cargo build + E2E) | ~3–5 min per VM test | ~3 min (boot + 146 tests) |
+| Property | `just test-*` (dev shell) | `just test-nix` (`nix flake check`) | `just check-one *` (sandbox) | `just test-nixos-*` (VM) | `just test-nixos-playwright-e2e` (4-VM) |
+|----------|--------------------------|-------------------------------------|------------------------------|---------------------------|-------------------------------|
+| **Runs in** | Host OS | Nix build sandbox | Nix build sandbox | NixOS VM (QEMU/KVM) | 4 NixOS VMs (QEMU/KVM) |
+| **Network** | Full | None | None | Loopback only | Virtual network (inter-VM) |
+| **Filesystem** | Full | Read-only source + tmp | Read-only source + tmp | Full VM filesystem | Full VM filesystem |
+| **Kernel features** | Full | Restricted (namespaces, seccomp) | Restricted (namespaces, seccomp) | Full Linux kernel | Full Linux kernel |
+| **Chromium** | ✅ Works | ❌ Hangs (kernel restrictions) | ❌ Hangs (kernel restrictions) | ✅ Works (`--dump-dom` only) | ✅ Works (full Playwright) |
+| **Firefox** | ✅ Works | ✅ Works | ✅ Works | Not installed | ✅ Works (full Playwright) |
+| **What runs** | Individual test sets | All 27 checks (lint + test + E2E + VM) | Individual check | NixOS VM test | Full Playwright suite (146 tests) |
+| **Binary source** | `cargo build` (local) | `cargo build` (in sandbox) | `cargo build` (in sandbox) | `just build-nix` (nix package) | `just build-nix` (nix package) |
+| **Browser source** | System/nix dev shell | `playwright-driver.browsers` (nix store) | `playwright-driver.browsers` (nix store) | `pkgs.chromium` (system package) | `playwright-driver.browsers` (nix store) |
+| **Server mode** | `--ephemeral` | `--ephemeral --no-mdns --no-relay --no-gossip` | `--ephemeral --no-mdns --no-relay --no-gossip` | systemd `services.id` (ephemeral, no P2P) | systemd `services.id` (ephemeral, no P2P) |
+| **Reproducible** | Mostly (nix shell tools) | Yes (hermetic) | Yes (hermetic) | Yes (hermetic VM) | Yes (hermetic VM) |
+| **RAM required** | ~500MB | ~2GB+ (cargo build + VM tests) | ~2GB (cargo build) | ~2GB per VM | ~4GB per client VM (×2), ~512MB per server VM (×2) |
+| **Runtime** | ~1.5 min (E2E) | ~15+ min (all checks + VM tests) | ~10+ min (cargo build + E2E) | ~3–5 min per VM test | ~3 min (boot + 146 tests) |
 
 ---
 
@@ -467,45 +459,37 @@ All 27 checks that run in the nix build sandbox:
 - ~15+ min (cargo build + tests + VM boot)
 - **Use for:** Pre-release verification, maximum confidence, CI
 
-**`nix flake check`** (same as `just test-nix`):
-- Runs all 27 checks: lint, unit, integration (sandbox + VM), E2E (Firefox), NixOS VM tests, **VM Playwright (both browsers)**
-- Hermetic and reproducible — **no coverage gaps**, every test layer is included
-- Chromium Playwright runs inside VMs (not in sandbox); serve_tests run in VM (not in sandbox)
-- ~15+ min (cargo build + tests + VM boot)
-- **Use for:** CI, reproducible full-suite verification
-
-**`nix run .#test-e2e`** (app, outside sandbox):
-- Runs `just test-e2e` on the host
-- Both Chromium and Firefox
+**`just test-e2e`** (fast development, both browsers):
+- Both Chromium and Firefox on the host
 - Uses locally built binary (`cargo build`)
 - Full 146 tests
 - Fast if binary is already built
 - **Use for:** Full browser coverage during development
 
-**`nix build .#checks.x86_64-linux.test-e2e`** (check, in sandbox):
-- Builds everything from scratch inside nix sandbox
+**`just check-test-e2e`** (sandbox E2E, Firefox only):
+- Builds everything from scratch inside nix sandbox (`nix build .#checks...test-e2e`)
 - Firefox only (Chromium crashes in sandbox)
 - 78 tests
 - Slow (must compile Rust + build web assets)
 - **Use for:** CI/reproducible verification that E2E tests pass
 
-**`nix build .#checks.x86_64-linux.nixos-e2e`** (VM check):
-- Spins up full NixOS VM
+**`just test-nixos-e2e`** (VM DOM smoke test):
+- Spins up full NixOS VM (`nix build .#checks...nixos-e2e`)
 - Chromium `--dump-dom` only (~10 DOM structure assertions, **not interactive**)
 - No clicking, no typing, no WebSocket, no navigation — just renders page and checks HTML output
 - Tests the nix-packaged binary with systemd
 - **Use for:** Fast smoke test — validating the NixOS module, systemd integration, and that JS renders correct DOM
 
-**`nix build .#checks.x86_64-linux.nixos-playwright-e2e`** (4-VM Playwright):
-- Spins up 4 NixOS VMs: 2 servers + 2 clients
+**`just test-nixos-playwright-e2e`** (4-VM Playwright):
+- Spins up 4 NixOS VMs: 2 servers + 2 clients (`nix build .#checks...nixos-playwright-e2e`)
 - Full Playwright suite, both Chromium AND Firefox (146 interactive tests)
 - Exercises WebSocket collaboration, multi-user editing, all UI interactions
 - Hermetic and reproducible — no host dependencies
 - ~3 minutes (boot + all tests)
 - **Use for:** Complete E2E validation when you need hermetic, reproducible, both-browser Playwright coverage
 
-**`nix build .#checks.x86_64-linux.nixos-integration`** (VM integration):
-- Spins up 1 NixOS VM (2GB RAM, 2 cores)
+**`just test-nixos-integration`** (VM integration):
+- Spins up 1 NixOS VM (2GB RAM, 2 cores) (`nix build .#checks...nixos-integration`)
 - Runs the full `cli_integration` test binary including `serve_tests` (~83 tests)
 - Uses pre-built test binary (`integrationTestRunner`) with `ID_BINARY` env var pointing to nix-built `id`
 - `serve_tests` need real networking (bind/listen on ports) — the VM provides this
@@ -578,7 +562,7 @@ Tests here run in milliseconds. No I/O, no network, no filesystem. Examples: tag
 ### Command behavior (CLI I/O, end-to-end command flow)
 **Add to:** `tests/cli_integration.rs`
 
-Tests the full command pipeline: parse args → open store → execute → format output. If the test needs network (e.g., `serve` command), put it in the `serve_tests` module — it will be skipped in the nix sandbox `test-int` check but runs in the `nixos-integration` VM check, so `nix flake check` still covers it.
+Tests the full command pipeline: parse args → open store → execute → format output. If the test needs network (e.g., `serve` command), put it in the `serve_tests` module — it will be skipped in the nix sandbox `test-int` check but runs in the `nixos-integration` VM check, so `just test-nix` still covers it.
 
 ### Frontend logic (ProseMirror, cursor math, editor state)
 **Add to:** `web/src/*.test.ts` files (bun unit tests)
@@ -604,7 +588,7 @@ Tests that validate the nix-packaged binary works correctly as a systemd service
 When you add a new `e2e/tests/*.spec.ts` file, it is automatically picked up by all three Playwright execution modes (local, nix sandbox, VM). The VM Playwright test (`playwright-e2e-test.nix`) runs `--project=chromium` and `--project=firefox` without specifying individual test files, so new spec files are included automatically.
 
 ### Do I still need local E2E (`just test-e2e`)?
-**Yes, for development speed.** Local E2E runs in ~90 seconds with both browsers and gives immediate feedback. The VM Playwright test takes ~3 minutes and requires a full nix rebuild if any source changed. Use `just test-e2e` during development, rely on `nix flake check` (which includes VM Playwright) for pre-push verification.
+**Yes, for development speed.** Local E2E runs in ~90 seconds with both browsers and gives immediate feedback. The VM Playwright test takes ~3 minutes and requires a full nix rebuild if any source changed. Use `just test-e2e` during development, rely on `just test-nix` (which includes VM Playwright) for pre-push verification.
 
 ### What are the limits of each test set?
 
@@ -613,7 +597,7 @@ When you add a new `e2e/tests/*.spec.ts` file, it is automatically picked up by 
 | Rust unit tests | No I/O, no network, no browser |
 | Rust integration | No browser, no web UI. `serve_tests` subset needs network (skipped in sandbox, runs in `nixos-integration` VM) |
 | TS unit tests | No browser, no DOM, no WebSocket — pure logic only |
-| Playwright sandbox (`test-e2e` check) | **Firefox only** — Chromium crashes in nix build sandbox |
+| Playwright sandbox (`just check-test-e2e`) | **Firefox only** — Chromium crashes in nix build sandbox |
 | nixos-e2e | Chromium `--dump-dom` only — **no interactivity** (no clicks, typing, WS, navigation) |
 | nixos-serve | **No browser** at all — curl + JSON parsing only |
 | nixos-playwright-e2e | Full coverage, but **~3 min** and requires KVM. Playwright stdout only visible on failure |
@@ -638,13 +622,13 @@ When you add a new `e2e/tests/*.spec.ts` file, it is automatically picked up by 
 
 **Root cause:** Nix build sandbox's kernel-level namespace and seccomp restrictions are fundamentally incompatible with Chromium's multi-process architecture.
 
-**Fix:** `playwright.config.ts` conditionally runs Firefox-only when `IS_NIX_BUILD` is detected. Chromium coverage is provided by `nixos-e2e` (NixOS VM with real kernel access).
+**Fix:** `playwright.config.ts` conditionally runs Firefox-only when `IS_NIX_BUILD` is detected. Chromium coverage is provided by `just test-nixos-e2e` (NixOS VM with real kernel access).
 
-### nix flake check with -L flag
+### `just test-nix` / `nix flake check` with -L flag
 
-**Problem:** `nix flake check -L` (verbose logs) crashes with `fatal runtime error: assertion failed: output.write(&bytes).is_ok()` in PTY mode. This is a nix 2.28.5 bug.
+**Problem:** `just test-nix` (`nix flake check -L`, verbose logs) crashes with `fatal runtime error: assertion failed: output.write(&bytes).is_ok()` in PTY mode. This is a nix 2.28.5 bug.
 
-**Workaround:** Run `nix flake check` without `-L`. Build logs are still available via `nix log` after the fact. Individual checks can be run with `nix build .#checks.x86_64-linux.<name>` which does support `-L` (different code path).
+**Workaround:** Run `just test-nix` (which uses `nix flake check` without `-L`). Build logs are still available via `nix log` after the fact. Individual checks can be run with `just check-one <name>` (which does support `-L` internally).
 
 ### treefmt --check vs --fail-on-change
 
@@ -654,4 +638,4 @@ When you add a new `e2e/tests/*.spec.ts` file, it is automatically picked up by 
 
 ### git add requirement for nix flake commands
 
-**Important:** Nix flakes only see **staged** files. After editing any file, you must `git add .` before running `nix flake check` or `nix build .#checks.*`. Without staging, nix uses cached source and your changes won't be tested.
+**Important:** Nix flakes only see **staged** files. After editing any file, you must `git add .` before running `just test-nix`, `just check-one *`, or any nix-based just command. Without staging, nix uses cached source and your changes won't be tested.

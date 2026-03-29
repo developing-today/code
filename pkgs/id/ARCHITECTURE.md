@@ -233,7 +233,7 @@ The build script (`scripts/build.sh`) tracks the current variant in `target/.bui
 | E2E            | Playwright   | `just test-e2e`      | 146    |
 | NixOS VM (API) | curl/Python  | `just test-nixos-serve` | ~15 |
 | NixOS VM (DOM) | Chromium     | `just test-nixos-e2e`   | ~10 |
-| NixOS VM (Integration) | cargo test binary | `nix build .#checks.x86_64-linux.nixos-integration` | ~83 |
-| NixOS 4-VM (Playwright) | Playwright | `nix build .#checks.x86_64-linux.nixos-playwright-e2e` | 146 |
+| NixOS VM (Integration) | cargo test binary | `just test-nixos-integration` | ~83 |
+| NixOS 4-VM (Playwright) | Playwright | `just test-nixos-playwright-e2e` | 146 |
 
-`nix flake check` (27 checks) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.
+`just test-nix` (`nix flake check`, 27 checks) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.
