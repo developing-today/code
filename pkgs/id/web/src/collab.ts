@@ -346,15 +346,39 @@ export function initCollab(
 
   const setupWebSocket = (socket: WebSocket): void => {
     // Start a connection timeout — if the WS doesn't reach OPEN within
-    // CONNECT_TIMEOUT_MS, abort it so onclose fires and triggers reconnect.
+    // CONNECT_TIMEOUT_MS, abandon it and schedule reconnect directly.
     // Without this, browsers can hang in CONNECTING state for ~20s (Firefox)
     // waiting for their internal TCP timeout, which is terrible for UX.
+    //
+    // IMPORTANT: We detach all event handlers and schedule reconnect directly
+    // instead of relying on onclose, because:
+    // 1. socket.close() with no args uses code 1000, and our onclose handler
+    //    skips reconnect for code 1000 (treats it as intentional/clean close)
+    // 2. Firefox may not fire onclose at all when closing a CONNECTING socket
     if (connectTimer) clearTimeout(connectTimer);
     connectTimer = setTimeout(() => {
       connectTimer = null;
       if (socket.readyState === WebSocket.CONNECTING) {
         console.warn(`[collab] Connection timeout after ${CONNECT_TIMEOUT_MS}ms, aborting`);
-        socket.close(); // triggers onclose → scheduleReconnect
+        // Detach all handlers so if onopen/onclose eventually fire on the
+        // dead socket, they don't interfere with the new connection
+        socket.onopen = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        try {
+          socket.close();
+        } catch (_) {
+          /* ignore — may throw if already garbage collected */
+        }
+        // Update state directly — don't rely on onclose
+        connected = false;
+        currentWs = null;
+        if (editorInstance) {
+          setConnectionState(editorInstance.view, "disconnected");
+        }
+        updateStatus("disconnected");
+        scheduleReconnect();
       }
     }, CONNECT_TIMEOUT_MS);
 

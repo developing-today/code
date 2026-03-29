@@ -35,7 +35,7 @@ async function createFile(page: Page, name: string): Promise<void> {
 }
 
 /** Wait for the collab WebSocket to connect and editor to be ready */
-async function waitForEditorReady(page: Page): Promise<void> {
+async function waitForEditorReady(page: Page, timeout = 20_000): Promise<void> {
   // Poll JS state directly: collab connected + ProseMirror mounted.
   // Uses explicit interval polling (not rAF) because Firefox throttles
   // requestAnimationFrame during heavy JS initialization, causing missed
@@ -48,7 +48,7 @@ async function waitForEditorReady(page: Page): Promise<void> {
       // Also verify ProseMirror is in the DOM
       return !!document.querySelector("#editor .ProseMirror");
     },
-    { polling: 100, timeout: 20_000 },
+    { polling: 100, timeout },
   );
 }
 
@@ -100,8 +100,14 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
   // Navigate directly to file — tests that direct URL access works (bookmarks,
   // link sharing, page refresh). The 5s connect timeout in collab.ts handles
   // any WS init race on full page load.
+  //
+  // NOTE: Do NOT use waitForLoadState("networkidle") here. The WS upgrade
+  // request counts as a pending connection; if Firefox's handshake hangs,
+  // the 5s connect timeout fires → scheduleReconnect → new pending request,
+  // resetting networkidle's 500ms idle counter. This loop eats 30s+ of test
+  // budget before networkidle gives up. waitForEditorReady() handles all the
+  // real waiting by polling JS/DOM state directly.
   await page.goto(`/file/${encodeURIComponent(name)}`);
-  await page.waitForLoadState("networkidle");
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
 }
 
@@ -111,13 +117,31 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
 
 test.describe("WebSocket Connection + Editor Ready", () => {
   test("editor status shows connected after WS handshake", async ({ page, baseURL }) => {
+    // This is the first WS test in the full suite (~test #129). In Firefox,
+    // the browser process accumulates state from ~128 prior tests that can
+    // cause the first WS upgrade request to hang in CONNECTING state. The 5s
+    // connect timeout + reconnect mechanism in collab.ts handles recovery,
+    // but may need multiple cycles. Mark slow (3x timeout = 135s) to allow
+    // up to ~5 reconnect attempts without timing out.
+    test.slow();
+
     const fileName = `ws-connect-${Date.now()}.txt`;
+
+    // Warmup: force Firefox to make a real HTTP request before attempting WS.
+    // The API calls in createFileWithUniqueContent use Playwright's internal
+    // HTTP client (not Firefox), so the browser hasn't made any requests to
+    // this origin yet. Loading "/" first establishes TCP connections and may
+    // help prime Firefox's connection pool for the WS handshake.
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
 
     // Use unique content to avoid shared collab document under Firefox load
     await createFileWithUniqueContent(page, fileName, baseURL!);
 
-    // Wait for editor to be fully ready
-    await waitForEditorReady(page);
+    // Wait for editor to be fully ready — generous timeout for first WS
+    // connection which may need multiple reconnect cycles in Firefox.
+    // 5s connect timeout + 1-8s backoff per attempt × up to 5 attempts ≈ 55s
+    await waitForEditorReady(page, 60_000);
 
     // Verify WebSocket is connected
     const wsConnected = await page.evaluate(() => {
