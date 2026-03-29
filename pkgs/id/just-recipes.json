@@ -802,7 +802,7 @@
     },
     "check-nix": {
       "attributes": [{ "group": "nix" }],
-      "body": [["nix flake check -L"]],
+      "body": [["nix flake check"]],
       "dependencies": [],
       "doc": "Run nix flake check (full sandboxed CI, only x86_64-linux)",
       "name": "check-nix",
@@ -1624,6 +1624,24 @@
       "private": false,
       "quiet": false,
       "namepath": "test-e2e-report",
+      "shebang": false
+    },
+    "test-full": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["nix flake check"],
+        ["@echo \"✓ nix flake check passed (25 checks including Firefox E2E + NixOS VM tests)\""],
+        ["just test-e2e"],
+        ["@echo \"✓ All tests passed (nix flake check + Chromium & Firefox E2E)!\""]
+      ],
+      "dependencies": [],
+      "doc": "Run every test: nix flake check (25 sandboxed checks) + E2E with both browsers outside sandbox",
+      "name": "test-full",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-full",
       "shebang": false
     },
     "test-int": {

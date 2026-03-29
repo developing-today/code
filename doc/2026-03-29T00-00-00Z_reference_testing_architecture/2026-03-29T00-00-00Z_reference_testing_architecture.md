@@ -15,14 +15,15 @@ just test-e2e               # Playwright E2E — Chromium + Firefox (146 tests)
 just test-e2e-chromium      # Playwright E2E — Chromium only (73 tests)
 just test-e2e-firefox       # Playwright E2E — Firefox only (73 tests)
 just test-all               # Everything: Rust + TS + E2E
+just test-full              # Maximum coverage: nix flake check + E2E both browsers
 just ci                     # CI check suite (lint + test + build, no E2E)
 just check                  # fix + ci (auto-fix then verify)
 
 # ─── Nix (reproducible, sandboxed) ───────────────────────────────
 nix flake check             # All 25 checks in sandbox (includes test-e2e + NixOS VM tests)
-nix build .#checks.x86_64-linux.test-e2e     # E2E only (Firefox in sandbox)
-nix build .#checks.x86_64-linux.nixos-e2e    # NixOS VM browser test (Chromium)
-nix build .#checks.x86_64-linux.nixos-serve  # NixOS VM API/HTTP test
+nix build .#checks.x86_64-linux.test-e2e     # Playwright E2E only (Firefox in sandbox)
+nix build .#checks.x86_64-linux.nixos-e2e    # NixOS VM DOM rendering test (Chromium --dump-dom, NOT Playwright)
+nix build .#checks.x86_64-linux.nixos-serve  # NixOS VM API/HTTP test (curl, no browser)
 
 # ─── Nix apps (outside sandbox, uses dev shell tools) ────────────
 nix run .#test-e2e          # Full E2E — both browsers (no sandbox)
@@ -248,6 +249,8 @@ nix build .#checks.x86_64-linux.test-e2e
 
 **Where defined:** `nix/tests/e2e-test.nix`
 
+**Important: This is NOT Playwright.** It uses `chromium --headless --dump-dom` which renders the page (including JavaScript execution), then prints the final DOM as HTML to stdout. The test parses this HTML with string matching. There is **no interactivity** — no clicking, no typing, no WebSocket connections, no page navigation, no multi-tab scenarios.
+
 **What it tests (using `chromium --headless --dump-dom`):**
 1. Home page renders with "Files" heading and `new-file-name` form
 2. Created file appears in rendered file list
@@ -280,7 +283,7 @@ Each cell shows: ✅ works / ⛔ skipped / ❌ crashes / — not applicable
 |----------|-----------------|---------------------|--------------------------------|----------------------------|
 | basic.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — |
 | websocket.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — |
-| nixos-e2e DOM assertions (~10) | — | — | — | ✅ Chromium (--dump-dom) |
+| nixos-e2e DOM dumps (~10) | — | — | — | ✅ Chromium (`--dump-dom`, not interactive) |
 | **Total per-browser** | **38 + 38 = 76** | **38 + 38 = 76** | **0 + 38 = 38** | **~10 Chromium** |
 | **Grand total** | **146** | **146** | **78** (Firefox) | **~10** |
 
@@ -295,7 +298,7 @@ No combination of flags (`--no-sandbox`, `--no-zygote`, `--disable-gpu`, `--disa
 
 **Firefox works** because it uses a simpler process model without Chrome's zygote/renderer architecture.
 
-**Mitigation:** The `nixos-e2e` NixOS VM test covers Chromium rendering in a full Linux environment (systemd, real procfs, real namespaces). Interactive Chromium E2E testing happens via `just test-e2e` or `nix run .#test-e2e` outside the sandbox.
+**Mitigation:** The `nixos-e2e` NixOS VM test validates Chromium DOM rendering (via `--dump-dom`) in a full Linux environment, but does **not** run interactive Playwright tests. Full interactive Chromium E2E testing requires running outside the sandbox via `just test-e2e` or `nix run .#test-e2e`. The `just test-full` command covers both: `nix flake check` (sandboxed) then `just test-e2e` (both browsers, unsandboxed).
 
 ---
 
@@ -327,7 +330,8 @@ These run as part of `just ci` and `nix flake check`:
 | `just check` | `fix` (auto-format) → `ci` | No | Yes (serve_tests) |
 | `just ci` | fmt checks → clippy → web-lint → test-sandbox → web-unit → typecheck → doc → build → release | No | No (sandbox-safe) |
 | `just test-all` | `test` → `test-web-unit` → `test-web-typecheck` → `test-e2e` | Yes (both browsers) | Yes |
-| `nix flake check` | All 25 checks (lint + test + E2E + VM tests) | Yes (Firefox only) + VM (Chromium DOM) | No (sandboxed) |
+| `just test-full` | `nix flake check` → `just test-e2e` | Yes (all 25 nix checks + both browsers) | Yes (test-e2e needs network) |
+| `nix flake check` | All 25 checks (lint + test + E2E Firefox + NixOS VM DOM dumps) | Yes (Firefox Playwright + Chromium DOM dump) | No (sandboxed) |
 
 ---
 
@@ -360,31 +364,45 @@ All 25 checks that run in the nix build sandbox:
 | 21 | `shellcheck-check` | shellcheck lint on `.sh` files |
 | 22 | `taplo-check` | taplo validation on `.toml` files |
 | 23 | `nixos-serve` | NixOS VM: HTTP API test (~15 assertions) |
-| 24 | `nixos-e2e` | NixOS VM: Chromium `--dump-dom` rendering (~10 assertions) |
+| 24 | `nixos-e2e` | NixOS VM: Chromium `--dump-dom` DOM rendering (~10 assertions, **not Playwright**) |
 | 25 | — | (Nix evaluates the build derivations as implicit checks) |
 
 ---
 
 ## Environment Comparison
 
-| Property | `just test-*` (dev shell) | `nix run .#test-*` (nix app) | `nix build .#checks.*` (sandbox) | `nix build .#nixos-*` (VM) |
-|----------|--------------------------|-----------------------------|---------------------------------|---------------------------|
-| **Runs in** | Host OS | Host OS | Nix build sandbox | NixOS VM (QEMU/KVM) |
-| **Network** | Full | Full | None | Loopback only |
-| **Filesystem** | Full | Full | Read-only source + tmp | Full VM filesystem |
-| **Kernel features** | Full | Full | Restricted (namespaces, seccomp) | Full Linux kernel |
-| **Chromium** | ✅ Works | ✅ Works | ❌ Hangs (kernel restrictions) | ✅ Works (`--dump-dom`) |
-| **Firefox** | ✅ Works | ✅ Works | ✅ Works | Not installed |
-| **Binary source** | `cargo build` (local) | `cargo build` (local, via just) | `cargo build` (in sandbox) | `nix build .#id-web` (nix package) |
-| **Browser source** | System/nix dev shell | System/nix dev shell | `playwright-driver.browsers` (nix store) | `pkgs.chromium` (system package) |
-| **Server mode** | `--ephemeral` | `--ephemeral` | `--ephemeral --no-mdns --no-relay --no-gossip` | systemd `services.id` (ephemeral, no P2P) |
-| **Reproducible** | No (depends on local state) | Mostly (nix shell tools) | Yes (hermetic) | Yes (hermetic VM) |
-| **RAM required** | ~500MB | ~500MB | ~2GB (cargo build) | ~2GB per VM |
-| **Runtime** | ~1.5 min (E2E) | ~1.5 min (E2E) | ~10+ min (cargo build + E2E) | ~3–5 min per VM test |
+| Property | `just test-*` (dev shell) | `nix run .#test-*` (nix app) | `nix flake check` | `nix build .#checks.*` (sandbox) | `nix build .#nixos-*` (VM) |
+|----------|--------------------------|-----------------------------|--------------------|-------------------------------------|---------------------------|
+| **Runs in** | Host OS | Host OS | Nix build sandbox | Nix build sandbox | NixOS VM (QEMU/KVM) |
+| **Network** | Full | Full | None | None | Loopback only |
+| **Filesystem** | Full | Full | Read-only source + tmp | Read-only source + tmp | Full VM filesystem |
+| **Kernel features** | Full | Full | Restricted (namespaces, seccomp) | Restricted (namespaces, seccomp) | Full Linux kernel |
+| **Chromium** | ✅ Works | ✅ Works | ❌ Hangs (kernel restrictions) | ❌ Hangs (kernel restrictions) | ✅ Works (`--dump-dom` only) |
+| **Firefox** | ✅ Works | ✅ Works | ✅ Works | ✅ Works | Not installed |
+| **What runs** | Individual test sets | Individual test sets | All 25 checks (lint + test + E2E + VM) | Individual check | NixOS VM test |
+| **Binary source** | `cargo build` (local) | `cargo build` (local, via just) | `cargo build` (in sandbox) | `cargo build` (in sandbox) | `nix build .#id-web` (nix package) |
+| **Browser source** | System/nix dev shell | System/nix dev shell | `playwright-driver.browsers` (nix store) | `playwright-driver.browsers` (nix store) | `pkgs.chromium` (system package) |
+| **Server mode** | `--ephemeral` | `--ephemeral` | `--ephemeral --no-mdns --no-relay --no-gossip` | `--ephemeral --no-mdns --no-relay --no-gossip` | systemd `services.id` (ephemeral, no P2P) |
+| **Reproducible** | No (depends on local state) | Mostly (nix shell tools) | Yes (hermetic) | Yes (hermetic) | Yes (hermetic VM) |
+| **RAM required** | ~500MB | ~500MB | ~2GB+ (cargo build + VM tests) | ~2GB (cargo build) | ~2GB per VM |
+| **Runtime** | ~1.5 min (E2E) | ~1.5 min (E2E) | ~15+ min (all checks + VM tests) | ~10+ min (cargo build + E2E) | ~3–5 min per VM test |
 
 ---
 
 ## Nix App vs Nix Check — When to Use Which
+
+**`just test-full`** (maximum coverage):
+- Runs `nix flake check` (all 25 sandboxed checks) then `just test-e2e` (both browsers)
+- Fills the Chromium Playwright gap left by sandbox restrictions
+- Slowest option but covers everything
+- **Use for:** Pre-release verification, maximum confidence
+
+**`nix flake check`** (all sandboxed checks):
+- Runs all 25 checks: lint, unit, integration, E2E (Firefox), NixOS VM tests
+- Hermetic and reproducible
+- Does NOT run Chromium Playwright (crashes in sandbox)
+- ~15+ min (cargo build + tests + VM boot)
+- **Use for:** CI, reproducible full-suite verification
 
 **`nix run .#test-e2e`** (app, outside sandbox):
 - Runs `just test-e2e` on the host
@@ -403,9 +421,10 @@ All 25 checks that run in the nix build sandbox:
 
 **`nix build .#checks.x86_64-linux.nixos-e2e`** (VM check):
 - Spins up full NixOS VM
-- Chromium `--dump-dom` only (~10 DOM assertions)
+- Chromium `--dump-dom` only (~10 DOM structure assertions, **not interactive**)
+- No clicking, no typing, no WebSocket, no navigation — just renders page and checks HTML output
 - Tests the nix-packaged binary with systemd
-- **Use for:** Validating the NixOS module, systemd integration, and Chromium DOM rendering
+- **Use for:** Validating the NixOS module, systemd integration, and that JS renders correct DOM
 
 ---
 

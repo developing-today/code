@@ -268,6 +268,14 @@ test-web-typecheck:
 test-all: test test-web-unit test-web-typecheck test-e2e
     @echo "✓ All tests passed (including serve_tests + E2E)!"
 
+# Run every test: nix flake check (25 sandboxed checks) + E2E with both browsers outside sandbox
+[group('test')]
+test-full:
+    nix flake check
+    @echo "✓ nix flake check passed (25 checks including Firefox E2E + NixOS VM tests)"
+    just test-e2e
+    @echo "✓ All tests passed (nix flake check + Chromium & Firefox E2E)!"
+
 # =============================================================================
 # E2E Tests (Playwright - requires built web variant + network)
 # =============================================================================
@@ -646,7 +654,7 @@ update-nixpkgs-unstable-only:
 # Run nix flake check (full sandboxed CI, only x86_64-linux)
 [group('nix')]
 check-nix:
-    nix flake check -L
+    nix flake check
 
 # Run NixOS VM serve integration test (requires KVM, Linux only)
 [group('nix')]
