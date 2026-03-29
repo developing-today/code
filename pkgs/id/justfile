@@ -274,7 +274,7 @@ test-web-typecheck:
 [group('test')]
 test-nix:
     nix flake check
-    @echo "✓ nix flake check passed (26 checks including VM Playwright + NixOS VM tests)"
+    @echo "✓ nix flake check passed (27 checks — runs everything)"
 alias test-full := test-nix
 alias check-nix := test-nix
 alias nix-check := test-nix

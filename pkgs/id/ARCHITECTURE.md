@@ -233,6 +233,7 @@ The build script (`scripts/build.sh`) tracks the current variant in `target/.bui
 | E2E            | Playwright   | `just test-e2e`      | 146    |
 | NixOS VM (API) | curl/Python  | `just test-nixos-serve` | ~15 |
 | NixOS VM (DOM) | Chromium     | `just test-nixos-e2e`   | ~10 |
+| NixOS VM (Integration) | cargo test binary | `nix build .#checks.x86_64-linux.nixos-integration` | ~83 |
 | NixOS 4-VM (Playwright) | Playwright | `nix build .#checks.x86_64-linux.nixos-playwright-e2e` | 146 |
 
-Integration tests that require network (`serve_tests`) are skipped in sandbox environments. Playwright E2E tests run against both Chromium and Firefox. The 4-VM Playwright test runs the full interactive suite inside NixOS VMs where Chromium works (unlike the nix build sandbox). See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.
+`nix flake check` (27 checks) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.

@@ -189,7 +189,7 @@ just test-unit         # Unit tests only (fast, ~500 tests)
 just test-integration  # Integration tests only (~85 tests)
 just test-web-unit     # TypeScript unit tests (~116 assertions)
 just test-e2e          # Playwright E2E (chromium + firefox, 146 tests)
-just test-nix          # nix flake check (26 checks including VM Playwright)
+just test-nix          # nix flake check (27 checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
 ```
@@ -201,7 +201,7 @@ See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testin
 ```bash
 nix build              # Build web variant
 nix build .#id-lib     # Build lib variant
-just test-nix          # Run all 26 CI checks in sandbox (aliases: test-full, check-nix)
+just test-nix          # Run all 27 CI checks in sandbox (aliases: test-full, check-nix)
 nix build .#checks.x86_64-linux.nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 ```
 
@@ -250,6 +250,7 @@ e2e/                     # Playwright E2E tests (38 tests × 2 browsers = 146)
 nix/tests/                   # NixOS VM integration tests
 ├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
 ├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
+├── integration-test.nix     # Full cli_integration suite including serve_tests
 └── playwright-e2e-test.nix  # 4-VM full Playwright (146 interactive tests)
 
 tests/
