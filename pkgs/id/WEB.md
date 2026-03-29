@@ -104,9 +104,10 @@ src/web/
 └── markdown.rs           # Markdown rendering with syntax highlighting
 
 e2e/
-├── playwright.config.ts  # Chromium + Firefox config
+├── playwright.config.ts  # 3-mode config: local / nix sandbox / VM test
 └── tests/
-    └── basic.spec.ts     # 15 E2E tests
+    ├── basic.spec.ts     # 19 UI fundamental tests
+    └── websocket.spec.ts # 19 WS + collaboration tests
 ```
 
 ### Justfile Commands
@@ -261,15 +262,15 @@ just test-unit
 
 ### E2E Tests
 
-Playwright tests run against both Chromium and Firefox:
+Playwright tests run against both Chromium and Firefox (38 tests × 2 browsers = 146 total):
 
 ```bash
-just test-e2e          # Both browsers
-just test-e2e-chromium # Chromium only
-just test-e2e-firefox  # Firefox only
+just test-e2e          # Both browsers (146 tests)
+just test-e2e-chromium # Chromium only (73 tests)
+just test-e2e-firefox  # Firefox only (73 tests)
 ```
 
-Tests cover: home page elements, file creation, editor features, navigation, themes.
+Tests cover: home page elements, file creation, editor features, navigation, themes, WebSocket connection/disconnect/reconnect, collaborative editing, multi-user scenarios, tag live updates.
 
 Browser paths are configured via environment variables for nix compatibility:
 

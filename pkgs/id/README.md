@@ -183,22 +183,26 @@ This provides: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-
 ### Testing
 
 ```bash
-just test-unit         # Unit tests (fast)
-just test-int          # Integration tests
-just test              # All Rust tests
-just test-web-unit     # TypeScript unit tests
-just test-web          # All web tests
-just test-e2e          # Playwright E2E (chromium + firefox)
+just test              # All fast tests (Rust + TypeScript unit + typecheck)
+just test-rust         # Rust tests only (~500 unit + ~85 integration)
+just test-unit         # Unit tests only (fast, ~500 tests)
+just test-integration  # Integration tests only (~85 tests)
+just test-web-unit     # TypeScript unit tests (~116 assertions)
+just test-e2e          # Playwright E2E (chromium + firefox, 146 tests)
+just test-nix          # nix flake check (26 checks including VM Playwright)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
 ```
+
+See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference: 6 test layers, browser coverage matrix, environment comparison, and when to add tests where.
 
 ### Nix
 
 ```bash
 nix build              # Build web variant
 nix build .#id-lib     # Build lib variant
-nix flake check -L     # Run all CI checks in sandbox
+just test-nix          # Run all 26 CI checks in sandbox (aliases: test-full, check-nix)
+nix build .#checks.x86_64-linux.nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 ```
 
 ## Project Structure
@@ -238,12 +242,18 @@ web/                     # TypeScript frontend
 ├── styles/              # Terminal CSS, themes, editor styles
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests
-├── tests/basic.spec.ts  # 15 tests across chromium + firefox
-└── playwright.config.ts # Browser config with nix paths
+e2e/                     # Playwright E2E tests (38 tests × 2 browsers = 146)
+├── tests/basic.spec.ts      # 19 UI fundamental tests
+├── tests/websocket.spec.ts  # 19 WS + collaboration tests
+└── playwright.config.ts     # 3-mode config: local / nix sandbox / VM test
+
+nix/tests/                   # NixOS VM integration tests
+├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
+├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
+└── playwright-e2e-test.nix  # 4-VM full Playwright (146 interactive tests)
 
 tests/
-└── cli_integration.rs   # 64 integration tests
+└── cli_integration.rs   # ~85 integration tests
 ```
 
 ## Documentation

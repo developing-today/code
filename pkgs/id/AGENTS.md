@@ -106,8 +106,13 @@ just ci         # CI-safe read-only checks (no modifications)
 just fix        # Auto-fix formatting and lint issues
 just serve      # Serve with web UI [requires bun]
 just run        # Run CLI with arguments
+just test       # All fast tests (Rust + TypeScript unit + typecheck)
 just test-unit  # Unit tests only (fast)
+just test-e2e   # Playwright E2E (146 tests, chromium + firefox)
+just test-nix   # nix flake check (26 checks including VM Playwright)
 ```
+
+**Testing architecture:** See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete 6-layer testing reference, browser coverage matrix, environment comparison, and "when to add tests where" decision tree.
 
 Ask user before updating dependencies.
 
