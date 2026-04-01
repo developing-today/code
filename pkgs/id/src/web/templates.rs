@@ -66,7 +66,7 @@ pub fn render_page(title: &str, content: &str, scripts: &str, assets: &AssetUrls
         assets.main_js
     );
     html.push_str(scripts);
-    html.push_str("\n</head>\n<body>\n");
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
 
     // Main content - includes header and footer for SPA navigation
     html.push_str("    <main class=\"min-h-screen\" id=\"main\">\n");
@@ -87,11 +87,11 @@ pub fn render_main_page_wrapper(content: &str) -> String {
 
     // Header - same style as editor inline header
     html.push_str("    <header class=\"inline-header flex items-center justify-between px-3 py-1 bg-base-100 border-b border-base-300 text-xs\" id=\"main-header\">\n");
-    html.push_str("        <span class=\"font-bold\"><a href=\"/\" data-nav>id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
+    html.push_str("        <span class=\"font-bold\"><a href=\"/\" data-nav class=\"crt-bloom\">id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
     html.push_str("        <nav class=\"flex items-center gap-3\">\n");
-    html.push_str("            <a href=\"/\" data-nav>files</a>\n");
-    html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
-    html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
+    html.push_str("            <a href=\"/\" data-nav class=\"crt-glow\">files</a>\n");
+    html.push_str("            <a href=\"/peers\" data-nav class=\"crt-glow\">peers</a>\n");
+    html.push_str("            <a href=\"/settings\" data-nav class=\"crt-glow\">settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
@@ -537,7 +537,7 @@ pub fn render_editor_page(doc_id: &str, name: &str, content: &str, assets: &Asse
         "    <script type=\"module\" src=\"{}\"></script>\n",
         assets.main_js
     );
-    html.push_str("\n</head>\n<body>\n");
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
     html.push_str("    <main class=\"min-h-screen editor-main\" id=\"main\">\n");
     html.push_str(&editor_content);
     html.push_str("    </main>\n");
@@ -694,9 +694,9 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
     html.push_str("        <div class=\"flex gap-4\">\n");
-    html.push_str("            <button class=\"theme-btn\" data-theme=\"sneak\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn\" data-theme=\"arch\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn\" data-theme=\"mech\">Mech</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\">Sneak</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\">Arch</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\">Mech</button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
     html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");

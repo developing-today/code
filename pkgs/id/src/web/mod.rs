@@ -23,7 +23,7 @@
 //! │         │                                                    │
 //! │         ▼                                                    │
 //! │  Embedded Assets (rust-embed)                                │
-//! │  - CSS: terminal.css, themes.css, editor.css                 │
+//! │  - CSS: styles.css (TailwindCSS v4 + DaisyUI, single file)                 │
 //! │  - JS: main.js (bundled with Bun)                            │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
@@ -32,7 +32,7 @@
 //!
 //! - **File Browser**: SPA file listing with lazy loading
 //! - **Collaborative Editor**: Real-time editing with prosemirror-collab
-//! - **Themes**: Matrix (green-on-black) and Evangelion (orange/purple) themes
+//! - **Themes**: CRT terminal themes (sneak/blue, arch/green, mech/orange)
 //! - **Single Binary**: All assets embedded via rust-embed
 //!
 //! # Usage
