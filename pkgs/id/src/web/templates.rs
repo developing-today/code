@@ -679,7 +679,20 @@ pub fn render_settings(node_id: &str) -> String {
         "    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Settings</div>\n",
     );
     html.push_str("    <div class=\"p-4\">\n");
-    html.push_str("        <h3>Node Identity</h3>\n");
+
+    // Display Name section (client identity)
+    html.push_str("        <h3>Display Name</h3>\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Set a name that appears on your cursor when collaborating.</p>\n");
+    html.push_str("        <div class=\"flex gap-2 items-center\">\n");
+    html.push_str("            <input type=\"text\" id=\"display-name-input\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" maxlength=\"64\" />\n");
+    html.push_str("            <button id=\"display-name-save\" class=\"btn btn-sm btn-primary\">Save</button>\n");
+    html.push_str(
+        "            <span id=\"display-name-status\" class=\"text-muted text-sm\"></span>\n",
+    );
+    html.push_str("        </div>\n");
+    html.push_str("        \n");
+
+    html.push_str("        <h3 class=\"mt-8\">Node Identity</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Your node ID is used by peers to connect to you.</p>\n");
     let _ = write!(
         html,

@@ -85,6 +85,10 @@ mod msg {
 pub struct WsParams {
     /// Filename for content mode detection (optional).
     pub filename: Option<String>,
+    /// Identity token for client persistence (optional).
+    /// If provided and valid, the server will use the associated display name
+    /// for cursor labels instead of the default client-provided name.
+    pub token: Option<String>,
 }
 
 /// Load file content from the blob store.
@@ -528,8 +532,23 @@ pub async fn ws_collab_handler(
     Query(params): Query<WsParams>,
     State(state): State<super::AppState>,
 ) -> impl IntoResponse {
+    // Verify identity token (if provided) before upgrading the connection.
+    // This is a lightweight check — just verifies signature, no DB lookup.
+    let identity_client_id = params
+        .token
+        .as_deref()
+        .and_then(|t| state.identity.verify_token_client_id(t));
+
     ws.on_upgrade(move |socket| {
-        handle_collab_socket(socket, doc_id, params.filename, state.collab, state.store)
+        handle_collab_socket(
+            socket,
+            doc_id,
+            params.filename,
+            state.collab,
+            state.store,
+            state.identity,
+            identity_client_id,
+        )
     })
 }
 
@@ -540,14 +559,27 @@ async fn handle_collab_socket(
     filename: Option<String>,
     collab: Arc<CollabState>,
     store: iroh_blobs::api::Store,
+    identity_store: super::IdentityStore,
+    identity_client_id: Option<String>,
 ) {
     use std::sync::atomic::Ordering;
 
     tracing::info!(
-        "[collab] New connection for doc '{}' (page load), filename={:?}",
+        "[collab] New connection for doc '{}' (page load), filename={:?}, identity={:?}",
         doc_id,
-        filename
+        filename,
+        identity_client_id
     );
+
+    // Resolve the display name from the identity store (if authenticated).
+    // This name will override any client-provided cursor name.
+    let identity_display_name = if let Some(ref cid) = identity_client_id {
+        let name = identity_store.get_display_name(cid).await;
+        tracing::info!("[collab] Authenticated client: {} -> {:?}", cid, name);
+        Some(name)
+    } else {
+        None
+    };
 
     // Try to load file content from the store (doc_id is the hash)
     let initial_content = load_file_content(&store, &doc_id).await;
@@ -818,12 +850,19 @@ async fn handle_collab_socket(
                         .. // Ignore idle_secs from incoming messages
                     } => {
                         let client_id_str = client_id.to_string();
+
+                        // If this connection has a verified identity, override
+                        // the client-provided name with the server-known display name.
+                        // This prevents name spoofing and keeps names in sync
+                        // when updated via the settings API.
+                        let effective_name = identity_display_name.clone().or(name);
+
                         tracing::debug!(
                             "[collab] Received Cursor: client={}, head={}, anchor={}, name={:?}",
                             client_id,
                             head,
                             anchor,
-                            name
+                            effective_name
                         );
 
                         // Remember this client's ID for disconnect cleanup
@@ -836,7 +875,7 @@ async fn handle_collab_socket(
                                 CursorPosition {
                                     head,
                                     anchor,
-                                    name: name.clone(),
+                                    name: effective_name.clone(),
                                     last_update: Instant::now(),
                                     disconnected_at: None,
                                 },
@@ -848,7 +887,7 @@ async fn handle_collab_socket(
                             client_id,
                             head,
                             anchor,
-                            name,
+                            name: effective_name,
                             idle_secs: None,
                         };
                         let _ = doc.broadcast.send(cursor_msg);

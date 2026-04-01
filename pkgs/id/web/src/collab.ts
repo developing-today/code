@@ -35,10 +35,10 @@
  */
 
 import { Packr, Unpackr } from "msgpackr";
-import { receiveTransaction, getVersion } from "prosemirror-collab";
+import { getVersion, receiveTransaction } from "prosemirror-collab";
 import { Step } from "prosemirror-transform";
-import { getSendableSteps, initEditor, type EditorInstance, type ContentMode } from "./editor";
-import { updateCursor, setConnectionState, onInitReceived, markCursorFresh, removeCursor } from "./cursors";
+import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
+import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
 
 // Message type tags
 const MSG = {
@@ -74,6 +74,8 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param container - The DOM container for the editor
  * @param docId - Document identifier
  * @param filename - Optional filename for content mode detection
+ * @param token - Optional identity token for client persistence
+ * @param displayName - Optional display name to send with cursor messages
  * @param onStatus - Callback for status changes
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
@@ -83,11 +85,17 @@ export function initCollab(
   container: HTMLElement,
   docId: string,
   filename?: string,
+  token?: string | null,
+  displayName?: string | null,
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void,
 ): CollabConnection {
-  // Append filename as query parameter if provided
-  const finalWsUrl = filename ? `${wsUrl}?filename=${encodeURIComponent(filename)}` : wsUrl;
+  // Build query parameters for the WebSocket URL
+  const params = new URLSearchParams();
+  if (filename) params.set("filename", filename);
+  if (token) params.set("token", token);
+  const queryStr = params.toString();
+  const finalWsUrl = queryStr ? `${wsUrl}?${queryStr}` : wsUrl;
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,9 +170,11 @@ export function initCollab(
 
   // Send cursor position to server: [4, clientID, head, anchor, name?, idleSecs?]
   // Note: client never sends idleSecs, only server sends it on initial load
+  // When a displayName is provided, send it with cursor messages so the server
+  // can fall back to it for unauthenticated connections.
   const sendCursor = (head: number, anchor: number): void => {
     if (myClientID === null) return;
-    send(MSG.CURSOR, myClientID, head, anchor, null);
+    send(MSG.CURSOR, myClientID, head, anchor, displayName ?? null);
   };
 
   // Listen for editor changes and send steps: [1, version, steps, clientID]
