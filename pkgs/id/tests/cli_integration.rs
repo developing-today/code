@@ -881,8 +881,9 @@ mod show_peek_subcommand_help {
 mod serve_tests {
     use super::*;
     use std::fs;
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Read};
     use std::process::{Child, Command as StdCommand, Stdio};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     /// Lock file name (must match `SERVE_LOCK` in lib.rs)
@@ -892,11 +893,18 @@ mod serve_tests {
     const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Represents a running server process with cleanup on drop.
+    ///
+    /// Captures stderr in a background thread so that when the server exits
+    /// unexpectedly, the error output is available for diagnostics.
     struct ServerHandle {
         process: Child,
         work_dir: PathBuf,
         node_id: Option<String>,
         web_port: Option<u16>,
+        /// Captured stderr from the server process (populated by background thread).
+        stderr_buf: Arc<Mutex<String>>,
+        /// Handle to the stderr drain thread; joined on drop.
+        _stderr_thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl ServerHandle {
@@ -908,12 +916,28 @@ mod serve_tests {
             Self::spawn_with_args(work_dir, &[])
         }
 
-        /// Spawns a new ephemeral server with additional arguments.
+        /// Spawns a new ephemeral server with additional arguments (appended after serve flags).
         fn spawn_with_args(work_dir: &std::path::Path, extra_args: &[&str]) -> Self {
-            let mut args = vec!["serve", "--ephemeral", "--no-relay"];
+            Self::spawn_with_global_args(work_dir, &[], extra_args)
+        }
+
+        /// Spawns a new ephemeral server with global args (before `serve`) and extra args (after).
+        ///
+        /// Global args like `--data-dir` and `--new=` must appear before the `serve` subcommand.
+        /// The `work_dir` is used as `current_dir` for the child process.
+        /// The `lock_dir` (where we expect the lock file) is `work_dir` by default; callers
+        /// that pass `--data-dir` should set `work_dir` to the data dir so `lock_file_path()` works.
+        fn spawn_with_global_args(
+            work_dir: &std::path::Path,
+            global_args: &[&str],
+            extra_args: &[&str],
+        ) -> Self {
+            let mut args: Vec<&str> = Vec::new();
+            args.extend(global_args);
+            args.extend(["serve", "--ephemeral", "--no-relay"]);
             args.extend(extra_args);
 
-            let process = StdCommand::new(get_binary_path())
+            let mut process = StdCommand::new(get_binary_path())
                 .args(&args)
                 .current_dir(work_dir)
                 .stdout(Stdio::piped())
@@ -921,12 +945,44 @@ mod serve_tests {
                 .spawn()
                 .expect("Failed to spawn server");
 
+            // Drain stderr in a background thread so it doesn't block
+            // and is available for diagnostics if the process exits early.
+            let stderr_buf = Arc::new(Mutex::new(String::new()));
+            let buf_clone = Arc::clone(&stderr_buf);
+            let stderr = process.stderr.take().expect("stderr not captured");
+            let stderr_thread = std::thread::spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match reader.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&chunk[..n]);
+                            if let Ok(mut buf) = buf_clone.lock() {
+                                buf.push_str(&text);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
             Self {
                 process,
                 work_dir: work_dir.to_path_buf(),
                 node_id: None,
                 web_port: None,
+                stderr_buf,
+                _stderr_thread: Some(stderr_thread),
             }
+        }
+
+        /// Returns captured stderr (best-effort snapshot).
+        fn captured_stderr(&self) -> String {
+            self.stderr_buf
+                .lock()
+                .map(|b| b.clone())
+                .unwrap_or_default()
         }
 
         /// Waits for the server to become ready by checking for the lock file
@@ -939,20 +995,61 @@ mod serve_tests {
 
         /// Waits for the server to become ready, optionally waiting for web port too.
         ///
+        /// If the child process exits before the expected output is seen, the
+        /// panic message includes captured stderr for debugging.
+        ///
         /// Returns the node ID on success.
         fn wait_ready_with_web(&mut self, wait_for_web: bool) -> String {
             let start = Instant::now();
             let stdout = self.process.stdout.take().expect("stdout not captured");
             let reader = BufReader::new(stdout);
 
+            // Check if the process already exited before we start reading
+            if let Some(status) = self.process.try_wait().expect("try_wait failed") {
+                // Give the stderr thread a moment to drain
+                std::thread::sleep(Duration::from_millis(100));
+                panic!(
+                    "Server process exited immediately with {status}\n\
+                     --- stderr ---\n{}\n--- end stderr ---",
+                    self.captured_stderr()
+                );
+            }
+
             // Read lines until we see "node: <id>" which indicates server is ready
             for line in reader.lines() {
-                assert!(
-                    (start.elapsed() <= SERVER_STARTUP_TIMEOUT),
-                    "Server startup timed out after {SERVER_STARTUP_TIMEOUT:?}"
-                );
+                if start.elapsed() > SERVER_STARTUP_TIMEOUT {
+                    panic!(
+                        "Server startup timed out after {SERVER_STARTUP_TIMEOUT:?}\n\
+                         --- stderr ---\n{}\n--- end stderr ---",
+                        self.captured_stderr()
+                    );
+                }
 
-                let line = line.expect("Failed to read stdout line");
+                // Check if process exited between lines
+                if let Some(status) = self.process.try_wait().expect("try_wait failed") {
+                    // Drain remaining stdout lines we haven't processed yet
+                    std::thread::sleep(Duration::from_millis(100));
+                    panic!(
+                        "Server process exited with {status} before becoming ready\n\
+                         node_id so far: {:?}, web_port so far: {:?}\n\
+                         --- stderr ---\n{}\n--- end stderr ---",
+                        self.node_id,
+                        self.web_port,
+                        self.captured_stderr()
+                    );
+                }
+
+                let line = match line {
+                    Ok(l) => l,
+                    Err(e) => {
+                        std::thread::sleep(Duration::from_millis(100));
+                        panic!(
+                            "Failed to read stdout line: {e}\n\
+                             --- stderr ---\n{}\n--- end stderr ---",
+                            self.captured_stderr()
+                        );
+                    }
+                };
 
                 // Parse node ID
                 if let Some(id) = line.strip_prefix("node: ") {
@@ -984,7 +1081,19 @@ mod serve_tests {
                     return self.node_id.clone().unwrap();
                 }
             }
-            panic!("Server never printed node ID");
+
+            // stdout EOF reached without finding expected output
+            std::thread::sleep(Duration::from_millis(100));
+            let exit_status = self.process.try_wait().ok().flatten();
+            panic!(
+                "Server stdout closed without printing node ID\n\
+                 exit status: {exit_status:?}\n\
+                 node_id so far: {:?}, web_port so far: {:?}\n\
+                 --- stderr ---\n{}\n--- end stderr ---",
+                self.node_id,
+                self.web_port,
+                self.captured_stderr()
+            );
         }
 
         /// Returns the path to the lock file.
@@ -1303,8 +1412,8 @@ mod serve_tests {
     fn test_serve_web_random_port() {
         let tmp = TempDir::new().unwrap();
 
-        // Start server with --web 0 for random port
-        let mut server = ServerHandle::spawn_with_args(tmp.path(), &["--web", "0"]);
+        // Start server with --web --port 0 for random port
+        let mut server = ServerHandle::spawn_with_args(tmp.path(), &["--web", "--port", "0"]);
         // Use wait_ready_with_web(true) to wait for web port to be captured
         let node_id = server.wait_ready_with_web(true);
 
@@ -1333,9 +1442,9 @@ mod serve_tests {
         let tmp1 = TempDir::new().unwrap();
         let tmp2 = TempDir::new().unwrap();
 
-        // Start two servers with --web 0
-        let mut server1 = ServerHandle::spawn_with_args(tmp1.path(), &["--web", "0"]);
-        let mut server2 = ServerHandle::spawn_with_args(tmp2.path(), &["--web", "0"]);
+        // Start two servers with --web --port 0
+        let mut server1 = ServerHandle::spawn_with_args(tmp1.path(), &["--web", "--port", "0"]);
+        let mut server2 = ServerHandle::spawn_with_args(tmp2.path(), &["--web", "--port", "0"]);
 
         // Use wait_ready_with_web(true) to wait for web ports to be captured
         let _node_id1 = server1.wait_ready_with_web(true);
@@ -1352,6 +1461,385 @@ mod serve_tests {
 
         server1.stop();
         server2.stop();
+    }
+
+    // =========================================================================
+    // --data-dir tests
+    // =========================================================================
+
+    /// Test that --data-dir points all data files to the specified directory.
+    #[test]
+    fn test_serve_data_dir_basic() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("custom-data");
+
+        // Server should create the data dir and place lock file inside it
+        let data_dir_str = data_dir.to_str().unwrap();
+        let mut server =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", data_dir_str], &[]);
+        // wait_ready checks lock file at work_dir, but our lock file is in data_dir.
+        // We need to set work_dir to data_dir for lock_file_path() to work.
+        server.work_dir = data_dir.clone();
+        let node_id = server.wait_ready();
+
+        // Verify node ID format
+        assert_eq!(node_id.len(), 64, "Node ID should be 64 hex chars");
+
+        // Lock file should be in the data directory
+        let lock_path = data_dir.join(SERVE_LOCK);
+        assert!(lock_path.exists(), "Lock file should be in --data-dir");
+
+        // Key file should also be in the data directory
+        let key_path = data_dir.join(".iroh-key");
+        assert!(key_path.exists(), "Key file should be in --data-dir");
+
+        // Lock file should NOT be in the original working directory
+        let wrong_lock = tmp.path().join(SERVE_LOCK);
+        assert!(
+            !wrong_lock.exists(),
+            "Lock file should NOT be in the original cwd"
+        );
+
+        server.stop();
+    }
+
+    /// Test that --data-dir creates the directory if it doesn't exist (including parents).
+    #[test]
+    fn test_serve_data_dir_creates_missing() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("deep").join("nested").join("dir");
+        assert!(!data_dir.exists(), "Directory should not exist yet");
+
+        let data_dir_str = data_dir.to_str().unwrap();
+        let mut server =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", data_dir_str], &[]);
+        server.work_dir = data_dir.clone();
+        let _node_id = server.wait_ready();
+
+        assert!(data_dir.exists(), "Data directory should be created");
+        assert!(
+            data_dir.join(SERVE_LOCK).exists(),
+            "Lock file should be in created directory"
+        );
+
+        server.stop();
+    }
+
+    /// Test that two servers with different --data-dir paths are fully isolated.
+    #[test]
+    fn test_serve_data_dir_isolation() {
+        let tmp = TempDir::new().unwrap();
+        let dir1 = tmp.path().join("node1");
+        let dir2 = tmp.path().join("node2");
+
+        let dir1_str = dir1.to_str().unwrap();
+        let dir2_str = dir2.to_str().unwrap();
+
+        let mut server1 =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", dir1_str], &[]);
+        server1.work_dir = dir1.clone();
+
+        let mut server2 =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", dir2_str], &[]);
+        server2.work_dir = dir2.clone();
+
+        let node_id1 = server1.wait_ready();
+        let node_id2 = server2.wait_ready();
+
+        // Different directories → different keys → different node IDs
+        assert_ne!(
+            node_id1, node_id2,
+            "Servers with different --data-dir should have different node IDs"
+        );
+
+        // Each has its own lock file
+        assert!(dir1.join(SERVE_LOCK).exists());
+        assert!(dir2.join(SERVE_LOCK).exists());
+
+        // Lock files reference different PIDs
+        let lock1 = fs::read_to_string(dir1.join(SERVE_LOCK)).unwrap();
+        let lock2 = fs::read_to_string(dir2.join(SERVE_LOCK)).unwrap();
+        let json1: serde_json::Value = serde_json::from_str(&lock1).unwrap();
+        let json2: serde_json::Value = serde_json::from_str(&lock2).unwrap();
+        assert_ne!(
+            json1["pid"], json2["pid"],
+            "Isolated servers should have different PIDs"
+        );
+
+        server1.stop();
+        server2.stop();
+    }
+
+    // =========================================================================
+    // --new flag tests
+    // =========================================================================
+
+    /// Test that --new= (no name) auto-generates an 8-char hex directory under .iroh/.
+    #[test]
+    fn test_new_flag_auto_name() {
+        let tmp = TempDir::new().unwrap();
+
+        // Run `id --new= id` — the `id` subcommand just prints the node ID and exits.
+        // The --new= flag (with empty value) triggers auto-name generation.
+        let output = run_cmd(&["--new=", "id"], tmp.path());
+
+        // The command should succeed
+        assert!(
+            output.status.success(),
+            "id --new= id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // .iroh/ directory should now exist with exactly one subdirectory
+        let iroh_dir = tmp.path().join(".iroh");
+        assert!(iroh_dir.exists(), ".iroh/ directory should be created");
+
+        let entries: Vec<_> = fs::read_dir(&iroh_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Should have exactly one auto-generated subdirectory"
+        );
+
+        // The subdirectory name should be 8 hex chars
+        let name = entries[0].file_name().to_string_lossy().to_string();
+        assert_eq!(name.len(), 8, "Auto-generated name should be 8 chars");
+        assert!(
+            name.chars().all(|c| c.is_ascii_hexdigit()),
+            "Auto-generated name should be hex: {name}"
+        );
+
+        // Key file should exist inside the instance directory
+        let instance_dir = iroh_dir.join(&name);
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be created in instance directory"
+        );
+    }
+
+    /// Test that --new=NAME creates .iroh/NAME/ with the given name.
+    #[test]
+    fn test_new_flag_named() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new=test-instance", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new=test-instance id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let instance_dir = tmp.path().join(".iroh").join("test-instance");
+        assert!(
+            instance_dir.exists(),
+            ".iroh/test-instance/ should be created"
+        );
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be in named instance directory"
+        );
+    }
+
+    /// Test that --new=NAME rejects a name that already has an existing directory.
+    #[test]
+    fn test_new_flag_duplicate_rejects() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create the instance directory manually
+        let dup_dir = tmp.path().join(".iroh").join("dup");
+        fs::create_dir_all(&dup_dir).unwrap();
+
+        let output = run_cmd(&["--new=dup", "serve"], tmp.path());
+        assert!(
+            !output.status.success(),
+            "id --new=dup should fail when directory already exists"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("already exists"),
+            "Error should mention 'already exists': {stderr}"
+        );
+    }
+
+    /// Test that --new rejects path-like names (containing / or ..).
+    #[test]
+    fn test_new_flag_invalid_name() {
+        let tmp = TempDir::new().unwrap();
+
+        // Test with path separator
+        let output = run_cmd(&["--new=../escape", "serve"], tmp.path());
+        assert!(!output.status.success(), "id --new=../escape should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("simple identifier"),
+            "Error should mention 'simple identifier': {stderr}"
+        );
+
+        // Test with forward slash
+        let output2 = run_cmd(&["--new=sub/dir", "serve"], tmp.path());
+        assert!(!output2.status.success(), "id --new=sub/dir should fail");
+        let stderr2 = String::from_utf8_lossy(&output2.stderr);
+        assert!(
+            stderr2.contains("simple identifier"),
+            "Error should mention 'simple identifier': {stderr2}"
+        );
+    }
+
+    /// Test that --new and --data-dir conflict (clap rejects the combination).
+    #[test]
+    fn test_new_and_data_dir_conflict() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(
+            &[
+                "--new=foo",
+                "--data-dir",
+                tmp.path().to_str().unwrap(),
+                "serve",
+            ],
+            tmp.path(),
+        );
+        assert!(
+            !output.status.success(),
+            "--new and --data-dir should conflict"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clap produces an error message about conflicting arguments
+        assert!(
+            stderr.contains("cannot be used with") || stderr.contains("conflict"),
+            "Error should mention argument conflict: {stderr}"
+        );
+    }
+
+    // =========================================================================
+    // JSON lock file tests
+    // =========================================================================
+
+    /// Test the full JSON lock file structure: node_id, pid, addrs, web_port.
+    #[test]
+    fn test_serve_json_lock_structure() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap_or_else(|e| {
+            panic!("Lock file should be valid JSON: {e}\nContent: {lock_content}")
+        });
+
+        // node_id: 64-char hex string
+        let json_node_id = json["node_id"]
+            .as_str()
+            .expect("node_id should be a string");
+        assert_eq!(json_node_id, node_id, "JSON node_id should match stdout");
+        assert_eq!(json_node_id.len(), 64);
+        assert!(json_node_id.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // pid: positive integer matching the actual child PID
+        let json_pid = json["pid"].as_u64().expect("pid should be a number");
+        assert!(json_pid > 0, "PID should be positive");
+        assert_eq!(
+            json_pid as u32,
+            server.process.id(),
+            "Lock file PID should match actual child PID"
+        );
+
+        // addrs: array of socket address strings
+        let addrs = json["addrs"].as_array().expect("addrs should be an array");
+        assert!(!addrs.is_empty(), "Should have at least one address");
+        for addr in addrs {
+            let addr_str = addr.as_str().expect("Each addr should be a string");
+            // Should parse as a valid socket address
+            assert!(
+                addr_str.parse::<std::net::SocketAddr>().is_ok(),
+                "Address should be a valid SocketAddr: {addr_str}"
+            );
+        }
+
+        // web_port: null when server started without --web
+        assert!(
+            json["web_port"].is_null(),
+            "web_port should be null when --web is not used"
+        );
+
+        server.stop();
+    }
+
+    /// Test that the lock file includes a valid web_port when --web is enabled.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_json_lock_web_port() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(tmp.path(), &["--web", "--port", "0"]);
+        let _node_id = server.wait_ready_with_web(true);
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+
+        // web_port should be a number > 1024 (unprivileged range)
+        let web_port = json["web_port"]
+            .as_u64()
+            .expect("web_port should be a number when --web is used");
+        assert!(
+            web_port > 1024,
+            "Web port should be in unprivileged range: {web_port}"
+        );
+
+        // Should match the port captured from stdout
+        assert_eq!(
+            web_port as u16,
+            server.web_port.expect("stdout should have web port"),
+            "Lock file web_port should match stdout web port"
+        );
+
+        server.stop();
+    }
+
+    /// Test that a stale lock file (dead PID) is overwritten by a new server.
+    #[test]
+    fn test_serve_stale_lock_detection() {
+        let tmp = TempDir::new().unwrap();
+        let lock_path = tmp.path().join(SERVE_LOCK);
+
+        // Write a fake JSON lock file with a PID that doesn't exist
+        let fake_lock = serde_json::json!({
+            "node_id": "0000000000000000000000000000000000000000000000000000000000000000",
+            "pid": 999_999_999_u64,
+            "addrs": ["127.0.0.1:9999"],
+            "web_port": null
+        });
+        fs::write(&lock_path, serde_json::to_string(&fake_lock).unwrap()).unwrap();
+
+        // Start a real server — it should overwrite the stale lock
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        // Lock file should now have the real server's info
+        let lock_content = fs::read_to_string(&lock_path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+
+        assert_eq!(
+            json["node_id"].as_str().unwrap(),
+            node_id,
+            "Lock file should be overwritten with real server's node ID"
+        );
+        assert_ne!(
+            json["pid"].as_u64().unwrap(),
+            999_999_999,
+            "Lock file PID should be updated from stale value"
+        );
+        assert_eq!(
+            json["pid"].as_u64().unwrap() as u32,
+            server.process.id(),
+            "Lock file PID should match actual server PID"
+        );
+
+        server.stop();
     }
 }
 
