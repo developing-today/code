@@ -211,6 +211,10 @@ pub fn create_router(state: AppState) -> Router {
         )
         // Tag search endpoint with structured query syntax
         .route("/api/tags/search", get(super::tags_ws::search_tags_handler))
+        // Identity API routes
+        .route("/api/identity/register", post(identity_register_handler))
+        .route("/api/identity/me", get(identity_me_handler))
+        .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
         .route("/ws/collab/:doc_id", get(super::collab::ws_collab_handler))
         // WebSocket for live tag updates
@@ -1832,6 +1836,130 @@ async fn archive_original_tag(
             None
         }
     }
+}
+
+// =============================================================================
+// Identity API Handlers
+// =============================================================================
+
+/// Request body for identity registration.
+#[derive(Debug, Deserialize)]
+struct IdentityRegisterRequest {
+    /// Optional display name for the client.
+    name: Option<String>,
+}
+
+/// Response body for identity registration and lookup.
+#[derive(Debug, Serialize)]
+struct IdentityResponse {
+    /// Opaque token for the client to store in `localStorage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    /// The client's unique identifier.
+    client_id: String,
+    /// Display name (if set).
+    name: Option<String>,
+}
+
+/// Request body for name update.
+#[derive(Debug, Deserialize)]
+struct IdentityUpdateNameRequest {
+    /// The token proving client identity.
+    token: String,
+    /// New display name (or null/empty to clear).
+    name: Option<String>,
+}
+
+/// `POST /api/identity/register` - Register a new client identity.
+///
+/// Returns a signed token that the client stores in `localStorage`
+/// for future reconnection.
+async fn identity_register_handler(
+    State(state): State<AppState>,
+    Json(req): Json<IdentityRegisterRequest>,
+) -> impl IntoResponse {
+    match state.identity.register(req.name).await {
+        Ok((token, identity)) => {
+            tracing::info!(
+                "[identity] Registered new client: {}",
+                identity.client_id
+            );
+            (
+                StatusCode::OK,
+                Json(IdentityResponse {
+                    token: Some(token),
+                    client_id: identity.client_id,
+                    name: identity.name,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            tracing::error!("[identity] Registration failed: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `GET /api/identity/me?token=...` - Look up current identity from token.
+///
+/// Used by the client on page load to check if a stored token is still valid.
+async fn identity_me_handler(
+    State(state): State<AppState>,
+    Query(params): Query<IdentityMeQuery>,
+) -> impl IntoResponse {
+    let Some(identity) = state.identity.verify_token(&params.token).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    (
+        StatusCode::OK,
+        Json(IdentityResponse {
+            token: None,
+            client_id: identity.client_id,
+            name: identity.name,
+        }),
+    )
+        .into_response()
+}
+
+/// Query parameters for the identity lookup endpoint.
+#[derive(Debug, Deserialize)]
+struct IdentityMeQuery {
+    /// The client's token.
+    token: String,
+}
+
+/// `POST /api/identity/name` - Update display name.
+async fn identity_update_name_handler(
+    State(state): State<AppState>,
+    Json(req): Json<IdentityUpdateNameRequest>,
+) -> impl IntoResponse {
+    // Verify the token first
+    let Some(identity) = state.identity.verify_token(&req.token).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    // Update the name
+    let Some(updated) = state.identity.update_name(&identity.client_id, req.name).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+
+    tracing::info!(
+        "[identity] Updated name for {}: {:?}",
+        updated.client_id,
+        updated.name
+    );
+
+    (
+        StatusCode::OK,
+        Json(IdentityResponse {
+            token: None,
+            client_id: updated.client_id,
+            name: updated.name,
+        }),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
