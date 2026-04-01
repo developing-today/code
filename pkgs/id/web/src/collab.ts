@@ -77,6 +77,7 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param docId - Document identifier
  * @param filename - Optional filename for content mode detection
  * @param token - Optional identity token for client persistence
+ * @param onTokenRefresh - Callback when server sends a refreshed token via AUTH_OK
  * @param onStatus - Callback for status changes
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
@@ -87,6 +88,7 @@ export function initCollab(
   docId: string,
   filename?: string,
   token?: string | null,
+  onTokenRefresh?: (token: string) => void,
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void,
 ): CollabConnection {
@@ -351,10 +353,15 @@ export function initCollab(
       }
 
       case MSG.AUTH_OK: {
-        // [9, client_id, name] — server confirmed our identity
+        // [9, client_id, name, token?] — server confirmed our identity
         const authClientId = msg[1] as string;
         const authName = msg[2] as string | null;
+        const refreshedToken = msg[3] as string | null | undefined;
         console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
+        // Save the refreshed token so long-lived WS sessions stay fresh
+        if (refreshedToken && onTokenRefresh) {
+          onTokenRefresh(refreshedToken);
+        }
         break;
       }
 

@@ -454,10 +454,12 @@ pub enum CollabMessage {
     NewVersion { hash: String, name: String },
     /// `[8, token]` - Client authentication (first message after connect).
     Auth { token: String },
-    /// `[9, client_id, name]` - Authentication succeeded.
+    /// `[9, client_id, name, token?]` - Authentication succeeded.
+    /// Includes a refreshed token so long-lived WS sessions stay authenticated.
     AuthOk {
         client_id: String,
         name: Option<String>,
+        token: Option<String>,
     },
 }
 
@@ -496,8 +498,8 @@ impl CollabMessage {
                 to_vec(&(msg::NEW_VERSION, hash, name)).unwrap_or_default()
             }
             Self::Auth { token } => to_vec(&(msg::AUTH, token)).unwrap_or_default(),
-            Self::AuthOk { client_id, name } => {
-                to_vec(&(msg::AUTH_OK, client_id, name)).unwrap_or_default()
+            Self::AuthOk { client_id, name, token } => {
+                to_vec(&(msg::AUTH_OK, client_id, name, token)).unwrap_or_default()
             }
         }
     }
@@ -582,10 +584,17 @@ impl CollabMessage {
             return Some(Self::Auth { token });
         }
 
+        // AUTH_OK with token (new format)
+        if let Ok((msg::AUTH_OK, client_id, name, token)) =
+            from_slice::<(u8, String, Option<String>, Option<String>)>(data)
+        {
+            return Some(Self::AuthOk { client_id, name, token });
+        }
+        // AUTH_OK without token (legacy format)
         if let Ok((msg::AUTH_OK, client_id, name)) =
             from_slice::<(u8, String, Option<String>)>(data)
         {
-            return Some(Self::AuthOk { client_id, name });
+            return Some(Self::AuthOk { client_id, name, token: None });
         }
 
         None
@@ -679,16 +688,17 @@ async fn handle_collab_socket(
                     if let Some(decoded) = CollabMessage::decode(&data) {
                         match decoded {
                             CollabMessage::Auth { ref token } => {
-                                // Verify the token
-                                if let Some(cid) = identity_store.verify_token_client_id(token) {
-                                    let display_name = identity_store.get_display_name(&cid).await;
-                                    tracing::info!("[collab] Authenticated client: {} -> {:?}", cid, display_name);
-                                    name_watcher = identity_store.subscribe_name(&cid).await;
+                                // Verify the token and get a refreshed one
+                                if let Some((fresh_token, identity)) = identity_store.verify_and_refresh(token).await {
+                                    let display_name = identity.name.clone().unwrap_or_else(|| short_id(&identity.client_id));
+                                    tracing::info!("[collab] Authenticated client: {} -> {:?}", identity.client_id, display_name);
+                                    name_watcher = identity_store.subscribe_name(&identity.client_id).await;
 
-                                    // Send AUTH_OK back to client
+                                    // Send AUTH_OK back to client with refreshed token
                                     let auth_ok = CollabMessage::AuthOk {
-                                        client_id: cid.clone(),
+                                        client_id: identity.client_id.clone(),
                                         name: Some(display_name.clone()),
+                                        token: Some(fresh_token),
                                     };
                                     if sender.send(Message::Binary(auth_ok.encode())).await.is_err() {
                                         tracing::warn!("[collab] Client disconnected during auth response");
@@ -697,7 +707,7 @@ async fn handle_collab_socket(
                                     }
 
                                     cached_display_name = Some(display_name);
-                                    identity_client_id = Some(cid);
+                                    identity_client_id = Some(identity.client_id);
                                 } else {
                                     tracing::info!("[collab] Auth failed: invalid/expired token");
                                     // Proceed as anonymous — no AUTH_OK sent

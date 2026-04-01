@@ -49,6 +49,10 @@ interface IdApp {
 const IDENTITY_TOKEN_KEY = "id_identity_token";
 const IDENTITY_NAME_KEY = "id_identity_name";
 const IDENTITY_CLIENT_ID_KEY = "id_identity_client_id";
+const IDENTITY_REFRESHED_AT_KEY = "id_identity_refreshed_at";
+
+/** How often to re-validate identity with the server (milliseconds). */
+const IDENTITY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** Stored identity state from localStorage. */
 interface IdentityState {
@@ -69,10 +73,11 @@ function getStoredIdentity(): IdentityState | null {
   };
 }
 
-/** Save identity to localStorage. */
+/** Save identity to localStorage. Also records the current time as last refresh. */
 function saveIdentity(token: string, clientId: string, name: string | null): void {
   localStorage.setItem(IDENTITY_TOKEN_KEY, token);
   localStorage.setItem(IDENTITY_CLIENT_ID_KEY, clientId);
+  localStorage.setItem(IDENTITY_REFRESHED_AT_KEY, Date.now().toString());
   if (name) {
     localStorage.setItem(IDENTITY_NAME_KEY, name);
   } else {
@@ -86,6 +91,29 @@ function updateStoredName(name: string | null): void {
     localStorage.setItem(IDENTITY_NAME_KEY, name);
   } else {
     localStorage.removeItem(IDENTITY_NAME_KEY);
+  }
+}
+
+/** Check if the identity token needs refreshing (older than 24h). */
+function needsRefresh(): boolean {
+  const refreshedAt = localStorage.getItem(IDENTITY_REFRESHED_AT_KEY);
+  if (!refreshedAt) return true;
+  const elapsed = Date.now() - Number(refreshedAt);
+  return elapsed >= IDENTITY_REFRESH_INTERVAL_MS;
+}
+
+/**
+ * Called when the server sends a refreshed token via WS AUTH_OK.
+ * Saves the new token to localStorage without a full re-validation.
+ */
+function handleTokenRefresh(freshToken: string): void {
+  const stored = getStoredIdentity();
+  if (stored) {
+    saveIdentity(freshToken, stored.clientId, stored.name);
+    if (currentIdentity) {
+      currentIdentity.token = freshToken;
+    }
+    console.log("[id] Token refreshed via WS AUTH_OK");
   }
 }
 
@@ -472,6 +500,21 @@ async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
 function onMainSwapped(): void {
   const app = (window as unknown as Record<string, IdApp>).idApp;
   if (!app) return;
+
+  // Refresh identity token if it's been more than 24 hours since last refresh.
+  // This keeps the 30-day token alive for users who navigate via SPA (no full
+  // page loads) or use datastar SSE-based navigation.
+  if (needsRefresh()) {
+    ensureIdentity()
+      .then((identity) => {
+        if (identity) {
+          currentIdentity = identity;
+        }
+      })
+      .catch(() => {
+        // Non-critical — token stays valid until 30-day expiry
+      });
+  }
 
   const newPath = window.location.pathname;
 
@@ -965,6 +1008,7 @@ async function init(): Promise<void> {
           docId,
           filename,
           currentIdentity?.token ?? null,
+          handleTokenRefresh,
           updateStatus,
           (editor: EditorInstance) => {
             console.log("[id] Editor initialized with server version, mode:", editor.mode);
