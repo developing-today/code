@@ -41,15 +41,10 @@
     # Run the full integration test suite (including serve_tests).
     # ID_BINARY overrides the compile-time CARGO_BIN_EXE_id path so the
     # test binary finds the nix-built id binary.
-    #
-    # Skip test_serve_web_* — these 2 tests are flaky (the id process exits
-    # before printing its node ID on stdout). They also fail outside nix.
-    # All other serve_tests (10 of 12) pass reliably in the VM.
     server.succeed(
         f"ID_BINARY={ID_BIN} "
         f"{TEST_BIN} "
-        f"--test-threads=2 "
-        f"--skip test_serve_web 2>&1"
+        f"--test-threads=2 2>&1"
     )
   '';
 }

@@ -471,6 +471,20 @@ serve-web *ARGS:
 serve-lib *ARGS:
     cargo run -- serve {{ARGS}}
 
+# Serve a new instance with web UI and auto-assigned port (creates .iroh/<name>/) [bun]
+[group('run')]
+serve-new NAME="" *ARGS: web (serve-new-web NAME ARGS)
+
+# Serve a new instance with web UI (skip asset build, requires pre-built assets)
+[group('run')]
+serve-new-web NAME="" *ARGS:
+    cargo run --features web -- {{ if NAME != "" { "--new=" + NAME } else { "--new=" } }} serve --web --port 0 {{ARGS}}
+
+# Serve a new instance without web UI and auto-assigned port
+[group('run')]
+serve-new-lib NAME="" *ARGS:
+    cargo run -- {{ if NAME != "" { "--new=" + NAME } else { "--new=" } }} serve --port 0 {{ARGS}}
+
 # Build then serve with web UI [bun]
 [group('run')]
 build-serve *ARGS: build (serve ARGS)

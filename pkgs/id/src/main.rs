@@ -78,6 +78,41 @@ async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
     let cli = Cli::parse();
 
+    // Switch to the data directory if specified.
+    // All data paths (.iroh-store, .iroh-key, .iroh-serve.lock) are CWD-relative,
+    // so changing the working directory early makes everything use the right location
+    // with zero changes to path logic throughout the codebase.
+    if let Some(ref data_dir) = cli.data_dir {
+        std::fs::create_dir_all(data_dir)?;
+        std::env::set_current_dir(data_dir)?;
+    } else if let Some(ref name) = cli.new {
+        // --new [NAME] creates .iroh/<name>/ under the current directory
+        let name = if name.is_empty() {
+            // Generate a short random name (8 hex chars)
+            use rand::Rng;
+            let mut rng = rand::rng();
+            let n: u32 = rng.random();
+            format!("{n:08x}")
+        } else {
+            // Validate: name must be a simple identifier (no path separators or ..)
+            if name.contains('/') || name.contains('\\') || name.contains("..") {
+                anyhow::bail!(
+                    "--new name must be a simple identifier, not a path: {name:?}"
+                );
+            }
+            name.clone()
+        };
+        let data_dir = std::path::PathBuf::from(".iroh").join(&name);
+        if data_dir.exists() {
+            anyhow::bail!(
+                "instance directory already exists: {}  (use --data-dir to reuse an existing directory)",
+                data_dir.display()
+            );
+        }
+        std::fs::create_dir_all(&data_dir)?;
+        std::env::set_current_dir(&data_dir)?;
+    }
+
     // Initialize tracing with the determined log level
     let log_level = get_log_level(&cli);
 
