@@ -40,7 +40,7 @@ cargo run --no-default-features -- serve
 # With web UI (build assets first)
 cd web && bun install && bun run build && cd ..
 cargo build --features web
-cargo run --features web -- serve --web 3000
+cargo run --features web -- serve --web
 ```
 
 ## Usage
@@ -81,8 +81,11 @@ id migrate-tags
 
 # Start a server
 id serve                          # CLI only
-id serve --web 3000               # With web UI
-id serve --web 3000 --ephemeral   # Ephemeral mode
+id serve --web                    # With web UI (default port 3000)
+id serve --web --port 8080        # Custom port
+id serve --web --ephemeral        # Ephemeral mode
+id serve --web --data-dir /path   # Custom data directory
+id serve --web --new              # Fresh node (new identity)
 
 # Interactive REPL
 id repl
@@ -184,11 +187,11 @@ This provides: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-
 
 ```bash
 just test              # All fast tests (Rust + TypeScript unit + typecheck)
-just test-rust         # Rust tests only (~500 unit + ~85 integration)
-just test-unit         # Unit tests only (fast, ~500 tests)
-just test-integration  # Integration tests only (~85 tests)
-just test-web-unit     # TypeScript unit tests (~116 assertions)
-just test-e2e          # Playwright E2E (chromium + firefox, 146 tests)
+just test-rust         # Rust tests only (~408 unit + ~93 integration)
+just test-unit         # Unit tests only (fast, ~408 tests)
+just test-integration  # Integration tests only (~93 tests)
+just test-web-unit     # TypeScript unit tests (~304 assertions)
+just test-e2e          # Playwright E2E (chromium + firefox, 208 tests)
 just test-nix          # nix flake check (27 checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
@@ -238,22 +241,25 @@ src/
     └── markdown.rs      # Markdown rendering
 
 web/                     # TypeScript frontend
-├── src/                 # ProseMirror editor, collab, themes
+├── src/                 # ProseMirror editor, collab, themes, editor features
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests (38 tests × 2 browsers = 146)
-├── tests/basic.spec.ts      # 19 UI fundamental tests
-├── tests/websocket.spec.ts  # 19 WS + collaboration tests
-└── playwright.config.ts     # 3-mode config: local / nix sandbox / VM test
+e2e/                     # Playwright E2E tests (104 tests × 2 browsers = 208)
+├── tests/basic.spec.ts           # 19 UI fundamental tests
+├── tests/editor-features.spec.ts # 31 editor feature tests
+├── tests/file-operations.spec.ts # 18 file/tag operation tests
+├── tests/navigation.spec.ts      # 17 navigation + SPA tests
+├── tests/websocket.spec.ts       # 19 WS + collaboration tests
+└── playwright.config.ts          # 3-mode config: local / nix sandbox / VM test
 
 nix/tests/                   # NixOS VM integration tests
 ├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
 ├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
 ├── integration-test.nix     # Full cli_integration suite including serve_tests
-└── playwright-e2e-test.nix  # 4-VM full Playwright (146 interactive tests)
+└── playwright-e2e-test.nix  # 4-VM full Playwright (208 interactive tests)
 
 tests/
-└── cli_integration.rs   # ~85 integration tests
+└── cli_integration.rs   # ~93 integration tests
 ```
 
 ## Documentation

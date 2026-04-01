@@ -164,14 +164,21 @@ Built assets are embedded in the Rust binary via `rust-embed`.
 ```
 web/
 ├── src/
-│   ├── main.ts      # Entry point, SPA navigation, file operations (rename, copy)
-│   ├── input.css    # TailwindCSS v4 + DaisyUI entry point (themes, CRT effects, all styles)
-│   ├── editor.ts    # ProseMirror setup, schema, menu
-│   ├── collab.ts    # WebSocket client, MessagePack protocol
-│   ├── cursors.ts   # Cursor/selection plugin with fade
-│   └── theme.ts     # Theme switching
-├── dist/            # Built output (git-ignored)
-├── bun.nix          # Offline npm dependency fetching for nix sandbox
+│   ├── main.ts         # Entry point, SPA navigation, file operations (rename, copy)
+│   ├── input.css       # TailwindCSS v4 + DaisyUI entry point (themes, CRT effects, all styles)
+│   ├── editor.ts       # ProseMirror setup, schema, menu
+│   ├── collab.ts       # WebSocket client, MessagePack protocol
+│   ├── cursors.ts      # Cursor/selection plugin with fade
+│   ├── theme.ts        # Theme switching
+│   ├── search-panel.ts # Find & replace panel (Ctrl+F / Ctrl+H)
+│   ├── highlight.ts    # Syntax highlighting via Shiki
+│   ├── cursor-utils.ts # Cursor opacity, color, tooltip clustering
+│   ├── goto-line.ts    # Go-to-line dialog (Ctrl+G)
+│   ├── indent.ts       # Tab indentation (2-space)
+│   ├── active-line.ts  # Active line highlight plugin
+│   └── wrap.ts         # Word wrap toggle (Alt+Z)
+├── dist/               # Built output (git-ignored)
+├── bun.nix             # Offline npm dependency fetching for nix sandbox
 └── package.json
 ```
 

@@ -14,19 +14,26 @@ just web-build
 # Build and run with web interface on port 3000
 just serve
 # or explicitly:
-cargo run --features web -- serve --web 3000
+cargo run --features web -- serve --web
 ```
 
-Open http://localhost:3000 in your browser.
+Open http://localhost:3000 in your browser (default port).
 
 ## Features
 
 - **File Browser**: HTMX-powered listing with search, filtering, bulk operations
 - **Collaborative Editor**: Real-time text editing using ProseMirror + prosemirror-collab
+- **Syntax Highlighting**: Language-aware code coloring via Shiki (50+ languages)
+- **Line Numbers**: Toggleable line numbers for code files (Alt+L)
+- **Word Wrap**: Toggleable word wrap for long lines (Alt+Z)
+- **Find & Replace**: In-editor search with regex, match navigation (Ctrl+F / Ctrl+H)
+- **Go-to-Line**: Jump to specific line numbers (Ctrl+G)
+- **Active Line Highlight**: Visual indicator of current cursor line
+- **Tab Indentation**: Smart tab/shift-tab with 2-space indent
 - **Metadata Tags**: Attach, view, search key-value tags on files via inline UI and WebSocket
 - **File Management**: Rename, copy, delete, restore with archive tracking
 - **Content Viewers**: Smart rendering for text, markdown, images, video, audio, PDF, and binary files
-- **Themes**: Switchable terminal themes (sneak, arch, mech)
+- **Themes**: Switchable DaisyUI terminal themes (sneak, arch, mech)
 - **Single Binary**: All JS/CSS embedded via rust-embed
 
 ## Architecture
@@ -48,7 +55,7 @@ Open http://localhost:3000 in your browser.
 │         │     └───────────┘ └───────────┘                   │
 │         ▼                                                    │
 │  Embedded Assets (rust-embed)                                │
-│  - CSS: terminal.css, themes.css, editor.css                 │
+│  - CSS: main.css (DaisyUI + Tailwind v4)                     │
 │  - JS: main.js (bundled with Bun)                            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -82,15 +89,19 @@ web/
 ├── bun.nix               # Offline npm deps for nix sandbox
 ├── tsconfig.json         # TypeScript config
 ├── src/
-│   ├── main.ts           # Entry point, HTMX init, file operations
-│   ├── editor.ts         # ProseMirror editor setup
-│   ├── collab.ts         # WebSocket collaboration client
-│   ├── cursors.ts        # Cursor/selection plugin with fading
-│   └── theme.ts          # Theme switching
-├── styles/
-│   ├── terminal.css      # Base terminal styles, file list
-│   ├── themes.css        # sneak/arch/mech theme variables
-│   └── editor.css        # ProseMirror styles, viewer buttons
+│   ├── main.ts           # Entry point, SPA navigation, file operations
+│   ├── input.css         # TailwindCSS v4 + DaisyUI entry (themes, CRT effects, all styles)
+│   ├── editor.ts         # ProseMirror editor setup, schema, menu
+│   ├── collab.ts         # WebSocket collaboration client, MessagePack protocol
+│   ├── cursors.ts        # Cursor/selection plugin with opacity fading
+│   ├── theme.ts          # Theme switching (sneak/arch/mech)
+│   ├── search-panel.ts   # Find & replace panel (Ctrl+F / Ctrl+H)
+│   ├── highlight.ts      # Syntax highlighting via Shiki
+│   ├── cursor-utils.ts   # Cursor opacity, color, tooltip clustering
+│   ├── goto-line.ts      # Go-to-line dialog (Ctrl+G)
+│   ├── indent.ts         # Tab indentation (2-space)
+│   ├── active-line.ts    # Active line highlight plugin
+│   └── wrap.ts           # Word wrap toggle (Alt+Z)
 └── dist/                 # Built assets (embedded in binary)
 
 src/web/
@@ -104,10 +115,13 @@ src/web/
 └── markdown.rs           # Markdown rendering with syntax highlighting
 
 e2e/
-├── playwright.config.ts  # 3-mode config: local / nix sandbox / VM test
+├── playwright.config.ts        # 3-mode config: local / nix sandbox / VM test
 └── tests/
-    ├── basic.spec.ts     # 19 UI fundamental tests
-    └── websocket.spec.ts # 19 WS + collaboration tests
+    ├── basic.spec.ts           # 19 UI fundamental tests
+    ├── editor-features.spec.ts # 31 editor feature tests (syntax, lines, wrap, search, etc.)
+    ├── file-operations.spec.ts # 18 tag CRUD, rename, copy, delete, search, theme tests
+    ├── navigation.spec.ts      # 17 settings, peers, SPA nav, browser history tests
+    └── websocket.spec.ts       # 19 WS + collaboration tests
 ```
 
 ### Justfile Commands
@@ -140,6 +154,13 @@ The home page displays all stored files with:
 The editor page renders text/markdown files with ProseMirror:
 
 - **Collaborative editing**: Real-time multi-user editing via WebSocket
+- **Syntax highlighting**: Language-aware coloring for 50+ languages via Shiki
+- **Line numbers**: Toggleable gutter line numbers (Alt+L)
+- **Word wrap**: Toggleable soft wrap for long lines (Alt+Z)
+- **Find & replace**: Search panel with match highlighting, navigation (Ctrl+F), replace (Ctrl+H)
+- **Go-to-line**: Jump to line number dialog (Ctrl+G)
+- **Active line**: Visual highlight of the current cursor line
+- **Tab indentation**: Tab inserts 2 spaces, Shift+Tab dedents
 - **Save**: Manual save (Ctrl+S) writes content back to blob store
 - **Download**: Raw text, ProseMirror JSON, or original format
 - **Rename/Copy**: Inline rename and copy with archive support
@@ -196,7 +217,7 @@ The `/ws/tags` endpoint broadcasts `TagEvent` messages (JSON) when tags change:
 
 ## Themes
 
-Three terminal-inspired themes with `#000000` black backgrounds. Switch via the footer toggle or keyboard shortcut `Ctrl+T`.
+Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch via the footer toggle or keyboard shortcut `Alt+T`.
 
 ### sneak (default, blue)
 
@@ -243,11 +264,20 @@ Three terminal-inspired themes with `#000000` black backgrounds. Switch via the 
 ## Configuration
 
 ```bash
-# Start with web UI on port 3000
-id serve --web 3000
+# Start with web UI (default port 3000)
+id serve --web
+
+# Custom port
+id serve --web --port 8080
 
 # Ephemeral mode (no persistence between restarts)
-id serve --web 3000 --ephemeral
+id serve --web --ephemeral
+
+# Custom data directory
+id serve --web --data-dir /path/to/data
+
+# Fresh node (new identity, ignores existing data)
+id serve --web --new
 ```
 
 ## Testing
@@ -262,15 +292,15 @@ just test-unit
 
 ### E2E Tests
 
-Playwright tests run against both Chromium and Firefox (38 tests × 2 browsers = 146 total):
+Playwright tests run against both Chromium and Firefox (104 tests × 2 browsers = 208 total):
 
 ```bash
-just test-e2e          # Both browsers (146 tests)
-just test-e2e-chromium # Chromium only (73 tests)
-just test-e2e-firefox  # Firefox only (73 tests)
+just test-e2e          # Both browsers (208 tests)
+just test-e2e-chromium # Chromium only (104 tests)
+just test-e2e-firefox  # Firefox only (104 tests)
 ```
 
-Tests cover: home page elements, file creation, editor features, navigation, themes, WebSocket connection/disconnect/reconnect, collaborative editing, multi-user scenarios, tag live updates.
+Tests cover: home page elements, file creation, editor features (syntax highlighting, line numbers, word wrap, find/replace, go-to-line, active line, tab indentation), navigation, themes, WebSocket connection/disconnect/reconnect, collaborative editing, multi-user scenarios, tag CRUD, file rename/copy/delete, search filtering.
 
 Browser paths are configured via environment variables for nix compatibility:
 

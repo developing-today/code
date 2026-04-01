@@ -142,13 +142,21 @@ Feature-gated behind `--features web`. Embeds a full browser UI in the binary.
 
 TypeScript bundled with Bun, producing a single JS file and CSS file embedded in the binary.
 
-| File         | Purpose                                     |
-| ------------ | ------------------------------------------- |
-| `main.ts`    | Entry point, HTMX init, file operations     |
-| `editor.ts`  | ProseMirror editor setup                    |
-| `collab.ts`  | WebSocket collaboration client              |
-| `cursors.ts` | Cursor/selection plugin with opacity fading |
-| `theme.ts`   | Theme switching (sneak/arch/mech)           |
+| File              | Purpose                                            |
+| ----------------- | -------------------------------------------------- |
+| `main.ts`         | Entry point, SPA navigation, file operations       |
+| `input.css`       | TailwindCSS v4 + DaisyUI entry (themes, styles)   |
+| `editor.ts`       | ProseMirror editor setup, schema, menu             |
+| `collab.ts`       | WebSocket collaboration client, MessagePack        |
+| `cursors.ts`      | Cursor/selection plugin with opacity fading        |
+| `theme.ts`        | Theme switching (sneak/arch/mech)                  |
+| `search-panel.ts` | Find & replace panel (Ctrl+F / Ctrl+H)            |
+| `highlight.ts`    | Syntax highlighting via Shiki (50+ languages)      |
+| `cursor-utils.ts` | Cursor opacity, color, tooltip clustering          |
+| `goto-line.ts`    | Go-to-line dialog (Ctrl+G)                         |
+| `indent.ts`       | Tab indentation (2-space)                          |
+| `active-line.ts`  | Active line highlight plugin                       |
+| `wrap.ts`         | Word wrap toggle (Alt+Z)                           |
 
 ### Collaboration Protocol
 
@@ -227,13 +235,13 @@ The build script (`scripts/build.sh`) tracks the current variant in `target/.bui
 
 | Layer                   | Framework         | Command                          | Count |
 | ----------------------- | ----------------- | -------------------------------- | ----- |
-| Unit                    | `cargo test`      | `just test-unit`                 | ~500  |
-| Integration             | `cargo test`      | `just test-int`                  | ~85   |
-| TypeScript              | `bun test`        | `just test-web-unit`             | ~116  |
-| E2E                     | Playwright        | `just test-e2e`                  | 146   |
+| Unit                    | `cargo test`      | `just test-unit`                 | ~408  |
+| Integration             | `cargo test`      | `just test-int`                  | ~93   |
+| TypeScript              | vitest            | `just test-web-unit`             | ~304  |
+| E2E                     | Playwright        | `just test-e2e`                  | 208   |
 | NixOS VM (API)          | curl/Python       | `just test-nixos-serve`          | ~15   |
 | NixOS VM (DOM)          | Chromium          | `just test-nixos-e2e`            | ~10   |
-| NixOS VM (Integration)  | cargo test binary | `just test-nixos-integration`    | ~83   |
-| NixOS 4-VM (Playwright) | Playwright        | `just test-nixos-playwright-e2e` | 146   |
+| NixOS VM (Integration)  | cargo test binary | `just test-nixos-integration`    | ~93   |
+| NixOS 4-VM (Playwright) | Playwright        | `just test-nixos-playwright-e2e` | 208   |
 
 `just test-nix` (`nix flake check`, 27 checks) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.
