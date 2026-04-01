@@ -49,6 +49,8 @@ const MSG = {
   CURSOR: 4,
   ERROR: 5,
   CURSOR_REMOVE: 6,
+  AUTH: 8,
+  AUTH_OK: 9,
 } as const;
 
 // MessagePack encoder/decoder configured for array format
@@ -88,10 +90,9 @@ export function initCollab(
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void,
 ): CollabConnection {
-  // Build query parameters for the WebSocket URL
+  // Build query parameters for the WebSocket URL (no token — sent as first message)
   const params = new URLSearchParams();
   if (filename) params.set("filename", filename);
-  if (token) params.set("token", token);
   const queryStr = params.toString();
   const finalWsUrl = queryStr ? `${wsUrl}?${queryStr}` : wsUrl;
 
@@ -349,6 +350,14 @@ export function initCollab(
         break;
       }
 
+      case MSG.AUTH_OK: {
+        // [9, client_id, name] — server confirmed our identity
+        const authClientId = msg[1] as string;
+        const authName = msg[2] as string | null;
+        console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
+        break;
+      }
+
       default:
         console.warn("[collab] Unknown message type:", msgType);
     }
@@ -404,6 +413,14 @@ export function initCollab(
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");
+      }
+      // Send AUTH as the very first message (before flushing queued messages).
+      // The server waits for this before sending INIT. Token is kept out of
+      // the URL to avoid leaking in logs/Referer headers over HTTPS.
+      if (token) {
+        const authData = packr.pack([MSG.AUTH, token]);
+        socket.send(authData);
+        console.log("[collab] Sent AUTH message");
       }
       flushQueue();
     };

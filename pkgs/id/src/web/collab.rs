@@ -79,6 +79,8 @@ mod msg {
     pub const ERROR: u8 = 5;
     pub const CURSOR_REMOVE: u8 = 6;
     pub const NEW_VERSION: u8 = 7;
+    pub const AUTH: u8 = 8;
+    pub const AUTH_OK: u8 = 9;
 }
 
 /// Query parameters for WebSocket connection.
@@ -86,10 +88,6 @@ mod msg {
 pub struct WsParams {
     /// Filename for content mode detection (optional).
     pub filename: Option<String>,
-    /// Identity token for client persistence (optional).
-    /// If provided and valid, the server will use the associated display name
-    /// for cursor labels instead of the default client-provided name.
-    pub token: Option<String>,
 }
 
 /// Load file content from the blob store.
@@ -454,6 +452,13 @@ pub enum CollabMessage {
     /// `[7, hash, name]` - New version of the file was saved.
     /// Tells clients editing the old hash that a newer version exists.
     NewVersion { hash: String, name: String },
+    /// `[8, token]` - Client authentication (first message after connect).
+    Auth { token: String },
+    /// `[9, client_id, name]` - Authentication succeeded.
+    AuthOk {
+        client_id: String,
+        name: Option<String>,
+    },
 }
 
 impl CollabMessage {
@@ -489,6 +494,10 @@ impl CollabMessage {
             }
             Self::NewVersion { hash, name } => {
                 to_vec(&(msg::NEW_VERSION, hash, name)).unwrap_or_default()
+            }
+            Self::Auth { token } => to_vec(&(msg::AUTH, token)).unwrap_or_default(),
+            Self::AuthOk { client_id, name } => {
+                to_vec(&(msg::AUTH_OK, client_id, name)).unwrap_or_default()
             }
         }
     }
@@ -569,7 +578,25 @@ impl CollabMessage {
             return Some(Self::NewVersion { hash, name });
         }
 
+        if let Ok((msg::AUTH, token)) = from_slice::<(u8, String)>(data) {
+            return Some(Self::Auth { token });
+        }
+
+        if let Ok((msg::AUTH_OK, client_id, name)) =
+            from_slice::<(u8, String, Option<String>)>(data)
+        {
+            return Some(Self::AuthOk { client_id, name });
+        }
+
         None
+    }
+}
+
+/// Extract binary data from a WebSocket message (handles both Binary and legacy Text).
+fn extract_binary(msg: &Message) -> Option<Vec<u8>> {
+    match msg {
+        Message::Binary(data) => Some(data.clone()),
+        _ => None,
     }
 }
 
@@ -580,13 +607,6 @@ pub async fn ws_collab_handler(
     Query(params): Query<WsParams>,
     State(state): State<super::AppState>,
 ) -> impl IntoResponse {
-    // Verify identity token (if provided) before upgrading the connection.
-    // This is a lightweight check — just verifies signature, no DB lookup.
-    let identity_client_id = params
-        .token
-        .as_deref()
-        .and_then(|t| state.identity.verify_token_client_id(t));
-
     ws.on_upgrade(move |socket| {
         handle_collab_socket(
             socket,
@@ -595,7 +615,6 @@ pub async fn ws_collab_handler(
             state.collab,
             state.store,
             state.identity,
-            identity_client_id,
         )
     })
 }
@@ -608,28 +627,14 @@ async fn handle_collab_socket(
     collab: Arc<CollabState>,
     store: iroh_blobs::api::Store,
     identity_store: super::IdentityStore,
-    identity_client_id: Option<String>,
 ) {
     use std::sync::atomic::Ordering;
 
     tracing::info!(
-        "[collab] New connection for doc '{}' (page load), filename={:?}, identity={:?}",
+        "[collab] New connection for doc '{}' (page load), filename={:?}",
         doc_id,
         filename,
-        identity_client_id
     );
-
-    // Log identity status and subscribe to name changes (if authenticated).
-    // The cached name is updated via a watch channel whenever the client
-    // changes their display name through the settings API.
-    let mut cached_display_name: Option<String> = None;
-    let mut name_watcher: Option<tokio::sync::watch::Receiver<Option<String>>> = None;
-    if let Some(ref cid) = identity_client_id {
-        let display_name = identity_store.get_display_name(cid).await;
-        tracing::info!("[collab] Authenticated client: {} -> {:?}", cid, display_name);
-        cached_display_name = Some(display_name);
-        name_watcher = identity_store.subscribe_name(cid).await;
-    }
 
     // Try to load file content from the store (doc_id is the hash)
     let initial_content = load_file_content(&store, &doc_id).await;
@@ -651,6 +656,72 @@ async fn handle_collab_socket(
     let mut rx = doc.broadcast.subscribe();
 
     let (mut sender, mut receiver) = socket.split();
+
+    // =========================================================================
+    // First-message authentication
+    // =========================================================================
+    // Wait up to 5 seconds for the client to send an AUTH message as the first
+    // binary frame. If the first message is AUTH, verify the token and set the
+    // identity. If it's any other message type or the timeout expires, proceed
+    // as anonymous (the message is NOT dropped — it's processed normally below).
+    let mut identity_client_id: Option<String> = None;
+    let mut cached_display_name: Option<String> = None;
+    let mut name_watcher: Option<tokio::sync::watch::Receiver<Option<String>>> = None;
+    let mut buffered_msg: Option<CollabMessage> = None;
+
+    let auth_deadline = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(auth_deadline);
+
+    tokio::select! {
+        maybe_msg = receiver.next() => {
+            if let Some(Ok(ws_msg)) = maybe_msg {
+                if let Some(data) = extract_binary(&ws_msg) {
+                    if let Some(decoded) = CollabMessage::decode(&data) {
+                        match decoded {
+                            CollabMessage::Auth { ref token } => {
+                                // Verify the token
+                                if let Some(cid) = identity_store.verify_token_client_id(token) {
+                                    let display_name = identity_store.get_display_name(&cid).await;
+                                    tracing::info!("[collab] Authenticated client: {} -> {:?}", cid, display_name);
+                                    name_watcher = identity_store.subscribe_name(&cid).await;
+
+                                    // Send AUTH_OK back to client
+                                    let auth_ok = CollabMessage::AuthOk {
+                                        client_id: cid.clone(),
+                                        name: Some(display_name.clone()),
+                                    };
+                                    if sender.send(Message::Binary(auth_ok.encode())).await.is_err() {
+                                        tracing::warn!("[collab] Client disconnected during auth response");
+                                        doc.client_disconnected().await;
+                                        return;
+                                    }
+
+                                    cached_display_name = Some(display_name);
+                                    identity_client_id = Some(cid);
+                                } else {
+                                    tracing::info!("[collab] Auth failed: invalid/expired token");
+                                    // Proceed as anonymous — no AUTH_OK sent
+                                }
+                            }
+                            other => {
+                                // Not an auth message — buffer it for normal processing
+                                tracing::debug!("[collab] First message is not AUTH, proceeding as anonymous");
+                                buffered_msg = Some(other);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Client disconnected before sending anything
+                tracing::warn!("[collab] Client disconnected before first message");
+                doc.client_disconnected().await;
+                return;
+            }
+        }
+        () = &mut auth_deadline => {
+            tracing::debug!("[collab] Auth timeout, proceeding as anonymous");
+        }
+    }
 
     // Send initial document state (binary MessagePack)
     let init_msg = CollabMessage::Init {
@@ -811,8 +882,16 @@ async fn handle_collab_socket(
         }
     });
 
-    // Handle incoming messages
-    while let Some(Ok(msg)) = receiver.next().await {
+    // Handle incoming messages.
+    // If we buffered a non-AUTH message during the auth phase, process it first.
+    let buffered_iter = buffered_msg
+        .take()
+        .map(|m| Ok(Message::Binary(m.encode())))
+        .into_iter();
+    let ws_stream = futures::stream::iter(buffered_iter).chain(receiver);
+    tokio::pin!(ws_stream);
+
+    while let Some(Ok(msg)) = ws_stream.next().await {
         // Any message (pong, binary, etc.) counts as activity
         *last_activity.write().await = Instant::now();
 

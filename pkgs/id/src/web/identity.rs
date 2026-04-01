@@ -45,6 +45,9 @@ use tokio::sync::watch;
 /// Maximum allowed display name length (bytes).
 const MAX_NAME_LENGTH: usize = 64;
 
+/// Maximum token age before it's considered expired (30 days in seconds).
+const TOKEN_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
+
 /// A client's identity information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientIdentity {
@@ -268,7 +271,15 @@ impl IdentityStore {
             .ok()?;
 
         // Deserialize payload
-        serde_json::from_slice(payload_bytes).ok()
+        let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
+
+        // Reject expired tokens (older than TOKEN_MAX_AGE_SECS)
+        let now = unix_timestamp();
+        if now.saturating_sub(payload.created_at) > TOKEN_MAX_AGE_SECS {
+            return None;
+        }
+
+        Some(payload)
     }
 }
 
@@ -643,5 +654,25 @@ mod tests {
     async fn test_name_watch_no_subscription_for_unknown_client() {
         let store = IdentityStore::new();
         assert!(store.subscribe_name("nonexistent").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_token_expiry() {
+        let store = IdentityStore::new();
+
+        // Register a client normally — token should be valid
+        let (token, identity) = store.register(None).await.unwrap();
+        assert!(store.verify_token(&token).await.is_some());
+        assert!(store.verify_token_client_id(&token).is_some());
+
+        // Create a token with a timestamp older than TOKEN_MAX_AGE_SECS
+        let old_timestamp = unix_timestamp().saturating_sub(TOKEN_MAX_AGE_SECS + 1);
+        let expired_token = store
+            .create_token(&identity.client_id, old_timestamp)
+            .unwrap();
+
+        // Expired token should be rejected
+        assert!(store.verify_token(&expired_token).await.is_none());
+        assert!(store.verify_token_client_id(&expired_token).is_none());
     }
 }
