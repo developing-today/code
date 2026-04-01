@@ -94,9 +94,21 @@ async fn main() -> Result<()> {
             let n: u32 = rng.random();
             format!("{n:08x}")
         } else {
+            // Validate: name must be a simple identifier (no path separators or ..)
+            if name.contains('/') || name.contains('\\') || name.contains("..") {
+                anyhow::bail!(
+                    "--new name must be a simple identifier, not a path: {name:?}"
+                );
+            }
             name.clone()
         };
         let data_dir = std::path::PathBuf::from(".iroh").join(&name);
+        if data_dir.exists() {
+            anyhow::bail!(
+                "instance directory already exists: {}  (use --data-dir to reuse an existing directory)",
+                data_dir.display()
+            );
+        }
         std::fs::create_dir_all(&data_dir)?;
         std::env::set_current_dir(&data_dir)?;
     }
