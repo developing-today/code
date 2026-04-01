@@ -66,6 +66,7 @@ use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
+use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
@@ -87,31 +88,48 @@ use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 ///
 /// - `node_id`: The public identity of the serve node
 /// - `addrs`: Local socket addresses where the serve is listening
-#[derive(Debug, Clone)]
+///
+/// # JSON Lock File Format
+///
+/// ```json
+/// {
+///   "node_id": "abc123...",
+///   "pid": 12345,
+///   "addrs": ["127.0.0.1:12345", "[::1]:12345"],
+///   "web_port": 3001
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServeInfo {
     /// The public node ID derived from the serve's keypair.
-    pub node_id: EndpointId,
-    /// Socket addresses the serve is bound to.
-    pub addrs: Vec<SocketAddr>,
+    pub node_id: String,
+    /// Process ID of the running serve instance.
+    pub pid: u32,
+    /// Socket addresses the serve is bound to (as strings for JSON).
+    pub addrs: Vec<String>,
+    /// Port for the web UI, if enabled.
+    pub web_port: Option<u16>,
+}
+
+impl ServeInfo {
+    /// Parse the node_id string back to an [`EndpointId`].
+    pub fn endpoint_id(&self) -> Option<EndpointId> {
+        self.node_id.parse().ok()
+    }
+
+    /// Parse the address strings back to [`SocketAddr`]s.
+    pub fn socket_addrs(&self) -> Vec<SocketAddr> {
+        self.addrs.iter().filter_map(|a| a.parse().ok()).collect()
+    }
 }
 
 /// Checks if a serve instance is running and returns its connection info.
 ///
-/// Reads the lock file, verifies the PID is still alive, and returns
+/// Reads the JSON lock file, verifies the PID is still alive, and returns
 /// the serve info needed to connect. Returns `None` if:
 /// - Lock file doesn't exist
 /// - Lock file is malformed
 /// - Referenced process is no longer running (stale lock)
-///
-/// # Lock File Format
-///
-/// ```text
-/// <node_id>
-/// <pid>
-/// <socket_addr_1>
-/// <socket_addr_2>
-/// ...
-/// ```
 ///
 /// # Example
 ///
@@ -125,24 +143,16 @@ pub struct ServeInfo {
 /// ```
 pub async fn get_serve_info() -> Option<ServeInfo> {
     let contents = afs::read_to_string(SERVE_LOCK).await.ok()?;
-    let mut lines = contents.lines();
-    let node_id_str = lines.next()?;
-    let pid_str = lines.next()?;
-    let pid: u32 = pid_str.parse().ok()?;
+    let info: ServeInfo = serde_json::from_str(&contents).ok()?;
 
     // Check if process is still alive
-    if !is_process_alive(pid) {
+    if !is_process_alive(info.pid) {
         // Stale lock file - remove it
         let _ = afs::remove_file(SERVE_LOCK).await;
         return None;
     }
 
-    let node_id: EndpointId = node_id_str.parse().ok()?;
-
-    // Parse socket addresses (remaining lines)
-    let addrs: Vec<SocketAddr> = lines.filter_map(|line| line.parse().ok()).collect();
-
-    Some(ServeInfo { node_id, addrs })
+    Some(info)
 }
 
 /// Checks if a process with the given PID is still running.
@@ -176,26 +186,33 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-/// Creates the serve lock file with connection information.
+/// Creates the serve lock file with connection information as JSON.
 ///
-/// Writes the node ID, current process ID, and socket addresses
-/// to the lock file so other processes can discover and connect.
+/// Writes the node ID, current process ID, socket addresses, and
+/// optional web port to the lock file so other processes can discover
+/// and connect.
 ///
 /// # Arguments
 ///
 /// * `node_id` - The serve node's public identity
 /// * `addrs` - Socket addresses the serve is listening on
+/// * `web_port` - Port for the web UI, if enabled
 ///
 /// # Errors
 ///
 /// Returns an error if the lock file cannot be written.
-pub async fn create_serve_lock(node_id: &EndpointId, addrs: &[SocketAddr]) -> Result<()> {
-    use std::fmt::Write;
-    let pid = std::process::id();
-    let mut contents = format!("{node_id}\n{pid}");
-    for addr in addrs {
-        let _ = write!(contents, "\n{addr}");
-    }
+pub async fn create_serve_lock(
+    node_id: &EndpointId,
+    addrs: &[SocketAddr],
+    web_port: Option<u16>,
+) -> Result<()> {
+    let info = ServeInfo {
+        node_id: node_id.to_string(),
+        pid: std::process::id(),
+        addrs: addrs.iter().map(|a| a.to_string()).collect(),
+        web_port,
+    };
+    let contents = serde_json::to_string_pretty(&info)?;
     afs::write(SERVE_LOCK, contents).await?;
     Ok(())
 }
@@ -280,7 +297,7 @@ pub async fn cmd_serve(
     }
     if iroh_port != 0 {
         builder = builder.bind_addr(std::net::SocketAddrV4::new(
-            std::net::Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::UNSPECIFIED,
             iroh_port,
         ))?;
     }
@@ -407,7 +424,25 @@ pub async fn cmd_serve(
             other => *other,
         })
         .collect();
-    create_serve_lock(&serve_node_id, &local_addrs).await?;
+
+    // Bind the web server early to capture the actual port for the lock file,
+    // but don't start serving yet (spawn happens after lock file is written).
+    #[allow(unused_mut)] // web_port is only mutated with the `web` feature
+    let mut web_port: Option<u16> = None;
+    #[cfg(feature = "web")]
+    let web_listener = if web {
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let actual_port = listener.local_addr()?.port();
+        web_port = Some(actual_port);
+        Some(listener)
+    } else {
+        None
+    };
+
+    // Write the lock file before printing status so it exists when callers
+    // detect the server via stdout output (integration tests depend on this).
+    create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
 
     println!("node: {serve_node_id}");
     if ephemeral {
@@ -427,19 +462,16 @@ pub async fn cmd_serve(
         println!("mdns: enabled");
     }
 
-    // Start web server if enabled
+    // Start web server now that the lock file is written
     #[cfg(feature = "web")]
-    let _web_handle = if web {
+    let _web_handle = if let Some(listener) = web_listener {
         let web_router = crate::web::web_router(
             store_handle.clone(),
             Some(peer_discovery.clone()),
             node_id.to_string(),
             tag_store.clone(),
         );
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        // Get the actual bound port (important when port 0 is used for random assignment)
-        let actual_port = listener.local_addr()?.port();
+        let actual_port = web_port.unwrap_or(port);
         println!("web: http://localhost:{actual_port}");
         Some(tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, web_router).await {
@@ -659,16 +691,19 @@ mod tests {
 
         let key = SecretKey::generate(&mut rand::rng());
         let node_id = key.public();
-        let addrs = vec![
-            "127.0.0.1:8080".parse().unwrap(),
-            "[::1]:8080".parse().unwrap(),
-        ];
 
-        let info = ServeInfo { node_id, addrs };
+        let info = ServeInfo {
+            node_id: node_id.to_string(),
+            pid: 12345,
+            addrs: vec!["127.0.0.1:8080".to_string(), "[::1]:8080".to_string()],
+            web_port: Some(3000),
+        };
 
-        assert_eq!(info.node_id, node_id);
+        assert_eq!(info.node_id, node_id.to_string());
         assert_eq!(info.addrs.len(), 2);
-        assert_eq!(info.addrs[0].to_string(), "127.0.0.1:8080");
+        assert_eq!(info.addrs[0], "127.0.0.1:8080");
+        assert_eq!(info.pid, 12345);
+        assert_eq!(info.web_port, Some(3000));
     }
 
     #[test]
@@ -678,13 +713,48 @@ mod tests {
         let key = SecretKey::generate(&mut rand::rng());
         let node_id = key.public();
         let info = ServeInfo {
-            node_id,
-            addrs: vec!["127.0.0.1:8080".parse().unwrap()],
+            node_id: node_id.to_string(),
+            pid: 99,
+            addrs: vec!["127.0.0.1:8080".to_string()],
+            web_port: None,
         };
 
         let cloned = info.clone();
         assert_eq!(cloned.node_id, info.node_id);
         assert_eq!(cloned.addrs, info.addrs);
+        assert_eq!(cloned.pid, info.pid);
+        assert_eq!(cloned.web_port, info.web_port);
+    }
+
+    #[test]
+    fn test_serve_info_json_roundtrip() {
+        let info = ServeInfo {
+            node_id: "abc123".to_string(),
+            pid: 42,
+            addrs: vec!["127.0.0.1:8080".to_string(), "[::1]:9090".to_string()],
+            web_port: Some(3001),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: ServeInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.node_id, "abc123");
+        assert_eq!(parsed.pid, 42);
+        assert_eq!(parsed.addrs.len(), 2);
+        assert_eq!(parsed.web_port, Some(3001));
+    }
+
+    #[test]
+    fn test_serve_info_json_no_web_port() {
+        let info = ServeInfo {
+            node_id: "def456".to_string(),
+            pid: 100,
+            addrs: vec!["127.0.0.1:5555".to_string()],
+            web_port: None,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: ServeInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.web_port, None);
     }
 
     // Integration tests for lock file functions require file system access

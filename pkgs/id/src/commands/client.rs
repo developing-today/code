@@ -77,8 +77,8 @@ pub async fn create_local_client_endpoint(
 
     // Build EndpointAddr with known socket addresses to bypass DNS discovery
     // Prefer IPv4 localhost for reliability on systems with IPv6 issues
-    let addrs: Vec<_> = serve_info
-        .addrs
+    let all_addrs = serve_info.socket_addrs();
+    let addrs: Vec<_> = all_addrs
         .iter()
         .filter(|addr| addr.is_ipv4())
         .map(|addr| TransportAddr::Ip(*addr))
@@ -86,8 +86,7 @@ pub async fn create_local_client_endpoint(
 
     // Fall back to all addresses if no IPv4 found
     let addrs = if addrs.is_empty() {
-        serve_info
-            .addrs
+        all_addrs
             .iter()
             .map(|addr| TransportAddr::Ip(*addr))
             .collect()
@@ -95,7 +94,10 @@ pub async fn create_local_client_endpoint(
         addrs
     };
 
-    let endpoint_addr = EndpointAddr::from_parts(serve_info.node_id, addrs);
+    let node_id = serve_info
+        .endpoint_id()
+        .ok_or_else(|| anyhow::anyhow!("invalid node_id in lock file"))?;
+    let endpoint_addr = EndpointAddr::from_parts(node_id, addrs);
 
     Ok((endpoint, endpoint_addr))
 }

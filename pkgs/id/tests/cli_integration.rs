@@ -1066,13 +1066,16 @@ mod serve_tests {
         assert!(lock_path.exists(), "Lock file should exist");
 
         let lock_content = fs::read_to_string(&lock_path).unwrap();
-        let first_line = lock_content.lines().next().unwrap();
-        assert_eq!(first_line, node_id, "Lock file should contain node ID");
+        // Lock file is JSON; verify it contains the node_id
+        assert!(
+            lock_content.contains(&node_id),
+            "Lock file should contain node ID"
+        );
 
-        // Verify lock file has PID on second line
-        let lines: Vec<&str> = lock_content.lines().collect();
-        assert!(lines.len() >= 2, "Lock file should have at least 2 lines");
-        let pid: u32 = lines[1].parse().expect("Second line should be PID");
+        // Parse as JSON and verify structure
+        let lock_json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+        assert_eq!(lock_json["node_id"], node_id, "JSON node_id should match");
+        let pid = lock_json["pid"].as_u64().expect("pid should be a number");
         assert!(pid > 0, "PID should be positive");
 
         // Stop server gracefully - cleanup is tested separately to avoid flakiness
@@ -1142,8 +1145,10 @@ mod serve_tests {
         // Lock files should have different PIDs
         let lock1 = fs::read_to_string(server1.lock_file_path()).unwrap();
         let lock2 = fs::read_to_string(server2.lock_file_path()).unwrap();
-        let pid1: u32 = lock1.lines().nth(1).unwrap().parse().unwrap();
-        let pid2: u32 = lock2.lines().nth(1).unwrap().parse().unwrap();
+        let json1: serde_json::Value = serde_json::from_str(&lock1).unwrap();
+        let json2: serde_json::Value = serde_json::from_str(&lock2).unwrap();
+        let pid1 = json1["pid"].as_u64().unwrap();
+        let pid2 = json2["pid"].as_u64().unwrap();
         assert_ne!(pid1, pid2, "Servers should have different PIDs");
 
         // Clean up

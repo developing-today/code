@@ -82,6 +82,8 @@
 //! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
 //! - **Renaming**: Use `source:dest` syntax for any path argument
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
@@ -116,6 +118,53 @@ pub struct Cli {
     /// Overrides environment variables but not --debug.
     #[arg(long, global = true, value_name = "LEVEL")]
     pub log_level: Option<String>,
+
+    /// Base directory for all data files (.iroh-store, .iroh-key, .iroh-serve.lock).
+    ///
+    /// Allows running multiple independent instances on the same machine.
+    /// Each instance should use a separate data directory.
+    /// The directory is created if it does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Run two servers with separate data
+    /// id --data-dir ./node1 serve --port 3001
+    /// id --data-dir ./node2 serve --port 3002
+    ///
+    /// # Client commands use the same flag to target a specific instance
+    /// id --data-dir ./node1 list
+    /// id --data-dir ./node2 repl
+    /// ```
+    #[arg(
+        long,
+        short = 'd',
+        global = true,
+        value_name = "DIR",
+        conflicts_with = "new"
+    )]
+    pub data_dir: Option<PathBuf>,
+
+    /// Create a new instance directory under .iroh/<name>/.
+    ///
+    /// Shorthand for `--data-dir .iroh/<name>/` that auto-creates
+    /// a named (or randomly-named) subdirectory under `.iroh/` in
+    /// the current working directory.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Named instance
+    /// id --new my-dev serve --port 0
+    ///
+    /// # Random name (auto-generated)
+    /// id --new serve
+    ///
+    /// # Client commands targeting the same instance
+    /// id --new my-dev list
+    /// ```
+    #[arg(long, global = true, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with = "data_dir")]
+    pub new: Option<String>,
 
     /// The subcommand to execute.
     ///
