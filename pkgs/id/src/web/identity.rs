@@ -40,6 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tokio::sync::watch;
 
 /// Maximum allowed display name length (bytes).
 const MAX_NAME_LENGTH: usize = 64;
@@ -73,6 +74,9 @@ struct TokenPayload {
 pub struct IdentityStore {
     /// Map of `client_id` to identity.
     clients: Arc<RwLock<HashMap<String, ClientIdentity>>>,
+    /// Watch channels for name changes, keyed by `client_id`.
+    /// WS handlers subscribe to get notified when a client's name changes.
+    name_watchers: Arc<RwLock<HashMap<String, watch::Sender<Option<String>>>>>,
     /// Ed25519 signing key (generated at startup, used to sign tokens).
     signing_key: Arc<SigningKey>,
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
@@ -86,6 +90,7 @@ impl IdentityStore {
         let verifying_key = signing_key.verifying_key();
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            name_watchers: Arc::new(RwLock::new(HashMap::new())),
             signing_key: Arc::new(signing_key),
             verifying_key,
         }
@@ -105,7 +110,7 @@ impl IdentityStore {
 
         let identity = ClientIdentity {
             client_id: client_id.clone(),
-            name,
+            name: name.clone(),
             created_at: now,
             updated_at: now,
         };
@@ -114,6 +119,13 @@ impl IdentityStore {
         {
             let mut clients = self.clients.write().await;
             clients.insert(client_id.clone(), identity.clone());
+        }
+
+        // Create a watch channel for name changes
+        {
+            let (tx, _rx) = watch::channel(name);
+            let mut watchers = self.name_watchers.write().await;
+            watchers.insert(client_id.clone(), tx);
         }
 
         // Create and sign a token
@@ -149,9 +161,21 @@ impl IdentityStore {
         let name = sanitize_name(name);
         let mut clients = self.clients.write().await;
         let identity = clients.get_mut(client_id)?;
-        identity.name = name;
+        identity.name = name.clone();
         identity.updated_at = unix_timestamp();
-        Some(identity.clone())
+        let result = identity.clone();
+        drop(clients);
+
+        // Notify any subscribed WS handlers of the name change
+        {
+            let watchers = self.name_watchers.read().await;
+            if let Some(tx) = watchers.get(client_id) {
+                // send_replace never fails (just overwrites the value)
+                tx.send_replace(name);
+            }
+        }
+
+        Some(result)
     }
 
     /// Look up a client identity by ID.
@@ -169,6 +193,16 @@ impl IdentityStore {
             .get(client_id)
             .and_then(|c| c.name.clone())
             .unwrap_or_else(|| short_id(client_id))
+    }
+
+    /// Subscribe to name changes for a client.
+    ///
+    /// Returns a `watch::Receiver` that yields the current name immediately
+    /// and notifies on subsequent changes. Returns `None` if the client
+    /// is not registered.
+    pub async fn subscribe_name(&self, client_id: &str) -> Option<watch::Receiver<Option<String>>> {
+        let watchers = self.name_watchers.read().await;
+        watchers.get(client_id).map(|tx| tx.subscribe())
     }
 
     /// Get the number of registered clients.
@@ -279,7 +313,7 @@ fn sanitize_name(name: Option<String>) -> Option<String> {
 }
 
 /// Create a short display ID from a `client_id` (first 6 chars).
-fn short_id(client_id: &str) -> String {
+pub(crate) fn short_id(client_id: &str) -> String {
     client_id.chars().take(6).collect()
 }
 
@@ -576,5 +610,38 @@ mod tests {
 
         store.register(None).await.unwrap();
         assert_eq!(store.len().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_name_watch_channel() {
+        let store = IdentityStore::new();
+        let (_token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+        let cid = &identity.client_id;
+
+        // Subscribe to name changes
+        let mut rx = store.subscribe_name(cid).await.unwrap();
+
+        // Initial value is the name at registration time
+        assert_eq!(*rx.borrow(), Some("Alice".to_owned()));
+        assert!(!rx.has_changed().unwrap());
+
+        // Update the name
+        store.update_name(cid, Some("Bob".to_owned())).await;
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(*rx.borrow_and_update(), Some("Bob".to_owned()));
+
+        // Clear the name
+        store.update_name(cid, None).await;
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(*rx.borrow_and_update(), None);
+
+        // No further changes
+        assert!(!rx.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_name_watch_no_subscription_for_unknown_client() {
+        let store = IdentityStore::new();
+        assert!(store.subscribe_name("nonexistent").await.is_none());
     }
 }

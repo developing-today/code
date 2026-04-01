@@ -64,6 +64,7 @@ use std::{
 use tokio::sync::{RwLock, broadcast};
 
 use super::content_mode::{ContentMode, detect_mode_with_content};
+use super::identity::short_id;
 use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
@@ -571,15 +572,17 @@ async fn handle_collab_socket(
         identity_client_id
     );
 
-    // Resolve the display name from the identity store (if authenticated).
-    // This name will override any client-provided cursor name.
-    let identity_display_name = if let Some(ref cid) = identity_client_id {
-        let name = identity_store.get_display_name(cid).await;
-        tracing::info!("[collab] Authenticated client: {} -> {:?}", cid, name);
-        Some(name)
-    } else {
-        None
-    };
+    // Log identity status and subscribe to name changes (if authenticated).
+    // The cached name is updated via a watch channel whenever the client
+    // changes their display name through the settings API.
+    let mut cached_display_name: Option<String> = None;
+    let mut name_watcher: Option<tokio::sync::watch::Receiver<Option<String>>> = None;
+    if let Some(ref cid) = identity_client_id {
+        let display_name = identity_store.get_display_name(cid).await;
+        tracing::info!("[collab] Authenticated client: {} -> {:?}", cid, display_name);
+        cached_display_name = Some(display_name);
+        name_watcher = identity_store.subscribe_name(cid).await;
+    }
 
     // Try to load file content from the store (doc_id is the hash)
     let initial_content = load_file_content(&store, &doc_id).await;
@@ -851,11 +854,20 @@ async fn handle_collab_socket(
                     } => {
                         let client_id_str = client_id.to_string();
 
-                        // If this connection has a verified identity, override
-                        // the client-provided name with the server-known display name.
-                        // This prevents name spoofing and keeps names in sync
-                        // when updated via the settings API.
-                        let effective_name = identity_display_name.clone().or(name);
+                        // If this connection has a verified identity, use the
+                        // cached display name. The cache is updated via a watch
+                        // channel when the name changes (non-blocking check).
+                        if let Some(ref mut rx) = name_watcher {
+                            if rx.has_changed().unwrap_or(false) {
+                                let new_name = rx.borrow_and_update().clone();
+                                cached_display_name = Some(
+                                    new_name.unwrap_or_else(|| {
+                                        short_id(identity_client_id.as_deref().unwrap_or(""))
+                                    })
+                                );
+                            }
+                        }
+                        let effective_name = cached_display_name.clone().or(name);
 
                         tracing::debug!(
                             "[collab] Received Cursor: client={}, head={}, anchor={}, name={:?}",
