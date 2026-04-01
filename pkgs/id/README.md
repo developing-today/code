@@ -239,7 +239,6 @@ src/
 
 web/                     # TypeScript frontend
 ├── src/                 # ProseMirror editor, collab, themes
-├── styles/              # Terminal CSS, themes, editor styles
 └── dist/                # Built assets (embedded in binary)
 
 e2e/                     # Playwright E2E tests (38 tests × 2 browsers = 146)

@@ -189,8 +189,8 @@
     inset: 0;
     background: repeating-linear-gradient(
       0deg,
-      rgba(0, 0, 0, 0.15) 0px,
-      rgba(0, 0, 0, 0.15) 1px,
+      rgba(0, 0, 0, 0.03) 0px,
+      rgba(0, 0, 0, 0.03) 1px,
       transparent 1px,
       transparent 2px
     );
@@ -220,24 +220,39 @@
       0 0 16px currentColor;
   }
 
-  /* Theme switcher button - circular with split color gradient */
-  .theme-btn {
-    width: 24px;
-    height: 24px;
+  /* Theme switcher button (header dots) - circular with split color gradient.
+     :not(.btn) excludes settings page buttons which use DaisyUI btn classes. */
+  .theme-btn:not(.btn) {
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
-    border: 1px solid oklch(0.85 0.02 0 / 0.3);
+    background-color: color-mix(in oklch, var(--color-primary) 60%, transparent);
+    border: 1px solid color-mix(in oklch, var(--color-primary) 30%, transparent);
+    box-shadow:
+      0 0 4px color-mix(in oklch, var(--color-primary) 50%, transparent),
+      0 0 10px color-mix(in oklch, var(--color-primary) 30%, transparent),
+      0 0 16px color-mix(in oklch, white 15%, transparent);
     cursor: pointer;
     transition: all 0.2s ease;
     flex-shrink: 0;
   }
 
-  .theme-btn:hover {
+  .theme-btn:not(.btn):hover {
     transform: scale(1.15);
+    background-color: color-mix(in oklch, var(--color-primary) 85%, transparent);
+    box-shadow:
+      0 0 6px color-mix(in oklch, var(--color-primary) 60%, transparent),
+      0 0 14px color-mix(in oklch, var(--color-primary) 40%, transparent),
+      0 0 22px color-mix(in oklch, white 20%, transparent);
   }
 
-  .theme-btn.active {
-    border-color: oklch(0.85 0.02 0 / 0.8);
-    box-shadow: 0 0 6px oklch(0.85 0.02 0 / 0.3);
+  .theme-btn:not(.btn).active {
+    background-color: color-mix(in oklch, var(--color-primary) 80%, transparent);
+    border-color: color-mix(in oklch, var(--color-primary) 50%, transparent);
+    box-shadow:
+      0 0 6px color-mix(in oklch, var(--color-primary) 60%, transparent),
+      0 0 14px color-mix(in oklch, var(--color-primary) 40%, transparent),
+      0 0 22px color-mix(in oklch, white 20%, transparent);
   }
 
   /* Tag pills (used in file list and editor tag panel) */

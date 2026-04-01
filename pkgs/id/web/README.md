@@ -170,10 +170,6 @@ web/
 │   ├── collab.ts    # WebSocket client, MessagePack protocol
 │   ├── cursors.ts   # Cursor/selection plugin with fade
 │   └── theme.ts     # Theme switching
-├── styles/
-│   ├── editor.css   # ProseMirror styles, cursor tooltips, viewer buttons
-│   ├── terminal.css # DaisyUI component overrides, file list layout
-│   └── themes.css   # DaisyUI custom themes (sneak/arch/mech)
 ├── dist/            # Built output (git-ignored)
 ├── bun.nix          # Offline npm dependency fetching for nix sandbox
 └── package.json
