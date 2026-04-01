@@ -1945,6 +1945,18 @@ async fn identity_update_name_handler(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
 
+    // Immediately update cursors in all active documents so other clients
+    // (and newly joining clients) see the new name without waiting for
+    // the renamed client's next cursor move.
+    let display_name = updated
+        .name
+        .clone()
+        .unwrap_or_else(|| super::identity::short_id(&updated.client_id));
+    state
+        .collab
+        .update_client_name(&updated.client_id, &display_name)
+        .await;
+
     tracing::info!(
         "[identity] Updated name for {}: {:?}",
         updated.client_id,

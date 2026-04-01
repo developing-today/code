@@ -198,6 +198,8 @@ pub struct CursorPosition {
     pub head: u32,
     pub anchor: u32,
     pub name: Option<String>,
+    /// The identity client_id (hex string) if authenticated, for name updates.
+    pub identity_client_id: Option<String>,
     /// When the cursor was last updated (for age calculation on initial load).
     pub last_update: Instant,
     /// When the client disconnected (None if still connected).
@@ -361,6 +363,51 @@ impl CollabState {
                     old_doc_id,
                     new_hash
                 );
+            }
+        }
+    }
+
+    /// Update cursor display names for a client across all active documents.
+    ///
+    /// Called when a client changes their display name via the settings API.
+    /// Finds all cursors with the matching `identity_client_id`, updates the
+    /// stored name, and broadcasts the updated cursor to all connected clients.
+    pub async fn update_client_name(&self, identity_client_id: &str, new_name: &str) {
+        let docs = self.documents.read().await;
+        for (doc_id, doc) in docs.iter() {
+            let mut cursors = doc.cursors.write().await;
+            // Find cursors belonging to this identity
+            let matching: Vec<(String, u32, u32)> = cursors
+                .iter()
+                .filter(|(_, pos)| {
+                    pos.identity_client_id.as_deref() == Some(identity_client_id)
+                })
+                .map(|(cid, pos)| (cid.clone(), pos.head, pos.anchor))
+                .collect();
+
+            for (cursor_id, head, anchor) in &matching {
+                if let Some(pos) = cursors.get_mut(cursor_id) {
+                    pos.name = Some(new_name.to_owned());
+                }
+
+                // Broadcast the updated cursor to all clients
+                let client_id = cursor_id.parse::<u64>().unwrap_or(0);
+                let cursor_msg = CollabMessage::Cursor {
+                    client_id,
+                    head: *head,
+                    anchor: *anchor,
+                    name: Some(new_name.to_owned()),
+                    idle_secs: None,
+                };
+                let receivers = doc.broadcast.send(cursor_msg).unwrap_or(0);
+                if receivers > 0 {
+                    tracing::info!(
+                        "[collab] Broadcast name update for {} in doc '{}' to {} client(s)",
+                        identity_client_id,
+                        doc_id,
+                        receivers,
+                    );
+                }
             }
         }
     }
@@ -888,6 +935,7 @@ async fn handle_collab_socket(
                                     head,
                                     anchor,
                                     name: effective_name.clone(),
+                                    identity_client_id: identity_client_id.clone(),
                                     last_update: Instant::now(),
                                     disconnected_at: None,
                                 },
