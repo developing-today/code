@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_019icXcCuCDnjbgJU6eyYKWF",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "batch_read",
-  "fullOutput": "# Batch Read (5 files)\n\n## /home/user/autoresearch-opencode/commands\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/docs\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/scripts\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/skills/autoresearch\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/experiments\n\n**Error**: EISDIR: illegal operation on a directory, read\n",
-  "timestamp": 1774259597156
+	"callID": "toolu_vrtx_019icXcCuCDnjbgJU6eyYKWF",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "batch_read",
+	"fullOutput": "# Batch Read (5 files)\n\n## /home/user/autoresearch-opencode/commands\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/docs\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/scripts\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/skills/autoresearch\n\n**Error**: EISDIR: illegal operation on a directory, read\n\n## /home/user/autoresearch-opencode/experiments\n\n**Error**: EISDIR: illegal operation on a directory, read\n",
+	"timestamp": 1774259597156
 }

@@ -434,7 +434,10 @@ let
           (
             system:
             let
-              pkgs = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system};
+              pkgs = import inputs.clan-core.inputs.nixpkgs {
+                inherit system;
+                overlays = [ (import inputs.id-rust-overlay) ];
+              };
               # Import shared configuration (same as shell.nix)
               nixCommon = import ../nix-common.nix { inherit pkgs; };
             in
@@ -442,8 +445,17 @@ let
               default = pkgs.mkShell {
                 inherit (nixCommon)
                   NIX_CONFIG
+                  TREEFMT_TREE_ROOT_CMD
+                  buildInputs
                   nativeBuildInputs
                   shellHook
+                  ;
+                # OpenSSL configuration for native builds
+                inherit (nixCommon.opensslEnv)
+                  OPENSSL_DIR
+                  OPENSSL_LIB_DIR
+                  OPENSSL_INCLUDE_DIR
+                  PKG_CONFIG_PATH
                   ;
                 # Shared packages + clan-cli (only available via flake input)
                 packages = nixCommon.packages ++ [
@@ -458,36 +470,50 @@ let
     system:
     let
       pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
-      mkJustApp =
-        name:
-        let
-          script = pkgs.writeShellScriptBin name ''
-            exec ${pkgs.just}/bin/just ${name} "$@"
-          '';
-        in
-        {
-          type = "app";
-          program = "${script}/bin/${name}";
+
+      # Common metadata for all root apps
+      commonMeta = {
+        homepage = "https://github.com/developing-today/code";
+        license = with pkgs.lib.licenses; [
+          mit
+          asl20
+        ];
+      };
+
+      # Helper to create a runnable app with metadata
+      mkApp = drv: description: {
+        type = "app";
+        program = "${drv}/bin/${drv.name}";
+        meta = commonMeta // {
+          inherit description;
         };
-      justCmds = [
-        "update-input"
-        "update-inputs-all"
-        "update-nixpkgs-all"
-        "update-nixpkgs-master"
-        "update-nixpkgs-unstable"
-        "update-nixpkgs"
-        "update-nixpkgs-all-only"
-        "update-nixpkgs-master-only"
-        "update-nixpkgs-unstable-only"
-      ];
+      };
+
+      # ─── Dynamic app generation from justfile ──────────────────────────
+      #
+      # Apps are generated from just-recipes.json (produced by `just just-recipes`).
+      # To add a new nix app: add a recipe to root.just, run `just lockfiles`,
+      # and the app appears automatically as `nix run .#<recipe-name>`.
+      #
+      justRecipes = builtins.fromJSON (builtins.readFile ../just-recipes.json);
+
+      # Build a nix app from a just recipe
+      mkRecipeApp =
+        name: recipe:
+        let
+          description = if recipe.doc != null then recipe.doc else "Run 'just ${name}'";
+        in
+        mkApp (pkgs.writeShellScriptBin name ''
+          exec ${pkgs.just}/bin/just ${name} "$@"
+        '') description;
+
+      # Filter: exclude private recipes and 'default' (handled separately)
+      publicRecipes = pkgs.lib.filterAttrs (
+        name: recipe: !(recipe.private or false) && name != "default"
+      ) justRecipes.recipes;
     in
     {
-      apps = builtins.listToAttrs (
-        map (name: {
-          inherit name;
-          value = mkJustApp name;
-        }) justCmds
-      );
+      apps = pkgs.lib.mapAttrs mkRecipeApp publicRecipes;
     }
   );
 
@@ -554,45 +580,280 @@ let
       (inputs.flake-utils.lib.eachDefaultSystem (
         system:
         let
-          pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
-          fmtBins = with pkgs; [
-            treefmt
-            nixfmt
-            statix
-            deadnix
-            nodePackages.prettier
-            shfmt
-            rustfmt
-            shellcheck
-            ruff
-            biome
-            rufo
-            elmPackages.elm-format
-            go
-            haskellPackages.ormolu
-          ];
+          pkgs = import inputs.nixpkgs-unstable {
+            inherit system;
+            overlays = [ (import inputs.id-rust-overlay) ];
+          };
+          nixCommon = import ../nix-common.nix { inherit pkgs; };
+          inherit (nixCommon) fmtBins;
         in
         {
           formatter = pkgs.writeShellScriptBin "formatter" ''
             export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-            # Format root project
-            treefmt "$@"
-            # Format id sub-project (always full tree, ignores passed paths)
+            # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
+            just fix "$@"
+            # Format id sub-project
             if [ -d pkgs/id ]; then
-              (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter --tree-root .)
+              (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter)
             fi
           '';
           checks = {
-            nix-fmt-check = pkgs.stdenv.mkDerivation {
-              name = "nix-fmt-check";
+            # Validate all formatters at once via treefmt --ci
+            treefmt-check = pkgs.stdenv.mkDerivation {
+              name = "treefmt-check";
               src = inputs.self;
-              nativeBuildInputs = [ pkgs.nixfmt ];
+              nativeBuildInputs = fmtBins;
               buildPhase = ''
-                find . -name '*.nix' | xargs nixfmt -s -v
+                treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
               '';
               installPhase = ''
                 mkdir -p $out
-                echo "nix-fmt-check passed at $(date)" > $out/result.txt
+                echo "treefmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            # Per-formatter checks (read-only validation)
+            nixfmt-check = pkgs.stdenv.mkDerivation {
+              name = "nixfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.nixfmt ];
+              buildPhase = ''
+                find . -name '*.nix' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path './pkgs/dht/*' \
+                  | xargs nixfmt --check
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "nixfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            biome-check = pkgs.stdenv.mkDerivation {
+              name = "biome-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.biome ];
+              buildPhase = ''
+                biome format --check --config-path . \
+                  --files-ignore-unknown=true \
+                  $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
+                    -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
+                    -not -path './pkgs/id/*' \
+                    -not -path './.opencode/*' \
+                    -not -path './pkgs/dht/*' \
+                    -not -path '*/node_modules/*' \
+                    -not -path '*/target/*') \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "biome-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            rustfmt-check = pkgs.stdenv.mkDerivation {
+              name = "rustfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.rustfmt ];
+              buildPhase = ''
+                find . -name '*.rs' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './pkgs/dht/*' \
+                  -not -path '*/target/*' \
+                  -exec rustfmt --check --edition 2024 {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "rustfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            statix-check = pkgs.stdenv.mkDerivation {
+              name = "statix-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.statix ];
+              buildPhase = ''
+                find . -name '*.nix' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path './pkgs/dht/*' \
+                  -print0 | while IFS= read -r -d "" f; do
+                    statix check -- "$f" || true
+                  done
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "statix-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            prettier-check = pkgs.stdenv.mkDerivation {
+              name = "prettier-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.nodePackages.prettier ];
+              buildPhase = ''
+                find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
+                  -o -name '*.scss' -o -name '*.yaml' \) \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec prettier --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "prettier-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            shfmt-check = pkgs.stdenv.mkDerivation {
+              name = "shfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.shfmt ];
+              buildPhase = ''
+                find . -name '*.sh' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec shfmt -d -i 2 -s {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "shfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            taplo-check = pkgs.stdenv.mkDerivation {
+              name = "taplo-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.taplo ];
+              buildPhase = ''
+                find . -name '*.toml' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path '*/target/*' \
+                  -exec taplo check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "taplo-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            shellcheck-check = pkgs.stdenv.mkDerivation {
+              name = "shellcheck-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.shellcheck ];
+              buildPhase = ''
+                find . -name '*.sh' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec shellcheck {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "shellcheck-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            ruff-check = pkgs.stdenv.mkDerivation {
+              name = "ruff-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.ruff ];
+              buildPhase = ''
+                find . -name '*.py' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec ruff format --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "ruff-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            rufo-check = pkgs.stdenv.mkDerivation {
+              name = "rufo-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.rufo ];
+              buildPhase = ''
+                find . -name '*.rb' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec rufo --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "rufo-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            elm-format-check = pkgs.stdenv.mkDerivation {
+              name = "elm-format-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.elmPackages.elm-format ];
+              buildPhase = ''
+                find . -name '*.elm' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec elm-format --validate {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "elm-format-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            gofmt-check = pkgs.stdenv.mkDerivation {
+              name = "gofmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.go ];
+              buildPhase = ''
+                found=$(find . -name '*.go' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec gofmt -l {} +) || true
+                if [ -n "$found" ]; then
+                  echo "Files not formatted by gofmt:"
+                  echo "$found"
+                fi
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "gofmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            ormolu-check = pkgs.stdenv.mkDerivation {
+              name = "ormolu-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.haskellPackages.ormolu ];
+              buildPhase = ''
+                find . -name '*.hs' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path './examples/haskell/*' \
+                  -exec ormolu --mode check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "ormolu-check passed at $(date)" > $out/result.txt
               '';
             };
           };

@@ -98,45 +98,45 @@ id peers                # List discovered peers
 
 ## CLI Commands
 
-| Command    | Aliases              | Description                                      |
-|------------|----------------------|--------------------------------------------------|
-| `serve`    |                      | Start server for peer requests                   |
-| `repl`     | `shell`              | Interactive REPL with pipes and subshells         |
-| `put`      | `in`, `add`, `store`, `import` | Store files in blob store                |
-| `put-hash` |                      | Store content by hash only (no named tag)        |
-| `get`      |                      | Retrieve files by name or hash                   |
-| `get-hash` |                      | Retrieve file by hash with explicit output path  |
-| `cat`      | `output`, `out`      | Output file content to stdout                    |
-| `show`     | `view`               | Find file by pattern and output content          |
-| `peek`     |                      | Preview with configurable head/tail lines        |
-| `find`     |                      | Find files by query, optionally output content   |
-| `search`   |                      | Search files and list all matches                |
-| `list`     | `ls`                 | List all stored files                            |
-| `tag`      | `label`, `link`      | Manage metadata tags on files                    |
-| `migrate-tags` | `migrate`       | Add name/file auto-tags to existing files        |
-| `id`       |                      | Print local node public ID                       |
-| `peers`    |                      | Discover and list known peers                    |
+| Command        | Aliases                        | Description                                     |
+| -------------- | ------------------------------ | ----------------------------------------------- |
+| `serve`        |                                | Start server for peer requests                  |
+| `repl`         | `shell`                        | Interactive REPL with pipes and subshells       |
+| `put`          | `in`, `add`, `store`, `import` | Store files in blob store                       |
+| `put-hash`     |                                | Store content by hash only (no named tag)       |
+| `get`          |                                | Retrieve files by name or hash                  |
+| `get-hash`     |                                | Retrieve file by hash with explicit output path |
+| `cat`          | `output`, `out`                | Output file content to stdout                   |
+| `show`         | `view`                         | Find file by pattern and output content         |
+| `peek`         |                                | Preview with configurable head/tail lines       |
+| `find`         |                                | Find files by query, optionally output content  |
+| `search`       |                                | Search files and list all matches               |
+| `list`         | `ls`                           | List all stored files                           |
+| `tag`          | `label`, `link`                | Manage metadata tags on files                   |
+| `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files       |
+| `id`           |                                | Print local node public ID                      |
+| `peers`        |                                | Discover and list known peers                   |
 
 ### Tag Subcommands
 
-| Subcommand | Aliases                                    | Description                        |
-|------------|--------------------------------------------|------------------------------------|
-| `set`      | `add`                                      | Set a tag on a file                |
-| `del`      | `rm`, `remove`, `rem`, `delete`, `unset`   | Delete a tag from a file           |
-| `list`     | `ls`                                       | List tags (supports `--hex`, `--binary`, `--no-truncate`) |
-| `search`   | `find`                                     | Search tags with structured query syntax |
+| Subcommand | Aliases                                  | Description                                               |
+| ---------- | ---------------------------------------- | --------------------------------------------------------- |
+| `set`      | `add`                                    | Set a tag on a file                                       |
+| `del`      | `rm`, `remove`, `rem`, `delete`, `unset` | Delete a tag from a file                                  |
+| `list`     | `ls`                                     | List tags (supports `--hex`, `--binary`, `--no-truncate`) |
+| `search`   | `find`                                   | Search tags with structured query syntax                  |
 
 #### Search Syntax
 
 Search uses structured query terms (space-separated, ANDed together):
 
-| Syntax       | Meaning                                     | Example                  |
-|-------------|---------------------------------------------|--------------------------|
-| `key:`      | Filter by key name                          | `author:`                |
-| `:value`    | Filter by value                             | `:Jane`                  |
-| `key:value` | Filter by exact key-value pair              | `author:Jane`            |
-| `"literal"` | Search all fields for literal text          | `"key:value"`            |
-| `bare`      | Case-insensitive search across all fields   | `readme`                 |
+| Syntax      | Meaning                                   | Example       |
+| ----------- | ----------------------------------------- | ------------- |
+| `key:`      | Filter by key name                        | `author:`     |
+| `:value`    | Filter by value                           | `:Jane`       |
+| `key:value` | Filter by exact key-value pair            | `author:Jane` |
+| `"literal"` | Search all fields for literal text        | `"key:value"` |
+| `bare`      | Case-insensitive search across all fields | `readme`      |
 
 Quoted strings work in key:value position: `"key:":":value"` matches key `key:` with value `:value`.
 
@@ -163,10 +163,10 @@ id repl
 
 ## Build Variants
 
-| Variant | Command         | Description                    | Requires |
-|---------|-----------------|--------------------------------|----------|
-| `lib`   | `just build-lib`| Rust CLI only                  | Rust     |
-| `web`   | `just build`    | CLI with embedded web UI       | Rust, Bun|
+| Variant | Command          | Description              | Requires  |
+| ------- | ---------------- | ------------------------ | --------- |
+| `lib`   | `just build-lib` | Rust CLI only            | Rust      |
+| `web`   | `just build`     | CLI with embedded web UI | Rust, Bun |
 
 ## Development
 
@@ -183,22 +183,26 @@ This provides: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-
 ### Testing
 
 ```bash
-just test-unit         # Unit tests (fast)
-just test-int          # Integration tests
-just test              # All Rust tests
-just test-web-unit     # TypeScript unit tests
-just test-web          # All web tests
-just test-e2e          # Playwright E2E (chromium + firefox)
+just test              # All fast tests (Rust + TypeScript unit + typecheck)
+just test-rust         # Rust tests only (~500 unit + ~85 integration)
+just test-unit         # Unit tests only (fast, ~500 tests)
+just test-integration  # Integration tests only (~85 tests)
+just test-web-unit     # TypeScript unit tests (~116 assertions)
+just test-e2e          # Playwright E2E (chromium + firefox, 146 tests)
+just test-nix          # nix flake check (27 checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
 ```
 
+See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference: 6 test layers, browser coverage matrix, environment comparison, and when to add tests where.
+
 ### Nix
 
 ```bash
-nix build              # Build web variant
-nix build .#id-lib     # Build lib variant
-nix flake check -L     # Run all CI checks in sandbox
+just build-nix                  # Build web variant (nix build)
+just build-nix-lib              # Build lib variant (nix build .#id-lib)
+just test-nix                   # All 27 CI checks in sandbox (nix flake check)
+just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 ```
 
 ## Project Structure
@@ -235,15 +239,21 @@ src/
 
 web/                     # TypeScript frontend
 ├── src/                 # ProseMirror editor, collab, themes
-├── styles/              # Terminal CSS, themes, editor styles
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests
-├── tests/basic.spec.ts  # 15 tests across chromium + firefox
-└── playwright.config.ts # Browser config with nix paths
+e2e/                     # Playwright E2E tests (38 tests × 2 browsers = 146)
+├── tests/basic.spec.ts      # 19 UI fundamental tests
+├── tests/websocket.spec.ts  # 19 WS + collaboration tests
+└── playwright.config.ts     # 3-mode config: local / nix sandbox / VM test
+
+nix/tests/                   # NixOS VM integration tests
+├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
+├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
+├── integration-test.nix     # Full cli_integration suite including serve_tests
+└── playwright-e2e-test.nix  # 4-VM full Playwright (146 interactive tests)
 
 tests/
-└── cli_integration.rs   # 64 integration tests
+└── cli_integration.rs   # ~85 integration tests
 ```
 
 ## Documentation

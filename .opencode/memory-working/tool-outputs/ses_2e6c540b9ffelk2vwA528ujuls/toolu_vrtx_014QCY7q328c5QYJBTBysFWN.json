@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_014QCY7q328c5QYJBTBysFWN",
-  "sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
-  "tool": "bash",
-  "fullOutput": "bun.lock\ncommand\ncommands\ndcp.jsonc\nnode_modules\nopencode.json\nopencode-notifier-state.json\npackage.json\npilot\nplugin\nplugins\nscripts\nsettings.json.bak\nskills\nsubtask2.jsonc\nthemes\ntui.json\n",
-  "timestamp": 1774244792037
+	"callID": "toolu_vrtx_014QCY7q328c5QYJBTBysFWN",
+	"sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
+	"tool": "bash",
+	"fullOutput": "bun.lock\ncommand\ncommands\ndcp.jsonc\nnode_modules\nopencode.json\nopencode-notifier-state.json\npackage.json\npilot\nplugin\nplugins\nscripts\nsettings.json.bak\nskills\nsubtask2.jsonc\nthemes\ntui.json\n",
+	"timestamp": 1774244792037
 }

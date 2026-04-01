@@ -24,9 +24,9 @@ use crate::http::{HeaderMap, Version};
 ///     .set_typed_body("Hello, world!");
 /// ```
 ///
-/// The response is composed of a head ([`ResponseHead`]) and an optional body.  
+/// The response is composed of a head ([`ResponseHead`]) and an optional body.
 ///
-/// Check out [`Response::new`] for details on how to build a new [`Response`].  
+/// Check out [`Response::new`] for details on how to build a new [`Response`].
 /// You might also want to check out the following methods to further customize
 /// your response:
 ///
@@ -54,7 +54,7 @@ pub struct ResponseHead {
 }
 
 impl Response<Empty<Bytes>> {
-    /// Build a new [`Response`] with the given status code.  
+    /// Build a new [`Response`] with the given status code.
     /// The HTTP version is set to HTTP 1.1, there are no headers and
     /// the body is empty.
     ///
@@ -63,7 +63,7 @@ impl Response<Empty<Bytes>> {
     /// ```rust
     /// use pavex::http::StatusCode;
     /// use pavex::response::Response;
-    ///     
+    ///
     /// let response = Response::new(StatusCode::OK);
     /// ```
     ///
@@ -75,7 +75,7 @@ impl Response<Empty<Bytes>> {
     ///
     /// ```rust
     /// use pavex::response::Response;
-    ///     
+    ///
     /// let response = Response::ok();
     /// ```
     ///
@@ -131,7 +131,7 @@ impl<Body> Response<Body> {
 
     /// Append a value to a [`Response`] header.
     ///
-    /// If the header is not present, it is added with the given value.  
+    /// If the header is not present, it is added with the given value.
     /// If the header is present, the value is appended to the end
     /// of the comma-separated list of existing values for that header.
     ///
@@ -185,10 +185,10 @@ impl<Body> Response<Body> {
     /// ```rust
     /// use pavex::http::{header::HOST, HeaderValue};
     /// use pavex::response::Response;
-    ///     
+    ///
     /// let mut response = Response::ok();
     /// assert!(response.headers().get("host").is_none());
-    ///     
+    ///
     /// // Insert a value into the `host` header.
     /// let value = HeaderValue::from_static("world");
     /// response = response.insert_header(HOST, value);
@@ -200,7 +200,7 @@ impl<Body> Response<Body> {
     /// // Insert another value into the `host` header.
     /// let value = HeaderValue::from_static("earth");
     /// response = response.insert_header(HOST, value);
-    ///     
+    ///
     /// let headers: Vec<_> = response.headers().get_all("host").iter().collect();
     /// assert_eq!(headers.len(), 1);
     /// assert_eq!(headers[0], "earth");
@@ -221,7 +221,7 @@ impl<Body> Response<Body> {
 
     /// Set the [`Response`] body.
     ///
-    /// The provided body must implement the [`TypedBody`] trait.  
+    /// The provided body must implement the [`TypedBody`] trait.
     /// The `Content-Type` header is automatically set to the value returned
     /// by [`TypedBody::content_type`].
     ///
@@ -281,7 +281,7 @@ impl<Body> Response<Body> {
     /// use pavex::response::Response;
     /// use pavex::response::body::raw::{Bytes, Full};
     /// use pavex::http::header::CONTENT_TYPE;
-    ///     
+    ///
     /// let raw_body: Full<Bytes> = Full::new("Hello, world!".into());
     /// let response = Response::ok().set_raw_body(raw_body);
     ///
@@ -415,7 +415,7 @@ impl<Body> Response<Body> {
     /// ```rust
     /// use pavex::http::{header::{HOST, SERVER}, HeaderValue};
     /// use pavex::response::Response;
-    ///     
+    ///
     /// let response = Response::ok()
     ///     .append_header(HOST, HeaderValue::from_static("world"))
     ///     .append_header(HOST, HeaderValue::from_static("earth"))

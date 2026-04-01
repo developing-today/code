@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_013ZVb9VTSecfgMBTFUVVSgm",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "/home/user/.cache/opencode/node_modules/opencode-working-memory/index.ts\n",
-  "timestamp": 1774259132603
+	"callID": "toolu_vrtx_013ZVb9VTSecfgMBTFUVVSgm",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "/home/user/.cache/opencode/node_modules/opencode-working-memory/index.ts\n",
+	"timestamp": 1774259132603
 }

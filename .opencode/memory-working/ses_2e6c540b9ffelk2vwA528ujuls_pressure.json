@@ -1,25 +1,25 @@
 {
-  "sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
-  "modelID": "claude-opus-4.6",
-  "providerID": "github-copilot",
-  "limits": {
-    "context": 144000,
-    "input": 128000,
-    "output": 64000
-  },
-  "calculated": {
-    "maxOutputTokens": 32000,
-    "reserved": 20000,
-    "usable": 108000
-  },
-  "current": {
-    "totalTokens": 47946,
-    "pressure": 0.4439444444444444,
-    "level": "safe"
-  },
-  "thresholds": {
-    "moderate": 81000,
-    "high": 97200
-  },
-  "updatedAt": "2026-03-23T05:47:34.853Z"
+	"sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
+	"modelID": "claude-opus-4.6",
+	"providerID": "github-copilot",
+	"limits": {
+		"context": 144000,
+		"input": 128000,
+		"output": 64000
+	},
+	"calculated": {
+		"maxOutputTokens": 32000,
+		"reserved": 20000,
+		"usable": 108000
+	},
+	"current": {
+		"totalTokens": 47946,
+		"pressure": 0.4439444444444444,
+		"level": "safe"
+	},
+	"thresholds": {
+		"moderate": 81000,
+		"high": 97200
+	},
+	"updatedAt": "2026-03-23T05:47:34.853Z"
 }

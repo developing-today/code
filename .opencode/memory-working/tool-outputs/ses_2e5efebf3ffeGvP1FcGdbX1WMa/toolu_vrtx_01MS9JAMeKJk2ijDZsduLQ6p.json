@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01MS9JAMeKJk2ijDZsduLQ6p",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "glob",
-  "fullOutput": "/home/user/code/.opencode/commands/autoresearch.md\n/home/user/code/.opencode/plugins/autoresearch-context.ts",
-  "timestamp": 1774259113196
+	"callID": "toolu_vrtx_01MS9JAMeKJk2ijDZsduLQ6p",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "glob",
+	"fullOutput": "/home/user/code/.opencode/commands/autoresearch.md\n/home/user/code/.opencode/plugins/autoresearch-context.ts",
+	"timestamp": 1774259113196
 }

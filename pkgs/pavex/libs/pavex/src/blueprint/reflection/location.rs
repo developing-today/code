@@ -3,7 +3,7 @@
 ///
 /// # Implementation Notes
 ///
-/// `Location` is an owned version of [`std::panic::Location`].  
+/// `Location` is an owned version of [`std::panic::Location`].
 /// You can build a `Location` instance starting from a [`std::panic::Location`]:
 ///
 /// ```rust

@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_019rdZgv7uNGFxKoTmZdeFm5",
-  "sessionID": "ses_2e6e5e575ffeb3p4Er2nfYacP0",
-  "tool": "mindmodel_lookup",
-  "fullOutput": "No .mindmodel/ directory found in this project. Proceed without specific patterns.",
-  "timestamp": 1774242639677
+	"callID": "toolu_vrtx_019rdZgv7uNGFxKoTmZdeFm5",
+	"sessionID": "ses_2e6e5e575ffeb3p4Er2nfYacP0",
+	"tool": "mindmodel_lookup",
+	"fullOutput": "No .mindmodel/ directory found in this project. Proceed without specific patterns.",
+	"timestamp": 1774242639677
 }

@@ -66,7 +66,7 @@ Already has 22 tests. Verify coverage of `copy_all_tags()` — add if missing.
 ### 3b. commands/tag.rs (src/commands/tag.rs)
 Add tests for:
 - `cmd_tag_set` argument parsing
-- `cmd_tag_del` argument parsing  
+- `cmd_tag_del` argument parsing
 - `cmd_tag_list` argument parsing
 - `cmd_tag_search` argument parsing
 
@@ -80,7 +80,7 @@ Add tests for:
 ### 3d. web/templates.rs
 Add tests for:
 - `render_media_viewer` includes rename/copy buttons
-- `render_binary_viewer` includes rename/copy buttons  
+- `render_binary_viewer` includes rename/copy buttons
 - `render_editor` includes copy button
 
 ### 3e. repl/runner.rs

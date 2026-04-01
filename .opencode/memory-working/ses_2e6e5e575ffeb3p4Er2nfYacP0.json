@@ -1,173 +1,173 @@
 {
-  "sessionID": "ses_2e6e5e575ffeb3p4Er2nfYacP0",
-  "slots": {
-    "error": [],
-    "decision": [],
-    "todo": [],
-    "dependency": []
-  },
-  "pool": [
-    {
-      "id": "wm_1774242642573_2kazo3v",
-      "type": "file-path",
-      "content": "README.md",
-      "source": "tool:read",
-      "timestamp": 1774242651357,
-      "relevanceScore": 6.1785212188798555,
-      "mentions": 3,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242643145_jzo2w15",
-      "type": "file-path",
-      "content": "/home/user/code/pkgs/id/src/commands/serve.rs",
-      "source": "tool:glob",
-      "timestamp": 1774242646430,
-      "relevanceScore": 3.8678657647242334,
-      "mentions": 2,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242639987_pcnofbv",
-      "type": "file-path",
-      "content": ".hydra.js",
-      "source": "tool:read",
-      "timestamp": 1774242639986,
-      "relevanceScore": 3.2081583771203688,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242639987_027go94",
-      "type": "file-path",
-      "content": "ANDROID-CONNECTIVITY.md",
-      "source": "tool:read",
-      "timestamp": 1774242639986,
-      "relevanceScore": 3.18606867896514,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242639987_gxeh247",
-      "type": "file-path",
-      "content": "COPYRIGHT.md",
-      "source": "tool:read",
-      "timestamp": 1774242639986,
-      "relevanceScore": 3.1600807987825172,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242639987_8ipomzr",
-      "type": "file-path",
-      "content": "opencode.js",
-      "source": "tool:read",
-      "timestamp": 1774242639986,
-      "relevanceScore": 3.1295068220970794,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242639987_62q2s2a",
-      "type": "file-path",
-      "content": "package-lock.js",
-      "source": "tool:read",
-      "timestamp": 1774242639986,
-      "relevanceScore": 3.09353743776127,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242642572_smx2qo4",
-      "type": "file-path",
-      "content": "CONTRIBUTING.md",
-      "source": "tool:read",
-      "timestamp": 1774242642572,
-      "relevanceScore": 3.0512205150132585,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242645607_7jxklia",
-      "type": "file-path",
-      "content": "AGENTS.md",
-      "source": "tool:read",
-      "timestamp": 1774242645607,
-      "relevanceScore": 2.8739597232049805,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242645608_1irpsgn",
-      "type": "file-path",
-      "content": "TODO.md",
-      "source": "tool:read",
-      "timestamp": 1774242645607,
-      "relevanceScore": 2.6975221082421874,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242645608_902obxb",
-      "type": "file-path",
-      "content": "WEB.md",
-      "source": "tool:read",
-      "timestamp": 1774242645607,
-      "relevanceScore": 2.58532012734375,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242646128_98ds5ob",
-      "type": "file-path",
-      "content": "/home/user/code/pkgs/id/AGENTS.md",
-      "source": "tool:read",
-      "timestamp": 1774242646125,
-      "relevanceScore": 2.453317796875,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242646128_i9dvxqx",
-      "type": "file-path",
-      "content": "src/cli.rs",
-      "source": "tool:read",
-      "timestamp": 1774242646125,
-      "relevanceScore": 2.2980209375,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242646129_r5hysi8",
-      "type": "file-path",
-      "content": "main.rs",
-      "source": "tool:read",
-      "timestamp": 1774242646125,
-      "relevanceScore": 2.11531875,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242646129_2cg5v9q",
-      "type": "file-path",
-      "content": "lib.rs",
-      "source": "tool:read",
-      "timestamp": 1774242646125,
-      "relevanceScore": 1.900375,
-      "mentions": 1,
-      "lastEventCounter": 19
-    },
-    {
-      "id": "wm_1774242646129_6v9rfiz",
-      "type": "file-path",
-      "content": "cli.rs",
-      "source": "tool:read",
-      "timestamp": 1774242646125,
-      "relevanceScore": 1.6475,
-      "mentions": 1,
-      "lastEventCounter": 19
-    }
-  ],
-  "eventCounter": 19,
-  "updatedAt": "2026-03-23T05:10:51.357Z"
+	"sessionID": "ses_2e6e5e575ffeb3p4Er2nfYacP0",
+	"slots": {
+		"error": [],
+		"decision": [],
+		"todo": [],
+		"dependency": []
+	},
+	"pool": [
+		{
+			"id": "wm_1774242642573_2kazo3v",
+			"type": "file-path",
+			"content": "README.md",
+			"source": "tool:read",
+			"timestamp": 1774242651357,
+			"relevanceScore": 6.1785212188798555,
+			"mentions": 3,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242643145_jzo2w15",
+			"type": "file-path",
+			"content": "/home/user/code/pkgs/id/src/commands/serve.rs",
+			"source": "tool:glob",
+			"timestamp": 1774242646430,
+			"relevanceScore": 3.8678657647242334,
+			"mentions": 2,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242639987_pcnofbv",
+			"type": "file-path",
+			"content": ".hydra.js",
+			"source": "tool:read",
+			"timestamp": 1774242639986,
+			"relevanceScore": 3.2081583771203688,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242639987_027go94",
+			"type": "file-path",
+			"content": "ANDROID-CONNECTIVITY.md",
+			"source": "tool:read",
+			"timestamp": 1774242639986,
+			"relevanceScore": 3.18606867896514,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242639987_gxeh247",
+			"type": "file-path",
+			"content": "COPYRIGHT.md",
+			"source": "tool:read",
+			"timestamp": 1774242639986,
+			"relevanceScore": 3.1600807987825172,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242639987_8ipomzr",
+			"type": "file-path",
+			"content": "opencode.js",
+			"source": "tool:read",
+			"timestamp": 1774242639986,
+			"relevanceScore": 3.1295068220970794,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242639987_62q2s2a",
+			"type": "file-path",
+			"content": "package-lock.js",
+			"source": "tool:read",
+			"timestamp": 1774242639986,
+			"relevanceScore": 3.09353743776127,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242642572_smx2qo4",
+			"type": "file-path",
+			"content": "CONTRIBUTING.md",
+			"source": "tool:read",
+			"timestamp": 1774242642572,
+			"relevanceScore": 3.0512205150132585,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242645607_7jxklia",
+			"type": "file-path",
+			"content": "AGENTS.md",
+			"source": "tool:read",
+			"timestamp": 1774242645607,
+			"relevanceScore": 2.8739597232049805,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242645608_1irpsgn",
+			"type": "file-path",
+			"content": "TODO.md",
+			"source": "tool:read",
+			"timestamp": 1774242645607,
+			"relevanceScore": 2.6975221082421874,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242645608_902obxb",
+			"type": "file-path",
+			"content": "WEB.md",
+			"source": "tool:read",
+			"timestamp": 1774242645607,
+			"relevanceScore": 2.58532012734375,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242646128_98ds5ob",
+			"type": "file-path",
+			"content": "/home/user/code/pkgs/id/AGENTS.md",
+			"source": "tool:read",
+			"timestamp": 1774242646125,
+			"relevanceScore": 2.453317796875,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242646128_i9dvxqx",
+			"type": "file-path",
+			"content": "src/cli.rs",
+			"source": "tool:read",
+			"timestamp": 1774242646125,
+			"relevanceScore": 2.2980209375,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242646129_r5hysi8",
+			"type": "file-path",
+			"content": "main.rs",
+			"source": "tool:read",
+			"timestamp": 1774242646125,
+			"relevanceScore": 2.11531875,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242646129_2cg5v9q",
+			"type": "file-path",
+			"content": "lib.rs",
+			"source": "tool:read",
+			"timestamp": 1774242646125,
+			"relevanceScore": 1.900375,
+			"mentions": 1,
+			"lastEventCounter": 19
+		},
+		{
+			"id": "wm_1774242646129_6v9rfiz",
+			"type": "file-path",
+			"content": "cli.rs",
+			"source": "tool:read",
+			"timestamp": 1774242646125,
+			"relevanceScore": 1.6475,
+			"mentions": 1,
+			"lastEventCounter": 19
+		}
+	],
+	"eventCounter": 19,
+	"updatedAt": "2026-03-23T05:10:51.357Z"
 }

@@ -287,9 +287,7 @@
         "schema_version": 1,
         "description": "Provides Git Syntax Highlighting",
         "repository": "https://github.com/d1y/git_firefly",
-        "authors": [
-          "d1y <chenhonzho@gmail.com>"
-        ],
+        "authors": ["d1y <chenhonzho@gmail.com>"],
         "lib": {
           "kind": null,
           "version": null
@@ -350,9 +348,7 @@
         "schema_version": 1,
         "description": "Golangci Lint support.",
         "repository": "https://github.com/j4ng5y/zed_golangci_lint",
-        "authors": [
-          "Jordan Gregory <jordan@j4ng5y.dev>"
-        ],
+        "authors": ["Jordan Gregory <jordan@j4ng5y.dev>"],
         "lib": {
           "kind": "Rust",
           "version": "0.0.6"
@@ -382,17 +378,13 @@
         "schema_version": 1,
         "description": "HTML support.",
         "repository": "https://github.com/zed-industries/zed",
-        "authors": [
-          "Isaac Clayton <slightknack@gmail.com>"
-        ],
+        "authors": ["Isaac Clayton <slightknack@gmail.com>"],
         "lib": {
           "kind": "Rust",
           "version": "0.1.0"
         },
         "themes": [],
-        "languages": [
-          "languages/html"
-        ],
+        "languages": ["languages/html"],
         "grammars": {
           "html": {
             "repository": "https://github.com/tree-sitter/tree-sitter-html",
@@ -425,19 +417,13 @@
         "schema_version": 1,
         "description": "Syntax highlighting for log files.",
         "repository": "https://github.com/nervenes/zed-log",
-        "authors": [
-          "nervenes",
-          "notpeter",
-          "d1y"
-        ],
+        "authors": ["nervenes", "notpeter", "d1y"],
         "lib": {
           "kind": null,
           "version": null
         },
         "themes": [],
-        "languages": [
-          "languages/log"
-        ],
+        "languages": ["languages/log"],
         "grammars": {
           "log": {
             "repository": "https://github.com/Tudyx/tree-sitter-log",
@@ -460,17 +446,13 @@
         "schema_version": 1,
         "description": "Lua support.",
         "repository": "https://github.com/zed-industries/zed",
-        "authors": [
-          "Max Brunsfeld <max@zed.dev>"
-        ],
+        "authors": ["Max Brunsfeld <max@zed.dev>"],
         "lib": {
           "kind": "Rust",
           "version": "0.1.0"
         },
         "themes": [],
-        "languages": [
-          "languages/lua"
-        ],
+        "languages": ["languages/lua"],
         "grammars": {
           "lua": {
             "repository": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
@@ -500,17 +482,13 @@
         "schema_version": 1,
         "description": "Support for the Nickel configuration language.",
         "repository": "https://github.com/norpadon/zed-nickel-extension",
-        "authors": [
-          "Artur Chakhvadze <norpadon@gmail.com>"
-        ],
+        "authors": ["Artur Chakhvadze <norpadon@gmail.com>"],
         "lib": {
           "kind": null,
           "version": null
         },
         "themes": [],
-        "languages": [
-          "languages/nickel"
-        ],
+        "languages": ["languages/nickel"],
         "grammars": {
           "nickel": {
             "repository": "https://github.com/nickel-lang/tree-sitter-nickel",
@@ -540,17 +518,13 @@
         "schema_version": 1,
         "description": "Nix support.",
         "repository": "https://github.com/zed-extensions/nix",
-        "authors": [
-          "Hasit Mistry <hasitnm@gmail.com>"
-        ],
+        "authors": ["Hasit Mistry <hasitnm@gmail.com>"],
         "lib": {
           "kind": "Rust",
           "version": "0.1.0"
         },
         "themes": [],
-        "languages": [
-          "languages/nix"
-        ],
+        "languages": ["languages/nix"],
         "grammars": {
           "nix": {
             "repository": "https://github.com/nix-community/tree-sitter-nix",
@@ -1590,9 +1564,7 @@
       "extension": "git-firefly",
       "path": "languages/diff",
       "matcher": {
-        "path_suffixes": [
-          "diff"
-        ],
+        "path_suffixes": ["diff"],
         "first_line_pattern": null
       },
       "grammar": "diff"
@@ -1601,9 +1573,7 @@
       "extension": "git-firefly",
       "path": "languages/gitattributes",
       "matcher": {
-        "path_suffixes": [
-          ".gitattributes"
-        ],
+        "path_suffixes": [".gitattributes"],
         "first_line_pattern": null
       },
       "grammar": "gitattributes"
@@ -1612,13 +1582,7 @@
       "extension": "git-firefly",
       "path": "languages/gitcommit",
       "matcher": {
-        "path_suffixes": [
-          "TAG_EDITMSG",
-          "MERGE_MSG",
-          "COMMIT_EDITMSG",
-          "NOTES_EDITMSG",
-          "EDIT_DESCRIPTION"
-        ],
+        "path_suffixes": ["TAG_EDITMSG", "MERGE_MSG", "COMMIT_EDITMSG", "NOTES_EDITMSG", "EDIT_DESCRIPTION"],
         "first_line_pattern": null
       },
       "grammar": "git_commit"
@@ -1627,10 +1591,7 @@
       "extension": "git-firefly",
       "path": "languages/gitconfig",
       "matcher": {
-        "path_suffixes": [
-          ".gitconfig",
-          ".gitmodules"
-        ],
+        "path_suffixes": [".gitconfig", ".gitmodules"],
         "first_line_pattern": null
       },
       "grammar": "git_config"
@@ -1639,10 +1600,7 @@
       "extension": "git-firefly",
       "path": "languages/gitignore",
       "matcher": {
-        "path_suffixes": [
-          ".gitignore",
-          ".dockerignore"
-        ],
+        "path_suffixes": [".gitignore", ".dockerignore"],
         "first_line_pattern": null
       },
       "grammar": "gitignore"
@@ -1651,9 +1609,7 @@
       "extension": "git-firefly",
       "path": "languages/gitrebase",
       "matcher": {
-        "path_suffixes": [
-          "git-rebase-todo"
-        ],
+        "path_suffixes": ["git-rebase-todo"],
         "first_line_pattern": null
       },
       "grammar": "git_rebase"
@@ -1662,11 +1618,7 @@
       "extension": "html",
       "path": "languages/html",
       "matcher": {
-        "path_suffixes": [
-          "html",
-          "htm",
-          "shtml"
-        ],
+        "path_suffixes": ["html", "htm", "shtml"],
         "first_line_pattern": null
       },
       "grammar": "html"
@@ -1675,9 +1627,7 @@
       "extension": "log",
       "path": "languages/log",
       "matcher": {
-        "path_suffixes": [
-          "log"
-        ],
+        "path_suffixes": ["log"],
         "first_line_pattern": null
       },
       "grammar": "log"
@@ -1686,9 +1636,7 @@
       "extension": "lua",
       "path": "languages/lua",
       "matcher": {
-        "path_suffixes": [
-          "lua"
-        ],
+        "path_suffixes": ["lua"],
         "first_line_pattern": null
       },
       "grammar": "lua"
@@ -1697,9 +1645,7 @@
       "extension": "nickel",
       "path": "languages/nickel",
       "matcher": {
-        "path_suffixes": [
-          "ncl"
-        ],
+        "path_suffixes": ["ncl"],
         "first_line_pattern": null
       },
       "grammar": "nickel"
@@ -1708,9 +1654,7 @@
       "extension": "nix",
       "path": "languages/nix",
       "matcher": {
-        "path_suffixes": [
-          "nix"
-        ],
+        "path_suffixes": ["nix"],
         "first_line_pattern": null
       },
       "grammar": "nix"

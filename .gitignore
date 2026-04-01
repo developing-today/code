@@ -95,3 +95,7 @@ override.tf.json
 terraform.rc
 
 *tfplan*
+.opencode/worktree-session-state.json
+*_ses_*
+**/ses_*
+.opencode/plugin/subtask2/logs/*.log

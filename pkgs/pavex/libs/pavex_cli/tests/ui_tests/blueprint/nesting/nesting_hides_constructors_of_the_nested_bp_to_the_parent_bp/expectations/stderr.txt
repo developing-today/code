@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I can't invoke your request handler, `app::handler`, because it needs an
   [31m│[0m instance of `u64` as input, but I can't find a constructor for that type.
   [31m│[0m
@@ -10,7 +10,7 @@
   [31m│[0m  [2m11[0m │     bp
   [31m│[0m     ╰────
   [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:25:1]
-  [31m│[0m  [2m25[0m │ 
+  [31m│[0m  [2m25[0m │
   [31m│[0m  [2m26[0m │ pub fn handler(_x: u64, _y: u32, _z: u16) -> StatusCode {
   [31m│[0m     · [35;1m                   ─┬─[0m
   [31m│[0m     ·                     [35;1m╰── [35;1mI don't know how to construct an instance of this input parameter[0m[0m
@@ -18,7 +18,7 @@
   [31m│[0m     ╰────
   [31m│[0m [36m  help: [0mRegister a constructor for `u64`
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I can't invoke your request handler, `app::handler`, because it needs an
   [31m│[0m instance of `u32` as input, but I can't find a constructor for that type.
   [31m│[0m
@@ -30,7 +30,7 @@
   [31m│[0m  [2m11[0m │     bp
   [31m│[0m     ╰────
   [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:25:1]
-  [31m│[0m  [2m25[0m │ 
+  [31m│[0m  [2m25[0m │
   [31m│[0m  [2m26[0m │ pub fn handler(_x: u64, _y: u32, _z: u16) -> StatusCode {
   [31m│[0m     · [35;1m                            ─┬─[0m
   [31m│[0m     ·                              [35;1m╰── [35;1mI don't know how to construct an instance of this input parameter[0m[0m
@@ -38,7 +38,7 @@
   [31m│[0m     ╰────
   [31m│[0m [36m  help: [0mRegister a constructor for `u32`
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I can't invoke your request handler, `app::handler`, because it needs an
   [31m│[0m instance of `u16` as input, but I can't find a constructor for that type.
   [31m│[0m
@@ -50,7 +50,7 @@
   [31m│[0m  [2m11[0m │     bp
   [31m│[0m     ╰────
   [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:25:1]
-  [31m│[0m  [2m25[0m │ 
+  [31m│[0m  [2m25[0m │
   [31m│[0m  [2m26[0m │ pub fn handler(_x: u64, _y: u32, _z: u16) -> StatusCode {
   [31m│[0m     · [35;1m                                     ─┬─[0m
   [31m│[0m     ·                                       [35;1m╰── [35;1mI don't know how to construct an instance of this input parameter[0m[0m

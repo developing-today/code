@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01WvFigBTMJnJ9TEYroBAKCP",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "import { type Plugin } from '@opencode-ai/plugin';\n\nconst CONTEXT_INJECTION = `\n## Autoresearch Mode (ACTIVE)\n\n",
-  "timestamp": 1774259752563
+	"callID": "toolu_vrtx_01WvFigBTMJnJ9TEYroBAKCP",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "import { type Plugin } from '@opencode-ai/plugin';\n\nconst CONTEXT_INJECTION = `\n## Autoresearch Mode (ACTIVE)\n\n",
+	"timestamp": 1774259752563
 }

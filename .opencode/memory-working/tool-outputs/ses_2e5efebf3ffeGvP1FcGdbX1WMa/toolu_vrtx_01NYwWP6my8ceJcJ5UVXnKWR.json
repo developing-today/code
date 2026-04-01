@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01NYwWP6my8ceJcJ5UVXnKWR",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "---\ndescription: Start or resume autoresearch experiment loop (optional args: off|dashboard)\n---\n\n# Autoresearch Command\n",
-  "timestamp": 1774259467033
+	"callID": "toolu_vrtx_01NYwWP6my8ceJcJ5UVXnKWR",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "---\ndescription: Start or resume autoresearch experiment loop (optional args: off|dashboard)\n---\n\n# Autoresearch Command\n",
+	"timestamp": 1774259467033
 }

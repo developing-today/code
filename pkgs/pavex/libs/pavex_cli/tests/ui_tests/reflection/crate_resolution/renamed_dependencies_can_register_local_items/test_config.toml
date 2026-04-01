@@ -8,6 +8,3 @@ codegen = "pass"
 [ephemeral_dependencies]
 dep_1 = { path = "dep_1.rs", package = "dep", version = "1.0.0" }
 dep_2 = { path = "dep_2.rs", package = "dep", version = "2.0.0" }
-
-
-

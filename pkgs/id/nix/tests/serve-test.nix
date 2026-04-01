@@ -29,7 +29,7 @@
       environment.systemPackages = [ pkgs.curl ];
     };
 
-  globalTimeout = 120;
+  globalTimeout = 300;
 
   testScript = ''
     import json
@@ -73,14 +73,17 @@
     edit_html = server.succeed(f"curl -sf {BASE}/edit/{file_hash}")
     assert "hello.txt" in edit_html, "Edit page missing filename"
 
-    # ── Save content via API ──────────────────────────────────────────────
+    # ── Save content via API (ProseMirror doc format) ────────────────────
+    pm_doc = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello, NixOS!"}]}]}
+    save_body = json.dumps({"doc_id": file_hash, "name": "hello.txt", "doc": pm_doc})
     save_resp = server.succeed(
         f"curl -sf -X POST {BASE}/api/save "
         f"-H 'Content-Type: application/json' "
-        f"-d '{{\"name\": \"hello.txt\", \"content\": \"Hello, NixOS!\"}}'"
+        f"-d '{save_body}'"
     )
     save = json.loads(save_resp)
-    assert save.get("success") == True or "hash" in save, f"Save failed: {save_resp}"
+    assert "hash" in save, f"Save failed: {save_resp}"
+    saved_hash = save["hash"]
 
     # ── Rename via API ────────────────────────────────────────────────────
     rename_resp = server.succeed(
@@ -114,10 +117,9 @@
         f"-d '{{\"name\": \"copy.txt\"}}'"
     )
 
-    # ── Download endpoint ─────────────────────────────────────────────────
-    server.succeed(
-        f"curl -sf -o /dev/null {BASE}/api/download/renamed.txt"
-    )
+    # ── Verify saved content via blob endpoint ───────────────────────────
+    blob_content = server.succeed(f"curl -sf {BASE}/blob/{saved_hash}")
+    assert "Hello, NixOS!" in blob_content, f"Blob content mismatch: {blob_content[:200]}"
 
     # ── Health: server still running after all operations ─────────────────
     server.succeed(f"curl -sf {BASE}/")

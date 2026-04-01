@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_018obX8g4xZ94suVZy6biEHq",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": ". \"/nix/store/430ni0d73iah2pfpsh5bazxhznq9fmcl-hm-session-vars.sh/etc/profile.d/hm-session-vars.sh\"\n\n\n\n\n",
-  "timestamp": 1774252826673
+	"callID": "toolu_vrtx_018obX8g4xZ94suVZy6biEHq",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": ". \"/nix/store/430ni0d73iah2pfpsh5bazxhznq9fmcl-hm-session-vars.sh/etc/profile.d/hm-session-vars.sh\"\n\n\n\n\n",
+	"timestamp": 1774252826673
 }

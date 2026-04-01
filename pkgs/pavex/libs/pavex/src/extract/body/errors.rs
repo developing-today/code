@@ -65,9 +65,9 @@ pub struct SizeLimitExceeded {
     /// The maximum size limit enforced by this server.
     pub max_n_bytes: usize,
     /// The value of the `Content-Length` header for the request that breached the body
-    /// size limit.  
+    /// size limit.
     ///
-    /// It's set to `None` if the `Content-Length` header was missing or invalid.  
+    /// It's set to `None` if the `Content-Length` header was missing or invalid.
     /// If it's set to `Some(n)` and `n` is smaller than `max_n_bytes`, then the request
     /// lied about the size of its body in the `Content-Length` header.
     pub content_length: Option<usize>,

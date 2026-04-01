@@ -66,10 +66,10 @@ pub fn render_page(title: &str, content: &str, scripts: &str, assets: &AssetUrls
         assets.main_js
     );
     html.push_str(scripts);
-    html.push_str("\n</head>\n<body>\n");
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
 
-    // Main content - includes header and footer for HTMX compatibility
-    html.push_str("    <main class=\"main\" id=\"main\">\n");
+    // Main content - includes header and footer for SPA navigation
+    html.push_str("    <main class=\"min-h-screen\" id=\"main\">\n");
     html.push_str(&render_main_page_wrapper(content));
     html.push_str("    </main>\n");
 
@@ -79,20 +79,20 @@ pub fn render_page(title: &str, content: &str, scripts: &str, assets: &AssetUrls
 }
 
 /// Render the main page wrapper with header and footer.
-/// This is used both for full page renders and HTMX partial updates.
+/// This is used both for full page renders and partial updates.
 pub fn render_main_page_wrapper(content: &str) -> String {
     let mut html = String::with_capacity(2048);
 
-    html.push_str("<div class=\"main-page\">\n");
+    html.push_str("<div class=\"flex flex-col min-h-screen\">\n");
 
     // Header - same style as editor inline header
-    html.push_str("    <header class=\"inline-header\" id=\"main-header\">\n");
-    html.push_str("        <span class=\"header-title\"><a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
-    html.push_str("        <nav class=\"header-nav\">\n");
-    html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
-    html.push_str("            <a href=\"/peers\" hx-get=\"/peers\" hx-target=\"#main\" hx-push-url=\"true\">peers</a>\n");
-    html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
-    html.push_str("            <span class=\"theme-switcher\">\n");
+    html.push_str("    <header class=\"inline-header flex items-center justify-between px-3 py-1 bg-base-100 border-b border-base-300 text-xs\" id=\"main-header\">\n");
+    html.push_str("        <span class=\"font-bold\"><a href=\"/\" data-nav class=\"crt-bloom\">id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
+    html.push_str("        <nav class=\"flex items-center gap-3\">\n");
+    html.push_str("            <a href=\"/\" data-nav class=\"crt-glow\">files</a>\n");
+    html.push_str("            <a href=\"/peers\" data-nav class=\"crt-glow\">peers</a>\n");
+    html.push_str("            <a href=\"/settings\" data-nav class=\"crt-glow\">settings</a>\n");
+    html.push_str("            <span class=\"flex items-center gap-1\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
@@ -101,21 +101,21 @@ pub fn render_main_page_wrapper(content: &str) -> String {
     html.push_str("    </header>\n");
 
     // Content
-    html.push_str("    <div class=\"main-content\">\n");
-    html.push_str("        <div class=\"container\">\n");
+    html.push_str("    <div class=\"flex-1\">\n");
+    html.push_str("        <div class=\"max-w-4xl mx-auto px-4 py-4\">\n");
     html.push_str(content);
     html.push_str("\n        </div>\n");
     html.push_str("    </div>\n");
 
     // Footer
-    html.push_str("    <footer class=\"inline-footer\" id=\"main-footer\">\n");
+    html.push_str("    <footer class=\"inline-footer flex items-center gap-2 px-3 py-1 bg-base-100 border-t border-base-300 text-xs\" id=\"main-footer\">\n");
     html.push_str(
         "        <a href=\"#\" onclick=\"history.back()\" id=\"back-link\" class=\"back-link\">&larr; back</a>",
     );
-    html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<a href=\"/\" class=\"footer-link\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id v0.1.0</a>");
-    html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<a href=\"#\" class=\"footer-link\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<a href=\"/\" class=\"hover:text-primary\" data-nav>id v0.1.0</a>");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<a href=\"#\" class=\"hover:text-primary\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
     html.push_str("    </footer>\n");
 
     html.push_str("</div>\n");
@@ -136,43 +136,43 @@ pub fn render_file_list(page: &FileListPage) -> String {
     let mut html = String::with_capacity(4096);
 
     // New file form — above the file list, styled like the filter bar
-    html.push_str("<div class=\"card\">");
-    html.push_str("<div class=\"card-header\">New File</div>");
-    html.push_str("<div class=\"file-filter\">");
-    html.push_str("<form id=\"new-file-form\" onsubmit=\"window.idApp?.createFile?.(event); return false;\" style=\"display: contents;\">");
-    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" placeholder=\"filename.md\" required class=\"file-search\" />");
-    html.push_str("<button type=\"submit\" class=\"header-btn\">create</button>");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300\">");
+    html.push_str(
+        "<div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">New File</div>",
+    );
+    html.push_str("<div class=\"flex items-center gap-2 px-3 py-2 border-b border-base-300\">");
+    html.push_str("<form id=\"new-file-form\" onsubmit=\"window.idApp?.createFile?.(event); return false;\" class=\"contents\">");
+    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" placeholder=\"filename.md\" required class=\"input input-bordered input-xs flex-1 bg-base-100\" />");
+    html.push_str(
+        "<button type=\"submit\" class=\"btn btn-ghost btn-xs font-mono\">create</button>",
+    );
     html.push_str("</form>");
     html.push_str("</div>");
     html.push_str("</div>");
 
     // File list card
-    html.push_str("<div class=\"card mt-md\"><div class=\"card-header\">Files</div>");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300 mt-4\"><div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Files</div>");
 
-    // Search/filter bar — server-side search via HTMX
+    // Search/filter bar — server-side search via JS
     let search_value = page.search.as_deref().map(html_escape).unwrap_or_default();
     let show_deleted_checked = if page.show_deleted { " checked" } else { "" };
-    html.push_str("<div class=\"file-filter\" id=\"file-filter\">");
+    html.push_str("<div class=\"flex items-center gap-2 px-3 py-2 border-b border-base-300\" id=\"file-filter\">");
     let _ = write!(
         html,
-        "<input type=\"text\" id=\"file-search\" class=\"file-search\" name=\"search\" \
+        "<input type=\"text\" id=\"file-search\" class=\"input input-bordered input-xs flex-1 bg-base-100\" name=\"search\" \
          placeholder=\"search files & tags...\" autocomplete=\"off\" \
-         value=\"{}\" \
-         hx-get=\"/api/files\" hx-trigger=\"keyup changed delay:300ms, search\" \
-         hx-target=\"#file-list-content\" hx-include=\"[name='search'],[name='show_deleted']\" />",
+         value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"file-toggle\"><input type=\"checkbox\" id=\"show-auto\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
     let _ = write!(
         html,
-        "<label class=\"file-toggle\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"{} \
-         hx-get=\"/api/files\" hx-trigger=\"change\" hx-target=\"#file-list-content\" \
-         hx-include=\"[name='search'],[name='show_deleted']\" /> show deleted</label>",
+        "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
         show_deleted_checked
     );
     html.push_str("</div>");
 
-    // Inner content (list + pagination) — replaceable by HTMX
+    // Inner content (list + pagination) — replaceable via SPA navigation
     html.push_str("<div id=\"file-list-content\">");
     html.push_str(&render_file_list_content(page));
     html.push_str("</div>");
@@ -184,7 +184,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
 
 /// Render just the file list items and pagination controls.
 ///
-/// This is the HTMX-replaceable inner content of the file list card.
+/// This is the replaceable inner content of the file list card.
 /// Used by `/api/files` for search and pagination partial updates.
 pub fn render_file_list_content(page: &FileListPage) -> String {
     let files = &page.files;
@@ -192,34 +192,29 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
 
     if files.is_empty() {
         if page.search.is_some() {
-            html.push_str(
-                "<p class=\"text-muted\" style=\"padding: 1rem;\">No files match your search.</p>",
-            );
+            html.push_str("<p class=\"text-muted p-4\">No files match your search.</p>");
         } else {
-            html.push_str(
-                "<p class=\"text-muted\" style=\"padding: 1rem;\">No files stored yet.</p>",
-            );
+            html.push_str("<p class=\"text-muted p-4\">No files stored yet.</p>");
         }
     } else {
         // Bulk action bar (hidden by default, shown when files are selected)
         html.push_str(
-            "<div class=\"bulk-action-bar\" id=\"bulk-action-bar\" style=\"display:none;\">",
+            "<div class=\"flex items-center gap-2 px-3 py-2 border-b border-base-300 text-xs\" id=\"bulk-action-bar\" style=\"display:none;\">",
         );
-        html.push_str("<span class=\"bulk-count\" id=\"bulk-count\">0 selected</span>");
-        html.push_str("<input type=\"text\" id=\"bulk-tag-key\" class=\"bulk-tag-input\" placeholder=\"key\" />");
-        html.push_str("<input type=\"text\" id=\"bulk-tag-value\" class=\"bulk-tag-input\" placeholder=\"value (optional)\" />");
-        html.push_str("<button class=\"header-btn\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
-        html.push_str("<button class=\"header-btn\" onclick=\"window.idApp?.bulkClearSelection?.()\" style=\"border-color:var(--text-muted);color:var(--text-muted)\">clear</button>");
+        html.push_str("<span class=\"font-bold\" id=\"bulk-count\">0 selected</span>");
+        html.push_str("<input type=\"text\" id=\"bulk-tag-key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
+        html.push_str("<input type=\"text\" id=\"bulk-tag-value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
 
-        html.push_str("<ul class=\"file-list\">");
+        html.push_str("<ul class=\"list-none m-0 p-0\">");
         for file in files {
             let name_escaped = html_escape(&file.name);
             let display_name_escaped = file
                 .display_name
                 .as_deref()
-                .map(html_escape)
-                .unwrap_or_else(|| name_escaped.clone());
+                .map_or_else(|| name_escaped.clone(), html_escape);
             let hash_escaped = html_escape(&file.hash);
             let short_hash = &file.hash[..12.min(file.hash.len())];
 
@@ -237,14 +232,14 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 FileKind::Auto => {
                     let parent = file.parent_name.as_deref().unwrap_or("?");
                     format!(
-                        "<span class=\"file-badge auto\">auto: {}</span>",
+                        "<span class=\"file-badge-auto\">auto: {}</span>",
                         html_escape(parent)
                     )
                 }
                 FileKind::Archive => {
                     let parent = file.parent_name.as_deref().unwrap_or("?");
                     format!(
-                        "<span class=\"file-badge archive\">archive: {}</span>",
+                        "<span class=\"file-badge-archive\">archive: {}</span>",
                         html_escape(parent)
                     )
                 }
@@ -253,7 +248,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
 
             // Deleted badge
             let deleted_badge = if file.is_deleted {
-                "<span class=\"file-badge deleted\">deleted</span>".to_owned()
+                "<span class=\"file-badge-deleted\">deleted</span>".to_owned()
             } else {
                 String::new()
             };
@@ -291,7 +286,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             let tags_html = if tag_pills.is_empty() {
                 String::new()
             } else {
-                format!("<span class=\"file-tags\">{}</span>", tag_pills)
+                format!("<span class=\"flex gap-1 flex-wrap\">{}</span>", tag_pills)
             };
 
             // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
@@ -300,7 +295,10 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             let date_html = if date_str.is_empty() {
                 String::new()
             } else {
-                format!("<span class=\"file-date\">{}</span>", date_str)
+                format!(
+                    "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">{}</span>",
+                    date_str
+                )
             };
 
             // Use /file/{name} link for primary files, /edit/{hash} for others
@@ -311,18 +309,17 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
 
             let _ = write!(
                 html,
-                "<li class=\"file-item{}\" data-kind=\"{}\" data-name=\"{}\">\
-                    <input type=\"checkbox\" class=\"file-select\" data-name=\"{}\" />\
-                    <span class=\"file-icon\">[F]</span>\
-                    <a class=\"file-name\" href=\"{}\" hx-get=\"{}\" hx-target=\"#main\" hx-push-url=\"true\">{}</a>\
+                "<li class=\"file-item flex items-center gap-2 px-3 py-1.5 border-b border-base-300 hover:bg-base-200 text-xs{}\" data-kind=\"{}\" data-name=\"{}\">\
+                    <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" data-name=\"{}\" />\
+                    <span class=\"text-primary/50\">[F]</span>\
+                    <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
                     {}{}{}{}\
-                    <code class=\"file-hash\">{}</code>\
+                    <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
                 deleted_class,
                 kind_attr,
                 name_escaped,
                 name_escaped,
-                href,
                 href,
                 display_name_escaped,
                 badge,
@@ -344,37 +341,39 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             .map(|s| format!("&search={}", urlencoding::encode(s)))
             .unwrap_or_default();
 
-        html.push_str("<div class=\"file-pagination\">");
+        html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
         // Info text
         let start = (page.page - 1) * page.per_page + 1;
         let end = (start + page.files.len()).saturating_sub(1);
         let _ = write!(
             html,
-            "<span class=\"pagination-info\">{}-{} of {}</span>",
+            "<span class=\"text-base-content/50\">{}-{} of {}</span>",
             start, end, page.total
         );
 
-        html.push_str("<span class=\"pagination-btns\">");
+        html.push_str("<span class=\"flex items-center gap-2\">");
 
         // Previous button
         if page.page > 1 {
             let _ = write!(
                 html,
-                "<a class=\"header-btn\" hx-get=\"/api/files?page={}&per_page={}{}\" \
-                 hx-target=\"#file-list-content\" hx-swap=\"innerHTML\">&laquo; prev</a>",
+                "<a class=\"btn btn-ghost btn-xs font-mono\" data-page-nav=\"/api/files?page={}&per_page={}{}\" \
+                 data-target=\"#file-list-content\">&laquo; prev</a>",
                 page.page - 1,
                 page.per_page,
                 search_param
             );
         } else {
-            html.push_str("<span class=\"header-btn\" style=\"opacity:0.3\">&laquo; prev</span>");
+            html.push_str(
+                "<span class=\"btn btn-ghost btn-xs font-mono opacity-30\">&laquo; prev</span>",
+            );
         }
 
         // Page indicator
         let _ = write!(
             html,
-            "<span class=\"pagination-page\">{} / {}</span>",
+            "<span class=\"text-base-content/50\">{} / {}</span>",
             page.page, total_pages
         );
 
@@ -382,14 +381,16 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         if page.page < total_pages {
             let _ = write!(
                 html,
-                "<a class=\"header-btn\" hx-get=\"/api/files?page={}&per_page={}{}\" \
-                 hx-target=\"#file-list-content\" hx-swap=\"innerHTML\">next &raquo;</a>",
+                "<a class=\"btn btn-ghost btn-xs font-mono\" data-page-nav=\"/api/files?page={}&per_page={}{}\" \
+                 data-target=\"#file-list-content\">next &raquo;</a>",
                 page.page + 1,
                 page.per_page,
                 search_param
             );
         } else {
-            html.push_str("<span class=\"header-btn\" style=\"opacity:0.3\">next &raquo;</span>");
+            html.push_str(
+                "<span class=\"btn btn-ghost btn-xs font-mono opacity-30\">next &raquo;</span>",
+            );
         }
 
         html.push_str("</span>"); // pagination-btns
@@ -424,38 +425,38 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str("    <div class=\"editor-inline-header\" id=\"editor-header\">\n");
     let _ = write!(
         html,
-        "        <span class=\"editor-inline-title\"><a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id</a> // <a href=\"{}\" class=\"editor-file-link\">{}</a></span>\n",
+        "        <span class=\"font-bold truncate\"><a href=\"/\" data-nav>id</a> // <a href=\"{}\" class=\"hover:text-primary\">{}</a></span>\n",
         edit_url, name_escaped
     );
-    html.push_str("        <nav class=\"header-nav\">\n");
+    html.push_str("        <nav class=\"flex items-center gap-3\">\n");
     html.push_str(
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     // Save button
-    html.push_str("            <button class=\"header-btn\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.saveFile?.()\" disabled>save</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.saveFile?.()\" disabled>save</button>\n");
     // Download dropdown
-    html.push_str("            <span class=\"dropdown\" id=\"download-dropdown\">\n");
-    html.push_str("                <button class=\"header-btn\" id=\"download-btn\" title=\"Download\">dl</button>\n");
+    html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
+    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\">dl</button>\n");
     html.push_str("                <span class=\"dropdown-menu\" id=\"download-menu\">\n");
     html.push_str(
-        "                    <button class=\"dropdown-item\" data-dl-format=\"raw\">raw</button>\n",
+        "                    <button class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap\" data-dl-format=\"raw\">raw</button>\n",
     );
-    html.push_str("                    <button class=\"dropdown-item\" data-dl-format=\"json\">pm json</button>\n");
+    html.push_str("                    <button class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap\" data-dl-format=\"json\">pm json</button>\n");
     let _ = write!(
         html,
-        "                    <a class=\"dropdown-item\" href=\"/blob/{}\" download=\"{}\">original</a>\n",
+        "                    <a class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap block\" href=\"/blob/{}\" download=\"{}\">original</a>\n",
         doc_id_escaped, name_escaped
     );
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
     // Rename button
-    html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     // Copy button
-    html.push_str("            <button class=\"header-btn\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
-    html.push_str("            <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">files</a>\n");
-    html.push_str("            <a href=\"/peers\" hx-get=\"/peers\" hx-target=\"#main\" hx-push-url=\"true\">peers</a>\n");
-    html.push_str("            <a href=\"/settings\" hx-get=\"/settings\" hx-target=\"#main\" hx-push-url=\"true\">settings</a>\n");
-    html.push_str("            <span class=\"theme-switcher\">\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <a href=\"/\" data-nav>files</a>\n");
+    html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
+    html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
+    html.push_str("            <span class=\"flex items-center gap-1\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
@@ -464,15 +465,15 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str("    </div>\n");
 
     // Tag panel — inline tag display and editing for this file
-    html.push_str("    <div class=\"editor-tag-panel\" id=\"editor-tag-panel\" data-filename=\"");
+    html.push_str("    <div class=\"flex items-center gap-2 px-3 py-1 bg-base-200 border-b border-base-300 text-xs\" id=\"editor-tag-panel\" data-filename=\"");
     html.push_str(name_urlencoded.as_ref());
     html.push_str("\">\n");
-    html.push_str("        <span class=\"tag-panel-label\">tags:</span>\n");
-    html.push_str("        <span class=\"tag-panel-list\" id=\"editor-tag-list\"></span>\n");
-    html.push_str("        <span class=\"tag-panel-add\" id=\"tag-add-inline\">\n");
-    html.push_str("            <input type=\"text\" id=\"tag-add-key\" class=\"tag-add-input\" placeholder=\"key\" />\n");
-    html.push_str("            <input type=\"text\" id=\"tag-add-value\" class=\"tag-add-input\" placeholder=\"value\" />\n");
-    html.push_str("            <button class=\"header-btn\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
+    html.push_str("        <span class=\"font-bold text-base-content/50\">tags:</span>\n");
+    html.push_str("        <span class=\"flex gap-1 flex-wrap\" id=\"editor-tag-list\"></span>\n");
+    html.push_str("        <span class=\"flex items-center gap-1\" id=\"tag-add-inline\">\n");
+    html.push_str("            <input type=\"text\" id=\"tag-add-key\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"key\" />\n");
+    html.push_str("            <input type=\"text\" id=\"tag-add-value\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"value\" />\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
     html.push_str("        </span>\n");
     html.push_str("    </div>\n");
 
@@ -483,14 +484,14 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     );
 
     // Inline footer - at end of document
-    html.push_str("    <div class=\"editor-inline-footer\">\n");
+    html.push_str("    <div class=\"editor-inline-footer flex items-center gap-2 px-3 py-1 bg-base-100 border-t border-base-300 text-xs\">\n");
     html.push_str(
         "        <a href=\"#\" id=\"back-link\" class=\"back-link disabled\">&larr; back</a>",
     );
-    html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<a href=\"/\" class=\"footer-link\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\">id v0.1.0</a>");
-    html.push_str(" <span class=\"sep\">|</span> ");
-    html.push_str("<a href=\"#\" class=\"footer-link\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<a href=\"/\" class=\"hover:text-primary\" data-nav>id v0.1.0</a>");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<a href=\"#\" class=\"hover:text-primary\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
     html.push_str("    </div>\n");
 
     html.push_str("</div>\n");
@@ -532,8 +533,8 @@ pub fn render_editor_page(doc_id: &str, name: &str, content: &str, assets: &Asse
         "    <script type=\"module\" src=\"{}\"></script>\n",
         assets.main_js
     );
-    html.push_str("\n</head>\n<body>\n");
-    html.push_str("    <main class=\"main editor-main\" id=\"main\">\n");
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
+    html.push_str("    <main class=\"min-h-screen editor-main\" id=\"main\">\n");
     html.push_str(&editor_content);
     html.push_str("    </main>\n");
     html.push_str("</body>\n</html>");
@@ -559,10 +560,10 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     let blob_url = format!("/blob/{}?filename={}", doc_id_escaped, name_urlencoded);
 
     let mut html = String::with_capacity(1024);
-    html.push_str("<div class=\"card\">\n");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
     let _ = write!(
         html,
-        "    <div class=\"card-header\">{}</div>\n",
+        "    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">{}</div>\n",
         name_escaped
     );
     html.push_str("    <div class=\"media-viewer\">\n");
@@ -599,16 +600,16 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     }
 
     html.push_str("    </div>\n");
-    html.push_str("    <div class=\"flex justify-between mt-md viewer-actions\" data-filename=\"");
+    html.push_str("    <div class=\"flex justify-between mt-4 viewer-actions\" data-filename=\"");
     html.push_str(name_urlencoded.as_ref());
     html.push_str("\">\n");
-    html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
-    html.push_str("        <span class=\"viewer-btns\">\n");
-    html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"header-btn\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
+    html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
-        "            <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
+        "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
         blob_url, name_escaped
     );
     html.push_str("        </span>\n");
@@ -637,10 +638,10 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     let blob_url = format!("/blob/{}?filename={}", doc_id_escaped, name_urlencoded);
 
     let mut html = String::with_capacity(512);
-    html.push_str("<div class=\"card\">\n");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
     let _ = write!(
         html,
-        "    <div class=\"card-header\">{}</div>\n",
+        "    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">{}</div>\n",
         name_escaped
     );
     html.push_str("    <div class=\"binary-viewer\">\n");
@@ -649,16 +650,16 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     );
     html.push_str("        <p class=\"text-muted\">Download it to view with an appropriate application.</p>\n");
     html.push_str("    </div>\n");
-    html.push_str("    <div class=\"flex justify-between mt-md viewer-actions\" data-filename=\"");
+    html.push_str("    <div class=\"flex justify-between mt-4 viewer-actions\" data-filename=\"");
     html.push_str(name_urlencoded.as_ref());
     html.push_str("\">\n");
-    html.push_str("        <a href=\"/\" hx-get=\"/\" hx-target=\"#main\" hx-push-url=\"true\" class=\"text-muted\">&larr; back to files</a>\n");
-    html.push_str("        <span class=\"viewer-btns\">\n");
-    html.push_str("            <button class=\"header-btn\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"header-btn\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
+    html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
-        "            <a href=\"{}\" download=\"{}\" class=\"primary\">Download</a>\n",
+        "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
         blob_url, name_escaped
     );
     html.push_str("        </span>\n");
@@ -673,29 +674,29 @@ pub fn render_settings(node_id: &str) -> String {
     let node_id_escaped = html_escape(node_id);
 
     let mut html = String::with_capacity(2048);
-    html.push_str("<div class=\"card\">\n");
-    html.push_str("    <div class=\"card-header\">Settings</div>\n");
-    html.push_str("    <div style=\"padding: 1rem;\">\n");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
+    html.push_str(
+        "    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Settings</div>\n",
+    );
+    html.push_str("    <div class=\"p-4\">\n");
     html.push_str("        <h3>Node Identity</h3>\n");
-    html.push_str("        <p class=\"text-muted mb-md\">Your node ID is used by peers to connect to you.</p>\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Your node ID is used by peers to connect to you.</p>\n");
     let _ = write!(
         html,
-        "        <code class=\"file-hash\" style=\"word-break: break-all;\">{}</code>\n",
+        "        <code class=\"font-mono text-base-content/40 break-all\">{}</code>\n",
         node_id_escaped
     );
     html.push_str("        \n");
-    html.push_str("        <h3 class=\"mt-lg\">Theme</h3>\n");
-    html.push_str(
-        "        <p class=\"text-muted mb-md\">Choose your preferred visual theme.</p>\n",
-    );
-    html.push_str("        <div class=\"flex gap-md\">\n");
-    html.push_str("            <button class=\"theme-btn\" data-theme=\"sneak\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn\" data-theme=\"arch\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn\" data-theme=\"mech\">Mech</button>\n");
+    html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
+    html.push_str("        <div class=\"flex gap-4\">\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\">Sneak</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\">Arch</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\">Mech</button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
-    html.push_str("        <h3 class=\"mt-lg\">Keyboard Shortcuts</h3>\n");
-    html.push_str("        <table>\n");
+    html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");
+    html.push_str("        <table class=\"table table-xs\">\n");
     html.push_str("            <tr><td><kbd>Alt+T</kbd></td><td>Cycle themes</td></tr>\n");
     html.push_str(
         "            <tr><td><kbd>Ctrl+S</kbd></td><td>Save document (in editor)</td></tr>\n",
@@ -720,16 +721,16 @@ pub fn render_settings(node_id: &str) -> String {
 /// HTML fragment for the peers page.
 pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
     let mut html = String::with_capacity(2048);
-    html.push_str("<div id=\"peers-content\" hx-get=\"/peers\" hx-trigger=\"every 10s\" hx-select=\"#peers-content\" hx-target=\"this\" hx-swap=\"outerHTML\">\n");
-    html.push_str("<div class=\"card\">\n");
-    html.push_str("    <div class=\"card-header\">Discovered Peers</div>\n");
-    html.push_str("    <div style=\"padding: 1rem;\">\n");
-    html.push_str("        <p class=\"text-muted mb-md\">Peers discovered via gossip-based peer discovery.</p>\n");
+    html.push_str("<div id=\"peers-content\" data-auto-refresh=\"10\">\n");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
+    html.push_str("    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Discovered Peers</div>\n");
+    html.push_str("    <div class=\"p-4\">\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Peers discovered via gossip-based peer discovery.</p>\n");
 
     if peers.is_empty() {
         html.push_str("        <p class=\"text-muted\">No peers discovered yet.</p>\n");
     } else {
-        html.push_str("        <table>\n");
+        html.push_str("        <table class=\"table table-xs\">\n");
         html.push_str(
             "            <tr><th>Node ID</th><th>Name</th><th>Blobs</th><th>Last Seen</th></tr>\n",
         );
@@ -741,7 +742,7 @@ pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
             let _ = write!(
                 html,
                 "            <tr>\
-                    <td><code class=\"file-hash\" title=\"{}\">{}</code></td>\
+                    <td><code class=\"font-mono text-base-content/40\" title=\"{}\">{}</code></td>\
                     <td>{}</td>\
                     <td>{}</td>\
                     <td>{}</td>\
@@ -954,7 +955,7 @@ mod tests {
         let html = render_peers(&[]);
         assert!(html.contains("No peers discovered yet"));
         assert!(html.contains("Discovered Peers"));
-        assert!(html.contains("hx-trigger=\"every 10s\""));
+        assert!(html.contains("data-auto-refresh=\"10\""));
     }
 
     #[test]

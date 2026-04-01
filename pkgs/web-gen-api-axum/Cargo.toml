@@ -33,23 +33,23 @@ leptos_query = "0.2.3"
 
 [features]
 hydrate = [
-    "leptos/hydrate",
-    "leptos_meta/hydrate",
-    "leptos_router/hydrate",
-    "leptos_query/hydrate"
+  "leptos/hydrate",
+  "leptos_meta/hydrate",
+  "leptos_router/hydrate",
+  "leptos_query/hydrate",
 ]
 ssr = [
-    "dep:axum",
-    "dep:tokio",
-    "dep:tower",
-    "dep:tower-http",
-    "dep:leptos_axum",
-    "leptos/ssr",
-    "leptos_meta/ssr",
-    "leptos_router/ssr",
-    "leptos_query/hydrate",
-    "dep:tracing",
-    "dep:libsql",
+  "dep:axum",
+  "dep:tokio",
+  "dep:tower",
+  "dep:tower-http",
+  "dep:leptos_axum",
+  "leptos/ssr",
+  "leptos_meta/ssr",
+  "leptos_router/ssr",
+  "leptos_query/hydrate",
+  "dep:tracing",
+  "dep:libsql",
 ]
 
 # Defines a size-optimized profile for the WASM bundle in release mode

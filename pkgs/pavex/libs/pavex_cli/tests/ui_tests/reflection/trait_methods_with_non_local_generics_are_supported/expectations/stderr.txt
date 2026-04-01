@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m I do not know how to handle the type returned by `<app::B as
   [31m│[0m app::GenericTrait::<app::A>>::a_method_using_the_trait_generic_param`.
   [31m│[0m
@@ -9,7 +9,7 @@
   [31m│[0m     ·                                                    [35;1m╰── [35;1mThe constructor was registered here[0m[0m
   [31m│[0m  [2m30[0m │         Lifecycle::RequestScoped,
   [31m│[0m     ╰────
-  [31m│[0m   [31m×[0m 
+  [31m│[0m   [31m×[0m
   [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:11:1]
   [31m│[0m  [2m11[0m │ pub trait GenericTrait<T> {
   [31m│[0m  [2m12[0m │     fn a_method_using_the_trait_generic_param() -> T;

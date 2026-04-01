@@ -5,5 +5,3 @@ codegen = "fail"
 
 [ephemeral_dependencies]
 dep = { path = "dep.rs" }
-
-

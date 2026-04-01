@@ -61,6 +61,7 @@ reserved tag name `.meta`. This approach:
 - **No schema migration** - version field allows future evolution
 
 Update cycle:
+
 1. Load: get hash from `.meta` tag -> read blob -> deserialize JSON
 2. Modify: add/remove/update tags in memory
 3. Save: serialize JSON -> add as blob -> update `.meta` tag to new hash
@@ -70,10 +71,12 @@ If `.meta` tag doesn't exist, start with empty `MetaDoc { version: 1, tags: [] }
 ### API (`src/web/tags.rs`)
 
 Core I/O:
+
 - `load_meta(store) -> MetaDoc` - loads from `.meta` tag, returns empty doc if missing
 - `save_meta(store, doc) -> Result<()>` - serializes and stores
 
 Tag CRUD:
+
 - `add_tag(doc, subject, key, value?, link?)` - creates new tag with timestamps
 - `remove_tags(doc, subject, key) -> Vec<MetaTag>` - removes all matching, returns removed
 - `get_tags(doc, subject) -> Vec<&MetaTag>` - all tags for a subject
@@ -81,8 +84,9 @@ Tag CRUD:
 - `set_unique_tag(doc, subject, key, value?, link?)` - removes existing tags with same subject+key, adds new one (for "created", "modified" semantics)
 
 Convenience:
+
 - `set_created(doc, name)` - adds unique "created" tag with current timestamp
-- `set_modified(doc, name)` - adds unique "modified" tag with current timestamp  
+- `set_modified(doc, name)` - adds unique "modified" tag with current timestamp
 - `transfer_tags(doc, old_name, new_name)` - moves all tags from one subject to another (for rename)
 - `now_unix() -> u64` - current unix timestamp helper
 
@@ -114,7 +118,7 @@ The `classify_tag()` function in routes.rs skips `.meta` (treats it as internal)
    - `set_modified(doc, name)`
 
 3. **File rename** (`rename_handler`, `protocol.rs`, `repl.rs`):
-   - `transfer_tags(doc, old_name, new_name)` 
+   - `transfer_tags(doc, old_name, new_name)`
    - `set_modified(doc, new_name)` (rename is a modification)
 
 4. **File list** (`get_file_list`):

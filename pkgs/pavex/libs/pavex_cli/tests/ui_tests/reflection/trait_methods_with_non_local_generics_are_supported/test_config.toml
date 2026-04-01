@@ -2,5 +2,3 @@ description = "pavex supports trait methods that rely on non-local generic param
 
 [expectations]
 codegen = "pass"
-
-

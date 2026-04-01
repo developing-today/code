@@ -17,7 +17,7 @@ use figment::{
 ///
 /// We don't rely on `figment`'s built-in support for profiles because
 /// we want to make sure that values for different profiles are not co-located in
-/// the same configuration file.  
+/// the same configuration file.
 /// This makes it easier to avoid leaking sensitive information by mistake (e.g.
 /// by committing configuration values for the `dev` profile to the repository).
 ///
@@ -106,7 +106,7 @@ pub enum ApplicationProfile {
     /// This is the profile you should use when running the application in production—e.g.
     /// when deploying it to a staging or production environment, exposed to live traffic.
     ///
-    /// The corresponding configuration file is `prod.yml`.  
+    /// The corresponding configuration file is `prod.yml`.
     /// It's committed to the repository, but it's meant to contain exclusively
     /// non-sensitive configuration values.
     Prod,

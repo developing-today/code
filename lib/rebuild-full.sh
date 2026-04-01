@@ -63,9 +63,9 @@ if [[ -f "./flake.nix" ]]; then
   echo "git add flake.lock"
   git add flake.lock
   if systemctl is-active --quiet tailscaled; then # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
-    echo "stopping tailscaled..." # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
-    sudo systemctl stop tailscaled # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
-    echo "tailscaled service stopped." # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
+    echo "stopping tailscaled..."                 # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
+    sudo systemctl stop tailscaled                # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
+    echo "tailscaled service stopped."            # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
   else
     echo "tailscaled service not found or not active." # hack not needed
   fi
@@ -81,7 +81,7 @@ if [[ -f "./flake.nix" ]]; then
   set +e
   current=$(nixos-rebuild list-generations | grep current)
   set -e
-  if [[ -z "$current" ]]; then
+  if [[ -z $current ]]; then
     echo "Could not find current, possibly using nixos-25.11, seeking first Current tab = true"
     current="$(nixos-rebuild list-generations --json | jq -r 'to_entries[] | select(.value.current == true) | "\(.value.generation)"')"
   fi

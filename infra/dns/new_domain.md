@@ -1,4 +1,3 @@
-
 add domain
 https://monday.mxrouting.net:2222/evo/user/domains/add-domain
 
@@ -10,11 +9,11 @@ acquire dkim
 https://monday.mxrouting.net:2222/evo/user/dns
 
 add dns_config/default.nix
-  (autosetup by adding domain)
-  mx route 10 20
-  txt
-  (manual per-domain)
-  dkim from above
+(autosetup by adding domain)
+mx route 10 20
+txt
+(manual per-domain)
+dkim from above
 
 enable ssl cert
 (may need to double check mxrouting docs for this...)

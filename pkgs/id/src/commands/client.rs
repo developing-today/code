@@ -14,7 +14,7 @@
 //!
 //! if let Some(serve_info) = get_serve_info().await {
 //!     let (endpoint, addr) = create_local_client_endpoint(&serve_info).await?;
-//!     
+//!
 //!     // Connect using the meta protocol
 //!     let conn = endpoint.connect(addr, META_ALPN).await?;
 //! }
@@ -61,7 +61,7 @@ use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 /// // Connect to meta protocol
 /// let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
 ///
-/// // Connect to blobs protocol  
+/// // Connect to blobs protocol
 /// let blobs_conn = endpoint.connect(endpoint_addr, BLOBS_ALPN).await?;
 /// ```
 pub async fn create_local_client_endpoint(

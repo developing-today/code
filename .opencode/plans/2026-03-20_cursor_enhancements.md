@@ -1,7 +1,7 @@
 # Collaborative Cursor Enhancements
 
-**Created**: 2026-03-20T05:04:09Z  
-**Status**: Planning  
+**Created**: 2026-03-20T05:04:09Z
+**Status**: Planning
 **Package**: `pkgs/id`
 
 ## Overview
@@ -156,12 +156,12 @@ function getStrobeDurationMs(opacity: number): number {
 function updateCursorStrobe(clientID: string | number, element: HTMLElement, opacity: number): void {
   const durationMs = getStrobeDurationMs(opacity);
   const shouldStrobe = durationMs > 0 && connectionState === 'connected';
-  
+
   // Set CSS custom properties
   element.style.setProperty('--strobe-duration', `${durationMs}ms`);
   element.style.setProperty('--strobe-state', shouldStrobe ? 'running' : 'paused');
   element.style.setProperty('--base-opacity', String(opacity));
-  
+
   strobeInfos.set(clientID, { element, baseOpacity: opacity, paused: false });
 }
 
@@ -198,16 +198,16 @@ function unregisterCursorStrobe(clientID: string | number): void {
   margin-left: -1px;
   margin-right: -1px;
   pointer-events: auto; /* Changed from none for hover */
-  
+
   /* CSS custom properties for JS control */
   --strobe-duration: 1000ms;
   --strobe-state: running;
   --base-opacity: 1;
-  
+
   /* Strobe animation controlled by custom properties */
   animation: cursor-strobe var(--strobe-duration) ease-in-out infinite;
   animation-play-state: var(--strobe-state);
-  
+
   /* Smooth transition when duration changes */
   transition: --strobe-duration 0.5s ease;
 }
@@ -236,7 +236,7 @@ function unregisterCursorStrobe(clientID: string | number): void {
 ```typescript
 export function setConnectionState(state: 'connected' | 'disconnected'): void {
   connectionState = state;
-  
+
   // Update all cursor strobe states
   strobeInfos.forEach((info) => {
     if (state === 'disconnected') {
@@ -281,12 +281,12 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
   // Use event delegation for cursor hover
   container.addEventListener('mouseenter', (event: MouseEvent) => {
     const target = event.target as HTMLElement;
-    
+
     // Check if hovering a segment within a merged bar
     const segment = target.closest('.collab-cursor-bar-segment');
     const cursorEl = target.closest('.collab-cursor');
     const barEl = target.closest('.collab-cursor-bar');
-    
+
     if (!segment && !cursorEl && !barEl) return;
 
     // Cancel pending restore
@@ -297,7 +297,7 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
 
     // Determine which client ID is being hovered
     let clientID: string | number | null = null;
-    
+
     if (segment) {
       // Hovering a specific segment in merged bar
       clientID = segment.getAttribute('data-client-id');
@@ -305,9 +305,9 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
       // Hovering a standalone cursor
       clientID = cursorEl.getAttribute('data-client-id');
     }
-    
+
     if (!clientID) return;
-    
+
     hoveredCursorID = clientID;
 
     // Highlight ONLY this user's cursor and tooltip
@@ -317,14 +317,14 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
       state.element.style.opacity = '1';
       state.element.classList.add('collab-cursor-hovered'); // Makes cursor bolder
     }
-    
+
     // If in a merged bar, highlight only this segment
     if (segment) {
       segment.classList.add('collab-cursor-segment-hovered');
       // Elevate the entire bar's z-index
       barEl?.classList.add('collab-cursor-bar-elevated');
     }
-    
+
     // For standalone cursor, elevate it
     if (cursorEl) {
       cursorEl.classList.add('collab-cursor-hovered');
@@ -336,7 +336,7 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
     const segment = target.closest('.collab-cursor-bar-segment');
     const cursorEl = target.closest('.collab-cursor');
     const barEl = target.closest('.collab-cursor-bar');
-    
+
     if (!segment && !cursorEl && !barEl) return;
 
     const clientID = hoveredCursorID;
@@ -345,7 +345,7 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
     // 1s delay before restoring
     hoverRestoreTimer = setTimeout(() => {
       hoveredCursorID = null;
-      
+
       // Restore this user's cursor
       const state = strobeStates.get(clientID);
       if (state) {
@@ -353,18 +353,18 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
         state.element.style.opacity = String(state.baseOpacity);
         state.element.classList.remove('collab-cursor-hovered');
       }
-      
+
       // Remove segment highlight
       if (segment) {
         segment.classList.remove('collab-cursor-segment-hovered');
         barEl?.classList.remove('collab-cursor-bar-elevated');
       }
-      
+
       // Remove standalone cursor highlight
       if (cursorEl) {
         cursorEl.classList.remove('collab-cursor-hovered');
       }
-      
+
       // Refresh decorations
       editorView.dispatch(editorView.state.tr);
     }, 1000);
@@ -402,7 +402,7 @@ function setupHoverHandlers(container: HTMLElement, editorView: EditorView): voi
 
 ### 7. Horizontal Tooltip Stacking with Merged Bars
 
-**Goal**: 
+**Goal**:
 - Tooltips stack horizontally in whitespace between lines
 - Handle cursor position grouping and overlap intelligently
 - Each segment matches user's cursor color
@@ -430,7 +430,7 @@ Multiple users at exact same position stack together. The cursor line uses the m
          ↑
    all at pos 50
    cursor line color = Carol's green (most recent)
-   
+
    Sort within group: most recent activity = leftmost
 ```
 
@@ -443,7 +443,7 @@ Groups ordered by cursor position ascending. Within each group, most recent = le
       pos 10            │  pos 12
                         ↑
                  divider here (different positions)
-              
+
    - Left group (pos 10): Alice & Bob at same pos, Alice more recent
    - Right group (pos 12): Carol alone
    - Groups ordered by position ascending (10, then 12)
@@ -470,10 +470,10 @@ function groupCursorsByRenderedLine(
 ): Map<number, (string | number)[]> {
   const LINE_THRESHOLD = 5; // pixels - cursors within this are "same line"
   const groups = new Map<number, (string | number)[]>();
-  
+
   cursorElements.forEach((el, clientID) => {
     const y = getCursorLineY(el);
-    
+
     // Find existing group within threshold
     let foundGroup = false;
     for (const [groupY, ids] of groups) {
@@ -483,12 +483,12 @@ function groupCursorsByRenderedLine(
         break;
       }
     }
-    
+
     if (!foundGroup) {
       groups.set(y, [clientID]);
     }
   });
-  
+
   return groups;
 }
 ```
@@ -518,14 +518,14 @@ interface PositionGroup {
 ```typescript
 function groupCursorsByPosition(cursors: CursorForMerge[]): PositionGroup[] {
   const positionMap = new Map<number, CursorForMerge[]>();
-  
+
   // Group by exact position
   cursors.forEach(cursor => {
     const existing = positionMap.get(cursor.head) || [];
     existing.push(cursor);
     positionMap.set(cursor.head, existing);
   });
-  
+
   // Convert to PositionGroup[], sort each group by activity
   const groups: PositionGroup[] = [];
   positionMap.forEach((groupCursors, position) => {
@@ -537,30 +537,30 @@ function groupCursorsByPosition(cursors: CursorForMerge[]): PositionGroup[] {
       mostRecentColor: groupCursors[0].color,
     });
   });
-  
+
   // Sort groups by position ascending
   groups.sort((a, b) => a.position - b.position);
-  
+
   return groups;
 }
 
 function doTooltipsOverlap(groups: PositionGroup[], charWidthPx: number): boolean {
   if (groups.length <= 1) return false;
-  
+
   const LABEL_PADDING = 12;
   const MIN_GAP = 4;
-  
+
   for (let i = 0; i < groups.length - 1; i++) {
     const curr = groups[i];
     const next = groups[i + 1];
-    
+
     // Calculate total width of current group's tooltips
-    const currWidth = curr.cursors.reduce((sum, c) => 
+    const currWidth = curr.cursors.reduce((sum, c) =>
       sum + (c.name.length * charWidthPx) + LABEL_PADDING, 0);
-    
+
     // Distance between positions in pixels
     const posDiff = (next.position - curr.position) * charWidthPx;
-    
+
     if (posDiff < currWidth + MIN_GAP) {
       return true;
     }
@@ -575,10 +575,10 @@ function doTooltipsOverlap(groups: PositionGroup[], charWidthPx: number): boolea
 function createMergedBar(groups: PositionGroup[]): HTMLElement {
   // Groups already sorted by position ascending
   // Within each group, cursors sorted by activity (most recent first)
-  
+
   const bar = document.createElement('span');
   bar.className = 'collab-cursor-bar';
-  
+
   groups.forEach((group, groupIndex) => {
     // Add divider BETWEEN position groups (not within)
     if (groupIndex > 0) {
@@ -586,7 +586,7 @@ function createMergedBar(groups: PositionGroup[]): HTMLElement {
       divider.className = 'collab-cursor-bar-divider';
       bar.appendChild(divider);
     }
-    
+
     // Add all cursors in this position group (no dividers between them)
     group.cursors.forEach((cursor) => {
       const segment = document.createElement('span');
@@ -600,7 +600,7 @@ function createMergedBar(groups: PositionGroup[]): HTMLElement {
       bar.appendChild(segment);
     });
   });
-  
+
   return bar;
 }
 
@@ -654,19 +654,19 @@ function getCursorLineColor(group: PositionGroup): string {
 
 ```typescript
 function isOnSameLineAsLocal(
-  remoteCursorEl: HTMLElement, 
+  remoteCursorEl: HTMLElement,
   localSelection: Selection,
   editorView: EditorView
 ): boolean {
   const LINE_THRESHOLD = 5;
-  
+
   // Get local cursor's rendered position
   const localCoords = editorView.coordsAtPos(localSelection.head);
   const localY = localCoords.top;
-  
+
   // Get remote cursor's rendered position
   const remoteY = getCursorLineY(remoteCursorEl);
-  
+
   return Math.abs(localY - remoteY) < LINE_THRESHOLD;
 }
 ```
@@ -699,9 +699,9 @@ export function onInitReceived(): void {
   if (reconnectCleanupTimer) {
     clearTimeout(reconnectCleanupTimer);
   }
-  
+
   freshCursorIDs = new Set();
-  
+
   reconnectCleanupTimer = setTimeout(() => {
     if (cleanupEditorView && connectionState === 'connected') {
       performReconnectCleanup();
@@ -716,22 +716,22 @@ export function markCursorFresh(clientID: string | number): void {
 
 function performReconnectCleanup(): void {
   if (!cleanupEditorView) return;
-  
+
   const pluginState = cursorPluginKey.getState(cleanupEditorView.state);
   if (!pluginState) return;
-  
+
   const staleCursors: (string | number)[] = [];
   pluginState.cursors.forEach((_, clientID) => {
     if (!freshCursorIDs.has(clientID)) {
       staleCursors.push(clientID);
     }
   });
-  
+
   staleCursors.forEach(clientID => {
     removeCursor(cleanupEditorView!, clientID);
     unregisterCursorStrobe(clientID);
   });
-  
+
   freshCursorIDs.clear();
 }
 
@@ -739,7 +739,7 @@ function performReconnectCleanup(): void {
 // (Note: setConnectionState also handles strobe pause/resume - see Section 3)
 export function setConnectionState(state: 'connected' | 'disconnected'): void {
   connectionState = state;
-  
+
   // Pause/resume strobing for all cursors
   strobeInfos.forEach((info) => {
     if (state === 'disconnected') {
@@ -750,7 +750,7 @@ export function setConnectionState(state: 'connected' | 'disconnected'): void {
       info.element.style.setProperty('--strobe-state', durationMs > 0 ? 'running' : 'paused');
     }
   });
-  
+
   // Cancel reconnect cleanup timer on disconnect
   if (state === 'disconnected' && reconnectCleanupTimer) {
     clearTimeout(reconnectCleanupTimer);

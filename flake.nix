@@ -17,10 +17,10 @@ rec {
           unattended-installer-configurations
         ];
       }
-      (lib.make-vim)
-      (lib.make-clan)
-      (lib.make-root-apps)
-      (lib.make-id)
+      lib.make-vim
+      lib.make-clan
+      lib.make-root-apps
+      lib.make-id
     ];
   inputs = {
     nixgl = {

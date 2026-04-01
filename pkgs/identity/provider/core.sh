@@ -340,7 +340,7 @@ parseHttpRequest() {
               FILENAME=$(trim_quotes "${DISPOSITIONS[filename]}")
               FILE_UPLOADS["$NAME"]="$UPLOAD_TO"
               FILE_UPLOAD_NAMES["$NAME"]="$FILENAME"
-              FILE_UPLOAD_TYPES["$NAME"]="${MULTIPART_HEADERS[content - type]}"
+              FILE_UPLOAD_TYPES["$NAME"]="${MULTIPART_HEADERS[content-type]}"
               MULTIPART_HEADERS=()
               DISPOSITIONS=()
               state="headers"
@@ -399,7 +399,7 @@ writeHttpResponse() {
   if [[ -n $USE_HMR ]] && [[ $REQUEST_PATH == "/hmr" ]]; then
     if [[ $REQUEST_METHOD == "POST" ]]; then
       respond 204 OK
-      header HX-Redirect "${HTTP_HEADERS[hx - current - url]}"
+      header HX-Redirect "${HTTP_HEADERS[hx-current-url]}"
       end_headers
       return
     fi

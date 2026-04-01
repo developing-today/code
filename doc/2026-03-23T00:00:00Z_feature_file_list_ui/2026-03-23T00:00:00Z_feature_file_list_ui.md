@@ -112,7 +112,7 @@ Three scenarios are handled:
 ### Data Flow
 
 ```
-Store (iroh-blobs tags) 
+Store (iroh-blobs tags)
   → get_file_list() classifies each tag into FileInfo
   → render_file_list() generates HTML with data-kind attributes
   → main.ts initFileFilter() adds client-side search/toggle
@@ -129,7 +129,7 @@ Rename:
 
 ### File Changes
 
-1. **`src/web/routes.rs`**: FileInfo, FileKind, get_file_list(), /file/*name route, get_file_name(), RenameRequest/RenameResponse, rename_handler
+1. **`src/web/routes.rs`**: FileInfo, FileKind, get_file_list(), /file/\*name route, get_file_name(), RenameRequest/RenameResponse, rename_handler
 2. **`src/web/templates.rs`**: render_file_list(&[FileInfo]), search/filter UI, date column, rename button in editor header
 3. **`web/styles/terminal.css`**: .header-btn, .file-filter, .file-date, .file-badge, .dropdown-menu.show
 4. **`web/src/main.ts`**: initFileFilter(), search/toggle, renameFile() method on IdApp

@@ -58,6 +58,7 @@ Open http://localhost:3000 in your browser.
 ### Prerequisites
 
 The Nix dev shell provides all required tools:
+
 - Rust 1.89.0
 - Bun (for TypeScript bundling)
 - TypeScript
@@ -103,9 +104,10 @@ src/web/
 └── markdown.rs           # Markdown rendering with syntax highlighting
 
 e2e/
-├── playwright.config.ts  # Chromium + Firefox config
+├── playwright.config.ts  # 3-mode config: local / nix sandbox / VM test
 └── tests/
-    └── basic.spec.ts     # 15 E2E tests
+    ├── basic.spec.ts     # 19 UI fundamental tests
+    └── websocket.spec.ts # 19 WS + collaboration tests
 ```
 
 ### Justfile Commands
@@ -126,6 +128,7 @@ just test-e2e-report     # Show Playwright HTML report
 ### File List (Home)
 
 The home page displays all stored files with:
+
 - **New file form**: Create files with a name input
 - **Search/filter**: Real-time filtering by name
 - **Visibility toggles**: Show/hide auto-generated and archived files, show deleted files
@@ -135,6 +138,7 @@ The home page displays all stored files with:
 ### Editor
 
 The editor page renders text/markdown files with ProseMirror:
+
 - **Collaborative editing**: Real-time multi-user editing via WebSocket
 - **Save**: Manual save (Ctrl+S) writes content back to blob store
 - **Download**: Raw text, ProseMirror JSON, or original format
@@ -144,6 +148,7 @@ The editor page renders text/markdown files with ProseMirror:
 ### Media Viewer
 
 Images, video, audio, and PDF files render with native browser elements:
+
 - **Inline display**: `<img>`, `<video>`, `<audio>`, or `<iframe>` embed
 - **Download**: Direct download link
 - **Rename/Copy**: Same rename and copy buttons as editor
@@ -151,6 +156,7 @@ Images, video, audio, and PDF files render with native browser elements:
 ### Binary Viewer
 
 Unknown binary files show a download-only view:
+
 - **Download link**: Direct download
 - **Rename/Copy**: Same rename and copy buttons as editor
 
@@ -193,43 +199,46 @@ The `/ws/tags` endpoint broadcasts `TagEvent` messages (JSON) when tags change:
 Three terminal-inspired themes with `#000000` black backgrounds. Switch via the footer toggle or keyboard shortcut `Ctrl+T`.
 
 ### sneak (default, blue)
+
 - Accent: `#00aaff`
 - Monospace font, scanline effect
 
 ### arch (green)
+
 - Accent: `#00ff00`
 - Text glow effects
 
 ### mech (orange)
+
 - Accent: `#ff6600`
 - Angular UI elements
 
 ## API Routes
 
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/` | GET | File browser (main page) |
-| `/peers` | GET | Discovered peers (auto-refreshes) |
-| `/settings` | GET | Settings page |
-| `/edit/{hash}` | GET | Editor/viewer for file by hash |
-| `/file/{name}` | GET | Editor/viewer for file by name |
-| `/blob/{hash}` | GET | Raw blob content with Content-Type |
-| `/api/files` | GET | File list (HTMX partial) |
-| `/api/save` | POST | Save file content |
-| `/api/new` | POST | Create new file |
-| `/api/rename` | POST | Rename file (with optional archive) |
-| `/api/copy` | POST | Copy file to new name |
-| `/api/download` | POST | Download file content |
-| `/api/delete` | POST | Soft-delete file |
-| `/api/restore` | POST | Restore deleted file |
-| `/api/hard-delete` | POST | Permanently delete file |
-| `/api/tags` | GET | Get tags for a file |
-| `/api/tags` | POST | Set a tag |
-| `/api/tags` | DELETE | Delete a tag |
-| `/api/tags/search` | GET | Search tags |
-| `/ws/collab/{doc_id}` | WS | Collaboration WebSocket |
-| `/ws/tags` | WS | Tag change broadcast |
-| `/assets/*` | GET | Static assets |
+| Route                 | Method | Description                         |
+| --------------------- | ------ | ----------------------------------- |
+| `/`                   | GET    | File browser (main page)            |
+| `/peers`              | GET    | Discovered peers (auto-refreshes)   |
+| `/settings`           | GET    | Settings page                       |
+| `/edit/{hash}`        | GET    | Editor/viewer for file by hash      |
+| `/file/{name}`        | GET    | Editor/viewer for file by name      |
+| `/blob/{hash}`        | GET    | Raw blob content with Content-Type  |
+| `/api/files`          | GET    | File list (HTMX partial)            |
+| `/api/save`           | POST   | Save file content                   |
+| `/api/new`            | POST   | Create new file                     |
+| `/api/rename`         | POST   | Rename file (with optional archive) |
+| `/api/copy`           | POST   | Copy file to new name               |
+| `/api/download`       | POST   | Download file content               |
+| `/api/delete`         | POST   | Soft-delete file                    |
+| `/api/restore`        | POST   | Restore deleted file                |
+| `/api/hard-delete`    | POST   | Permanently delete file             |
+| `/api/tags`           | GET    | Get tags for a file                 |
+| `/api/tags`           | POST   | Set a tag                           |
+| `/api/tags`           | DELETE | Delete a tag                        |
+| `/api/tags/search`    | GET    | Search tags                         |
+| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket             |
+| `/ws/tags`            | WS     | Tag change broadcast                |
+| `/assets/*`           | GET    | Static assets                       |
 
 ## Configuration
 
@@ -246,22 +255,25 @@ id serve --web 3000 --ephemeral
 ### Unit Tests
 
 Rust unit tests cover routes, templates, and content mode logic:
+
 ```bash
 just test-unit
 ```
 
 ### E2E Tests
 
-Playwright tests run against both Chromium and Firefox:
+Playwright tests run against both Chromium and Firefox (38 tests × 2 browsers = 146 total):
+
 ```bash
-just test-e2e          # Both browsers
-just test-e2e-chromium # Chromium only
-just test-e2e-firefox  # Firefox only
+just test-e2e          # Both browsers (146 tests)
+just test-e2e-chromium # Chromium only (73 tests)
+just test-e2e-firefox  # Firefox only (73 tests)
 ```
 
-Tests cover: home page elements, file creation, editor features, navigation, themes.
+Tests cover: home page elements, file creation, editor features, navigation, themes, WebSocket connection/disconnect/reconnect, collaborative editing, multi-user scenarios, tag live updates.
 
 Browser paths are configured via environment variables for nix compatibility:
+
 - `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
 - `PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH`
 
@@ -270,6 +282,7 @@ Browser paths are configured via environment variables for nix compatibility:
 ### Assets not found (404)
 
 Ensure web assets are built before compiling Rust:
+
 ```bash
 just web-build && cargo build --features web
 ```
@@ -277,6 +290,7 @@ just web-build && cargo build --features web
 ### WebSocket connection failed
 
 Check that the server is running and the port is accessible. WebSocket endpoints:
+
 - Collaboration: `ws://localhost:PORT/ws/collab/{doc_id}`
 - Tags: `ws://localhost:PORT/ws/tags`
 
@@ -287,6 +301,7 @@ Clear browser cache or hard refresh (Ctrl+Shift+R). Theme preference is stored i
 ### E2E tests fail with browser not found
 
 Ensure you're in the nix dev shell (`nix develop`), which sets browser paths automatically. Outside nix, install Playwright browsers:
+
 ```bash
 cd e2e && bunx playwright install chromium firefox
 ```

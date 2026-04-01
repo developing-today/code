@@ -1032,7 +1032,7 @@ impl ReplContext {
     /// Search tags using structured query syntax.
     ///
     /// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
-    /// bare word searches. Multiple terms are ANDed together.
+    /// bare word searches. Multiple terms are `ANDed` together.
     ///
     /// In connected mode, sends a `SearchTags` request to the server.
     pub async fn search_tags(&mut self, query: &str) -> Result<()> {
@@ -1116,7 +1116,7 @@ impl ReplContext {
     /// Migrate all existing blob tags to have name/file auto-tags.
     ///
     /// In connected mode, sends `MetaRequest::MigrateTags` to the serve
-    /// instance. In local mode, prints a message since TagStore is required.
+    /// instance. In local mode, prints a message since `TagStore` is required.
     pub async fn migrate_tags(&mut self) -> Result<()> {
         if self.is_connected() {
             let meta_conn = self.meta_conn().await?;

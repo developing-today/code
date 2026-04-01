@@ -44,6 +44,7 @@ pub struct TagQuery {
     /// Filter by tag value (requires `key`).
     pub value: Option<String>,
     /// Namespace to query (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -53,6 +54,7 @@ pub struct SearchQuery {
     /// Search query string (supports: `key:`, `:value`, `key:value`, `"literal"`, bare word).
     pub q: String,
     /// Namespace to search (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -63,6 +65,7 @@ pub struct SetTagRequest {
     pub key: String,
     pub value: Option<String>,
     /// Namespace to write to (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -76,6 +79,7 @@ pub struct DelTagRequest {
     #[serde(default)]
     pub all: bool,
     /// Namespace (default: "global").
+    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -188,7 +192,8 @@ pub async fn get_tags_handler(
                 tags.into_iter()
                     .filter(|t| {
                         value.is_none()
-                            || t.value.as_ref().map(|v| v.as_bytes()) == value.map(|v| v.as_bytes())
+                            || t.value.as_ref().map(super::super::tags::TagValue::as_bytes)
+                                == value.map(str::as_bytes)
                     })
                     .collect::<Vec<_>>()
             }),
@@ -247,7 +252,7 @@ pub async fn set_tag_handler(
             ns,
             req.subject.as_bytes(),
             req.key.as_bytes(),
-            req.value.as_ref().map(|v| v.as_bytes()),
+            req.value.as_ref().map(String::as_bytes),
             b"",
         )
         .await
@@ -293,7 +298,7 @@ pub async fn del_tag_handler(
                 ns,
                 req.subject.as_bytes(),
                 req.key.as_bytes(),
-                req.value.as_ref().map(|v| v.as_bytes()),
+                req.value.as_ref().map(String::as_bytes),
             )
             .await
             .map(|()| None)

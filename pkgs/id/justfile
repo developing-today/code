@@ -41,16 +41,81 @@ ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox 
 
 # Auto-fix formatting and lint issues
 [group('check')]
-fix: lockfiles fmt lint-fix
+fix *args: strip-whitespace lockfiles (fmt args) lint-fix
     @echo "✓ Fixed what could be fixed"
 
 # =============================================================================
 # Formatting
 # =============================================================================
 
-# Format all code (Rust + web)
+# Run treefmt (cached, finds nearest treefmt.toml from pwd)
 [group('format')]
-fmt: cargo-fmt web-fmt
+treefmt *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    # Translate --check to --fail-on-change (treefmt v2 renamed the flag)
+    translated_args=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) translated_args+=(--fail-on-change) ;;
+        *) translated_args+=("$arg") ;;
+      esac
+    done
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" "${translated_args[@]}"
+
+# Run treefmt without cache (finds nearest treefmt.toml from pwd)
+[group('format')]
+treefmt-no-cache *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    # Translate --check to --fail-on-change (treefmt v2 renamed the flag)
+    translated_args=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) translated_args+=(--fail-on-change) ;;
+        *) translated_args+=("$arg") ;;
+      esac
+    done
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" --no-cache "${translated_args[@]}"
+alias treefmt-uncached := treefmt-no-cache
+
+# Strip trailing whitespace from all tracked text files
+[group('format')]
+strip-whitespace:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git grep -rl '[[:space:]]$' -- \
+      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \
+      ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \
+      ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \
+      ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \
+      ':!*.mp3' ':!*.wav' ':!*.flac' ':!*.aac' ':!*.ogg' ':!*.wma' ':!*.m4a' ':!*.opus' \
+      ':!*.zip' ':!*.tar' ':!*.gz' ':!*.bz2' ':!*.xz' ':!*.zst' ':!*.7z' ':!*.rar' \
+      ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \
+      2>/dev/null | while IFS= read -r f; do
+      case "$f" in
+        */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;
+        */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;
+        */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;
+        */third_party/*|*/third-party/*|*/external/*|*/deps/*|*/Pods/*|*/.bundle/*) continue ;;
+        */bower_components/*|*/.pnp/*|*/.eggs/*|*.egg-info/*|*/site-packages/*) continue ;;
+        */.gradle/*|*/.mvn/*|*/Packages/*) continue ;;
+      esac
+      case "$(file -b --mime-encoding "$f")" in binary) continue ;; esac
+      sed -i 's/[[:space:]]*$//' "$f"
+    done || true
+
+# Format all code (via treefmt)
+[group('format')]
+fmt *args: (treefmt args)
 
 # Check all formatting (no changes)
 [group('format')]
@@ -119,17 +184,23 @@ web-lint-fix:
 
 # Regenerate all lockfiles (bun2nix + just-recipes.json)
 [group('deps')]
-lockfiles: bun2nix just-recipes
+lockfiles: bun2nix bun2nix-e2e just-recipes
 
 # Regenerate web/bun.nix from web/bun.lock for offline nix builds
 [group('deps')]
 bun2nix:
     bun2nix --lock-file web/bun.lock --output-file web/bun.nix
 
+# Regenerate e2e/bun.nix from e2e/bun.lock for offline nix builds
+[group('deps')]
+bun2nix-e2e:
+    bun2nix --lock-file e2e/bun.lock --output-file e2e/bun.nix
+
 # Regenerate just-recipes.json from justfile for dynamic nix app generation
 [group('deps')]
 just-recipes:
     just --dump --dump-format json > just-recipes.json
+    biome format --write --config-path . just-recipes.json
 
 # =============================================================================
 # Testing
@@ -137,8 +208,14 @@ just-recipes:
 
 # Run all Rust tests
 [group('test')]
-test:
+test-rust:
     cargo test --all-features
+alias test-cargo := test-rust
+
+# Run all fast tests (Rust + TypeScript unit + typecheck)
+[group('test')]
+test: test-rust test-web-unit test-web-typecheck
+    @echo "✓ All fast tests passed (Rust + TypeScript)!"
 
 # Run all Rust tests (sandbox-safe: excludes tests requiring network)
 [group('test')]
@@ -153,8 +230,9 @@ alias test-lib := test-unit
 
 # Run integration tests only
 [group('test')]
-test-int:
+test-integration:
     cargo test --all-features --test cli_integration
+alias test-int := test-integration
 
 # Run integration tests (sandbox-safe: excludes serve_tests requiring network)
 [group('test')]
@@ -173,7 +251,7 @@ test-one NAME:
 
 # [bun] Run web tests (Rust + TypeScript unit tests + type checking)
 [group('test')]
-test-web: test test-web-unit test-web-typecheck
+test-web: test-rust test-web-unit test-web-typecheck
     @echo "✓ All web tests passed!"
 alias web-typecheck := test-web
 
@@ -192,10 +270,14 @@ test-web-unit:
 test-web-typecheck:
     cd web && bun run typecheck
 
-# Run ALL tests including serve_tests and E2E (requires network + built binary) [bun]
+# Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
 [group('test')]
-test-all: test test-web-unit test-web-typecheck test-e2e
-    @echo "✓ All tests passed (including serve_tests + E2E)!"
+test-nix:
+    nix flake check
+    @echo "✓ nix flake check passed (27 checks — runs everything)"
+alias test-full := test-nix
+alias check-nix := test-nix
+alias nix-check := test-nix
 
 # =============================================================================
 # E2E Tests (Playwright - requires built web variant + network)
@@ -471,6 +553,16 @@ tree:
 loc:
     tokei
 
+# Recursively chown all files (including hidden) to current user:group (requires sudo)
+[group('util')]
+chown:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    id
+    user="$(id -u)"
+    group="$(id -g)"
+    sudo chown -R "$user:$group" .
+
 # =============================================================================
 # Flake Input Management
 # =============================================================================
@@ -559,27 +651,101 @@ update-nixpkgs-unstable-only:
     just update-input $inputs
 
 # =============================================================================
-# Nix
+# Nix Checks (individual flake checks — prefer test-nix for full suite)
 # =============================================================================
 
-# Run nix flake check (full sandboxed CI, only x86_64-linux)
+# Run a single nix flake check by name (e.g. just check-one test-unit)
 [group('nix')]
-check-nix:
-    nix flake check -L
+check-one NAME:
+    nix build -L .#checks.x86_64-linux.{{NAME}}
 
-# Run NixOS VM serve integration test (requires KVM, Linux only)
+# Build nix package — web variant (nix build)
+[group('nix')]
+build-nix:
+    nix build
+
+# Build nix package — lib variant, no web (nix build .#id-lib)
+[group('nix')]
+build-nix-lib:
+    nix build .#id-lib
+
+# --- NixOS VM tests (require KVM, Linux only) ---
+
+# Run NixOS VM serve integration test
 [group('nix')]
 test-nixos-serve:
     nix build -L .#checks.x86_64-linux.nixos-serve
 
-# Run NixOS VM E2E browser test (requires KVM, Linux only)
+# Run NixOS VM E2E browser test (Chromium --dump-dom)
 [group('nix')]
 test-nixos-e2e:
     nix build -L .#checks.x86_64-linux.nixos-e2e
 
+# Run NixOS 4-VM Playwright E2E test (both browsers, ~3 min)
+[group('nix')]
+test-nixos-playwright-e2e:
+    nix build -L .#checks.x86_64-linux.nixos-playwright-e2e
+
+# Run NixOS VM integration tests (serve_tests + full test binary)
+[group('nix')]
+test-nixos-integration:
+    nix build -L .#checks.x86_64-linux.nixos-integration
+
 # Run all NixOS VM tests (requires KVM, Linux only)
 [group('nix')]
-test-nixos: test-nixos-serve test-nixos-e2e
+test-nixos: test-nixos-serve test-nixos-e2e test-nixos-playwright-e2e test-nixos-integration
+
+# --- Sandbox format checks (individual) ---
+
+# Run Playwright E2E in nix sandbox (Firefox only — Chromium crashes in sandbox)
+[group('nix')]
+check-test-e2e:
+    nix build -L .#checks.x86_64-linux.test-e2e
+
+# Run nix-fmt-check in sandbox (nixfmt --check on all .nix files)
+[group('nix')]
+check-nix-fmt:
+    nix build -L .#checks.x86_64-linux.nix-fmt-check
+
+# Run treefmt in sandbox (all formatters via treefmt.toml)
+[group('nix')]
+check-treefmt:
+    nix build -L .#checks.x86_64-linux.treefmt-check
+
+# Run biome check in sandbox (JS/TS/CSS linting)
+[group('nix')]
+check-biome:
+    nix build -L .#checks.x86_64-linux.biome-check
+
+# Run rustfmt check in sandbox (Rust formatting)
+[group('nix')]
+check-rustfmt:
+    nix build -L .#checks.x86_64-linux.rustfmt-check
+
+# Run statix check in sandbox (Nix linting)
+[group('nix')]
+check-statix:
+    nix build -L .#checks.x86_64-linux.statix-check
+
+# Run shfmt check in sandbox (shell script formatting)
+[group('nix')]
+check-shfmt:
+    nix build -L .#checks.x86_64-linux.shfmt-check
+
+# Run shellcheck in sandbox (shell script linting)
+[group('nix')]
+check-shellcheck:
+    nix build -L .#checks.x86_64-linux.shellcheck-check
+
+# Run taplo check in sandbox (TOML formatting)
+[group('nix')]
+check-taplo:
+    nix build -L .#checks.x86_64-linux.taplo-check
+
+# Run prettier check in sandbox (Markdown/YAML/JSON formatting)
+[group('nix')]
+check-prettier:
+    nix build -L .#checks.x86_64-linux.prettier-check
 
 # =============================================================================
 # Combined Commands

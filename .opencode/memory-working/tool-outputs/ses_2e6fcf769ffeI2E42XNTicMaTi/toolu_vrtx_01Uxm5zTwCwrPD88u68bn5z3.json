@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01Uxm5zTwCwrPD88u68bn5z3",
-  "sessionID": "ses_2e6fcf769ffeI2E42XNTicMaTi",
-  "tool": "read",
-  "fullOutput": "<path>/home/user/code/nixos/environment/default.nix</path>\n<type>file</type>\n<content>497:       fractal # Matrix.org messaging app\n498:       #tdesktop # telegram desktop\n499: \n500:       # Testing and development tools\n501:       #beekeeper-studio # electron 31 eol\n502:       cypress # Functional testing framework using headless chrome\n503:       chromedriver\n504:       playwright-driver\n505:       direnv\n506:       rofi\n507:       rofi-calc\n508:       qmk\n509:       postgresql\n510:       libusb1 # for Xbox controller\n511:       libtool # for Emacs vterm\n\n(Showing lines 497-511 of 554. Use offset=512 to continue.)\n</content>",
-  "timestamp": 1774242122935
+	"callID": "toolu_vrtx_01Uxm5zTwCwrPD88u68bn5z3",
+	"sessionID": "ses_2e6fcf769ffeI2E42XNTicMaTi",
+	"tool": "read",
+	"fullOutput": "<path>/home/user/code/nixos/environment/default.nix</path>\n<type>file</type>\n<content>497:       fractal # Matrix.org messaging app\n498:       #tdesktop # telegram desktop\n499: \n500:       # Testing and development tools\n501:       #beekeeper-studio # electron 31 eol\n502:       cypress # Functional testing framework using headless chrome\n503:       chromedriver\n504:       playwright-driver\n505:       direnv\n506:       rofi\n507:       rofi-calc\n508:       qmk\n509:       postgresql\n510:       libusb1 # for Xbox controller\n511:       libtool # for Emacs vterm\n\n(Showing lines 497-511 of 554. Use offset=512 to continue.)\n</content>",
+	"timestamp": 1774242122935
 }

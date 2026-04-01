@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01M2mwRudBY5cjj6xdq98FGG",
-  "sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
-  "tool": "bash",
-  "fullOutput": "{\n  // Replace OpenCode's generic \"Summarize...\" prompt when no return is specified\n  \"replace_generic\": true\n\n  // Custom prompt to use (uses subtask2 substitution prompt by default)\n  // \"generic_return\": \"Challenge and validate the task tool output above. Verify assumptions, identify gaps or errors, then continue with the next logical step.\"\n}\n",
-  "timestamp": 1774244803020
+	"callID": "toolu_vrtx_01M2mwRudBY5cjj6xdq98FGG",
+	"sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
+	"tool": "bash",
+	"fullOutput": "{\n  // Replace OpenCode's generic \"Summarize...\" prompt when no return is specified\n  \"replace_generic\": true\n\n  // Custom prompt to use (uses subtask2 substitution prompt by default)\n  // \"generic_return\": \"Challenge and validate the task tool output above. Verify assumptions, identify gaps or errors, then continue with the next logical step.\"\n}\n",
+	"timestamp": 1774244803020
 }

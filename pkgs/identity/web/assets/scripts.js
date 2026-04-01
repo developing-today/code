@@ -1,3 +1,3 @@
-import 'htmx.org'
+import "htmx.org";
 
-import 'hyperscript.org'
+import "hyperscript.org";

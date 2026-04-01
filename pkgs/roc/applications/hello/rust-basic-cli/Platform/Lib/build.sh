@@ -44,12 +44,12 @@ if [[ $# -gt 1 ]]; then
       ;;
     # *) usage ;;
     *)
-      if [[ -z "$1" ]]; then
+      if [[ -z $1 ]]; then
         usage
       fi
       application="$1"
       shift
-      if [[ "$#" -lt 1 ]]; then
+      if [[ $# -lt 1 ]]; then
         break
       fi
       platform="$1"
@@ -71,7 +71,7 @@ platform_roc_path="$platform_path"
 if [[ -d "$platform_path/platform" ]]; then
   platform_roc_path="$platform_path/platform"
 fi
-if [[ -d "$platform_path" ]] && [[ ! -d "$app_path/Platform" ]]; then
+if [[ -d $platform_path ]] && [[ ! -d "$app_path/Platform" ]]; then
   ln -s "../../../$platform_roc_path" "$app_path/Platform"
 fi
 if [[ ! -d "$app_path/Lib" ]]; then
@@ -81,7 +81,7 @@ app_lib="$app_path/libapp.so"
 rm -f "$app_lib" 2>/dev/null || true
 app_main="$app_path/main.roc"
 roc build --lib "$app_main" --output "$app_lib"
-if [[ -d "$platform_path" ]]; then
+if [[ -d $platform_path ]]; then
   if [[ ! -d "$platform_roc_path/Lib" ]]; then
     ln -s ../../../lib "$platform_roc_path/Lib"
   fi
@@ -89,7 +89,7 @@ if [[ -d "$platform_path" ]]; then
   pushd "$platform_path" >/dev/null
   host_bin="$platform_path/dynhost"
   roc_build_file="build.roc"
-  if [[ -e "$roc_build_file" ]]; then
+  if [[ -e $roc_build_file ]]; then
     # nix_file="flake.nix"
     # if [[ -f "$nix_file" ]] && command -v nix && eval "nix eval --json .#devShell.x86_64-linux >/dev/null 2>&1"; then
     #   nix develop --command "roc \"$roc_build_file\""

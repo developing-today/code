@@ -55,20 +55,17 @@
           with pkgs;
           lib.optionals stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
 
-        sharedInputs = (
-          with pkgs;
-          [
-            jq
-            rust
-            llvmPkgs.clang
-            llvmPkgs.lldb # for debugging
-            expect
-            nmap
-            simple-http-server
-            rocPkgs.cli
-            ripgrep # for ci/check_all_exposed_funs_tested.roc
-          ]
-        );
+        sharedInputs = with pkgs; [
+          jq
+          rust
+          llvmPkgs.clang
+          llvmPkgs.lldb # for debugging
+          expect
+          nmap
+          simple-http-server
+          rocPkgs.cli
+          ripgrep # for ci/check_all_exposed_funs_tested.roc
+        ];
       in
       {
 

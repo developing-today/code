@@ -38,7 +38,7 @@ pub struct Callable {
     /// defined.
     ///
     /// It is optional to allow for flexible usage patterns—e.g. to leverage [`Callable`]
-    /// to work with callables that we want to code-generate into a new crate.  
+    /// to work with callables that we want to code-generate into a new crate.
     pub source_coordinates: Option<GlobalItemId>,
 }
 

@@ -21,18 +21,18 @@ VARIANT="${1:-web}"
 PROFILE="${2:-debug}"
 
 # Validate inputs
-if [[ "$VARIANT" != "lib" && "$VARIANT" != "web" && "$VARIANT" != "assets" ]]; then
+if [[ $VARIANT != "lib" && $VARIANT != "web" && $VARIANT != "assets" ]]; then
   echo "Error: variant must be 'lib', 'web', or 'assets', got '$VARIANT'" >&2
   exit 1
 fi
 
-if [[ "$PROFILE" != "debug" && "$PROFILE" != "release" ]]; then
+if [[ $PROFILE != "debug" && $PROFILE != "release" ]]; then
   echo "Error: profile must be 'debug' or 'release', got '$PROFILE'" >&2
   exit 1
 fi
 
 # Set paths based on profile
-if [[ "$PROFILE" == "release" ]]; then
+if [[ $PROFILE == "release" ]]; then
   BINARY="target/release/id"
   VARIANT_FILE="target/.build-variant-release"
   CARGO_FLAGS="--release"
@@ -45,7 +45,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Build web assets if needed (for web and assets variants)
 # ─────────────────────────────────────────────────────────────────────────────
-if [[ "$VARIANT" == "web" || "$VARIANT" == "assets" ]]; then
+if [[ $VARIANT == "web" || $VARIANT == "assets" ]]; then
   needs_frontend=false
 
   if [[ ! -f web/dist/manifest.json ]]; then
@@ -61,9 +61,9 @@ if [[ "$VARIANT" == "web" || "$VARIANT" == "assets" ]]; then
     # Check all .ts, .css, .json config files under web/ (excluding dist/ and node_modules/)
     # Also check bun.lock for dependency changes
     while IFS= read -r f; do
-      if [[ -f "$f" ]]; then
+      if [[ -f $f ]]; then
         file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-        if [[ "$file_time" -gt "$manifest_time" ]]; then
+        if [[ $file_time -gt $manifest_time ]]; then
           echo "[web] $f is newer than manifest"
           needs_frontend=true
           break
@@ -75,7 +75,7 @@ if [[ "$VARIANT" == "web" || "$VARIANT" == "assets" ]]; then
     )
   fi
 
-  if [[ "$needs_frontend" == "true" ]]; then
+  if [[ $needs_frontend == "true" ]]; then
     echo "[web] Building frontend assets..."
     (cd web && bun install && bun run build)
   else
@@ -83,8 +83,12 @@ if [[ "$VARIANT" == "web" || "$VARIANT" == "assets" ]]; then
   fi
 fi
 
+# Track whether frontend was just rebuilt — if so, Rust needs rebuild too
+# (embedded assets changed) without re-scanning web/dist timestamps
+frontend_just_built="$needs_frontend"
+
 # Exit early for assets-only variant
-if [[ "$VARIANT" == "assets" ]]; then
+if [[ $VARIANT == "assets" ]]; then
   exit 0
 fi
 
@@ -92,22 +96,25 @@ fi
 # Step 2: Build Rust binary if needed (for lib and web variants)
 # ─────────────────────────────────────────────────────────────────────────────
 needs_backend=false
-OTHER_VARIANT=$([[ "$VARIANT" == "web" ]] && echo "lib" || echo "web")
+OTHER_VARIANT=$([[ $VARIANT == "web" ]] && echo "lib" || echo "web")
 
-if [[ ! -f "$BINARY" ]]; then
+if [[ ! -f $BINARY ]]; then
   echo "[rust] No binary found, build needed"
   needs_backend=true
-elif [[ -f "$VARIANT_FILE" ]] && [[ "$(cat "$VARIANT_FILE")" == "$OTHER_VARIANT" ]]; then
+elif [[ -f $VARIANT_FILE ]] && [[ "$(cat "$VARIANT_FILE")" == "$OTHER_VARIANT" ]]; then
   echo "[rust] Last build was '$OTHER_VARIANT' variant, rebuilding as '$VARIANT'"
+  needs_backend=true
+elif [[ ${frontend_just_built:-false} == "true" ]]; then
+  echo "[rust] Frontend assets were just rebuilt, need to re-embed"
   needs_backend=true
 else
   binary_time=$(stat -c %Y "$BINARY" 2>/dev/null || echo 0)
 
   # Use find for robust recursive file discovery
   while IFS= read -r f; do
-    if [[ -f "$f" ]]; then
+    if [[ -f $f ]]; then
       file_time=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-      if [[ "$file_time" -gt "$binary_time" ]]; then
+      if [[ $file_time -gt $binary_time ]]; then
         echo "[rust] $f is newer than binary"
         needs_backend=true
         break
@@ -118,20 +125,25 @@ else
     echo Cargo.toml
     echo Cargo.lock
     # For web variant, also check embedded assets (exclude .map files - not embedded)
-    if [[ "$VARIANT" == "web" ]]; then
+    # Only scan web/dist when frontend wasn't just rebuilt (that case is handled above)
+    if [[ $VARIANT == "web" ]]; then
       find web/dist -type f ! -name '*.map' 2>/dev/null
     fi
   )
 fi
 
-if [[ "$needs_backend" == "true" ]]; then
+if [[ $needs_backend == "true" ]]; then
   echo "[rust] Building $VARIANT $PROFILE variant..."
 
-  if [[ "$VARIANT" == "web" ]]; then
+  if [[ $VARIANT == "web" ]]; then
     cargo build $CARGO_FLAGS --features web
   else
     cargo build $CARGO_FLAGS
   fi
+
+  # Touch binary so our timestamp check works even when cargo no-ops
+  # (cargo doesn't re-link when only embedded assets changed but no .rs files did)
+  touch "$BINARY"
 
   mkdir -p target
   echo "$VARIANT" >"$VARIANT_FILE"

@@ -36,7 +36,7 @@ git add flake.lock
 set +e
 current=$(nixos-rebuild list-generations | grep current)
 set -e
-if [[ -z "$current" ]]; then
+if [[ -z $current ]]; then
   echo "Could not find current, possibly using nixos-25.11, seeking first Current tab = true"
   current="$(nixos-rebuild list-generations --json | jq -r 'to_entries[] | select(.value.current == true) | "\(.value.generation)"')"
 fi

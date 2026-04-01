@@ -326,7 +326,7 @@
               if type == "routed" then
                 {
                   Address = ipv4;
-                  MulticastDNS = (trust == "trusted" || trust == "management");
+                  MulticastDNS = trust == "trusted" || trust == "management";
                 }
               else if type == "dhcp" then
                 { DHCP = "ipv4"; }
@@ -458,7 +458,7 @@
                       (mkV4Subnet {
                         address24 = toAddress24 ipv4;
                         iface = name;
-                        dns = dns;
+                        inherit dns;
                       })
                     ]
                   else
@@ -512,10 +512,10 @@
               ifname ${pppName}
             '';
             fromPppoe = dev: name: pppoe: {
-              name = name;
+              inherit name;
               value = {
                 enable = true;
-                config = (mkConfig dev name pppoe.user);
+                config = mkConfig dev name pppoe.user;
               };
             };
             fromTopology =
@@ -928,7 +928,7 @@
 
       services.hostapd = {
         enable = true;
-        wpaPassphrase = pw.wpaPassphrase;
+        inherit (pw) wpaPassphrase;
         interface = "wlp4s0";
         ssid = "flux";
       };
@@ -1275,7 +1275,7 @@
               if type == "routed" then
                 {
                   Address = ipv4;
-                  MulticastDNS = (trust == "trusted" || trust == "management");
+                  MulticastDNS = trust == "trusted" || trust == "management";
                 }
               else if type == "dhcp" then
                 { DHCP = "ipv4"; }
@@ -1407,7 +1407,7 @@
                       (mkV4Subnet {
                         address24 = toAddress24 ipv4;
                         iface = name;
-                        dns = dns;
+                        inherit dns;
                       })
                     ]
                   else
@@ -1461,10 +1461,10 @@
               ifname ${pppName}
             '';
             fromPppoe = dev: name: pppoe: {
-              name = name;
+              inherit name;
               value = {
                 enable = true;
-                config = (mkConfig dev name pppoe.user);
+                config = mkConfig dev name pppoe.user;
               };
             };
             fromTopology =

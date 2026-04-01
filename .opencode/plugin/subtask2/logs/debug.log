@@ -1,8 +1,0 @@
-[2026-03-25T15:07:09.555Z] Plugin initialized: 6 commands [
-  "worktree",
-  "plannotator-last",
-  "devcontainer",
-  "workspaces",
-  "plannotator-annotate",
-  "plannotator-review"
-]

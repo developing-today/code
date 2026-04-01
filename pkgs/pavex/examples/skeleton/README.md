@@ -1,6 +1,6 @@
 # Skeleton example
 
-A barebone example that showcases the _mechanics_ of Pavex.  
+A barebone example that showcases the _mechanics_ of Pavex.
 
 `app_blueprint` provides two entrypoints:
 
@@ -15,7 +15,7 @@ A barebone example that showcases the _mechanics_ of Pavex.
 
 # How to build
 
-All commands must be proxied through `cargo-px` in order to re-generate `app_server_sdk` when necessary.  
+All commands must be proxied through `cargo-px` in order to re-generate `app_server_sdk` when necessary.
 
 ```bash
 # Build the project

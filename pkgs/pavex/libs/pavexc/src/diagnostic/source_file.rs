@@ -36,7 +36,7 @@ impl From<ParsedSourceFile> for NamedSource {
 
 /// Given a file path, return the content of the source file it refers to.
 ///
-/// Relative paths are assumed to be relative to the workspace root manifest.  
+/// Relative paths are assumed to be relative to the workspace root manifest.
 /// Absolute paths are used as-is.
 pub fn read_source_file(
     path: &Path,

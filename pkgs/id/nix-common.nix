@@ -4,54 +4,99 @@
 # variables, and shell hooks. The flake.lock provides exact version pinning.
 #
 # Usage in flake.nix:
-#   nixCommon = import ./nix-common.nix { inherit pkgs; };
+#   nixCommon = import ./nix-common.nix { inherit pkgs; extraFmtBins = [ bun2nixPkg ]; };
 #
 # Usage in shell.nix:
 #   nixCommon = import ./nix-common.nix { inherit pkgs; };
 
-{ pkgs }:
-
 {
-  # Build inputs (libraries)
-  buildInputs = with pkgs; [ openssl ];
+  pkgs,
+  extraFmtBins ? [ ],
+}:
+
+let
+  # Rust toolchain from rust-toolchain.toml (includes rustc, cargo, rustfmt, clippy)
+  # Works because both shell.nix and flake.nix apply rust-overlay before importing
+  rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+
+  # Formatter binaries (keep in sync with treefmt.toml)
+  # Used by formatter wrapper (nix fmt), nix flake checks, and devShell PATH
+  fmtBins = [
+    # Rust toolchain (includes rustfmt)
+    rustToolchain
+  ]
+  ++ (with pkgs; [
+    # Formatter orchestrator
+    treefmt
+    # Formatters and linters (keep in sync with treefmt.toml)
+    biome
+    nodePackages.prettier
+    nixfmt
+    statix
+    shfmt
+    shellcheck
+    taplo
+    # Utilities needed by formatter wrapper
+    file
+    bash
+    just
+    gnused
+    findutils
+  ])
+  ++ extraFmtBins;
 
   # Native build inputs (tools, compilers)
-  # Note: rustToolchain should be added separately as it's defined differently
-  # in flake.nix vs shell.nix
-  nativeBuildInputs = with pkgs; [
-    # Build dependencies
-    pkg-config
+  nativeBuildInputs =
+    fmtBins
+    ++ (with pkgs; [
+      # Build dependencies
+      pkg-config
+      openssl
 
-    # Cargo plugins
-    cargo-watch
-    cargo-nextest
-    cargo-llvm-cov
-    cargo-audit
-    cargo-outdated
-    cargo-machete
-    cargo-edit
+      # Cargo plugins
+      cargo-watch
+      cargo-nextest
+      cargo-llvm-cov
+      cargo-audit
+      cargo-outdated
+      cargo-machete
+      cargo-edit
 
-    # Development tools
-    just
-    git
-    ripgrep
-    fd
-    jq
-    uv
-    tokei
-    hyperfine
-    treefmt # Multi-language formatter orchestrator (used by nix fmt)
+      # Development tools
+      git
+      ripgrep
+      fd
+      jq
+      uv
+      tokei
+      hyperfine
 
-    # Web development tools
-    bun # JavaScript bundler and runtime (required for web builds)
-    nodePackages.typescript # TypeScript for type checking
-    biome # Fast formatter and linter for TypeScript/CSS
+      # Web development tools
+      bun # JavaScript bundler and runtime (required for web builds)
+      nodePackages.typescript # TypeScript for type checking
 
-    # E2E testing (Playwright) — use playwright-driver.browsers for
-    # pre-patched browser binaries that work with Playwright's CDP protocol.
-    # Pin @playwright/test in e2e/package.json to match this version.
-    playwright-driver.browsers
-  ];
+      # E2E testing (Playwright) — use playwright-driver.browsers for
+      # pre-patched browser binaries that work with Playwright's CDP protocol.
+      # Pin @playwright/test in e2e/package.json to match this version.
+      playwright-driver.browsers
+
+      # Manual linters (not in treefmt, run manually)
+      deadnix
+    ]);
+in
+{
+  inherit rustToolchain fmtBins nativeBuildInputs;
+
+  # Build inputs (libraries for Rust compilation)
+  buildInputs = with pkgs; [ openssl ];
+
+  # Anchor bare treefmt to current directory (for ad-hoc devshell use)
+  # Without this, treefmt walks up to .git root which is wrong for pkgs/id
+  # (just recipes and nix fmt use explicit --config-file/--tree-root instead)
+  TREEFMT_TREE_ROOT_CMD = "pwd";
+
+  # Packages for shell.nix / nix develop (nativeBuildInputs = all tools)
+  packages = nativeBuildInputs;
 
   # OpenSSL environment variables
   opensslEnv = {
@@ -118,34 +163,33 @@
     echo "    Cargo: $(cargo --version 2>/dev/null || echo 'not found')"
     echo "    Bun:   $(bun --version 2>/dev/null || echo 'not found')"
     echo ""
-    echo "  Quick commands:"
-    echo "    just                 - List all available tasks"
-    echo "    just check           - Run fix + ci (primary check)"
-    echo "    just ci              - Run read-only checks (CI-safe)"
+    echo "  Build & Run:"
+    echo "    just                 - Kill, build, and serve with web UI (alias: kill-serve)"
     echo "    just build           - Build with web UI [bun]"
     echo "    just build-lib       - Build Rust only (no web/bun)"
+    echo "    just build-web       - Build web frontend assets with Bun"
     echo "    just serve           - Build and serve with web UI"
     echo "    just serve-lib       - Serve without web UI"
+    echo "    just kill            - Kill any running 'id serve' processes"
     echo ""
-    echo "  Web development:"
-    echo "    just web-build       - Build web assets with Bun"
-    echo "    just web-dev         - Start web dev server with hot reload"
-    echo "    just serve-web 3000  - Serve with web UI on port 3000"
+    echo "  Testing:"
+    echo "    just check           - Fix + CI (run before committing)"
+    echo "    just ci              - CI-safe read-only checks"
+    echo "    just test            - All fast tests (Rust + TS unit + typecheck)"
+    echo "    just test-rust       - All Rust tests (unit + integration)"
+    echo "    just test-unit       - Unit tests only (fast)"
+    echo "    just test-web        - All web tests (Rust + TS unit + typecheck)"
+    echo "    just test-e2e        - Playwright E2E (chromium + firefox)"
+    echo "    just test-nix        - All 27 sandboxed checks (nix flake check)"
     echo ""
-    echo "  Testing & Quality:"
-    echo "    just test            - Run all tests"
-    echo "    just test-lib        - Run unit tests only (fast)"
-    echo "    just test-e2e        - Run Playwright E2E tests"
-    echo "    just lint            - Run clippy linting"
-    echo "    just coverage        - Generate coverage report"
+    echo "  Nix (every just recipe is also: nix run .#<recipe>):"
+    echo "    just build-nix       - Build nix package (nix build)"
+    echo "    just build-nix-lib   - Build lib-only package (nix build .#id-lib)"
+    echo "    just test-nixos      - All 4 NixOS VM tests"
+    echo "    just check-one NAME  - Run single nix check by name"
     echo ""
-    echo "  Nix commands:"
-    echo "    nix run .#<cmd>      - Run any just command via Nix"
-    echo "    nix run .#just <cmd> - Run just (fallback for missing apps)"
-    echo "    nix fmt              - Run formatter (just fix)"
-    echo "    nix flake check -L   - Run all Nix checks"
-    echo "    nix build            - Build web-enabled package (default)"
-    echo "    nix build .#id-lib   - Build library-only package"
+    echo "  Utility:"
+    echo "    just list            - Show all available recipes"
     echo "════════════════════════════════════════════════════════════"
     echo ""
     echo "Welcome to the id development shell!"

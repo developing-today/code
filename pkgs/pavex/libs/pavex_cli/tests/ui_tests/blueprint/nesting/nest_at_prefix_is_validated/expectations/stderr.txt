@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m The path prefix passed to `nest_at` can't end with a trailing slash, `/`.
   [31m│[0m `/api/` does.
   [31m│[0m Trailing slashes in path prefixes increase the likelihood of having
@@ -17,7 +17,7 @@
   [31m│[0m [36m  help: [0mRemove the '/' at the end of the path prefix to fix this error: use
   [31m│[0m         `/api` instead of `/api/`.
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m The path prefix passed to `nest_at` must begin with a forward slash, `/`.
   [31m│[0m `api` doesn't.
   [31m│[0m
@@ -31,7 +31,7 @@
   [31m│[0m [36m  help: [0mAdd a '/' at the beginning of the path prefix to fix this error: use
   [31m│[0m         `/api` instead of `api`.
 
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m The path prefix passed to `nest_at` cannot be empty.
   [31m│[0m
   [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:8:1]

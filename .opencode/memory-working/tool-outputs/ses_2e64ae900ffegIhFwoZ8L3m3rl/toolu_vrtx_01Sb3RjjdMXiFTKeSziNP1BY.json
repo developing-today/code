@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01Sb3RjjdMXiFTKeSziNP1BY",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "IN_NIX_SHELL: impure\nDIRENV_DIR: -/home/user/code\nname: nix-shell-env\nbuildInputs: \nNIX_BUILD_TOP: /tmp/nix-shell.slQmT6/nix-shell.lrMJrq/nix-shell.Fs5l1x\n",
-  "timestamp": 1774252854504
+	"callID": "toolu_vrtx_01Sb3RjjdMXiFTKeSziNP1BY",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "IN_NIX_SHELL: impure\nDIRENV_DIR: -/home/user/code\nname: nix-shell-env\nbuildInputs: \nNIX_BUILD_TOP: /tmp/nix-shell.slQmT6/nix-shell.lrMJrq/nix-shell.Fs5l1x\n",
+	"timestamp": 1774252854504
 }

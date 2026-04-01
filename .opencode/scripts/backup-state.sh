@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # autoresearch-state-backup.sh
-# 
+#
 # Auto-backup functionality for autoresearch state files.
 # Designed to be called before experiment runs.
 #
@@ -84,12 +84,12 @@ get_backups() {
     local base_file="$1"
     local pattern="${base_file}.bak.*"
     local backups=()
-    
+
     # Find backups in the backup directory
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
     done < <(find "$BACKUP_DIR" -maxdepth 1 -name "$pattern" -type f -print0 2>/dev/null | sort -z -r)
-    
+
     printf '%s\n' "${backups[@]}"
 }
 
@@ -100,7 +100,7 @@ backup_file() {
     local base_name=$(basename "$file")
     local backup_name="${base_name}.bak.${TIMESTAMP}"
     local backup_path="${BACKUP_DIR}/${backup_name}"
-    
+
     if file_exists "$file"; then
         cp -p "$full_path" "$backup_path"
         echo "✓ Backed up: ${file} -> ${backup_name}"
@@ -117,25 +117,25 @@ cleanup_file() {
     local base_name=$(basename "$file")
     local pattern="${base_name}.bak.*"
     local count=0
-    
+
     # Get all backups sorted by date (newest first)
     local backups=()
     while IFS= read -r backup; do
         [[ -n "$backup" ]] && backups+=("$backup")
     done < <(find "$BACKUP_DIR" -maxdepth 1 -name "$pattern" -type f 2>/dev/null | sort -r)
-    
+
     count=${#backups[@]}
-    
+
     if [[ $count -eq 0 ]]; then
         echo "  No backups found for ${file}"
         return 0
     fi
-    
+
     if [[ $count -le $MAX_BACKUPS ]]; then
         echo "  ${file}: ${count} backup(s) (within limit of ${MAX_BACKUPS})"
         return 0
     fi
-    
+
     # Delete old backups beyond the limit
     local deleted=0
     for ((i=MAX_BACKUPS; i<count; i++)); do
@@ -144,7 +144,7 @@ cleanup_file() {
         echo "  🗑 Deleted old backup: $(basename "$backup")"
         ((deleted++)) || true
     done
-    
+
     echo "  ${file}: Cleaned up ${deleted} old backup(s), kept ${MAX_BACKUPS}"
 }
 
@@ -153,14 +153,14 @@ do_backup() {
     echo "=== Creating backups (timestamp: ${TIMESTAMP}) ==="
     local success=0
     local total=0
-    
+
     for file in "${STATE_FILES[@]}"; do
         ((total++)) || true
         if backup_file "$file"; then
             ((success++)) || true
         fi
     done
-    
+
     echo ""
     echo "Backup complete: ${success}/${total} files backed up"
     echo ""
@@ -170,11 +170,11 @@ do_backup() {
 do_cleanup() {
     echo "=== Cleaning up old backups (keeping last ${MAX_BACKUPS}) ==="
     echo ""
-    
+
     for file in "${STATE_FILES[@]}"; do
         cleanup_file "$file"
     done
-    
+
     echo ""
     echo "Cleanup complete"
     echo ""
@@ -185,22 +185,22 @@ list_backups() {
     local file="$1"
     local base_name=$(basename "$file")
     local pattern="${base_name}.bak.*"
-    
+
     echo "=== Available backups for: ${file} ==="
-    
+
     local backups=()
     while IFS= read -r backup; do
         [[ -n "$backup" ]] && backups+=("$backup")
     done < <(find "$BACKUP_DIR" -maxdepth 1 -name "$pattern" -type f 2>/dev/null | sort -r)
-    
+
     if [[ ${#backups[@]} -eq 0 ]]; then
         echo "  No backups found"
         return 0
     fi
-    
+
     echo "  Total: ${#backups[@]} backup(s)"
     echo ""
-    
+
     local idx=0
     for backup in "${backups[@]}"; do
         local size=$(stat -c%s "$backup" 2>/dev/null || echo "0")
@@ -208,7 +208,7 @@ list_backups() {
         echo "  [${idx}] $(basename "$backup") (${size} bytes, ${date})"
         ((idx++))
     done
-    
+
     echo ""
 }
 
@@ -216,7 +216,7 @@ list_backups() {
 do_restore() {
     echo "=== Restore from backup ==="
     echo ""
-    
+
     # Check if there are any backups
     local has_backups=false
     for file in "${STATE_FILES[@]}"; do
@@ -225,12 +225,12 @@ do_restore() {
             break
         fi
     done
-    
+
     if [[ "$has_backups" == "false" ]]; then
         echo "❌ No backups found. Run 'backup' first."
         return 1
     fi
-    
+
     echo "Available state files to restore:"
     for file in "${STATE_FILES[@]}"; do
         local backups=$(get_backups "$file")
@@ -239,7 +239,7 @@ do_restore() {
         fi
     done
     echo ""
-    
+
     # List all files that have backups
     local files_with_backups=()
     for file in "${STATE_FILES[@]}"; do
@@ -247,14 +247,14 @@ do_restore() {
             files_with_backups+=("$file")
         fi
     done
-    
+
     # Interactive selection
     local num_files=${#files_with_backups[@]}
     if [[ $num_files -eq 0 ]]; then
         echo "No backups available to restore."
         return 1
     fi
-    
+
     if [[ $num_files -eq 1 ]]; then
         # Only one file with backups, ask for confirmation
         local file="${files_with_backups[0]}"
@@ -262,12 +262,12 @@ do_restore() {
         local base_name=$(basename "$file")
         local backup_name=$(basename "$backup")
         local backup_path="${BACKUP_DIR}/${backup_name}"
-        
+
         echo "Found most recent backup: ${backup_name}"
         echo ""
         read -p "Restore ${file} from this backup? (y/N): " -r
         echo ""
-        
+
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             cp -p "$backup_path" "${BACKUP_DIR}/${file}"
             echo "✓ Restored: ${file}"
@@ -278,26 +278,26 @@ do_restore() {
         # Multiple files, show all backups and let user select
         echo "Select a file to restore (or 'all' to restore all, 'cancel' to abort):"
         echo ""
-        
+
         local idx=0
         declare -A file_map
         for file in "${files_with_backups[@]}"; do
             local backups=$(get_backups "$file")
             local backup=$(echo "$backups" | head -n 1)
             local backup_name=$(basename "$backup")
-            
+
             echo "  [${idx}] ${file} (latest: ${backup_name})"
             file_map[$idx]="$file"
             ((idx++))
         done
-        
+
         echo "  [all] Restore all files to their latest backup"
         echo "  [cancel] Abort"
         echo ""
-        
+
         read -p "Enter selection: " -r
         echo ""
-        
+
         if [[ $REPLY == "all" ]]; then
             echo "Restoring all files..."
             for file in "${files_with_backups[@]}"; do
@@ -323,7 +323,7 @@ do_restore() {
             echo "Invalid selection."
         fi
     fi
-    
+
     echo ""
 }
 
@@ -331,15 +331,15 @@ do_restore() {
 do_restore_auto() {
     echo "=== Auto-restore from most recent backups ==="
     echo ""
-    
+
     local restored=0
     local total=0
-    
+
     for file in "${STATE_FILES[@]}"; do
         ((total++)) || true
         local backup
         backup=$(get_backups "$file" | head -n 1)
-        
+
         if [[ -n "$backup" ]]; then
             local backup_path="${BACKUP_DIR}/$(basename "$backup")"
             cp -p "$backup_path" "${BACKUP_DIR}/${file}"
@@ -349,7 +349,7 @@ do_restore_auto() {
             echo "⚠ No backup available for: ${file}"
         fi
     done
-    
+
     echo ""
     echo "Restore complete: ${restored}/${total} files restored"
     echo ""
@@ -362,7 +362,7 @@ main() {
         echo ""
         usage
     fi
-    
+
     # Allow chaining of commands
     for cmd in "$@"; do
         case "$cmd" in

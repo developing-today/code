@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01XsAdx5mPYUZcwAsPFRqYJn",
-  "sessionID": "ses_2e6fcf769ffeI2E42XNTicMaTi",
-  "tool": "glob",
-  "fullOutput": "/home/user/code/nixos/hosts/default.nix",
-  "timestamp": 1774241134703
+	"callID": "toolu_vrtx_01XsAdx5mPYUZcwAsPFRqYJn",
+	"sessionID": "ses_2e6fcf769ffeI2E42XNTicMaTi",
+	"tool": "glob",
+	"fullOutput": "/home/user/code/nixos/hosts/default.nix",
+	"timestamp": 1774241134703
 }

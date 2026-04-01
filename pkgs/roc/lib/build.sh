@@ -59,12 +59,12 @@ if [[ $# -gt 1 ]]; then
       ;;
     # *) usage ;;
     *)
-      if [[ -z "$1" ]]; then
+      if [[ -z $1 ]]; then
         usage
       fi
       application="$1"
       shift
-      if [[ "$#" -lt 1 ]]; then
+      if [[ $# -lt 1 ]]; then
         break
       fi
       platform="$1"
@@ -74,10 +74,10 @@ if [[ $# -gt 1 ]]; then
     esac
   done
 fi
-if [[ "$linker" = "default" ]]; then
+if [[ $linker == "default" ]]; then
   linker="surgical"
 fi
-if [[ ! -z "$linker" ]]; then
+if [[ -n $linker ]]; then
   linker="--linker $linker"
 fi
 platform="${platform:-$DEFAULT_PLATFORM}"
@@ -92,7 +92,7 @@ platform_roc_path="$platform_path"
 if [[ -d "$platform_path/platform" ]]; then
   platform_roc_path="$platform_path/platform"
 fi
-if [[ -d "$platform_path" ]] && [[ ! -d "$app_path/Platform" ]]; then
+if [[ -d $platform_path ]] && [[ ! -d "$app_path/Platform" ]]; then
   if [[ -L "$app_path/Platform" ]]; then
     unlink "$app_path/Platform"
   fi
@@ -109,7 +109,7 @@ rm -f "$app_lib" 2>/dev/null || true
 app_main="$app_path/main.roc"
 # --linker=legacy
 roc build $linker --lib "$app_main" --output "$app_lib"
-if [[ -d "$platform_path" ]]; then
+if [[ -d $platform_path ]]; then
   if [[ ! -d "$platform_roc_path/Lib" ]]; then
     if [[ -L "$platform_roc_path/Lib" ]]; then
       unlink "$platform_roc_path/Lib"
@@ -119,12 +119,12 @@ if [[ -d "$platform_path" ]]; then
   abs_app_dir="$(realpath "$app_path")"
   pushd "$platform_path" >/dev/null
   jump_start_file="./jump-start.sh"
-  if [[ -e "$jump_start_file" ]]; then
+  if [[ -e $jump_start_file ]]; then
     "$jump_start_file"
   fi
   roc_build_file="./build.roc"
   host_bin="$platform_path/dynhost"
-  if [[ -e "$roc_build_file" ]]; then
+  if [[ -e $roc_build_file ]]; then
     # nix_file="./flake.nix"
     # if [[ -f "$nix_file" ]] && command -v nix && eval "nix eval --json .#devShell.x86_64-linux >/dev/null 2>&1"; then
     # --linker=legacy

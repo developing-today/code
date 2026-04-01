@@ -190,8 +190,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/file/*name", get(file_by_name_handler))
         // Blob route (serves raw file content)
         .route("/blob/:hash", get(blob_handler))
-        // HTMX partial routes (return HTML fragments)
+        // Partial routes (return HTML fragments for SPA navigation)
         .route("/api/files", get(files_list_handler))
+        .route("/api/peers", get(peers_partial_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
         .route("/api/new", post(new_file_handler))
@@ -219,11 +220,11 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Check if this is an HTMX request (partial content).
-fn is_htmx_request(headers: &HeaderMap) -> bool {
-    let is_htmx = headers.contains_key("HX-Request");
-    tracing::debug!("[routes] is_htmx_request: {}", is_htmx);
-    is_htmx
+/// Check if this is a partial request (SPA navigation, returns fragment not full page).
+fn is_partial_request(headers: &HeaderMap) -> bool {
+    let is_partial = headers.contains_key("X-Partial-Request");
+    tracing::debug!("[routes] is_partial_request: {}", is_partial);
+    is_partial
 }
 
 /// Index page handler - shows file list.
@@ -234,8 +235,8 @@ async fn index_handler(
 ) -> impl IntoResponse {
     let page = get_file_list_page(&state, &query).await;
     let content = render_file_list(&page);
-    if is_htmx_request(&headers) {
-        // HTMX request - return wrapped content with header/footer
+    if is_partial_request(&headers) {
+        // Partial request - return wrapped content with header/footer
         Html(render_main_page_wrapper(&content))
     } else {
         Html(render_page("Files", &content, "", &state.assets))
@@ -245,8 +246,8 @@ async fn index_handler(
 /// Settings page handler.
 async fn settings_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let content = render_settings(&state.node_id);
-    if is_htmx_request(&headers) {
-        // HTMX request - return wrapped content with header/footer
+    if is_partial_request(&headers) {
+        // Partial request - return wrapped content with header/footer
         Html(render_main_page_wrapper(&content))
     } else {
         Html(render_page("Settings", &content, "", &state.assets))
@@ -274,7 +275,7 @@ async fn peers_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
     };
 
     let content = render_peers(&peers_data);
-    if is_htmx_request(&headers) {
+    if is_partial_request(&headers) {
         Html(render_main_page_wrapper(&content))
     } else {
         Html(render_page("Peers", &content, "", &state.assets))
@@ -310,8 +311,12 @@ async fn edit_handler(
     // Get file content bytes from store
     let content_result = get_file_bytes(&state.store, &hash).await;
 
-    let is_htmx = is_htmx_request(&headers);
-    tracing::info!("[routes] edit_handler is_htmx={}, name={}", is_htmx, name);
+    let is_partial = is_partial_request(&headers);
+    tracing::info!(
+        "[routes] edit_handler is_partial={}, name={}",
+        is_partial,
+        name
+    );
 
     match content_result {
         Ok(bytes) => {
@@ -322,7 +327,7 @@ async fn edit_handler(
                 ContentMode::Media(media_type) => {
                     // Render media viewer
                     let viewer_html = render_media_viewer(&hash, &name, media_type);
-                    if is_htmx {
+                    if is_partial {
                         Html(viewer_html)
                     } else {
                         Html(render_page(
@@ -336,7 +341,7 @@ async fn edit_handler(
                 ContentMode::Binary => {
                     // Render binary viewer with download option
                     let viewer_html = render_binary_viewer(&hash, &name);
-                    if is_htmx {
+                    if is_partial {
                         Html(viewer_html)
                     } else {
                         Html(render_page(
@@ -350,7 +355,7 @@ async fn edit_handler(
                 _ => {
                     // Editable modes - convert bytes to HTML for editor
                     let content = get_file_content_html(&bytes);
-                    if is_htmx {
+                    if is_partial {
                         Html(render_editor(&hash, &name, &content))
                     } else {
                         Html(render_editor_page(&hash, &name, &content, &state.assets))
@@ -360,7 +365,7 @@ async fn edit_handler(
         }
         Err(err_msg) => {
             // Error loading file
-            if is_htmx {
+            if is_partial {
                 Html(render_editor(&hash, &name, &err_msg))
             } else {
                 Html(render_editor_page(&hash, &name, &err_msg, &state.assets))
@@ -411,13 +416,13 @@ async fn file_by_name_handler(
 ) -> impl IntoResponse {
     tracing::info!("[routes] file_by_name_handler called for name: {}", name);
 
-    let is_htmx = is_htmx_request(&headers);
+    let is_partial = is_partial_request(&headers);
 
     // Look up the hash for this tag name
     let Some(hash) = get_hash_for_name(&state.store, &name).await else {
         let escaped = html_escape_inline(&name);
         let err_html = format!("<p>File not found: {escaped}</p>");
-        if is_htmx {
+        if is_partial {
             return Html(render_editor("", &name, &err_html));
         }
         return Html(render_editor_page("", &name, &err_html, &state.assets));
@@ -433,7 +438,7 @@ async fn file_by_name_handler(
             match mode {
                 ContentMode::Media(media_type) => {
                     let viewer_html = render_media_viewer(&hash, &name, media_type);
-                    if is_htmx {
+                    if is_partial {
                         Html(viewer_html)
                     } else {
                         Html(render_page(
@@ -446,7 +451,7 @@ async fn file_by_name_handler(
                 }
                 ContentMode::Binary => {
                     let viewer_html = render_binary_viewer(&hash, &name);
-                    if is_htmx {
+                    if is_partial {
                         Html(viewer_html)
                     } else {
                         Html(render_page(
@@ -459,7 +464,7 @@ async fn file_by_name_handler(
                 }
                 _ => {
                     let content = get_file_content_html(&bytes);
-                    if is_htmx {
+                    if is_partial {
                         Html(render_editor(&hash, &name, &content))
                     } else {
                         Html(render_editor_page(&hash, &name, &content, &state.assets))
@@ -468,7 +473,7 @@ async fn file_by_name_handler(
             }
         }
         Err(err_msg) => {
-            if is_htmx {
+            if is_partial {
                 Html(render_editor(&hash, &name, &err_msg))
             } else {
                 Html(render_editor_page(&hash, &name, &err_msg, &state.assets))
@@ -519,14 +524,39 @@ async fn blob_handler(
         })
 }
 
-/// API handler for file list (HTMX partial).
+/// API handler for file list (partial fragment).
 async fn files_list_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
 ) -> impl IntoResponse {
     let page = get_file_list_page(&state, &query).await;
-    // Return just the inner content (list + pagination) for HTMX partial replacement
+    // Return just the inner content (list + pagination) for partial replacement
     Html(render_file_list_content(&page))
+}
+
+/// API handler for peers partial (used by auto-refresh).
+///
+/// Returns just the peers content fragment for replacing #peers-content.
+async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let peers_data: Vec<(String, String, u64, u64)> = if let Some(ref discovery) = state.peers {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        discovery
+            .peers()
+            .into_iter()
+            .map(|info| {
+                let ann = &info.announcement;
+                let name = ann.name.clone().unwrap_or_else(|| "-".to_owned());
+                let age = now.saturating_sub(ann.timestamp_secs);
+                (ann.node_id.to_string(), name, ann.blob_count, age)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Html(render_peers(&peers_data))
 }
 
 /// Static assets handler.
@@ -591,12 +621,11 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         // Resolve display name from name/file/path tags (prefer name > file > path)
         if matches!(tag.key.as_bytes(), b"name" | b"file" | b"path") {
             let subj = tag.subject.display_lossy();
-            if !display_name_map.contains_key(&subj) {
-                if let Some(ref v) = tag.value {
-                    if let Some(s) = v.as_str() {
-                        display_name_map.insert(subj, s.to_owned());
-                    }
-                }
+            if !display_name_map.contains_key(&subj)
+                && let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+            {
+                display_name_map.insert(subj, s.to_owned());
             }
         }
         // Collect user-visible tags (not system tags)
@@ -606,7 +635,9 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
                 .or_default()
                 .push((
                     tag.key.display_lossy(),
-                    tag.value.as_ref().map(|v| v.display_lossy()),
+                    tag.value
+                        .as_ref()
+                        .map(super::super::tags::TagValue::display_lossy),
                 ));
         }
     }
@@ -952,6 +983,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     // Check save rate limit
     if let Err(remaining) = state.save_limiter.check(&req.name).await {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let secs = remaining.as_secs_f64().ceil() as u64;
         tracing::info!(
             "[routes] Save rate limited for '{}': {}s remaining",

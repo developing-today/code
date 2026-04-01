@@ -6,28 +6,28 @@ set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo
 
 . ./load-env.sh
 
-if [[ -z "$ARGO_APP" ]]; then
+if [[ -z $ARGO_APP ]]; then
   echo "ARGO_APP is empty"
   exit 1
 else
   echo "ARGO_APP=$ARGO_APP"
 fi
 
-if [[ -z "$ARGO_APP_PATH" ]]; then
+if [[ -z $ARGO_APP_PATH ]]; then
   echo "ARGO_APP_PATH is empty"
   exit 1
 else
   echo "ARGO_APP_PATH=$ARGO_APP_PATH"
 fi
 
-if [[ -z "$ARGO_PROJECT" ]]; then
+if [[ -z $ARGO_PROJECT ]]; then
   echo "ARGO_PROJECT is empty"
   exit 1
 else
   echo "ARGO_PROJECT=$ARGO_PROJECT"
 fi
 
-if [[ -z "$ARGO_WAIT_TIMEOUT" ]]; then
+if [[ -z $ARGO_WAIT_TIMEOUT ]]; then
   echo "ARGO_WAIT_TIMEOUT is empty"
   echo "ARGO_WAIT_TIMEOUT=2m"
   export ARGO_WAIT_TIMEOUT=2m
@@ -45,4 +45,4 @@ argocd app create "$ARGO_APP" \
   --sync-policy auto \
   --dest-server https://kubernetes.default.svc \
   --dest-namespace default
-  # --timeout "$ARGO_WAIT_TIMEOUT" \
+# --timeout "$ARGO_WAIT_TIMEOUT" \

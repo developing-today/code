@@ -2,7 +2,11 @@
 
 # Exclude pkgs/id/ — it has its own treefmt/formatter
 [global]
-excludes = ["pkgs/id/**"]
+excludes = [
+  "pkgs/id/**",   # has its own treefmt/formatter
+  "pkgs/dht/**",  # WIP package with syntax errors
+  ".opencode/**", # managed by opencode, may have permission issues
+]
 
 # [formatter.<name>]
 # command = "<formatter-command>"
@@ -15,8 +19,8 @@ command = "nixfmt"
 includes = ["*.nix"]
 
 [formatter.statix]
-command = "statix"
-options = ["fix"]
+command = "bash"
+options = ["-c", "for f in \"$@\"; do statix fix -- \"$f\"; done", "_"]
 includes = ["*.nix"]
 
 #[formatter.deadnix]
@@ -33,28 +37,13 @@ includes = ["*.nix"]
 
 [formatter.biome]
 command = "biome"
-includes = [
-  "*.js",
-  "*.jsx",
-  "*.ts",
-  "*.tsx",
-  "*.css",
-  "*.json",
-  "*.graphql",
-]
+includes = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.css", "*.json", "*.graphql"]
 options = ["format", "--write"]
 
 [formatter.prettier]
 command = "prettier"
-includes = [
-  "*.html",
-  "*.md",
-  "*.mdx",
-  "*.scss",
-  "*.yaml",
-  "*.toml",
-]
-options = ["--plugin", "prettier-plugin-toml", "--write"]
+includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml"]
+options = ["--write"]
 
 [formatter.shfmt]
 command = "shfmt"
@@ -66,9 +55,10 @@ command = "rustfmt"
 options = ["--edition", "2024"]
 includes = ["*.rs"]
 
-[formatter.shellcheck]
-command = "shellcheck"
-includes = ["*.sh"]
+[formatter.taplo]
+command = "taplo"
+options = ["fmt"]
+includes = ["*.toml"]
 
 [formatter.ruby]
 command = "rufo"

@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01FFc7YB5YJCGScTLvMgtv5W",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "/home/user/code/lib/default.nix:431:      devShells =\n/home/user/code/lib/default.nix:435:            default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {\n",
-  "timestamp": 1774254241950
+	"callID": "toolu_vrtx_01FFc7YB5YJCGScTLvMgtv5W",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "/home/user/code/lib/default.nix:431:      devShells =\n/home/user/code/lib/default.nix:435:            default = inputs.clan-core.inputs.nixpkgs.legacyPackages.${system}.mkShell {\n",
+	"timestamp": 1774254241950
 }

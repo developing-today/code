@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01QyoEVE9ZbuyXQJqxTFJb7y",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "read",
-  "fullOutput": "<path>/home/user/code/inspiration/hosts/nix-ld.nix</path>\n<type>file</type>\n<content>1: {\n2:   programs.nix-ld = {\n3:     enable = true;\n4:   };\n5: }\n\n(End of file - total 5 lines)\n</content>",
-  "timestamp": 1774253201595
+	"callID": "toolu_vrtx_01QyoEVE9ZbuyXQJqxTFJb7y",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "read",
+	"fullOutput": "<path>/home/user/code/inspiration/hosts/nix-ld.nix</path>\n<type>file</type>\n<content>1: {\n2:   programs.nix-ld = {\n3:     enable = true;\n4:   };\n5: }\n\n(End of file - total 5 lines)\n</content>",
+	"timestamp": 1774253201595
 }

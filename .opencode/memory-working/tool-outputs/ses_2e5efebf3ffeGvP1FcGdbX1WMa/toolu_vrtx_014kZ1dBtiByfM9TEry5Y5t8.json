@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_014kZ1dBtiByfM9TEry5Y5t8",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "/run/current-system/sw/bin/opencode: symbolic link to /nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/opencode\n",
-  "timestamp": 1774258800816
+	"callID": "toolu_vrtx_014kZ1dBtiByfM9TEry5Y5t8",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "/run/current-system/sw/bin/opencode: symbolic link to /nix/store/h35yg87mx11cvzqiwhxgs2n0r2bwdjs2-opencode-1.2.27-2e0d5d2/bin/opencode\n",
+	"timestamp": 1774258800816
 }

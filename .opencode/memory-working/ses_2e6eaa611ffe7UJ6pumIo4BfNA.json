@@ -1,63 +1,63 @@
 {
-  "sessionID": "ses_2e6eaa611ffe7UJ6pumIo4BfNA",
-  "slots": {
-    "error": [],
-    "decision": [],
-    "todo": [],
-    "dependency": []
-  },
-  "pool": [
-    {
-      "id": "wm_1774242330663_urp9znz",
-      "type": "file-path",
-      "content": "/home/user/code/pkgs/id/AGENTS.md",
-      "source": "tool:read",
-      "timestamp": 1774242330662,
-      "relevanceScore": 2.11531875,
-      "mentions": 1,
-      "lastEventCounter": 5
-    },
-    {
-      "id": "wm_1774242330663_adhupfx",
-      "type": "file-path",
-      "content": "src/cli.rs",
-      "source": "tool:read",
-      "timestamp": 1774242330662,
-      "relevanceScore": 1.900375,
-      "mentions": 1,
-      "lastEventCounter": 5
-    },
-    {
-      "id": "wm_1774242330663_u9878dr",
-      "type": "file-path",
-      "content": "main.rs",
-      "source": "tool:read",
-      "timestamp": 1774242330662,
-      "relevanceScore": 1.6475,
-      "mentions": 1,
-      "lastEventCounter": 5
-    },
-    {
-      "id": "wm_1774242330663_cdsk558",
-      "type": "file-path",
-      "content": "lib.rs",
-      "source": "tool:read",
-      "timestamp": 1774242330662,
-      "relevanceScore": 1.35,
-      "mentions": 1,
-      "lastEventCounter": 5
-    },
-    {
-      "id": "wm_1774242330664_vovl8zm",
-      "type": "file-path",
-      "content": "cli.rs",
-      "source": "tool:read",
-      "timestamp": 1774242330662,
-      "relevanceScore": 1,
-      "mentions": 1,
-      "lastEventCounter": 5
-    }
-  ],
-  "eventCounter": 5,
-  "updatedAt": "2026-03-23T05:05:30.664Z"
+	"sessionID": "ses_2e6eaa611ffe7UJ6pumIo4BfNA",
+	"slots": {
+		"error": [],
+		"decision": [],
+		"todo": [],
+		"dependency": []
+	},
+	"pool": [
+		{
+			"id": "wm_1774242330663_urp9znz",
+			"type": "file-path",
+			"content": "/home/user/code/pkgs/id/AGENTS.md",
+			"source": "tool:read",
+			"timestamp": 1774242330662,
+			"relevanceScore": 2.11531875,
+			"mentions": 1,
+			"lastEventCounter": 5
+		},
+		{
+			"id": "wm_1774242330663_adhupfx",
+			"type": "file-path",
+			"content": "src/cli.rs",
+			"source": "tool:read",
+			"timestamp": 1774242330662,
+			"relevanceScore": 1.900375,
+			"mentions": 1,
+			"lastEventCounter": 5
+		},
+		{
+			"id": "wm_1774242330663_u9878dr",
+			"type": "file-path",
+			"content": "main.rs",
+			"source": "tool:read",
+			"timestamp": 1774242330662,
+			"relevanceScore": 1.6475,
+			"mentions": 1,
+			"lastEventCounter": 5
+		},
+		{
+			"id": "wm_1774242330663_cdsk558",
+			"type": "file-path",
+			"content": "lib.rs",
+			"source": "tool:read",
+			"timestamp": 1774242330662,
+			"relevanceScore": 1.35,
+			"mentions": 1,
+			"lastEventCounter": 5
+		},
+		{
+			"id": "wm_1774242330664_vovl8zm",
+			"type": "file-path",
+			"content": "cli.rs",
+			"source": "tool:read",
+			"timestamp": 1774242330662,
+			"relevanceScore": 1,
+			"mentions": 1,
+			"lastEventCounter": 5
+		}
+	],
+	"eventCounter": 5,
+	"updatedAt": "2026-03-23T05:05:30.664Z"
 }

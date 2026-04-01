@@ -203,7 +203,7 @@ impl RawUserComponentDb {
     }
 
     /// Register with [`RawUserComponentDb`] all the user components that have been
-    /// registered against the provided `Blueprint`.  
+    /// registered against the provided `Blueprint`.
     /// All components are associated with or nested under the provided `current_scope_id`.
     ///
     /// If `path_prefix` is `Some`, then it is prepended to the path of each route

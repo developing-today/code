@@ -284,7 +284,7 @@ pub enum MetaRequest {
     /// Search metadata tags using structured query syntax.
     ///
     /// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
-    /// bare word searches. Multiple terms are ANDed together.
+    /// bare word searches. Multiple terms are `ANDed` together.
     SearchTags {
         /// The search query string.
         query: String,
@@ -769,7 +769,7 @@ impl ProtocolHandler for MetaProtocol {
                             &ts.global,
                             subject.as_bytes(),
                             key.as_bytes(),
-                            value.as_ref().map(|v| v.as_bytes()),
+                            value.as_ref().map(String::as_bytes),
                             b"",
                         )
                         .await
@@ -792,7 +792,7 @@ impl ProtocolHandler for MetaProtocol {
                             &ts.global,
                             subject.as_bytes(),
                             key.as_bytes(),
-                            value.as_ref().map(|v| v.as_bytes()),
+                            value.as_ref().map(String::as_bytes),
                         )
                         .await
                         .is_ok()

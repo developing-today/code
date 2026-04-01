@@ -1,0 +1,430 @@
+/**
+ * Tailwind CSS + DaisyUI Input File
+ *
+ * This is the main CSS entry point for the id web UI.
+ * Tailwind CLI processes this file to generate the final stylesheet.
+ *
+ * Architecture:
+ * 1. Tailwind base + DaisyUI plugin
+ * 2. Source scanning directives (Rust templates + TypeScript)
+ * 3. Custom DaisyUI themes (sneak/arch/mech) - CRT terminal aesthetic
+ * 4. CRT visual effects (@layer components)
+ * 5. ProseMirror editor styles (separate file)
+ */
+
+@import "tailwindcss";
+@import "./editor-compat.css";
+@plugin "daisyui";
+
+/* Scan Rust templates and TypeScript for Tailwind class usage */
+@source "../../src/web/templates.rs";
+@source "./main.ts";
+@source "./editor.ts";
+@source "./collab.ts";
+@source "./cursors.ts";
+@source "./theme.ts";
+
+/* ============================================================================
+   Custom DaisyUI Themes - CRT Terminal Aesthetic
+   ============================================================================
+   All themes share:
+   - Pure black background scale (base-100=#000, base-200=#0a0a0a, base-300=#111)
+   - Zero border-radius (sharp corners everywhere)
+   - Monospace font (set globally via Tailwind)
+   - No depth/shadows (flat terminal look)
+   - Single-pixel borders
+   ============================================================================ */
+
+@plugin "daisyui/theme" {
+  name: "sneak";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+
+  /* Primary: Blue */
+  --color-primary: oklch(0.65 0.2 250);
+  --color-primary-content: oklch(0.98 0.01 250);
+  --color-secondary: oklch(0.5 0.15 250);
+  --color-secondary-content: oklch(0.95 0.01 250);
+  --color-accent: oklch(0.7 0.22 250);
+  --color-accent-content: oklch(0.98 0.01 250);
+
+  /* Neutral: Pure black scale */
+  --color-neutral: oklch(0.2 0.01 250);
+  --color-neutral-content: oklch(0.85 0.02 250);
+
+  /* Base: Black backgrounds */
+  --color-base-100: oklch(0 0 0);
+  --color-base-200: oklch(0.13 0.005 250);
+  --color-base-300: oklch(0.18 0.005 250);
+  --color-base-content: oklch(0.85 0.02 250);
+
+  /* Semantic colors (shared across themes) */
+  --color-info: oklch(0.65 0.2 250);
+  --color-info-content: oklch(0.98 0.01 250);
+  --color-success: oklch(0.72 0.22 145);
+  --color-success-content: oklch(0.98 0.01 145);
+  --color-warning: oklch(0.75 0.18 85);
+  --color-warning-content: oklch(0.15 0.02 85);
+  --color-error: oklch(0.65 0.25 25);
+  --color-error-content: oklch(0.98 0.01 25);
+
+  /* Terminal aesthetic overrides */
+  --rounded-box: 0;
+  --rounded-btn: 0;
+  --rounded-badge: 0;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "arch";
+  prefersdark: true;
+  color-scheme: dark;
+
+  /* Primary: Green */
+  --color-primary: oklch(0.75 0.25 145);
+  --color-primary-content: oklch(0.98 0.01 145);
+  --color-secondary: oklch(0.55 0.18 145);
+  --color-secondary-content: oklch(0.95 0.01 145);
+  --color-accent: oklch(0.8 0.28 145);
+  --color-accent-content: oklch(0.98 0.01 145);
+
+  /* Neutral: Pure black scale */
+  --color-neutral: oklch(0.2 0.01 145);
+  --color-neutral-content: oklch(0.85 0.02 145);
+
+  /* Base: Black backgrounds */
+  --color-base-100: oklch(0 0 0);
+  --color-base-200: oklch(0.13 0.005 145);
+  --color-base-300: oklch(0.18 0.005 145);
+  --color-base-content: oklch(0.85 0.02 145);
+
+  /* Semantic colors */
+  --color-info: oklch(0.65 0.2 250);
+  --color-info-content: oklch(0.98 0.01 250);
+  --color-success: oklch(0.72 0.22 145);
+  --color-success-content: oklch(0.98 0.01 145);
+  --color-warning: oklch(0.75 0.18 85);
+  --color-warning-content: oklch(0.15 0.02 85);
+  --color-error: oklch(0.65 0.25 25);
+  --color-error-content: oklch(0.98 0.01 25);
+
+  /* Terminal aesthetic */
+  --rounded-box: 0;
+  --rounded-btn: 0;
+  --rounded-badge: 0;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "mech";
+  prefersdark: true;
+  color-scheme: dark;
+
+  /* Primary: Orange */
+  --color-primary: oklch(0.7 0.2 55);
+  --color-primary-content: oklch(0.98 0.01 55);
+  --color-secondary: oklch(0.55 0.15 55);
+  --color-secondary-content: oklch(0.95 0.01 55);
+  --color-accent: oklch(0.75 0.22 55);
+  --color-accent-content: oklch(0.98 0.01 55);
+
+  /* Neutral: Pure black scale */
+  --color-neutral: oklch(0.2 0.01 55);
+  --color-neutral-content: oklch(0.85 0.02 55);
+
+  /* Base: Black backgrounds */
+  --color-base-100: oklch(0 0 0);
+  --color-base-200: oklch(0.13 0.005 55);
+  --color-base-300: oklch(0.18 0.005 55);
+  --color-base-content: oklch(0.85 0.02 55);
+
+  /* Semantic colors */
+  --color-info: oklch(0.65 0.2 250);
+  --color-info-content: oklch(0.98 0.01 250);
+  --color-success: oklch(0.72 0.22 145);
+  --color-success-content: oklch(0.98 0.01 145);
+  --color-warning: oklch(0.75 0.18 85);
+  --color-warning-content: oklch(0.15 0.02 85);
+  --color-error: oklch(0.65 0.25 25);
+  --color-error-content: oklch(0.98 0.01 25);
+
+  /* Terminal aesthetic */
+  --rounded-box: 0;
+  --rounded-btn: 0;
+  --rounded-badge: 0;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/* ============================================================================
+   CRT Terminal Effects
+   ============================================================================
+   These are custom component classes that apply the retro terminal aesthetic.
+   They go in @layer components so they can be overridden by utilities.
+   ============================================================================ */
+
+@layer components {
+  /* Text glow effect - use on headings, links, accents */
+  .crt-glow {
+    text-shadow:
+      0 0 5px currentColor,
+      0 0 10px currentColor;
+  }
+
+  /* Subtle glow - lighter version for body text accents */
+  .crt-glow-subtle {
+    text-shadow: 0 0 4px currentColor;
+  }
+
+  /* Scanline overlay - apply to <body> or main container */
+  .crt-scanlines::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.03) 0px,
+      rgba(0, 0, 0, 0.03) 1px,
+      transparent 1px,
+      transparent 2px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* CRT flicker animation - subtle phosphor flicker */
+  .crt-flicker {
+    animation: crt-flicker 4s infinite;
+  }
+
+  @keyframes crt-flicker {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.98;
+    }
+  }
+
+  /* Phosphor bloom on hover - for interactive elements */
+  .crt-bloom:hover {
+    text-shadow:
+      0 0 8px currentColor,
+      0 0 16px currentColor;
+  }
+
+  /* Theme switcher button (header dots) - circular with split color gradient.
+     :not(.btn) excludes settings page buttons which use DaisyUI btn classes. */
+  .theme-btn:not(.btn) {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background-color: color-mix(in oklch, var(--color-primary) 60%, transparent);
+    border: 1px solid color-mix(in oklch, var(--color-primary) 30%, transparent);
+    box-shadow:
+      0 0 4px color-mix(in oklch, var(--color-primary) 50%, transparent),
+      0 0 10px color-mix(in oklch, var(--color-primary) 30%, transparent),
+      0 0 16px color-mix(in oklch, white 15%, transparent);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  .theme-btn:not(.btn):hover {
+    transform: scale(1.15);
+    background-color: color-mix(in oklch, var(--color-primary) 85%, transparent);
+    box-shadow:
+      0 0 6px color-mix(in oklch, var(--color-primary) 60%, transparent),
+      0 0 14px color-mix(in oklch, var(--color-primary) 40%, transparent),
+      0 0 22px color-mix(in oklch, white 20%, transparent);
+  }
+
+  .theme-btn:not(.btn).active {
+    background-color: color-mix(in oklch, var(--color-primary) 80%, transparent);
+    border-color: color-mix(in oklch, var(--color-primary) 50%, transparent);
+    box-shadow:
+      0 0 6px color-mix(in oklch, var(--color-primary) 60%, transparent),
+      0 0 14px color-mix(in oklch, var(--color-primary) 40%, transparent),
+      0 0 22px color-mix(in oklch, white 20%, transparent);
+  }
+
+  /* Tag pills (used in file list and editor tag panel) */
+  .tag-pill {
+    @apply badge badge-outline text-xs font-mono;
+  }
+
+  .tag-pill-removable {
+    @apply badge badge-outline text-xs font-mono pr-1;
+  }
+
+  .tag-remove-btn {
+    @apply ml-1 opacity-50 hover:opacity-100 cursor-pointer;
+  }
+
+  /* File badges (auto, archive, deleted markers) */
+  .file-badge {
+    @apply badge badge-sm font-mono text-xs;
+  }
+
+  .file-badge-auto {
+    @apply badge badge-sm badge-ghost font-mono text-xs opacity-50;
+  }
+
+  .file-badge-archive {
+    @apply badge badge-sm badge-warning font-mono text-xs;
+  }
+
+  .file-badge-deleted {
+    @apply badge badge-sm badge-error font-mono text-xs;
+  }
+
+  /* JS-interop: scroll-show headers/footers (JS adds floating/visible) */
+  .inline-header,
+  .editor-inline-header {
+    transition:
+      transform 0.2s ease,
+      opacity 0.2s ease;
+  }
+
+  .inline-footer,
+  .editor-inline-footer {
+    transition:
+      transform 0.2s ease,
+      opacity 0.2s ease;
+  }
+
+  .inline-header.floating,
+  .editor-inline-header.floating {
+    @apply fixed top-0 left-0 right-0 z-40;
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+
+  .inline-header.floating.visible,
+  .editor-inline-header.floating.visible {
+    transform: translateY(0);
+    opacity: 1;
+  }
+
+  .inline-footer.floating,
+  .editor-inline-footer.floating {
+    @apply fixed bottom-0 left-0 right-0 z-40;
+    transform: translateY(100%);
+    opacity: 0;
+  }
+
+  .inline-footer.floating.visible,
+  .editor-inline-footer.floating.visible {
+    transform: translateY(0);
+    opacity: 1;
+  }
+
+  /* JS-interop: editor connection status indicator */
+  .editor-status {
+    @apply text-xs;
+  }
+
+  .editor-status.status-connecting {
+    color: var(--color-warning);
+  }
+
+  .editor-status.status-connected {
+    color: var(--color-success);
+  }
+
+  .editor-status.status-disconnected,
+  .editor-status.status-error {
+    color: var(--color-error);
+  }
+
+  /* JS-interop: dropdown menus (JS toggles .show) */
+  .dropdown-menu {
+    @apply hidden absolute right-0 top-full z-50 flex-col bg-base-200 border border-base-300 min-w-24;
+  }
+
+  .dropdown-menu.show {
+    @apply flex;
+  }
+
+  /* JS-interop: file-deleted opacity */
+  .file-deleted {
+    @apply opacity-50;
+  }
+
+  /* JS-interop: back link disabled state */
+  .back-link.disabled {
+    @apply opacity-30 pointer-events-none;
+  }
+
+  /* JS-interop: text-muted (set dynamically by JS) */
+  .text-muted {
+    @apply text-base-content/50;
+  }
+}
+
+/* ============================================================================
+   Global Styles
+   ============================================================================
+   Force monospace everywhere, dark mode always, minimal base resets.
+   ============================================================================ */
+
+@layer base {
+  /* Force dark mode always */
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Global monospace font */
+  html {
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  body {
+    @apply bg-base-100 text-base-content;
+    min-height: 100vh;
+  }
+
+  /* Keyboard shortcut styling */
+  kbd {
+    @apply font-mono text-xs;
+    padding: 0 3px;
+    border: 1px solid oklch(0.65 0.02 0 / 0.3);
+    background-color: oklch(0.18 0.005 0);
+  }
+
+  /* Custom scrollbar for terminal aesthetic */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.35 0.01 0);
+    border-radius: 0;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.45 0.01 0);
+  }
+
+  /* Firefox scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.35 0.01 0) transparent;
+  }
+}
+
+/* ProseMirror editor styles are imported via @import "./editor-compat.css" at the top of this file */

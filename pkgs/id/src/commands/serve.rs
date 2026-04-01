@@ -332,7 +332,7 @@ pub async fn cmd_serve(
     let meta = MetaProtocol::new(
         &store_handle,
         Some(peer_discovery.clone()),
-        Some(tag_store.clone()),
+        Some(Arc::clone(&tag_store)),
     );
     let blobs = BlobsProtocol::new(&store_handle, None);
 
@@ -469,7 +469,7 @@ pub async fn cmd_serve(
             store_handle.clone(),
             Some(peer_discovery.clone()),
             node_id.to_string(),
-            tag_store.clone(),
+            Arc::clone(&tag_store),
         );
         let actual_port = web_port.unwrap_or(port);
         println!("web: http://localhost:{actual_port}");

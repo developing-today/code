@@ -9,7 +9,16 @@ pre_cmd = ["npm run build"]
 cmd = "templ generate && go build  -o ./tmp/gowebly_chi ."
 bin = "tmp/gowebly_chi"
 include_ext = ["go", "templ", "html", "json", "js", "ts", "css", "scss"]
-exclude_dir = [".parcel-cache", "bin", "dist", "node_modules", "static", "tmp", "tests", "vendor"]
+exclude_dir = [
+  ".parcel-cache",
+  "bin",
+  "dist",
+  "node_modules",
+  "static",
+  "tmp",
+  "tests",
+  "vendor",
+]
 exclude_regex = ["_test\\.go", "_templ\\.go"]
 exclude_unchanged = false
 follow_symlink = false

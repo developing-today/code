@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01X87wbc4962mbwLEUoYJcYc",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "total 8\ndrwxr-xr-x 2 user users 4096 Mar 23 02:57 .\ndrwxr-xr-x 4 user users 4096 Mar 23 02:19 ..\nlrwxrwxrwx 1 user users   42 Mar 23 02:57 btca -> ../install/global/node_modules/btca/bin.js\n---\nbtca\n",
-  "timestamp": 1774252946361
+	"callID": "toolu_vrtx_01X87wbc4962mbwLEUoYJcYc",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "total 8\ndrwxr-xr-x 2 user users 4096 Mar 23 02:57 .\ndrwxr-xr-x 4 user users 4096 Mar 23 02:19 ..\nlrwxrwxrwx 1 user users   42 Mar 23 02:57 btca -> ../install/global/node_modules/btca/bin.js\n---\nbtca\n",
+	"timestamp": 1774252946361
 }

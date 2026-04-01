@@ -1,4 +1,4 @@
-description = """Test what happens when we give pavex a graph that satisfies the constraints 
+description = """Test what happens when we give pavex a graph that satisfies the constraints
 of the Rust borrow checker due to the fact that one of the contended nodes is `Copy`"""
 
 [expectations]

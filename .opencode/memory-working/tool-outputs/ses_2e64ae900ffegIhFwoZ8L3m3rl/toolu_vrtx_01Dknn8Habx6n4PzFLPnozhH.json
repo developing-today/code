@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01Dknn8Habx6n4PzFLPnozhH",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "evaluating 'devShells.x86_64-linux'...\n\u001b[32;1m│   └───\u001b[0m\u001b[1mx86_64-linux\u001b[0m\nevaluating 'devShells.x86_64-linux.default'...\n\u001b[32;1m│       └───\u001b[0m\u001b[1mdefault\u001b[0m: development environment 'nix-shell'\nevaluating 'formatter'...\n",
-  "timestamp": 1774254707278
+	"callID": "toolu_vrtx_01Dknn8Habx6n4PzFLPnozhH",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "evaluating 'devShells.x86_64-linux'...\n\u001b[32;1m│   └───\u001b[0m\u001b[1mx86_64-linux\u001b[0m\nevaluating 'devShells.x86_64-linux.default'...\n\u001b[32;1m│       └───\u001b[0m\u001b[1mdefault\u001b[0m: development environment 'nix-shell'\nevaluating 'formatter'...\n",
+	"timestamp": 1774254707278
 }

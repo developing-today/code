@@ -88,8 +88,6 @@ export function initCollab(
 ): CollabConnection {
   // Append filename as query parameter if provided
   const finalWsUrl = filename ? `${wsUrl}?filename=${encodeURIComponent(filename)}` : wsUrl;
-  const ws = new WebSocket(finalWsUrl);
-  ws.binaryType = "arraybuffer"; // Receive binary data as ArrayBuffer
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -97,6 +95,18 @@ export function initCollab(
   let connected = false;
   let editorInstance: EditorInstance | null = null;
   let documentMode: ContentMode | null = null;
+  // Mutable reference to the current WebSocket — updated on reconnect
+  let currentWs: WebSocket | null = null;
+  // Flag to track client-initiated disconnects. Calling ws.close(1000) doesn't
+  // guarantee onclose fires with code 1000 — the close handshake can fail/timeout,
+  // causing the browser to fire onclose with code 1006 instead. This flag ensures
+  // we don't spuriously reconnect after an intentional disconnect.
+  let intentionalClose = false;
+  // App-level connection timeout — if the WS doesn't reach OPEN within this
+  // many ms, we close it and schedule reconnect directly.
+  // Browsers default to ~20s TCP timeout which is far too slow for UX.
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
+  const CONNECT_TIMEOUT_MS = 2000;
 
   // Track our clientID (set when editor initializes)
   let myClientID: number | null = null;
@@ -105,40 +115,47 @@ export function initCollab(
     if (onStatus) onStatus(status);
   };
 
-  // Encode and send a message
+  // Encode and send a message (always uses currentWs)
   const send = (msgType: number, ...fields: unknown[]): void => {
     const data = packr.pack([msgType, ...fields]);
-    if (connected && ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
+    if (connected && currentWs && currentWs.readyState === WebSocket.OPEN) {
+      currentWs.send(data);
     } else {
       sendQueue.push(data);
     }
   };
 
   const flushQueue = (): void => {
-    while (sendQueue.length > 0 && ws.readyState === WebSocket.OPEN) {
+    while (sendQueue.length > 0 && currentWs && currentWs.readyState === WebSocket.OPEN) {
       const data = sendQueue.shift();
-      if (data) {
-        ws.send(data);
+      if (data && currentWs) {
+        currentWs.send(data);
       }
     }
   };
 
   const scheduleReconnect = (): void => {
-    if (reconnectAttempts >= 5) {
+    if (reconnectAttempts >= 10) {
       console.error("[collab] Max reconnection attempts reached");
       updateStatus("error");
       return;
     }
 
-    const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
+    // Exponential backoff with jitter: base * 2^attempt + random jitter
+    // Fast initial retries (250ms) for localhost/LAN; caps at 5s for WAN.
+    // Combined with 2s connect timeout: worst-case cycle ≈ 2.25–7s per attempt.
+    const baseDelay = Math.min(250 * 2 ** reconnectAttempts, 5000);
+    const jitter = Math.random() * Math.min(250, baseDelay * 0.2);
+    const delay = baseDelay + jitter;
     reconnectAttempts++;
 
-    console.log(`[collab] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+    console.log(`[collab] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts}/10)`);
     updateStatus("connecting");
     reconnectTimer = setTimeout(() => {
       const newWs = new WebSocket(finalWsUrl);
       newWs.binaryType = "arraybuffer";
+      // Update the mutable reference so send()/disconnect() use the new socket
+      currentWs = newWs;
       setupWebSocket(newWs);
     }, delay);
   };
@@ -164,9 +181,15 @@ export function initCollab(
   };
 
   const handleMessage = (data: ArrayBuffer): void => {
-    const msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+    let msg: unknown[];
+    try {
+      msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+    } catch (err) {
+      console.error("[collab] Failed to decode MessagePack message:", err);
+      return;
+    }
     const msgType = msg[0] as number;
-    console.log("[collab] handleMessage msgType:", msgType, "full msg:", msg);
+    console.log("[collab] handleMessage msgType:", msgType);
 
     switch (msgType) {
       case MSG.INIT: {
@@ -175,22 +198,12 @@ export function initCollab(
         const doc = msg[2] as { type: string; content?: unknown[] };
         const mode = ((msg[3] as string) || "raw") as ContentMode;
         documentMode = mode;
-        console.log("[collab] Received initial state, version:", version, "mode:", mode);
-        console.log("[collab] Doc type:", doc?.type);
-        console.log("[collab] Doc content length:", doc?.content?.length);
-        if (doc?.content?.[0]) {
-          const firstNode = doc.content[0] as { type?: string; attrs?: unknown };
-          console.log("[collab] First node type:", firstNode?.type, "attrs:", firstNode?.attrs);
-        }
-        console.log("[collab] Full doc:", JSON.stringify(doc).slice(0, 500));
+        console.log("[collab] Received Init, version:", version, "mode:", mode);
 
-        // Initialize the editor with the server's document and mode
         if (!editorInstance) {
+          // First connection — initialize the editor from scratch
           console.log("[collab] Initializing editor with server version:", version, "mode:", mode);
-          console.log("[collab] Container element:", container, "innerHTML before:", container.innerHTML.slice(0, 100));
-          // Pass the server's ProseMirror JSON doc, not the HTML initialContent
           editorInstance = initEditor(container, doc, version, mode, sendCursor);
-          console.log("[collab] Container innerHTML after initEditor:", container.innerHTML.slice(0, 200));
           myClientID = editorInstance.clientID;
           console.log("[collab] Our clientID:", myClientID);
 
@@ -198,6 +211,25 @@ export function initCollab(
           container.addEventListener("editor:change", handleEditorChange);
 
           // Notify that editor is ready
+          if (onEditorReady) {
+            onEditorReady(editorInstance);
+          }
+        } else {
+          // Reconnect — destroy old editor and re-initialize with fresh server state.
+          // The server sends a full Init with potentially different version/doc after
+          // reconnect, so the ProseMirror collab plugin must be re-created to avoid
+          // version mismatch errors.
+          console.log("[collab] Reconnect: re-initializing editor, server version:", version);
+          container.removeEventListener("editor:change", handleEditorChange);
+          editorInstance.view.destroy();
+
+          editorInstance = initEditor(container, doc, version, mode, sendCursor);
+          myClientID = editorInstance.clientID;
+          console.log("[collab] Reconnect: new clientID:", myClientID);
+
+          container.addEventListener("editor:change", handleEditorChange);
+
+          // Re-notify that editor is ready (re-enables save button etc.)
           if (onEditorReady) {
             onEditorReady(editorInstance);
           }
@@ -279,7 +311,19 @@ export function initCollab(
         // [5, error]
         const error = msg[1] as string;
         console.error("[collab] Server error:", error);
-        updateStatus("error");
+
+        // Version mismatch errors are recoverable via reconnect —
+        // the server will send a fresh Init with the correct state
+        if (typeof error === "string" && error.includes("Version mismatch")) {
+          console.log("[collab] Version mismatch — scheduling reconnect to resync");
+          connected = false;
+          if (currentWs) {
+            currentWs.close(4000, "Version mismatch resync");
+          }
+          scheduleReconnect();
+        } else {
+          updateStatus("error");
+        }
         break;
       }
 
@@ -303,7 +347,49 @@ export function initCollab(
   };
 
   const setupWebSocket = (socket: WebSocket): void => {
+    // Start a connection timeout — if the WS doesn't reach OPEN within
+    // CONNECT_TIMEOUT_MS, abandon it and schedule reconnect directly.
+    // Without this, browsers can hang in CONNECTING state for ~20s (Firefox)
+    // waiting for their internal TCP timeout, which is terrible for UX.
+    //
+    // IMPORTANT: We detach all event handlers and schedule reconnect directly
+    // instead of relying on onclose, because:
+    // 1. socket.close() with no args uses code 1000, and our onclose handler
+    //    skips reconnect for code 1000 (treats it as intentional/clean close)
+    // 2. Firefox may not fire onclose at all when closing a CONNECTING socket
+    if (connectTimer) clearTimeout(connectTimer);
+    connectTimer = setTimeout(() => {
+      connectTimer = null;
+      if (socket.readyState === WebSocket.CONNECTING) {
+        console.warn(`[collab] Connection timeout after ${CONNECT_TIMEOUT_MS}ms, aborting`);
+        // Detach all handlers so if onopen/onclose eventually fire on the
+        // dead socket, they don't interfere with the new connection
+        socket.onopen = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        try {
+          socket.close();
+        } catch (_) {
+          /* ignore — may throw if already garbage collected */
+        }
+        // Update state directly — don't rely on onclose
+        connected = false;
+        currentWs = null;
+        if (editorInstance) {
+          setConnectionState(editorInstance.view, "disconnected");
+        }
+        updateStatus("disconnected");
+        scheduleReconnect();
+      }
+    }, CONNECT_TIMEOUT_MS);
+
     socket.onopen = (): void => {
+      // Connection succeeded — cancel the timeout
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
       reconnectAttempts = 0;
@@ -315,13 +401,35 @@ export function initCollab(
     };
 
     socket.onclose = (event): void => {
+      // Clean up any pending connection timeout
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       console.log("[collab] Disconnected:", event.code, event.reason);
+      const wasConnected = connected;
       connected = false;
-      // Only update connection state if we're not intentionally closing
-      // (the view may be destroyed if this is an intentional disconnect)
-      if (event.code !== 1000 && editorInstance) {
-        setConnectionState(editorInstance.view, "disconnected");
+      // Only reconnect if this was NOT an intentional disconnect.
+      // We check both the intentionalClose flag AND event.code because:
+      // - intentionalClose: covers client-initiated disconnect() calls where the
+      //   close handshake may fail/timeout, causing the browser to fire onclose
+      //   with code 1006 instead of the requested 1000
+      // - event.code === 1000 AND wasConnected: covers server-initiated clean
+      //   closes when we had a working session. We MUST still reconnect if the
+      //   connection dropped before we were fully connected (e.g., immediately
+      //   after WS handshake but before Init message was processed), because
+      //   that indicates a transient failure, not an intentional close.
+      const wasIntentional = intentionalClose;
+      intentionalClose = false;
+      if (!wasIntentional && !(event.code === 1000 && wasConnected)) {
+        // Update cursor state if editor was already initialized
+        if (editorInstance) {
+          setConnectionState(editorInstance.view, "disconnected");
+        }
         updateStatus("disconnected");
+        // Always schedule reconnect — even if editorInstance is null (WS closed
+        // before Init message arrived). Without this, the client would be stuck
+        // forever with no editor and no reconnect if the first connection drops.
         scheduleReconnect();
       }
     };
@@ -351,23 +459,37 @@ export function initCollab(
     };
   };
 
-  // Set up the WebSocket
-  setupWebSocket(ws);
+  // Set up the initial WebSocket
+  const initialWs = new WebSocket(finalWsUrl);
+  initialWs.binaryType = "arraybuffer";
+  currentWs = initialWs;
+  setupWebSocket(initialWs);
 
   const disconnect = (): void => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
     }
+    if (connectTimer) {
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    }
     container.removeEventListener("editor:change", handleEditorChange);
     // Note: We intentionally don't call setConnectionState here because
     // the view will be destroyed immediately after this function returns.
-    // The close code 1000 tells the onclose handler not to try using the view.
-    ws.close(1000, "Client disconnected");
+    // Set intentionalClose BEFORE close() so the onclose handler knows not to reconnect
+    // (the browser may fire onclose with code 1006 if the close handshake fails/times out)
+    intentionalClose = true;
+    if (currentWs) {
+      currentWs.close(1000, "Client disconnected");
+    }
+    currentWs = null;
     updateStatus("disconnected");
   };
 
   return {
-    ws,
+    get ws() {
+      return currentWs as WebSocket;
+    },
     docId,
     disconnect,
     get editor() {

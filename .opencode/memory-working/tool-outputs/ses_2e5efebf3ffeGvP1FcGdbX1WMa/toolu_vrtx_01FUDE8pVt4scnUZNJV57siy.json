@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01FUDE8pVt4scnUZNJV57siy",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "{\n  \"dependencies\": {\n    \"opencode-anthropic-auth\": \"0.0.13\",\n    \"@tarquinen/opencode-dcp\": \"3.0.4\",\n    \"opencode-working-memory\": \"1.1.2\",\n    \"octto\": \"0.3.1\",\n    \"micode\": \"0.10.0\",\n    \"opencode-scheduler\": \"1.3.0\",\n    \"@openspoon/subtask2\": \"0.3.9\",\n    \"@tmegit/opencode-worktree-session\": \"1.1.0\",\n    \"@mohak34/opencode-notifier\": \"0.1.34\",\n    \"opencode-pty\": \"0.2.3\",\n    \"opencode-devcontainers\": \"0.3.3\",\n    \"opencode-pilot\": \"0.27.0\",\n    \"@franlol/opencode-md-table-formatter\": \"0.0.6\",\n    \"@plannotator/opencode\": \"0.14.5\"\n  }\n}",
-  "timestamp": 1774259125745
+	"callID": "toolu_vrtx_01FUDE8pVt4scnUZNJV57siy",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "{\n  \"dependencies\": {\n    \"opencode-anthropic-auth\": \"0.0.13\",\n    \"@tarquinen/opencode-dcp\": \"3.0.4\",\n    \"opencode-working-memory\": \"1.1.2\",\n    \"octto\": \"0.3.1\",\n    \"micode\": \"0.10.0\",\n    \"opencode-scheduler\": \"1.3.0\",\n    \"@openspoon/subtask2\": \"0.3.9\",\n    \"@tmegit/opencode-worktree-session\": \"1.1.0\",\n    \"@mohak34/opencode-notifier\": \"0.1.34\",\n    \"opencode-pty\": \"0.2.3\",\n    \"opencode-devcontainers\": \"0.3.3\",\n    \"opencode-pilot\": \"0.27.0\",\n    \"@franlol/opencode-md-table-formatter\": \"0.0.6\",\n    \"@plannotator/opencode\": \"0.14.5\"\n  }\n}",
+	"timestamp": 1774259125745
 }

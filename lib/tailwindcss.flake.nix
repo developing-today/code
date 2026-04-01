@@ -10,6 +10,6 @@
     {
       defaultPackage.x86_64-linux =
         with import nixpkgs { system = "x86_64-linux"; };
-        import ./tailwindcss.nix { pkgs = pkgs; };
+        import ./tailwindcss.nix { inherit pkgs; };
     };
 }

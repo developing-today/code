@@ -9,6 +9,7 @@ Guidelines for AI coding agents working on the `id` peer-to-peer file sharing CL
 **NEVER use `git restore`, `git checkout -- <file>`, or any command that overwrites pre-existing unstaged changes.**
 
 Only discard unstaged work if:
+
 1. The user explicitly instructs you to discard it, OR
 2. You ask and receive specific approval to do so
 
@@ -25,6 +26,7 @@ This applies to all files with uncommitted modifications—assume the user has i
 This enables running commands without entering a dev shell (`nix run .#ci`), CI/CD pipelines with pure Nix evaluation, and reproducible execution across systems.
 
 When adding a new just command:
+
 1. Add the recipe to `justfile`
 2. Add corresponding app in `flake.nix` `apps` section
 3. For CI-verifiable commands, add a check in `flake.nix` `checks` section
@@ -81,13 +83,13 @@ just release-lib    # Release build library only
 # Library variant (no web) - works standalone
 cargo build --no-default-features     # Debug build
 cargo build --release --no-default-features  # Release build
-nix build .#id-lib                    # Nix package
+nix build .#id-lib                    # Nix package (or: just build-nix-lib)
 
 # Web variant - requires web assets built first
 cd web && bun install && bun run build && cd ..  # Build web assets
 cargo build                             # Debug build with embedded web UI
 cargo build --release                   # Release build with embedded web UI
-nix build                               # Nix package (handles assets automatically)
+nix build                               # Nix package (or: just build-nix)
 ```
 
 **Build variant tracking:** The build system tracks variants in `target/.build-variant` to detect when rebuild is needed due to variant change.
@@ -97,14 +99,20 @@ nix build                               # Nix package (handles assets automatica
 See [`justfile`](justfile) for all recipes (`just` with no args lists them).
 
 **Essential commands:**
+
 ```bash
 just check      # Primary quality check - RUN BEFORE COMPLETING WORK
 just ci         # CI-safe read-only checks (no modifications)
 just fix        # Auto-fix formatting and lint issues
 just serve      # Serve with web UI [requires bun]
 just run        # Run CLI with arguments
+just test       # All fast tests (Rust + TypeScript unit + typecheck)
 just test-unit  # Unit tests only (fast)
+just test-e2e   # Playwright E2E (146 tests, chromium + firefox)
+just test-nix   # nix flake check (27 checks — runs everything)
 ```
+
+**Testing architecture:** See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete 6-layer testing reference, browser coverage matrix, environment comparison, and "when to add tests where" decision tree.
 
 Ask user before updating dependencies.
 
@@ -144,13 +152,14 @@ tests/cli_integration.rs       # Integration tests
 3. Add integration tests in `tests/cli_integration.rs` for CLI behavior
 4. Run `just check` before completing
 
-When tests fail: ensure failure relates to your change, make tests *correct* not just passing, update tests if behavior changed intentionally.
+When tests fail: ensure failure relates to your change, make tests _correct_ not just passing, update tests if behavior changed intentionally.
 
 ## Documenting Design & Architecture Decisions
 
 For significant changes, **document first, then implement**. See [`docs/DOCUMENTATION_PROTOCOL.md`](docs/DOCUMENTATION_PROTOCOL.md) for the full protocol.
 
 **When to create docs** (load the protocol if any apply):
+
 - New features affecting system behavior or adding new commands
 - Architectural changes or major refactors
 - Design decisions with non-obvious trade-offs

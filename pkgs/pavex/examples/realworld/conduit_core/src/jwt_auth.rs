@@ -60,7 +60,7 @@ pub fn extract_claims(headers: &HeaderMap, jwt_key: &DecodingKey) -> Option<Clai
         Ok(claims) => Some(claims),
         Err(e) => {
             info!(
-                error.msg = %e, 
+                error.msg = %e,
                 error.error_chain = ?e,
                 "Failed to decode token");
             None

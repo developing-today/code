@@ -50,7 +50,7 @@ pub struct NestedBlueprint {
     /// The nested [`Blueprint`].
     pub blueprint: Blueprint,
     /// The path prefix that will prepended to all routes registered against the nested
-    /// [`Blueprint`].  
+    /// [`Blueprint`].
     /// If `None`, the routes coming from the nested [`Blueprint`] will be registered as-they-are.
     pub path_prefix: Option<String>,
     /// The location where the [`Blueprint`] was nested under its parent [`Blueprint`].

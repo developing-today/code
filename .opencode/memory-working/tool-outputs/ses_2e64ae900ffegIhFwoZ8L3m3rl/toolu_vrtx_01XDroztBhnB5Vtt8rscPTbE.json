@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01XDroztBhnB5Vtt8rscPTbE",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "evaluating 'devShells'...\n\u001b[32;1m├───\u001b[0m\u001b[1mdevShells\u001b[0m\nevaluating 'devShells.aarch64-darwin'...\nevaluating 'devShells.aarch64-darwin.default'...\nevaluating 'devShells.aarch64-linux'...\nevaluating 'devShells.aarch64-linux.default'...\nevaluating 'devShells.x86_64-darwin'...\nevaluating 'devShells.x86_64-darwin.default'...\nevaluating 'devShells.x86_64-linux'...\nevaluating 'devShells.x86_64-linux.default'...\n\u001b[32;1m│       └───\u001b[0m\u001b[1mdefault\u001b[0m: development environment 'nix-shell'\n",
-  "timestamp": 1774255149225
+	"callID": "toolu_vrtx_01XDroztBhnB5Vtt8rscPTbE",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "evaluating 'devShells'...\n\u001b[32;1m├───\u001b[0m\u001b[1mdevShells\u001b[0m\nevaluating 'devShells.aarch64-darwin'...\nevaluating 'devShells.aarch64-darwin.default'...\nevaluating 'devShells.aarch64-linux'...\nevaluating 'devShells.aarch64-linux.default'...\nevaluating 'devShells.x86_64-darwin'...\nevaluating 'devShells.x86_64-darwin.default'...\nevaluating 'devShells.x86_64-linux'...\nevaluating 'devShells.x86_64-linux.default'...\n\u001b[32;1m│       └───\u001b[0m\u001b[1mdefault\u001b[0m: development environment 'nix-shell'\n",
+	"timestamp": 1774255149225
 }

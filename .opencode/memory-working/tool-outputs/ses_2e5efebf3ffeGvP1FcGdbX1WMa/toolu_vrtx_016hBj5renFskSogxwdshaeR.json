@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_016hBj5renFskSogxwdshaeR",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "/**\n * Working Memory Plugin for OpenCode\n *\n * Four-tier memory architecture:\n * 1. Core Memory - Persistent goal/progress/context blocks (always in-context)\n * 2. Working Memory - Auto-managed session-relevant information\n * 3. Smart Pruning - Content-aware tool output compression\n * 4. Memory Pressure Monitoring - Context usage tracking with adaptive warnings\n */\n\nimport type { Plugin } from \"@opencode-ai/plugin\";\nimport { tool } from \"@opencode-ai/plugin/tool\";\nimport { existsSync } from \"fs\";\nimport { mkdir, readFile, writeFile, readdir, stat, unlink, rm } from \"fs/promises\";\nimport { join } from \"path\";\n\n// ============================================================================\n// Types & Schemas\n// ============================================================================\n\ntype CoreMemory = {\n  sessionID: string;\n  blocks: {\n    goal: CoreBlock;\n    progress: CoreBlock;\n    context: CoreBlock;\n  };\n  updatedAt: string;\n};\n\n",
-  "timestamp": 1774259135717
+	"callID": "toolu_vrtx_016hBj5renFskSogxwdshaeR",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "/**\n * Working Memory Plugin for OpenCode\n *\n * Four-tier memory architecture:\n * 1. Core Memory - Persistent goal/progress/context blocks (always in-context)\n * 2. Working Memory - Auto-managed session-relevant information\n * 3. Smart Pruning - Content-aware tool output compression\n * 4. Memory Pressure Monitoring - Context usage tracking with adaptive warnings\n */\n\nimport type { Plugin } from \"@opencode-ai/plugin\";\nimport { tool } from \"@opencode-ai/plugin/tool\";\nimport { existsSync } from \"fs\";\nimport { mkdir, readFile, writeFile, readdir, stat, unlink, rm } from \"fs/promises\";\nimport { join } from \"path\";\n\n// ============================================================================\n// Types & Schemas\n// ============================================================================\n\ntype CoreMemory = {\n  sessionID: string;\n  blocks: {\n    goal: CoreBlock;\n    progress: CoreBlock;\n    context: CoreBlock;\n  };\n  updatedAt: string;\n};\n\n",
+	"timestamp": 1774259135717
 }

@@ -11,8 +11,8 @@ let
 
   gabrielCfg = homeCfgs.gabriel;
   gtkTheme = gabrielCfg.gtk.theme;
-  iconTheme = gabrielCfg.gtk.iconTheme;
-  wallpaper = gabrielCfg.wallpaper;
+  inherit (gabrielCfg.gtk) iconTheme;
+  inherit (gabrielCfg) wallpaper;
 
   sway-kiosk =
     command:

@@ -3,17 +3,17 @@ set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo
 
 . ./load-env.sh
 
-if [[ -z "$ARGO_APP" ]]; then
+if [[ -z $ARGO_APP ]]; then
   ARGO_APP="apisix"
 else
   echo "ARGO_APP=$ARGO_APP"
 fi
-if [[ -z "$ARGO_APP_PATH" ]]; then
+if [[ -z $ARGO_APP_PATH ]]; then
   ARGO_APP_PATH="manifests/apisix"
 else
   echo "ARGO_APP_PATH=$ARGO_APP_PATH"
 fi
-if [[ -z "$ARGO_PROJECT" ]]; then
+if [[ -z $ARGO_PROJECT ]]; then
   # ARGO_PROJECT="testing"
   ARGO_PROJECT="default"
 else

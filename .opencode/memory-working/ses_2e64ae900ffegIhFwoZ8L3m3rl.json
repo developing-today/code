@@ -1,12 +1,12 @@
 {
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "slots": {
-    "error": [],
-    "decision": [],
-    "todo": [],
-    "dependency": []
-  },
-  "pool": [],
-  "eventCounter": 0,
-  "updatedAt": "2026-03-23T09:34:01.842Z"
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"slots": {
+		"error": [],
+		"decision": [],
+		"todo": [],
+		"dependency": []
+	},
+	"pool": [],
+	"eventCounter": 0,
+	"updatedAt": "2026-03-23T09:34:01.842Z"
 }

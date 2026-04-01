@@ -99,7 +99,7 @@ struct GetUserRecord {
 async fn get_user_by_id(user_id: &Uuid, pool: &PgPool) -> Result<GetUserRecord, anyhow::Error> {
     let row = sqlx::query!(
         r#"
-        SELECT email, username, bio, image 
+        SELECT email, username, bio, image
         FROM users
         WHERE id = $1
         "#,

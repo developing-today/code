@@ -9,6 +9,7 @@ Peer discovery enables `id` servers to find and list each other automatically, w
 ### Problem
 
 Currently, connecting two `id` servers requires:
+
 1. Server A starts and prints its node ID
 2. The operator manually copies that node ID
 3. Server B uses the node ID to connect
@@ -58,6 +59,7 @@ Add gossip-based peer discovery using two layers:
 ### Global Default
 
 All `id` servers share a default discovery topic:
+
 - **Topic**: `id-peer-discovery-v1` (hashed via SHA-512 by `TopicId::new()`)
 - **Secret**: `id-public-discovery-v1` (shared secret for DHT record encryption)
 
@@ -66,6 +68,7 @@ This allows any `id` server to find any other server on the public network with 
 ### Private Networks
 
 Users can create isolated discovery networks with:
+
 ```bash
 id serve --topic my-private-network --topic-secret my-secret-key
 ```
@@ -95,7 +98,7 @@ Added as the **last variant** in `MetaRequest` and `MetaResponse` enums to prese
 // Request
 MetaRequest::ListPeers
 
-// Response  
+// Response
 MetaResponse::ListPeers { peers: Vec<PeerAnnouncement> }
 ```
 
@@ -118,6 +121,7 @@ id serve --bootstrap abc123...,def456...
 ```
 
 Manually specified peer node IDs are joined in addition to DHT-discovered peers. Useful when:
+
 - DHT traffic is blocked by firewalls
 - Running in restricted/isolated networks
 - Local development and testing
@@ -151,12 +155,12 @@ id peers --depth -1 --max-peers 500 --timeout 15
 
 ## Timing Parameters
 
-| Parameter | Value | Purpose |
-|-----------|-------|---------|
-| `ANNOUNCE_INTERVAL` | 30s | How often servers broadcast PeerAnnouncement |
-| `STALE_THRESHOLD` | 120s | Time since last announcement before a peer is considered stale |
-| `STALE_CHECK_INTERVAL` | 60s | How often the server checks for stale peers |
-| `PROBE_TIMEOUT` | 10s | Timeout for each individual stale peer probe |
+| Parameter              | Value | Purpose                                                        |
+| ---------------------- | ----- | -------------------------------------------------------------- |
+| `ANNOUNCE_INTERVAL`    | 30s   | How often servers broadcast PeerAnnouncement                   |
+| `STALE_THRESHOLD`      | 120s  | Time since last announcement before a peer is considered stale |
+| `STALE_CHECK_INTERVAL` | 60s   | How often the server checks for stale peers                    |
+| `PROBE_TIMEOUT`        | 10s   | Timeout for each individual stale peer probe                   |
 
 A peer is stale after missing ~4 consecutive announcements. Before removal, stale peers are probed via a `ListPeers` RPC call. If the peer responds within the probe timeout, its `last_seen` timestamp is refreshed and it stays in the table. If the peer is unreachable or times out, it is removed. This prevents premature eviction of peers that are alive but experiencing temporary gossip delivery issues.
 
@@ -178,11 +182,13 @@ A peer is stale after missing ~4 consecutive announcements. Before removal, stal
 ## CLI Interface
 
 ### Server flags
+
 ```bash
 id serve [--bootstrap <node_ids>] [--topic <name>] [--topic-secret <secret>]
 ```
 
 ### Peers command
+
 ```bash
 id peers [--gossip] [--rpc] [--depth N] [--max-peers N] [--timeout N]
          [--bootstrap <node_ids>] [--topic <name>] [--topic-secret <secret>]
@@ -190,6 +196,7 @@ id peers [--gossip] [--rpc] [--depth N] [--max-peers N] [--timeout N]
 ```
 
 ### REPL
+
 ```
 > peers              # List known peers (via RPC to local serve)
 > peers @NODE_ID     # Query a specific remote node's peer list
@@ -197,20 +204,20 @@ id peers [--gossip] [--rpc] [--depth N] [--max-peers N] [--timeout N]
 
 ## Files Changed
 
-| File | Change |
-|------|--------|
-| `src/discovery.rs` | **New** -- core types (PeerAnnouncement, PeerInfo, PeerDiscovery) |
-| `src/lib.rs` | Add module + re-exports |
-| `src/protocol.rs` | Add ListPeers to MetaRequest/MetaResponse |
-| `src/cli.rs` | Add Peers command, add flags to Serve |
-| `src/commands/serve.rs` | Gossip integration, background tasks |
-| `src/commands/peers.rs` | **New** -- peers command implementation |
-| `src/commands/mod.rs` | Add peers module |
-| `src/main.rs` | Add Peers command dispatch |
-| `src/repl/runner.rs` | Add peers REPL command |
-| `src/web/mod.rs` | Add PeerDiscovery to AppState |
-| `src/web/routes.rs` | Add /peers route |
-| `src/web/templates.rs` | Add peers page template |
+| File                    | Change                                                            |
+| ----------------------- | ----------------------------------------------------------------- |
+| `src/discovery.rs`      | **New** -- core types (PeerAnnouncement, PeerInfo, PeerDiscovery) |
+| `src/lib.rs`            | Add module + re-exports                                           |
+| `src/protocol.rs`       | Add ListPeers to MetaRequest/MetaResponse                         |
+| `src/cli.rs`            | Add Peers command, add flags to Serve                             |
+| `src/commands/serve.rs` | Gossip integration, background tasks                              |
+| `src/commands/peers.rs` | **New** -- peers command implementation                           |
+| `src/commands/mod.rs`   | Add peers module                                                  |
+| `src/main.rs`           | Add Peers command dispatch                                        |
+| `src/repl/runner.rs`    | Add peers REPL command                                            |
+| `src/web/mod.rs`        | Add PeerDiscovery to AppState                                     |
+| `src/web/routes.rs`     | Add /peers route                                                  |
+| `src/web/templates.rs`  | Add peers page template                                           |
 
 ## Endpoint Lifecycle (iroh 0.97)
 
@@ -232,15 +239,15 @@ result
 
 ### Endpoint ownership in peers code
 
-| Function | Endpoint Lifecycle |
-|----------|-------------------|
-| `query_local_peers()` | Creates endpoint via `create_local_client_endpoint()`, closes after RPC |
-| `query_remote_peers()` | Creates endpoint, closes after RPC |
-| `discover_via_gossip()` | Creates endpoint, closes after gossip timeout |
-| `crawl_peers()` | Delegates to `query_remote_peers()` (each call creates/closes its own endpoint) |
-| `ReplContext::peers()` | Uses shared REPL endpoint (closed in `shutdown()`) |
-| `ReplContext::peers_on_node()` | Uses shared REPL endpoint (closed in `shutdown()`) |
-| `cmd_serve()` | Endpoint owned by Router (Router handles lifecycle) |
+| Function                       | Endpoint Lifecycle                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| `query_local_peers()`          | Creates endpoint via `create_local_client_endpoint()`, closes after RPC         |
+| `query_remote_peers()`         | Creates endpoint, closes after RPC                                              |
+| `discover_via_gossip()`        | Creates endpoint, closes after gossip timeout                                   |
+| `crawl_peers()`                | Delegates to `query_remote_peers()` (each call creates/closes its own endpoint) |
+| `ReplContext::peers()`         | Uses shared REPL endpoint (closed in `shutdown()`)                              |
+| `ReplContext::peers_on_node()` | Uses shared REPL endpoint (closed in `shutdown()`)                              |
+| `cmd_serve()`                  | Endpoint owned by Router (Router handles lifecycle)                             |
 
 ## References
 

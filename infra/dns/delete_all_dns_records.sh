@@ -8,7 +8,7 @@ subdomains=("www" "blog" "mail")
 
 echo "\$0=$0"
 script_name="$0"
-while [[ "$script_name" == -* ]]; do
+while [[ $script_name == -* ]]; do
   script_name="${script_name#-}"
 done
 

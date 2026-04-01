@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01GrCnuwS9C8Huo2t8Gnt4VS",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "grep",
-  "fullOutput": "Found 1 matches\n/home/user/code/inspiration/hosts/nix-ld.nix:\n  Line 2:   programs.nix-ld = {",
-  "timestamp": 1774253198279
+	"callID": "toolu_vrtx_01GrCnuwS9C8Huo2t8Gnt4VS",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "grep",
+	"fullOutput": "Found 1 matches\n/home/user/code/inspiration/hosts/nix-ld.nix:\n  Line 2:   programs.nix-ld = {",
+	"timestamp": 1774253198279
 }

@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01FnVVu6K4QVQmC1UXyiHrSW",
-  "sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
-  "tool": "bash",
-  "fullOutput": "Could not start dynamically linked executable: /home/user/.cache/.bun/install/global/node_modules/btca/dist/btca-linux-x64\nNixOS cannot run dynamically linked executables intended for generic\nlinux environments out of the box. For more information, see:\nhttps://nix.dev/permalink/stub-ld\n",
-  "timestamp": 1774253188671
+	"callID": "toolu_vrtx_01FnVVu6K4QVQmC1UXyiHrSW",
+	"sessionID": "ses_2e64ae900ffegIhFwoZ8L3m3rl",
+	"tool": "bash",
+	"fullOutput": "Could not start dynamically linked executable: /home/user/.cache/.bun/install/global/node_modules/btca/dist/btca-linux-x64\nNixOS cannot run dynamically linked executables intended for generic\nlinux environments out of the box. For more information, see:\nhttps://nix.dev/permalink/stub-ld\n",
+	"timestamp": 1774253188671
 }

@@ -62,15 +62,15 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     // Open persistent storage
 //!     let store = open_store(false).await?;
-//!     
+//!
 //!     // Add a blob
 //!     let data = b"Hello, world!";
 //!     let hash = store.as_store().blobs().add_bytes(data.to_vec()).await?;
 //!     println!("Stored with hash: {}", hash.hash);
-//!     
+//!
 //!     // Create a named tag
 //!     store.as_store().tags().set("greeting.txt", hash.hash).await?;
-//!     
+//!
 //!     store.shutdown().await?;
 //!     Ok(())
 //! }

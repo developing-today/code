@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_013rTs4X1xCuw3Uwmq3rKdUH",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "export { PTYPlugin } from './src/plugin.ts'\n",
-  "timestamp": 1774259137538
+	"callID": "toolu_vrtx_013rTs4X1xCuw3Uwmq3rKdUH",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "export { PTYPlugin } from './src/plugin.ts'\n",
+	"timestamp": 1774259137538
 }

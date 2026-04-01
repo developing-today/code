@@ -21,17 +21,17 @@
     - fpexlxgk
       - m.2 nvme 1TB (Inland) nvme-PCIe_SSD_23051610002029
   - linstor/drbd/extra drives
-    - host*drives type
-      - 2*1 optane-1.5-nvme (u.2 1.5TB - Intel Optane DC P4800X Series 1.5TB PCIe NVMe 2.5in U.2 SSD SSDPE21K015TA)
+    - host\*drives type
+      - 2\*1 optane-1.5-nvme (u.2 1.5TB - Intel Optane DC P4800X Series 1.5TB PCIe NVMe 2.5in U.2 SSD SSDPE21K015TA)
         - optane.nvme.linstor-external-01b
           - TODO
-      - 3*1 medium-2.0-nvme (m.2 2.0TB - samsung 980 pro)
+      - 3\*1 medium-2.0-nvme (m.2 2.0TB - samsung 980 pro)
         - basic.nvme.linstor-external-01b
           - CREATED: storage-pool: xcp-sr-linstor_group_thin_device
-      - 2*1 medium-1.0-nvme   (m.2 1.0TB - samsung 990 pro)
+      - 2\*1 medium-1.0-nvme (m.2 1.0TB - samsung 990 pro)
         - burst.nvme.linstor-external-01b
           - TODO
-      - 2*2 medium-4.0-nvme   (m.2 4.0TB - hp fx900 pro)
+      - 2\*2 medium-4.0-nvme (m.2 4.0TB - hp fx900 pro)
         - sustain.nvme.linstor-external-01b
           - TODO
 

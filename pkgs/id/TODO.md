@@ -3,6 +3,7 @@
 ---
 
 ## **Warning For Agents & Onlookers**
+
 > This is for future implementation.
 >
 > It's fine to read this file but don't make any significant decisions based on anything here.
@@ -51,6 +52,7 @@
 - fix so meta attribute is on all nix flake sections that need it.
 - just ci is running multiple tests in a row, i see it repeated the 237 test blocks and it may be repeating more tests in some of the smaller groups like the 54/14 tests. does the just command need changes?
 - nix flake check -L fails because clippy has to build and tries to download files. find a way to ensure that no network access is needed. if just ci needs to have different commands then ensure just check still runs all of them. if you can fix it by updating the build or something then do that.
+
 ```
 ❯ nix flake check -L
 warning: Git tree '/home/user/code' is dirty
@@ -182,11 +184,11 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - can we add tags to files/nodes and have those tags be searchable in the cli/repl/website? each client/node that added the tag should be linked to the tag so we can show that information in the cli/repl/website and use it for searching/organizing. if 2 clients add the same tag to a node/file, that should be reflected in the cli/repl/website and show that both clients added that tag, in the order they added it with timestamps. (get all files from x node that have the word 'yz' in them etc should be doable, not reinventing sql just allowing extended search/metadata.)
 - can each uploaded file be linked to the node/time that uploaded it? (maybe use tags for this? or whatever is best) implement at least a rudimentary way to show this information in the cli/repl/website, and use it for searching/organizing files. ideally we could also show this information in the file listing in the cli/repl/website, and have a way to sort/filter by upload time/node.
 - can tags/petnames be able to be either local to the client or shared across clients, and can we have a way to specify which when creating/editing a tag/petname? some way to organize/review existing petnames/tags would be good too.
-- allow each node to self-publish information about themselves, their preferred name, maybe just helpers to add public tags to their own node id and then update the various interfaces to be able to poll and pull that info. (priority would be something like "clients private alias for some node, clients public alias, the other node's public alias for themselves, any other public aliases the client/server are aware of, 
+- allow each node to self-publish information about themselves, their preferred name, maybe just helpers to add public tags to their own node id and then update the various interfaces to be able to poll and pull that info. (priority would be something like "clients private alias for some node, clients public alias, the other node's public alias for themselves, any other public aliases the client/server are aware of,
 
 ---
 
-- make a tui using ratatui or whatever the highest performance tui rust crate is. aim for high performance, it should work locally without running other servers, or connect to the local server if it's running or connect to a remote server. use iroh for network communication not ssh, consider the most efficient way to handle this so that it is very performant. we want high fps, ability to make complex graphs, possibly transmit kitty image protocol images, coloring blocks, all the tui things you might want from something like ratatui, but ideally you wouldn't be sending all the terminal inputs from the server to the client. there should be a way to send a custom protocol in an iroh postcard or whatever, where you say what you want to do provide the new bytes, and then the client handles. like 'heres the bytes for the image, put the image in the screen at 64x 16y on the screen and let the image be 256*256' and then the client can display the picture without the server needing to actually move the cursor, delete/redraw in the terminal, etc. server could say 'draw the level map at <blob> across the entire screen' and then the client would handle getting the blob itself. you wouldn't want a second round trip if they don't have it cached locally, so some thought would need to be put there. the tui should cover things like the website, except native access without upload boxes and with full control of the box. it should be a tui program, doesn't need to be ssh--- someone can ssh into the server and run the tui. maybe 3 panels, room/object selector/search/find/pin-favorites || the interactive room/document or other meta configuration or search pages || a chatroom for a given room or topic
+- make a tui using ratatui or whatever the highest performance tui rust crate is. aim for high performance, it should work locally without running other servers, or connect to the local server if it's running or connect to a remote server. use iroh for network communication not ssh, consider the most efficient way to handle this so that it is very performant. we want high fps, ability to make complex graphs, possibly transmit kitty image protocol images, coloring blocks, all the tui things you might want from something like ratatui, but ideally you wouldn't be sending all the terminal inputs from the server to the client. there should be a way to send a custom protocol in an iroh postcard or whatever, where you say what you want to do provide the new bytes, and then the client handles. like 'heres the bytes for the image, put the image in the screen at 64x 16y on the screen and let the image be 256\*256' and then the client can display the picture without the server needing to actually move the cursor, delete/redraw in the terminal, etc. server could say 'draw the level map at <blob> across the entire screen' and then the client would handle getting the blob itself. you wouldn't want a second round trip if they don't have it cached locally, so some thought would need to be put there. the tui should cover things like the website, except native access without upload boxes and with full control of the box. it should be a tui program, doesn't need to be ssh--- someone can ssh into the server and run the tui. maybe 3 panels, room/object selector/search/find/pin-favorites || the interactive room/document or other meta configuration or search pages || a chatroom for a given room or topic
 
 ---
 
@@ -196,18 +198,11 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 - rust/js linters, clippy with all runs, run rustfmt, etc. (youtube video that mentioned what to run? there was another in addition to clippy..)
 
+---
 
 ---
 
-
-
 ---
-
-
-
----
-
-
 
 ---
 
@@ -218,7 +213,6 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - victoriametrics
 - footer for raw/media should match markdown. download should be in the bottom right of all per-page toolbars
 - allow save back update hash, allow download saved which downloads last saved copy and download which downloads current file as-is. maybe allow download json for active documents too which is same as download except its the prosemirror json.
-
 
 ---
 
@@ -244,7 +238,7 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 - veilid transport ?
 - veilid alternative network ?
 - tor ?
-- mycelium ? 
+- mycelium ?
 - zerotier ? no because licenses?
 - yggdrasil ?
 - tinc ?
@@ -253,174 +247,104 @@ error: build of '/nix/store/5s64nhc9q6q3kfcc2g7qhhdkpipqh3q4-id-doc.drv', '/nix/
 
 ---
 
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
+- technically unrelated to this project
+  - bunx oh-my-openagent install
+  - bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=yes --opencode-go=no --opencode-zen=no --zai-coding-plan=no
+  - https://github.com/kdcokenny/ocx
+  - ocx add kdco/workspace --from https://registry.kdco.dev
+  - ocx add kdco/worktree --from https://registry.kdco.dev
+  - ocx add kdco/background-agents --from https://registry.kdco.dev
+  - ocx add kdco/notify --from https://registry.kdco.dev
+  - https://github.com/NeuralNomadsAI/CodeNomad
+  - https://github.com/morapelker/hive
+  - bun add -g btca opencode-ai
+  - btca connect --provider opencode --model claude-haiku-4-5
 
 ---
 
-
-
----
-
-
+- remove chromium/firefox from nix-common since playwright handles, still include them in the nixos config
+- set zen browser as default browser in nixos config
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
+---
 
 ---
 
-
-
 ---
 
-
-
 ---
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
-
----
-
-
 
 ---

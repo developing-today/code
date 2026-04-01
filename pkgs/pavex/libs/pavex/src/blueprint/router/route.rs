@@ -21,7 +21,7 @@ impl<'a> Route<'a> {
     /// Error handlers convert the error type returned by your request handler into an HTTP response.
     ///
     /// Error handlers CANNOT consume the error type, they must take a reference to the
-    /// error as input.  
+    /// error as input.
     /// Error handlers can have additional input parameters alongside the error, as long as there
     /// are constructors registered for those parameter types.
     ///

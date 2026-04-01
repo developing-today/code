@@ -387,6 +387,8 @@ in
       nodePackages.prettier
       ruff
       biome
+      rustfmt
+      taplo
       rufo
       elmPackages.elm-format
       go

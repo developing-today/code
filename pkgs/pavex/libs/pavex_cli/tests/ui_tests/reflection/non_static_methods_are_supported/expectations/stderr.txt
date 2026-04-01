@@ -1,4 +1,4 @@
-[31m[1mERROR[0m[39m: 
+[31m[1mERROR[0m[39m:
   [31m×[0m One of the input parameters for `app::Streamer::stream_file` has a type
   [31m│[0m that I cannot handle.
   [31m│[0m
@@ -9,7 +9,7 @@
   [31m│[0m     ·                                            [35;1m╰── [35;1mThe request handler was registered here[0m[0m
   [31m│[0m  [2m14[0m │     bp
   [31m│[0m     ╰────
-  [31m│[0m   [31m×[0m 
+  [31m│[0m   [31m×[0m
   [31m│[0m    ╭─[[36;1;4msrc/lib.rs[0m:5:1]
   [31m│[0m  [2m5[0m │ impl Streamer {
   [31m│[0m  [2m6[0m │     pub fn stream_file(&self) -> pavex_runtime::response::Response {

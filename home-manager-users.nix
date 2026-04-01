@@ -1,6 +1,6 @@
 inputs:
 let
-  lib = inputs.self.lib;
+  inherit (inputs.self) lib;
 in
 {
   "user@default" = lib.home-manager-user-configuration "user";

@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_011F7oiZgM1QyvfyanZyhQTt",
-  "sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
-  "tool": "bash",
-  "fullOutput": "No system config found\n---\ntotal 56\ndrwxr-xr-x  9 user users 4096 Mar 22 23:02 .\ndrwxr-xr-x 29 user users 4096 Mar 22 03:44 ..\n-rw-r--r--  1 user users  706 Mar 22 23:02 bun.lock\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 commands\n-rw-r--r--  1 user users   45 Mar 16 06:08 .gitignore\ndrwxr-xr-x  3 user users 4096 Mar 23 00:46 memory-working\ndrwxr-xr-x  4 user users 4096 Mar 20 21:12 node_modules\n-rw-r--r--  1 user users  952 Mar 22 23:39 opencode.json\n-rw-r--r--  1 user users   58 Mar 22 23:02 package.json\ndrwxr-xr-x  2 user users 4096 Mar 21 00:28 plans\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 plugins\ndrwxr-xr-x  3 user users 4096 Mar 22 01:08 skills\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 themes\n-rw-r--r--  1 user users  554 Mar 22 23:02 worktree-session-state.json\n",
-  "timestamp": 1774244779715
+	"callID": "toolu_vrtx_011F7oiZgM1QyvfyanZyhQTt",
+	"sessionID": "ses_2e6c540b9ffelk2vwA528ujuls",
+	"tool": "bash",
+	"fullOutput": "No system config found\n---\ntotal 56\ndrwxr-xr-x  9 user users 4096 Mar 22 23:02 .\ndrwxr-xr-x 29 user users 4096 Mar 22 03:44 ..\n-rw-r--r--  1 user users  706 Mar 22 23:02 bun.lock\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 commands\n-rw-r--r--  1 user users   45 Mar 16 06:08 .gitignore\ndrwxr-xr-x  3 user users 4096 Mar 23 00:46 memory-working\ndrwxr-xr-x  4 user users 4096 Mar 20 21:12 node_modules\n-rw-r--r--  1 user users  952 Mar 22 23:39 opencode.json\n-rw-r--r--  1 user users   58 Mar 22 23:02 package.json\ndrwxr-xr-x  2 user users 4096 Mar 21 00:28 plans\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 plugins\ndrwxr-xr-x  3 user users 4096 Mar 22 01:08 skills\ndrwxr-xr-x  2 user users 4096 Mar 22 01:08 themes\n-rw-r--r--  1 user users  554 Mar 22 23:02 worktree-session-state.json\n",
+	"timestamp": 1774244779715
 }

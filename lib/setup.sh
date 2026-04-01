@@ -17,15 +17,15 @@ echo "allowed-users = root $USER_NAME" | sudo tee -a /etc/nix/nix.conf
 echo 'experimental-features = flakes nix-command ca-derivations' | sudo tee -a /etc/nix/nix.conf
 
 nix-env -i direnv
-echo "eval \"\$(direnv hook bash)\"" >> ~/.profile
+echo 'eval "$(direnv hook bash)"' >>~/.profile
 eval "$(direnv hook bash)"
 
 # exit; wsl --shutdown; ubuntu
 
 nix run \
-    --tarball-ttl 0 \
-    --accept-flake-config \
-    'github:developing-today/code?dir=build/nix#setup'
+  --tarball-ttl 0 \
+  --accept-flake-config \
+  'github:developing-today/code?dir=build/nix#setup'
 
 cd $HOME/code.sl
 

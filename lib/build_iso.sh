@@ -23,37 +23,37 @@ print_usage() {
 process_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -bootstrap)
-        bootstrap=true
-        shift
-        ;;
-      -clean)
-        clean=true
-        shift
-        ;;
-      -flash)
-        flash=true
-        shift
-        ;;
-      -force)
-        force=true
-        shift
-        ;;
-      -*)
-        echo "Error: Unknown flag $1"
+    -bootstrap)
+      bootstrap=true
+      shift
+      ;;
+    -clean)
+      clean=true
+      shift
+      ;;
+    -flash)
+      flash=true
+      shift
+      ;;
+    -force)
+      force=true
+      shift
+      ;;
+    -*)
+      echo "Error: Unknown flag $1"
+      print_usage
+      exit 1
+      ;;
+    *)
+      if [[ -z $custom_hostname ]]; then
+        custom_hostname="$1"
+      else
+        echo "Error: Multiple hostnames provided"
         print_usage
         exit 1
-        ;;
-      *)
-        if [[ -z $custom_hostname ]]; then
-          custom_hostname="$1"
-        else
-          echo "Error: Multiple hostnames provided"
-          print_usage
-          exit 1
-        fi
-        shift
-        ;;
+      fi
+      shift
+      ;;
     esac
   done
 }
@@ -154,7 +154,7 @@ if [ "$bootstrap" = true ]; then
       echo "Error: Bootstrap script execution failed."
       exit 1
     fi
-else
+  else
     echo "Warning: Bootstrap script not found at $bootstrap_script"
   fi
 fi

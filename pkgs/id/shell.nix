@@ -35,19 +35,19 @@ let
     overlays = [ (import rustOverlay) ];
   };
 
-  # Rust toolchain from rust-toolchain.toml (same as flake)
-  rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-
-  # Import shared configuration
+  # Import shared configuration (defines rustToolchain, fmtBins, nativeBuildInputs)
   nixCommon = import ./nix-common.nix { inherit pkgs; };
 
 in
 pkgs.mkShell {
   name = "id-dev";
 
-  inherit (nixCommon) buildInputs shellHook;
-
-  nativeBuildInputs = [ rustToolchain ] ++ nixCommon.nativeBuildInputs;
+  inherit (nixCommon)
+    buildInputs
+    shellHook
+    nativeBuildInputs
+    TREEFMT_TREE_ROOT_CMD
+    ;
 
   # OpenSSL configuration for native builds
   inherit (nixCommon.opensslEnv)

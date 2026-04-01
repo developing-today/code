@@ -2,8 +2,8 @@
 set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
 echo "\$0=$0"
 script_name="$0"
-while [[ "$script_name" == -* ]]; do
-    script_name="${script_name#-}"
+while [[ $script_name == -* ]]; do
+  script_name="${script_name#-}"
 done
 
 dir="$(dirname -- "$(readlink -f -- "$script_name")")"
@@ -41,7 +41,7 @@ if [ -z "$tainted_resources" ]; then
     rm -f "$dir/tainted_resources.json"
   fi
 else
-  echo "$tainted_resources" | jq -nR '[inputs]' > "$dir/tainted_resources.json"
+  echo "$tainted_resources" | jq -nR '[inputs]' >"$dir/tainted_resources.json"
   echo "tainted resources written to $dir/tainted_resources.json"
   echo "tainted_resources.json:"
   cat "$dir/tainted_resources.json"

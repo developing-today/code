@@ -252,7 +252,7 @@ fn report_non_existing_route_parameters(
 }
 
 /// Checks that the type of the route parameter is a struct with named fields.
-/// If it is, returns the rustdoc item for the type.  
+/// If it is, returns the rustdoc item for the type.
 /// If it isn't, reports an error diagnostic on each compute node that consumes the
 /// `RouteParams` extractor.
 fn must_be_a_plain_struct(

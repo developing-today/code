@@ -382,7 +382,7 @@ export_lib() {
 
     # Choose a random range
     local range,start,end
-    range=${ranges[RANDOM % ${#ranges[@]}]}
+    range=${ranges[RANDOM%${#ranges[@]}]}
     start=$(echo "${range}" | awk '{ print ${1} }')
     end=$(echo "${range}" | awk '{ print ${2} }')
 
@@ -425,7 +425,7 @@ export_lib() {
       # Characters from Fire Emblem
       "Marth" "Ike" "Roy" "Lucina" "Chrom" "Robin" "Corrin" "Byleth" "Edelgard" "Dimitri" "Sigurd" "Eliwood" "Lyn" "Micaiah" "Tharja" "Camilla" "Alm" "Celica" "Eirika" "Ephraim" "Hector" "Leif" "Ninian" "Olwen" "Reinhardt" "Seliph" "Sothe" "Takumi" "Tiki" "Xander" "Azura" "Fjorm"
     )
-    printf "%s" "${words[RANDOM % ${#words[@]}]}"
+    printf "%s" "${words[RANDOM%${#words[@]}]}"
   }
   export -f random_word
 

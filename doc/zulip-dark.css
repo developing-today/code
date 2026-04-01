@@ -146,11 +146,7 @@
 }
 
 .messagebox:hover .message_controls,
-.messagebox:has(
-    .active-emoji-picker-reference,
-    .active-playground-links-reference
-  )
-  .message_controls,
+.messagebox:has(.active-emoji-picker-reference, .active-playground-links-reference) .message_controls,
 .has_actions_popover .message_controls {
   display: flex !important;
 }
@@ -195,20 +191,9 @@
 }
 
 :root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(odd),
-:root.dark-theme
-  #recent_topics_table.table-striped
-  > tbody
-  > tr:nth-child(even),
-:root.dark-theme
-  #recent_topics_table.table-striped
-  > tbody
-  > tr:nth-child(odd)
-  > td,
-:root.dark-theme
-  #recent_topics_table.table-striped
-  > tbody
-  > tr:nth-child(even)
-  > td {
+:root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(even),
+:root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(odd) > td,
+:root.dark-theme #recent_topics_table.table-striped > tbody > tr:nth-child(even) > td {
   background: #000 !important;
 }
 

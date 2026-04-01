@@ -238,7 +238,7 @@ async fn tag_list(subject: Option<&str>, opts: &TagDisplayOptions) -> Result<()>
 /// Search metadata tags using structured query syntax.
 ///
 /// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
-/// bare word searches. Multiple terms are ANDed together.
+/// bare word searches. Multiple terms are `ANDed` together.
 async fn tag_search(query: &str, opts: &TagDisplayOptions) -> Result<()> {
     let req = MetaRequest::SearchTags {
         query: query.to_owned(),
@@ -317,7 +317,7 @@ fn print_tag_line(subject: &str, key: &str, value: Option<&str>, opts: &TagDispl
 /// Migrate all existing blob tags to have name/file auto-tags.
 ///
 /// If a local serve is running, sends `MetaRequest::MigrateTags` via the
-/// meta protocol. Otherwise prints a message (TagStore is only available
+/// meta protocol. Otherwise prints a message (`TagStore` is only available
 /// when serve is running).
 pub async fn cmd_migrate_tags() -> Result<()> {
     let req = MetaRequest::MigrateTags;

@@ -18,8 +18,8 @@ rustup toolchain install nightly --allow-downgrade
 rustup target add wasm32-unknown-unknown
 
 # For NixOS, change .scss to .css in the style directory.
-if [[ "${OSTYPE}" == "nixos"* ]]; then
-    find ./ -name "*.scss" -exec bash -c 'mv "$0" "${0%.scss}.css"' {} \;
+if [[ ${OSTYPE} == "nixos"* ]]; then
+  find ./ -name "*.scss" -exec bash -c 'mv "$0" "${0%.scss}.css"' {} \;
 fi
 
 cargo install cargo-generate

@@ -12,14 +12,17 @@ When making a significant design or architecture decision—whether modifying an
 ## Initial Documentation
 
 1. **Create a docs folder** for the change:
+
    ```
    docs/<UTC_RFC_DATETIME>_<kind>_<name>/
    ```
+
    - `<UTC_RFC_DATETIME>`: e.g., `2026-03-16T14-30-00Z`
    - `<kind>`: `feature`, `architecture`, `refactor`, `design`, `component`, etc.
    - `<name>`: descriptive snake_case name
 
 2. **Create the initial document** with the same naming:
+
    ```
    docs/2026-03-16T14-30-00Z_feature_blob_streaming/2026-03-16T14-30-00Z_feature_blob_streaming.md
    ```
@@ -41,11 +44,13 @@ When making a significant design or architecture decision—whether modifying an
 After initial rollout is complete:
 
 - **If significantly different or many updates**: Create a new file in the same folder with a new datetime and clarifying suffix:
+
   ```
   2026-03-18T09-00-00Z_feature_blob_streaming_final_design.md
   ```
 
 - **Returning in a new session with major changes planned**: Create a new datetime document with a suffix explaining the revision type:
+
   ```
   2026-03-25T11-00-00Z_feature_blob_streaming_v2_proposal.md
   ```

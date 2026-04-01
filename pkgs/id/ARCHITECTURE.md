@@ -46,6 +46,7 @@ Defines the command-line interface using [clap](https://docs.rs/clap). All comma
 Defines the P2P request/response protocol between nodes. Uses Iroh's RPC mechanism with custom `MetaRequest`/`MetaResponse` types serialized as postcard-encoded bytes.
 
 Key message types:
+
 - `Put`/`Get` — file transfer
 - `List` — enumerate remote files
 - `Find`/`Search` — pattern-based file lookup
@@ -69,6 +70,7 @@ Omega Index: key → value → subject    (search files by tag)
 Both indices are stored as Iroh documents using sort-preserving binary key encoding (`tuple.rs`). Each index is a `NamespacePair` — an alpha doc and omega doc that mirror each other for bidirectional queries.
 
 Key concepts:
+
 - **TagValue**: Binary-safe value type wrapping `Vec<u8>`, displays as UTF-8 when valid, `<binary N bytes>` otherwise. Supports arbitrary-length keys/values.
 - **Tag**: `(subject, key, value?)` triple — e.g., `("readme.md", "author", "Jane")`
 - **NamespacePair**: Two Iroh docs (alpha + omega) for dual-indexed queries
@@ -126,27 +128,27 @@ Feature-gated behind `--features web`. Embeds a full browser UI in the binary.
 
 ### Backend (`src/web/`)
 
-| Module          | Purpose                                           |
-|-----------------|---------------------------------------------------|
-| `routes.rs`     | Axum HTTP handlers: file CRUD, rename, copy, tags |
-| `templates.rs`  | Server-side HTML rendering (no template engine)    |
-| `collab.rs`     | WebSocket server for collaborative editing         |
-| `tags_ws.rs`    | WebSocket broadcast for tag change events          |
-| `assets.rs`     | Static asset serving via rust-embed                |
-| `content_mode.rs` | Content type detection and rendering mode        |
-| `markdown.rs`   | Markdown → HTML rendering with syntax highlighting |
+| Module            | Purpose                                            |
+| ----------------- | -------------------------------------------------- |
+| `routes.rs`       | Axum HTTP handlers: file CRUD, rename, copy, tags  |
+| `templates.rs`    | Server-side HTML rendering (no template engine)    |
+| `collab.rs`       | WebSocket server for collaborative editing         |
+| `tags_ws.rs`      | WebSocket broadcast for tag change events          |
+| `assets.rs`       | Static asset serving via rust-embed                |
+| `content_mode.rs` | Content type detection and rendering mode          |
+| `markdown.rs`     | Markdown → HTML rendering with syntax highlighting |
 
 ### Frontend (`web/`)
 
 TypeScript bundled with Bun, producing a single JS file and CSS file embedded in the binary.
 
-| File          | Purpose                                    |
-|---------------|--------------------------------------------|
-| `main.ts`     | Entry point, HTMX init, file operations    |
-| `editor.ts`   | ProseMirror editor setup                   |
-| `collab.ts`   | WebSocket collaboration client             |
-| `cursors.ts`  | Cursor/selection plugin with opacity fading |
-| `theme.ts`    | Theme switching (sneak/arch/mech)           |
+| File         | Purpose                                     |
+| ------------ | ------------------------------------------- |
+| `main.ts`    | Entry point, HTMX init, file operations     |
+| `editor.ts`  | ProseMirror editor setup                    |
+| `collab.ts`  | WebSocket collaboration client              |
+| `cursors.ts` | Cursor/selection plugin with opacity fading |
+| `theme.ts`   | Theme switching (sneak/arch/mech)           |
 
 ### Collaboration Protocol
 
@@ -156,14 +158,14 @@ Real-time collaborative editing uses ProseMirror's `prosemirror-collab` plugin o
 
 The web UI renders files differently based on content type:
 
-| Content Type | Viewer          | Features                              |
-|-------------|-----------------|---------------------------------------|
-| Text/Code    | ProseMirror     | Collaborative editing, save, download |
-| Markdown     | ProseMirror     | Rich editing with menu bar            |
-| Images       | Media viewer    | Inline display, download              |
-| Video/Audio  | Media viewer    | Native player, download               |
-| PDF          | Media viewer    | Embedded viewer, download             |
-| Binary       | Binary viewer   | Download only                         |
+| Content Type | Viewer        | Features                              |
+| ------------ | ------------- | ------------------------------------- |
+| Text/Code    | ProseMirror   | Collaborative editing, save, download |
+| Markdown     | ProseMirror   | Rich editing with menu bar            |
+| Images       | Media viewer  | Inline display, download              |
+| Video/Audio  | Media viewer  | Native player, download               |
+| PDF          | Media viewer  | Embedded viewer, download             |
+| Binary       | Binary viewer | Download only                         |
 
 All viewers include rename and copy buttons.
 
@@ -214,20 +216,24 @@ The project uses Nix flakes for reproducible builds:
 
 ### Build Variants
 
-| Variant | Feature Flag | Assets Required | Output          |
-|---------|-------------|-----------------|-----------------|
-| `lib`   | (none)      | No              | CLI binary      |
-| `web`   | `web`       | `web/dist/`     | CLI + web UI    |
+| Variant | Feature Flag | Assets Required | Output       |
+| ------- | ------------ | --------------- | ------------ |
+| `lib`   | (none)       | No              | CLI binary   |
+| `web`   | `web`        | `web/dist/`     | CLI + web UI |
 
 The build script (`scripts/build.sh`) tracks the current variant in `target/.build-variant` to detect when a rebuild is needed due to variant change.
 
 ## Testing
 
-| Layer         | Framework     | Command              | Count |
-|---------------|---------------|----------------------|-------|
-| Unit          | `cargo test`  | `just test-unit`     | 484   |
-| Integration   | `cargo test`  | `just test-int`      | 64    |
-| TypeScript    | `bun test`    | `just test-web-unit` | —     |
-| E2E           | Playwright    | `just test-e2e`      | 15    |
+| Layer          | Framework    | Command              | Count  |
+| -------------- | ------------ | -------------------- | ------ |
+| Unit           | `cargo test` | `just test-unit`     | ~500   |
+| Integration    | `cargo test` | `just test-int`      | ~85    |
+| TypeScript     | `bun test`   | `just test-web-unit` | ~116   |
+| E2E            | Playwright   | `just test-e2e`      | 146    |
+| NixOS VM (API) | curl/Python  | `just test-nixos-serve` | ~15 |
+| NixOS VM (DOM) | Chromium     | `just test-nixos-e2e`   | ~10 |
+| NixOS VM (Integration) | cargo test binary | `just test-nixos-integration` | ~83 |
+| NixOS 4-VM (Playwright) | Playwright | `just test-nixos-playwright-e2e` | 146 |
 
-Integration tests that require network (serve_tests) are skipped in sandbox environments. Playwright E2E tests run against both Chromium and Firefox.
+`just test-nix` (`nix flake check`, 27 checks) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.

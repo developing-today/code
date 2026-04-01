@@ -16,7 +16,7 @@ export TALOSCONFIG=secrets/talosconfig
 talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.8.188 # a1
 # talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.4.92 # a2 # stopped
 # talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.15.105 # b1 # stopped
-talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.12.69 # b1
+talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.12.69  # b1
 talosctl apply-config --insecure --file "./secrets/controlplane.yaml" --nodes 10.10.24.137 # c1
 talosctl bootstrap --endpoints 10.10.8.188 --nodes 10.10.8.188
 # talosctl -n 10.10.24.137 service etcd # c1
@@ -45,11 +45,11 @@ talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.22
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.15.10  # c5
 
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.25.241 # b2
-talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.8.199 # b3
-talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.3.175 # b4
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.8.199  # b3
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.3.175  # b4
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.27.240 # b5
-talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.30.37 # b6
-talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.9.213 # b7
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.30.37  # b6
+talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.9.213  # b7
 talosctl apply-config --insecure --file "./secrets/worker.yaml" --nodes 10.10.31.127 # b8
 
 # talosctl reboot

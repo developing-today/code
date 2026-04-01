@@ -2,8 +2,13 @@
 # Used by `nix fmt` (via treefmt) and `just fmt`
 #
 # Formatters:
-#   rustfmt  - Rust source files
-#   biome    - TypeScript and CSS files
+#   rustfmt    - Rust source files
+#   biome      - JS/TS/CSS/JSON/GraphQL files
+#   prettier   - HTML/Markdown/SCSS/YAML files (types biome doesn't handle)
+#   nixfmt     - Nix files
+#   statix     - Nix linter/fixer
+#   shfmt      - Shell scripts
+#   taplo      - TOML files
 
 [global]
 excludes = [
@@ -13,8 +18,8 @@ excludes = [
   "e2e/node_modules/**",
   "e2e/test-results/**",
   "e2e/playwright-report/**",
-  "*.nix",
   "web/bun.nix",
+  "e2e/bun.nix",
   "flake.lock",
 ]
 
@@ -26,5 +31,29 @@ includes = ["*.rs"]
 [formatter.biome]
 command = "biome"
 options = ["format", "--write"]
-includes = ["*.ts", "*.css"]
+includes = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.css", "*.json", "*.graphql"]
 excludes = ["web/dist/**", "web/node_modules/**", "e2e/node_modules/**"]
+
+[formatter.prettier]
+command = "prettier"
+includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml"]
+options = ["--write"]
+
+[formatter.nixfmt]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.statix]
+command = "bash"
+options = ["-c", "for f in \"$@\"; do statix fix -- \"$f\"; done", "_"]
+includes = ["*.nix"]
+
+[formatter.shfmt]
+command = "shfmt"
+includes = ["*.sh"]
+options = ["-i", "2", "-s", "-w"]
+
+[formatter.taplo]
+command = "taplo"
+options = ["fmt"]
+includes = ["*.toml"]

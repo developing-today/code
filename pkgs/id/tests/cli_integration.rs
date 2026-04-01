@@ -11,16 +11,16 @@ use tempfile::TempDir;
 
 /// Get the path to the built binary
 fn get_binary_path() -> PathBuf {
-    // Use CARGO_MANIFEST_DIR to get absolute path to binary
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    let manifest_path = PathBuf::from(manifest_dir);
-
-    // Try debug build first, then release
-    let debug_path = manifest_path.join("target/debug/id");
-    if debug_path.exists() {
-        return debug_path;
+    // Runtime override: allows pre-built test binaries to find the id binary
+    // in a different location (e.g., NixOS VM tests where the test binary is
+    // compiled separately from the binary under test).
+    if let Ok(path) = std::env::var("ID_BINARY") {
+        return PathBuf::from(path);
     }
-    manifest_path.join("target/release/id")
+    // CARGO_BIN_EXE_id is set by cargo for integration tests and always
+    // points to the correct binary path regardless of target triple or
+    // build profile (works in both local dev and Nix sandbox builds).
+    PathBuf::from(env!("CARGO_BIN_EXE_id"))
 }
 
 /// Run a CLI command and return output

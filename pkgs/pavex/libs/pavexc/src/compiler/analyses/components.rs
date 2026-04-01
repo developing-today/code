@@ -1413,7 +1413,7 @@ impl ComponentDb {
             .map(|s| s.labeled(format!("The {callable_type} was registered here")));
         let error = anyhow::Error::from(e).context(format!(
             "Something went wrong when I tried to analyze the implementation of \
-                `pavex::response::IntoResponse` for {output_type:?}, the type returned by 
+                `pavex::response::IntoResponse` for {output_type:?}, the type returned by
                 one of your {callable_type}s.\n\
                 This is definitely a bug, I am sorry! Please file an issue on \
                 https://github.com/LukeMathWalker/pavex"

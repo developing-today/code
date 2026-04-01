@@ -30,9 +30,9 @@ use matchit::{Params, ParamsIter};
 /// # What does "raw" mean?
 ///
 /// Route parameters are URL segments, therefore they must comply with the restrictions that apply
-/// to the URL itself. In particular, they can only use ASCII characters.  
+/// to the URL itself. In particular, they can only use ASCII characters.
 /// In order to support non-ASCII characters, route parameters are
-/// [percent-encoded](https://www.w3schools.com/tags/ref_urlencode.ASP).  
+/// [percent-encoded](https://www.w3schools.com/tags/ref_urlencode.ASP).
 /// If you want to send "123 456" as a route parameter, you have to percent-encode it: it becomes
 /// "123%20456" since "%20" is the percent-encoding for a space character.
 ///
@@ -40,7 +40,7 @@ use matchit::{Params, ParamsIter};
 /// as they are extracted from the URL, before any kind of processing has taken
 /// place.
 ///
-/// In particular, `RawRouteParams` does **not** perform any percent-decoding.  
+/// In particular, `RawRouteParams` does **not** perform any percent-decoding.
 /// If you send a request to `/address/123%20456/home/789`, the `RawRouteParams` for
 /// `/address/:address_id/home/:home_id` will contain the following key-value pairs:
 ///

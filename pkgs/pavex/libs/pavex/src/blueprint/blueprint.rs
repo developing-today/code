@@ -8,7 +8,7 @@ use super::router::{MethodGuard, Route};
 #[derive(serde::Serialize, serde::Deserialize)]
 /// The starting point for building an application with Pavex.
 ///
-/// A blueprint defines the runtime behaviour of your application.  
+/// A blueprint defines the runtime behaviour of your application.
 /// It captures three types of information:
 ///
 /// - route handlers, via [`Blueprint::route`].
@@ -148,7 +148,7 @@ impl Blueprint {
     /// # }
     /// ```
     ///
-    /// Route parameters are path segments prefixed with a colon (`:`)—`:home_id` in the example.  
+    /// Route parameters are path segments prefixed with a colon (`:`)—`:home_id` in the example.
     /// The value of the route parameter `home_id` can then be retrieved from the request handler
     /// (or any other constructor that has access to the request):
     ///
@@ -254,7 +254,7 @@ impl Blueprint {
     }
 
     #[track_caller]
-    /// Register a wrapping middleware.  
+    /// Register a wrapping middleware.
     ///
     /// A wrapping middleware is invoked before the request handler and it is given
     /// the opportunity to *wrap* the execution of the rest of the request processing
@@ -327,7 +327,7 @@ impl Blueprint {
     /// ## Dependency injection
     ///
     /// Wrapping middlewares can take advantage of dependency injection, like any
-    /// other component.  
+    /// other component.
     /// You list what you want to inject as function parameters (in _addition_ to [`Next`])
     /// and Pavex will inject them for you in the generated code:
     ///
@@ -382,7 +382,7 @@ impl Blueprint {
     /// ```
     ///
     /// `first` will be invoked before `second`, which is in turn invoked before the
-    /// request handler.  
+    /// request handler.
     /// Or, in other words:
     ///
     /// - `second` is invoked when `first` calls `.await` on its `Next` input
@@ -403,19 +403,19 @@ impl Blueprint {
     }
 
     #[track_caller]
-    /// Nest a [`Blueprint`] under the current [`Blueprint`] (the parent), adding a common prefix to all the new routes.  
+    /// Nest a [`Blueprint`] under the current [`Blueprint`] (the parent), adding a common prefix to all the new routes.
     ///
     /// # Routes
     ///
-    /// `prefix` will be prepended to all the routes coming from the nested blueprint.  
-    /// `prefix` must be non-empty and it must start with a `/`.  
+    /// `prefix` will be prepended to all the routes coming from the nested blueprint.
+    /// `prefix` must be non-empty and it must start with a `/`.
     /// If you don't want to add a common prefix, check out [`Blueprint::nest`].
     ///
     /// ## Trailing slashes
     ///
-    /// `prefix` **can't** end with a trailing `/`.  
+    /// `prefix` **can't** end with a trailing `/`.
     /// This would result in routes with two consecutive `/` in their paths—e.g.
-    /// `/prefix//path`—which is rarely desirable.  
+    /// `/prefix//path`—which is rarely desirable.
     /// If you actually need consecutive slashes in your route, you can add them explicitly to
     /// the path of the route registered in the nested blueprint:
     ///
@@ -441,7 +441,7 @@ impl Blueprint {
     /// # Constructors
     ///
     /// Constructors registered against the parent blueprint will be available to the nested
-    /// blueprint—they are **inherited**.  
+    /// blueprint—they are **inherited**.
     /// Constructors registered against the nested blueprint will **not** be available to other
     /// sibling blueprints that are nested under the same parent—they are **private**.
     ///
@@ -493,7 +493,7 @@ impl Blueprint {
     /// - `crate::db_connection_pool`, for `ConnectionPool`.
     ///
     /// Since we are **nesting** the `user_bp` blueprint, the `get_session` constructor will only
-    /// be available to the routes declared in the `user_bp` blueprint.  
+    /// be available to the routes declared in the `user_bp` blueprint.
     /// If a route declared in `home_bp` tries to inject a `Session`, Pavex will report an error
     /// at compile-time, complaining that there is no registered constructor for `Session`.
     /// In other words, all constructors declared against the `user_bp` blueprint are **private**
@@ -542,19 +542,19 @@ impl Blueprint {
     /// ## Singletons
     ///
     /// There is one exception to the precedence rule: constructors for singletons (i.e.
-    /// using [`Lifecycle::Singleton`]).  
+    /// using [`Lifecycle::Singleton`]).
     /// Pavex guarantees that there will be only one instance of a singleton type for the entire
     /// lifecycle of the application. What should happen if two different constructors are registered for
-    /// the same `Singleton` type by two nested blueprints that share the same parent?  
+    /// the same `Singleton` type by two nested blueprints that share the same parent?
     /// We can't honor both constructors without ending up with two different instances of the same
-    /// type, which would violate the singleton contract.  
+    /// type, which would violate the singleton contract.
     ///
     /// It goes one step further! Even if those two constructors are identical, what is the expected
     /// behaviour? Does the user expect the same singleton instance to be injected in both blueprints?
     /// Or does the user expect two different singleton instances to be injected in each nested blueprint?
     ///
     /// To avoid this ambiguity, Pavex takes a conservative approach: a singleton constructor
-    /// must be registered **exactly once** for each type.  
+    /// must be registered **exactly once** for each type.
     /// If multiple nested blueprints need access to the singleton, the constructor must be
     /// registered against a common parent blueprint—the root blueprint, if necessary.
     pub fn nest_at(&mut self, prefix: &str, blueprint: Blueprint) {
@@ -566,7 +566,7 @@ impl Blueprint {
     }
 
     #[track_caller]
-    /// Nest a [`Blueprint`] under the current [`Blueprint`] (the parent), without adding a common prefix to all the new routes.  
+    /// Nest a [`Blueprint`] under the current [`Blueprint`] (the parent), without adding a common prefix to all the new routes.
     ///
     /// Check out [`Blueprint::nest_at`] for more details.
     pub fn nest(&mut self, blueprint: Blueprint) {
@@ -578,7 +578,7 @@ impl Blueprint {
     }
 }
 
-/// Methods to serialize and deserialize a [`Blueprint`].  
+/// Methods to serialize and deserialize a [`Blueprint`].
 /// These are used to pass the blueprint data to Pavex's CLI.
 impl Blueprint {
     /// Serialize the [`Blueprint`] to a file in RON format.

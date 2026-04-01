@@ -14,33 +14,33 @@ remote=""
 repo_url="github.com/developing-today/code"
 
 print_usage() {
-    echo "Usage: $0 [remote] [-force]"
-    echo "  remote: Optional remote for ISO file matching"
-    echo "  -force: Skip confirmation prompt"
+  echo "Usage: $0 [remote] [-force]"
+  echo "  remote: Optional remote for ISO file matching"
+  echo "  -force: Skip confirmation prompt"
 }
 
 process_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -force)
-        force=true
-        shift
-        ;;
-      -*)
-        echo "Error: Unknown flag $1"
+    -force)
+      force=true
+      shift
+      ;;
+    -*)
+      echo "Error: Unknown flag $1"
+      print_usage
+      exit 1
+      ;;
+    *)
+      if [[ -z $remote ]]; then
+        remote="$1"
+      else
+        echo "Error: Too many arguments"
         print_usage
         exit 1
-        ;;
-      *)
-        if [[ -z $remote ]]; then
-          remote="$1"
-        else
-          echo "Error: Too many arguments"
-          print_usage
-          exit 1
-        fi
-        shift
-        ;;
+      fi
+      shift
+      ;;
     esac
   done
 }
@@ -117,7 +117,7 @@ for r in $remotes; do
     break
   fi
 done
-if [[ "$remote_exists" == "false" ]]; then
+if [[ $remote_exists == "false" ]]; then
   echo "Remote $remote does not exist" >&2
 else
   echo "git remote remove \"$remote\""

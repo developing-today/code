@@ -456,7 +456,7 @@ pub struct PathType {
     /// The id associated with this type within the (JSON) docs for `package_id`.
     ///
     /// The id is optional to allow for flexible usage patterns—e.g. to leverage [`ResolvedType`]
-    /// to work with types that we want to code-generate into a new crate.  
+    /// to work with types that we want to code-generate into a new crate.
     pub rustdoc_id: Option<rustdoc_types::Id>,
     pub base_type: Vec<String>,
     pub generic_arguments: Vec<GenericArgument>,

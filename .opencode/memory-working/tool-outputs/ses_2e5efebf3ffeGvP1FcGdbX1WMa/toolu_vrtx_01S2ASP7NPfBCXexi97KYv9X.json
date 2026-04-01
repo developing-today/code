@@ -1,7 +1,7 @@
 {
-  "callID": "toolu_vrtx_01S2ASP7NPfBCXexi97KYv9X",
-  "sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
-  "tool": "bash",
-  "fullOutput": "To https://github.com/dezren39/autoresearch-opencode.git\n   088c98f..b61dbdd  fix/plugin-export-format -> fix/plugin-export-format\n",
-  "timestamp": 1774260308443
+	"callID": "toolu_vrtx_01S2ASP7NPfBCXexi97KYv9X",
+	"sessionID": "ses_2e5efebf3ffeGvP1FcGdbX1WMa",
+	"tool": "bash",
+	"fullOutput": "To https://github.com/dezren39/autoresearch-opencode.git\n   088c98f..b61dbdd  fix/plugin-export-format -> fix/plugin-export-format\n",
+	"timestamp": 1774260308443
 }
