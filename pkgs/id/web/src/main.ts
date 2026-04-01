@@ -958,7 +958,6 @@ async function init(): Promise<void> {
           docId,
           filename,
           currentIdentity?.token ?? null,
-          currentIdentity?.name ?? null,
           updateStatus,
           (editor: EditorInstance) => {
             console.log("[id] Editor initialized with server version, mode:", editor.mode);

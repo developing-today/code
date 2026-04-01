@@ -75,7 +75,6 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param docId - Document identifier
  * @param filename - Optional filename for content mode detection
  * @param token - Optional identity token for client persistence
- * @param displayName - Optional display name to send with cursor messages
  * @param onStatus - Callback for status changes
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
@@ -86,7 +85,6 @@ export function initCollab(
   docId: string,
   filename?: string,
   token?: string | null,
-  displayName?: string | null,
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void,
 ): CollabConnection {
@@ -170,11 +168,11 @@ export function initCollab(
 
   // Send cursor position to server: [4, clientID, head, anchor, name?, idleSecs?]
   // Note: client never sends idleSecs, only server sends it on initial load
-  // When a displayName is provided, send it with cursor messages so the server
-  // can fall back to it for unauthenticated connections.
+  // Name is always null from client — the server fills it in from the identity
+  // store before broadcasting to other clients.
   const sendCursor = (head: number, anchor: number): void => {
     if (myClientID === null) return;
-    send(MSG.CURSOR, myClientID, head, anchor, displayName ?? null);
+    send(MSG.CURSOR, myClientID, head, anchor, null);
   };
 
   // Listen for editor changes and send steps: [1, version, steps, clientID]
