@@ -99,3 +99,4 @@ terraform.rc
 *_ses_*
 **/ses_*
 .opencode/plugin/subtask2/logs/*.log
+.opencode/worktrees/

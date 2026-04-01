@@ -126,6 +126,13 @@
     "chrome-devtools_get_network_request": true,
   },
   "mcp": {
+    "codedb": {
+      "type": "local",
+      "command": ["/home/user/bin/codedb", "mcp"],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1",
+      },
+    },
     "chrome-devtools": {
       "type": "local",
       "command": [
