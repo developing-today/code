@@ -495,7 +495,11 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str(" <span class=\"text-base-content/30\">|</span> ");
     html.push_str("<span><kbd>Alt+Z</kbd> <span>wrap</span></span>");
     html.push_str(" <span class=\"text-base-content/30\">|</span> ");
-    html.push_str("<span><kbd>Alt+L</kbd> <span>lines</span></span>\n");
+    html.push_str("<span><kbd>Alt+L</kbd> <span>lines</span></span>");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<span><kbd>Ctrl+F</kbd> <span>find</span></span>");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<span><kbd>Ctrl+G</kbd> <span>go to line</span></span>\n");
     html.push_str("    </div>\n");
 
     html.push_str("</div>\n");

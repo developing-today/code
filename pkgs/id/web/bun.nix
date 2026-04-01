@@ -817,6 +817,10 @@
     url = "https://registry.npmjs.org/prosemirror-schema-list/-/prosemirror-schema-list-1.5.1.tgz";
     hash = "sha512-927lFx/uwyQaGwJxLWCZRkjXG0p48KpMj6ueoYiu4JX05GGuGcgzAy62dfiV8eFZftgyBUvLx76RsMe20fJl+Q==";
   };
+  "prosemirror-search@1.1.0" = fetchurl {
+    url = "https://registry.npmjs.org/prosemirror-search/-/prosemirror-search-1.1.0.tgz";
+    hash = "sha512-hnGINlrRs+St6scaF4hoGiR8b7V0ffddzvO/zy+ON8RwvVinfLk4rVsuSztLNthgvfE2LAOU4blsPr7yoeoLOQ==";
+  };
   "prosemirror-state@1.4.4" = fetchurl {
     url = "https://registry.npmjs.org/prosemirror-state/-/prosemirror-state-1.4.4.tgz";
     hash = "sha512-6jiYHH2CIGbCfnxdHbXZ12gySFY/fz/ulZE333G6bPqIZ4F+TXo9ifiR86nAHpWnfoNjOb3o5ESi7J8Uz1jXHw==";

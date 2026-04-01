@@ -17,6 +17,7 @@
         "prosemirror-model": "^1.21.0",
         "prosemirror-schema-basic": "^1.2.2",
         "prosemirror-schema-list": "^1.3.0",
+        "prosemirror-search": "^1.1.0",
         "prosemirror-state": "^1.4.3",
         "prosemirror-view": "^1.33.6",
         "shiki": "^4.0.2",
@@ -423,6 +424,8 @@
     "prosemirror-schema-basic": ["prosemirror-schema-basic@1.2.4", "", { "dependencies": { "prosemirror-model": "^1.25.0" } }, "sha512-ELxP4TlX3yr2v5rM7Sb70SqStq5NvI15c0j9j/gjsrO5vaw+fnnpovCLEGIcpeGfifkuqJwl4fon6b+KdrODYQ=="],
 
     "prosemirror-schema-list": ["prosemirror-schema-list@1.5.1", "", { "dependencies": { "prosemirror-model": "^1.0.0", "prosemirror-state": "^1.0.0", "prosemirror-transform": "^1.7.3" } }, "sha512-927lFx/uwyQaGwJxLWCZRkjXG0p48KpMj6ueoYiu4JX05GGuGcgzAy62dfiV8eFZftgyBUvLx76RsMe20fJl+Q=="],
+
+    "prosemirror-search": ["prosemirror-search@1.1.0", "", { "dependencies": { "prosemirror-model": "^1.21.0", "prosemirror-state": "^1.4.3", "prosemirror-view": "^1.33.6" } }, "sha512-hnGINlrRs+St6scaF4hoGiR8b7V0ffddzvO/zy+ON8RwvVinfLk4rVsuSztLNthgvfE2LAOU4blsPr7yoeoLOQ=="],
 
     "prosemirror-state": ["prosemirror-state@1.4.4", "", { "dependencies": { "prosemirror-model": "^1.0.0", "prosemirror-transform": "^1.0.0", "prosemirror-view": "^1.27.0" } }, "sha512-6jiYHH2CIGbCfnxdHbXZ12gySFY/fz/ulZE333G6bPqIZ4F+TXo9ifiR86nAHpWnfoNjOb3o5ESi7J8Uz1jXHw=="],
 

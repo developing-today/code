@@ -21,8 +21,12 @@ import { schema as basicSchema } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
 import { EditorState, type Plugin, TextSelection, type Transaction } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
+import { createActiveLinePlugin } from "./active-line";
 import { createCursorPlugin, type SendCursorFn } from "./cursors";
+import { createGotoLinePlugin, destroyGotoLineDialog } from "./goto-line";
 import { createSyntaxHighlightPlugin } from "./highlight";
+import { createIndentPlugin } from "./indent";
+import { createSearchPlugins, destroySearchPanel } from "./search-panel";
 import { createWrapPlugins } from "./wrap";
 
 /**
@@ -238,6 +242,18 @@ export function initEditor(
       },
     }),
   );
+
+  // Add active line highlight
+  plugins.push(createActiveLinePlugin());
+
+  // Add find/replace (Ctrl+F / Ctrl+H)
+  plugins.push(...createSearchPlugins());
+
+  // Add Go to Line (Ctrl+G)
+  plugins.push(createGotoLinePlugin());
+
+  // Add Tab/Shift+Tab indentation for code blocks
+  plugins.push(createIndentPlugin());
 
   // Add cursor plugin if sendCursor callback provided
   if (sendCursor) {
