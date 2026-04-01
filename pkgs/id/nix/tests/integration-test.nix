@@ -18,13 +18,11 @@
 {
   name = "id-integration";
 
-  nodes.server =
-    _:
-    {
-      environment.systemPackages = [ ];
-      virtualisation.memorySize = 2048;
-      virtualisation.cores = 2;
-    };
+  nodes.server = _: {
+    environment.systemPackages = [ ];
+    virtualisation.memorySize = 2048;
+    virtualisation.cores = 2;
+  };
 
   globalTimeout = 300; # 5 minutes
 

@@ -181,7 +181,7 @@ describe("dedentCommand", () => {
     // dedentCommand returns true (it's in code_block) but doesn't dispatch
     // when there are no spaces to remove (offset stays 0)
     let dispatched = false;
-    const result = dedentCommand(state, (tr) => {
+    const result = dedentCommand(state, (_tr) => {
       dispatched = true;
     });
     expect(result).toBe(true);
@@ -192,7 +192,7 @@ describe("dedentCommand", () => {
   it("handles empty code_block", () => {
     const state = createCodeState("", 1);
     let dispatched = false;
-    const result = dedentCommand(state, (tr) => {
+    const result = dedentCommand(state, (_tr) => {
       dispatched = true;
     });
     expect(result).toBe(true);

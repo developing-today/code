@@ -487,7 +487,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/.local/share/opencode/worktree/code/pretext/pkgs/id/../../root.just",
+      "source": "/home/user/code/pkgs/id/../../root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1628,6 +1628,131 @@
       "namepath": "serve-lib",
       "shebang": false
     },
+    "serve-new": {
+      "attributes": [{ "group": "run" }],
+      "body": [],
+      "dependencies": [
+        { "arguments": [], "recipe": "web" },
+        { "arguments": [["variable", "NAME"], ["variable", "ARGS"]], "recipe": "serve-new-web" }
+      ],
+      "doc": "Serve a new instance with web UI and auto-assigned port (creates .iroh/<name>/) [bun]",
+      "name": "serve-new",
+      "parameters": [
+        {
+          "default": "",
+          "export": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "name": "NAME",
+          "pattern": null,
+          "short": null,
+          "value": null
+        },
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "ARGS",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 2,
+      "private": false,
+      "quiet": false,
+      "namepath": "serve-new",
+      "shebang": false
+    },
+    "serve-new-lib": {
+      "attributes": [{ "group": "run" }],
+      "body": [
+        [
+          "cargo run -- ",
+          [["if", ["!=", ["variable", "NAME"], ""], ["concatenate", "--new=", ["variable", "NAME"]], "--new="]],
+          " serve --port 0 ",
+          [["variable", "ARGS"]]
+        ]
+      ],
+      "dependencies": [],
+      "doc": "Serve a new instance without web UI and auto-assigned port",
+      "name": "serve-new-lib",
+      "parameters": [
+        {
+          "default": "",
+          "export": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "name": "NAME",
+          "pattern": null,
+          "short": null,
+          "value": null
+        },
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "ARGS",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "serve-new-lib",
+      "shebang": false
+    },
+    "serve-new-web": {
+      "attributes": [{ "group": "run" }],
+      "body": [
+        [
+          "cargo run --features web -- ",
+          [["if", ["!=", ["variable", "NAME"], ""], ["concatenate", "--new=", ["variable", "NAME"]], "--new="]],
+          " serve --web --port 0 ",
+          [["variable", "ARGS"]]
+        ]
+      ],
+      "dependencies": [],
+      "doc": "Serve a new instance with web UI (skip asset build, requires pre-built assets)",
+      "name": "serve-new-web",
+      "parameters": [
+        {
+          "default": "",
+          "export": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "name": "NAME",
+          "pattern": null,
+          "short": null,
+          "value": null
+        },
+        {
+          "default": null,
+          "export": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "name": "ARGS",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "serve-new-web",
+      "shebang": false
+    },
     "serve-web": {
       "attributes": [{ "group": "run" }],
       "body": [["cargo run --features web -- serve --web ", [["variable", "ARGS"]]]],
@@ -2020,7 +2145,7 @@
     },
     "test-web-unit": {
       "attributes": [{ "group": "test" }],
-      "body": [["cd web && bun test"]],
+      "body": [["cd web && bun run test"]],
       "dependencies": [],
       "doc": "[bun] Run TypeScript unit tests only",
       "name": "test-web-unit",
@@ -2395,7 +2520,7 @@
     },
     "web-fmt": {
       "attributes": [{ "group": "format" }],
-      "body": [["biome format --write web/src/ web/scripts/ web/styles/ e2e/"]],
+      "body": [["biome format --write web/src/ web/scripts/  e2e/"]],
       "dependencies": [],
       "doc": "[biome] Format web code (TypeScript + CSS)",
       "name": "web-fmt",
@@ -2408,7 +2533,7 @@
     },
     "web-fmt-check": {
       "attributes": [{ "group": "format" }],
-      "body": [["biome format web/src/ web/scripts/ web/styles/ e2e/"]],
+      "body": [["biome format web/src/ web/scripts/  e2e/"]],
       "dependencies": [],
       "doc": "[biome] Check web formatting (no changes)",
       "name": "web-fmt-check",
@@ -2421,7 +2546,7 @@
     },
     "web-lint": {
       "attributes": [{ "group": "lint" }],
-      "body": [["biome lint web/src/ web/scripts/ web/styles/ e2e/"]],
+      "body": [["biome lint web/src/ web/scripts/  e2e/"]],
       "dependencies": [],
       "doc": "[biome] Lint web code (TypeScript + CSS)",
       "name": "web-lint",
@@ -2434,7 +2559,7 @@
     },
     "web-lint-fix": {
       "attributes": [{ "group": "lint" }],
-      "body": [["biome lint --write web/src/ web/scripts/ web/styles/ e2e/"]],
+      "body": [["biome lint --write web/src/ web/scripts/  e2e/"]],
       "dependencies": [],
       "doc": "[biome] Lint web code with auto-fix",
       "name": "web-lint-fix",
@@ -2469,7 +2594,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/.local/share/opencode/worktree/code/pretext/pkgs/id/justfile",
+  "source": "/home/user/code/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

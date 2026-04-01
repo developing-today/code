@@ -775,7 +775,7 @@ test.describe("Go to Line", () => {
     await editor.click();
 
     // Record cursor position before
-    const posBefore = await editor.evaluate((el) => {
+    const posBefore = await editor.evaluate((_el) => {
       const view = (
         window as unknown as { idApp: { collab: { editor: { view: { state: { selection: { from: number } } } } } } }
       ).idApp?.collab?.editor?.view;
@@ -795,7 +795,7 @@ test.describe("Go to Line", () => {
     await expect(dialog).toBeHidden();
 
     // Cursor position should be unchanged
-    const posAfter = await editor.evaluate((el) => {
+    const posAfter = await editor.evaluate((_el) => {
       const view = (
         window as unknown as { idApp: { collab: { editor: { view: { state: { selection: { from: number } } } } } } }
       ).idApp?.collab?.editor?.view;
@@ -843,7 +843,6 @@ test.describe("Tab Indentation", () => {
           // In raw mode: doc > code_block > text. Position 1 = start of text in code_block.
           // So text offset 0 maps to doc position 1, text offset N maps to doc position N+1.
           const pos = atStart ? idx + 1 : idx + 1 + searchText.length;
-          const { TextSelection } = (window as any).PM_STATE || {};
           // ProseMirror state module isn't on window, use view.dispatch with a selection set
           const tr = view.state.tr.setSelection((view.state.selection.constructor as any).create(view.state.doc, pos));
           view.dispatch(tr);

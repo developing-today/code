@@ -247,13 +247,13 @@ function closeSearchPanel(view: EditorView): void {
 }
 
 /** Command: open find panel. */
-const openFind: Command = (state, dispatch, view) => {
+const openFind: Command = (_state, _dispatch, view) => {
   if (view) openPanel(view, false);
   return true;
 };
 
 /** Command: open find+replace panel. */
-const openFindReplace: Command = (state, dispatch, view) => {
+const openFindReplace: Command = (_state, _dispatch, view) => {
   if (view) openPanel(view, true);
   return true;
 };

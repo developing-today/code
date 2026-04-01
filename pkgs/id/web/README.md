@@ -165,7 +165,7 @@ Built assets are embedded in the Rust binary via `rust-embed`.
 web/
 ├── src/
 │   ├── main.ts      # Entry point, SPA navigation, file operations (rename, copy)
-│   ├── input.css    # TailwindCSS v4 + DaisyUI entry point
+│   ├── input.css    # TailwindCSS v4 + DaisyUI entry point (themes, CRT effects, all styles)
 │   ├── editor.ts    # ProseMirror setup, schema, menu
 │   ├── collab.ts    # WebSocket client, MessagePack protocol
 │   ├── cursors.ts   # Cursor/selection plugin with fade

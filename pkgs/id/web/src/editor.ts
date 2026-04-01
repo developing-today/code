@@ -23,10 +23,10 @@ import { EditorState, type Plugin, TextSelection, type Transaction } from "prose
 import { EditorView } from "prosemirror-view";
 import { createActiveLinePlugin } from "./active-line";
 import { createCursorPlugin, type SendCursorFn } from "./cursors";
-import { createGotoLinePlugin, destroyGotoLineDialog } from "./goto-line";
+import { createGotoLinePlugin } from "./goto-line";
 import { createSyntaxHighlightPlugin } from "./highlight";
 import { createIndentPlugin } from "./indent";
-import { createSearchPlugins, destroySearchPanel } from "./search-panel";
+import { createSearchPlugins } from "./search-panel";
 import { createWrapPlugins } from "./wrap";
 
 /**

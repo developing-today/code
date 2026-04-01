@@ -112,7 +112,7 @@ pub struct ServeInfo {
 }
 
 impl ServeInfo {
-    /// Parse the node_id string back to an [`EndpointId`].
+    /// Parse the `node_id` string back to an [`EndpointId`].
     pub fn endpoint_id(&self) -> Option<EndpointId> {
         self.node_id.parse().ok()
     }
@@ -209,7 +209,7 @@ pub async fn create_serve_lock(
     let info = ServeInfo {
         node_id: node_id.to_string(),
         pid: std::process::id(),
-        addrs: addrs.iter().map(|a| a.to_string()).collect(),
+        addrs: addrs.iter().map(ToString::to_string).collect(),
         web_port,
     };
     let contents = serde_json::to_string_pretty(&info)?;
@@ -695,7 +695,7 @@ mod tests {
         let info = ServeInfo {
             node_id: node_id.to_string(),
             pid: 12345,
-            addrs: vec!["127.0.0.1:8080".to_string(), "[::1]:8080".to_string()],
+            addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:8080".to_owned()],
             web_port: Some(3000),
         };
 
@@ -715,7 +715,7 @@ mod tests {
         let info = ServeInfo {
             node_id: node_id.to_string(),
             pid: 99,
-            addrs: vec!["127.0.0.1:8080".to_string()],
+            addrs: vec!["127.0.0.1:8080".to_owned()],
             web_port: None,
         };
 
@@ -729,9 +729,9 @@ mod tests {
     #[test]
     fn test_serve_info_json_roundtrip() {
         let info = ServeInfo {
-            node_id: "abc123".to_string(),
+            node_id: "abc123".to_owned(),
             pid: 42,
-            addrs: vec!["127.0.0.1:8080".to_string(), "[::1]:9090".to_string()],
+            addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:9090".to_owned()],
             web_port: Some(3001),
         };
 
@@ -746,9 +746,9 @@ mod tests {
     #[test]
     fn test_serve_info_json_no_web_port() {
         let info = ServeInfo {
-            node_id: "def456".to_string(),
+            node_id: "def456".to_owned(),
             pid: 100,
-            addrs: vec!["127.0.0.1:5555".to_string()],
+            addrs: vec!["127.0.0.1:5555".to_owned()],
             web_port: None,
         };
 

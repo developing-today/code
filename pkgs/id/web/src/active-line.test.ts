@@ -3,7 +3,6 @@
  */
 
 import { EditorState, TextSelection } from "prosemirror-state";
-import { DecorationSet } from "prosemirror-view";
 import { describe, expect, it } from "vitest";
 import { activeLineKey, createActiveLinePlugin } from "./active-line";
 import { rawSchema } from "./editor";

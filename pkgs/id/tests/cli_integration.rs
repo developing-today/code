@@ -955,14 +955,13 @@ mod serve_tests {
                 let mut chunk = [0u8; 4096];
                 loop {
                     match reader.read(&mut chunk) {
-                        Ok(0) => break,
+                        Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let text = String::from_utf8_lossy(&chunk[..n]);
                             if let Ok(mut buf) = buf_clone.lock() {
                                 buf.push_str(&text);
                             }
                         }
-                        Err(_) => break,
                     }
                 }
             });
@@ -1017,13 +1016,12 @@ mod serve_tests {
 
             // Read lines until we see "node: <id>" which indicates server is ready
             for line in reader.lines() {
-                if start.elapsed() > SERVER_STARTUP_TIMEOUT {
-                    panic!(
-                        "Server startup timed out after {SERVER_STARTUP_TIMEOUT:?}\n\
+                assert!(
+                    (start.elapsed() <= SERVER_STARTUP_TIMEOUT),
+                    "Server startup timed out after {SERVER_STARTUP_TIMEOUT:?}\n\
                          --- stderr ---\n{}\n--- end stderr ---",
-                        self.captured_stderr()
-                    );
-                }
+                    self.captured_stderr()
+                );
 
                 // Check if process exited between lines
                 if let Some(status) = self.process.try_wait().expect("try_wait failed") {
@@ -1596,7 +1594,7 @@ mod serve_tests {
 
         let entries: Vec<_> = fs::read_dir(&iroh_dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .collect();
         assert_eq!(
             entries.len(),
@@ -1720,7 +1718,7 @@ mod serve_tests {
     // JSON lock file tests
     // =========================================================================
 
-    /// Test the full JSON lock file structure: node_id, pid, addrs, web_port.
+    /// Test the full JSON lock file structure: `node_id`, pid, addrs, `web_port`.
     #[test]
     fn test_serve_json_lock_structure() {
         let tmp = TempDir::new().unwrap();
@@ -1743,8 +1741,10 @@ mod serve_tests {
         // pid: positive integer matching the actual child PID
         let json_pid = json["pid"].as_u64().expect("pid should be a number");
         assert!(json_pid > 0, "PID should be positive");
+        #[allow(clippy::cast_possible_truncation)]
+        let json_pid_u32 = json_pid as u32;
         assert_eq!(
-            json_pid as u32,
+            json_pid_u32,
             server.process.id(),
             "Lock file PID should match actual child PID"
         );
@@ -1770,7 +1770,7 @@ mod serve_tests {
         server.stop();
     }
 
-    /// Test that the lock file includes a valid web_port when --web is enabled.
+    /// Test that the lock file includes a valid `web_port` when --web is enabled.
     #[test]
     #[cfg(feature = "web")]
     fn test_serve_json_lock_web_port() {
@@ -1791,8 +1791,10 @@ mod serve_tests {
         );
 
         // Should match the port captured from stdout
+        #[allow(clippy::cast_possible_truncation)]
+        let web_port_u16 = web_port as u16;
         assert_eq!(
-            web_port as u16,
+            web_port_u16,
             server.web_port.expect("stdout should have web port"),
             "Lock file web_port should match stdout web port"
         );
@@ -1833,8 +1835,10 @@ mod serve_tests {
             999_999_999,
             "Lock file PID should be updated from stale value"
         );
+        #[allow(clippy::cast_possible_truncation)]
+        let stale_pid = json["pid"].as_u64().unwrap() as u32;
         assert_eq!(
-            json["pid"].as_u64().unwrap() as u32,
+            stale_pid,
             server.process.id(),
             "Lock file PID should match actual server PID"
         );

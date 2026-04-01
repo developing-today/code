@@ -96,9 +96,7 @@ async fn main() -> Result<()> {
         } else {
             // Validate: name must be a simple identifier (no path separators or ..)
             if name.contains('/') || name.contains('\\') || name.contains("..") {
-                anyhow::bail!(
-                    "--new name must be a simple identifier, not a path: {name:?}"
-                );
+                anyhow::bail!("--new name must be a simple identifier, not a path: {name:?}");
             }
             name.clone()
         };

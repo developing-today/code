@@ -8,7 +8,6 @@
 
 import { keymap } from "prosemirror-keymap";
 import type { Command, Plugin } from "prosemirror-state";
-import { TextSelection } from "prosemirror-state";
 
 const INDENT = "  "; // 2 spaces
 
@@ -35,9 +34,6 @@ export const indentCommand: Command = (state, dispatch) => {
 
   // Multi-line selection: indent each line
   if (dispatch) {
-    const text = state.doc.textBetween($from.start($from.depth), $to.end($to.depth));
-    const startPos = $from.start($from.depth);
-
     // Find all line start positions within the selection
     let tr = state.tr;
     let offset = 0;

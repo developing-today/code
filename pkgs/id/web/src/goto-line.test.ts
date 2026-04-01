@@ -243,7 +243,7 @@ describe("dialog input interaction", () => {
     input.value = "2";
 
     // Before: cursor is at default position
-    const posBefore = view.state.selection.from;
+    const _posBefore = view.state.selection.from;
 
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 

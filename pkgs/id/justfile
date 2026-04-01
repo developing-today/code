@@ -134,12 +134,12 @@ cargo-fmt-check:
 # [biome] Format web code (TypeScript + CSS)
 [group('format')]
 web-fmt:
-    biome format --write web/src/ web/scripts/ web/styles/ e2e/
+    biome format --write web/src/ web/scripts/  e2e/
 
 # [biome] Check web formatting (no changes)
 [group('format')]
 web-fmt-check:
-    biome format web/src/ web/scripts/ web/styles/ e2e/
+    biome format web/src/ web/scripts/  e2e/
 
 # =============================================================================
 # Linting
@@ -171,12 +171,12 @@ clippy-lint-fix:
 # [biome] Lint web code (TypeScript + CSS)
 [group('lint')]
 web-lint:
-    biome lint web/src/ web/scripts/ web/styles/ e2e/
+    biome lint web/src/ web/scripts/  e2e/
 
 # [biome] Lint web code with auto-fix
 [group('lint')]
 web-lint-fix:
-    biome lint --write web/src/ web/scripts/ web/styles/ e2e/
+    biome lint --write web/src/ web/scripts/  e2e/
 
 # =============================================================================
 # Lockfiles

@@ -86,7 +86,7 @@ function openGotoLine(view: EditorView): void {
         if (e.key === "Enter") {
           e.preventDefault();
           const line = parseInt(dialogInput?.value ?? "", 10);
-          if (!isNaN(line) && activeView) {
+          if (!Number.isNaN(line) && activeView) {
             const pos = getLineStartPos(activeView, line);
             if (pos !== null) {
               const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
