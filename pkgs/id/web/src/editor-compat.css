@@ -931,3 +931,221 @@ img.ProseMirror-separator {
   gap: 4px;
   align-items: center;
 }
+
+/* ============================================================================
+   12. Syntax Highlighting & Line Numbers
+   ============================================================================ */
+
+/* Line number gutter */
+.line-number {
+  display: inline-block;
+  width: 4ch;
+  margin-right: 1.5ch;
+  text-align: right;
+  color: oklch(0.85 0.02 250 / 0.35);
+  user-select: none;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hide line numbers when toggled off via Alt+L */
+.id-editor-no-line-numbers .line-number {
+  display: none;
+}
+
+/* Raw mode: the whole editor IS the code block, remove default pre styling */
+.id-editor-raw .ProseMirror pre {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+/* Syntax highlight color integration (Shiki inline styles provide the colors,
+   these CSS custom properties handle fallback/background) */
+.ProseMirror pre {
+  color: var(--prosemirror-highlight, inherit);
+  background-color: var(--prosemirror-highlight-bg, inherit);
+}
+
+/* ============================================================================
+   13. Word Wrap Toggle
+   ============================================================================ */
+
+/* Wrap ON (default) — classes are on .ProseMirror itself (compound selectors) */
+.ProseMirror.id-editor-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.ProseMirror.id-editor-wrap pre {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Wrap OFF — classes are on .ProseMirror itself (compound selectors) */
+.ProseMirror.id-editor-nowrap {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.ProseMirror.id-editor-nowrap pre {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* ============================================================================
+   14. Active Line Highlight
+   ============================================================================ */
+
+.id-active-line {
+  background-color: oklch(from var(--color-primary) l c h / 0.06);
+  border-left: 2px solid oklch(from var(--color-primary) l c h / 0.3);
+}
+
+/* ============================================================================
+   15. Find/Replace Panel
+   ============================================================================ */
+
+.search-panel {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--color-base-200);
+  border-bottom: 1px solid var(--color-base-300);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.search-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.search-field {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  color: var(--color-base-content);
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+.search-field:focus {
+  border-color: var(--color-primary);
+}
+
+.search-match-count {
+  color: var(--color-base-content, #999);
+  opacity: 0.6;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  min-width: 5em;
+}
+
+.search-btn {
+  padding: 2px 6px;
+  background: var(--color-base-300);
+  border: 1px solid var(--color-base-300);
+  color: var(--color-base-content);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.4;
+}
+
+.search-btn:hover {
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.search-close {
+  font-weight: bold;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.search-toggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  padding: 2px 4px;
+  border: 1px solid var(--color-base-300);
+  font-size: 0.75rem;
+  opacity: 0.5;
+}
+
+.search-toggle:has(input:checked) {
+  opacity: 1;
+  border-color: var(--color-primary);
+  background: oklch(from var(--color-primary) l c h / 0.15);
+}
+
+.search-toggle input {
+  display: none;
+}
+
+/* prosemirror-search match highlighting */
+.ProseMirror .ProseMirror-search-match {
+  background-color: oklch(from var(--color-warning) l c h / 0.3);
+}
+
+.ProseMirror .ProseMirror-active-search-match {
+  background-color: oklch(from var(--color-warning) l c h / 0.6);
+}
+
+/* ============================================================================
+   16. Go to Line Dialog
+   ============================================================================ */
+
+.goto-line-dialog {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--color-base-200);
+  border-bottom: 1px solid var(--color-base-300);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.goto-line-label {
+  color: var(--color-base-content);
+  white-space: nowrap;
+}
+
+.goto-line-input {
+  width: 8em;
+  padding: 3px 6px;
+  background: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  color: var(--color-base-content);
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+.goto-line-input:focus {
+  border-color: var(--color-primary);
+}
+
+/* Hide number input spinners */
+.goto-line-input::-webkit-inner-spin-button,
+.goto-line-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.goto-line-input[type="number"] {
+  -moz-appearance: textfield;
+}

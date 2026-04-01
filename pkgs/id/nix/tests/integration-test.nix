@@ -19,7 +19,7 @@
   name = "id-integration";
 
   nodes.server =
-    { ... }:
+    _:
     {
       environment.systemPackages = [ ];
       virtualisation.memorySize = 2048;
