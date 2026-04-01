@@ -972,24 +972,24 @@ img.ProseMirror-separator {
    13. Word Wrap Toggle
    ============================================================================ */
 
-/* Wrap ON (default) */
-.id-editor-wrap .ProseMirror {
+/* Wrap ON (default) — classes are on .ProseMirror itself (compound selectors) */
+.ProseMirror.id-editor-wrap {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 
-.id-editor-wrap .ProseMirror pre {
+.ProseMirror.id-editor-wrap pre {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 
-/* Wrap OFF */
-.id-editor-nowrap .ProseMirror {
+/* Wrap OFF — classes are on .ProseMirror itself (compound selectors) */
+.ProseMirror.id-editor-nowrap {
   white-space: pre;
   overflow-x: auto;
 }
 
-.id-editor-nowrap .ProseMirror pre {
+.ProseMirror.id-editor-nowrap pre {
   white-space: pre;
   overflow-x: auto;
 }

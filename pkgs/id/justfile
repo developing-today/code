@@ -263,7 +263,7 @@ test-web-sandbox: test-sandbox test-web-unit test-web-typecheck
 # [bun] Run TypeScript unit tests only
 [group('test')]
 test-web-unit:
-    cd web && bun test
+    cd web && bun run test
 
 # [bun] Run TypeScript type checking only
 [group('test')]

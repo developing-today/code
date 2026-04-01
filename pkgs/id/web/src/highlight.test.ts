@@ -85,6 +85,10 @@ describe("detectLanguage", () => {
     it("detects .scala as scala", () => {
       expect(detectLanguage("Main.scala")).toBe("scala");
     });
+
+    it("detects .dart as dart", () => {
+      expect(detectLanguage("main.dart")).toBe("dart");
+    });
   });
 
   describe("scripting languages", () => {
@@ -126,6 +130,14 @@ describe("detectLanguage", () => {
 
     it("detects .bat as bat", () => {
       expect(detectLanguage("run.bat")).toBe("bat");
+    });
+
+    it("detects .cmd as bat", () => {
+      expect(detectLanguage("build.cmd")).toBe("bat");
+    });
+
+    it("detects .r as r", () => {
+      expect(detectLanguage("analysis.r")).toBe("r");
     });
   });
 
@@ -187,6 +199,10 @@ describe("detectLanguage", () => {
     it("detects .conf as ini", () => {
       expect(detectLanguage("nginx.conf")).toBe("ini");
     });
+
+    it("detects .cmake as cmake", () => {
+      expect(detectLanguage("build.cmake")).toBe("cmake");
+    });
   });
 
   describe("query / schema languages", () => {
@@ -224,8 +240,40 @@ describe("detectLanguage", () => {
       expect(detectLanguage("app.ex")).toBe("elixir");
     });
 
+    it("detects .exs as elixir", () => {
+      expect(detectLanguage("test_helper.exs")).toBe("elixir");
+    });
+
+    it("detects .erl as erlang", () => {
+      expect(detectLanguage("server.erl")).toBe("erlang");
+    });
+
     it("detects .hs as haskell", () => {
       expect(detectLanguage("Main.hs")).toBe("haskell");
+    });
+
+    it("detects .ml as ocaml", () => {
+      expect(detectLanguage("main.ml")).toBe("ocaml");
+    });
+
+    it("detects .vim as viml", () => {
+      expect(detectLanguage("plugin.vim")).toBe("viml");
+    });
+
+    it("detects .tf as hcl", () => {
+      expect(detectLanguage("main.tf")).toBe("hcl");
+    });
+
+    it("detects .cts as typescript", () => {
+      expect(detectLanguage("config.cts")).toBe("typescript");
+    });
+
+    it("detects .gradle as groovy", () => {
+      expect(detectLanguage("build.gradle")).toBe("groovy");
+    });
+
+    it("detects .markdown as markdown", () => {
+      expect(detectLanguage("notes.markdown")).toBe("markdown");
     });
   });
 
@@ -268,6 +316,10 @@ describe("detectLanguage", () => {
 
     it("detects CMakeLists.txt as cmake", () => {
       expect(detectLanguage("CMakeLists.txt")).toBe("cmake");
+    });
+
+    it("detects Vagrantfile as ruby", () => {
+      expect(detectLanguage("Vagrantfile")).toBe("ruby");
     });
   });
 
