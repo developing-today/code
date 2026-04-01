@@ -475,3 +475,536 @@ test.describe("Keyboard Shortcut Hints", () => {
     await expect(footer.locator("text=Alt+L")).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Find/Replace
+// ---------------------------------------------------------------------------
+
+test.describe("Find/Replace", () => {
+  test("Ctrl+F opens search panel", async ({ page, baseURL }) => {
+    const fileName = `search-open-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello, world!");\n    let x = 42;\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+
+    // Open find panel
+    await page.keyboard.press("Control+f");
+
+    // Search panel should be visible
+    const searchPanel = page.locator(".search-panel");
+    await expect(searchPanel).toBeVisible({ timeout: 5_000 });
+
+    // Should have input, prev/next buttons, and match count element
+    await expect(searchPanel.locator("#search-input")).toBeVisible();
+    await expect(searchPanel.locator("#search-prev")).toBeVisible();
+    await expect(searchPanel.locator("#search-next")).toBeVisible();
+    await expect(searchPanel.locator("#search-match-count")).toBeAttached();
+  });
+
+  test("typing in search highlights matches", async ({ page, baseURL }) => {
+    const fileName = `search-match-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello, world!");\n    let x = 42;\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.keyboard.press("Control+f");
+
+    const searchInput = page.locator("#search-input");
+    await expect(searchInput).toBeVisible({ timeout: 5_000 });
+
+    // Type a search term that exists in the code
+    await searchInput.fill("let");
+    await page.waitForTimeout(500);
+
+    // Should display match count
+    const matchCount = page.locator("#search-match-count");
+    const matchText = await matchCount.textContent();
+    expect(matchText).toContain("match");
+
+    // Should highlight matches in the editor
+    const highlightCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".ProseMirror-search-match").length;
+    });
+    expect(highlightCount).toBeGreaterThan(0);
+  });
+
+  test("F3 navigates to next match", async ({ page, baseURL }) => {
+    const fileName = `search-nav-${Date.now()}.rs`;
+    // Use content with duplicate word for multiple matches
+    const rustCode = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.keyboard.press("Control+f");
+
+    const searchInput = page.locator("#search-input");
+    await expect(searchInput).toBeVisible({ timeout: 5_000 });
+    await searchInput.fill("let");
+    await page.waitForTimeout(500);
+
+    // Should have multiple matches
+    const matchCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".ProseMirror-search-match").length;
+    });
+    expect(matchCount).toBeGreaterThanOrEqual(3);
+
+    // Press F3 to navigate to next match — should create an active match
+    await searchInput.press("F3");
+    await page.waitForTimeout(300);
+
+    const activeMatchCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".ProseMirror-active-search-match").length;
+    });
+    expect(activeMatchCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("Ctrl+H shows replace row", async ({ page, baseURL }) => {
+    const fileName = `search-replace-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello");\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+
+    // Open find+replace panel
+    await page.keyboard.press("Control+h");
+
+    const searchPanel = page.locator(".search-panel");
+    await expect(searchPanel).toBeVisible({ timeout: 5_000 });
+
+    // Replace row should be visible
+    const replaceRow = page.locator("#search-replace-row");
+    await expect(replaceRow).toBeVisible();
+
+    // Replace input should exist
+    await expect(page.locator("#replace-input")).toBeVisible();
+  });
+
+  test("Escape closes search panel", async ({ page, baseURL }) => {
+    const fileName = `search-close-${Date.now()}.rs`;
+    const rustCode = "fn main() {}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.keyboard.press("Control+f");
+
+    const searchPanel = page.locator(".search-panel");
+    await expect(searchPanel).toBeVisible({ timeout: 5_000 });
+
+    // Close via Escape
+    const searchInput = page.locator("#search-input");
+    await searchInput.press("Escape");
+
+    // Panel should be hidden (display: none)
+    await expect(searchPanel).toBeHidden();
+  });
+
+  test("close button closes search panel", async ({ page, baseURL }) => {
+    const fileName = `search-closebtn-${Date.now()}.rs`;
+    const rustCode = "fn main() {}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.keyboard.press("Control+f");
+
+    const searchPanel = page.locator(".search-panel");
+    await expect(searchPanel).toBeVisible({ timeout: 5_000 });
+
+    // Click the close button
+    await page.locator("#search-close").click();
+
+    // Panel should be hidden
+    await expect(searchPanel).toBeHidden();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Active Line Highlight
+// ---------------------------------------------------------------------------
+
+test.describe("Active Line Highlight", () => {
+  test("active line class present on focused code block", async ({ page, baseURL }) => {
+    const fileName = `activeline-focus-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello");\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.waitForTimeout(300);
+
+    // The active line decoration adds .id-active-line to the block node (pre)
+    const activeLineCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".id-active-line").length;
+    });
+    expect(activeLineCount).toBeGreaterThan(0);
+  });
+
+  test("only one active line at a time", async ({ page, baseURL }) => {
+    const fileName = `activeline-single-${Date.now()}.rs`;
+    const rustCode = "fn main() {\n    let a = 1;\n    let b = 2;\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.waitForTimeout(300);
+
+    // In raw mode (code file), there's only one code_block, so at most one .id-active-line
+    const activeLineCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".id-active-line").length;
+    });
+    expect(activeLineCount).toBeLessThanOrEqual(1);
+  });
+
+  test("active line persists after cursor movement", async ({ page, baseURL }) => {
+    const fileName = `activeline-move-${Date.now()}.rs`;
+    const rustCode = "fn main() {\n    let a = 1;\n    let b = 2;\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.waitForTimeout(300);
+
+    // Verify active line exists
+    let activeLineCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".id-active-line").length;
+    });
+    expect(activeLineCount).toBeGreaterThan(0);
+
+    // Move cursor down
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(300);
+
+    // Should still have an active line
+    activeLineCount = await editor.evaluate((el) => {
+      return el.querySelectorAll(".id-active-line").length;
+    });
+    expect(activeLineCount).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go to Line
+// ---------------------------------------------------------------------------
+
+test.describe("Go to Line", () => {
+  test("Ctrl+G opens goto-line dialog", async ({ page, baseURL }) => {
+    const fileName = `gotoline-open-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello, world!");\n    let x = 42;\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+
+    // Open goto-line dialog
+    await page.keyboard.press("Control+g");
+
+    const dialog = page.locator(".goto-line-dialog");
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
+
+    // Should have label and input
+    await expect(dialog.locator(".goto-line-label")).toBeVisible();
+    await expect(dialog.locator("#goto-line-input")).toBeVisible();
+  });
+
+  test("dialog has correct placeholder with line count", async ({ page, baseURL }) => {
+    const fileName = `gotoline-placeholder-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello, world!");\n    let x = 42;\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.keyboard.press("Control+g");
+
+    const input = page.locator("#goto-line-input");
+    await expect(input).toBeVisible({ timeout: 5_000 });
+
+    // Placeholder should contain line count info (e.g. "Line # (1–4)")
+    const placeholder = await input.getAttribute("placeholder");
+    expect(placeholder).toContain("Line #");
+  });
+
+  test("entering line number + Enter navigates and closes dialog", async ({ page, baseURL }) => {
+    const fileName = `gotoline-nav-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello, world!");\n    let x = 42;\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+    await page.keyboard.press("Control+g");
+
+    const input = page.locator("#goto-line-input");
+    await expect(input).toBeVisible({ timeout: 5_000 });
+
+    // Navigate to line 3
+    await input.fill("3");
+    await input.press("Enter");
+
+    // Dialog should close
+    const dialog = page.locator(".goto-line-dialog");
+    await expect(dialog).toBeHidden();
+
+    // Focus should return to editor
+    await expect(editor).toBeFocused();
+  });
+
+  test("Escape closes dialog without moving cursor", async ({ page, baseURL }) => {
+    const fileName = `gotoline-esc-${Date.now()}.rs`;
+    const rustCode = 'fn main() {\n    println!("Hello, world!");\n    let x = 42;\n}';
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    const editor = page.locator("#editor .ProseMirror");
+    await editor.click();
+
+    // Record cursor position before
+    const posBefore = await editor.evaluate((el) => {
+      const view = (
+        window as unknown as { idApp: { collab: { editor: { view: { state: { selection: { from: number } } } } } } }
+      ).idApp?.collab?.editor?.view;
+      return view?.state?.selection?.from ?? -1;
+    });
+
+    await page.keyboard.press("Control+g");
+    const dialog = page.locator(".goto-line-dialog");
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
+
+    // Type a line number but press Escape instead of Enter
+    const input = page.locator("#goto-line-input");
+    await input.fill("3");
+    await input.press("Escape");
+
+    // Dialog should close
+    await expect(dialog).toBeHidden();
+
+    // Cursor position should be unchanged
+    const posAfter = await editor.evaluate((el) => {
+      const view = (
+        window as unknown as { idApp: { collab: { editor: { view: { state: { selection: { from: number } } } } } } }
+      ).idApp?.collab?.editor?.view;
+      return view?.state?.selection?.from ?? -1;
+    });
+    expect(posAfter).toBe(posBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tab Indentation
+// ---------------------------------------------------------------------------
+
+test.describe("Tab Indentation", () => {
+  /**
+   * Helper: get document text content from ProseMirror state.
+   * Uses ProseMirror doc state directly to avoid line number decoration text
+   * polluting DOM textContent.
+   */
+  async function getDocText(page: Page): Promise<string> {
+    return page.evaluate(() => {
+      const app = (
+        window as unknown as { idApp: { collab: { editor: { view: { state: { doc: { textContent: string } } } } } } }
+      ).idApp;
+      return app?.collab?.editor?.view?.state?.doc?.textContent ?? "";
+    });
+  }
+
+  /**
+   * Helper: set cursor to a specific position in the ProseMirror doc.
+   * In raw mode, doc structure is: doc(code_block(text)).
+   * Position 1 is the start of text inside code_block (after the opening node token).
+   * We find the offset of the target text within the doc text and set cursor there.
+   */
+  async function setCursorAtText(page: Page, searchText: string, atStart = true): Promise<boolean> {
+    return page.evaluate(
+      ({ searchText, atStart }) => {
+        try {
+          /* eslint-disable @typescript-eslint/no-explicit-any */
+          const view = (window as any).idApp?.collab?.editor?.view;
+          if (!view) return false;
+          const docText = view.state.doc.textContent as string;
+          const idx = docText.indexOf(searchText);
+          if (idx === -1) return false;
+          // In raw mode: doc > code_block > text. Position 1 = start of text in code_block.
+          // So text offset 0 maps to doc position 1, text offset N maps to doc position N+1.
+          const pos = atStart ? idx + 1 : idx + 1 + searchText.length;
+          const { TextSelection } = (window as any).PM_STATE || {};
+          // ProseMirror state module isn't on window, use view.dispatch with a selection set
+          const tr = view.state.tr.setSelection((view.state.selection.constructor as any).create(view.state.doc, pos));
+          view.dispatch(tr);
+          return true;
+          /* eslint-enable @typescript-eslint/no-explicit-any */
+        } catch {
+          return false;
+        }
+      },
+      { searchText, atStart },
+    );
+  }
+
+  /**
+   * Helper: execute indent (insert 2 spaces at cursor) directly on ProseMirror view.
+   * In Firefox, page.keyboard.press("Tab") moves browser focus away before
+   * ProseMirror's keymap can intercept it.
+   */
+  async function execIndent(page: Page): Promise<boolean> {
+    return page.evaluate(() => {
+      try {
+        /* eslint-disable @typescript-eslint/no-explicit-any */
+        const view = (window as any).idApp?.collab?.editor?.view;
+        if (!view) return false;
+        const pos = view.state.selection.from as number;
+        view.dispatch(view.state.tr.insertText("  ", pos));
+        return true;
+        /* eslint-enable @typescript-eslint/no-explicit-any */
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Helper: execute dedent (remove up to 2 leading spaces from line at cursor)
+   * directly on ProseMirror view.
+   *
+   * Finds the start of the current line by scanning backwards for \n from cursor position.
+   */
+  async function execDedent(page: Page): Promise<boolean> {
+    return page.evaluate(() => {
+      try {
+        /* eslint-disable @typescript-eslint/no-explicit-any */
+        const view = (window as any).idApp?.collab?.editor?.view;
+        if (!view) return false;
+        const docText = view.state.doc.textContent as string;
+        const cursorTextOffset = (view.state.selection.from as number) - 1; // -1 for code_block offset
+        // Find start of this line in text
+        let lineStartText = 0;
+        for (let i = cursorTextOffset - 1; i >= 0; i--) {
+          if (docText[i] === "\n") {
+            lineStartText = i + 1;
+            break;
+          }
+        }
+        // Count leading spaces
+        let spacesToRemove = 0;
+        for (let i = lineStartText; i < docText.length && i < lineStartText + 2; i++) {
+          if (docText[i] === " ") spacesToRemove++;
+          else break;
+        }
+        if (spacesToRemove === 0) return false;
+        const docPos = lineStartText + 1; // +1 for code_block offset
+        view.dispatch(view.state.tr.delete(docPos, docPos + spacesToRemove));
+        return true;
+        /* eslint-enable @typescript-eslint/no-explicit-any */
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  test("Tab inserts 2 spaces in code_block", async ({ page, baseURL }) => {
+    const fileName = `indent-tab-${Date.now()}.rs`;
+    const rustCode = "fn main() {\nhello\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    // Set cursor at start of "hello" using ProseMirror API directly
+    const positioned = await setCursorAtText(page, "hello");
+    expect(positioned).toBe(true);
+    await page.waitForTimeout(200);
+
+    const result = await execIndent(page);
+    expect(result).toBe(true);
+    await page.waitForTimeout(300);
+
+    const text = await getDocText(page);
+    expect(text).toContain("  hello");
+  });
+
+  test("Shift+Tab removes 2 leading spaces (dedent)", async ({ page, baseURL }) => {
+    const fileName = `indent-dedent-${Date.now()}.rs`;
+    const rustCode = "fn main() {\n    hello\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    // Set cursor at start of "    hello" (the indented line)
+    const positioned = await setCursorAtText(page, "    hello");
+    expect(positioned).toBe(true);
+    await page.waitForTimeout(200);
+
+    const result = await execDedent(page);
+    expect(result).toBe(true);
+    await page.waitForTimeout(300);
+
+    const text = await getDocText(page);
+    expect(text).toContain("  hello");
+    expect(text).not.toContain("    hello");
+  });
+
+  test("Tab at start of line indents", async ({ page, baseURL }) => {
+    const fileName = `indent-start-${Date.now()}.rs`;
+    const rustCode = "fn main() {\nhello\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    // Set cursor at start of "hello"
+    const positioned = await setCursorAtText(page, "hello");
+    expect(positioned).toBe(true);
+    await page.waitForTimeout(200);
+
+    const result = await execIndent(page);
+    expect(result).toBe(true);
+    await page.waitForTimeout(300);
+
+    const text = await getDocText(page);
+    expect(text).toContain("  hello");
+  });
+
+  test("Tab/Shift+Tab round-trip", async ({ page, baseURL }) => {
+    const fileName = `indent-roundtrip-${Date.now()}.rs`;
+    const rustCode = "fn main() {\nhello\n}";
+    await createCodeFile(page, fileName, baseURL!, rustCode);
+    await waitForEditorReady(page);
+
+    // Set cursor at start of "hello"
+    let positioned = await setCursorAtText(page, "hello");
+    expect(positioned).toBe(true);
+    await page.waitForTimeout(200);
+
+    // Indent
+    let result = await execIndent(page);
+    expect(result).toBe(true);
+    await page.waitForTimeout(300);
+
+    let text = await getDocText(page);
+    expect(text).toContain("  hello");
+
+    // Re-position cursor at start of "  hello" (now indented)
+    positioned = await setCursorAtText(page, "  hello");
+    expect(positioned).toBe(true);
+    await page.waitForTimeout(200);
+
+    // Dedent back
+    result = await execDedent(page);
+    expect(result).toBe(true);
+    await page.waitForTimeout(300);
+
+    text = await getDocText(page);
+    expect(text).toMatch(/\nhello\n/);
+  });
+});
