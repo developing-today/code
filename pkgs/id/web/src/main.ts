@@ -103,6 +103,13 @@ async function ensureIdentity(): Promise<IdentityState | null> {
       const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
       if (resp.ok) {
         const data = await resp.json();
+        // Server returns a refreshed token on each validation, resetting the
+        // 30-day expiry clock. Save it so the client stays authenticated as
+        // long as they visit within every 30 days.
+        if (data.token) {
+          stored.token = data.token;
+          saveIdentity(stored.token, stored.clientId, data.name || null);
+        }
         // Update name from server (may have changed via another tab/session)
         const serverName = data.name || null;
         if (serverName !== stored.name) {

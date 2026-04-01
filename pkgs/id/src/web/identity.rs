@@ -144,6 +144,19 @@ impl IdentityStore {
         clients.get(&payload.client_id).cloned()
     }
 
+    /// Verify a token and return a fresh token + the client identity.
+    ///
+    /// Used by `/api/identity/me` to renew the token on each page load.
+    /// The returned token has a new `created_at`, resetting the 30-day expiry.
+    pub async fn verify_and_refresh(&self, token: &str) -> Option<(String, ClientIdentity)> {
+        let payload = self.decode_token(token)?;
+        let clients = self.clients.read().await;
+        let identity = clients.get(&payload.client_id).cloned()?;
+        drop(clients);
+        let fresh_token = self.create_token(&identity.client_id, unix_timestamp()).ok()?;
+        Some((fresh_token, identity))
+    }
+
     /// Verify a token and return the `client_id` without looking up the full identity.
     ///
     /// Useful for lightweight checks (e.g., WebSocket auth).

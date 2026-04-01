@@ -1904,18 +1904,20 @@ async fn identity_register_handler(
 /// `GET /api/identity/me?token=...` - Look up current identity from token.
 ///
 /// Used by the client on page load to check if a stored token is still valid.
+/// Returns a refreshed token on success, resetting the 30-day expiry clock.
 async fn identity_me_handler(
     State(state): State<AppState>,
     Query(params): Query<IdentityMeQuery>,
 ) -> impl IntoResponse {
-    let Some(identity) = state.identity.verify_token(&params.token).await else {
+    let Some((fresh_token, identity)) = state.identity.verify_and_refresh(&params.token).await
+    else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
     (
         StatusCode::OK,
         Json(IdentityResponse {
-            token: None,
+            token: Some(fresh_token),
             client_id: identity.client_id,
             name: identity.name,
         }),
