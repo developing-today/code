@@ -492,6 +492,10 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     html.push_str("<a href=\"/\" class=\"hover:text-primary\" data-nav>id v0.1.0</a>");
     html.push_str(" <span class=\"text-base-content/30\">|</span> ");
     html.push_str("<a href=\"#\" class=\"hover:text-primary\" onclick=\"window.cycleTheme?.(); return false;\"><kbd>Alt+T</kbd> <span>theme</span></a>\n");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<span><kbd>Alt+Z</kbd> <span>wrap</span></span>");
+    html.push_str(" <span class=\"text-base-content/30\">|</span> ");
+    html.push_str("<span><kbd>Alt+L</kbd> <span>lines</span></span>\n");
     html.push_str("    </div>\n");
 
     html.push_str("</div>\n");
@@ -703,6 +707,12 @@ pub fn render_settings(node_id: &str) -> String {
     );
     html.push_str("            <tr><td><kbd>Ctrl+Z</kbd></td><td>Undo (in editor)</td></tr>\n");
     html.push_str("            <tr><td><kbd>Ctrl+Y</kbd></td><td>Redo (in editor)</td></tr>\n");
+    html.push_str(
+        "            <tr><td><kbd>Alt+Z</kbd></td><td>Toggle word wrap (in editor)</td></tr>\n",
+    );
+    html.push_str(
+        "            <tr><td><kbd>Alt+L</kbd></td><td>Toggle line numbers (in editor)</td></tr>\n",
+    );
     html.push_str("        </table>\n");
     html.push_str("    </div>\n");
     html.push_str("</div>");

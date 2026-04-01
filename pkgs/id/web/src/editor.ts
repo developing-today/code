@@ -8,20 +8,22 @@
  * - "media" / "binary" - Not editable (handled elsewhere)
  */
 
-import { EditorState, type Transaction, type Plugin, TextSelection } from "prosemirror-state";
-import { EditorView } from "prosemirror-view";
-import { Schema, Node } from "prosemirror-model";
+import { collab, getVersion, sendableSteps } from "prosemirror-collab";
+import { baseKeymap } from "prosemirror-commands";
+import { dropCursor } from "prosemirror-dropcursor";
+import { buildMenuItems, exampleSetup } from "prosemirror-example-setup";
+import { gapCursor } from "prosemirror-gapcursor";
+import { history } from "prosemirror-history";
+import { keymap } from "prosemirror-keymap";
+import { blockTypeItem, liftItem, redoItem, selectParentNodeItem, undoItem } from "prosemirror-menu";
+import { Node, Schema } from "prosemirror-model";
 import { schema as basicSchema } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
-import { exampleSetup, buildMenuItems } from "prosemirror-example-setup";
-import { collab, sendableSteps, getVersion } from "prosemirror-collab";
-import { keymap } from "prosemirror-keymap";
-import { baseKeymap } from "prosemirror-commands";
-import { history } from "prosemirror-history";
-import { dropCursor } from "prosemirror-dropcursor";
-import { gapCursor } from "prosemirror-gapcursor";
-import { undoItem, redoItem, blockTypeItem, liftItem, selectParentNodeItem } from "prosemirror-menu";
+import { EditorState, type Plugin, TextSelection, type Transaction } from "prosemirror-state";
+import { EditorView } from "prosemirror-view";
 import { createCursorPlugin, type SendCursorFn } from "./cursors";
+import { createSyntaxHighlightPlugin } from "./highlight";
+import { createWrapPlugins } from "./wrap";
 
 /**
  * Content mode types matching server-side enum.
@@ -52,9 +54,14 @@ export const rawSchema = new Schema({
       group: "block",
       code: true,
       defining: true,
+      attrs: {
+        language: { default: null },
+      },
       parseDOM: [{ tag: "pre", preserveWhitespace: "full" }],
-      toDOM() {
-        return ["pre", ["code", 0]];
+      toDOM(node) {
+        const attrs: Record<string, string> = {};
+        if (node.attrs.language) attrs["data-language"] = node.attrs.language as string;
+        return ["pre", attrs, ["code", 0]];
       },
     },
   },
@@ -105,6 +112,7 @@ export interface CollabState {
  * @param collabVersion - Starting version for collaboration (default 0)
  * @param mode - Content mode determining schema and plugins
  * @param sendCursor - Optional callback to send cursor updates
+ * @param filename - Optional filename for syntax highlighting language detection
  * @returns The editor instance
  */
 export function initEditor(
@@ -113,6 +121,7 @@ export function initEditor(
   collabVersion: number = 0,
   mode: ContentMode = "raw",
   sendCursor?: SendCursorFn,
+  filename?: string,
 ): EditorInstance {
   console.log("[editor] initEditor called with mode:", mode, "collabVersion:", collabVersion);
   console.log("[editor] initialDoc:", initialDoc ? JSON.stringify(initialDoc).slice(0, 300) : "undefined");
@@ -211,6 +220,24 @@ export function initEditor(
 
   // Always add collab plugin
   plugins.push(collab({ version: collabVersion, clientID }));
+
+  // Add syntax highlighting + line numbers for code_block nodes
+  plugins.push(createSyntaxHighlightPlugin({ filename, lineNumbers: true }));
+
+  // Add word wrap toggle (default: ON, toggle with Alt+Z)
+  plugins.push(...createWrapPlugins({ defaultEnabled: true }));
+
+  // Add line number toggle (Alt+L) — shown by default, CSS class hides them
+  plugins.push(
+    keymap({
+      "Alt-l": (_state, _dispatch, view) => {
+        if (view) {
+          view.dom.classList.toggle("id-editor-no-line-numbers");
+        }
+        return true;
+      },
+    }),
+  );
 
   // Add cursor plugin if sendCursor callback provided
   if (sendCursor) {

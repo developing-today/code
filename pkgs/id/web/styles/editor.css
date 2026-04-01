@@ -280,6 +280,69 @@
   border: none;
 }
 
+/* ============================================================================
+   Line Numbers (prosemirror-highlight withLineNumbers)
+   Widget decorations inserted at the start of each logical line.
+   ============================================================================ */
+
+.line-number {
+  display: inline-block;
+  width: 4ch;
+  margin-right: 1.5ch;
+  text-align: right;
+  color: var(--line-number-color, oklch(0.45 0 0));
+  user-select: none;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
+/* When line numbers are hidden via toggle */
+.id-editor-no-line-numbers .line-number {
+  display: none;
+}
+
+/* Raw mode: remove pre margins/borders since the whole editor IS the code block */
+.id-editor-raw pre {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+}
+
+/* Syntax highlighting background integration */
+.ProseMirror pre {
+  color: var(--prosemirror-highlight, inherit);
+  background-color: var(--prosemirror-highlight-bg, transparent);
+}
+
+/* ============================================================================
+   Word Wrap Toggle
+   CSS classes applied by the wrap plugin to .ProseMirror element.
+   Default is wrap ON (pre-wrap). Toggle with Alt+Z.
+   ============================================================================ */
+
+/* Wrap ON — text wraps at container edge (default) */
+.id-editor-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Wrap OFF — no wrapping, horizontal scroll */
+.id-editor-nowrap {
+  white-space: pre;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+
+/* Ensure code blocks inherit wrap behavior */
+.id-editor-nowrap pre,
+.id-editor-nowrap pre code {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
 /* Links */
 .ProseMirror a {
   color: var(--accent);

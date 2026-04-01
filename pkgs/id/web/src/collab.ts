@@ -35,10 +35,10 @@
  */
 
 import { Packr, Unpackr } from "msgpackr";
-import { receiveTransaction, getVersion } from "prosemirror-collab";
+import { getVersion, receiveTransaction } from "prosemirror-collab";
 import { Step } from "prosemirror-transform";
-import { getSendableSteps, initEditor, type EditorInstance, type ContentMode } from "./editor";
-import { updateCursor, setConnectionState, onInitReceived, markCursorFresh, removeCursor } from "./cursors";
+import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
+import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
 
 // Message type tags
 const MSG = {
@@ -203,7 +203,7 @@ export function initCollab(
         if (!editorInstance) {
           // First connection — initialize the editor from scratch
           console.log("[collab] Initializing editor with server version:", version, "mode:", mode);
-          editorInstance = initEditor(container, doc, version, mode, sendCursor);
+          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Our clientID:", myClientID);
 
@@ -223,7 +223,7 @@ export function initCollab(
           container.removeEventListener("editor:change", handleEditorChange);
           editorInstance.view.destroy();
 
-          editorInstance = initEditor(container, doc, version, mode, sendCursor);
+          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Reconnect: new clientID:", myClientID);
 

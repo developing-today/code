@@ -3,8 +3,8 @@
  * Tests the content mode types and schema selection.
  */
 
-import { describe, it, expect } from "vitest";
-import { richSchema, rawSchema, getSchema, hasToolbar, isEditable } from "./editor";
+import { describe, expect, it } from "vitest";
+import { getSchema, hasToolbar, isEditable, rawSchema, richSchema } from "./editor";
 
 // ============================================================================
 // Content Mode Type Tests
@@ -181,6 +181,13 @@ describe("rawSchema", () => {
   it("code_block has code flag set", () => {
     const codeBlockSpec = rawSchema.nodes.code_block.spec;
     expect(codeBlockSpec.code).toBe(true);
+  });
+
+  it("code_block has language attribute defaulting to null", () => {
+    const codeBlockSpec = rawSchema.nodes.code_block.spec;
+    expect(codeBlockSpec.attrs).toBeDefined();
+    expect(codeBlockSpec.attrs?.language).toBeDefined();
+    expect(codeBlockSpec.attrs?.language.default).toBeNull();
   });
 });
 
