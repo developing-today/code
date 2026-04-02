@@ -570,25 +570,64 @@ async fn handle_collab_socket(
 
     let (mut sender, mut receiver) = socket.split();
 
-    // Send initial document state (binary MessagePack)
+    // Send initial document state at version 0 (binary MessagePack).
+    // Always send the base document at version 0, then follow up with a
+    // catch-up Update containing all accumulated steps. This ensures
+    // connecting/reconnecting clients replay the full step history and
+    // arrive at the correct current state.
     let init_msg = CollabMessage::Init {
-        version: doc.version(),
+        version: 0,
         doc: doc.doc.read().await.clone(),
         mode: doc.mode.as_str().to_owned(),
     };
 
     let init_bytes = init_msg.encode();
     tracing::info!(
-        "[collab] Sending Init: version={}, mode={}, {} bytes",
-        doc.version(),
+        "[collab] Sending Init: version=0 (base), mode={}, {} bytes, current_version={}",
         doc.mode.as_str(),
-        init_bytes.len()
+        init_bytes.len(),
+        doc.version()
     );
 
     if sender.send(Message::Binary(init_bytes)).await.is_err() {
         tracing::warn!("[collab] Client disconnected during init send");
         doc.client_disconnected().await;
         return;
+    }
+
+    // Send catch-up Update with all accumulated steps so the client
+    // replays from version 0 to the current version.
+    {
+        let steps = doc.steps.read().await;
+        if !steps.is_empty() {
+            let catch_up_steps: Vec<serde_json::Value> =
+                steps.iter().map(|(step, _)| step.data.clone()).collect();
+            let catch_up_client_ids: Vec<u64> = steps
+                .iter()
+                .filter_map(|(_, cid)| cid.as_u64())
+                .collect();
+
+            let catch_up_msg = CollabMessage::Update {
+                steps: catch_up_steps,
+                client_ids: catch_up_client_ids,
+            };
+            let catch_up_bytes = catch_up_msg.encode();
+            tracing::info!(
+                "[collab] Sending catch-up Update: {} steps, {} bytes",
+                steps.len(),
+                catch_up_bytes.len()
+            );
+
+            if sender
+                .send(Message::Binary(catch_up_bytes))
+                .await
+                .is_err()
+            {
+                tracing::warn!("[collab] Client disconnected during catch-up send");
+                doc.client_disconnected().await;
+                return;
+            }
+        }
     }
 
     // Send existing cursor positions to new client (only those still connected)
@@ -666,9 +705,20 @@ async fn handle_collab_socket(
                     tracing::warn!(
                         doc_id = %doc_id_for_broadcast,
                         skipped = n,
-                        "Broadcast receiver lagged, skipped messages"
+                        "Broadcast receiver lagged, sending desync error to client"
                     );
-                    // Continue receiving — don't kill the task
+                    // Tell the client to reconnect for a fresh state.
+                    // The client will close the WS → reconnect → get Init + catch-up.
+                    let error_msg = CollabMessage::Error {
+                        error: format!(
+                            "Session desynchronized: {n} messages lost"
+                        ),
+                    };
+                    let mut sender = sender_for_broadcast.lock().await;
+                    let _ = sender
+                        .send(Message::Binary(error_msg.encode()))
+                        .await;
+                    break; // Stop broadcasting — client will reconnect
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     break; // Channel closed, document cleaned up
@@ -1310,5 +1360,58 @@ mod tests {
 
         let doc = Document::with_content(Some(b"Hello".as_slice()), Some("note.txt"));
         assert_eq!(doc.mode, ContentMode::Plain);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_catch_up_update_with_multiple_steps() {
+        // Simulates the catch-up Update sent after Init(v=0):
+        // all accumulated steps with their client IDs.
+        let steps = vec![
+            serde_json::json!({"stepType": "replace", "from": 0, "to": 0}),
+            serde_json::json!({"stepType": "replace", "from": 5, "to": 5}),
+            serde_json::json!({"stepType": "addMark", "from": 0, "to": 10}),
+        ];
+        let client_ids = vec![111u64, 111, 222];
+
+        let msg = CollabMessage::Update {
+            steps: steps.clone(),
+            client_ids: client_ids.clone(),
+        };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::Update {
+                steps: decoded_steps,
+                client_ids: decoded_ids,
+            } => {
+                assert_eq!(decoded_steps.len(), 3);
+                assert_eq!(decoded_ids, vec![111, 111, 222]);
+                assert_eq!(decoded_steps[0], steps[0]);
+                assert_eq!(decoded_steps[1], steps[1]);
+                assert_eq!(decoded_steps[2], steps[2]);
+            }
+            _ => panic!("Expected Update message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_error_desynchronized_roundtrip() {
+        // Verify the new desync error message encodes/decodes correctly
+        let msg = CollabMessage::Error {
+            error: "Session desynchronized: 5 messages lost".to_owned(),
+        };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::Error { error } => {
+                assert_eq!(error, "Session desynchronized: 5 messages lost");
+                assert!(error.contains("desynchronized"));
+            }
+            _ => panic!("Expected Error message"),
+        }
     }
 }
