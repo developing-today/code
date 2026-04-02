@@ -692,12 +692,13 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3>Display Name</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Set a name that appears on your cursor when collaborating.</p>\n");
     html.push_str("        <div class=\"flex gap-2 items-center\">\n");
-    html.push_str("            <input type=\"text\" id=\"display-name-input\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" maxlength=\"64\" />\n");
+    html.push_str("            <input type=\"text\" id=\"display-name-input\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" />\n");
     html.push_str("            <button id=\"display-name-save\" class=\"btn btn-sm btn-primary\">Save</button>\n");
     html.push_str(
         "            <span id=\"display-name-status\" class=\"text-muted text-sm\"></span>\n",
     );
     html.push_str("        </div>\n");
+    html.push_str("        <p id=\"display-name-warning\" class=\"text-warning text-xs mt-1 hidden\">Long names may be truncated.</p>\n");
     html.push_str("        \n");
 
     html.push_str("        <h3 class=\"mt-8\">Node Identity</h3>\n");

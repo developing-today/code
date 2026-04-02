@@ -25,6 +25,8 @@ out
 **/out
 result*
 **/result*
+!test/result*
+!**/test/result*
 target
 **/target
 targets
@@ -97,7 +99,15 @@ terraform.rc
 *tfplan*
 .env.local
 .opencode/worktree-session-state.json
-*_ses_*
-**/ses_*
+*_ses_*.json
+ses_*.json
+**/*_ses_*.json
+**/ses_*.json
+*_ses_*/*.json
+ses_*/*.json
+**/*_ses_*/*.json
+**/ses_*/*.json
 .opencode/plugin/subtask2/logs/*.log
 .opencode/worktrees/
+.iroh*
+test.*

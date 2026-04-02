@@ -645,6 +645,17 @@ function initSettingsIdentity(): void {
     input.value = currentIdentity.name;
   }
 
+  // Show warning for long names (> 4 chars)
+  const warning = document.getElementById("display-name-warning");
+  function updateWarning() {
+    if (warning) {
+      const show = input!.value.trim().length > 4;
+      warning.classList.toggle("hidden", !show);
+    }
+  }
+  updateWarning();
+  input.addEventListener("input", updateWarning);
+
   // Also handle Enter key to save
   input.addEventListener("keydown", (event: KeyboardEvent) => {
     if (event.key === "Enter") {
