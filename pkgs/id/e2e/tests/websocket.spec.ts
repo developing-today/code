@@ -524,7 +524,7 @@ test.describe("Editor Typing + Save", () => {
     await waitForEditorReady(page);
 
     // Set content programmatically — bypasses Firefox keyboard flakiness in NixOS VMs
-    const editor = page.locator("#editor .ProseMirror");
+    const _editor = page.locator("#editor .ProseMirror");
     await setEditorContent(page, "Ctrl+S test content");
 
     // Use Ctrl+S to save
@@ -659,7 +659,7 @@ test.describe("Multi-User Collab", () => {
 
     try {
       // User 1 types something — use programmatic API to bypass Firefox keyboard flakiness
-      const editor1 = page1.locator("#editor .ProseMirror");
+      const _editor1 = page1.locator("#editor .ProseMirror");
       await setEditorContent(page1, "Hello from user 1!");
       // Brief wait for collab sync propagation over cross-VM networking
       await page1.waitForTimeout(2_000);

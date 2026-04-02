@@ -73,10 +73,10 @@ struct TokenPayload {
     created_at: u64,
 }
 
-/// In-memory store for client identities, optionally backed by encrypted SQLite.
+/// In-memory store for client identities, optionally backed by encrypted `SQLite`.
 ///
 /// Keyed by `client_id` (a hex string). Thread-safe via `Arc<RwLock<>>`.
-/// When backed by a database, mutations are written through to SQLite for
+/// When backed by a database, mutations are written through to `SQLite` for
 /// persistence across server restarts.
 #[derive(Clone)]
 pub struct IdentityStore {
@@ -89,7 +89,7 @@ pub struct IdentityStore {
     signing_key: Arc<SigningKey>,
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
     verifying_key: VerifyingKey,
-    /// SQLite database for persistent storage (`None` for ephemeral/test mode).
+    /// `SQLite` database for persistent storage (`None` for ephemeral/test mode).
     db: Option<Arc<libsql::Database>>,
 }
 
@@ -99,12 +99,12 @@ impl std::fmt::Debug for IdentityStore {
             .field("clients", &self.clients)
             .field("signing_key", &"<SigningKey>")
             .field("db", &self.db.as_ref().map(|_| "<Database>"))
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl IdentityStore {
-    /// Create a new identity store backed by an encrypted SQLite database.
+    /// Create a new identity store backed by an encrypted `SQLite` database.
     ///
     /// Derives a signing key and DB encryption key from the given secret key
     /// bytes using HKDF-SHA256. The DB file is encrypted at rest using AES-256-GCM.
@@ -113,20 +113,20 @@ impl IdentityStore {
     /// # Arguments
     ///
     /// * `secret_key` - 32-byte secret key (from iroh `SecretKey::to_bytes()`)
-    /// * `db_path` - Path for the SQLite database file (e.g., `.identity.db`)
+    /// * `db_path` - Path for the `SQLite` database file (e.g., `.identity.db`)
     pub async fn new(secret_key: [u8; 32], db_path: PathBuf) -> anyhow::Result<Self> {
         // Derive signing key via HKDF-SHA256
         let hk = Hkdf::<Sha256>::new(None, &secret_key);
         let mut signing_bytes = [0u8; 32];
         hk.expand(b"id-identity-signing", &mut signing_bytes)
-            .map_err(|_| anyhow::anyhow!("HKDF expand failed for signing key"))?;
+            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
         let signing_key = SigningKey::from_bytes(&signing_bytes);
         let verifying_key = signing_key.verifying_key();
 
         // Derive DB encryption key via HKDF-SHA256
         let mut enc_bytes = [0u8; 32];
         hk.expand(b"id-identity-encryption", &mut enc_bytes)
-            .map_err(|_| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
+            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
         let hex_key = hex_encode(&enc_bytes);
 
         // Open encrypted SQLite database
@@ -220,10 +220,7 @@ impl IdentityStore {
     ///
     /// Generates a unique client ID, stores the identity, and returns
     /// a signed token + the new identity.
-    pub async fn register(
-        &self,
-        name: Option<String>,
-    ) -> anyhow::Result<(String, ClientIdentity)> {
+    pub async fn register(&self, name: Option<String>) -> anyhow::Result<(String, ClientIdentity)> {
         let name = sanitize_name(name);
         let client_id = generate_client_id();
         let now = unix_timestamp();
@@ -242,7 +239,7 @@ impl IdentityStore {
                 .map_err(|e| anyhow::anyhow!("DB connect: {e}"))?;
             conn.execute(
                 "INSERT INTO identities (client_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                db_identity_params(&client_id, &name, now, now),
+                db_identity_params(&client_id, name.as_ref(), now, now),
             )
             .await
             .map_err(|e| anyhow::anyhow!("DB insert: {e}"))?;
@@ -283,7 +280,9 @@ impl IdentityStore {
         let clients = self.clients.read().await;
         let identity = clients.get(&payload.client_id).cloned()?;
         drop(clients);
-        let fresh_token = self.create_token(&identity.client_id, unix_timestamp()).ok()?;
+        let fresh_token = self
+            .create_token(&identity.client_id, unix_timestamp())
+            .ok()?;
         Some((fresh_token, identity))
     }
 
@@ -307,29 +306,29 @@ impl IdentityStore {
         let name = sanitize_name(name);
         let mut clients = self.clients.write().await;
         let identity = clients.get_mut(client_id)?;
-        identity.name = name.clone();
+        identity.name.clone_from(&name);
         identity.updated_at = unix_timestamp();
         let result = identity.clone();
         drop(clients);
 
         // Persist to database (best-effort — in-memory is authoritative during session)
-        if let Some(db) = &self.db {
-            if let Ok(conn) = db.connect() {
-                let params = vec![
-                    name.as_ref()
-                        .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
-                    libsql::Value::Integer(i64::try_from(result.updated_at).unwrap_or(0)),
-                    libsql::Value::Text(client_id.to_owned()),
-                ];
-                if let Err(e) = conn
-                    .execute(
-                        "UPDATE identities SET name = ?1, updated_at = ?2 WHERE client_id = ?3",
-                        params,
-                    )
-                    .await
-                {
-                    tracing::warn!("[identity] Failed to persist name update: {e}");
-                }
+        if let Some(db) = &self.db
+            && let Ok(conn) = db.connect()
+        {
+            let params = vec![
+                name.as_ref()
+                    .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
+                libsql::Value::Integer(i64::try_from(result.updated_at).unwrap_or(0)),
+                libsql::Value::Text(client_id.to_owned()),
+            ];
+            if let Err(e) = conn
+                .execute(
+                    "UPDATE identities SET name = ?1, updated_at = ?2 WHERE client_id = ?3",
+                    params,
+                )
+                .await
+            {
+                tracing::warn!("[identity] Failed to persist name update: {e}");
             }
         }
 
@@ -369,7 +368,7 @@ impl IdentityStore {
     /// is not registered.
     pub async fn subscribe_name(&self, client_id: &str) -> Option<watch::Receiver<Option<String>>> {
         let watchers = self.name_watchers.read().await;
-        watchers.get(client_id).map(|tx| tx.subscribe())
+        watchers.get(client_id).map(watch::Sender::subscribe)
     }
 
     /// Get the number of registered clients.
@@ -397,7 +396,7 @@ impl IdentityStore {
 
         // Combine: payload_len (4 bytes LE) + payload + signature (64 bytes)
         let payload_len = u32::try_from(payload_bytes.len())
-            .map_err(|_| anyhow::anyhow!("Token payload too large"))?;
+            .map_err(|_e| anyhow::anyhow!("Token payload too large"))?;
         let mut token_bytes = Vec::with_capacity(4 + payload_bytes.len() + 64);
         token_bytes.extend_from_slice(&payload_len.to_le_bytes());
         token_bytes.extend_from_slice(&payload_bytes);
@@ -430,9 +429,7 @@ impl IdentityStore {
 
         // Verify signature
         let signature = ed25519_dalek::Signature::from_bytes(signature_bytes.try_into().ok()?);
-        self.verifying_key
-            .verify(payload_bytes, &signature)
-            .ok()?;
+        self.verifying_key.verify(payload_bytes, &signature).ok()?;
 
         // Deserialize payload
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
@@ -541,14 +538,13 @@ fn db_u64(row: &libsql::Row, idx: i32) -> anyhow::Result<u64> {
 /// Convert identity fields to database parameter values for INSERT.
 fn db_identity_params(
     client_id: &str,
-    name: &Option<String>,
+    name: Option<&String>,
     created_at: u64,
     updated_at: u64,
 ) -> Vec<libsql::Value> {
     vec![
         libsql::Value::Text(client_id.to_owned()),
-        name.as_ref()
-            .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
+        name.map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
         libsql::Value::Integer(i64::try_from(created_at).unwrap_or(0)),
         libsql::Value::Integer(i64::try_from(updated_at).unwrap_or(0)),
     ]
@@ -556,14 +552,14 @@ fn db_identity_params(
 
 /// Base64url encode without padding (RFC 4648 section 5).
 fn base64url_encode(data: &[u8]) -> String {
-    let mut encoded = String::with_capacity((data.len() * 4 + 2) / 3);
+    let mut encoded = String::with_capacity((data.len() * 4).div_ceil(3));
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
     let mut i = 0;
     while i + 2 < data.len() {
-        let b0 = data[i] as u32;
-        let b1 = data[i + 1] as u32;
-        let b2 = data[i + 2] as u32;
+        let b0 = u32::from(data[i]);
+        let b1 = u32::from(data[i + 1]);
+        let b2 = u32::from(data[i + 2]);
         let triple = (b0 << 16) | (b1 << 8) | b2;
         encoded.push(alphabet[((triple >> 18) & 0x3F) as usize] as char);
         encoded.push(alphabet[((triple >> 12) & 0x3F) as usize] as char);
@@ -574,14 +570,14 @@ fn base64url_encode(data: &[u8]) -> String {
 
     let remaining = data.len() - i;
     if remaining == 2 {
-        let b0 = data[i] as u32;
-        let b1 = data[i + 1] as u32;
+        let b0 = u32::from(data[i]);
+        let b1 = u32::from(data[i + 1]);
         let triple = (b0 << 16) | (b1 << 8);
         encoded.push(alphabet[((triple >> 18) & 0x3F) as usize] as char);
         encoded.push(alphabet[((triple >> 12) & 0x3F) as usize] as char);
         encoded.push(alphabet[((triple >> 6) & 0x3F) as usize] as char);
     } else if remaining == 1 {
-        let b0 = data[i] as u32;
+        let b0 = u32::from(data[i]);
         let triple = b0 << 16;
         encoded.push(alphabet[((triple >> 18) & 0x3F) as usize] as char);
         encoded.push(alphabet[((triple >> 12) & 0x3F) as usize] as char);
@@ -591,14 +587,15 @@ fn base64url_encode(data: &[u8]) -> String {
 }
 
 /// Base64url decode without padding (RFC 4648 section 5).
+#[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
 fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
     let mut data = Vec::with_capacity(encoded.len() * 3 / 4);
 
     let decode_char = |c: u8| -> Option<u32> {
         match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a' + 26)),
+            b'0'..=b'9' => Some(u32::from(c - b'0' + 52)),
             b'-' => Some(62),
             b'_' => Some(63),
             _ => None,
@@ -697,6 +694,7 @@ mod tests {
 
         // Test with various lengths (padding edge cases)
         for len in 0..=32 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let data: Vec<u8> = (0..len).map(|i| i as u8).collect();
             let encoded = base64url_encode(&data);
             let decoded = base64url_decode(&encoded).unwrap();
@@ -772,10 +770,7 @@ mod tests {
         assert!(updated.updated_at >= identity.updated_at);
 
         // Clear name
-        let cleared = store
-            .update_name(&identity.client_id, None)
-            .await
-            .unwrap();
+        let cleared = store.update_name(&identity.client_id, None).await.unwrap();
         assert_eq!(cleared.name, None);
     }
 
@@ -804,10 +799,7 @@ mod tests {
         assert_eq!(display, short_id(&nameless.client_id));
 
         // Unknown client also gets short ID
-        assert_eq!(
-            store.get_display_name("abcdef1234567890").await,
-            "abcdef"
-        );
+        assert_eq!(store.get_display_name("abcdef1234567890").await, "abcdef");
     }
 
     #[tokio::test]

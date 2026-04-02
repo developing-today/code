@@ -164,7 +164,7 @@ impl std::fmt::Debug for AppState {
 impl AppState {
     /// Create a new application state with persistent identity storage.
     ///
-    /// Opens an encrypted SQLite database for identity persistence using
+    /// Opens an encrypted `SQLite` database for identity persistence using
     /// a key derived from the node's iroh secret key.
     pub async fn new(
         store: Store,
@@ -255,7 +255,15 @@ pub async fn web_router(
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
 ) -> anyhow::Result<Router> {
-    let state = AppState::new(store, peers, node_id, tag_store, secret_key, identity_db_path).await?;
+    let state = AppState::new(
+        store,
+        peers,
+        node_id,
+        tag_store,
+        secret_key,
+        identity_db_path,
+    )
+    .await?;
     Ok(create_router(state))
 }
 

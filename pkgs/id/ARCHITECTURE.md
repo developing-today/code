@@ -142,21 +142,21 @@ Feature-gated behind `--features web`. Embeds a full browser UI in the binary.
 
 TypeScript bundled with Bun, producing a single JS file and CSS file embedded in the binary.
 
-| File              | Purpose                                            |
-| ----------------- | -------------------------------------------------- |
-| `main.ts`         | Entry point, SPA navigation, file operations       |
-| `input.css`       | TailwindCSS v4 + DaisyUI entry (themes, styles)   |
-| `editor.ts`       | ProseMirror editor setup, schema, menu             |
-| `collab.ts`       | WebSocket collaboration client, MessagePack        |
-| `cursors.ts`      | Cursor/selection plugin with opacity fading        |
-| `theme.ts`        | Theme switching (sneak/arch/mech)                  |
-| `search-panel.ts` | Find & replace panel (Ctrl+F / Ctrl+H)            |
-| `highlight.ts`    | Syntax highlighting via Shiki (50+ languages)      |
-| `cursor-utils.ts` | Cursor opacity, color, tooltip clustering          |
-| `goto-line.ts`    | Go-to-line dialog (Ctrl+G)                         |
-| `indent.ts`       | Tab indentation (2-space)                          |
-| `active-line.ts`  | Active line highlight plugin                       |
-| `wrap.ts`         | Word wrap toggle (Alt+Z)                           |
+| File              | Purpose                                         |
+| ----------------- | ----------------------------------------------- |
+| `main.ts`         | Entry point, SPA navigation, file operations    |
+| `input.css`       | TailwindCSS v4 + DaisyUI entry (themes, styles) |
+| `editor.ts`       | ProseMirror editor setup, schema, menu          |
+| `collab.ts`       | WebSocket collaboration client, MessagePack     |
+| `cursors.ts`      | Cursor/selection plugin with opacity fading     |
+| `theme.ts`        | Theme switching (sneak/arch/mech)               |
+| `search-panel.ts` | Find & replace panel (Ctrl+F / Ctrl+H)          |
+| `highlight.ts`    | Syntax highlighting via Shiki (50+ languages)   |
+| `cursor-utils.ts` | Cursor opacity, color, tooltip clustering       |
+| `goto-line.ts`    | Go-to-line dialog (Ctrl+G)                      |
+| `indent.ts`       | Tab indentation (2-space)                       |
+| `active-line.ts`  | Active line highlight plugin                    |
+| `wrap.ts`         | Word wrap toggle (Alt+Z)                        |
 
 ### Collaboration Protocol
 

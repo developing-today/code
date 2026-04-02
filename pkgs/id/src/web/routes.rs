@@ -1228,10 +1228,7 @@ async fn new_file_handler(
 ///
 /// Accepts a single file field, validates the MIME type against allowed
 /// image types, stores the blob, creates a named tag, and sets metadata.
-async fn upload_handler(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Response {
+async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     // Read the first field from the multipart body
     let field = match multipart.next_field().await {
         Ok(Some(field)) => field,
@@ -1240,7 +1237,10 @@ async fn upload_handler(
         }
         Err(err) => {
             tracing::error!("[routes] Failed to read multipart field: {}", err);
-            return (StatusCode::BAD_REQUEST, format!("Invalid multipart data: {err}"))
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid multipart data: {err}"),
+            )
                 .into_response();
         }
     };
@@ -1260,7 +1260,7 @@ async fn upload_handler(
 
     // Get filename from the field, or generate one
     let ext = mime_to_extension(&content_type);
-    let filename = match field.file_name().map(|s| s.to_owned()) {
+    let filename = match field.file_name().map(ToOwned::to_owned) {
         Some(name) if !name.trim().is_empty() => name,
         _ => {
             let ts = SystemTime::now()
@@ -1351,7 +1351,7 @@ async fn upload_handler(
         tracing::warn!("[routes] Failed to set content-type tag: {:#}", err);
     }
 
-    let url = format!("/blob/{}?filename={}", hash_str, filename);
+    let url = format!("/blob/{hash_str}?filename={filename}");
 
     Json(UploadResponse {
         hash: hash_str,
@@ -2056,10 +2056,7 @@ async fn identity_register_handler(
 ) -> impl IntoResponse {
     match state.identity.register(req.name).await {
         Ok((token, identity)) => {
-            tracing::info!(
-                "[identity] Registered new client: {}",
-                identity.client_id
-            );
+            tracing::info!("[identity] Registered new client: {}", identity.client_id);
             (
                 StatusCode::OK,
                 Json(IdentityResponse {
@@ -2119,7 +2116,11 @@ async fn identity_update_name_handler(
     };
 
     // Update the name
-    let Some(updated) = state.identity.update_name(&identity.client_id, req.name).await else {
+    let Some(updated) = state
+        .identity
+        .update_name(&identity.client_id, req.name)
+        .await
+    else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
 

@@ -196,7 +196,7 @@ pub struct CursorPosition {
     pub head: u32,
     pub anchor: u32,
     pub name: Option<String>,
-    /// The identity client_id (hex string) if authenticated, for name updates.
+    /// The identity `client_id` (hex string) if authenticated, for name updates.
     pub identity_client_id: Option<String>,
     /// When the cursor was last updated (for age calculation on initial load).
     pub last_update: Instant,
@@ -377,9 +377,7 @@ impl CollabState {
             // Find cursors belonging to this identity
             let matching: Vec<(String, u32, u32)> = cursors
                 .iter()
-                .filter(|(_, pos)| {
-                    pos.identity_client_id.as_deref() == Some(identity_client_id)
-                })
+                .filter(|(_, pos)| pos.identity_client_id.as_deref() == Some(identity_client_id))
                 .map(|(cid, pos)| (cid.clone(), pos.head, pos.anchor))
                 .collect();
 
@@ -498,9 +496,11 @@ impl CollabMessage {
                 to_vec(&(msg::NEW_VERSION, hash, name)).unwrap_or_default()
             }
             Self::Auth { token } => to_vec(&(msg::AUTH, token)).unwrap_or_default(),
-            Self::AuthOk { client_id, name, token } => {
-                to_vec(&(msg::AUTH_OK, client_id, name, token)).unwrap_or_default()
-            }
+            Self::AuthOk {
+                client_id,
+                name,
+                token,
+            } => to_vec(&(msg::AUTH_OK, client_id, name, token)).unwrap_or_default(),
         }
     }
 
@@ -588,13 +588,21 @@ impl CollabMessage {
         if let Ok((msg::AUTH_OK, client_id, name, token)) =
             from_slice::<(u8, String, Option<String>, Option<String>)>(data)
         {
-            return Some(Self::AuthOk { client_id, name, token });
+            return Some(Self::AuthOk {
+                client_id,
+                name,
+                token,
+            });
         }
         // AUTH_OK without token (legacy format)
         if let Ok((msg::AUTH_OK, client_id, name)) =
             from_slice::<(u8, String, Option<String>)>(data)
         {
-            return Some(Self::AuthOk { client_id, name, token: None });
+            return Some(Self::AuthOk {
+                client_id,
+                name,
+                token: None,
+            });
         }
 
         None
@@ -684,8 +692,8 @@ async fn handle_collab_socket(
     tokio::select! {
         maybe_msg = receiver.next() => {
             if let Some(Ok(ws_msg)) = maybe_msg {
-                if let Some(data) = extract_binary(&ws_msg) {
-                    if let Some(decoded) = CollabMessage::decode(&data) {
+                if let Some(data) = extract_binary(&ws_msg)
+                    && let Some(decoded) = CollabMessage::decode(&data) {
                         match decoded {
                             CollabMessage::Auth { ref token } => {
                                 // Verify the token and get a refreshed one
@@ -720,7 +728,6 @@ async fn handle_collab_socket(
                             }
                         }
                     }
-                }
             } else {
                 // Client disconnected before sending anything
                 tracing::warn!("[collab] Client disconnected before first message");
@@ -761,10 +768,8 @@ async fn handle_collab_socket(
         if !steps.is_empty() {
             let catch_up_steps: Vec<serde_json::Value> =
                 steps.iter().map(|(step, _)| step.data.clone()).collect();
-            let catch_up_client_ids: Vec<u64> = steps
-                .iter()
-                .filter_map(|(_, cid)| cid.as_u64())
-                .collect();
+            let catch_up_client_ids: Vec<u64> =
+                steps.iter().filter_map(|(_, cid)| cid.as_u64()).collect();
 
             let catch_up_msg = CollabMessage::Update {
                 steps: catch_up_steps,
@@ -777,11 +782,7 @@ async fn handle_collab_socket(
                 catch_up_bytes.len()
             );
 
-            if sender
-                .send(Message::Binary(catch_up_bytes))
-                .await
-                .is_err()
-            {
+            if sender.send(Message::Binary(catch_up_bytes)).await.is_err() {
                 tracing::warn!("[collab] Client disconnected during catch-up send");
                 doc.client_disconnected().await;
                 return;
@@ -869,14 +870,10 @@ async fn handle_collab_socket(
                     // Tell the client to reconnect for a fresh state.
                     // The client will close the WS → reconnect → get Init + catch-up.
                     let error_msg = CollabMessage::Error {
-                        error: format!(
-                            "Session desynchronized: {n} messages lost"
-                        ),
+                        error: format!("Session desynchronized: {n} messages lost"),
                     };
                     let mut sender = sender_for_broadcast.lock().await;
-                    let _ = sender
-                        .send(Message::Binary(error_msg.encode()))
-                        .await;
+                    let _ = sender.send(Message::Binary(error_msg.encode())).await;
                     break; // Stop broadcasting — client will reconnect
                 }
                 Err(broadcast::error::RecvError::Closed) => {
@@ -1039,8 +1036,8 @@ async fn handle_collab_socket(
                         // If this connection has a verified identity, use the
                         // cached display name. The cache is updated via a watch
                         // channel when the name changes (non-blocking check).
-                        if let Some(ref mut rx) = name_watcher {
-                            if rx.has_changed().unwrap_or(false) {
+                        if let Some(ref mut rx) = name_watcher
+                            && rx.has_changed().unwrap_or(false) {
                                 let new_name = rx.borrow_and_update().clone();
                                 cached_display_name = Some(
                                     new_name.unwrap_or_else(|| {
@@ -1048,7 +1045,6 @@ async fn handle_collab_socket(
                                     })
                                 );
                             }
-                        }
                         let effective_name = cached_display_name.clone().or(name);
 
                         tracing::debug!(
@@ -1560,7 +1556,7 @@ mod tests {
 
         let msg = CollabMessage::Update {
             steps: steps.clone(),
-            client_ids: client_ids.clone(),
+            client_ids,
         };
         let encoded = msg.encode();
         let decoded = CollabMessage::decode(&encoded).unwrap();
