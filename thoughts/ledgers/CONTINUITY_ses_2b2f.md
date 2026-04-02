@@ -1,49 +1,43 @@
 ---
 session: ses_2b2f
-updated: 2026-04-02T11:27:21.745Z
+updated: 2026-04-02T15:34:03.441Z
 ---
 
 
 
-## Conversation Summary
+## Summary of Work Done This Session
 
 ### Task
-Add a **References section** to `~/code/docs/inventory/routing-and-switching.md` — 3-8 valid links per device (21 devices total), preferring manufacturer PDFs/datasheets, then specs/reviews/benchmarks. Dead links use web.archive.org; unresolvable links go in a subsection (don't count toward 3-8 minimum).
+Add community/forum/video links to ALL 21 devices in `~/code/docs/inventory/routing-and-switching.md`. No cap on links — add all useful links found. Dead links use web.archive.org or `#### Dead/Unresolvable Links` subsections. Skip reseller listings.
 
-### What Was Done
-1. **Research phase COMPLETE** for all 21 devices across multiple sessions
-2. **References section WRITTEN** — appended after line 544 (Summary Table) with per-device `###` subsections
-3. **G8316 FIXED** — User pointed out I should have just Googled it instead of guessing TIPS numbers. Found and verified 5 links:
-   - Lenovo Press TIPS0842 (19-page product guide)
-   - IBM Support overview page
-   - karma-group.ru datasheet PDF
-   - IBM Boulder Networking OS 7.4 Release Notes PDF
-   - IT Jungle launch article (2011, $35,999 pricing)
-4. **Key learning**: Google search finds links that URL-guessing misses. User wants me to apply same approach to remaining hard cases.
+### Completed Link Additions (12 devices updated)
 
-### Current Coverage (after G8316 fix)
-| Coverage                       | Devices                                                                                                                                                |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **3-5 links**                      | DX010(5), G8264(5), G8316(5), Cisco 881(3), Netgear XS712T(3)                                                                                          |
-| **1-2 links**                      | G8264e(2), Arista 7050QX-32(1), Mono Gateway(2), TEG-30284(1), SG3210XHP-M2(1), Dell PC5448(1), Cisco 3560(1), Cisco 2960(2), ASA 5505(2), 4402 WLC(1) |
-| **0 links (noted as unavailable)** | SX6036, Cisco 2811, Cisco 1841, Cisco SG300-52, Netgear GS116E, Calix GP1101X                                                                          |
+| Device        | Before → After      | Change       |
+| ------------- | ------------------- | ------------ |
+| 4402 WLC      | 2 → 9               | +7           |
+| 2960          | 4 → 9+1dead         | +5           |
+| 3560          | 5+1dead → 8+1dead   | +3           |
+| ASA 5505      | 7 → 13              | +6           |
+| G8316         | 7 → 7               | no new found |
+| 881           | 3+1dead → 11+1dead  | +8           |
+| GS116E        | 5 → 9               | +4           |
+| SG3210XHP-M2  | 4 → 7               | +3           |
+| G8264e        | 4 → 6+1dead         | +2, +1dead   |
+| SG300-52      | 10+1dead → 11+1dead | +1           |
+| 2811          | 9 → 11              | +2           |
+| Calix GP1101X | 9 → 10              | +1           |
 
-### What Needs to Be Done Next
-1. **Google search for remaining hard cases** (as user instructed): SX6036, Cisco 2811, Cisco 1841, Cisco SG300-52, Netgear GS116E, Calix GP1101X — use actual Google/web search rather than guessing URLs
-2. **Verify found links** and update each device's section in the file
-3. **Consider searching for more links** for devices with only 1-2 links to try to reach the 3-link minimum
-4. Update core_memory when complete
+### Current State
+- User just pasted Google search results for **SG3210XHP-M2** (second search). I checked the current section — it already has 7 links. The search results show: Amazon (reseller, skip), ServeTheHome non-PoE variant (already link #6), Omada downloads (already link #7), TP-Link AE regional page (new candidate), ServeTheHome deal thread page 2 (already link #5), Newegg/CDW/ADI (all resellers, skip).
+- The TP-Link AE regional page (`tp-link.com/ae/business-networking/managed-switch/tl-sg3210xhp-m2/v1.6/`) is a new candidate but is a regional duplicate of existing link #1. **Likely no new links from this search.**
 
-### Key Findings
-- **Cisco deliberately removes ALL docs for retired products** (confirmed on their retired products page)
-- **Lenovo Press TIPS numbers are NOT sequential by product** — TIPS0842=G8316, TIPS1272=G8264, TIPS1273=G8264CS, TIPS1271=G8124E
-- **ManualsLib manual IDs are NOT predictable** — random IDs, URL guessing returns wrong products
-- **Mellanox docs absorbed by NVIDIA** — many legacy PDFs gone (404)
-- **Calix requires partner login** for all documentation
-- **Acclinet** (third-party reseller with G8316 page) has expired SSL cert — skipped
+### Remaining Devices Needing Google Search Pastes
+- **HIGH**: Cisco 1841 (currently 4 links)
+- **MEDIUM**: Dell PowerConnect 5448 (7 links), TRENDnet TEG-30284 (7 links)
+- **LOW**: Most others already well-covered (9+ links)
 
-### File Being Modified
-- `~/code/docs/inventory/routing-and-switching.md` — References section starts after line 544
-
-### Key User Instruction
-User explicitly said: search Google for the other hard-case devices the same way they found the G8316 links, rather than guessing URLs. The approach of just googling `"ibm g8316"` immediately found TIPS0842, IBM Support page, karma-group PDF, IBM Boulder PDF, and IT Jungle — all of which I had failed to find by URL guessing.
+### Key Technical Details
+- **File**: `~/code/docs/inventory/routing-and-switching.md` (~900 lines)
+- **DNS workaround**: Environment DNS (100.100.100.100) sometimes returns SERVFAIL; use `dig @8.8.8.8` + `curl --resolve` 
+- **Cisco Community**: Always returns 403 (Cloudflare bot block) but pages are confirmed real
+- **Google CAPTCHA**: Blocks browser automation, so user pastes search results manually
