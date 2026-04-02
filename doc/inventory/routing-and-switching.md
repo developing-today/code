@@ -646,6 +646,8 @@ The G8264e does not have a dedicated Lenovo Press product guide. It is a variant
 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
 6. [IBM Support — RackSwitch 40G G8316 Firmware Update v6.8.4.0](https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking) — Latest firmware download for the G8316 (BLADE OS 6.8.4.0)
 7. [Chelsio — 40Gb Ethernet: A Competitive Alternative to InfiniBand (PDF)](https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf) — Technical whitepaper benchmarking 40GbE (including G8316) against InfiniBand for data center workloads
+8. [Reddit r/networking — OIDs for IBM G8316](https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/) — Community thread on finding SNMP OIDs for the IBM RackSwitch G8316 for monitoring and management
+9. [STH Forums — Can't Get More Than 20Gbps out of a 40GbE Network](https://forums.servethehome.com/index.php?threads/cant-get-more-than-20gbps-out-of-a-40gbe-network-suggestions.11448/) — Troubleshooting 40GbE throughput capped at 21Gbps on an IBM G8316 with Chelsio and Mellanox NICs; covers MTU tuning, iperf testing, and FreeNAS configuration
 
 ### IBM/Mellanox SX6036
 

@@ -19,12 +19,12 @@
                     │                                                                      │
                     │  VLAN 10 (WAN)        VLAN 20 (Transit)       VLAN 30 (Internal)     │
                     │  MTU 1500             MTU 1500                MTU 9216               │
-                    │  ┌───────────┐        ┌───────────────┐       ┌──────────────────┐   │
-                    │  │ ONT       │        │ Mono1 SFP+1   │       │ Mono2 SFP+       │   │
-                    │  │ Mono1 SFP+│        │ Mono1 RJ45    │       │ Mono3 SFP+       │   │
-                    │  └───────────┘        │ Mono2 RJ45    │       │ DX010-1 uplink   │   │
-                    │                       │ Mono3 RJ45    │       │ DX010-2 uplink   │   │
-                    │                       └───────────────┘       └──────────────────┘   │
+                    │  ┌───────────────┐    ┌───────────────┐       ┌──────────────────┐   │
+                    │  │ ONT           │    │ Mono1 RJ45×3  │       │ Mono2 SFP+×2     │   │
+                    │  │ Mono1 SFP+×2  │    │ Mono2 RJ45×3  │       │ Mono3 SFP+×2     │   │
+                    │  └───────────────┘    │ Mono3 RJ45×3  │       │ DX010-1 uplink   │   │
+                    │                       └───────────────┘       │ DX010-2 uplink   │   │
+                    │                                               └──────────────────┘   │
                     └──────────────────────────────────────────────────────────────────────┘
                          │                    │  │  │  │                │  │  │  │
                     SFP+ 10G            SFP+/RJ45 mixed           SFP+ 10G × 4
@@ -38,15 +38,16 @@
      │  NXP LS1046A    │     │  NXP LS1046A        │ │ │  NXP LS1046A       │ │      │               │
      │  DPAA offload   │     │  DPAA offload       │ │ │  DPAA offload      │ │      │               │
      │                 │     │  Priority: 120      │ │ │  Priority: 110     │ │      │               │
-     │ SFP+0: WAN      │     │                     │ │ │                    │ │      │               │
-     │ SFP+1: Transit  │     │ bond-sfp (10G+10G)  │ │ │ bond-sfp (10G+10G) │ │      │               │
-     │ RJ45s: Transit  │     │   → DX010s/VLAN 30  │ │ │   → DX010s/VLAN 30 │ │      │               │
-     │                 │     │ bond-rj45 (3×1G)    │ │ │ bond-rj45 (3×1G)   │ │      │               │
-     │ NAT / Firewall  │     │   → Mono1/VLAN 20   │ │ │   → Mono1/VLAN 20  │ │      │               │
-     └─────────────────┘     │                     │ │ │                    │ │      │               │
-                             │ DHCP, DNS           │ │ │ DHCP, DNS          │ │      │               │
-                             │ VRRP VIP: 10.0.200.1│ │ │ VRRP VIP: 10.0.200.1│      │               │
-                             └─────────────────────┘ │ └────────────────────┘ │      │               │
+     │ bond-wan        │     │                     │ │ │                    │ │      │               │
+     │  SFP+0+1 (2×10G)│     │ bond-sfp (10G+10G)  │ │ │ bond-sfp (10G+10G) │ │      │               │
+     │  → ONT/VLAN 10  │     │   → DX010s/VLAN 30  │ │ │   → DX010s/VLAN 30 │ │      │               │
+     │  metric 10      │     │ bond-rj45 (3×1G)    │ │ │ bond-rj45 (3×1G)   │ │      │               │
+     │ bond-transit    │     │   → Mono1/VLAN 20   │ │ │   → Mono1/VLAN 20  │ │      │               │
+     │  RJ45×3 (3×1G)  │     │                     │ │ │                    │ │      │               │
+     │  → Mono2,3/V20  │     │ DHCP, DNS           │ │ │ DHCP, DNS          │ │      │               │
+     │  metric 100     │     │ VRRP VIP: 10.0.200.1│ │ │ VRRP VIP: 10.0.200.1│      │               │
+     │                 │     └─────────────────────┘ │ └────────────────────┘ │      │               │
+     │ NAT / Firewall  │
                                                      │                       │      │               │
                     ┌────────────────────────────────┘                       │      │               │
                     │                    ┌───────────────────────────────────┘      │               │
@@ -87,10 +88,10 @@
 │  WAN         │  Transit                              │  Internal            │
 │  MTU: 1500   │  MTU: 1500                            │  MTU: 9216           │
 │              │                                       │                      │
-│  • ONT       │  • Mono 1 — SFP+1 (10G)              │  • Mono 2 — SFP+0    │
-│  • Mono 1    │  • Mono 1 — RJ45×3 (3×1G)            │  • Mono 2 — SFP+1    │
-│    SFP+0     │  • Mono 2 — RJ45×3 (3×1G)            │  • Mono 3 — SFP+0    │
-│              │  • Mono 3 — RJ45×3 (3×1G)            │  • Mono 3 — SFP+1    │
+│  • ONT       │  • Mono 1 — RJ45×3 (3×1G)            │  • Mono 2 — SFP+×2   │
+│  • Mono 1    │  • Mono 2 — RJ45×3 (3×1G)            │  • Mono 3 — SFP+×2   │
+│    SFP+×2    │  • Mono 3 — RJ45×3 (3×1G)            │  • DX010-1 uplink    │
+│              │                                       │  • DX010-2 uplink    │
 │              │                                       │  • DX010-1 uplink    │
 │              │                                       │  • DX010-2 uplink    │
 └──────────────┴───────────────────────────────────────┴───────────────────────┘
@@ -169,20 +170,26 @@ NODE-TO-NODE (e.g., DRBD replication):
 
 ```
 ┌─────────────────────────────────────────────────┐
-│              MONO 1 CONNECTIONS                  │
-│              (Edge Router)                       │
+│              MONO 1 BONDING                      │
+│              (Edge Router, balance-tlb / mode 5) │
 ├─────────────────────┬───────────────────────────┤
-│  WAN-facing         │  LAN-facing (Transit)     │
+│  bond-wan           │  bond-transit             │
+│  (WAN / ONT-facing) │  (Transit / Mono2,3)     │
 │                     │                           │
-│  SFP+0 ── ONT      │  SFP+1  10G ──┐          │
-│  (VLAN 10)          │  RJ45-0  1G ──┤          │
-│                     │  RJ45-1  1G ──┤          │
-│                     │  RJ45-2  1G ──┤          │
-│                     │          bond-transit     │
-│                     │          (VLAN 20)        │
-│                     │          MTU 1500         │
+│  SFP+0  10G ──┐    │  RJ45-0  1G ──┐          │
+│  SFP+1  10G ──┤    │  RJ45-1  1G ──┤          │
+│               │    │  RJ45-2  1G ──┤          │
+│         bond-wan   │          bond-transit      │
+│         20G max    │          3G max           │
+│         MTU 1500   │          MTU 1500         │
+│         metric 10  │          metric 100       │
+│  (VLAN 10)         │  (VLAN 20)               │
+│  primary path      │  lower-priority path     │
 ├─────────────────────┴───────────────────────────┤
 │  Functions: NAT, Firewall, WAN termination      │
+│  Link redundancy on WAN (if 1 SFP+ fails,      │
+│  ONT still reachable via other SFP+)            │
+│  Transit 3G > WAN 2G = no bottleneck           │
 └─────────────────────────────────────────────────┘
 ```
 
