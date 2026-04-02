@@ -18,19 +18,19 @@
  * WeakMap keyed by EditorView to support multiple editors without interference.
  */
 
-import { Plugin, PluginKey, type EditorState, type Transaction } from "prosemirror-state";
+import { type EditorState, Plugin, PluginKey, type Transaction } from "prosemirror-state";
 import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
 import {
+  type CursorForMerge,
+  clusterOverlappingGroups,
   FADE_START_MS,
-  HIDE_MS,
-  LINE_THRESHOLD_PX,
+  getColorForClient,
   getOpacityForAge,
   getStrobeDurationMs,
-  isLightColor,
-  getColorForClient,
   groupCursorsByPosition,
-  clusterOverlappingGroups,
-  type CursorForMerge,
+  HIDE_MS,
+  isLightColor,
+  LINE_THRESHOLD_PX,
   type PositionGroup,
 } from "./cursor-utils";
 
@@ -812,11 +812,14 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
               const newCursors = new Map(pluginState.cursors);
               // If idleSecs is provided (initial load), backdate lastUpdate
               const lastUpdate = cursorUpdate.idleSecs ? Date.now() - cursorUpdate.idleSecs * 1000 : Date.now();
+              // Preserve cached name if the incoming message doesn't provide one
+              const existing = pluginState.cursors.get(cursorUpdate.clientID);
+              const name = cursorUpdate.name ?? existing?.name;
               newCursors.set(cursorUpdate.clientID, {
                 clientID: cursorUpdate.clientID,
                 head: cursorUpdate.head,
                 anchor: cursorUpdate.anchor,
-                name: cursorUpdate.name,
+                name,
                 color: cursorUpdate.color,
                 lastUpdate,
               });

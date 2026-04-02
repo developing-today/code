@@ -49,6 +49,8 @@ const MSG = {
   CURSOR: 4,
   ERROR: 5,
   CURSOR_REMOVE: 6,
+  AUTH: 8,
+  AUTH_OK: 9,
 } as const;
 
 // MessagePack encoder/decoder configured for array format
@@ -74,6 +76,8 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param container - The DOM container for the editor
  * @param docId - Document identifier
  * @param filename - Optional filename for content mode detection
+ * @param token - Optional identity token for client persistence
+ * @param onTokenRefresh - Callback when server sends a refreshed token via AUTH_OK
  * @param onStatus - Callback for status changes
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
@@ -83,11 +87,16 @@ export function initCollab(
   container: HTMLElement,
   docId: string,
   filename?: string,
+  token?: string | null,
+  onTokenRefresh?: (token: string) => void,
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void,
 ): CollabConnection {
-  // Append filename as query parameter if provided
-  const finalWsUrl = filename ? `${wsUrl}?filename=${encodeURIComponent(filename)}` : wsUrl;
+  // Build query parameters for the WebSocket URL (no token — sent as first message)
+  const params = new URLSearchParams();
+  if (filename) params.set("filename", filename);
+  const queryStr = params.toString();
+  const finalWsUrl = queryStr ? `${wsUrl}?${queryStr}` : wsUrl;
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,6 +171,8 @@ export function initCollab(
 
   // Send cursor position to server: [4, clientID, head, anchor, name?, idleSecs?]
   // Note: client never sends idleSecs, only server sends it on initial load
+  // Name is always null from client — the server fills it in from the identity
+  // store before broadcasting to other clients.
   const sendCursor = (head: number, anchor: number): void => {
     if (myClientID === null) return;
     send(MSG.CURSOR, myClientID, head, anchor, null);
@@ -350,6 +361,19 @@ export function initCollab(
         break;
       }
 
+      case MSG.AUTH_OK: {
+        // [9, client_id, name, token?] — server confirmed our identity
+        const authClientId = msg[1] as string;
+        const authName = msg[2] as string | null;
+        const refreshedToken = msg[3] as string | null | undefined;
+        console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
+        // Save the refreshed token so long-lived WS sessions stay fresh
+        if (refreshedToken && onTokenRefresh) {
+          onTokenRefresh(refreshedToken);
+        }
+        break;
+      }
+
       default:
         console.warn("[collab] Unknown message type:", msgType);
     }
@@ -405,6 +429,14 @@ export function initCollab(
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");
+      }
+      // Send AUTH as the very first message (before flushing queued messages).
+      // The server waits for this before sending INIT. Token is kept out of
+      // the URL to avoid leaking in logs/Referer headers over HTTPS.
+      if (token) {
+        const authData = packr.pack([MSG.AUTH, token]);
+        socket.send(authData);
+        console.log("[collab] Sent AUTH message");
       }
       flushQueue();
     };

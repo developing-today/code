@@ -47,6 +47,7 @@
 mod assets;
 mod collab;
 mod content_mode;
+mod identity;
 mod markdown;
 mod routes;
 mod tags_ws;
@@ -70,6 +71,7 @@ use crate::tags::TagStore;
 
 pub use assets::static_handler;
 pub use collab::CollabState;
+pub use identity::IdentityStore;
 pub use routes::create_router;
 pub use templates::{AssetUrls, render_page};
 
@@ -140,6 +142,8 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
+    /// Client identity store for persistent client sessions.
+    pub identity: IdentityStore,
 }
 
 impl std::fmt::Debug for AppState {
@@ -152,6 +156,7 @@ impl std::fmt::Debug for AppState {
             .field("node_id", &self.node_id)
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
+            .field("identity", &self.identity)
             .finish()
     }
 }
@@ -172,6 +177,7 @@ impl AppState {
             node_id,
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
+            identity: IdentityStore::new(),
         }
     }
 }

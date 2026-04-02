@@ -4,9 +4,9 @@
  */
 
 import "@starfederation/datastar";
+import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
-import { initCollab, type CollabConnection } from "./collab";
-import { initTheme, setTheme, cycleTheme, type Theme } from "./theme";
+import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
   interface Window {
@@ -41,6 +41,175 @@ interface IdApp {
   lastFilename: string | null;
   lastFilePath: string | null;
 }
+
+// =============================================================================
+// Client Identity Management
+// =============================================================================
+
+const IDENTITY_TOKEN_KEY = "id_identity_token";
+const IDENTITY_NAME_KEY = "id_identity_name";
+const IDENTITY_CLIENT_ID_KEY = "id_identity_client_id";
+const IDENTITY_REFRESHED_AT_KEY = "id_identity_refreshed_at";
+
+/** How often to re-validate identity with the server (milliseconds). */
+const IDENTITY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/** Stored identity state from localStorage. */
+interface IdentityState {
+  token: string;
+  clientId: string;
+  name: string | null;
+}
+
+/** Read identity from localStorage (if exists). */
+function getStoredIdentity(): IdentityState | null {
+  const token = localStorage.getItem(IDENTITY_TOKEN_KEY);
+  const clientId = localStorage.getItem(IDENTITY_CLIENT_ID_KEY);
+  if (!token || !clientId) return null;
+  return {
+    token,
+    clientId,
+    name: localStorage.getItem(IDENTITY_NAME_KEY),
+  };
+}
+
+/** Save identity to localStorage. Also records the current time as last refresh. */
+function saveIdentity(token: string, clientId: string, name: string | null): void {
+  localStorage.setItem(IDENTITY_TOKEN_KEY, token);
+  localStorage.setItem(IDENTITY_CLIENT_ID_KEY, clientId);
+  localStorage.setItem(IDENTITY_REFRESHED_AT_KEY, Date.now().toString());
+  if (name) {
+    localStorage.setItem(IDENTITY_NAME_KEY, name);
+  } else {
+    localStorage.removeItem(IDENTITY_NAME_KEY);
+  }
+}
+
+/** Update the display name in localStorage (keeps token/clientId). */
+function updateStoredName(name: string | null): void {
+  if (name) {
+    localStorage.setItem(IDENTITY_NAME_KEY, name);
+  } else {
+    localStorage.removeItem(IDENTITY_NAME_KEY);
+  }
+}
+
+/** Check if the identity token needs refreshing (older than 24h). */
+function needsRefresh(): boolean {
+  const refreshedAt = localStorage.getItem(IDENTITY_REFRESHED_AT_KEY);
+  if (!refreshedAt) return true;
+  const elapsed = Date.now() - Number(refreshedAt);
+  return elapsed >= IDENTITY_REFRESH_INTERVAL_MS;
+}
+
+/**
+ * Called when the server sends a refreshed token via WS AUTH_OK.
+ * Saves the new token to localStorage without a full re-validation.
+ */
+function handleTokenRefresh(freshToken: string): void {
+  const stored = getStoredIdentity();
+  if (stored) {
+    saveIdentity(freshToken, stored.clientId, stored.name);
+    if (currentIdentity) {
+      currentIdentity.token = freshToken;
+    }
+    console.log("[id] Token refreshed via WS AUTH_OK");
+  }
+}
+
+/**
+ * Ensure we have a valid identity. Checks localStorage first,
+ * validates with server, registers if needed.
+ * Returns the identity state or null on failure.
+ */
+async function ensureIdentity(): Promise<IdentityState | null> {
+  // Check localStorage for existing identity
+  const stored = getStoredIdentity();
+  if (stored) {
+    // Validate token with server
+    try {
+      const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        // Server returns a refreshed token on each validation, resetting the
+        // 30-day expiry clock. Save it so the client stays authenticated as
+        // long as they visit within every 30 days.
+        if (data.token) {
+          stored.token = data.token;
+          saveIdentity(stored.token, stored.clientId, data.name || null);
+        }
+        // Update name from server (may have changed via another tab/session)
+        const serverName = data.name || null;
+        if (serverName !== stored.name) {
+          updateStoredName(serverName);
+          stored.name = serverName;
+        }
+        console.log("[id] Identity validated:", stored.clientId, stored.name);
+        return stored;
+      }
+      // Token invalid — fall through to register
+      console.log("[id] Stored token invalid, re-registering");
+    } catch (err) {
+      console.warn("[id] Identity check failed:", err);
+      // Network error — use stored identity optimistically
+      return stored;
+    }
+  }
+
+  // Register new identity
+  try {
+    const resp = await fetch("/api/identity/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: null }),
+    });
+    if (!resp.ok) {
+      console.error("[id] Identity registration failed:", resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    const identity: IdentityState = {
+      token: data.token,
+      clientId: data.client_id,
+      name: data.name || null,
+    };
+    saveIdentity(identity.token, identity.clientId, identity.name);
+    console.log("[id] New identity registered:", identity.clientId);
+    return identity;
+  } catch (err) {
+    console.error("[id] Identity registration error:", err);
+    return null;
+  }
+}
+
+/**
+ * Update the display name on the server and in localStorage.
+ * Returns the updated name or null on failure.
+ */
+async function updateDisplayName(token: string, name: string | null): Promise<string | null> {
+  try {
+    const resp = await fetch("/api/identity/name", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, name: name || null }),
+    });
+    if (!resp.ok) {
+      console.error("[id] Name update failed:", resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    const updatedName = data.name || null;
+    updateStoredName(updatedName);
+    console.log("[id] Display name updated:", updatedName);
+    return updatedName;
+  } catch (err) {
+    console.error("[id] Name update error:", err);
+    return null;
+  }
+}
+
+// Global identity state (initialized in init())
+let currentIdentity: IdentityState | null = null;
 
 /**
  * Update the editor status indicator.
@@ -332,6 +501,21 @@ function onMainSwapped(): void {
   const app = (window as unknown as Record<string, IdApp>).idApp;
   if (!app) return;
 
+  // Refresh identity token if it's been more than 24 hours since last refresh.
+  // This keeps the 30-day token alive for users who navigate via SPA (no full
+  // page loads) or use datastar SSE-based navigation.
+  if (needsRefresh()) {
+    ensureIdentity()
+      .then((identity) => {
+        if (identity) {
+          currentIdentity = identity;
+        }
+      })
+      .catch(() => {
+        // Non-critical — token stays valid until 30-day expiry
+      });
+  }
+
   const newPath = window.location.pathname;
 
   // Track navigation: push previous path to history
@@ -370,6 +554,8 @@ function onMainSwapped(): void {
     initSearchDebounce();
     // Re-initialize peers auto-refresh if on peers page
     initPeersAutoRefresh();
+    // Populate display name input on settings page
+    initSettingsIdentity();
   }
 }
 
@@ -447,14 +633,40 @@ function initPeersAutoRefresh(): void {
 }
 
 /**
+ * Populate the display name input on the settings page (if present).
+ * Reads the current name from the identity state and fills the input.
+ */
+function initSettingsIdentity(): void {
+  const input = document.getElementById("display-name-input") as HTMLInputElement | null;
+  if (!input) return; // Not on settings page
+
+  // Populate with current display name
+  if (currentIdentity?.name) {
+    input.value = currentIdentity.name;
+  }
+
+  // Also handle Enter key to save
+  input.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const saveBtn = document.getElementById("display-name-save") as HTMLButtonElement | null;
+      if (saveBtn) saveBtn.click();
+    }
+  });
+}
+
+/**
  * Initialize the application.
  */
-function init(): void {
+async function init(): Promise<void> {
   // Expose cycleTheme globally for onclick handlers
   window.cycleTheme = cycleTheme;
 
   // Initialize theme system
   initTheme();
+
+  // Initialize client identity (register if needed, validate if stored)
+  currentIdentity = await ensureIdentity();
 
   // Create app API
   const app: IdApp = {
@@ -790,20 +1002,29 @@ function init(): void {
         const wsUrl = `${wsProtocol}//${window.location.host}/ws/collab/${docId}`;
         console.log("[id] Connecting to WebSocket:", wsUrl);
 
-        this.collab = initCollab(wsUrl, container, docId, filename, updateStatus, (editor: EditorInstance) => {
-          console.log("[id] Editor initialized with server version, mode:", editor.mode);
-          // Initialize scroll-show header after editor is ready
-          scrollCleanup = initScrollShowHeader();
-          // Update back link based on navigation history
-          updateBackLink(this.navHistory, this.currentPath);
-          // Enable save button
-          const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
-          if (saveBtn) saveBtn.disabled = false;
-          // Load tags for the current file
-          if (filename) {
-            this.loadFileTags(filename);
-          }
-        });
+        this.collab = initCollab(
+          wsUrl,
+          container,
+          docId,
+          filename,
+          currentIdentity?.token ?? null,
+          handleTokenRefresh,
+          updateStatus,
+          (editor: EditorInstance) => {
+            console.log("[id] Editor initialized with server version, mode:", editor.mode);
+            // Initialize scroll-show header after editor is ready
+            scrollCleanup = initScrollShowHeader();
+            // Update back link based on navigation history
+            updateBackLink(this.navHistory, this.currentPath);
+            // Enable save button
+            const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
+            if (saveBtn) saveBtn.disabled = false;
+            // Load tags for the current file
+            if (filename) {
+              this.loadFileTags(filename);
+            }
+          },
+        );
         console.log("[id] Collab connection initiated");
       } catch (err) {
         console.error("[id] Error initializing editor:", err);
@@ -1147,6 +1368,39 @@ function init(): void {
       }
     }
 
+    // Handle display name save button on settings page
+    if (target.id === "display-name-save" || target.closest("#display-name-save")) {
+      const input = document.getElementById("display-name-input") as HTMLInputElement | null;
+      const status = document.getElementById("display-name-status");
+      if (input && currentIdentity?.token) {
+        const newName = input.value.trim() || null;
+        const btn = document.getElementById("display-name-save") as HTMLButtonElement | null;
+        if (btn) btn.disabled = true;
+        if (status) status.textContent = "saving...";
+
+        updateDisplayName(currentIdentity.token, newName).then((updatedName) => {
+          if (btn) btn.disabled = false;
+          if (updatedName !== null || newName === null) {
+            // Success: update local state
+            if (currentIdentity) currentIdentity.name = updatedName;
+            if (status) {
+              status.textContent = "saved!";
+              setTimeout(() => {
+                if (status) status.textContent = "";
+              }, 2000);
+            }
+          } else {
+            if (status) {
+              status.textContent = "failed";
+              setTimeout(() => {
+                if (status) status.textContent = "";
+              }, 2000);
+            }
+          }
+        });
+      }
+    }
+
     // Handle download format buttons
     const dlBtn = target.closest("[data-dl-format]");
     if (dlBtn) {
@@ -1248,6 +1502,8 @@ function init(): void {
   initSearchDebounce();
   // Initialize auto-refresh for peers page
   initPeersAutoRefresh();
+  // Populate display name on settings page (if direct navigation)
+  initSettingsIdentity();
 
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById("editor-container");
