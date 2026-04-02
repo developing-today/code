@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -25,6 +25,31 @@ use super::templates::{
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
+
+/// Image MIME types allowed for upload.
+const ALLOWED_IMAGE_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
+    "image/bmp",
+    "image/x-icon",
+];
+
+/// Map an image MIME type to a file extension.
+fn mime_to_extension(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "image/x-icon" => "ico",
+        _ => "bin",
+    }
+}
 
 /// Query parameters for the file list (pagination + search).
 #[derive(Debug, Deserialize, Default)]
@@ -202,6 +227,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/delete", post(delete_handler))
         .route("/api/restore", post(restore_handler))
         .route("/api/hard-delete", post(hard_delete_handler))
+        // Image upload API
+        .route("/api/upload", post(upload_handler))
         // Tag REST API
         .route(
             "/api/tags",
@@ -217,6 +244,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
         .route("/assets/*path", get(assets_handler))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -914,6 +942,17 @@ struct NewFileResponse {
     name: String,
 }
 
+/// Response from the image upload endpoint.
+#[derive(Debug, Serialize)]
+struct UploadResponse {
+    /// Blake3 hash of the uploaded file.
+    hash: String,
+    /// Name/tag assigned to the uploaded file.
+    name: String,
+    /// URL to access the uploaded file.
+    url: String,
+}
+
 /// Request body for renaming a file.
 #[derive(Debug, Deserialize)]
 struct RenameRequest {
@@ -1177,6 +1216,143 @@ async fn new_file_handler(
     Json(NewFileResponse {
         hash: hash_str,
         name: req.name,
+    })
+    .into_response()
+}
+
+/// Upload an image file via multipart form data.
+///
+/// Accepts a single file field, validates the MIME type against allowed
+/// image types, stores the blob, creates a named tag, and sets metadata.
+async fn upload_handler(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Response {
+    // Read the first field from the multipart body
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return (StatusCode::BAD_REQUEST, "No file field in upload").into_response();
+        }
+        Err(err) => {
+            tracing::error!("[routes] Failed to read multipart field: {}", err);
+            return (StatusCode::BAD_REQUEST, format!("Invalid multipart data: {err}"))
+                .into_response();
+        }
+    };
+
+    // Validate content type
+    let content_type = field
+        .content_type()
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    if !ALLOWED_IMAGE_TYPES.contains(&content_type.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Unsupported image type: {content_type}"),
+        )
+            .into_response();
+    }
+
+    // Get filename from the field, or generate one
+    let ext = mime_to_extension(&content_type);
+    let filename = match field.file_name().map(|s| s.to_owned()) {
+        Some(name) if !name.trim().is_empty() => name,
+        _ => {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            format!("paste-{ts}.{ext}")
+        }
+    };
+
+    // Read the file bytes
+    let data = match field.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!("[routes] Failed to read upload bytes: {}", err);
+            return (StatusCode::BAD_REQUEST, "Failed to read file data").into_response();
+        }
+    };
+
+    if data.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Uploaded file is empty").into_response();
+    }
+
+    tracing::info!(
+        "[routes] upload_handler: name={}, content_type={}, size={}",
+        filename,
+        content_type,
+        data.len()
+    );
+
+    // Store blob
+    let outcome = match state.store.blobs().add_bytes(data.to_vec()).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!("[routes] Failed to add upload blob: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store file").into_response();
+        }
+    };
+    let hash = outcome.hash;
+    let hash_str = hash.to_string();
+
+    // Set named tag
+    let tag = iroh_blobs::api::Tag::from(filename.clone());
+    if let Err(err) = state.store.tags().set(tag, hash).await {
+        tracing::error!("[routes] Failed to set upload tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set file name").into_response();
+    }
+
+    // Set metadata tags (created, modified, content-type)
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_if_absent(
+            &state.tag_store.global,
+            filename.as_bytes(),
+            b"created",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            filename.as_bytes(),
+            b"modified",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set modified tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            filename.as_bytes(),
+            b"content-type",
+            Some(content_type.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set content-type tag: {:#}", err);
+    }
+
+    let url = format!("/blob/{}?filename={}", hash_str, filename);
+
+    Json(UploadResponse {
+        hash: hash_str,
+        name: filename,
+        url,
     })
     .into_response()
 }
@@ -2022,5 +2198,54 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"archived_original\":\"source.md.archive.100\""));
         assert!(json.contains("\"archived_replaced\":\"target.md.archive.100\""));
+    }
+
+    // ========================================================================
+    // Upload endpoint tests
+    // ========================================================================
+
+    #[test]
+    fn test_upload_response_serialization() {
+        let resp = UploadResponse {
+            hash: "abc123def456".to_owned(),
+            name: "photo.png".to_owned(),
+            url: "/blob/abc123def456?filename=photo.png".to_owned(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"hash\":\"abc123def456\""));
+        assert!(json.contains("\"name\":\"photo.png\""));
+        assert!(json.contains("\"url\":\"/blob/abc123def456?filename=photo.png\""));
+    }
+
+    #[test]
+    fn test_allowed_image_types_contains_expected() {
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/png"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/jpeg"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/gif"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/webp"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/svg+xml"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/bmp"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/x-icon"));
+    }
+
+    #[test]
+    fn test_allowed_image_types_rejects_non_images() {
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"text/plain"));
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"application/pdf"));
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"application/json"));
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"video/mp4"));
+    }
+
+    #[test]
+    fn test_mime_to_extension() {
+        assert_eq!(mime_to_extension("image/png"), "png");
+        assert_eq!(mime_to_extension("image/jpeg"), "jpg");
+        assert_eq!(mime_to_extension("image/gif"), "gif");
+        assert_eq!(mime_to_extension("image/webp"), "webp");
+        assert_eq!(mime_to_extension("image/svg+xml"), "svg");
+        assert_eq!(mime_to_extension("image/bmp"), "bmp");
+        assert_eq!(mime_to_extension("image/x-icon"), "ico");
+        assert_eq!(mime_to_extension("application/octet-stream"), "bin");
+        assert_eq!(mime_to_extension("text/plain"), "bin");
     }
 }

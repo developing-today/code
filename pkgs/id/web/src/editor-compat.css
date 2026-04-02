@@ -1149,3 +1149,50 @@ img.ProseMirror-separator {
 .goto-line-input[type="number"] {
   -moz-appearance: textfield;
 }
+
+/* ============================================================================
+   17. Image Upload
+   ============================================================================ */
+
+.image-upload-placeholder {
+  display: inline-block;
+  min-width: 100px;
+  min-height: 60px;
+  border: 2px dashed var(--color-base-300);
+  border-radius: 0.25rem;
+  padding: 1rem;
+  text-align: center;
+  color: var(--color-base-content);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  animation: image-upload-pulse 1.5s ease-in-out infinite;
+}
+
+.image-upload-placeholder::after {
+  content: "Uploading...";
+}
+
+@keyframes image-upload-pulse {
+  0%,
+  100% {
+    border-color: var(--color-base-300);
+  }
+  50% {
+    border-color: var(--color-primary);
+  }
+}
+
+.ProseMirror img {
+  max-width: 100%;
+  display: block;
+  border-radius: 0.25rem;
+  margin: 0.5rem 0;
+}
+
+.ProseMirror img:hover {
+  outline: 2px solid oklch(var(--p) / 0.3);
+}
+
+.ProseMirror img.ProseMirror-selectednode {
+  outline: 2px solid oklch(var(--p) / 0.6);
+}

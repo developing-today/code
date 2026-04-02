@@ -25,6 +25,7 @@ import { createActiveLinePlugin } from "./active-line";
 import { createCursorPlugin, type SendCursorFn } from "./cursors";
 import { createGotoLinePlugin, destroyGotoLineDialog } from "./goto-line";
 import { createSyntaxHighlightPlugin } from "./highlight";
+import { createImageUploadPlugin } from "./image-upload";
 import { createIndentPlugin } from "./indent";
 import { createSearchPlugins, destroySearchPanel } from "./search-panel";
 import { createWrapPlugins } from "./wrap";
@@ -198,7 +199,13 @@ export function initEditor(
     // Row 3: lists, blockquote, structure tools
     const customMenu = [
       // Inline formatting
-      cut([menuItems.toggleStrong, menuItems.toggleEm, menuItems.toggleCode, menuItems.toggleLink]),
+      cut([
+        menuItems.toggleStrong,
+        menuItems.toggleEm,
+        menuItems.toggleCode,
+        menuItems.toggleLink,
+        menuItems.insertImage,
+      ]),
       // Block types flattened + undo/redo
       cut([makeParagraph, makeCodeBlock, ...makeHeadings, undoItem, redoItem]),
       // Block structure tools
@@ -254,6 +261,12 @@ export function initEditor(
 
   // Add Tab/Shift+Tab indentation for code blocks
   plugins.push(createIndentPlugin());
+
+  // Add image paste/drop upload (only for schemas with image node)
+  const imageUploadPlugin = createImageUploadPlugin(editorSchema);
+  if (imageUploadPlugin) {
+    plugins.push(imageUploadPlugin);
+  }
 
   // Add cursor plugin if sendCursor callback provided
   if (sendCursor) {
