@@ -465,12 +465,16 @@ pub async fn cmd_serve(
     // Start web server now that the lock file is written
     #[cfg(feature = "web")]
     let _web_handle = if let Some(listener) = web_listener {
+        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.db");
         let web_router = crate::web::web_router(
             store_handle.clone(),
             Some(peer_discovery.clone()),
             node_id.to_string(),
             Arc::clone(&tag_store),
-        );
+            key.to_bytes(),
+            identity_db_path,
+        )
+        .await?;
         let actual_port = web_port.unwrap_or(port);
         println!("web: http://localhost:{actual_port}");
         Some(tokio::spawn(async move {

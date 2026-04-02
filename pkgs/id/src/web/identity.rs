@@ -34,11 +34,14 @@
 //! internally. Clone it freely across handlers.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use tokio::sync::RwLock;
 use tokio::sync::watch;
 
@@ -70,25 +73,138 @@ struct TokenPayload {
     created_at: u64,
 }
 
-/// In-memory store for client identities.
+/// In-memory store for client identities, optionally backed by encrypted SQLite.
 ///
 /// Keyed by `client_id` (a hex string). Thread-safe via `Arc<RwLock<>>`.
-#[derive(Debug, Clone)]
+/// When backed by a database, mutations are written through to SQLite for
+/// persistence across server restarts.
+#[derive(Clone)]
 pub struct IdentityStore {
     /// Map of `client_id` to identity.
     clients: Arc<RwLock<HashMap<String, ClientIdentity>>>,
     /// Watch channels for name changes, keyed by `client_id`.
     /// WS handlers subscribe to get notified when a client's name changes.
     name_watchers: Arc<RwLock<HashMap<String, watch::Sender<Option<String>>>>>,
-    /// Ed25519 signing key (generated at startup, used to sign tokens).
+    /// Ed25519 signing key (derived from iroh secret key, or random for tests).
     signing_key: Arc<SigningKey>,
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
     verifying_key: VerifyingKey,
+    /// SQLite database for persistent storage (`None` for ephemeral/test mode).
+    db: Option<libsql::Database>,
+}
+
+impl std::fmt::Debug for IdentityStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityStore")
+            .field("clients", &self.clients)
+            .field("signing_key", &"<SigningKey>")
+            .field("db", &self.db.as_ref().map(|_| "<Database>"))
+            .finish()
+    }
 }
 
 impl IdentityStore {
-    /// Create a new identity store with a fresh Ed25519 keypair.
-    pub fn new() -> Self {
+    /// Create a new identity store backed by an encrypted SQLite database.
+    ///
+    /// Derives a signing key and DB encryption key from the given secret key
+    /// bytes using HKDF-SHA256. The DB file is encrypted at rest using AES-256-GCM.
+    /// All existing identities are loaded into memory on startup.
+    ///
+    /// # Arguments
+    ///
+    /// * `secret_key` - 32-byte secret key (from iroh `SecretKey::to_bytes()`)
+    /// * `db_path` - Path for the SQLite database file (e.g., `.identity.db`)
+    pub async fn new(secret_key: [u8; 32], db_path: PathBuf) -> anyhow::Result<Self> {
+        // Derive signing key via HKDF-SHA256
+        let hk = Hkdf::<Sha256>::new(None, &secret_key);
+        let mut signing_bytes = [0u8; 32];
+        hk.expand(b"id-identity-signing", &mut signing_bytes)
+            .map_err(|_| anyhow::anyhow!("HKDF expand failed for signing key"))?;
+        let signing_key = SigningKey::from_bytes(&signing_bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        // Derive DB encryption key via HKDF-SHA256
+        let mut enc_bytes = [0u8; 32];
+        hk.expand(b"id-identity-encryption", &mut enc_bytes)
+            .map_err(|_| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
+        let hex_key = hex_encode(&enc_bytes);
+
+        // Open encrypted SQLite database
+        let db_path_str = db_path.display().to_string();
+        let uri = format!("file:{db_path_str}?cipher=aes256gcm&hexkey={hex_key}");
+        let db = libsql::Builder::new_local(uri)
+            .build()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to open identity database: {e}"))?;
+        let conn = db
+            .connect()
+            .map_err(|e| anyhow::anyhow!("Failed to connect to identity database: {e}"))?;
+
+        // Create table if it doesn't exist
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS identities (
+                client_id TEXT PRIMARY KEY,
+                name TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create identities table: {e}"))?;
+
+        // Load existing identities into memory
+        let mut clients = HashMap::new();
+        let mut name_watchers_map = HashMap::new();
+        let mut rows = conn
+            .query(
+                "SELECT client_id, name, created_at, updated_at FROM identities",
+                (),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query identities: {e}"))?;
+
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read identity row: {e}"))?
+        {
+            let client_id = db_text(&row, 0)?;
+            let name = db_opt_text(&row, 1)?;
+            let created_at = db_u64(&row, 2)?;
+            let updated_at = db_u64(&row, 3)?;
+
+            let identity = ClientIdentity {
+                client_id: client_id.clone(),
+                name: name.clone(),
+                created_at,
+                updated_at,
+            };
+
+            let (tx, _rx) = watch::channel(name);
+            name_watchers_map.insert(client_id.clone(), tx);
+            clients.insert(client_id, identity);
+        }
+
+        let count = clients.len();
+        if count > 0 {
+            tracing::info!("[identity] Loaded {count} identities from database");
+        }
+
+        Ok(Self {
+            clients: Arc::new(RwLock::new(clients)),
+            name_watchers: Arc::new(RwLock::new(name_watchers_map)),
+            signing_key: Arc::new(signing_key),
+            verifying_key,
+            db: Some(db),
+        })
+    }
+
+    /// Create an ephemeral identity store with no persistence.
+    ///
+    /// Generates a random signing key. Identities are lost when the store
+    /// is dropped. Used in tests and when persistence is not needed.
+    pub fn new_ephemeral() -> Self {
         let signing_key = SigningKey::generate(&mut rand::rng());
         let verifying_key = signing_key.verifying_key();
         Self {
@@ -96,6 +212,7 @@ impl IdentityStore {
             name_watchers: Arc::new(RwLock::new(HashMap::new())),
             signing_key: Arc::new(signing_key),
             verifying_key,
+            db: None,
         }
     }
 
@@ -118,7 +235,20 @@ impl IdentityStore {
             updated_at: now,
         };
 
-        // Store the identity
+        // Persist to database first (if available)
+        if let Some(db) = &self.db {
+            let conn = db
+                .connect()
+                .map_err(|e| anyhow::anyhow!("DB connect: {e}"))?;
+            conn.execute(
+                "INSERT INTO identities (client_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                db_identity_params(&client_id, &name, now, now),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("DB insert: {e}"))?;
+        }
+
+        // Store the identity in memory
         {
             let mut clients = self.clients.write().await;
             clients.insert(client_id.clone(), identity.clone());
@@ -181,6 +311,27 @@ impl IdentityStore {
         identity.updated_at = unix_timestamp();
         let result = identity.clone();
         drop(clients);
+
+        // Persist to database (best-effort — in-memory is authoritative during session)
+        if let Some(db) = &self.db {
+            if let Ok(conn) = db.connect() {
+                let params = vec![
+                    name.as_ref()
+                        .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
+                    libsql::Value::Integer(i64::try_from(result.updated_at).unwrap_or(0)),
+                    libsql::Value::Text(client_id.to_owned()),
+                ];
+                if let Err(e) = conn
+                    .execute(
+                        "UPDATE identities SET name = ?1, updated_at = ?2 WHERE client_id = ?3",
+                        params,
+                    )
+                    .await
+                {
+                    tracing::warn!("[identity] Failed to persist name update: {e}");
+                }
+            }
+        }
 
         // Notify any subscribed WS handlers of the name change
         {
@@ -349,6 +500,60 @@ fn unix_timestamp() -> u64 {
         .as_secs()
 }
 
+// =============================================================================
+// Database Helpers
+// =============================================================================
+
+/// Extract a TEXT value from a database row.
+fn db_text(row: &libsql::Row, idx: i32) -> anyhow::Result<String> {
+    match row
+        .get_value(idx)
+        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
+    {
+        libsql::Value::Text(s) => Ok(s),
+        other => anyhow::bail!("Expected text at column {idx}, got {other:?}"),
+    }
+}
+
+/// Extract an optional TEXT value from a database row.
+fn db_opt_text(row: &libsql::Row, idx: i32) -> anyhow::Result<Option<String>> {
+    match row
+        .get_value(idx)
+        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
+    {
+        libsql::Value::Text(s) if !s.is_empty() => Ok(Some(s)),
+        libsql::Value::Text(_) | libsql::Value::Null => Ok(None),
+        other => anyhow::bail!("Expected text or null at column {idx}, got {other:?}"),
+    }
+}
+
+/// Extract a u64 value from a database INTEGER column.
+fn db_u64(row: &libsql::Row, idx: i32) -> anyhow::Result<u64> {
+    match row
+        .get_value(idx)
+        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
+    {
+        libsql::Value::Integer(n) => Ok(u64::try_from(n).unwrap_or(0)),
+        other => anyhow::bail!("Expected integer at column {idx}, got {other:?}"),
+    }
+}
+
+/// Convert identity fields to database parameter values for INSERT.
+fn db_identity_params(
+    client_id: &str,
+    name: &Option<String>,
+    created_at: u64,
+    updated_at: u64,
+) -> Vec<libsql::Value> {
+    vec![
+        libsql::Value::Text(client_id.to_owned()),
+        name.as_ref()
+            .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
+        libsql::Value::Integer(i64::try_from(created_at).unwrap_or(0)),
+        libsql::Value::Integer(i64::try_from(updated_at).unwrap_or(0)),
+    ]
+}
+
 /// Base64url encode without padding (RFC 4648 section 5).
 fn base64url_encode(data: &[u8]) -> String {
     let mut encoded = String::with_capacity((data.len() * 4 + 2) / 3);
@@ -509,7 +714,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_verify() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
 
         let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
         assert_eq!(identity.name, Some("Alice".to_owned()));
@@ -523,7 +728,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_without_name() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
 
         let (token, identity) = store.register(None).await.unwrap();
         assert_eq!(identity.name, None);
@@ -534,7 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_token() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
 
         assert!(store.verify_token("invalid").await.is_none());
         assert!(store.verify_token("").await.is_none());
@@ -543,8 +748,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_from_different_store() {
-        let store1 = IdentityStore::new();
-        let store2 = IdentityStore::new();
+        let store1 = IdentityStore::new_ephemeral();
+        let store2 = IdentityStore::new_ephemeral();
 
         let (token, _) = store1.register(Some("Alice".to_owned())).await.unwrap();
 
@@ -554,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_name() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
 
         let (_, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
 
@@ -576,7 +781,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_nonexistent() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
         assert!(
             store
                 .update_name("nonexistent", Some("X".to_owned()))
@@ -587,7 +792,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_display_name() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
 
         let (_, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
         assert_eq!(store.get_display_name(&identity.client_id).await, "Alice");
@@ -607,7 +812,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_token_client_id() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
         let (token, identity) = store.register(None).await.unwrap();
 
         let client_id = store.verify_token_client_id(&token).unwrap();
@@ -624,7 +829,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_len() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
         assert!(store.is_empty().await);
         assert_eq!(store.len().await, 0);
 
@@ -638,7 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_name_watch_channel() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
         let (_token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
         let cid = &identity.client_id;
 
@@ -665,13 +870,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_name_watch_no_subscription_for_unknown_client() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
         assert!(store.subscribe_name("nonexistent").await.is_none());
     }
 
     #[tokio::test]
     async fn test_token_expiry() {
-        let store = IdentityStore::new();
+        let store = IdentityStore::new_ephemeral();
 
         // Register a client normally — token should be valid
         let (token, identity) = store.register(None).await.unwrap();

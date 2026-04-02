@@ -162,14 +162,19 @@ impl std::fmt::Debug for AppState {
 }
 
 impl AppState {
-    /// Create a new application state.
-    pub fn new(
+    /// Create a new application state with persistent identity storage.
+    ///
+    /// Opens an encrypted SQLite database for identity persistence using
+    /// a key derived from the node's iroh secret key.
+    pub async fn new(
         store: Store,
         peers: Option<PeerDiscovery>,
         node_id: String,
         tag_store: Arc<TagStore>,
-    ) -> Self {
-        Self {
+        secret_key: [u8; 32],
+        identity_db_path: std::path::PathBuf,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             store,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
@@ -177,8 +182,8 @@ impl AppState {
             node_id,
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
-            identity: IdentityStore::new(),
-        }
+            identity: IdentityStore::new(secret_key, identity_db_path).await?,
+        })
     }
 }
 
@@ -242,14 +247,16 @@ fn load_asset_urls() -> AssetUrls {
 /// # Returns
 ///
 /// An Axum router ready to be merged with the serve endpoint.
-pub fn web_router(
+pub async fn web_router(
     store: Store,
     peers: Option<PeerDiscovery>,
     node_id: String,
     tag_store: Arc<TagStore>,
-) -> Router {
-    let state = AppState::new(store, peers, node_id, tag_store);
-    create_router(state)
+    secret_key: [u8; 32],
+    identity_db_path: std::path::PathBuf,
+) -> anyhow::Result<Router> {
+    let state = AppState::new(store, peers, node_id, tag_store, secret_key, identity_db_path).await?;
+    Ok(create_router(state))
 }
 
 #[cfg(test)]
