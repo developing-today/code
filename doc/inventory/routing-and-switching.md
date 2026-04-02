@@ -507,7 +507,7 @@
 | **Cisco 3560** | No | N/A | N/A | 3750 is the stackable variant of this generation |
 | **IBM G8264** | **Yes** | QSFP+ 40G stacking links | Up to 8 units | Single IP management, ring or daisy-chain topology; also supports vLAG (pairs of 2) independently |
 | **IBM G8264e** | **Likely yes** | QSFP+ 40G stacking links (same platform as G8264) | Up to 8 units (unconfirmed) | Same ASIC/NOS as G8264; no dedicated product guide to confirm independently. Also supports vLAG |
-| **IBM G8316** | No | Uses vLAG instead | 2 (vLAG pair) | Spine/aggregation switch; no stacking feature, vLAG only |
+| **IBM G8316** | **Unclear** | Uses vLAG instead | 2 (vLAG pair) | Spine/aggregation switch; IBM Support page lists "Stacking LEDs" in hardware specs but TIPS0842 does not list stacking as a software feature. vLAG confirmed. |
 | **Celestica DX010** | No | Uses MC-LAG instead | 2 (MC-LAG pair) | SONiC MC-LAG for multi-chassis |
 | **Arista 7050QX-32-F** | No | Uses MLAG instead | 2 (MLAG pair) | MLAG for multi-chassis, ECMP for beyond 2 |
 | **Mellanox SX6036** | No | N/A | N/A | No stacking or MC-LAG |
@@ -524,7 +524,7 @@
 | **Celestica DX010** | 4* | 100GbE | 32x QSFP28 | Yes | Yes | Yes | No | DC | 2016 |
 | **Arista 7050QX-32-F** | 1 | 40GbE | 32x QSFP+ | Yes | Yes | Yes (MLAG) | No | DC | 2013 |
 | **IBM Mellanox SX6036** | 1 | 56G IB / 40GbE | 36x QSFP | Yes | Limited | No | No | HPC/DC | 2013 |
-| **IBM G8316** | 4 | 40GbE | 16x QSFP+ | Yes | Yes | Yes (vLAG) | No | DC Spine | 2012 |
+| **IBM G8316** | 4 | 40GbE | 16x QSFP+ | Yes | Yes | Yes (vLAG) | **Unclear** | DC Spine | 2012 |
 | **IBM G8264** | 3 | 10GbE / 40GbE | 48x SFP+ + 4x QSFP+ | Yes | Yes | Yes (vLAG) | **Yes (8)** | DC TOR | 2012 |
 | **IBM G8264e** | 1 | 10GbE / 40GbE | 48x 10GBASE-T + 4x QSFP+ | Yes | Yes | Yes (vLAG) | **Likely** | DC TOR | 2012 |
 | **Mono Gateway** | 3 | 10GbE | 2x SFP+ + 3x 1G | Yes | Yes | No | No | Router | 2022 |
@@ -650,6 +650,13 @@ The G8264e does not have a dedicated Lenovo Press product guide. It is a variant
 7. [Chelsio — 40Gb Ethernet: A Competitive Alternative to InfiniBand (PDF)](https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf) — Technical whitepaper benchmarking 40GbE (including G8316) against InfiniBand for data center workloads
 8. [Reddit r/networking — OIDs for IBM G8316](https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/) — Community thread on finding SNMP OIDs for the IBM RackSwitch G8316 for monitoring and management
 9. [STH Forums — Can't Get More Than 20Gbps out of a 40GbE Network](https://forums.servethehome.com/index.php?threads/cant-get-more-than-20gbps-out-of-a-40gbe-network-suggestions.11448/) — Troubleshooting 40GbE throughput capped at 21Gbps on an IBM G8316 with Chelsio and Mellanox NICs; covers MTU tuning, iperf testing, and FreeNAS configuration
+10. [IBM — RackSwitch G8316 Installation Guide (PDF)](https://www.ibm.com/support/pages/system/files/support/isg/isgdocs.nsf/0/db526ca86796d0c485257991007f7ca1/$FILE/G8316_Install.pdf) — Hardware installation guide covering rack mounting, cabling, and initial bootstrap
+11. [IBM/Lenovo — Switch Center 8.1.4 Release Notes (PDF)](https://serveroption-pdf.s3.amazonaws.com/rack_switches/Switch_Center_8.1.4_RN.pdf) — Release notes for Switch Center management software v8.1.4
+12. [Scribd — Networking RackSwitch G8316](https://www.scribd.com/document/202481327/Networking-RackSwitch-G8316) — Community-hosted G8316 documentation (may require Scribd account)
+
+#### Dead/Unresolvable Links
+
+- ~~[OfficeExpress — Lenovo RackSwitch G8316 Product Page](https://www.officecentral.com/lenovo-rackswitch-g8316-layer-3-switch-manageable-10-gigabit-ethernet-gigabit-ethernet-fast-ethernet-3-layer-supported-1u-high-rack-mountable-1-year-limited-warranty--4)~~ — Third-party product listing (HTTP 453, site dead)
 
 ### IBM/Mellanox SX6036
 
