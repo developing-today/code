@@ -649,7 +649,7 @@ function initSettingsIdentity(): void {
   const warning = document.getElementById("display-name-warning");
   function updateWarning() {
     if (warning) {
-      const show = input!.value.trim().length > 4;
+      const show = input!.value.trim().length > 8;
       warning.classList.toggle("hidden", !show);
     }
   }

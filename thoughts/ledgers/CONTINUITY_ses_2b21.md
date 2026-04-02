@@ -1,91 +1,66 @@
 ---
 session: ses_2b21
-updated: 2026-04-02T11:10:51.928Z
+updated: 2026-04-02T11:14:29.556Z
 ---
 
-## Summary of Conversation
+## Summary
 
 ### Task
-Research and verify 3-8 valid web links for each of 8 network hardware devices. Priority: manufacturer datasheets/PDFs > spec pages > reviews/benchmarks. All links must be verified as LIVE using webfetch before reporting.
+Research and verify 3-8 valid web links per device for 6 network hardware devices. Priority: manufacturer datasheets/PDFs > spec pages > reviews/benchmarks. Every URL must be verified with webfetch before claiming LIVE.
 
-### Devices Being Researched
-1. Cisco 881 ISR
-2. Netgear ProSafe XS712T
-3. TRENDnet TEG-30284
-4. TP-Link Omada SG3210XHP-M2
-5. Dell PowerConnect 5448
-6. Cisco SG300-52
-7. Netgear ProSAFE GS116E
-8. Calix GP1101X ONT
+### Devices & Results So Far
 
-### What Was Done
-Multiple rounds of webfetch calls were made to search (DuckDuckGo) and verify direct URLs. DuckDuckGo started CAPTCHA-blocking after the first 2 searches, so most research relied on direct URL guessing and verification.
+**1. Cisco Catalyst 3560** — L3 switch
+- ✅ LIVE: `https://www.cisco.com/c/en/us/products/switches/catalyst-3560-series-switches/index.html` — Series product/support page (End of Support, lists retired models)
+- ❌ DEAD: `https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3560-series-switches/product_data_sheet0900aecd8034699f.html` — 404
+- ❌ DEAD: Several alternate datasheet URL patterns tried (data_sheet_c78-530684, datasheet-c78-530684) — all 404
+- ❌ DEAD: archive.org for the datasheet — 404
+- ❌ ManualsLib returned wrong product (a Changhong freezer at manual ID 868756)
+- ❌ manualzz.com — 403 forbidden
+- Still needs: more working links (only 1 found)
 
-### Verified LIVE Links So Far
+**2. Cisco Catalyst 2960** — L2 switch
+- ✅ LIVE: `https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/product_data_sheet0900aecd806b0bd8.html` — Full LAN Lite datasheet with specs, PoE, QoS, hardware details
+- ✅ LIVE: `https://www.cisco.com/c/en/us/products/switches/catalyst-2960-series-switches/index.html` — Redirects to 2960-X series support page (still loads, contains 2960 references)
+- Still needs: more links for better coverage
 
-**1. Cisco 881 ISR** — ✅ Well covered
-- Cisco 880 Series Data Sheet HTML: `https://www.cisco.com/c/en/us/products/collateral/routers/887-integrated-services-router-isr/data_sheet_c78_459542.html` — LIVE
-- Cisco 881 Product Page: `https://www.cisco.com/c/en/us/products/routers/881-integrated-services-router-isr/index.html` — LIVE
-- ManualsLib Cisco 881 Datasheet: `https://www.manualslib.com/manual/713954/Cisco-881.html` — LIVE (confirmed Cisco 881 content)
-- Netgear XS712T datasheet PDF (from initial search, confirms PDFs downloadable): `https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf` — LIVE (PDF binary received)
+**3. Cisco ASA 5505** — Firewall/VPN appliance
+- ✅ LIVE: `https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html` — Full ASA 5505 datasheet (features, specs, ordering info)
+- ✅ LIVE: `https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html` — Redirects to ASA 5500-X support page listing ASA 5505 datasheet among docs
+- ❌ DEAD: `https://www.cisco.com/c/en/us/products/collateral/security/asa-5505-adaptive-security-appliance/datasheet-c78-733510.html` — 404 (wrong path)
+- ❌ DEAD: `https://www.cisco.com/c/en/us/products/security/asa-5505-adaptive-security-appliance/index.html` — 404
+- ManualsLib returned wrong product (OKI printer)
 
-**2. Netgear ProSafe XS712T** — ✅ Well covered
-- Netgear XS712T Datasheet PDF (original): `https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf` — LIVE (PDF)
-- Netgear XS712T+XS728T Combined Datasheet PDF: `https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T-XS728T.pdf` — LIVE (PDF)
-- Netgear XS712T Support Page: `https://www.netgear.com/support/product/xs712t` — returned empty but no error (likely JS-rendered)
-- Archive.org XS712T Datasheet PDF: `https://archive.org/download/manualzilla-id-5923700/5923700.pdf` — LIVE (PDF binary received)
+**4. Cisco 4402 WLC** — Wireless LAN Controller
+- ✅ LIVE: `https://www.cisco.com/c/en/us/products/wireless/4400-series-wireless-lan-controllers/index.html` — Retirement notification page (EoS 2011-06-13, EoSupport 2016-06-30)
+- ❌ DEAD: `https://www.cisco.com/c/en/us/products/collateral/wireless/4400-series-wireless-lan-controllers/product_data_sheet0900aecd802930c5.html` — 404
+- ❌ DEAD: `https://www.cisco.com/c/en/us/products/wireless/4402-wireless-lan-controller/index.html` — 404
+- ❌ DEAD: `https://www.cisco.com/c/en/us/support/wireless/4402-wireless-lan-controller/model.html` — 404
+- ❌ DEAD: archive.org for datasheet — 404
+- ❌ DEAD: Various alternate Cisco URL patterns — all 404
+- Hardest device — very few live links for this retired product
 
-**3. TRENDnet TEG-30284** — ✅ Well covered
-- TRENDnet TEG-30284 Product Page (new URL format): `https://www.trendnet.com/products/managed-switch/28-Port-Gigabit-Web-Smart-Switch-TEG-30284` — LIVE (full product page with specs)
-- Old URL `https://www.trendnet.com/products/product-detail?prod=100_TEG-30284` — shows "product not currently available"
-- Support URL `https://www.trendnet.com/support/support-detail.asp?prod=265_TEG-30284` — shows "product not currently available"
+**5. IBM RackSwitch G8264e** — 10G/40G ToR switch
+- ✅ LIVE: `https://lenovopress.lenovo.com/tips1272-lenovo-rackswitch-g8264` — Full product guide for G8264 (base model, covers G8264 family: 48x SFP+ 10G, 4x QSFP+ 40G, 1.28Tbps, specs, models, features)
+- ✅ LIVE: `https://lenovopress.lenovo.com/tips1273-lenovo-rackswitch-g8264cs` — Product guide for G8264CS converged variant (FCoE/FC Omni Ports, related model in same family)
+- ❌ DEAD: `https://www.ibm.com/docs/en/rackswitch-g8264` — 404
+- Note: The "G8264e" specifically (copper 10GBASE-T variant) may not have its own dedicated page; the G8264 and G8264CS are the closest documented variants on Lenovo Press
 
-**4. TP-Link Omada SG3210XHP-M2** — ✅ Well covered
-- TP-Link Product Page: `https://www.tp-link.com/us/business-networking/omada-sdn-switch/sg3210xhp-m2/` — LIVE (full product page with detailed specs)
-- TP-Link Specs page (same content, #spec anchor): `https://www.tp-link.com/us/business-networking/omada-sdn-switch/sg3210xhp-m2/#spec` — LIVE
+**6. IBM RackSwitch G8316** — 16x QSFP+ 40G spine switch
+- ❌ NO Lenovo Press TIPS page found (tried TIPS1264 through TIPS1275; these map to other products: G8296, G7028, G7052, G8052, G8124E, G8264, G8264CS, G8332, N4610 storage)
+- ❌ DEAD: `https://www.ibm.com/docs/en/rackswitch-g8316` — 404
+- ❌ DEAD: `https://lenovopress.lenovo.com/tips1265-lenovo-rackswitch-g8316` — 404
+- This is likely an older IBM-era product that was never migrated to Lenovo Press. The G8332 (TIPS1274) is the successor/related 40G spine switch.
+- Hardest device — no verified live links found yet
 
-**5. Dell PowerConnect 5448** — ✅ Partially covered
-- Dell Support Overview Page: `https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/overview` — LIVE (support page loaded)
-- Dell Support Manuals URL tried: `https://www.dell.com/support/manuals/en-us/powerconnect-5448/PC5424_UG/introduction` — 404
+### Blockers Encountered
+- **DuckDuckGo HTML search** is completely blocked with CAPTCHA on all queries — cannot use for searching
+- **ManualsLib** search by manual ID is unreliable — returned wrong products for IDs 868756 and 410181
+- **Cisco old datasheet URLs** have been widely retired/404'd for end-of-life products (3560, 4402 WLC)
+- **IBM docs** for older RackSwitch products appear fully decommissioned
 
-**6. Cisco SG300-52** — ⚠️ Difficult (retired product)
-- Cisco 300 Series Retired Products page: `https://www.cisco.com/c/en/us/products/switches/small-business-300-series-managed-switches/index.html` — LIVE but redirects to retired products listing
-- Direct datasheet URL `data_sheet_c78-610061.html` — 404 (Cisco removed docs for retired products)
-- ManualsLib manual/677126 — returned wrong product (Sharp microwave, likely ID collision)
-- Manualzz.com — returned 403
-
-**7. Netgear ProSAFE GS116E** — ⚠️ Difficult
-- `https://www.netgear.com/business/wired/switches/plus/gs116e/` — 404
-- `https://www.netgear.com/business/wired/switches/plus/gs116ev2/` — 404
-- `https://www.netgear.com/support/product/gs116e/` — empty response (JS-rendered)
-- `https://www.netgear.com/support/product/gs116ev2/` — empty response
-- `https://www.downloads.netgear.com/files/GDC/datasheet/en/GS116E.pdf` — 403
-- `https://www.downloads.netgear.com/files/GDC/datasheet/en/GS116Ev2.pdf` — 403
-- ServTheHome review URL tried — 404
-
-**8. Calix GP1101X ONT** — ⚠️ Difficult
-- Multiple Calix URL patterns tried — all 404:
-  - `/platforms/ont/gp1101x.html`
-  - `/platforms/systems/ont/gp1101x.html`
-  - `/platforms/intelligent-access-edge/premises-systems/gp1101x.html`
-  - `/systems/gpon/gp1101x.html`
-  - `/content/dam/calix/mycalix-misc/datasheets/gp1101x-datasheet.pdf`
-- Broadbandbuyer — 403
-
-### Remaining Work
-- **Cisco 881**: Have 3 verified links. Could try for more (e.g., zen.co.uk PDF, hi-network.com PDF).
-- **Netgear XS712T**: Have 3-4 verified links. Solid coverage.
-- **TRENDnet TEG-30284**: Have 1 strong verified link. Need more (try datasheet PDF URL).
-- **TP-Link SG3210XHP-M2**: Have 1-2 verified links. Need TP-Link datasheet PDF URL.
-- **Dell PowerConnect 5448**: Have 1 verified link. Need more (try archive.org, third-party reviews).
-- **Cisco SG300-52**: 0 verified product-specific links. Need to try archive.org for cached datasheet, or third-party sites.
-- **Netgear GS116E**: 0 verified links. Netgear blocks PDFs (403) and product pages are 404 or JS-rendered. Need to try archive.org, ManualsLib with correct ID, or third-party sites.
-- **Calix GP1101X**: 0 verified links. Calix requires login/partner access. Need to try ISP documentation sites, FCC filings, or third-party sources.
-
-### Critical Context
-- DuckDuckGo HTML search is CAPTCHA-blocked after ~2 queries per session
-- Many manufacturer sites (Netgear downloads, Calix) block or require authentication
-- Cisco removed all documentation for retired 300-series switches
-- ManualsLib URL IDs don't always correspond to the expected product
-- Webfetch can download PDFs (returns binary), confirming the link is live
-- The final output format should list each device with numbered links marked LIVE or DEAD with reasons
+### What Remains
+- Devices 1, 4, and 6 need more live links (only 1 or 0 found each)
+- Could try: different archive.org snapshot dates, other third-party sites (NetworkWorld reviews, ServersPlus spec pages, etc.), Cisco community/forum pages, direct PDF links
+- Final formatted output per device hasn't been delivered yet
+- No files were modified — this is a pure research/URL-verification task

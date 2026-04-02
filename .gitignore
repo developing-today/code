@@ -27,6 +27,8 @@ result*
 **/result*
 !test/result*
 !**/test/result*
+!tests/result*
+!**/tests/result*
 target
 **/target
 targets
@@ -54,6 +56,8 @@ sources/**/data
 **/.ssh/
 .direnv
 result*
+!**/tests/results/
+!tests/results/
 *.qcow2
 .nixie
 
