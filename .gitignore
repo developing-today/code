@@ -115,3 +115,4 @@ ses_*/*.json
 .opencode/worktrees/
 .iroh*
 test.*
+pkgs/roc/platforms/rust-basic-cli

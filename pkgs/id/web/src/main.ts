@@ -1035,6 +1035,15 @@ async function init(): Promise<void> {
               this.loadFileTags(filename);
             }
           },
+          (hash: string, _name: string) => {
+            // NewVersion callback — update the stored doc hash so the next save
+            // uses the correct doc_id without requiring a page reload or WS reconnect
+            console.log("[id] NewVersion received: updating docId to", hash);
+            const editorContainer = document.getElementById("editor-container");
+            if (editorContainer) {
+              editorContainer.dataset.docId = hash;
+            }
+          },
         );
         console.log("[id] Collab connection initiated");
       } catch (err) {

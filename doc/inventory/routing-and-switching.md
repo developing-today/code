@@ -6,7 +6,7 @@
 
 ## Core Fabric Switches
 
-### Celestica DX010 (4x)
+### Celestica DX010 (4x) (*- 1 is missing fans/psu)
 
 | Attribute | Value |
 |---|---|
@@ -48,7 +48,7 @@
 | **L2 Features** | VLAN (4094), LACP, STP/RSTP/MSTP, vLAG (IBM's MC-LAG) |
 | **L3 Features** | Static routes, OSPF, BGP, ECMP, VRRP, SVIs |
 | **MC-LAG** | Yes (vLAG - IBM/Lenovo virtual LAG, pairs of 2) |
-| **Stacking** | No (uses vLAG for multi-chassis) |
+| **Stacking** | Yes (up to 8 switches, single IP management, uses QSFP+ 40G ports as stacking links; ring or daisy-chain topology) |
 | **Class** | Enterprise / Data Center TOR |
 | **Released** | ~2012 |
 | **EOL** | ~2018 (IBM sold networking to Lenovo 2014, became G8272 line) |
@@ -56,7 +56,7 @@
 
 ---
 
-### IBM RackSwitch G8264e (1x)
+### IBM RackSwitch G8264e (1x) (G8264T)
 
 | Attribute | Value |
 |---|---|
@@ -73,15 +73,15 @@
 | **L2 Features** | VLAN, LACP, STP/RSTP/MSTP, vLAG |
 | **L3 Features** | Static routes, OSPF, BGP, ECMP, VRRP, SVIs |
 | **MC-LAG** | Yes (vLAG) |
-| **Stacking** | No |
+| **Stacking** | Likely yes (same platform/firmware as G8264; no dedicated product guide to confirm independently, but shares ASIC, NOS, and QSFP+ stacking port design) |
 | **Class** | Enterprise / Data Center TOR |
 | **Released** | ~2012 |
 | **EOL** | ~2018 |
-| **Notes** | Copper 10GBASE-T variant of G8264. Higher power consumption (~300-400W vs ~200W for SFP+ model) due to copper PHY. Uses standard Cat6a/Cat7 cabling. Useful for connecting servers without SFP+ NICs. |
+| **Notes** | Copper 10GBASE-T variant of G8264. Higher power consumption (~300-400W vs ~200W for SFP+ model) due to copper PHY. Uses standard Cat6a/Cat7 cabling. Useful for connecting servers without SFP+ NICs. Stacking uses the same 4x QSFP+ 40G ports as the G8264; cross-model stacking with G8264 SFP+ units is plausible but unconfirmed. |
 
 ---
 
-### IBM RackSwitch G8316 (2x)
+### IBM RackSwitch G8316 (4x)
 
 | Attribute | Value |
 |---|---|
@@ -505,9 +505,9 @@
 | **Dell PowerConnect 5448** | Yes | Proprietary stacking ports/cables | Up to 12 units | Single management IP for the stack, shared config |
 | **Cisco 2960-S/X** | Yes | FlexStack / FlexStack-Plus | Up to 4-8 units | Original 2960 (non-S/X): No stacking. S/X variants only |
 | **Cisco 3560** | No | N/A | N/A | 3750 is the stackable variant of this generation |
-| **IBM G8264** | No | Uses vLAG (MC-LAG) instead | 2 (vLAG pair) | vLAG provides multi-chassis redundancy, not stacking |
-| **IBM G8264e** | No | Uses vLAG instead | 2 (vLAG pair) | Same as G8264 |
-| **IBM G8316** | No | Uses vLAG instead | 2 (vLAG pair) | Same as G8264 |
+| **IBM G8264** | **Yes** | QSFP+ 40G stacking links | Up to 8 units | Single IP management, ring or daisy-chain topology; also supports vLAG (pairs of 2) independently |
+| **IBM G8264e** | **Likely yes** | QSFP+ 40G stacking links (same platform as G8264) | Up to 8 units (unconfirmed) | Same ASIC/NOS as G8264; no dedicated product guide to confirm independently. Also supports vLAG |
+| **IBM G8316** | No | Uses vLAG instead | 2 (vLAG pair) | Spine/aggregation switch; no stacking feature, vLAG only |
 | **Celestica DX010** | No | Uses MC-LAG instead | 2 (MC-LAG pair) | SONiC MC-LAG for multi-chassis |
 | **Arista 7050QX-32-F** | No | Uses MLAG instead | 2 (MLAG pair) | MLAG for multi-chassis, ECMP for beyond 2 |
 | **Mellanox SX6036** | No | N/A | N/A | No stacking or MC-LAG |
@@ -521,12 +521,12 @@
 
 | Device | Qty | Max Port Speed | Total High-Speed Ports | Managed | L3 | MC-LAG | Stacking | Class | Era |
 |---|---|---|---|---|---|---|---|---|---|
-| **Celestica DX010** | 4 | 100GbE | 32x QSFP28 | Yes | Yes | Yes | No | DC | 2016 |
+| **Celestica DX010** | 4* | 100GbE | 32x QSFP28 | Yes | Yes | Yes | No | DC | 2016 |
 | **Arista 7050QX-32-F** | 1 | 40GbE | 32x QSFP+ | Yes | Yes | Yes (MLAG) | No | DC | 2013 |
 | **IBM Mellanox SX6036** | 1 | 56G IB / 40GbE | 36x QSFP | Yes | Limited | No | No | HPC/DC | 2013 |
-| **IBM G8316** | 2 | 40GbE | 16x QSFP+ | Yes | Yes | Yes (vLAG) | No | DC Spine | 2012 |
-| **IBM G8264** | 3 | 10GbE / 40GbE | 48x SFP+ + 4x QSFP+ | Yes | Yes | Yes (vLAG) | No | DC TOR | 2012 |
-| **IBM G8264e** | 1 | 10GbE / 40GbE | 48x 10GBASE-T + 4x QSFP+ | Yes | Yes | Yes (vLAG) | No | DC TOR | 2012 |
+| **IBM G8316** | 4 | 40GbE | 16x QSFP+ | Yes | Yes | Yes (vLAG) | No | DC Spine | 2012 |
+| **IBM G8264** | 3 | 10GbE / 40GbE | 48x SFP+ + 4x QSFP+ | Yes | Yes | Yes (vLAG) | **Yes (8)** | DC TOR | 2012 |
+| **IBM G8264e** | 1 | 10GbE / 40GbE | 48x 10GBASE-T + 4x QSFP+ | Yes | Yes | Yes (vLAG) | **Likely** | DC TOR | 2012 |
 | **Mono Gateway** | 3 | 10GbE | 2x SFP+ + 3x 1G | Yes | Yes | No | No | Router | 2022 |
 | **Calix GP1101X** | 1 | 10GbE | 1x 10GBASE-T | No | No | No | No | ISP CPE | 2022 |
 | **Netgear XS712T** | 1 | 10GbE | 12x 10GBASE-T | Smart | No | No | No | Prosumer | 2014 |
@@ -542,6 +542,8 @@
 | **Cisco 881** | 1 | 100Mbps | 5x FE | Yes | Yes | No | No | Router | 2008 |
 | **Cisco ASA 5505** | 1 | 100Mbps | 8x FE | Yes | Firewall | No | No | Firewall | 2006 |
 | **Cisco 4402 WLC** | 1 | 1GbE | 4x RJ45 | Yes | N/A | No | No | WLAN Ctrl | 2006 |
+
+- *: 1 DX010 is missing fans/psu
 
 ---
 

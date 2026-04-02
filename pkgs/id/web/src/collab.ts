@@ -10,6 +10,7 @@
  * - [4, clientID, head, anchor, name?, idleSecs?] - Cursor position
  * - [5, error] - Error message
  * - [6, clientID] - Cursor removed (client disconnected)
+ * - [7, hash, name] - NewVersion: document saved, new content hash
  *
  * Content Modes:
  * - "rich" - ProseMirror JSON files, full editor
@@ -49,6 +50,7 @@ const MSG = {
   CURSOR: 4,
   ERROR: 5,
   CURSOR_REMOVE: 6,
+  NEW_VERSION: 7,
   AUTH: 8,
   AUTH_OK: 9,
 } as const;
@@ -91,6 +93,7 @@ export function initCollab(
   onTokenRefresh?: (token: string) => void,
   onStatus?: StatusCallback,
   onEditorReady?: (editor: EditorInstance) => void,
+  onNewVersion?: (hash: string, name: string) => void,
 ): CollabConnection {
   // Build query parameters for the WebSocket URL (no token — sent as first message)
   const params = new URLSearchParams();
@@ -358,6 +361,17 @@ export function initCollab(
 
         console.log("[collab] Cursor removed for client", clientID);
         removeCursor(editorInstance.view, clientID);
+        break;
+      }
+
+      case MSG.NEW_VERSION: {
+        // [7, hash, name] — document was saved, new content hash available
+        const hash = msg[1] as string;
+        const name = msg[2] as string;
+        console.log("[collab] NewVersion: hash=%s, name=%s", hash, name);
+        if (onNewVersion) {
+          onNewVersion(hash, name);
+        }
         break;
       }
 

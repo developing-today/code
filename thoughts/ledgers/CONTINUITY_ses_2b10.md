@@ -1,78 +1,48 @@
 ---
 session: ses_2b10
-updated: 2026-04-02T16:05:12.268Z
+updated: 2026-04-02T22:41:38.242Z
 ---
 
+## Summary of Work Done So Far
 
+### Overall Project
+Building a network infrastructure for a homelab with IBM/Lenovo switches and SONiC-based switches, documented across two main files.
 
-## Conversation Summary
+### Completed Work
 
-### Task/Goal
-Designing a complete network topology for a homelab Kubernetes cluster.
+#### 1. Network Topology Design (`docs/network-topology.md`) ✅
+- Designed 3-VLAN hybrid port topology with DX010 MC-LAG pair and Mono routers
+- Decided on MTU, PMTUD, ARP sysctls, hybrid port design
+
+#### 2. Inventory Documentation Fixes (`doc/inventory/routing-and-switching.md`) ✅
+- **G8264 stacking**: Corrected from "No" → "Yes (up to 8 switches, QSFP+ 40G, ring or daisy-chain)" based on Lenovo Press TIPS1272
+- **G8264e stacking**: Corrected from "No" → "Likely yes (same platform/firmware)"
+- **Stacking Reference Table** (lines 508-510): Updated G8264=Yes, G8264e=Likely, G8316=No
+- **Summary Table** (lines 528-529): Updated G8264="Yes (8)", G8264e="Likely"
+- TIPS1272 and TIPS0842 already added to references
+
+#### 3. G8316 Link Review (8 URLs from user) ✅
+Reviewed 8 user-provided links for G8316 stacking/vLAG info:
+- **Key discovery**: TIPS0842 and IBM Support page both list "Stacking LEDs to indicate Master/Member" in physical specs, despite stacking NOT being listed as a feature. This is ambiguous — may refer to vLAG master/member roles.
+- **G8316 confirmed capabilities**: vLAG, VRRP, LACP (64 trunk groups/32 ports each), Hot Links, full L3 (OSPF, BGP, RIP), OpenFlow 1.0/1.3.1, CEE/DCB, FCoE transit, 128K MAC, 9216 jumbo
+- Several links were dead, paywalled, or unreadable PDFs; identified 2-3 new links worth adding to references
+
+### Remaining Work (This Task)
+1. 🔲 **Report G8316 "Stacking LEDs" finding** to user and discuss implications — possibly update G8316 stacking from "No" to "Possible/Unclear"
+2. 🔲 **Add new reference links** to G8316 section (IBM Install Guide PDF, Switch Center 8.1.4 Release Notes)
+
+### Remaining Work (Broader Project)
+- 🔲 SONiC MC-LAG configuration for DX010-1/DX010-2
+- 🔲 OpenWrt config for Monos
+- 🔲 Intermediate switch selection
+- 🔲 SONiC version/build selection
 
 ### Hardware Inventory
-- **4× Celestica DX010 switches** — Broadcom Tomahawk ASIC, 32× QSFP28 100G ports each, running SONiC (used/surplus, may fail)
-- **3× Mono Gateway routers** (mono.si) — NXP LS1046A with DPAA hardware offload, 2× SFP+ 10G + 3× RJ45 1G each, running OpenWrt
-- **1× prosumer 10G managed switch** — supports LACP, cannot form MC-LAGs
-- **1× ONT** — ethernet, 2G ISP
-- **~12 cluster nodes** — dual NICs, 4–16 NVMe each (Samsung 990 Pro), running Kubernetes with LINSTOR/DRBD/Cozystack
+- 2× G8316 (16×40G)
+- 2× G8264 (48×10G SFP+ + 4×40G)
+- 1× G8264e (48×10GBase-T + 4×40G)
+- DX010 MC-LAG pair (SONiC)
+- Mono routers (OpenWrt)
 
-### Key Decisions Made
-
-**DX010 allocation:**
-- DX010-1 + DX010-2: MC-LAG pair (pairs only, always exactly 2 switches), all client downlinks
-- DX010-3 & DX010-4: cold spares on shelf
-- 4×100G peer link between DX010-1 and DX010-2 (user's choice despite analysis showing 1×100G suffices — peer link carries almost zero data when all nodes dual-home to both switches)
-
-**Mono roles:**
-- Mono 1: edge router (NAT, firewall, WAN-facing)
-- Mono 2: internal gateway (DHCP, DNS, VRRP master)
-- Mono 3: internal gateway (DHCP, DNS, VRRP backup)
-
-**Intermediate switch** replaces DX010-3 for WAN aggregation (3.2Tbps DX010 overkill for 2Gbps WAN).
-
-### Final Topology — 3-VLAN Design (DECIDED in latest exchange)
-
-```
-ONT → VLAN 10 ← Mono 1 → VLAN 20 ← Mono 2/3 → VLAN 30 ← DX010-1/DX010-2
-```
-
-All VLANs on the intermediate switch, all access ports (untagged), no trunking.
-
-| VLAN               | Purpose           | Ports                                     | MTU  |
-| ------------------ | ----------------- | ----------------------------------------- | ---- |
-| VLAN 10 (WAN)      | ONT ↔ Mono 1      | ONT + Mono 1 SFP+0                        | 1500 |
-| VLAN 20 (transit)  | Mono 1 ↔ Mono 2/3 | Mono 1 SFP+1/RJ45 + Mono 2/3 RJ45         | 1500 |
-| VLAN 30 (internal) | Mono 2/3 ↔ DX010s | Mono 2/3 SFP+ + DX010-1 + DX010-2 uplinks | 9216 |
-
-**DX010 is now pure L2 (DECIDED — gateway removed):**
-- Single VLAN, all ports (peer link, downlinks, uplinks) — 9216 MTU everywhere
-- No SVIs, no L3, no anycast gateway
-- Pure MC-LAG L2 switch — much simpler SONiC config
-- VLAN 30 on intermediate switch extends L2 domain from nodes to Mono 2/3 SFP+ ports
-- MTU boundary at Mono 2/3 (routes from 9216 SFP+ side to 1500 RJ45 side, sends ICMP "too big" for PMTUD)
-
-**Node default gateway** = Mono 2/3 VRRP VIP (e.g., 10.0.200.1), handed out via DHCP. No DX010 involvement in routing.
-
-### Bonding & VRRP Design
-- **Mono bonding:** balance-tlb (mode 5) for mixed 10G+1G speeds. Two bonds per Mono: bond-sfp (DX010-facing) and bond-rj45 (Mono1-facing)
-- **VRRP (Keepalived):** Mono 2 priority 120, Mono 3 priority 110, track_interface weights (bond-sfp down: -30, bond-rj45 down: -50). Failover chain: M2(20G)→M3(20G)→M2(3G)→M3(3G)
-- **Route metrics:** bond-sfp metric 10 (primary), bond-rj45 metric 100 (backup)
-
-### Traffic Flows
-- **Node → internet:** Node → DX010 (L2) → intermediate switch VLAN 30 → Mono 2/3 (VRRP VIP, first L3 hop) → VLAN 20 → Mono 1 (NAT) → VLAN 10 → ONT
-- **Node → node:** Pure L2, stays within DX010 MC-LAG pair
-
-### Technical Principles Established
-- MC-LAG and spine-leaf are fundamentally at odds
-- LS1046A DPAA = hardware-accelerated routing (~10–50μs for NAT)
-- VLAN isolation eliminates STP entirely (SONiC STP unreliable)
-- L2 switches silently drop oversized frames (no ICMP), so MTU boundaries must be at L3 routers
-- Intermediate switch VLAN 30 must support jumbo frames (9216)
-
-### Remaining Work
-1. **SONiC MC-LAG config** for DX010-1/DX010-2 (now simpler: pure L2, single VLAN, no SVIs)
-2. **OpenWrt config for Monos** — bonding, VRRP, routing, NAT, DHCP/DNS, jumbo MTU on SFP+
-3. **Intermediate switch hardware selection** — needs ≥8× SFP+ 10G + 9× RJ45 1G, VLAN support, jumbo frame support on VLAN 30
-4. **SONiC version/build** not yet confirmed
-5. User was offered to start writing configs — hasn't responded yet
+### Key Constraint
+- Prosumer switch supports LACP but cannot form MC-LAGs itself.
