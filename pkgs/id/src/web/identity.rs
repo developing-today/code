@@ -90,7 +90,7 @@ pub struct IdentityStore {
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
     verifying_key: VerifyingKey,
     /// SQLite database for persistent storage (`None` for ephemeral/test mode).
-    db: Option<libsql::Database>,
+    db: Option<Arc<libsql::Database>>,
 }
 
 impl std::fmt::Debug for IdentityStore {
@@ -196,7 +196,7 @@ impl IdentityStore {
             name_watchers: Arc::new(RwLock::new(name_watchers_map)),
             signing_key: Arc::new(signing_key),
             verifying_key,
-            db: Some(db),
+            db: Some(Arc::new(db)),
         })
     }
 
