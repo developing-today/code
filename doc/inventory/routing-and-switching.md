@@ -542,3 +542,149 @@
 | **Cisco 881** | 1 | 100Mbps | 5x FE | Yes | Yes | No | No | Router | 2008 |
 | **Cisco ASA 5505** | 1 | 100Mbps | 8x FE | Yes | Firewall | No | No | Firewall | 2006 |
 | **Cisco 4402 WLC** | 1 | 1GbE | 4x RJ45 | Yes | N/A | No | No | WLAN Ctrl | 2006 |
+
+---
+
+## References
+
+> **Note on link availability:** Many of the devices in this inventory are end-of-life (EOL)
+> or discontinued. Cisco [deliberately removes all documentation for retired products][cisco-retired].
+> IBM/Lenovo has migrated legacy docs to Lenovo Press but coverage is incomplete.
+> Mellanox documentation was absorbed into NVIDIA's portal and many legacy PDFs are gone.
+> Where original manufacturer documentation is no longer available, we link to archived copies
+> (web.archive.org), third-party datasheets, or community resources. Devices with no surviving
+> documentation are listed with a note explaining what was attempted.
+>
+> [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
+
+### Celestica Haliburton (DX010)
+
+1. [SONiC GitHub — Celestica Platform Modules](https://github.com/sonic-net/sonic-buildimage/tree/master/platform/broadcom/sonic-platform-modules-cel) — SONiC platform driver source code for Celestica switches (dx010, haliburton directories)
+2. [SONiC GitHub — DX010 Platform Definition (platform.json)](https://github.com/sonic-net/sonic-buildimage/blob/master/device/celestica/x86_64-cel_seastone-r0/platform.json) — Hardware spec: 32x QSFP28, 5 fan drawers, 2 PSUs, breakout modes (1x100G, 2x50G, 4x25G)
+3. [SONiC Foundation](https://sonicfoundation.dev/) — SONiC project home at the Linux Foundation
+4. [SONiC Wiki — Supported Devices & Architecture](https://github.com/sonic-net/SONiC/wiki) — Supported platforms list, building guides, and architecture documentation
+
+### IBM/Lenovo RackSwitch G8264
+
+1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, and configuration
+2. [DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html) — Full datasheet PDF
+3. [ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264) — Installation and user guides
+4. [karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf) — Marketing product brief
+5. [eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf) — Product brochure with diagrams
+
+### IBM/Lenovo RackSwitch G8264e
+
+The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
+
+1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (covers G8264e variants)
+2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — Related G8264 campus switch variant
+
+<!-- No additional manufacturer documentation found for the G8264e specifically -->
+
+### IBM/Lenovo RackSwitch G8316
+
+1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
+2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
+3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
+4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
+5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
+
+### IBM/Mellanox SX6036
+
+1. [Mellanox SX6036 Product Brief (PDF, archived)](https://web.archive.org/web/20210124132727/https://www.mellanox.com/related-docs/prod_ib_switch_systems/PB_SX6036.pdf) — Official product brief via Wayback Machine (Mellanox site absorbed by NVIDIA, originals removed)
+2. [ManualsLib — Mellanox SX60 Series](https://www.manualslib.com/brand/mellanox/) — Mellanox manuals index including SX60 series and MSX6036G gateway variant manuals
+3. [NVIDIA InfiniBand OFED Documentation — Fabric Utilities](https://docs.nvidia.com/networking/display/MLNXOFEDv461000/InfiniBand+Fabric+Utilities) — FDR InfiniBand technology reference (covers the FDR 56Gbps technology used in the SX6036)
+
+### Arista 7050QX-32
+
+1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32)
+
+<!-- Arista requires a login to download PDF datasheets directly; the product page has inline specs -->
+
+### Mono Gateway (mono.si)
+
+The Mono Gateway manufacturer website (mono.si) is completely offline. Documentation is referenced via the NXP SoC that powers the device.
+
+1. [NXP LS1046A Product Page](https://www.nxp.com/products/processors-and-microcontrollers/arm-processors/layerscape-processors/layerscape-1046a-and-1026a-processors:LS1046A) — SoC datasheet and reference manual
+2. [NXP LS1046A Fact Sheet (PDF)](https://www.nxp.com/docs/en/fact-sheet/LS1046AFS.pdf) — SoC specifications summary
+
+### Calix GP1101X
+
+No publicly accessible documentation has been found for the Calix GP1101X. Calix restricts all product documentation behind a partner/customer login portal. This is a 10G GPON ONT used as ISP customer premises equipment.
+
+<!-- Attempted: calix.com product page (404), FCC ID search (no results), community forums (login required) -->
+
+### Netgear XS712T
+
+1. [Netgear XS712T Product Page](https://www.netgear.com/support/product/xs712t/) — Support downloads, firmware, and documentation
+2. [Netgear XS712T Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf) — Official product datasheet
+3. [Netgear ProSAFE 10-Gigabit Smart Switches Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/ProSAFE_10-Gigabit_Smart_Managed_Switches.pdf) — Combined family datasheet
+
+### TRENDnet TEG-30284
+
+1. [TRENDnet TEG-30284 Product Page](https://www.trendnet.com/products/28-port-10g-web-smart-switch-TEG-30284) — Official product page with specifications and downloads
+
+<!-- TRENDnet has limited documentation beyond the product page for this model -->
+
+### TP-Link SG3210XHP-M2
+
+1. [TP-Link SG3210XHP-M2 Product Page](https://www.tp-link.com/us/business-networking/omada-switch-poe/sg3210xhp-m2/) — Official product page with specifications, datasheet, and firmware
+
+### Dell PowerConnect 5448
+
+1. [Dell PowerConnect 5448 Support Page](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/overview) — Support overview, drivers, and documentation
+
+<!-- Dell has limited legacy documentation for the PowerConnect 5448 series -->
+
+### Cisco Catalyst 3560
+
+1. [Cisco Catalyst 3560 Series End-of-Life Information](https://www.cisco.com/c/en/us/obsolete/switches/cisco-catalyst-3560-series-switches.html) — EOL notices and last-available support references
+
+<!-- Original datasheets and configuration guides have been removed per Cisco's retirement policy -->
+
+### Cisco Catalyst 2960
+
+1. [Cisco Catalyst 2960 Series LAN Lite Switches Data Sheet](https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/data_sheet_c78-728003.html) — Datasheet (may be intermittently available)
+2. [Cisco Catalyst 2960 Series Switches](https://www.cisco.com/c/en/us/products/switches/catalyst-2960-series-switches/index.html) — Product family page
+
+### Cisco 2811
+
+No surviving manufacturer documentation. Cisco has removed all datasheets, configuration guides, and EOL bulletins for the 2800 series. The 2811 was a modular integrated services router with 2x GbE ports and HWIC/AIM slots.
+
+<!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (403/404),
+     ManualsLib (returned wrong products). Cisco's retired products page confirms intentional removal. -->
+
+### Cisco 1841
+
+No surviving manufacturer documentation. Cisco has removed all documentation for the 1800 series integrated services routers. The 1841 was a modular router with 2x FastEthernet ports and HWIC slots.
+
+<!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (404) -->
+
+### Cisco 881
+
+1. [Cisco 880 Series Integrated Services Routers Data Sheet](https://www.cisco.com/c/en/us/products/collateral/routers/800-series-routers/datasheet-c78-731755.html) — Covers 881, 887, 891 and other 880 variants
+2. [Cisco 880 Series Product Page](https://www.cisco.com/c/en/us/products/routers/800-series-routers/index.html) — 800 series family page
+3. [ManualsLib — Cisco 881 Manuals](https://www.manualslib.com/brand/cisco/?q=881) — Hardware installation and configuration guides
+
+### Cisco ASA 5505
+
+1. [Cisco ASA 5505 Adaptive Security Appliance Data Sheet](https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html) — Product datasheet (may be intermittently available)
+2. [Cisco ASA 5505 Support Page](https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html) — Support resources and EOL information
+
+### Cisco SG300-52
+
+No surviving manufacturer documentation. Cisco has removed documentation for the Small Business 300 series managed switches. The SG300-52 was a 52-port Gigabit L3-lite managed switch with 2x SFP combo uplinks.
+
+<!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404) -->
+
+### Netgear GS116E (ProSAFE Plus)
+
+No surviving manufacturer documentation. Netgear has removed product pages and datasheet downloads for the GS116E. This was a 16-port Gigabit Plus (smart-managed) desktop switch.
+
+<!-- Attempted: netgear.com product/support pages (404), datasheet downloads (403), archive.org (no cache) -->
+
+### Cisco 4402 Wireless LAN Controller
+
+1. [Cisco 4400 Series Wireless LAN Controllers End-of-Life Notice](https://www.cisco.com/c/en/us/obsolete/wireless/cisco-4400-series-wireless-lan-controllers.html) — Retirement notification and migration guidance
+
+<!-- Original datasheets and configuration guides removed per Cisco's retirement policy -->
