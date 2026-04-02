@@ -98,9 +98,11 @@
       "variant": "thinking",
     },
   },
-  // "instructions": [
-  // "~/.config/opencode/plugin/shell-strategy/shell_strategy.md"
-  // ],
+  "instructions": [
+    ".opencode/instructions/codedb.md",
+    ".opencode/instructions/chrome-devtools.md",
+    ".opencode/instructions/context7.md",
+  ],
   "compaction": {
     "reserved": 8192,
   },
@@ -129,7 +131,7 @@
     "codedb": {
       "type": "local",
       "command": ["/home/user/bin/codedb", "mcp"],
-      "env": {
+      "environment": {
         "CODEDB_NO_TELEMETRY": "1",
       },
     },
