@@ -266,7 +266,15 @@ export function initCollab(
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
           } catch (err) {
-            console.error("[collab] Failed to apply steps:", err);
+            // Step application failed — editor state is desynchronized.
+            // Trigger reconnect to get fresh Init + catch-up from server.
+            console.error("[collab] Failed to apply steps, reconnecting:", err);
+            connected = false;
+            intentionalClose = true;
+            if (currentWs) {
+              currentWs.close(4001, "Step apply failure");
+            }
+            scheduleReconnect();
           }
         }
         break;
@@ -312,13 +320,14 @@ export function initCollab(
         const error = msg[1] as string;
         console.error("[collab] Server error:", error);
 
-        // Version mismatch errors are recoverable via reconnect —
+        // Version mismatch and desync errors are recoverable via reconnect —
         // the server will send a fresh Init with the correct state
-        if (typeof error === "string" && error.includes("Version mismatch")) {
-          console.log("[collab] Version mismatch — scheduling reconnect to resync");
+        if (typeof error === "string" && (error.includes("Version mismatch") || error.includes("desynchronized"))) {
+          console.log("[collab] Recoverable error — scheduling reconnect to resync:", error);
           connected = false;
+          intentionalClose = true;
           if (currentWs) {
-            currentWs.close(4000, "Version mismatch resync");
+            currentWs.close(4000, "Resync");
           }
           scheduleReconnect();
         } else {
