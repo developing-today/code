@@ -1007,3 +1007,139 @@ test.describe("Tab Indentation", () => {
     expect(text).toMatch(/\nhello\n/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Image Upload
+// ---------------------------------------------------------------------------
+
+test.describe("Image Upload", () => {
+  /** Minimal 1×1 transparent PNG (67 bytes). */
+  const PIXEL_PNG = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  /** Upload a PNG via the API and return the parsed JSON response. */
+  async function uploadPng(
+    page: Page,
+    baseURL: string,
+    filename: string,
+  ): Promise<{ hash: string; name: string; url: string }> {
+    const response = await page.request.post(`${baseURL}/api/upload`, {
+      multipart: {
+        file: {
+          name: filename,
+          mimeType: "image/png",
+          buffer: PIXEL_PNG,
+        },
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    return (await response.json()) as { hash: string; name: string; url: string };
+  }
+
+  test("upload endpoint accepts image files", async ({ page, baseURL }) => {
+    const filename = `upload-accept-${Date.now()}.png`;
+    const response = await page.request.post(`${baseURL}/api/upload`, {
+      multipart: {
+        file: {
+          name: filename,
+          mimeType: "image/png",
+          buffer: PIXEL_PNG,
+        },
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+
+    const json = (await response.json()) as { hash: string; name: string; url: string };
+    expect(json.hash).toBeTruthy();
+    expect(json.name).toBeTruthy();
+    expect(json.url).toBeTruthy();
+    expect(json.url).toMatch(/^\/blob\//);
+    expect(json.name).toMatch(/\.png$/);
+  });
+
+  test("upload endpoint rejects non-image files", async ({ page, baseURL }) => {
+    const response = await page.request.post(`${baseURL}/api/upload`, {
+      multipart: {
+        file: {
+          name: "test.txt",
+          mimeType: "text/plain",
+          buffer: Buffer.from("hello world"),
+        },
+      },
+    });
+    expect(response.status()).toBe(400);
+  });
+
+  test("uploaded image is accessible via blob URL", async ({ page, baseURL }) => {
+    const filename = `upload-blob-${Date.now()}.png`;
+    const uploadResult = await uploadPng(page, baseURL!, filename);
+
+    const blobResp = await page.request.get(`${baseURL}${uploadResult.url}`);
+    expect(blobResp.ok()).toBeTruthy();
+    expect(blobResp.headers()["content-type"]).toContain("image/png");
+  });
+
+  test("uploaded image appears in file list", async ({ page, baseURL }) => {
+    const filename = `e2e-test-${Date.now()}.png`;
+    await uploadPng(page, baseURL!, filename);
+
+    await page.goto("/");
+    // Wait for the file list to load and contain our filename
+    await page.waitForFunction((name) => document.body.textContent?.includes(name) ?? false, filename, {
+      timeout: 15_000,
+    });
+
+    const bodyText = await page.locator("body").textContent();
+    expect(bodyText).toContain(filename);
+  });
+
+  test("image node renders in markdown editor", async ({ page, baseURL }) => {
+    const mdName = `img-test-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Upload a small PNG
+    const uploadResult = await uploadPng(page, baseURL!, `img-embed-${Date.now()}.png`);
+
+    // Save the markdown file with an image node
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: hash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "image",
+                  attrs: { src: uploadResult.url, alt: "test image" },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Navigate to the file
+    await page.goto(`/file/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Assert an <img> tag is visible inside the ProseMirror editor with the correct src
+    const img = page.locator("#editor .ProseMirror img");
+    await expect(img).toBeVisible({ timeout: 15_000 });
+    const src = await img.getAttribute("src");
+    expect(src).toContain(uploadResult.url);
+  });
+});
