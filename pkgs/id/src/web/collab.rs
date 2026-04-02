@@ -223,6 +223,8 @@ pub struct Document {
     pub client_count: AtomicUsize,
     /// When the last client disconnected (None if clients are connected).
     pub last_client_disconnect: RwLock<Option<Instant>>,
+    /// Current content hash (updated on save).
+    pub hash: RwLock<String>,
 }
 
 impl Document {
@@ -250,6 +252,7 @@ impl Document {
             broadcast: tx,
             client_count: AtomicUsize::new(0),
             last_client_disconnect: RwLock::new(None),
+            hash: RwLock::new(String::new()),
         }
     }
 
@@ -313,24 +316,25 @@ impl CollabState {
     /// the document will be initialized with that content.
     pub async fn get_or_create(
         &self,
-        doc_id: &str,
+        filename: &str,
+        hash: &str,
         initial_content: Option<&[u8]>,
-        filename: Option<&str>,
     ) -> Arc<Document> {
         let read = self.documents.read().await;
-        if let Some(doc) = read.get(doc_id) {
+        if let Some(doc) = read.get(filename) {
             return Arc::clone(doc);
         }
         drop(read);
 
         let mut write = self.documents.write().await;
         // Double-check after acquiring write lock
-        if let Some(doc) = write.get(doc_id) {
+        if let Some(doc) = write.get(filename) {
             return Arc::clone(doc);
         }
 
-        let doc = Arc::new(Document::with_content(initial_content, filename));
-        write.insert(doc_id.to_owned(), Arc::clone(&doc));
+        let doc = Arc::new(Document::with_content(initial_content, Some(filename)));
+        write.insert(filename.to_owned(), Arc::clone(&doc));
+        *doc.hash.write().await = hash.to_owned();
         doc
     }
 
@@ -345,9 +349,9 @@ impl CollabState {
     ///
     /// Called by `save_handler` when a file is saved with a new hash.
     /// Broadcasts `NewVersion` to all clients connected to the old hash session.
-    pub async fn notify_new_version(&self, old_doc_id: &str, new_hash: &str, filename: &str) {
+    pub async fn notify_new_version(&self, filename: &str, new_hash: &str) {
         let read = self.documents.read().await;
-        if let Some(doc) = read.get(old_doc_id) {
+        if let Some(doc) = read.get(filename) {
             let msg = CollabMessage::NewVersion {
                 hash: new_hash.to_owned(),
                 name: filename.to_owned(),
@@ -355,13 +359,14 @@ impl CollabState {
             let receivers = doc.broadcast.send(msg).unwrap_or(0);
             if receivers > 0 {
                 tracing::info!(
-                    "[collab] Notified {} client(s) about new version of '{}': {} -> {}",
+                    "[collab] Notified {} client(s) about new version of '{}': hash -> {}",
                     receivers,
                     filename,
-                    old_doc_id,
                     new_hash
                 );
             }
+            // Update the stored hash
+            *doc.hash.write().await = new_hash.to_owned();
         }
     }
 
@@ -640,27 +645,38 @@ pub async fn ws_collab_handler(
 async fn handle_collab_socket(
     socket: WebSocket,
     doc_id: String,
-    filename: Option<String>,
+    _filename: Option<String>,
     collab: Arc<CollabState>,
     store: iroh_blobs::api::Store,
     identity_store: super::IdentityStore,
 ) {
     use std::sync::atomic::Ordering;
 
-    tracing::info!(
-        "[collab] New connection for doc '{}' (page load), filename={:?}",
-        doc_id,
-        filename,
-    );
+    tracing::info!("[collab] New connection for doc '{}' (page load)", doc_id,);
 
-    // Try to load file content from the store (doc_id is the hash)
-    let initial_content = load_file_content(&store, &doc_id).await;
-    if initial_content.is_some() {
-        tracing::debug!("[collab] Loaded file content from store for '{}'", doc_id);
-    }
+    // doc_id is now a filename — resolve to hash, then load content
+    let hash_str = super::routes::get_hash_for_name(&store, &doc_id).await;
+    let initial_content = if let Some(h) = &hash_str {
+        let content = load_file_content(&store, h).await;
+        if content.is_some() {
+            tracing::debug!(
+                "[collab] Loaded file content from store for '{}' (hash: {})",
+                doc_id,
+                h
+            );
+        }
+        content
+    } else {
+        tracing::debug!("[collab] No hash found for filename '{}'", doc_id);
+        None
+    };
 
     let doc = collab
-        .get_or_create(&doc_id, initial_content.as_deref(), filename.as_deref())
+        .get_or_create(
+            &doc_id,
+            hash_str.as_deref().unwrap_or(""),
+            initial_content.as_deref(),
+        )
         .await;
     let client_count = doc.client_connected();
     tracing::info!(

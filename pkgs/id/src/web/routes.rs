@@ -388,9 +388,15 @@ async fn edit_handler(
                     // Editable modes - convert bytes to HTML for editor
                     let content = get_file_content_html(&bytes);
                     if is_partial {
-                        Html(render_editor(&hash, &name, &content))
+                        Html(render_editor(&name, &name, &content, &hash))
                     } else {
-                        Html(render_editor_page(&hash, &name, &content, &state.assets))
+                        Html(render_editor_page(
+                            &name,
+                            &name,
+                            &content,
+                            &hash,
+                            &state.assets,
+                        ))
                     }
                 }
             }
@@ -398,9 +404,15 @@ async fn edit_handler(
         Err(err_msg) => {
             // Error loading file
             if is_partial {
-                Html(render_editor(&hash, &name, &err_msg))
+                Html(render_editor(&name, &name, &err_msg, &hash))
             } else {
-                Html(render_editor_page(&hash, &name, &err_msg, &state.assets))
+                Html(render_editor_page(
+                    &name,
+                    &name,
+                    &err_msg,
+                    &hash,
+                    &state.assets,
+                ))
             }
         }
     }
@@ -409,7 +421,10 @@ async fn edit_handler(
 /// Look up a content hash for a given tag name.
 ///
 /// Iterates all tags in the store to find one matching `name` and returns its hash.
-async fn get_hash_for_name(store: &iroh_blobs::api::Store, name: &str) -> Option<String> {
+pub(crate) async fn get_hash_for_name(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> Option<String> {
     use futures_lite::StreamExt;
 
     let mut tags = store.tags().list().await.ok()?;
@@ -455,9 +470,9 @@ async fn file_by_name_handler(
         let escaped = html_escape_inline(&name);
         let err_html = format!("<p>File not found: {escaped}</p>");
         if is_partial {
-            return Html(render_editor("", &name, &err_html));
+            return Html(render_editor("", &name, &err_html, ""));
         }
-        return Html(render_editor_page("", &name, &err_html, &state.assets));
+        return Html(render_editor_page("", &name, &err_html, "", &state.assets));
     };
 
     // Get file content bytes from store
@@ -497,18 +512,30 @@ async fn file_by_name_handler(
                 _ => {
                     let content = get_file_content_html(&bytes);
                     if is_partial {
-                        Html(render_editor(&hash, &name, &content))
+                        Html(render_editor(&name, &name, &content, &hash))
                     } else {
-                        Html(render_editor_page(&hash, &name, &content, &state.assets))
+                        Html(render_editor_page(
+                            &name,
+                            &name,
+                            &content,
+                            &hash,
+                            &state.assets,
+                        ))
                     }
                 }
             }
         }
         Err(err_msg) => {
             if is_partial {
-                Html(render_editor(&hash, &name, &err_msg))
+                Html(render_editor(&name, &name, &err_msg, &hash))
             } else {
-                Html(render_editor_page(&hash, &name, &err_msg, &state.assets))
+                Html(render_editor_page(
+                    &name,
+                    &name,
+                    &err_msg,
+                    &hash,
+                    &state.assets,
+                ))
             }
         }
     }
@@ -1124,7 +1151,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     // Notify collab clients editing the old hash about the new version
     state
         .collab
-        .notify_new_version(&req.doc_id, &new_hash_str, &req.name)
+        .notify_new_version(&req.name, &new_hash_str)
         .await;
 
     // Record successful save for rate limiting

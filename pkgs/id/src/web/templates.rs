@@ -411,8 +411,9 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
 /// # Returns
 ///
 /// HTML fragment for the editor.
-pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
+pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> String {
     let doc_id_escaped = html_escape(doc_id);
+    let hash_escaped = html_escape(hash);
     let name_escaped = html_escape(name);
     // URL-encode the filename for WebSocket query parameter
     let name_urlencoded = urlencoding::encode(name);
@@ -445,7 +446,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
     let _ = write!(
         html,
         "                    <a class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap block\" href=\"/blob/{}\" download=\"{}\">original</a>\n",
-        doc_id_escaped, name_escaped
+        hash_escaped, name_escaped
     );
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
@@ -479,8 +480,8 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
 
     let _ = write!(
         html,
-        "    <div class=\"editor-wrapper\" id=\"editor-container\" data-doc-id=\"{}\" data-filename=\"{}\">\n        <div id=\"editor\">{}</div>\n    </div>\n",
-        doc_id_escaped, name_urlencoded, content
+        "    <div class=\"editor-wrapper\" id=\"editor-container\" data-doc-id=\"{}\" data-filename=\"{}\" data-hash=\"{}\">\n        <div id=\"editor\">{}</div>\n    </div>\n",
+        doc_id_escaped, name_urlencoded, hash_escaped, content
     );
 
     // Inline footer - at end of document
@@ -519,9 +520,15 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str) -> String {
 /// # Returns
 ///
 /// A complete HTML document for the editor.
-pub fn render_editor_page(doc_id: &str, name: &str, content: &str, assets: &AssetUrls) -> String {
+pub fn render_editor_page(
+    doc_id: &str,
+    name: &str,
+    content: &str,
+    hash: &str,
+    assets: &AssetUrls,
+) -> String {
     let name_escaped = html_escape(name);
-    let editor_content = render_editor(doc_id, name, content);
+    let editor_content = render_editor(doc_id, name, content, hash);
 
     let mut html = String::with_capacity(4096);
 
@@ -1015,7 +1022,7 @@ mod tests {
 
     #[test]
     fn test_render_editor_has_rename_button() {
-        let html = render_editor("abc123", "test.md", "<p>hello</p>");
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
         assert!(
             html.contains("id=\"rename-btn\""),
             "editor should have rename button"
@@ -1028,7 +1035,7 @@ mod tests {
 
     #[test]
     fn test_render_editor_has_copy_button() {
-        let html = render_editor("abc123", "test.md", "<p>hello</p>");
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
         assert!(
             html.contains("id=\"copy-btn\""),
             "editor should have copy button"
@@ -1041,7 +1048,7 @@ mod tests {
 
     #[test]
     fn test_render_editor_has_data_filename() {
-        let html = render_editor("abc123", "test.md", "<p>hello</p>");
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
         assert!(
             html.contains("data-filename=\"test.md\""),
             "editor should have data-filename attribute"
@@ -1050,7 +1057,12 @@ mod tests {
 
     #[test]
     fn test_render_editor_escapes_filename() {
-        let html = render_editor("abc123", "file with spaces.md", "<p>content</p>");
+        let html = render_editor(
+            "abc123",
+            "file with spaces.md",
+            "<p>content</p>",
+            "testhash123",
+        );
         // URL-encoded filename in data attribute
         assert!(
             html.contains("data-filename=\"file%20with%20spaces.md\""),

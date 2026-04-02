@@ -1036,12 +1036,12 @@ async function init(): Promise<void> {
             }
           },
           (hash: string, _name: string) => {
-            // NewVersion callback — update the stored doc hash so the next save
-            // uses the correct doc_id without requiring a page reload or WS reconnect
-            console.log("[id] NewVersion received: updating docId to", hash);
+            // NewVersion callback — update the stored hash so the next save
+            // sends the correct hash for archiving, without touching the doc_id (filename)
+            console.log("[id] NewVersion received: updating hash to", hash);
             const editorContainer = document.getElementById("editor-container");
             if (editorContainer) {
-              editorContainer.dataset.docId = hash;
+              editorContainer.dataset.hash = hash;
             }
           },
         );
@@ -1081,12 +1081,12 @@ async function init(): Promise<void> {
       const editorContainer = document.getElementById("editor-container");
       if (!editorContainer) return;
 
-      const docId = editorContainer.dataset.docId;
-      const filenameEncoded = editorContainer.dataset.filename;
+      const filenameEncoded = editorContainer.dataset.docId;
       const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+      const hash = editorContainer.dataset.hash;
 
-      if (!docId || !filename) {
-        console.error("[id] Missing doc_id or filename for save");
+      if (!filename || !hash) {
+        console.error("[id] Missing filename or hash for save");
         return;
       }
 
@@ -1104,7 +1104,7 @@ async function init(): Promise<void> {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            doc_id: docId,
+            doc_id: hash,
             name: filename,
             doc: state.doc,
           }),
@@ -1123,12 +1123,8 @@ async function init(): Promise<void> {
         const result = (await response.json()) as { hash: string; name: string; archive_name: string | null };
         console.log("[id] File saved:", result);
 
-        // Update the doc_id in the container to the new hash
-        editorContainer.dataset.docId = result.hash;
-
-        // Update the URL to reflect the new hash
-        const newUrl = `/edit/${result.hash}`;
-        window.history.replaceState(null, "", newUrl);
+        // Update the hash in the container (doc_id stays as filename)
+        editorContainer.dataset.hash = result.hash;
 
         if (saveBtn) {
           saveBtn.textContent = "saved!";
