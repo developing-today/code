@@ -8,6 +8,9 @@ import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
+/** Result from saveFile() for AutoSaveManager to process */
+type SaveResult = { ok: true } | { ok: false; retryAfterMs?: number };
+
 declare global {
   interface Window {
     idApp: IdApp;
@@ -22,7 +25,7 @@ interface IdApp {
   setTheme: (theme: Theme) => void;
   openEditor: (docId: string) => Promise<void>;
   closeEditor: () => void;
-  saveFile: () => Promise<void>;
+  saveFile: () => Promise<SaveResult>;
   createFile: (event: Event) => Promise<void>;
   downloadFile: (format: string) => Promise<void>;
   renameFile: () => Promise<void>;
@@ -1072,14 +1075,14 @@ async function init(): Promise<void> {
       updateStatus("disconnected");
     },
 
-    async saveFile(): Promise<void> {
+    async saveFile(): Promise<SaveResult> {
       if (!this.collab?.editor) {
         console.warn("[id] No editor to save");
-        return;
+        return { ok: false };
       }
 
       const editorContainer = document.getElementById("editor-container");
-      if (!editorContainer) return;
+      if (!editorContainer) return { ok: false };
 
       const filenameEncoded = editorContainer.dataset.docId;
       const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
@@ -1087,7 +1090,7 @@ async function init(): Promise<void> {
 
       if (!filename || !hash) {
         console.error("[id] Missing filename or hash for save");
-        return;
+        return { ok: false };
       }
 
       // Get current editor state
@@ -1097,7 +1100,7 @@ async function init(): Promise<void> {
       try {
         if (saveBtn) {
           saveBtn.disabled = true;
-          saveBtn.textContent = "saving...";
+          saveBtn.textContent = "saving\u2026";
         }
 
         const response = await fetch("/api/save", {
@@ -1110,14 +1113,20 @@ async function init(): Promise<void> {
           }),
         });
 
+        if (response.status === 429) {
+          const errorText = await response.text();
+          console.warn("[id] Save rate limited:", errorText);
+          // Parse "Save rate limited. Try again in Xs." → extract seconds
+          const match = errorText.match(/(\d+)s/);
+          const serverDelaySec = match ? Number.parseInt(match[1], 10) : 5;
+          const RATE_LIMIT_BUFFER_MS = 500;
+          return { ok: false, retryAfterMs: serverDelaySec * 1000 + RATE_LIMIT_BUFFER_MS };
+        }
+
         if (!response.ok) {
           const errorText = await response.text();
           console.error("[id] Save failed:", errorText);
-          if (saveBtn) saveBtn.textContent = "error!";
-          setTimeout(() => {
-            if (saveBtn) saveBtn.textContent = "save";
-          }, 2000);
-          return;
+          return { ok: false };
         }
 
         const result = (await response.json()) as { hash: string; name: string; archive_name: string | null };
@@ -1126,20 +1135,13 @@ async function init(): Promise<void> {
         // Update the hash in the container (doc_id stays as filename)
         editorContainer.dataset.hash = result.hash;
 
-        if (saveBtn) {
-          saveBtn.textContent = "saved!";
-          setTimeout(() => {
-            if (saveBtn) saveBtn.textContent = "save";
-          }, 2000);
-        }
+        return { ok: true };
       } catch (err) {
         console.error("[id] Save error:", err);
-        if (saveBtn) {
-          saveBtn.textContent = "error!";
-          setTimeout(() => {
-            if (saveBtn) saveBtn.textContent = "save";
-          }, 2000);
-        }
+        return { ok: false };
+      } finally {
+        // Always re-enable save button — fixes the disabled-forever bug
+        if (saveBtn) saveBtn.disabled = false;
       }
     },
 
@@ -1448,7 +1450,21 @@ async function init(): Promise<void> {
     if ((event.ctrlKey || event.metaKey) && event.key === "s") {
       event.preventDefault();
       if (app.collab?.editor) {
-        app.saveFile();
+        app.saveFile().then((result) => {
+          const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+          if (!btn) return;
+          if (result.ok) {
+            btn.textContent = "saved \u2713";
+            setTimeout(() => {
+              btn.textContent = "save";
+            }, 2000);
+          } else if (!result.retryAfterMs) {
+            btn.textContent = "error!";
+            setTimeout(() => {
+              btn.textContent = "save";
+            }, 2000);
+          }
+        });
       }
       return;
     }
