@@ -56,7 +56,7 @@ async function createCodeFile(page: Page, name: string, baseURL: string, content
   });
   expect(saveResp.ok()).toBeTruthy();
 
-  await page.goto(`/file/${encodeURIComponent(name)}`);
+  await page.goto(`/edit/${encodeURIComponent(name)}`);
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
 }
 
@@ -103,7 +103,7 @@ test.describe("Syntax Highlighting", () => {
     expect(saveResp.ok()).toBeTruthy();
 
     // Navigate to the file editor
-    await page.goto(`/file/${encodeURIComponent(fileName)}`);
+    await page.goto(`/edit/${encodeURIComponent(fileName)}`);
     await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
     await waitForEditorReady(page);
 
@@ -183,7 +183,7 @@ test.describe("Syntax Highlighting", () => {
     });
     expect(saveResp.ok()).toBeTruthy();
 
-    await page.goto(`/file/${encodeURIComponent(fileName)}`);
+    await page.goto(`/edit/${encodeURIComponent(fileName)}`);
     await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
     await waitForEditorReady(page);
 
@@ -1132,7 +1132,7 @@ test.describe("Image Upload", () => {
     expect(saveResp.ok()).toBeTruthy();
 
     // Navigate to the file
-    await page.goto(`/file/${encodeURIComponent(mdName)}`);
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
     await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
     await waitForEditorReady(page);
 

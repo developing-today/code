@@ -82,11 +82,11 @@
         assert "hello.txt" in list_html, f"[port {port}] Created file not in file list"
 
         # ── File accessible by name ───────────────────────────────────────
-        file_html = server.succeed(f"curl -sf {BASE}/file/hello.txt")
+        file_html = server.succeed(f"curl -sf {BASE}/edit/hello.txt")
         assert "hello.txt" in file_html, f"[port {port}] File page missing filename"
 
         # ── File accessible by hash ───────────────────────────────────────
-        edit_html = server.succeed(f"curl -sf {BASE}/edit/{file_hash}")
+        edit_html = server.succeed(f"curl -sfL {BASE}/hash/{file_hash}")
         assert "hello.txt" in edit_html, f"[port {port}] Edit page missing filename"
 
         # ── Save content via API (ProseMirror doc format) ─────────────────
@@ -111,7 +111,7 @@
         assert rename.get("name") == "renamed.txt", f"[port {port}] Rename failed: {rename_resp}"
 
         # ── Renamed file accessible ───────────────────────────────────────
-        server.succeed(f"curl -sf {BASE}/file/renamed.txt")
+        server.succeed(f"curl -sf {BASE}/edit/renamed.txt")
 
         # ── Copy via API ──────────────────────────────────────────────────
         copy_resp = server.succeed(
@@ -123,8 +123,8 @@
         assert copy.get("name") == "copy.txt", f"[port {port}] Copy failed: {copy_resp}"
 
         # ── Both files exist ──────────────────────────────────────────────
-        server.succeed(f"curl -sf {BASE}/file/renamed.txt")
-        server.succeed(f"curl -sf {BASE}/file/copy.txt")
+        server.succeed(f"curl -sf {BASE}/edit/renamed.txt")
+        server.succeed(f"curl -sf {BASE}/edit/copy.txt")
 
         # ── Delete via API ────────────────────────────────────────────────
         server.succeed(

@@ -210,7 +210,7 @@ async function createFileWithUniqueContent(page: Page, name: string, baseURL: st
   // resetting networkidle's 500ms idle counter. This loop eats 30s+ of test
   // budget before networkidle gives up. waitForEditorReady() handles all the
   // real waiting by polling JS/DOM state directly.
-  await page.goto(`/file/${encodeURIComponent(name)}`);
+  await page.goto(`/edit/${encodeURIComponent(name)}`);
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
 }
 

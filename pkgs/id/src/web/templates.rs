@@ -301,10 +301,10 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 )
             };
 
-            // Use /file/{name} link for primary files, /edit/{hash} for others
+            // Use /edit/{name} link for primary files, /hash/{hash} for others
             let href = match file.kind {
-                FileKind::Primary => format!("/file/{}", urlencoding::encode(&file.name)),
-                _ => format!("/edit/{}", hash_escaped),
+                FileKind::Primary => format!("/edit/{}", urlencoding::encode(&file.name)),
+                _ => format!("/hash/{}", hash_escaped),
             };
 
             let _ = write!(

@@ -9,7 +9,7 @@ use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -211,8 +211,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(index_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
-        .route("/edit/:hash", get(edit_handler))
-        .route("/file/*name", get(file_by_name_handler))
+        .route("/edit/*name", get(file_by_name_handler))
+        .route("/hash/:hash", get(hash_redirect_handler))
+        .route("/view/*name", get(view_handler))
         // Blob route (serves raw file content)
         .route("/blob/:hash", get(blob_handler))
         // Partial routes (return HTML fragments for SPA navigation)
@@ -321,103 +322,6 @@ struct BlobQuery {
     filename: Option<String>,
 }
 
-/// Editor page handler - shows `ProseMirror` editor for a file.
-///
-/// Routes to different views based on content mode:
-/// - Editable modes (Rich, Markdown, Plain, Raw) → Editor
-/// - Media modes (Image, Video, Audio, Pdf) → Media viewer
-/// - Binary → Binary viewer with download option
-async fn edit_handler(
-    State(state): State<AppState>,
-    Path(hash): Path<String>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    tracing::info!("[routes] edit_handler called for hash: {}", hash);
-
-    // Try to find the file name from tags
-    let name = get_file_name(&state.store, &hash)
-        .await
-        .unwrap_or_else(|| hash.clone());
-    tracing::debug!("[routes] Resolved name: {}", name);
-
-    // Get file content bytes from store
-    let content_result = get_file_bytes(&state.store, &hash).await;
-
-    let is_partial = is_partial_request(&headers);
-    tracing::info!(
-        "[routes] edit_handler is_partial={}, name={}",
-        is_partial,
-        name
-    );
-
-    match content_result {
-        Ok(bytes) => {
-            // Detect content mode from filename and content
-            let mode = detect_mode_with_content(&name, &bytes);
-
-            match mode {
-                ContentMode::Media(media_type) => {
-                    // Render media viewer
-                    let viewer_html = render_media_viewer(&hash, &name, media_type);
-                    if is_partial {
-                        Html(viewer_html)
-                    } else {
-                        Html(render_page(
-                            &format!("View: {name}"),
-                            &viewer_html,
-                            "",
-                            &state.assets,
-                        ))
-                    }
-                }
-                ContentMode::Binary => {
-                    // Render binary viewer with download option
-                    let viewer_html = render_binary_viewer(&hash, &name);
-                    if is_partial {
-                        Html(viewer_html)
-                    } else {
-                        Html(render_page(
-                            &format!("File: {name}"),
-                            &viewer_html,
-                            "",
-                            &state.assets,
-                        ))
-                    }
-                }
-                _ => {
-                    // Editable modes - convert bytes to HTML for editor
-                    let content = get_file_content_html(&bytes);
-                    if is_partial {
-                        Html(render_editor(&name, &name, &content, &hash))
-                    } else {
-                        Html(render_editor_page(
-                            &name,
-                            &name,
-                            &content,
-                            &hash,
-                            &state.assets,
-                        ))
-                    }
-                }
-            }
-        }
-        Err(err_msg) => {
-            // Error loading file
-            if is_partial {
-                Html(render_editor(&name, &name, &err_msg, &hash))
-            } else {
-                Html(render_editor_page(
-                    &name,
-                    &name,
-                    &err_msg,
-                    &hash,
-                    &state.assets,
-                ))
-            }
-        }
-    }
-}
-
 /// Look up a content hash for a given tag name.
 ///
 /// Iterates all tags in the store to find one matching `name` and returns its hash.
@@ -452,10 +356,10 @@ fn html_escape_inline(s: &str) -> String {
     out
 }
 
-/// Handler for `/file/*name` — resolve a file by tag name and render the editor.
+/// Handler for `/edit/*name` — resolve a file by tag name and render the editor.
 ///
-/// Looks up the content hash for the given name, then delegates to the same
-/// edit/view logic as [`edit_handler`].
+/// Looks up the content hash for the given name, then delegates to
+/// edit/view logic based on content mode detection.
 async fn file_by_name_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -539,6 +443,44 @@ async fn file_by_name_handler(
             }
         }
     }
+}
+
+/// Handler for `/hash/:hash` — redirect hash-based URLs to name-based URLs.
+///
+/// Resolves the hash to a file name and issues a 302 redirect to `/edit/{name}`.
+/// Returns 404 if no file is found with that hash.
+async fn hash_redirect_handler(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+) -> impl IntoResponse {
+    tracing::info!("[routes] hash_redirect_handler called for hash: {}", hash);
+
+    match get_file_name(&state.store, &hash).await {
+        Some(name) => {
+            let encoded_name = urlencoding::encode(&name);
+            let redirect_url = format!("/edit/{encoded_name}");
+            tracing::info!(
+                "[routes] Redirecting /hash/{} -> {}",
+                hash,
+                redirect_url
+            );
+            Redirect::to(&redirect_url).into_response()
+        }
+        None => {
+            tracing::warn!("[routes] hash_redirect_handler: no file found for hash {}", hash);
+            (StatusCode::NOT_FOUND, "File not found for hash").into_response()
+        }
+    }
+}
+
+/// Handler for `/view/*name` — read-only view stub.
+///
+/// Currently redirects to the editor at `/edit/{name}`.
+/// Will be enhanced to provide a proper read-only view in the future.
+async fn view_handler(Path(name): Path<String>) -> impl IntoResponse {
+    let encoded_name = urlencoding::encode(&name);
+    let redirect_url = format!("/edit/{encoded_name}");
+    Redirect::to(&redirect_url)
 }
 
 /// Blob handler - serves raw file content with appropriate Content-Type.

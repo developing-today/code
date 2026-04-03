@@ -1171,7 +1171,7 @@ async function init(): Promise<void> {
         input.value = "";
 
         // Navigate to the new file's editor
-        const editUrl = `/edit/${result.hash}`;
+        const editUrl = `/edit/${encodeURIComponent(result.name)}`;
         await navigateTo(editUrl);
       } catch (err) {
         console.error("[id] Create file error:", err);
@@ -1290,7 +1290,7 @@ async function init(): Promise<void> {
         }
 
         // Navigate to the new file name
-        const fileUrl = `/file/${encodeURIComponent(result.name)}`;
+        const fileUrl = `/edit/${encodeURIComponent(result.name)}`;
         await navigateTo(fileUrl);
       } catch (err) {
         console.error("[id] Rename error:", err);
@@ -1356,7 +1356,7 @@ async function init(): Promise<void> {
         }
 
         // Navigate to the copied file
-        const fileUrl = `/file/${encodeURIComponent(result.name)}`;
+        const fileUrl = `/edit/${encodeURIComponent(result.name)}`;
         await navigateTo(fileUrl);
       } catch (err) {
         console.error("[id] Copy error:", err);

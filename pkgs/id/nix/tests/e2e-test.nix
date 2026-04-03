@@ -100,7 +100,7 @@
         # ── Chromium renders the editor page ──────────────────────────────
         editor_dom = server.succeed(
             f"chromium --headless --disable-gpu --no-sandbox --dump-dom "
-            f"--timeout=15000 {BASE}/file/browser-test.txt 2>/dev/null"
+            f"--timeout=15000 {BASE}/edit/browser-test.txt 2>/dev/null"
         )
         assert "editor" in editor_dom, f"[port {port}] Editor page missing editor element"
         assert "browser-test.txt" in editor_dom, f"[port {port}] Editor page missing filename"
@@ -108,7 +108,7 @@
         # ── Chromium renders the editor by hash ───────────────────────────
         edit_dom = server.succeed(
             f"chromium --headless --disable-gpu --no-sandbox --dump-dom "
-            f"--timeout=15000 {BASE}/edit/{file_hash} 2>/dev/null"
+            f"--timeout=15000 {BASE}/hash/{file_hash} 2>/dev/null"
         )
         assert "editor" in edit_dom, f"[port {port}] Edit-by-hash page missing editor"
 

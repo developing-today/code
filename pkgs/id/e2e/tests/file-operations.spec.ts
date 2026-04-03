@@ -165,7 +165,7 @@ test.describe("File Rename", () => {
     await page.click("#rename-btn");
 
     // Should navigate to the new file URL
-    await page.waitForURL(new RegExp(`/file/${newName}`), { timeout: 10_000 });
+    await page.waitForURL(new RegExp(`/edit/${newName}`), { timeout: 10_000 });
 
     // Verify the editor still works with the new name
     await expect(page.locator("#editor-container")).toBeVisible();
