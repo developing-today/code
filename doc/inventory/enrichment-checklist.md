@@ -18,7 +18,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 9 | [x] | Cisco 1841 | Router (IOS) | ISR G1 compact, 2xFE only, 50W PSU, ~40-50W typ, CEF ~100-300µs, ~40-80Mbps routing, FastEthernet limits throughput, HSRP/VRRP, OSPF/BGP/EIGRP, ~20Mbps IPsec SW, lab/learning device |
 | 10 | [x] | Cisco 881 | Router (IOS) | ISR G1 SOHO, 4xFE LAN+1xFE WAN, 30W ext adapter, ~15-20W typ, CEF ~50-200µs, ~50-100Mbps routing, integrated switch w/VLANs, ZBF, ~15-25Mbps IPsec SW only, 802.1X on switch ports, fanless desktop |
 | 11 | [x] | Netgear XS712T | Prosumer 10GbE | 12x10GBASE-T+2xSFP+ combo, ~25W idle / ~50-65W typ / ~80-95W max, 10GBASE-T PHY ~4-5W/port, S&F ~5-8µs copper / ~1-2µs SFP+, 256 VLANs, LACP 8×8, RSTP only, basic 802.1X/ACLs, SNMP v1/v2c/v3, no CLI/sFlow/L3 |
-| 12 | [ ] | TRENDnet TEG-30284 | Prosumer L2+ | |
+| 12 | [x] | TRENDnet TEG-30284 | Prosumer L2+ | 24xGbE+4xSFP+, fanless ~10-20W typ / ~28-32W max, S&F ~3-5µs GbE / ~1-3µs SFP+, 256 VLANs, LACP 8×8, STP/RSTP/MSTP, 32 static routes, 802.1X/RADIUS/TACACS+/ACLs/DHCP-snoop/DAI, SNMP v3, CLI |
 | 13 | [ ] | TP-Link SG3210XHP-M2 | Prosumer PoE | |
 | 14 | [ ] | Dell PowerConnect 5448 | Prosumer stackable | |
 | 15 | [ ] | Cisco SG300-52 | SMB L3-lite | |
