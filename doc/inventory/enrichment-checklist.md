@@ -13,7 +13,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 4 | [x] | IBM G8316 | DC Spine (ENOS) | 16xQSFP+ 40G spine, 2x450W PSU, ~330W typ, 880ns cut-through (same ASIC as G8264), LACP L2/L3 hash, vLAG pairs/2+peer-gw, VRRP IPv4 only, OSPF/BGP(v4)/RIP/PBR, CEE/FCoE, CoPP, OpenFlow, sFlow, PTP. No stacking, no VXLAN, no VRF |
 | 5 | [x] | Mellanox SX6036 | HPC/DC (MLNX-OS) | 36xQSFP VPI (IB FDR 56G or 40GbE), SwitchX-2, 170ns IB/~300ns Eth, 126W passive/231W active, native IB RDMA + RoCE(adapter), SM 648 nodes, 9 VLs, PFC/ECN/DCBX, CoPP, LACP, OSPF/BGP(Eth), no MC-LAG, no stacking |
 | 6 | [x] | Arista 7050QX-32-F | DC (EOS) | 32xQSFP+ 40G, Intel FM6000, 2xPWR-460AC(460W), ~150W typ(4.5W/port), 550ns, LACP L2/L3/L4 sym+resilient, MLAG/2 ISSU, VRRP v2/v3+anycast-gw, BGP/OSPF/IS-IS/ECMP-64/VRF/BFD, VXLAN EVPN HW VTEP, sFlow/LANZ/eAPI/gNMI, SSU/SFR, PFC/ECN, SONiC ok, no MACsec |
-| 7 | [ ] | Mono Gateway | Router (OpenWrt) | |
+| 7 | [x] | Mono Gateway | Router (OpenWrt) | NXP LS1046A 4xA72@1.6GHz, 8GB LPDDR4 ECC, DPAA HW offload 17+Gbps, USB-C PD 65W/~15-25W typ, ~10-50µs DPAA/~100-500µs SW, 5x2.5GbE+1xSFP+, WiFi6+tri-radio M.2, OpenWrt/VyOS/VPP, VRRP/keepalived, FRR BGP/OSPF, SQM/CAKE, IPsec CAAM HW, WireGuard SW ~1-3G |
 | 8 | [ ] | Cisco 2811 | Router (IOS) | |
 | 9 | [ ] | Cisco 1841 | Router (IOS) | |
 | 10 | [ ] | Cisco 881 | Router (IOS) | |
