@@ -434,23 +434,154 @@
 | Attribute | Value |
 |---|---|
 | **Ports** | 16x QSFP+ 40GbE |
-| **Breakout** | 4x10GbE per QSFP+ (up to 64x 10GbE) |
-| **ASIC** | Memory |
+| **Breakout** | 4x10GbE per QSFP+ via breakout DAC or optical (up to 64x 10GbE total) |
+| **ASIC** | Single-chip design (consistent port-to-port latency, same ASIC family as G8264) |
 | **Switching Capacity** | 1.28 Tbps |
 | **Forwarding Rate** | 952 Mpps |
-| **Latency** | ~1-2 us |
-| **MTU / Jumbo** | 9216 bytes |
-| **Form Factor** | 1RU |
+| **MAC Table** | 128,000 entries |
+| **MTU / Jumbo** | 9,216 bytes |
+| **Form Factor** | 1RU, 44mm × 439mm × 445mm, 10.0 kg |
 | **OS** | IBM ENOS or Lenovo CNOS; ONIE compatible |
-| **Management** | CLI, SNMP, web GUI |
-| **L2 Features** | VLAN, LACP, STP/RSTP/MSTP, vLAG |
-| **L3 Features** | Static routes, OSPF, BGP, ECMP, VRRP, SVIs |
-| **MC-LAG** | Yes (vLAG) |
-| **Stacking** | No |
+| **Management** | isCLI (scriptable), SNMP v1/v2/v3, HTTP/HTTPS web GUI, Telnet, SSH v1/v2, SCP, SLP, LLDP, serial console |
 | **Class** | Enterprise / Data Center Spine/Aggregation |
 | **Released** | ~2012 |
-| **EOL** | ~2018 |
-| **Notes** | Spine/aggregation switch designed to sit above G8264 TOR switches. All 40GbE ports, no 10GbE access ports. Intended for leaf-spine or aggregation tier. |
+| **EOL** | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering) |
+| **Environmental** | Operating: 0-40°C, 10-90% RH non-condensing, up to 1,800m altitude; acoustic: <65 dB |
+| **Software Images** | Dual software images (active/standby for hitless upgrades) |
+| **Notes** | Spine/aggregation switch designed to sit above G8264 TOR switches. All 16 ports are 40GbE QSFP+, no 10GbE access ports. Intended for leaf-spine or aggregation tier. Same ENOS firmware family as G8264/G8264e — identical software feature set. No VXLAN (CNOS-only feature on successor G8332). No VRF (not supported on ENOS). |
+| | |
+| **— Power —** | |
+| **PSU** | 2x 450W AC (100-240V, 50-60Hz), IEC 320-C14 connector, load-sharing, redundant (1+1), hot-swap |
+| **System Idle** | ~200-250W estimated (ASIC + management CPU + fans at low speed, 16 empty QSFP+ cages draw negligible power) |
+| **System Typical** | ~330W (per TIPS0842; fewer ports than G8264 but all 40G — similar ASIC power) |
+| **System Max** | ~400-450W estimated (all 16 QSFP+ ports active with optics, full traffic, fans at full speed) |
+| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes × ~0.25-0.375W) |
+| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
+| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
+| **Per-Port: QSFP+ PLR4/PSM4** | ~1.5-2.0W (parallel single-mode, lower power than LR4 WDM) |
+| **Per-Port: Empty QSFP+ cage** | ~0W |
+| **Per-Port: Breakout 4x10G DAC** | ~1.0-1.5W total (4x10G passive copper, SerDes only) |
+| **Per-Port: Breakout 4x10G optic** | ~2.0-4.0W total (4× SFP+ SR/LR optics) |
+| **PoE** | Not supported |
+| **Cooling** | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow (order correct SKU) |
+| **Power Source** | TIPS0842 (Lenovo Press G8316 Product Guide) — 330W typical, 450W PSU rating |
+| | |
+| **— Latency —** | |
+| **Baseline (QSFP+ DAC, L2, 64B)** | ~880ns cut-through (TIPS0842: "880 nanoseconds" in Benefits section; "below 1 microsecond" in Introduction) |
+| **Forwarding Mode** | Cut-through (default); store-and-forward available |
+| **ASIC Switching Latency** | ~880ns (single-chip design, same ASIC family as G8264) |
+| **Modifier: QSFP+ SR4 optic** | ~880ns + negligible optical PHY latency (~10-20ns) + fiber cable latency (~5ns/m) |
+| **Modifier: QSFP+ LR4 optic** | ~880ns + LR4 WDM mux/demux latency (~20-50ns) + fiber cable latency (~5ns/m) |
+| **Modifier: Breakout 4x10G** | ~880ns (same ASIC pipeline; breakout is handled in SerDes layer) |
+| **Modifier: Speed mismatch (40G→10G breakout)** | +variable buffering latency for speed adaptation (packet serialization at lower rate) |
+| **L3 Routing vs L2** | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline) |
+| **ACL/QoS Impact** | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN) |
+| **Latency Source** | TIPS0842 Lenovo Press G8316 Product Guide — Benefits section states "880 nanoseconds" |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) |
+| **Private VLAN** | Yes (per RFC 5517) |
+| **Protocol-Based VLAN** | Yes |
+| **Voice VLAN** | Not documented (use QoS 802.1p priority + VLAN assignment) |
+| **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
+| **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
+| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
+| **Storm Control** | Yes (broadcast and multicast storm control) |
+| **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups, IGMP relay) |
+| **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
+| **L2 Failover** | Yes (trunk failover for NIC teaming active/standby) |
+| | |
+| **— Link Aggregation —** | |
+| **Static LAG** | Yes |
+| **LACP (802.3ad)** | Yes (IEEE 802.3ad) |
+| **Max LAGs / Ports per LAG** | 64 LAG groups / 32 ports per LAG |
+| **Hash Modes** | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk |
+| **L4 (port-based) Hash** | Not documented in TIPS0842 (hash is L2/L3 based) |
+| **Symmetric Hashing** | Not explicitly documented |
+| **Cross-Stack LAG** | N/A (no stacking support on G8316) |
+| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG Variant** | vLAG (IBM/Lenovo Virtual LAG) |
+| **Protocol** | Proprietary (IBM/Lenovo vLAG protocol) |
+| **Interoperable** | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two switches |
+| **Max MC-LAG Peers** | 2 (active-active pair) |
+| **vLAG Peer Gateway** | Yes (improved utilization of inter-switch link) |
+| **Two-Tier vLAG** | Yes (with VRRP for active/active routing — reduces routing latency) |
+| **Failover Time** | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config) |
+| **Split-Brain Handling** | Peer-link + keepalive heartbeat between vLAG peers |
+| **Cross-Model vLAG** | Plausible with G8264 (same ENOS firmware family) but unconfirmed for cross-platform vLAG |
+| | |
+| **— First-Hop Redundancy —** | |
+| **VRRP** | Yes (IPv4 VRRP only — IPv6 VRRP NOT supported per TIPS0842) |
+| **VRRP + vLAG** | Yes (two-tier vLAG with active/active VRRP for reduced routing latency) |
+| **HSRP** | No (Cisco proprietary) |
+| **GLBP** | No (Cisco proprietary) |
+| **Anycast Gateway** | No (not supported in ENOS; no EVPN/VXLAN on G8316) |
+| **VRRP Failover Time** | ~3-4s default (configurable advertisement interval × dead multiplier) |
+| **Preemption** | Yes (VRRP preempt) |
+| **Tracking** | Interface tracking for VRRP priority adjustment |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes (up to 128 static routes) |
+| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
+| **BGP** | Yes (IPv4 only — IPv6 BGP NOT supported per TIPS0842) |
+| **RIP** | Yes (v1, v2 — IPv4 only) |
+| **IS-IS** | Not documented |
+| **Policy-Based Routing** | Yes (IPv4 PBR) |
+| **VRF / VRF-lite** | Not supported on ENOS (CNOS-only feature on successor G8332) |
+| **BFD** | Not documented |
+| **ECMP** | Yes (via OSPF/BGP equal-cost paths) |
+| **Route Table Capacity** | ~15,498 IPv4 / ~600 IPv6 dynamic routes (from G8332 TIPS1274 with same ENOS; G8316-specific limits not documented) |
+| **PIM Multicast** | Yes (PIM-SM, PIM-DM) |
+| **DHCP Relay** | Yes |
+| **IP Interfaces** | Up to 126 per switch (128 total, 2 reserved for OOB management) |
+| | |
+| **— Converged Fabric —** | |
+| **CEE/DCB** | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB) |
+| **FCoE** | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions) |
+| **iSCSI** | Yes (convergence support via CEE) |
+| | |
+| **— Virtualization —** | |
+| **Virtual Fabric (vNICs)** | Yes (up to 8 vNICs per dual-port 10G adapter) |
+| **EVB (802.1Qbg)** | Yes (VEB, VEPA, ECP, VDP) |
+| **VMready** | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs) |
+| **OpenFlow** | 1.0, 1.3.1 |
+| **VXLAN** | Not supported (CNOS-only feature on successor G8332) |
+| | |
+| **— Security —** | |
+| **ACLs** | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6) |
+| **802.1X** | Yes (port-based network access control) |
+| **RADIUS / TACACS+ / LDAP** | Yes (all three, including LDAPS) |
+| **SSH** | v1, v2 |
+| **SCP / sFTP** | Yes |
+| **RBAC** | Yes (Role-Based Access Control) |
+| **NIST 800-131A** | Yes (encryption compliance) |
+| **DHCP Snooping** | Not documented in TIPS0842 |
+| **Dynamic ARP Inspection** | Not documented |
+| **IP Source Guard** | Not documented |
+| **MACsec (802.1AE)** | Not supported |
+| **Control Plane Policing** | Yes (CoPP — listed in QoS features, TIPS0842) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2, v3 |
+| **sFlow** | Yes (hardware-sampled) |
+| **RMON** | Yes (statistics and proactive monitoring) |
+| **Port Mirroring** | Yes |
+| **LLDP** | Yes |
+| **Syslog** | Yes (remote logging) |
+| **NTP** | Yes |
+| **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
+| **Netconf** | Yes (XML) |
+| | |
+| **— QoS —** | |
+| **Classification** | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN) |
+| **Queues** | 8 CoS queues per port |
+| **Scheduling** | Traffic shaping and re-marking based on defined policies |
+| **WRED** | Yes (with ECN — Explicit Congestion Notification) |
+| **ACL Metering** | Yes (IPv4/IPv6) |
+| | |
+| **Stacking** | No (confirmed — TIPS0842 does not list stacking as a software feature; "Stacking LEDs" on IBM Support page are a hardware artifact from shared chassis design; G8316 is spine/aggregation and uses vLAG for multi-chassis redundancy, not physical stacking) |
 
 ---
 
