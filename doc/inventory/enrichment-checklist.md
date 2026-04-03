@@ -14,9 +14,9 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 5 | [x] | Mellanox SX6036 | HPC/DC (MLNX-OS) | 36xQSFP VPI (IB FDR 56G or 40GbE), SwitchX-2, 170ns IB/~300ns Eth, 126W passive/231W active, native IB RDMA + RoCE(adapter), SM 648 nodes, 9 VLs, PFC/ECN/DCBX, CoPP, LACP, OSPF/BGP(Eth), no MC-LAG, no stacking |
 | 6 | [x] | Arista 7050QX-32-F | DC (EOS) | 32xQSFP+ 40G, Intel FM6000, 2xPWR-460AC(460W), ~150W typ(4.5W/port), 550ns, LACP L2/L3/L4 sym+resilient, MLAG/2 ISSU, VRRP v2/v3+anycast-gw, BGP/OSPF/IS-IS/ECMP-64/VRF/BFD, VXLAN EVPN HW VTEP, sFlow/LANZ/eAPI/gNMI, SSU/SFR, PFC/ECN, SONiC ok, no MACsec |
 | 7 | [x] | Mono Gateway | Router (OpenWrt) | NXP LS1046A 4xA72@1.6GHz, 8GB LPDDR4 ECC, DPAA HW offload 17+Gbps, USB-C PD 65W/~15-25W typ, ~10-50µs DPAA/~100-500µs SW, 5x2.5GbE+1xSFP+, WiFi6+tri-radio M.2, OpenWrt/VyOS/VPP, VRRP/keepalived, FRR BGP/OSPF, SQM/CAKE, IPsec CAAM HW, WireGuard SW ~1-3G |
-| 8 | [ ] | Cisco 2811 | Router (IOS) | |
-| 9 | [ ] | Cisco 1841 | Router (IOS) | |
-| 10 | [ ] | Cisco 881 | Router (IOS) | |
+| 8 | [x] | Cisco 2811 | Router (IOS) | ISR G1, 2xGbE+HWIC/NM, 130W PSU, ~80-100W typ, CEF ~50-200µs, ~100-200Mbps routing, HSRP/VRRP/GLBP, OSPF/BGP/EIGRP, ZBF ~50-100Mbps, AIM-VPN ~85Mbps IPsec, NetFlow/IP SLA/EEM, 2 units for HSRP pair |
+| 9 | [x] | Cisco 1841 | Router (IOS) | ISR G1 compact, 2xFE only, 50W PSU, ~40-50W typ, CEF ~100-300µs, ~40-80Mbps routing, FastEthernet limits throughput, HSRP/VRRP, OSPF/BGP/EIGRP, ~20Mbps IPsec SW, lab/learning device |
+| 10 | [x] | Cisco 881 | Router (IOS) | ISR G1 SOHO, 4xFE LAN+1xFE WAN, 30W ext adapter, ~15-20W typ, CEF ~50-200µs, ~50-100Mbps routing, integrated switch w/VLANs, ZBF, ~15-25Mbps IPsec SW only, 802.1X on switch ports, fanless desktop |
 | 11 | [ ] | Netgear XS712T | Prosumer 10GbE | |
 | 12 | [ ] | TRENDnet TEG-30284 | Prosumer L2+ | |
 | 13 | [ ] | TP-Link SG3210XHP-M2 | Prosumer PoE | |
