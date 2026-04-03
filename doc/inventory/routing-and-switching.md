@@ -1695,6 +1695,85 @@
 | **Released** | ~2010 |
 | **EOL** | ~2017 |
 | **Notes** | Cisco Small Business line (not Catalyst). Decent L2/L3-lite switch. Can do inter-VLAN routing in L3 mode (limited static routes, no dynamic routing). 52 ports total is good density. No 10G. Separate product line from enterprise Catalyst. |
+| | |
+| **— Power —** | |
+| System idle | ~15-20 W (no traffic, all ports link-down) |
+| System typical | ~35-42 W (mixed GbE traffic, ~30-40 ports linked) |
+| System max | ~55-60 W (all 52 ports active, full traffic) |
+| Per-port RJ45 (GbE link) | ~0.3-0.5 W |
+| Per-port SFP (1G optic) | ~0.5-1 W |
+| Per-port SFP (empty) | ~0 W |
+| PoE | Not supported (SG300-52 is non-PoE; SG300-52P/MP for PoE) |
+| PSU | Internal 100-240 VAC, single, non-redundant |
+| PSU efficiency | ~85% typical |
+| | |
+| **— Latency —** | |
+| Forwarding mode | Store-and-forward (only mode) |
+| Baseline (GbE copper, 64 B) | ~5-8 µs |
+| SFP 1G port | ~3-5 µs |
+| L3 forwarding penalty | Negligible (hardware-routed static routes) |
+| ACL penalty | Negligible (TCAM-based in hardware) |
+| | |
+| **— L2 Features —** | |
+| VLAN range | 802.1Q, 4094 VLAN IDs |
+| Max active VLANs | 4094 |
+| Private VLAN | Yes (community, isolated) |
+| Voice VLAN | Yes (auto via LLDP-MED / CDP) |
+| Q-in-Q | No |
+| Trunking | 802.1Q tagged, native VLAN configurable, general/access/trunk modes |
+| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
+| STP instances | MSTP: 8 instances |
+| BPDU guard / root guard | Yes / Yes |
+| Storm control | Yes (broadcast/multicast/unknown-unicast, rate-based per port) |
+| IGMP snooping | v1/v2/v3 with querier |
+| MLD snooping | Yes (IPv6) |
+| LLDP / LLDP-MED | Yes / Yes |
+| MAC table | 16K entries |
+| Jumbo frames | 9,000 bytes |
+| | |
+| **— LAG / LACP —** | |
+| Static LAG | Yes |
+| LACP (802.3ad) | Yes |
+| Max LAG groups | 8 |
+| Max ports per LAG | 8 |
+| Load-balance hash | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) |
+| Cross-stack LAG | N/A (no stacking) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG | Not supported |
+| | |
+| **— L3 Routing —** | |
+| Mode | L3-lite: must enable "L3 mode" in firmware (dual L2/L3 firmware image) |
+| Static routes | Up to 128 (IPv4), 128 (IPv6) |
+| IP interfaces | Up to 64 (VLAN-based SVI) |
+| Inter-VLAN routing | Yes (hardware forwarded) |
+| Dynamic routing | None (no OSPF/BGP/RIP/EIGRP) |
+| DHCP relay | Yes |
+| DHCP server | Yes (basic, for small networks) |
+| ARP table | 1024 entries |
+| | |
+| **— Security —** | |
+| 802.1X | Yes (port-based, single/multi/multi-session modes) |
+| RADIUS | Yes (authentication, accounting) |
+| TACACS+ | Yes |
+| ACLs | L2 (MAC-based), L3/L4 (IP-based, TCP/UDP port) |
+| ACL capacity | ~256-512 entries (TCAM) |
+| DHCP snooping | Yes |
+| Dynamic ARP inspection | Yes |
+| IP source guard | Yes |
+| Port security | Yes (MAC limiting, sticky MAC) |
+| DoS prevention | Yes (basic SYN/ICMP/fragment protection) |
+| MACsec | No |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 (auth + privacy) |
+| RMON | Yes (groups 1, 2, 3, 9) |
+| SPAN | Yes (local port mirroring, 1 session) |
+| RSPAN | No |
+| sFlow / NetFlow | No |
+| Syslog | Yes (to remote server) |
+| NTP | Yes (client + SNTP) |
+| CLI | Yes (console serial, Telnet, SSH) |
 
 ---
 
