@@ -21,7 +21,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 12 | [x] | TRENDnet TEG-30284 | Prosumer L2+ | 24xGbE+4xSFP+, fanless ~10-20W typ / ~28-32W max, S&F ~3-5µs GbE / ~1-3µs SFP+, 256 VLANs, LACP 8×8, STP/RSTP/MSTP, 32 static routes, 802.1X/RADIUS/TACACS+/ACLs/DHCP-snoop/DAI, SNMP v3, CLI |
 | 13 | [x] | TP-Link SG3210XHP-M2 | Prosumer PoE | 8x2.5G-PoE+2xSFP+, 240W PoE, ~20-25W no-PoE / ~265W max, S&F ~3-5µs, 4K VLANs, LACP 8×8, MSTP, 48 static routes, DHCP server, 802.1X/RADIUS/TACACS+, SNMP v3, Omada SDN |
 | 14 | [x] | Dell PowerConnect 5448 | Prosumer stackable | 48xGbE+4xSFP combo, ~30-35W idle / ~45-55W typ / ~65-75W max, stack up to 12 units (48Gbps backplane, cross-stack LAG), S&F ~5-10µs local / ~15-25µs cross-stack, 256 VLANs, LACP 6×8, RSTP only, 802.1X/RADIUS/DHCP-snoop, SNMP v3 |
-| 15 | [ ] | Cisco SG300-52 | SMB L3-lite | |
+| 15 | [x] | Cisco SG300-52 | SMB L3-lite | 50xGbE+2xSFP combo, ~15-20W idle / ~35-42W typ / ~55-60W max, S&F ~5-8µs GbE / ~3-5µs SFP, 4094 VLANs, LACP 8×8, STP/RSTP/MSTP, L3-lite 128 static routes / 64 SVIs / inter-VLAN / DHCP relay+server, private VLAN, 802.1X multi-session / RADIUS / TACACS+ / ACLs L2-L4 / DHCP-snoop / DAI / IP-src-guard, SNMP v3, RMON, SPAN |
 | 16 | [ ] | Netgear GS116E | Consumer | |
 | 17 | [ ] | Cisco 3560 | Enterprise L3 | |
 | 18 | [ ] | Cisco 2960 | Enterprise L2 | |
