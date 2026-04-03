@@ -118,3 +118,4 @@ test.*
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
 **/codedb.snapshot
+*bfg-report/
