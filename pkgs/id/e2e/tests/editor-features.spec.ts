@@ -1143,3 +1143,122 @@ test.describe("Image Upload", () => {
     expect(src).toContain(uploadResult.url);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Strikethrough
+// ---------------------------------------------------------------------------
+
+test.describe("Strikethrough", () => {
+  test("strikethrough mark renders in markdown editor", async ({ page, baseURL }) => {
+    const mdName = `strike-render-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save with a strikethrough mark in ProseMirror JSON
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: hash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "normal " },
+                {
+                  type: "text",
+                  marks: [{ type: "strikethrough" }],
+                  text: "deleted",
+                },
+                { type: "text", text: " text" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Navigate to the file
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Assert an <s> tag is visible inside the ProseMirror editor with strikethrough text
+    const strikeEl = page.locator("#editor .ProseMirror s");
+    await expect(strikeEl).toBeVisible({ timeout: 15_000 });
+    await expect(strikeEl).toHaveText("deleted");
+  });
+
+  test("strikethrough roundtrips through save and reload", async ({ page, baseURL }) => {
+    const mdName = `strike-roundtrip-${Date.now()}.md`;
+
+    // Create file, save with strikethrough
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: hash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "text",
+                  marks: [{ type: "strikethrough" }],
+                  text: "roundtrip test",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Load the page to trigger PM→MD save, then reload to trigger MD→PM load
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Verify the strikethrough survived the roundtrip
+    const strikeEl = page.locator("#editor .ProseMirror s");
+    await expect(strikeEl).toBeVisible({ timeout: 15_000 });
+    await expect(strikeEl).toHaveText("roundtrip test");
+  });
+
+  test("strikethrough toolbar button visible in markdown editor", async ({ page, baseURL }) => {
+    const mdName = `strike-toolbar-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    // Navigate to the file
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // The strikethrough button should be visible in the menu bar
+    // It has title containing "strikethrough" and label "~~S~~"
+    const strikeBtn = page.locator(".ProseMirror-menubar .ProseMirror-menu-active, .ProseMirror-menubar .ProseMirror-menuitem", {
+      hasText: "~~S~~",
+    });
+    await expect(strikeBtn.first()).toBeVisible({ timeout: 10_000 });
+  });
+});

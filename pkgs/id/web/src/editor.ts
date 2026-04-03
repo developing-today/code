@@ -9,14 +9,21 @@
  */
 
 import { collab, getVersion, sendableSteps } from "prosemirror-collab";
-import { baseKeymap } from "prosemirror-commands";
+import { baseKeymap, toggleMark } from "prosemirror-commands";
 import { dropCursor } from "prosemirror-dropcursor";
 import { buildMenuItems, exampleSetup } from "prosemirror-example-setup";
 import { gapCursor } from "prosemirror-gapcursor";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
-import { blockTypeItem, liftItem, redoItem, selectParentNodeItem, undoItem } from "prosemirror-menu";
-import { Node, Schema } from "prosemirror-model";
+import {
+  MenuItem,
+  blockTypeItem,
+  liftItem,
+  redoItem,
+  selectParentNodeItem,
+  undoItem,
+} from "prosemirror-menu";
+import { type MarkType, Node, Schema } from "prosemirror-model";
 import { schema as basicSchema } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
 import { EditorState, type Plugin, TextSelection, type Transaction } from "prosemirror-state";
@@ -37,11 +44,27 @@ import { createWrapPlugins } from "./wrap";
 export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "binary";
 
 /**
- * Full schema with list support for rich/markdown/plain modes.
+ * Full schema with list support and GFM extensions for rich/markdown/plain modes.
+ * Extends prosemirror-schema-basic with strikethrough mark.
  */
 export const richSchema = new Schema({
   nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block"),
-  marks: basicSchema.spec.marks,
+  marks: basicSchema.spec.marks.append({
+    strikethrough: {
+      parseDOM: [
+        { tag: "s" },
+        { tag: "del" },
+        { tag: "strike" },
+        {
+          style: "text-decoration",
+          getAttrs: (value) => (value === "line-through" ? null : false),
+        },
+      ],
+      toDOM() {
+        return ["s", 0];
+      },
+    },
+  }),
 });
 
 /**
@@ -107,6 +130,32 @@ export interface EditorInstance {
 export interface CollabState {
   version: number;
   unconfirmed: Transaction[];
+}
+
+/**
+ * Create a menu item that toggles a mark on the current selection.
+ * Used for inline formatting buttons (strikethrough, etc.).
+ */
+function markMenuItem(
+  markType: MarkType,
+  options: { title: string; label: string },
+): InstanceType<typeof MenuItem> {
+  const cmd = toggleMark(markType);
+  return new MenuItem({
+    title: options.title,
+    label: options.label,
+    run(state, dispatch) {
+      cmd(state, dispatch);
+    },
+    select(state) {
+      return cmd(state);
+    },
+    active(state) {
+      const { from, $from, to, empty } = state.selection;
+      if (empty) return !!(markType.isInSet(state.storedMarks || $from.marks()));
+      return state.doc.rangeHasMark(from, to, markType);
+    },
+  });
 }
 
 /**
@@ -193,8 +242,17 @@ export function initEditor(
         )
       : [];
 
+    // Create strikethrough menu item
+    const strikethrough = editorSchema.marks.strikethrough;
+    const toggleStrikethrough = strikethrough
+      ? markMenuItem(strikethrough, {
+          title: "Toggle strikethrough (Mod-Shift-s)",
+          label: "~~S~~",
+        })
+      : null;
+
     // Build flattened menu structure:
-    // Row 1: inline formatting (bold, italic, code, link)
+    // Row 1: inline formatting (bold, italic, code, strikethrough, link)
     // Row 2: block types (paragraph, code, H1-H6) + undo/redo
     // Row 3: lists, blockquote, structure tools
     const customMenu = [
@@ -203,6 +261,7 @@ export function initEditor(
         menuItems.toggleStrong,
         menuItems.toggleEm,
         menuItems.toggleCode,
+        toggleStrikethrough,
         menuItems.toggleLink,
         menuItems.insertImage,
       ]),
@@ -224,6 +283,11 @@ export function initEditor(
         menuContent: customMenu,
       }),
     );
+
+    // Strikethrough keyboard shortcut (Mod-Shift-s)
+    if (strikethrough) {
+      plugins.push(keymap({ "Mod-Shift-s": toggleMark(strikethrough) }));
+    }
   } else {
     // Minimal setup for raw mode - just basic editing, no menu/toolbar
     plugins.push(history(), dropCursor(), gapCursor(), keymap(baseKeymap));

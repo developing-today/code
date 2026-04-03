@@ -26,10 +26,11 @@
 //! - `strong`: Strong emphasis (bold)
 //! - `code`: Inline code
 //! - `link`: Hyperlink with `href` and `title` attributes
+//! - `strikethrough`: Strikethrough text (GFM `~~text~~`)
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
-use comrak::{Arena, Options, format_commonmark, parse_document};
-use serde_json::{Value, json};
+use comrak::{format_commonmark, parse_document, Arena, Options};
+use serde_json::{json, Value};
 
 /// Error type for markdown conversion.
 #[derive(Debug)]
@@ -63,8 +64,8 @@ impl From<std::fmt::Error> for ConversionError {
 /// Get comrak options for `CommonMark` parsing.
 fn commonmark_options() -> Options<'static> {
     let mut options = Options::default();
-    // Enable some useful extensions that map well to ProseMirror
-    // Note: We're NOT enabling tables, strikethrough, etc. for v1
+    // Enable GFM extensions that map to ProseMirror marks/nodes
+    options.extension.strikethrough = true;
     options.parse.smart = false; // Don't convert quotes/dashes
     options
 }
@@ -330,8 +331,13 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::Strikethrough => {
-            // Strikethrough not supported - pass through without mark
-            json!(collect_inline_children(node, active_marks))
+            // Strikethrough - collect children with strikethrough mark added
+            let mut marks = active_marks.to_vec();
+            marks.push(Mark {
+                mark_type: "strikethrough",
+                attrs: None,
+            });
+            json!(collect_inline_children(node, &marks))
         }
 
         NodeValue::FootnoteDefinition(_) | NodeValue::FootnoteReference(_) => {
@@ -615,6 +621,7 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
         let wrapper_value = match mark_type {
             "em" => NodeValue::Emph,
             "strong" => NodeValue::Strong,
+            "strikethrough" => NodeValue::Strikethrough,
             "link" => {
                 let href = mark["attrs"]["href"].as_str().unwrap_or("");
                 let title = mark["attrs"]["title"].as_str().unwrap_or("");
@@ -917,12 +924,10 @@ mod tests {
 
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], "code_block");
-        assert!(
-            content[0]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("function test()")
-        );
+        assert!(content[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("function test()"));
     }
 
     #[test]
@@ -966,5 +971,49 @@ mod tests {
         assert!(result.contains("Item 2"));
         // Should have list markers (- or *)
         assert!(result.contains('-') || result.contains('*'));
+    }
+
+    #[test]
+    fn test_strikethrough() {
+        let doc = markdown_to_prosemirror("This is ~~deleted~~ text");
+        let content = doc["content"].as_array().unwrap();
+        let para_content = content[0]["content"].as_array().unwrap();
+
+        let struck_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "strikethrough"))
+        });
+
+        assert!(struck_text.is_some());
+        assert_eq!(struck_text.unwrap()["text"], "deleted");
+    }
+
+    #[test]
+    fn test_strikethrough_with_other_marks() {
+        let doc = markdown_to_prosemirror("This is **~~bold deleted~~** text");
+        let content = doc["content"].as_array().unwrap();
+        let para_content = content[0]["content"].as_array().unwrap();
+
+        let marked_text = para_content
+            .iter()
+            .find(|n| n["marks"].as_array().is_some_and(|m| m.len() == 2));
+
+        assert!(marked_text.is_some());
+        let marks = marked_text.unwrap()["marks"].as_array().unwrap();
+        let mark_types: Vec<&str> = marks.iter().map(|m| m["type"].as_str().unwrap()).collect();
+        assert!(mark_types.contains(&"strong"));
+        assert!(mark_types.contains(&"strikethrough"));
+    }
+
+    #[test]
+    fn test_roundtrip_strikethrough() {
+        let original = "This is ~~deleted~~ text.\n";
+        let doc = markdown_to_prosemirror(original);
+        let result = prosemirror_to_markdown(&doc).unwrap();
+
+        assert!(result.contains("~~deleted~~"));
+        assert!(result.contains("This is"));
+        assert!(result.contains("text."));
     }
 }
