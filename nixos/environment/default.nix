@@ -384,7 +384,7 @@ in
       deadnix
       shfmt
       shellcheck
-      nodePackages.prettier
+      prettier # nodepackages remoed 2026-04-03
       ruff
       biome
       rustfmt

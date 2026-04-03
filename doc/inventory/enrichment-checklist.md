@@ -19,7 +19,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 10 | [x] | Cisco 881 | Router (IOS) | ISR G1 SOHO, 4xFE LAN+1xFE WAN, 30W ext adapter, ~15-20W typ, CEF ~50-200µs, ~50-100Mbps routing, integrated switch w/VLANs, ZBF, ~15-25Mbps IPsec SW only, 802.1X on switch ports, fanless desktop |
 | 11 | [x] | Netgear XS712T | Prosumer 10GbE | 12x10GBASE-T+2xSFP+ combo, ~25W idle / ~50-65W typ / ~80-95W max, 10GBASE-T PHY ~4-5W/port, S&F ~5-8µs copper / ~1-2µs SFP+, 256 VLANs, LACP 8×8, RSTP only, basic 802.1X/ACLs, SNMP v1/v2c/v3, no CLI/sFlow/L3 |
 | 12 | [x] | TRENDnet TEG-30284 | Prosumer L2+ | 24xGbE+4xSFP+, fanless ~10-20W typ / ~28-32W max, S&F ~3-5µs GbE / ~1-3µs SFP+, 256 VLANs, LACP 8×8, STP/RSTP/MSTP, 32 static routes, 802.1X/RADIUS/TACACS+/ACLs/DHCP-snoop/DAI, SNMP v3, CLI |
-| 13 | [ ] | TP-Link SG3210XHP-M2 | Prosumer PoE | |
+| 13 | [x] | TP-Link SG3210XHP-M2 | Prosumer PoE | 8x2.5G-PoE+2xSFP+, 240W PoE, ~20-25W no-PoE / ~265W max, S&F ~3-5µs, 4K VLANs, LACP 8×8, MSTP, 48 static routes, DHCP server, 802.1X/RADIUS/TACACS+, SNMP v3, Omada SDN |
 | 14 | [ ] | Dell PowerConnect 5448 | Prosumer stackable | |
 | 15 | [ ] | Cisco SG300-52 | SMB L3-lite | |
 | 16 | [ ] | Netgear GS116E | Consumer | |

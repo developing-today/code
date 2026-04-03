@@ -30,7 +30,7 @@ let
     nixfmt
     statix
     biome
-    nodePackages.prettier
+    prettier # nodepackages remoed 2026-04-03
     shfmt
     shellcheck
     ruff

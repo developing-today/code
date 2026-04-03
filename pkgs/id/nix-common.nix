@@ -30,7 +30,7 @@ let
     treefmt
     # Formatters and linters (keep in sync with treefmt.toml)
     biome
-    nodePackages.prettier
+    prettier # nodepackages remoed 2026-04-03
     nixfmt
     statix
     shfmt
@@ -73,7 +73,7 @@ let
 
       # Web development tools
       bun # JavaScript bundler and runtime (required for web builds)
-      nodePackages.typescript # TypeScript for type checking
+      typescript # TypeScript for type checking # nodepackages remoed 2026-04-03
 
       # E2E testing (Playwright) — use playwright-driver.browsers for
       # pre-patched browser binaries that work with Playwright's CDP protocol.

@@ -692,7 +692,7 @@ let
             prettier-check = pkgs.stdenv.mkDerivation {
               name = "prettier-check";
               src = inputs.self;
-              nativeBuildInputs = [ pkgs.nodePackages.prettier ];
+              nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remoed 2026-04-03
               buildPhase = ''
                 find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
                   -o -name '*.scss' -o -name '*.yaml' \) \

@@ -936,9 +936,9 @@
         nix-melt
         nixfmt-rfc-style
         nixpkgs-fmt # ??
-        nodePackages.bash-language-server
-        nodePackages.eslint
-        nodePackages.prettier
+        bash-language-server # nodepackages removed 2026-04-03
+        eslint # nodepackages removed 2026-04-03
+        prettier #nodepackages  nodepackages removed?? # removed 2026-04-03
         #nodePackages.prettier-plugin-toml
         #nodePackages.typescript
         #nodePackages.typescript-language-server

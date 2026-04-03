@@ -527,7 +527,7 @@
           prettier-check = pkgs.stdenv.mkDerivation {
             name = "id-prettier-check";
             src = ./.;
-            nativeBuildInputs = [ pkgs.nodePackages.prettier ];
+            nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remove 2026-04-03
             buildPhase = ''
               find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
                 -o -name '*.scss' -o -name '*.yaml' \) \
