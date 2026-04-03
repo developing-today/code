@@ -7,7 +7,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 
 | # | Done | Device | Class | Notes |
 |---|------|--------|-------|-------|
-| 1 | [ ] | Celestica DX010 | DC Fabric (SONiC) | |
+| 1 | [x] | Celestica DX010 | DC Fabric (SONiC) | 2x800W PSU, ~150-200W typ, ~400ns cut-through, LACP L3+L4 hash, MC-LAG ICCP pairs, VRRP+SAG anycast-gw, BGP/OSPF/IS-IS via FRR, VXLAN EVPN, 128K MAC, sFlow/gNMI |
 | 2 | [ ] | IBM G8264 | DC TOR (ENOS) | |
 | 3 | [ ] | IBM G8264e | DC TOR (ENOS) | |
 | 4 | [ ] | IBM G8316 | DC Spine (ENOS) | |
