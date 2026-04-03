@@ -1798,6 +1798,55 @@
 | **Released** | ~2013 |
 | **Status** | Discontinued (replaced by GS116Ev2/GS316E) |
 | **Notes** | Basic "Plus" managed switch - step above unmanaged but far below fully managed. No CLI, no LACP, limited VLAN support. Fanless, silent, low power (~8W). Best suited as a desk/lab switch or for extending ports in low-traffic areas. |
+| | |
+| **— Power —** | |
+| System idle | ~5 W (external 12 V DC adapter, no traffic) |
+| System typical | ~7-8 W (mixed GbE traffic) |
+| System max | ~10 W (all 16 ports active, wire-rate traffic) |
+| Per-port RJ45 (GbE link) | ~0.3-0.5 W (integrated switch SoC) |
+| PoE | Not supported |
+| PSU | External 12 V / 1 A DC adapter (not field-replaceable) |
+| | |
+| **— Latency —** | |
+| Forwarding mode | Store-and-forward (only mode) |
+| Baseline (GbE, 64 B) | ~3-5 µs |
+| | |
+| **— L2 Features —** | |
+| VLAN range | 802.1Q, up to 64 VLAN IDs |
+| Max active VLANs | 64 |
+| Private VLAN | No |
+| Voice VLAN | No |
+| Q-in-Q | No |
+| Trunking | 802.1Q tagged (limited; "Plus" web GUI config only) |
+| STP | No (basic loop detection only — not standards-based STP/RSTP) |
+| Storm control | Basic (broadcast on/off per port, no granular rate) |
+| IGMP snooping | Yes (v1/v2) |
+| LLDP | No |
+| MAC table | 4K entries |
+| Jumbo frames | 9,216 bytes |
+| | |
+| **— LAG / LACP —** | |
+| Static LAG | No |
+| LACP (802.3ad) | No |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG | Not supported |
+| | |
+| **— Security —** | |
+| 802.1X | No |
+| RADIUS / TACACS+ | No |
+| ACLs | No |
+| DHCP snooping | No |
+| Port security | No (no MAC limiting) |
+| MACsec | No |
+| | |
+| **— Monitoring —** | |
+| SNMP | Limited (v1/v2c; no v3) |
+| sFlow / NetFlow | No |
+| Port mirroring | Yes (1 session, local) |
+| Syslog | No |
+| NTP | No |
+| CLI | No (ProSafe Plus web utility only) |
 
 ---
 
