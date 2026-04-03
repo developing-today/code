@@ -1227,3 +1227,30 @@ img.ProseMirror-separator {
   text-decoration: line-through;
   opacity: 0.6;
 }
+
+/* ── Tables (GFM pipe tables) ── */
+
+.ProseMirror table.pm-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  overflow: auto;
+}
+
+.ProseMirror table.pm-table th,
+.ProseMirror table.pm-table td {
+  border: 1px solid oklch(var(--bc) / 0.2);
+  padding: 0.4em 0.8em;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ProseMirror table.pm-table th {
+  font-weight: bold;
+  background: oklch(var(--bc) / 0.05);
+}
+
+.ProseMirror table.pm-table tr:hover td,
+.ProseMirror table.pm-table tr:hover th {
+  background: oklch(var(--bc) / 0.03);
+}

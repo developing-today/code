@@ -85,9 +85,9 @@ in
       # opencode
     ])
     ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
-      rclone
-      rclone-browser
-      rclone-ui
+      # rclone   # fish completions broke 2025-04-03
+      # rclone-browser   # fish completions broke 2025-04-03
+      # rclone-ui   # fish completions broke 2025-04-03
       framework-tool
       musl
       fish

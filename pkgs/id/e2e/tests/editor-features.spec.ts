@@ -1390,3 +1390,202 @@ test.describe("Task Lists", () => {
     await expect(page.locator("#editor .ProseMirror").getByText("roundtrip checked")).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+test.describe("Tables", () => {
+  test("table renders with header and data rows", async ({ page, baseURL }) => {
+    const mdName = `test-table-render-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save PM doc JSON with a table (header + one data row)
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: hash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "table",
+              content: [
+                {
+                  type: "table_row",
+                  content: [
+                    {
+                      type: "table_header",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Name" }],
+                        },
+                      ],
+                    },
+                    {
+                      type: "table_header",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Age" }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+                {
+                  type: "table_row",
+                  content: [
+                    {
+                      type: "table_cell",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Alice" }],
+                        },
+                      ],
+                    },
+                    {
+                      type: "table_cell",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "30" }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Navigate to the file
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Verify table rendered
+    const table = page.locator("#editor .ProseMirror table");
+    await expect(table).toBeVisible({ timeout: 10_000 });
+
+    // Verify header cells
+    const headers = page.locator("#editor .ProseMirror table th");
+    await expect(headers).toHaveCount(2);
+    await expect(headers.nth(0)).toContainText("Name");
+    await expect(headers.nth(1)).toContainText("Age");
+
+    // Verify data cells
+    const cells = page.locator("#editor .ProseMirror table td");
+    await expect(cells).toHaveCount(2);
+    await expect(cells.nth(0)).toContainText("Alice");
+    await expect(cells.nth(1)).toContainText("30");
+  });
+
+  test("table roundtrips through save and reload", async ({ page, baseURL }) => {
+    const mdName = `test-table-rt-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save PM doc JSON with a table
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: hash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "table",
+              content: [
+                {
+                  type: "table_row",
+                  content: [
+                    {
+                      type: "table_header",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Fruit" }],
+                        },
+                      ],
+                    },
+                    {
+                      type: "table_header",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Color" }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+                {
+                  type: "table_row",
+                  content: [
+                    {
+                      type: "table_cell",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Apple" }],
+                        },
+                      ],
+                    },
+                    {
+                      type: "table_cell",
+                      content: [
+                        {
+                          type: "paragraph",
+                          content: [{ type: "text", text: "Red" }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Load the page to trigger PM→MD save, then reload to trigger MD→PM load
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Verify the table survived the roundtrip
+    const table = page.locator("#editor .ProseMirror table");
+    await expect(table).toBeVisible({ timeout: 15_000 });
+
+    // Verify header
+    const headers = page.locator("#editor .ProseMirror table th");
+    await expect(headers).toHaveCount(2);
+    await expect(headers.nth(0)).toContainText("Fruit");
+    await expect(headers.nth(1)).toContainText("Color");
+
+    // Verify data cells
+    const cells = page.locator("#editor .ProseMirror table td");
+    await expect(cells).toHaveCount(2);
+    await expect(cells.nth(0)).toContainText("Apple");
+    await expect(cells.nth(1)).toContainText("Red");
+  });
+});

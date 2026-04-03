@@ -14,3 +14,9 @@ https://github.com/fishfolk/bones
 https://github.com/rustonbsd/rustpatcher
 https://github.com/p2panda/p2panda
 https://github.com/HIRO-MicroDataCenters-BV/rhio
+
+https://github.com/anomalyco/opencode/pull/8721
+
+curl -s -H "Authorization: Bearer $(cat ~/.config/github-copilot/apps.json \
+| jq '.[].oauth_token' \
+| sed 's/^"\(.*\)"$/\1/')" https://api.github.com/copilot_internal/user

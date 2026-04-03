@@ -69,6 +69,7 @@ fn commonmark_options() -> Options<'static> {
     // Enable GFM extensions that map to ProseMirror marks/nodes
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
+    options.extension.table = true;
     options.parse.smart = false; // Don't convert quotes/dashes
     options
 }
@@ -328,10 +329,59 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             text_node_with_marks(html, active_marks)
         }
 
-        // GFM features we don't support - convert to plain text or skip
-        NodeValue::Table(_) | NodeValue::TableRow(_) | NodeValue::TableCell => {
-            // Tables are not supported - this shouldn't happen as we collect text
-            json!({"type": "paragraph"})
+        NodeValue::Table(_table) => {
+            let children = collect_block_children(node);
+            json!({
+                "type": "table",
+                "content": if children.is_empty() {
+                    vec![json!({"type": "table_row", "content": [{"type": "table_cell", "content": [{"type": "paragraph"}]}]})]
+                } else {
+                    children
+                }
+            })
+        }
+
+        NodeValue::TableRow(is_header) => {
+            let cell_type = if *is_header {
+                "table_header"
+            } else {
+                "table_cell"
+            };
+            let children: Vec<Value> = node
+                .children()
+                .map(|child| {
+                    // Table cells contain inline content in comrak,
+                    // but ProseMirror needs block content (paragraphs)
+                    let inline_content = collect_inline_children(child, active_marks);
+                    let content = if inline_content.is_empty() {
+                        vec![json!({"type": "paragraph"})]
+                    } else {
+                        vec![json!({"type": "paragraph", "content": inline_content})]
+                    };
+                    json!({
+                        "type": cell_type,
+                        "content": content
+                    })
+                })
+                .collect();
+            json!({
+                "type": "table_row",
+                "content": children
+            })
+        }
+
+        NodeValue::TableCell => {
+            // Fallback: normally handled by TableRow above
+            let inline_content = collect_inline_children(node, active_marks);
+            let content = if inline_content.is_empty() {
+                vec![json!({"type": "paragraph"})]
+            } else {
+                vec![json!({"type": "paragraph", "content": inline_content})]
+            };
+            json!({
+                "type": "table_cell",
+                "content": content
+            })
         }
 
         NodeValue::TaskItem(task) => {
@@ -589,6 +639,20 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             })
         }
 
+        "table" => NodeValue::Table(Box::new(comrak::nodes::NodeTable::default())),
+
+        "table_row" => {
+            // Determine if this is a header row by checking if children are table_header
+            let is_header = json["content"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|c| c["type"].as_str())
+                .is_some_and(|t| t == "table_header");
+            NodeValue::TableRow(is_header)
+        }
+
+        "table_header" | "table_cell" => NodeValue::TableCell,
+
         "image" => {
             let src = json["attrs"]["src"].as_str().unwrap_or("");
             let title = json["attrs"]["title"].as_str().unwrap_or("");
@@ -614,6 +678,29 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     };
 
     let ast_node = arena.alloc(AstNode::from(node_value));
+
+    // Special case: table cells need paragraph unwrapping.
+    // comrak expects inline content directly in cells, not wrapped in paragraphs.
+    // ProseMirror wraps cell content in paragraphs, so we unwrap them here.
+    if node_type == "table_header" || node_type == "table_cell" {
+        if let Some(content) = json["content"].as_array() {
+            for child_json in content {
+                if child_json["type"].as_str() == Some("paragraph") {
+                    // Unwrap: add paragraph's inline children directly to cell
+                    if let Some(para_content) = child_json["content"].as_array() {
+                        for inline_json in para_content {
+                            let inline_node = json_to_ast(arena, inline_json)?;
+                            ast_node.append(inline_node);
+                        }
+                    }
+                } else {
+                    let child = json_to_ast(arena, child_json)?;
+                    ast_node.append(child);
+                }
+            }
+        }
+        return Ok(ast_node);
+    }
 
     // Process children (except for code_block which stores content in literal, not as children)
     if node_type != "code_block"
@@ -1114,5 +1201,75 @@ mod tests {
         );
         assert!(result.contains("unchecked item"));
         assert!(result.contains("checked item"));
+    }
+
+    #[test]
+    fn test_table() {
+        let md =
+            "| Header 1 | Header 2 |\n| --- | --- |\n| Cell A | Cell B |\n| Cell C | Cell D |\n";
+        let doc = markdown_to_prosemirror(md);
+        let content = doc["content"].as_array().unwrap();
+
+        // Should have a table at the top level
+        assert_eq!(content[0]["type"], "table");
+
+        let rows = content[0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 3); // 1 header row + 2 data rows
+
+        // First row should have table_header cells
+        assert_eq!(rows[0]["type"], "table_row");
+        let header_cells = rows[0]["content"].as_array().unwrap();
+        assert_eq!(header_cells.len(), 2);
+        assert_eq!(header_cells[0]["type"], "table_header");
+        assert_eq!(header_cells[1]["type"], "table_header");
+
+        // Header cells should wrap content in paragraphs
+        assert_eq!(header_cells[0]["content"][0]["type"], "paragraph");
+        assert_eq!(
+            header_cells[0]["content"][0]["content"][0]["text"],
+            "Header 1"
+        );
+
+        // Data rows should have table_cell
+        assert_eq!(rows[1]["type"], "table_row");
+        let data_cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(data_cells[0]["type"], "table_cell");
+        assert_eq!(data_cells[0]["content"][0]["content"][0]["text"], "Cell A");
+    }
+
+    #[test]
+    fn test_table_with_formatting() {
+        let md = "| Normal | **Bold** | *Italic* |\n| --- | --- | --- |\n| plain | **strong** | *em* |\n";
+        let doc = markdown_to_prosemirror(md);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "table");
+
+        let rows = content[0]["content"].as_array().unwrap();
+        // Data row - check that bold formatting is preserved
+        let data_cells = rows[1]["content"].as_array().unwrap();
+        let bold_text = &data_cells[1]["content"][0]["content"][0];
+        assert_eq!(bold_text["text"], "strong");
+        assert_eq!(bold_text["marks"][0]["type"], "strong");
+
+        let italic_text = &data_cells[2]["content"][0]["content"][0];
+        assert_eq!(italic_text["text"], "em");
+        assert_eq!(italic_text["marks"][0]["type"], "em");
+    }
+
+    #[test]
+    fn test_roundtrip_table() {
+        let original = "| H1 | H2 |\n| --- | --- |\n| A | B |\n";
+        let doc = markdown_to_prosemirror(original);
+        let result = prosemirror_to_markdown(&doc).unwrap();
+
+        // Should contain table-like structure with pipes
+        assert!(
+            result.contains('|'),
+            "Should have pipe characters: {result}"
+        );
+        assert!(result.contains("H1"), "Should have header H1: {result}");
+        assert!(result.contains("H2"), "Should have header H2: {result}");
+        assert!(result.contains('A'), "Should have cell A: {result}");
+        assert!(result.contains('B'), "Should have cell B: {result}");
     }
 }

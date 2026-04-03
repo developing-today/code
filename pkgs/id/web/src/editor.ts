@@ -45,7 +45,7 @@ export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "bin
 
 /**
  * Full schema with list support and GFM extensions for rich/markdown/plain modes.
- * Extends prosemirror-schema-basic with strikethrough mark and task list nodes.
+ * Extends prosemirror-schema-basic with strikethrough mark, task list nodes, and table nodes.
  */
 export const richSchema = new Schema({
   nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block").append({
@@ -99,6 +99,42 @@ export const richSchema = new Schema({
           ],
           ["div", { class: "task-list-item-content" }, 0],
         ];
+      },
+    },
+    table: {
+      content: "table_row+",
+      tableRole: "table",
+      group: "block",
+      isolating: true,
+      parseDOM: [{ tag: "table" }],
+      toDOM() {
+        return ["table", { class: "pm-table" }, ["tbody", 0]];
+      },
+    },
+    table_row: {
+      content: "(table_cell | table_header)+",
+      tableRole: "row",
+      parseDOM: [{ tag: "tr" }],
+      toDOM() {
+        return ["tr", 0];
+      },
+    },
+    table_cell: {
+      content: "paragraph+",
+      tableRole: "cell",
+      isolating: true,
+      parseDOM: [{ tag: "td" }],
+      toDOM() {
+        return ["td", 0];
+      },
+    },
+    table_header: {
+      content: "paragraph+",
+      tableRole: "header_cell",
+      isolating: true,
+      parseDOM: [{ tag: "th" }],
+      toDOM() {
+        return ["th", 0];
       },
     },
   }),

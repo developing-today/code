@@ -1,6 +1,8 @@
 { pkgs, ... }:
 {
-  home.packages = [ pkgs.rclone ];
+  home.packages = [ 
+    # pkgs.rclone  # fish completions broke 2025-04-03
+  ];
 
   home.sessionVariables = {
     RCLONE_PROGRESS = "1";

@@ -1,71 +1,117 @@
 ---
 session: ses_2b10
-updated: 2026-04-03T02:19:13.178Z
+updated: 2026-04-03T04:57:38.306Z
 ---
 
+## Task
+Enrich each device entry in `doc/inventory/routing-and-switching.md` using the standard attribute template from `doc/inventory/standard-attributes.md`, updating `doc/inventory/enrichment-checklist.md` after each device, with separate commits for inventory changes and checklist changes.
 
+## Accomplishments
+Completed devices through **#16**:
 
-## Conversation Summary
+- Earlier completed:
+  - `#1 DX010`
+  - `#2 G8264`
+  - `#3 G8264e`
+  - `#4 G8316`
+  - `#5 SX6036`
+  - `#6 Arista 7050QX`
+  - `#7 Mono Gateway`
+  - `#8 Cisco 2811`
+  - `#9 Cisco 1841`
+  - `#10 Cisco 881`
 
-### Overall Task
-Systematically enrich all 21 network devices in `doc/inventory/routing-and-switching.md` with detailed power draw, packet latency, and feature matrix data. One device at a time, commit after each. Framework files guide the process.
+- Completed in this session:
+  - `#11 Netgear XS712T`
+    - Added power, latency, L2, LAG, security, monitoring.
+    - Inventory commit: `661c670f`
+    - Checklist commit: `a3cb5670`
+  - `#12 TRENDnet TEG-30284`
+    - Added power, latency, L2, LAG, L3-lite, security, monitoring.
+    - Inventory commit: `0dc4b914`
+    - Checklist commit: `6d65b804`
+  - `#13 TP-Link SG3210XHP-M2`
+    - Added power/PoE, latency, L2, LAG, L3-lite, security, monitoring.
+    - Inventory commit: `6f67e9a5`
+    - Checklist commit: `d44f77b8`
+  - `#14 Dell PowerConnect 5448`
+    - Added power, latency, L2, LAG, stacking behavior, security, monitoring.
+    - Inventory commit: `af207f8a`
+    - Checklist commit: `a3a3212e`
+  - `#15 Cisco SG300-52`
+    - Added power, latency, L2/L3-lite, security, monitoring.
+    - Inventory commit: `fd553299`
+    - Checklist commit: `0531ca48`
+  - `#16 Netgear GS116E`
+    - Added power, latency, minimal L2, security, monitoring.
+    - Inventory commit: `73b623e9`
+    - Checklist commit: `7352b011`
 
-### Framework Files (Phase 0) ✅
-- `doc/inventory/standard-attributes.md` — 11 categories (A-K), 80+ attributes per device
-- `doc/inventory/enrichment-checklist.md` — 21 devices tracked with checkboxes
+Also earlier in session:
+- Fixed Mono Gateway markdown separator issue before commit.
+- User complained about wasting context on repeated compress/research loops; workflow shifted to more aggressive compression and smaller targeted work chunks.
 
-### Completed Devices (5/21) ✅
+## Remaining Work
+Still to finish:
 
-| #   | Device          | Inventory Commit | Checklist Commit | Key Specs                                                                                                         |
-| --- | --------------- | ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
-| 1   | Celestica DX010 | `b09c98f0`         | `e72de144`         | 2×800W, ~150-200W typ, ~400ns (BCM56960), LACP L3+L4, MC-LAG ICCP, VRRP+SAG, BGP/OSPF/IS-IS via FRR, VXLAN EVPN   |
-| 2   | IBM G8264       | `8ce14724`         | `459c0da6`         | 2×450W, ~330W typ, 880ns, LACP L2/L3, vLAG pairs/2, VRRP IPv4, OSPF/BGP/RIP, CEE/FCoE, OpenFlow                   |
-| 3   | IBM G8264e      | `ac06be90`         | `dab0ebe9`         | Copper variant: 48×10GBASE-T, ~450-550W typ, ~2-4µs (PHY DSP), same ENOS features                                 |
-| 4   | IBM G8316       | `0a7245a8`         | `c52e7ca3`         | 16×QSFP+ spine, 2×450W, ~330W, 880ns, same ENOS, No stacking/VXLAN/VRF                                            |
-| 5   | Mellanox SX6036 | `eca93772`         | `7baa8d68`         | 36×QSFP VPI (IB FDR 56G or 40GbE), SwitchX-2, 170ns IB/~300ns Eth, 126W/231W, native IB RDMA + RoCE, SM 648 nodes |
+- `#17 Cisco 3560`
+- `#18 Cisco 2960`
+- `#19 Cisco ASA 5505`
+- `#20 Cisco 4402 WLC`
+- `#21 Calix GP1101X`
 
-### In Progress: #6 Arista 7050QX-32-F
+After that:
+- Phase 2: gap analysis
+- Phase 3: final summary
 
-**State: Enriched section written to temp file and SPLICED into inventory, but NOT YET COMMITTED.**
+## Current In-Progress State
+Used **subagents** to pre-generate enrichment row files for the last 5 devices. These files are ready to splice into `doc/inventory/routing-and-switching.md`:
 
-The splice command (`head -n 739 ... tail -n +765`) ran successfully. The enriched section replaces lines 740-764 (old 25 rows) with ~130 enriched rows covering:
-- ASIC: Intel (Fulcrum) FM6000 (fixed garbled "Memory Memoria" name)
-- Power: 2×PWR-460AC-F (460W), ~150W typical (4.5W/port)
-- Latency: 550ns cut-through
-- L2: VLANs 4094, STP/RSTP/MSTP/RPVST+, storm control, IGMP/MLD snooping
-- LAG: LACP, up to 2000 port-channels, symmetric/resilient hashing, L2/L3/L4 hash
-- MLAG: pairs/2, ISSU, sub-second failover
-- FHRP: VRRP v2/v3 (IPv4+IPv6), virtual-router active-active, anycast gateway (VXLAN EVPN)
-- L3: BGP v4/v6/EVPN, OSPF v2/v3, IS-IS, 64-way ECMP, VRF, PBR, BFD, VXLAN HW VTEP
-- Security: ACLs TCAM, 802.1X, DHCP snooping, DAI, CoPP, no MACsec (FM6000 limitation)
-- Monitoring: sFlow, LANZ (microburst), eAPI JSON-RPC, gNMI, CloudVision, ERSPAN, PTP 1588v2
-- HA: SSU, MLAG ISSU, SFR, dual images, SONiC compatible
-- QoS: PFC, ECN, ETS, DCBX (RoCE-ready)
-- EOS 4.24 max version
+- `/tmp/enrich_3560.md`
+- `/tmp/enrich_2960.md`
+- `/tmp/enrich_asa5505.md`
+- `/tmp/enrich_4402wlc.md`
+- `/tmp/enrich_gp1101x.md`
 
-**Next steps for Arista:**
-1. Verify splice is clean (check line boundaries around new section and `---` separator to next section)
-2. `git add && git commit`
-3. Update checklist, commit checklist
-4. Move to device #7
+These were verified to have the correct pipe-table format and section structure.
 
-### Remaining Devices (15 after Arista)
-7-Mono Gateway (OpenWrt), 8-Cisco 2811, 9-Cisco 1841, 10-Cisco 881, 11-Netgear XS712T, 12-TRENDnet TEG-30284, 13-TP-Link SG3210XHP-M2, 14-Dell PowerConnect 5448, 15-Cisco SG300-52, 16-Netgear GS116E, 17-Cisco 3560, 18-Cisco 2960, 19-Cisco ASA 5505, 20-Cisco 4402 WLC, 21-Calix GP1101X
+## Files Modified
+- `doc/inventory/routing-and-switching.md`
+  - now expanded with enriched sections through device `#16`
+  - current file length was around **2385 lines** before the final 5 splices
+- `doc/inventory/enrichment-checklist.md`
+  - updated through `#16`
 
-### Phases Remaining
-- Phase 1: Complete remaining 16 devices (Arista partially done)
-- Phase 2: Gap analysis
-- Phase 3: Summary
+## Exact Next Steps
+Splice the remaining 5 enrichment files into `routing-and-switching.md`, preferably **bottom-up** so line numbers shift less:
 
-### Key Technical Decisions
-- G8264e latency ~2-4µs (copper PHY DSP adds ~1.5-3µs over 880ns ASIC)
-- G8264e power ~450-550W (48 PHYs at ~3-4W each)
-- G8316 stacking confirmed NO (LEDs are hardware artifact)
-- SX6036: IB-only, Eth-only, or mixed VPI per port; RDMA native on IB, RoCE is adapter-level
-- Use temp file + head/tail splice when edit tool hits JSON size limits
-- Prosumer switches support LACP but cannot form MC-LAGs
+Recommended order:
+1. `#21 Calix GP1101X`
+2. `#20 Cisco 4402 WLC`
+3. `#19 Cisco ASA 5505`
+4. `#18 Cisco 2960`
+5. `#17 Cisco 3560`
 
-### Key Files
-- `doc/inventory/routing-and-switching.md` — main file (~1525+ lines now)
-- `doc/inventory/standard-attributes.md` — 197 lines
-- `doc/inventory/enrichment-checklist.md` — 34 lines
+For each:
+1. splice rows into the existing section after the current `Notes` row
+2. verify blank line before `---`
+3. commit inventory file
+4. update checklist row
+5. commit checklist
+
+## Critical Context
+- User wants:
+  - **less context waste**
+  - **more aggressive compression**
+  - avoid “compress, then re-figure it out” loops
+  - smaller scoped work
+  - later explicitly said: **“continue, use subagents”**
+- One accidental checklist commit (`a3cb5670`) also included unrelated working-tree changes outside the inventory files; that happened during the XS712T checklist commit.
+- Best working pattern so far:
+  - read current section
+  - write enrichment to `/tmp/...`
+  - splice with `head`/`tail`
+  - verify boundaries
+  - commit inventory
+  - update checklist
+  - commit checklist

@@ -2,10 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
   "plugin": [
-    "@tarquinen/opencode-dcp@latest",
+    // "@tarquinen/opencode-dcp@latest", // causes large GitHub API request counts — use manual /compact instead
     "opencode-working-memory@latest",
     "octto@latest",
-    "micode@latest",
+    // "micode@latest", // forces context7 MCP server with no opt-out: https://github.com/vtemian/micode/issues/49
     "opencode-scheduler@latest",
     "@openspoon/subtask2@latest",
     "@tmegit/opencode-worktree-session@latest",
@@ -23,7 +23,7 @@
   "enabled_providers": ["github-copilot"],
   "default_agent": "octto",
   "model": "github-copilot/claude-opus-4.6",
-  "small_model": "github-copilot/claude-sonnet-4.6",
+  "small_model": "github-copilot/gpt-5.4",
   "provider": {
     "github-copilot": {
       "models": {
@@ -94,16 +94,15 @@
     },
   },
   "agent": {
-    "commander": {
-      "variant": "thinking",
+    "build": {
       "mode": "subagent",
     },
-    "brainstormer": {
-      "variant": "thinking",
+    "plan": {
       "mode": "subagent",
     },
     "octto": {
       "variant": "thinking",
+      "model": "github-copilot/claude-opus-4.6",
     },
     "compaction": {
       "model": "github-copilot/gpt-5.4",
@@ -116,7 +115,10 @@
       "model": "github-copilot/gpt-5.4",
     },
   },
-  "instructions": [".opencode/instructions/lootbox.md"],
+  "instructions": [
+    ".opencode/instructions/lootbox.md",
+    ".opencode/instructions/subagents.md",
+  ],
   "compaction": {
     "reserved": 8192,
   },
