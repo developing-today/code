@@ -334,7 +334,7 @@ impl CollabState {
 
         let doc = Arc::new(Document::with_content(initial_content, Some(filename)));
         write.insert(filename.to_owned(), Arc::clone(&doc));
-        *doc.hash.write().await = hash.to_owned();
+        hash.clone_into(&mut *doc.hash.write().await);
         doc
     }
 
@@ -366,7 +366,7 @@ impl CollabState {
                 );
             }
             // Update the stored hash
-            *doc.hash.write().await = new_hash.to_owned();
+            new_hash.clone_into(&mut *doc.hash.write().await);
         }
     }
 
