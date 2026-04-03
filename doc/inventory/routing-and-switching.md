@@ -1873,6 +1873,95 @@
 | **Released** | ~2004 (3560), ~2006 (3560G), ~2010 (3560X) |
 | **EOL** | 3560: ~2008, 3560G: ~2012, 3560X: ~2016 |
 | **Notes** | Classic Cisco enterprise L3 switch. The 3560 series spans multiple hardware generations. With IP Services license, it's a full L3 router-switch. Without exact model number, specs are approximate. The "G" suffix means Gigabit throughout; original 3560 had FastEthernet models. |
+| | |
+| **— Power —** | |
+| System Idle (non-PoE) | ~25–30 W |
+| Typical Load (non-PoE) | ~35–50 W |
+| Max Draw (non-PoE) | ~60–80 W |
+| Max Draw (PoE models) | Up to ~370 W (3560-48PS with full PoE load) |
+| Per-Port GbE (RJ45) | ~0.3–0.5 W |
+| Per-Port SFP | ~0.5–1.0 W |
+| PoE | Model-dependent; 3560-xxPS models support 802.3af (15.4 W/port); no 802.3at |
+| PoE Budget | 370 W (3560-48PS), 370 W (3560-24PS) |
+| PSU | Internal AC, non-redundant (most models); RPS 2300 external redundancy option |
+| | |
+| **— Latency —** | |
+| Forwarding Mode | Store-and-forward |
+| GbE RJ45 Baseline | ~3–6 µs (64-byte frames) |
+| SFP 1GbE Baseline | ~2–4 µs (64-byte frames) |
+| L3 Forwarding Penalty | Negligible (hardware CEF in ASIC) |
+| ACL Processing Penalty | Negligible (TCAM-based lookup) |
+| | |
+| **— L2 Features —** | |
+| VLAN Range | Up to 4094 |
+| Private VLAN | Yes (community, isolated, promiscuous) |
+| Voice VLAN | Yes (auto-detection via CDP/LLDP) |
+| Q-in-Q (802.1ad) | No (not supported on most 3560 models) |
+| Trunking | 802.1Q, ISL |
+| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
+| STP Enhancements | BPDU Guard, BPDU Filter, Root Guard, Loop Guard, UplinkFast, BackboneFast |
+| Storm Control | Yes (broadcast, multicast, unicast; threshold-based) |
+| IGMP Snooping | Yes (v1/v2/v3), MVR |
+| LLDP | Yes (transmit, receive, MED) |
+| MAC Address Table | ~12K entries |
+| Jumbo Frames | Up to 9198 bytes |
+| | |
+| **— LAG / LACP —** | |
+| Mode | Static (on) + LACP (802.3ad) |
+| Max Port-Channel Groups | Up to 48 (IOS version dependent) |
+| Max Ports per Group | 8 active |
+| Hash Algorithm | L2 (src-dst-mac), L3 (src-dst-ip), L4 (src-dst-port); src-dst-ip default |
+| Cross-Stack LAG | No (3560 is non-stackable) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG Support | Not supported |
+| | |
+| **— FHRP —** | |
+| HSRP | v1 and v2 |
+| VRRP | Yes (requires IP Services license) |
+| GLBP | Yes (requires IP Services license) |
+| Preemption | Configurable (all protocols) |
+| Timers | Tunable (hello/hold intervals) |
+| Object Tracking | Yes (interface, IP route, IP SLA) |
+| | |
+| **— L3 Routing —** | |
+| Static Routing | Yes |
+| OSPF | v2 (IPv4), v3 (IPv6) — requires IP Services |
+| EIGRP | Yes (requires IP Services) |
+| BGP | Yes (requires IP Services; limited scale) |
+| RIP | v1/v2 |
+| PBR | Yes (policy-based routing) |
+| VRF-Lite | Yes |
+| Inter-VLAN Routing | Yes (via SVI) |
+| DHCP Relay | Yes |
+| DHCP Server | Yes (embedded IOS DHCP server) |
+| ARP Table | ~8K entries |
+| Unicast Routes (TCAM) | Up to ~11K (SDM template dependent) |
+| ECMP | Up to 8 equal-cost paths |
+| | |
+| **— Security —** | |
+| 802.1X | Yes (single-host, multi-auth, multi-domain) |
+| RADIUS | Yes |
+| TACACS+ | Yes |
+| ACLs | L2–L4 standard/extended (TCAM-based, hardware-accelerated) |
+| DHCP Snooping | Yes |
+| Dynamic ARP Inspection | Yes (DAI) |
+| IP Source Guard | Yes |
+| Port Security | Yes (sticky MAC, max MAC limit, violation actions) |
+| MACsec (802.1AE) | No |
+| CoPP | Limited (no full CoPP; CPU rate-limiters available) |
+| Private VLAN | Yes |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 |
+| RMON | Groups 1, 2, 3, 9 |
+| SPAN / RSPAN | Yes (local SPAN and remote SPAN) |
+| NetFlow | Limited (supported on some models/IOS versions) |
+| Syslog | Yes |
+| NTP | Yes (client and server) |
+| IP SLA | Yes (responder and initiator) |
+| EEM | Yes (Embedded Event Manager, applet and Tcl) |
+| CLI | Yes (console, SSH v2, Telnet) |
 
 ---
 
@@ -1896,6 +1985,70 @@
 | **Released** | ~2006 (original), ~2010 (2960-S), ~2013 (2960-X) |
 | **EOL** | Original: ~2013, 2960-S: ~2016, 2960-X: ~2019 |
 | **Notes** | Workhorse Cisco L2 access switch. Very common in enterprise environments. L2 only (no routing). Used for connecting end devices to the network. Without exact model number, specs are approximate. |
+| | |
+| **— Power —** | |
+| System Idle (non-PoE) | ~15–25 W (varies by model; 24-port lower, 48-port higher) |
+| System Typical (non-PoE) | ~25–40 W under moderate traffic load |
+| System Max (non-PoE) | ~45–60 W (all ports active, peak traffic) |
+| System Max (PoE models) | ~370 W (af, 24-port) to ~740 W (at, 48-port) including PoE budget |
+| Per-Port Power (GbE RJ45) | ~0.3–0.5 W per active port |
+| Per-Port Power (SFP 1GbE) | ~0.5–1.0 W per active SFP |
+| PoE Support | 802.3af (15.4 W/port) and 802.3at (30 W/port) on PoE+ models |
+| PoE Budget | Model-dependent: 370 W (24p af), 740 W (48p at) typical |
+| PSU | Internal AC; redundant power via Cisco RPS 2300 on select models |
+| FlexStack Module Power | +5–10 W additional per switch when stacking module installed |
+| | |
+| **— Latency —** | |
+| Switching Mode | Store-and-forward only (no cut-through) |
+| Baseline GbE (RJ45→RJ45) | ~3–6 µs (64-byte frames) |
+| SFP→SFP | ~2–4 µs (64-byte frames) |
+| Cross-Stack (FlexStack) | +10–20 µs additional hop latency per stack member traversal |
+| | |
+| **— L2 Features —** | |
+| VLAN Support | Up to 4094 VLANs (LAN Base); 64 VLANs (LAN Lite) |
+| Private VLAN | Limited or not supported on most 2960 models |
+| Voice VLAN | Yes; auto-detect via CDP/LLDP for Cisco IP phones |
+| Q-in-Q (802.1ad) | No |
+| Trunking | 802.1Q; ISL not supported |
+| STP | STP, RSTP (802.1w), MSTP (802.1s) |
+| STP Enhancements | BPDU Guard, BPDU Filter, Root Guard, Loop Guard, UplinkFast, BackboneFast |
+| Storm Control | Yes; broadcast, multicast, unicast with threshold-based suppression |
+| IGMP Snooping | Yes; v1/v2/v3; up to 255 multicast groups (LAN Base) |
+| LLDP | Yes; LLDP and LLDP-MED |
+| MAC Address Table | ~8K entries |
+| Jumbo Frames | Up to 9198 bytes |
+| | |
+| **— LAG / LACP —** | |
+| Mode | Static (EtherChannel) and LACP (802.3ad) |
+| Max Groups | Up to 48 EtherChannel groups |
+| Ports per Group | Up to 8 active ports per group |
+| Hash Algorithm | L2 (src-dst-mac), L3 (src-dst-ip); configurable |
+| Cross-Stack LAG | Yes, on 2960-S (FlexStack) and 2960-X (FlexStack-Plus) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG / vPC / VSS | Not supported |
+| | |
+| **— Security —** | |
+| 802.1X | Yes; single-host, multi-host, multi-domain, multi-auth modes |
+| RADIUS | Yes; authentication, authorization, accounting |
+| TACACS+ | Yes; authentication and command authorization |
+| ACLs | Standard/extended ACLs; PACL and VACL on LAN Base S/X models |
+| DHCP Snooping | Yes; trusted/untrusted port classification |
+| Dynamic ARP Inspection (DAI) | Yes; validates ARP packets against DHCP snooping binding table |
+| IP Source Guard | Yes; restricts traffic based on DHCP snooping bindings |
+| Port Security | Yes; static, sticky, and dynamic MAC limiting; violation actions |
+| MACsec (802.1AE) | No |
+| MAC Authentication Bypass (MAB) | Yes; fallback for non-802.1X devices |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 (authPriv) |
+| RMON | Yes; RMON I (4 groups: statistics, history, alarms, events) |
+| SPAN | Yes; local SPAN and RSPAN (Remote SPAN) |
+| NetFlow / sFlow | Not supported |
+| Syslog | Yes; local buffer and remote syslog server export |
+| NTP | Yes; NTP client and server |
+| EEM (Embedded Event Manager) | Limited applet support on LAN Base |
+| Management Access | CLI (console, SSH v2, Telnet), HTTPS web GUI, CNA/CMS |
 
 ---
 
@@ -1915,6 +2068,56 @@
 | **Released** | ~2006 |
 | **EOL** | 2013 (End of Sale), 2017 (End of Support) |
 | **Notes** | Entry-level ASA firewall. FastEthernet only. Very limited by modern standards (~150Mbps). VLAN trunk requires Security Plus license. Desktop form factor. Useful only for lab/learning or very low-bandwidth firewall scenarios. |
+| | |
+| **— Power —** | |
+| System Idle | ~12–15 W |
+| Typical Load | ~18–22 W |
+| Max Draw | ~25–30 W |
+| PoE Output | 2 ports, 802.3af, 7 W total budget |
+| PSU | External 12 V / 5 A AC adapter |
+| Cooling | Fanless (convection) |
+| | |
+| **— Latency —** | |
+| Firewall Latency | ~0.5–2 ms (stateful inspection at 150 Mbps) |
+| VPN Overhead | +1–5 ms additional (IPsec 3DES/AES) |
+| Switching Mode | Store-and-forward (integrated 8-port FE switch) |
+| | |
+| **— L2 Features —** | |
+| Integrated Switch | 8-port 10/100 FastEthernet |
+| VLANs | Up to 3 (base license) / 20 (Security Plus) |
+| Trunking | 802.1Q (Security Plus only) |
+| STP | No |
+| LACP / EtherChannel | No |
+| LLDP | No |
+| | |
+| **— Firewall / VPN —** | |
+| Stateful Inspection | Yes (up to 150 Mbps) |
+| NAT / PAT | Static NAT, dynamic NAT, PAT |
+| ACLs | Per-interface, per-direction |
+| Modular Policy Framework | Yes (L3/L4 & L7 traffic policies) |
+| Application Inspection | HTTP, FTP, SIP, DNS, SMTP, ESMTP, ICMP, and others |
+| Failover | Active/Standby (Security Plus only) |
+| IPsec Site-to-Site VPN | 10 peers (base) / 25 peers (Security Plus) |
+| SSL VPN | 2 concurrent peers (base) |
+| VPN Encryption | 3DES, AES-128, AES-192, AES-256 |
+| VPN Throughput | Up to 100 Mbps |
+| IPS | Basic (optional AIP-SSC-5 module) |
+| Routing | Static only (no OSPF, no BGP, no EIGRP) |
+| Botnet Traffic Filter | Yes (with subscription) |
+| | |
+| **— Security —** | |
+| AAA | RADIUS, TACACS+, local database |
+| 802.1X | No (firewall appliance, not a switch) |
+| Management Access Control | Management ACLs, SSH, HTTPS (ASDM) |
+| Certificate Auth | Yes (identity/CA certificates for VPN and management) |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 |
+| Syslog | Yes (to external syslog servers) |
+| ASDM Monitoring | Real-time graphs, dashboards, log viewer |
+| NetFlow | NSEL (NetFlow Security Event Logging) — limited |
+| NTP | Yes (client) |
+| SPAN / Mirror | No (not a switch function) |
 
 ---
 
@@ -1931,6 +2134,49 @@
 | **Released** | ~2006 |
 | **EOL** | ~2012 (End of Sale), ~2017 (End of Support) |
 | **Notes** | This is a wireless LAN controller, not a switch or router. Manages lightweight Cisco APs (not autonomous). Only relevant if you have Cisco lightweight APs. 802.11a/b/g era - does NOT support 802.11n/ac/ax. Essentially useless for modern WiFi. |
+| | |
+| **— Power —** | |
+| System Power Draw | ~65–85 W typical |
+| Power Supply | Internal AC, single PSU (no redundancy) |
+| PoE Output | None — APs powered separately via PoE switches or injectors |
+| | |
+| **— Latency —** | |
+| CAPWAP Tunnel Overhead | ~1–3 ms per AP hop |
+| Control Plane Latency | ~5–10 ms for client roaming events |
+| | |
+| **— Wireless —** | |
+| Standards | 802.11a/b/g (no 802.11n/ac/ax) |
+| Max Data Rate | 54 Mbps per radio |
+| MIMO | No (pre-MIMO era) |
+| QoS | WMM (Wi-Fi Multimedia) |
+| Band Steering | No |
+| DFS | Yes |
+| RF Management | RRM auto RF (dynamic channel/power) |
+| Max APs | 50 (base license 12 or 25) |
+| Max Clients | ~500–1000 |
+| SSID Limit | 16 per WLAN |
+| H-REAP / FlexConnect | Limited support |
+| Mesh Networking | Basic |
+| | |
+| **— Security —** | |
+| WPA / WPA2 | Personal (PSK) + Enterprise (802.1X) |
+| WPA3 | No |
+| RADIUS Authentication | EAP-TLS, PEAP, EAP-FAST |
+| MAC Filtering | Yes |
+| Web Auth / Captive Portal | Yes |
+| Rogue AP Detection | Detection + containment |
+| wIPS | Yes (requires MSE) |
+| Management AAA | RADIUS, TACACS+ |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1 / v2c / v3 |
+| Syslog | Yes |
+| NMS | WCS / Cisco Prime Infrastructure |
+| RMON | Yes |
+| NTP | Yes |
+| CLI Diagnostics | Yes |
+| LinkTest | Yes |
+| Client Troubleshooting | Built-in tools (debug client, test commands) |
 
 ---
 
@@ -1960,6 +2206,33 @@
 | **Manufacturer** | Calix (GigaPoint series) |
 | **Released** | ~2022 |
 | **Notes** | XGS-PON ONT with single 10GbE copper output. The GP1101X is the 10GE variant (GP1100X is 2.5GE). Operates as a transparent L2 bridge from fiber to Ethernet. Single LAN port means all downstream routing/switching must happen on the next device. ISP-locked firmware - no user configuration of the ONT itself. VoIP port for carrier-grade telephony if subscribed. |
+| | |
+| **— Power —** | |
+| System Idle | ~5–7 W |
+| Typical Load | ~8–10 W |
+| Max (10GBASE-T + VoIP active) | ~12–15 W |
+| PSU | External 12 V DC adapter, ~1–2 A |
+| Battery Backup | Optional Calix GigaCenter battery; ~4–8 hr standby (VoIP) |
+| 10GBASE-T PHY | ~3–5 W |
+| | |
+| **— Latency —** | |
+| XGS-PON Upstream Grant | ~125 µs – 1 ms (TDM-PON scheduling) |
+| Fiber + ONT Processing | ~50–200 µs typical |
+| 10GBASE-T PHY | ~2–3 µs |
+| Total ONT Pass-Through | ~100–500 µs |
+| | |
+| **— L2 Features —** | |
+| 802.1Q VLAN | ISP-configured only; not user-configurable |
+| QoS | ISP-configured traffic classes |
+| STP / LACP | Not supported |
+| User-Facing L2 Config | None (single LAN port, no switching) |
+| | |
+| **— Monitoring —** | |
+| Management Platform | Calix AXOS / SMx Cloud (ISP only) |
+| ONT Management | OMCI via OLT |
+| User SNMP | Not available |
+| Status Indicators | LED only (Power, PON, LAN, VoIP) |
+| Remote Diagnostics | ISP can read optical power levels, error counters |
 
 ---
 
