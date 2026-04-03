@@ -17,6 +17,8 @@
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
+//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items)
+//! - `task_list_item`: Task list item with `checked` attribute
 //! - `image`: Inline image with `src`, `alt`, `title` attributes
 //! - `hard_break`: Hard line break
 //! - `text`: Text content
@@ -66,6 +68,7 @@ fn commonmark_options() -> Options<'static> {
     let mut options = Options::default();
     // Enable GFM extensions that map to ProseMirror marks/nodes
     options.extension.strikethrough = true;
+    options.extension.tasklist = true;
     options.parse.smart = false; // Don't convert quotes/dashes
     options
 }
@@ -178,26 +181,40 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::List(list) => {
-            let content = collect_list_items(node);
-            let tight = list.tight;
+            // Check if this is a task list by looking at children
+            let is_task_list = node
+                .children()
+                .next()
+                .is_some_and(|child| matches!(child.data.borrow().value, NodeValue::TaskItem(_)));
 
-            match list.list_type {
-                ListType::Ordered => {
-                    json!({
-                        "type": "ordered_list",
-                        "attrs": {
-                            "order": list.start,
-                            "tight": tight
-                        },
-                        "content": content
-                    })
-                }
-                ListType::Bullet => {
-                    json!({
-                        "type": "bullet_list",
-                        "attrs": {"tight": tight},
-                        "content": content
-                    })
+            if is_task_list {
+                let content = collect_list_items(node);
+                json!({
+                    "type": "task_list",
+                    "content": content
+                })
+            } else {
+                let content = collect_list_items(node);
+                let tight = list.tight;
+
+                match list.list_type {
+                    ListType::Ordered => {
+                        json!({
+                            "type": "ordered_list",
+                            "attrs": {
+                                "order": list.start,
+                                "tight": tight
+                            },
+                            "content": content
+                        })
+                    }
+                    ListType::Bullet => {
+                        json!({
+                            "type": "bullet_list",
+                            "attrs": {"tight": tight},
+                            "content": content
+                        })
+                    }
                 }
             }
         }
@@ -317,11 +334,13 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!({"type": "paragraph"})
         }
 
-        NodeValue::TaskItem(_) => {
-            // Task items become regular list items
+        NodeValue::TaskItem(task) => {
+            // Task items have a checked state (symbol present = checked)
+            let checked = task.symbol.is_some();
             let content = collect_block_children(node);
             json!({
-                "type": "list_item",
+                "type": "task_list_item",
+                "attrs": { "checked": checked },
                 "content": if content.is_empty() {
                     vec![json!({"type": "paragraph"})]
                 } else {
@@ -548,6 +567,27 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
 
         "list_item" => NodeValue::Item(comrak::nodes::NodeList::default()),
+
+        "task_list" => {
+            // Task list is a bullet list whose children are TaskItems
+            NodeValue::List(comrak::nodes::NodeList {
+                list_type: ListType::Bullet,
+                tight: true,
+                bullet_char: b'-',
+                ..Default::default()
+            })
+        }
+
+        "task_list_item" => {
+            let checked = json["attrs"]["checked"].as_bool().unwrap_or(false);
+            NodeValue::TaskItem(comrak::nodes::NodeTaskItem {
+                symbol: if checked { Some('x') } else { None },
+                symbol_sourcepos: comrak::nodes::Sourcepos {
+                    start: comrak::nodes::LineColumn { line: 0, column: 0 },
+                    end: comrak::nodes::LineColumn { line: 0, column: 0 },
+                },
+            })
+        }
 
         "image" => {
             let src = json["attrs"]["src"].as_str().unwrap_or("");
@@ -1015,5 +1055,64 @@ mod tests {
         assert!(result.contains("~~deleted~~"));
         assert!(result.contains("This is"));
         assert!(result.contains("text."));
+    }
+
+    #[test]
+    fn test_task_list() {
+        let doc = markdown_to_prosemirror("- [ ] unchecked\n- [x] checked\n");
+        let content = doc["content"].as_array().unwrap();
+
+        // Should produce a task_list, not a bullet_list
+        assert_eq!(content[0]["type"], "task_list");
+        let items = content[0]["content"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+
+        // First item: unchecked
+        assert_eq!(items[0]["type"], "task_list_item");
+        assert_eq!(items[0]["attrs"]["checked"], false);
+
+        // Second item: checked
+        assert_eq!(items[1]["type"], "task_list_item");
+        assert_eq!(items[1]["attrs"]["checked"], true);
+    }
+
+    #[test]
+    fn test_task_list_mixed_content() {
+        // Task list items with text content
+        let doc = markdown_to_prosemirror("- [ ] buy milk\n- [x] write code\n- [ ] review PR\n");
+        let content = doc["content"].as_array().unwrap();
+
+        assert_eq!(content[0]["type"], "task_list");
+        let items = content[0]["content"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+
+        // Verify text content is preserved
+        let first_item_text = items[0]["content"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(first_item_text, "buy milk");
+
+        assert_eq!(items[0]["attrs"]["checked"], false);
+        assert_eq!(items[1]["attrs"]["checked"], true);
+        assert_eq!(items[2]["attrs"]["checked"], false);
+    }
+
+    #[test]
+    fn test_roundtrip_task_list() {
+        let original = "- [ ] unchecked item\n- [x] checked item\n";
+        let doc = markdown_to_prosemirror(original);
+        let result = prosemirror_to_markdown(&doc).unwrap();
+
+        // Should preserve checkbox syntax
+        assert!(
+            result.contains("[ ]"),
+            "Should have unchecked checkbox: {result}"
+        );
+        assert!(
+            result.contains("[x]"),
+            "Should have checked checkbox: {result}"
+        );
+        assert!(result.contains("unchecked item"));
+        assert!(result.contains("checked item"));
     }
 }

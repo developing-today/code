@@ -45,10 +45,63 @@ export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "bin
 
 /**
  * Full schema with list support and GFM extensions for rich/markdown/plain modes.
- * Extends prosemirror-schema-basic with strikethrough mark.
+ * Extends prosemirror-schema-basic with strikethrough mark and task list nodes.
  */
 export const richSchema = new Schema({
-  nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block"),
+  nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block").append({
+    task_list: {
+      group: "block",
+      content: "task_list_item+",
+      parseDOM: [
+        {
+          tag: "ul",
+          getAttrs(dom) {
+            // Match <ul> that contains task list items (with checkboxes)
+            const el = dom as HTMLElement;
+            if (el.classList.contains("contains-task-list")) return {};
+            // Also match if first child li has a checkbox
+            const firstLi = el.querySelector("li");
+            if (firstLi?.querySelector('input[type="checkbox"]')) return {};
+            return false;
+          },
+        },
+      ],
+      toDOM() {
+        return ["ul", { class: "contains-task-list" }, 0];
+      },
+    },
+    task_list_item: {
+      content: "paragraph block*",
+      defining: true,
+      attrs: { checked: { default: false } },
+      parseDOM: [
+        {
+          tag: "li",
+          getAttrs(dom) {
+            const el = dom as HTMLElement;
+            const checkbox = el.querySelector('input[type="checkbox"]');
+            if (!checkbox) return false;
+            return { checked: (checkbox as HTMLInputElement).checked };
+          },
+        },
+      ],
+      toDOM(node) {
+        return [
+          "li",
+          { class: `task-list-item${node.attrs.checked ? " task-list-item-checked" : ""}` },
+          [
+            "input",
+            {
+              type: "checkbox",
+              ...(node.attrs.checked ? { checked: "" } : {}),
+              // Note: actual toggle is handled by nodeView
+            },
+          ],
+          ["div", { class: "task-list-item-content" }, 0],
+        ];
+      },
+    },
+  }),
   marks: basicSchema.spec.marks.append({
     strikethrough: {
       parseDOM: [
@@ -349,6 +402,48 @@ export function initEditor(
   // Create editor view
   const view = new EditorView(container, {
     state,
+    nodeViews: {
+      // Custom nodeView for task_list_item: renders a clickable checkbox
+      task_list_item(node, outerView, getPos) {
+        const li = document.createElement("li");
+        li.classList.add("task-list-item");
+        if (node.attrs.checked) li.classList.add("task-list-item-checked");
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = !!node.attrs.checked;
+        checkbox.contentEditable = "false";
+        checkbox.addEventListener("change", () => {
+          const pos = typeof getPos === "function" ? getPos() : null;
+          if (pos != null) {
+            outerView.dispatch(
+              outerView.state.tr.setNodeMarkup(pos, undefined, {
+                ...node.attrs,
+                checked: checkbox.checked,
+              }),
+            );
+          }
+        });
+
+        const content = document.createElement("div");
+        content.classList.add("task-list-item-content");
+
+        li.appendChild(checkbox);
+        li.appendChild(content);
+
+        return {
+          dom: li,
+          contentDOM: content,
+          update(updatedNode) {
+            if (updatedNode.type !== node.type) return false;
+            checkbox.checked = !!updatedNode.attrs.checked;
+            li.classList.toggle("task-list-item-checked", !!updatedNode.attrs.checked);
+            node = updatedNode;
+            return true;
+          },
+        };
+      },
+    },
     dispatchTransaction(transaction: Transaction) {
       const newState = view.state.apply(transaction);
       view.updateState(newState);

@@ -1,0 +1,35 @@
+{
+  "port": 9420,
+  "lootboxRoot": ".lootbox",
+  "mcpServers": {
+    "codedb": {
+      "command": "/home/user/bin/codedb",
+      "args": ["mcp"],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1"
+      }
+    },
+    "fff": {
+      "command": "/home/user/.local/bin/fff-mcp",
+      "args": []
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--executable-path=/run/current-system/sw/bin/chromium",
+        "--headless",
+        "--isolated",
+        "--viewport=800x600",
+        "--no-usage-statistics",
+        "--no-performance-crux",
+        "--no-category-emulation"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  }
+}

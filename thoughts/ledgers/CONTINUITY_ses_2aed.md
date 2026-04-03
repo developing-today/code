@@ -1,6 +1,6 @@
 ---
 session: ses_2aed
-updated: 2026-04-03T02:25:17.239Z
+updated: 2026-04-03T03:31:58.110Z
 ---
 
 
@@ -8,77 +8,59 @@ updated: 2026-04-03T02:25:17.239Z
 ## Conversation Summary
 
 ### Overall Task
-Transform `pkgs/id` web UI from a single-user markdown editor into a live collaborative platform. A 6-phase roadmap was created, approved, and implementation has begun.
+Implement Phase 2 (Markdown Polish) for pkgs/id collaborative web platform — all 6 parts with unit + E2E tests. Commit after each part. Keep phase-2 plan doc updated. Do NOT proceed to Phase 3 or update features.md until user approves.
 
-### Completed Work
-1. **Build fix**: Wrapped `libsql::Database` in `Arc` in `identity.rs` to fix `Clone` derive
-2. **Feature verification**: All 10 features PASS (DaisyUI, identity, collab editing, peer discovery, etc.)
-3. **Test documentation**: 8 screenshots + markdown report in `tests/results/2026-04-02T07-46-50Z/`
-4. **Display name warning UI**: Soft warning at >8 chars in `templates.rs` + `main.ts`
-5. **Lint fixes committed** as `e6a01637`: clippy pedantic, fmt, biome lint cleanups
-6. **`just check` passes**: 549 unit + 74 integration + 343 TS tests
-7. **Deep codebase analysis**: 7-area assessment of the web UI
-8. **6-phase roadmap APPROVED** at `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/README.md`
-9. **Phase 1 plan APPROVED** at `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/phase-1-fix-save-and-collab.md`
+### Phase 1 Status: ✅ Complete
+All 4 parts committed with E2E tests (commits: eceac4d4, 62570d15, 0a3ce640, 4232b9e9, 71950437, 89585365, 772fbdbf, 706f4e76).
 
-### The 6-Phase Roadmap
-1. **Fix Save & Collab** (critical) ← CURRENTLY IMPLEMENTING
-2. **Markdown Polish** (parallel)
-3. **Identity & Auth**
-4. **iroh-docs Versioning**
-5. **p2panda Integration**
-6. **UX Essentials**
+### Phase 2 Plan: ✅ Written
+Plan doc at `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/phase-2-markdown-polish.md` — 6 parts approved by user.
 
-### Phase 1 — Fix Save & Collab (In Progress)
+### Phase 2 Part 1 (Strikethrough): 🔧 IN PROGRESS
 
-**Root Problem**: Collab sessions are keyed by content hash. When save creates a new blob (new hash), the session breaks for all clients. Additionally, `NEW_VERSION` message type 7 has no client-side handler.
+**Completed changes:**
 
-**Phase 1 has 4 parts, in order:**
+1. **markdown.rs** — All Rust-side changes done:
+   - `commonmark_options()` (~line 64): Changed comment and enabled `options.extension.strikethrough = true`
+   - `convert_node()` Strikethrough handler (~line 332): Changed from "pass through without mark" to properly adding `strikethrough` mark via `marks.push(Mark { mark_type: "strikethrough", ... })`
+   - `create_marked_text()` (~line 615): Added `"strikethrough" => NodeValue::Strikethrough` in the mark_type match
+   - Module doc comment: Added `strikethrough` to marks list
+   - Added 3 unit tests: `test_strikethrough`, `test_strikethrough_with_other_marks`, `test_roundtrip_strikethrough`
 
-#### Part 1: Add NEW_VERSION handler to collab.ts (← STARTING THIS NOW)
-- Add `NEW_VERSION: 7` to MSG constants in `collab.ts` (between CURSOR_REMOVE=6 and AUTH=8)
-- Add `case MSG.NEW_VERSION:` in `handleMessage` switch
-- Handler extracts `hash` and `name` from decoded array, emits event/callback for `main.ts`
-- **Files**: `pkgs/id/web/src/collab.ts`
+2. **editor.ts** — Partial TypeScript changes done:
+   - Updated imports: Added `toggleMark` from prosemirror-commands, `MenuItem` and `MarkType` types from prosemirror-menu/prosemirror-model
+   - Updated `richSchema`: Added `strikethrough` mark with `parseDOM` supporting `<s>`, `<del>`, `<strike>` tags and `text-decoration: line-through` style, `toDOM` returns `["s", 0]`
+   - Updated schema JSDoc comment
 
-#### Part 2: Re-key collab sessions by filename instead of hash
-- Change `CollabState` document map key from hash to filename
-- WebSocket endpoint `/ws/collab/{name}` instead of `/ws/collab/{hash}`
-- Add `current_hash` tracking to `Document` struct
-- **Files**: `pkgs/id/src/web/collab.rs`, `pkgs/id/src/web/routes.rs`
+**Still needed for Part 1:**
+   - Add `markMenuItem()` helper function for creating toolbar items for custom marks (attempted but hit "multiple matches" error on `/**` pattern)
+   - Add strikethrough button to toolbar row 1 (after toggleCode, before toggleLink)
+   - Add `Mod-Shift-s` keymap for strikethrough toggle
+   - Run Rust unit tests to verify
+   - Write E2E Playwright test
+   - Commit Part 1
 
-#### Part 3: Name-first URL scheme
-- `/edit/{name}` (primary), `/view/{name}`, `/hash/{hash}` (redirect), backward compat redirects
-- Client no longer changes URL on save (stays at `/edit/{name}`)
-- **Files**: `pkgs/id/src/web/routes.rs`, `pkgs/id/src/web/templates.rs`, `pkgs/id/web/src/main.ts`
+### Key Files Being Modified
+- `pkgs/id/src/web/markdown.rs` — Rust markdown↔ProseMirror conversion (comrak)
+- `pkgs/id/web/src/editor.ts` — ProseMirror schema, menu, plugins setup
+- `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/phase-2-markdown-polish.md` — Phase 2 plan doc
 
-#### Part 4: Auto-save on idle
-- Debounced 2s auto-save, save state indicator, rate limit handling
-- Cancel pending auto-save on receiving NewVersion from other client
-- **Files**: `pkgs/id/web/src/main.ts`
+### Remaining Phase 2 Parts
+- Part 2: GFM Task Lists (task_list/task_list_item nodes, checkbox nodeView)
+- Part 3: GFM Tables (prosemirror-tables dep, 4 table nodes, table editing)
+- Part 4: Image Alt-Text Editing (ImageNodeView with alt-text popover)
+- Part 5: Image Resize Handles (width/height attrs, drag handles)
+- Part 6: Image Browser (GET /api/images endpoint, modal gallery)
 
-### Critical Architecture Details (from code analysis)
-- **Server collab.rs**: `CollabState` has `documents: HashMap<String, Arc<Document>>` keyed by hash. MSG types: INIT=0, STEPS=1, UPDATE=2, ACK=3, CURSOR=4, ERROR=5, CURSOR_REMOVE=6, NEW_VERSION=7, AUTH=8, AUTH_OK=9. `notify_new_version(old_doc_id, new_hash, name)` broadcasts type 7.
-- **Client collab.ts**: MSG consts skip 7 entirely (no NEW_VERSION). `handleMessage` switch has no `case 7`.
-- **Save flow (routes.rs:1020-1139)**: Receives `SaveRequest{doc_id, name, doc}`, creates new blob → new hash, archives old tag, sets new tag, calls `notify_new_version`, returns `{hash, name, archive_name}`.
-- **Client save (main.ts:1066-1139)**: POSTs to `/api/save`, updates `dataset.docId` and `replaceState` URL to `/edit/{new_hash}`. Does NOT reconnect WebSocket.
+### Key Architecture Notes
+- All markdown conversion is server-side via comrak (Rust) — no client-side markdown parsing
+- Both Rust (markdown.rs) and TypeScript (editor.ts) schemas must stay in sync
+- Wire protocol sends PM JSON, not markdown
+- Image upload already works (paste/drag-drop via image-upload.ts)
+- Existing design doc: `thoughts/shared/designs/2026-04-01-image-upload-design.md`
 
-### Key Files
-- `pkgs/id/src/web/collab.rs` — CollabState, MSG types, session management
-- `pkgs/id/src/web/routes.rs` — HTTP handlers, save_handler, edit_handler
-- `pkgs/id/src/web/templates.rs` — HTML rendering
-- `pkgs/id/web/src/collab.ts` — Client WebSocket collab (missing NEW_VERSION=7)
-- `pkgs/id/web/src/main.ts` — Client app logic, save, URL handling
-
-### Constraints & Methodology
-- Build with `just` and `nix flake`; keep generated artifacts synced
-- Commit after every step; never revert/force/rebase
-- Document everything including failed explorations
-- Phase docs + validation docs with test specs before coding
-- Evidence-based sign-off with screenshots
-- If it builds and screenshots look right, proceed to next steps
-
-### What to Do Next
-1. **Implement Part 1**: Add `NEW_VERSION = 7` handler to `collab.ts` — was literally about to start this when conversation was compacted
-2. Read current `collab.ts` MSG constants and `handleMessage` switch, add the constant and case handler
-3. Commit, then proceed to Part 2
+### User Instructions
+- Go one by one through each part, don't parallelize
+- Commit after each step
+- Keep phase-2 doc updated
+- Do not proceed to Phase 3 or update features.md until approval

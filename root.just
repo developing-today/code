@@ -168,6 +168,47 @@ fix *args: strip-whitespace lockfiles (fmt args)
 # Utilities
 # =============================================================================
 
+# Reinstall/update lootbox binary from latest source
+[group('util')]
+update-lootbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Updating lootbox..."
+    curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash
+    echo "lootbox updated to $(lootbox --version)"
+
+# Start lootbox server (if not already running)
+[group('util')]
+lootbox-server:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then
+        echo "Lootbox server already running on port 9420"
+    else
+        echo "Starting lootbox server..."
+        nohup lootbox server --port 9420 &>/dev/null &
+        disown
+        sleep 1
+        if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then
+            echo "Lootbox server started on port 9420"
+        else
+            echo "Lootbox server may still be starting up..."
+        fi
+    fi
+
+# Kill running lootbox server
+[group('util')]
+lootbox-kill:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\K[0-9]+' || true)
+    if [ -n "$pid" ]; then
+        kill "$pid"
+        echo "Killed lootbox server (PID $pid)"
+    else
+        echo "No lootbox server running on port 9420"
+    fi
+
 # Recursively chown all files (including hidden) to current user:group (requires sudo)
 [group('util')]
 chown:

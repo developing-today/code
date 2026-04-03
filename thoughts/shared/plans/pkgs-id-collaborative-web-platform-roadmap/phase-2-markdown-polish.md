@@ -450,8 +450,8 @@ Parts 1 and 2 could potentially be parallelized since they touch different node/
 
 | Part | Description | Status | Commit |
 |------|------------|--------|--------|
-| 1 | GFM Strikethrough | ✅ Done | (this commit) |
-| 2 | Task Lists | ⏳ Pending | — |
+| 1 | GFM Strikethrough | ✅ Done | 0c8b6a89 |
+| 2 | Task Lists | ✅ Done | (this commit) |
 | 3 | Tables | ⏳ Pending | — |
 | 4 | Image Alt-Text | ⏳ Pending | — |
 | 5 | Image Resize | ⏳ Pending | — |

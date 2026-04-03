@@ -21,7 +21,7 @@
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz",
   ],
   "enabled_providers": ["github-copilot"],
-  "default_agent": "commander",
+  "default_agent": "octto",
   "model": "github-copilot/claude-opus-4.6",
   "small_model": "github-copilot/claude-sonnet-4.6",
   "provider": {
@@ -96,69 +96,28 @@
   "agent": {
     "commander": {
       "variant": "thinking",
+      "mode": "subagent",
+    },
+    "brainstormer": {
+      "variant": "thinking",
+      "mode": "subagent",
+    },
+    "octto": {
+      "variant": "thinking",
+    },
+    "compaction": {
+      "model": "github-copilot/gpt-5.4",
+      "threshold": 0.5,
+    },
+    "title": {
+      "model": "github-copilot/gpt-5.4",
+    },
+    "summary": {
+      "model": "github-copilot/gpt-5.4",
     },
   },
-  "instructions": [
-    ".opencode/instructions/codedb.md",
-    ".opencode/instructions/chrome-devtools.md",
-    ".opencode/instructions/context7.md",
-    ".opencode/instructions/fff.md",
-  ],
+  "instructions": [".opencode/instructions/lootbox.md"],
   "compaction": {
     "reserved": 8192,
-  },
-  "tools": {
-    "chrome-devtools_*": false,
-    "chrome-devtools_navigate_page": true,
-    "chrome-devtools_take_screenshot": true,
-    "chrome-devtools_take_snapshot": true,
-    "chrome-devtools_evaluate_script": true,
-    "chrome-devtools_click": true,
-    "chrome-devtools_fill": true,
-    "chrome-devtools_fill_form": true,
-    "chrome-devtools_press_key": true,
-    "chrome-devtools_hover": true,
-    "chrome-devtools_type_text": true,
-    "chrome-devtools_resize_page": true,
-    "chrome-devtools_wait_for": true,
-    "chrome-devtools_upload_file": true,
-    "chrome-devtools_handle_dialog": true,
-    "chrome-devtools_list_console_messages": true,
-    "chrome-devtools_get_console_message": true,
-    "chrome-devtools_list_network_requests": true,
-    "chrome-devtools_get_network_request": true,
-  },
-  "mcp": {
-    "codedb": {
-      "type": "local",
-      "command": ["/home/user/bin/codedb", "mcp"],
-      "environment": {
-        "CODEDB_NO_TELEMETRY": "1",
-      },
-    },
-    "fff": {
-      "type": "local",
-      "command": ["/home/user/.local/bin/fff-mcp"],
-    },
-    "chrome-devtools": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "chrome-devtools-mcp@latest",
-        "--executable-path=/run/current-system/sw/bin/chromium",
-        "--headless",
-        "--isolated",
-        "--viewport=800x600",
-        "--no-usage-statistics",
-        "--no-performance-crux",
-        "--no-category-emulation", // important fix for bad request: bad request errors -- see: https://github.com/anomalyco/opencode/issues/8417
-        // "--logFile=...",
-        // "--chromeArg=",
-        // "--slim",
-        // "--experimentalScreencast",
-        // "--no-category-*",
-      ],
-    },
   },
 }

@@ -141,6 +141,20 @@ in
       export PATH="$_devshell_only''${_hm_paths:+:$_hm_paths}''${_system_only:+:$_system_only}"
       unset _pre_profile_path _hm_paths _devshell_only _system_only _remaining _e _is_sys _p
     fi
+    # Lootbox setup: install if missing, start server if not running
+    export PATH="$HOME/.deno/bin:$PATH"
+    if ! command -v lootbox &>/dev/null; then
+      echo "Installing lootbox..."
+      curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash
+    fi
+    if command -v lootbox &>/dev/null; then
+      if ! ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then
+        echo "Starting lootbox server (port 9420)..."
+        nohup lootbox server --port 9420 &>/dev/null &
+        disown
+      fi
+    fi
+
     echo ""
     just --list
     echo ""

@@ -1262,3 +1262,131 @@ test.describe("Strikethrough", () => {
     await expect(strikeBtn.first()).toBeVisible({ timeout: 10_000 });
   });
 });
+
+test.describe("Task Lists", () => {
+  test("task list renders with checkboxes in markdown editor", async ({ page, baseURL }) => {
+    const mdName = `tasklist-render-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save PM doc JSON with task_list containing checked and unchecked items
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: hash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "task_list",
+              content: [
+                {
+                  type: "task_list_item",
+                  attrs: { checked: false },
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "unchecked task" }],
+                    },
+                  ],
+                },
+                {
+                  type: "task_list_item",
+                  attrs: { checked: true },
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "checked task" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Navigate to the file
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Verify task list renders with checkboxes
+    const checkboxes = page.locator("#editor .ProseMirror input[type='checkbox']");
+    await expect(checkboxes).toHaveCount(2, { timeout: 15_000 });
+
+    // Verify text content
+    await expect(page.locator("#editor .ProseMirror").getByText("unchecked task")).toBeVisible();
+    await expect(page.locator("#editor .ProseMirror").getByText("checked task", { exact: true })).toBeVisible();
+  });
+
+  test("task list roundtrips through save and reload", async ({ page, baseURL }) => {
+    const mdName = `tasklist-roundtrip-${Date.now()}.md`;
+
+    // Create a markdown file via API
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash: rtHash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save PM doc JSON with task_list
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: rtHash,
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "task_list",
+              content: [
+                {
+                  type: "task_list_item",
+                  attrs: { checked: false },
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "roundtrip unchecked" }],
+                    },
+                  ],
+                },
+                {
+                  type: "task_list_item",
+                  attrs: { checked: true },
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "roundtrip checked" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Load the page to trigger PM→MD save, then reload to trigger MD→PM load
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+    await waitForEditorReady(page);
+
+    // Verify the task list survived the roundtrip
+    const checkboxes = page.locator("#editor .ProseMirror input[type='checkbox']");
+    await expect(checkboxes).toHaveCount(2, { timeout: 15_000 });
+
+    // Verify both items are present
+    await expect(page.locator("#editor .ProseMirror").getByText("roundtrip unchecked")).toBeVisible();
+    await expect(page.locator("#editor .ProseMirror").getByText("roundtrip checked")).toBeVisible();
+  });
+});
