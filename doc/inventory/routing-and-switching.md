@@ -1597,7 +1597,7 @@
 | **Ports** | 48x Gigabit RJ45 + 4x SFP combo (shared with 4 of the 48 RJ45) |
 | **Switching Capacity** | 96 Gbps |
 | **Forwarding Rate** | 71.4 Mpps |
-| **Latency** | ~5-10 us |
+| **Latency** | ~5-10 µs |
 | **MTU / Jumbo** | 9,216 bytes |
 | **Form Factor** | 1RU |
 | **OS** | Dell Networking OS (proprietary web/CLI managed) |
@@ -1611,6 +1611,66 @@
 | **Released** | ~2007 |
 | **EOL** | ~2012 |
 | **Notes** | Basic 48-port GbE managed switch. No 10G uplinks (SFP is 1GbE only). Stackable for management simplification — up to 12 units managed as a single logical switch. Four units means 192 GbE ports if stacked. Stacking uses dedicated rear-panel ports and proprietary cables. |
+| | |
+| **— Power —** | |
+| System idle | ~30-35 W (single unit, no stacking, minimal links) |
+| System typical | ~45-55 W (single unit, 24-36 ports active) |
+| System maximum | ~65-75 W (single unit, all 48 GbE + 4 SFP active, full traffic) |
+| Per-port: GbE RJ45 (active) | ~0.3-0.5 W |
+| Per-port: SFP GbE optic | ~0.5-1 W |
+| Per-port: SFP empty | ~0 W |
+| Stacking module | ~5-8 W additional per unit when stacking active |
+| PoE | Not supported |
+| PSU | Internal, 100-240 VAC, non-redundant, non-hot-swap |
+| | |
+| **— Latency —** | |
+| Forwarding mode | Store-and-forward only |
+| GbE → GbE (64 B, same unit) | ~5-10 µs |
+| GbE → GbE (64 B, cross-stack) | ~15-25 µs (additional hop through stacking backplane) |
+| GbE → SFP (64 B) | ~5-10 µs |
+| With ACL / QoS | Negligible additional (hardware TCAM, limited depth) |
+| | |
+| **— L2 Features —** | |
+| VLANs | 802.1Q, up to 256 VLAN IDs |
+| Private VLAN | No |
+| Voice VLAN | Yes (auto-voice via LLDP-MED / OUI) |
+| Q-in-Q (802.1ad) | No |
+| Trunking | 802.1Q tagged trunks, configurable native VLAN |
+| STP | STP (802.1D), RSTP (802.1w); no MSTP |
+| Storm control | Yes (broadcast / multicast / unknown-unicast) |
+| IGMP snooping | v1 / v2 |
+| LLDP | Yes |
+| MAC table | 8 K entries per unit |
+| | |
+| **— LAG —** | |
+| Static LAG | Yes |
+| LACP (802.3ad) | Yes |
+| Max groups | 6 per unit (18 for 3-unit stack) |
+| Max ports / group | 8 |
+| Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
+| Cross-stack LAG | Yes (when stacked, LAG members can span units) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG | Not supported (stacking is single-chassis logical; no independent-chassis MC-LAG) |
+| | |
+| **— Security —** | |
+| 802.1X | Yes (port-based) |
+| ACLs | L2/L3 ACLs (MAC, IP-based); limited L4 |
+| DHCP snooping | Yes (basic) |
+| Port security | Yes (MAC limit / lockdown) |
+| MACsec (802.1AE) | No |
+| RADIUS | Yes |
+| TACACS+ | No (2007-era Dell firmware; RADIUS only) |
+| SSH | Yes (v1/v2) |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 |
+| sFlow / NetFlow | No |
+| Port mirroring (SPAN) | Yes (local SPAN, 1 session per unit) |
+| RMON | Yes (groups 1, 2, 3, 9) |
+| Syslog | Yes |
+| NTP | Yes |
+| CLI | Yes (console serial, Telnet, SSH) |
 
 ---
 
