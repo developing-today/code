@@ -227,6 +227,9 @@ interface IdApp {
   currentPath: string;
   lastFilename: string | null;
   lastFilePath: string | null;
+  autoSave: AutoSaveManager | null;
+  _editorChangeHandler: (() => void) | null;
+  triggerSave: () => void;
 }
 
 // =============================================================================
@@ -876,6 +879,8 @@ async function init(): Promise<void> {
     currentPath: window.location.pathname,
     lastFilename: null,
     lastFilePath: null,
+    autoSave: null,
+    _editorChangeHandler: null,
 
     /**
      * Connect to the tags WebSocket for live tag change notifications.
@@ -1217,6 +1222,15 @@ async function init(): Promise<void> {
             // Enable save button
             const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
             if (saveBtn) saveBtn.disabled = false;
+            // Create AutoSaveManager and wire editor:change listener
+            this.autoSave = new AutoSaveManager(() => this.saveFile());
+            const onEditorChange = () => this.autoSave?.onContentChange();
+            const editorContainer2 = document.getElementById("editor-container");
+            if (editorContainer2) {
+              editorContainer2.addEventListener("editor:change", onEditorChange);
+            }
+            // Store reference for cleanup in closeEditor
+            this._editorChangeHandler = onEditorChange;
             // Load tags for the current file
             if (filename) {
               this.loadFileTags(filename);
@@ -1230,6 +1244,8 @@ async function init(): Promise<void> {
             if (editorContainer) {
               editorContainer.dataset.hash = hash;
             }
+            // Cancel any pending auto-save — their version is newer
+            this.autoSave?.onNewVersion();
           },
         );
         console.log("[id] Collab connection initiated");
@@ -1240,6 +1256,18 @@ async function init(): Promise<void> {
     },
 
     closeEditor(): void {
+      // Cancel auto-save timers and remove editor:change listener
+      if (this.autoSave) {
+        this.autoSave.cancel();
+        this.autoSave = null;
+      }
+      if (this._editorChangeHandler) {
+        const editorContainer = document.getElementById("editor-container");
+        if (editorContainer) {
+          editorContainer.removeEventListener("editor:change", this._editorChangeHandler);
+        }
+        this._editorChangeHandler = null;
+      }
       // Clean up scroll handler
       if (scrollCleanup) {
         scrollCleanup();
@@ -1554,6 +1582,29 @@ async function init(): Promise<void> {
         }
       }
     },
+
+    triggerSave(): void {
+      if (this.autoSave) {
+        this.autoSave.saveNow();
+      } else if (this.collab?.editor) {
+        // Fallback: direct save if AutoSaveManager not yet initialized
+        this.saveFile().then((result) => {
+          const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+          if (!btn) return;
+          if (result.ok) {
+            btn.textContent = "saved \u2713";
+            setTimeout(() => {
+              btn.textContent = "save";
+            }, 2000);
+          } else if (!result.retryAfterMs) {
+            btn.textContent = "error!";
+            setTimeout(() => {
+              btn.textContent = "save";
+            }, 2000);
+          }
+        });
+      }
+    },
   };
 
   window.idApp = app;
@@ -1633,22 +1684,8 @@ async function init(): Promise<void> {
   document.addEventListener("keydown", (event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "s") {
       event.preventDefault();
-      if (app.collab?.editor) {
-        app.saveFile().then((result) => {
-          const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
-          if (!btn) return;
-          if (result.ok) {
-            btn.textContent = "saved \u2713";
-            setTimeout(() => {
-              btn.textContent = "save";
-            }, 2000);
-          } else if (!result.retryAfterMs) {
-            btn.textContent = "error!";
-            setTimeout(() => {
-              btn.textContent = "save";
-            }, 2000);
-          }
-        });
+      if (app.collab?.editor && app.autoSave) {
+        app.autoSave.saveNow();
       }
       return;
     }
