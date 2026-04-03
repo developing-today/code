@@ -126,24 +126,152 @@
 
 | Attribute | Value |
 |---|---|
-| **Ports** | 48x SFP+ 10GbE + 4x QSFP+ 40GbE |
-| **Breakout** | 4x10GbE per QSFP+ (up to 64x 10GbE total) |
-| **ASIC** | Memory (BNT design, acquired by IBM) |
+| **Ports** | 48x SFP/SFP+ (1/10GbE) + 4x QSFP+ (40GbE or 4x10GbE breakout) |
+| **Breakout** | 4x10GbE per QSFP+ via DAC/AOC breakout cables (up to 64x 10GbE total) |
+| **ASIC** | BNT/BLADE design (acquired by IBM; single-chip non-blocking architecture) |
 | **Switching Capacity** | 1.28 Tbps |
-| **Forwarding Rate** | 952 Mpps |
-| **Latency** | ~1-2 us |
-| **MTU / Jumbo** | 9216 bytes |
-| **Form Factor** | 1RU |
-| **OS** | IBM ENOS (Enterprise NOS) or Lenovo CNOS; ONIE compatible |
-| **Management** | CLI, SNMP, web GUI |
-| **L2 Features** | VLAN (4094), LACP, STP/RSTP/MSTP, vLAG (IBM's MC-LAG) |
-| **L3 Features** | Static routes, OSPF, BGP, ECMP, VRRP, SVIs |
-| **MC-LAG** | Yes (vLAG - IBM/Lenovo virtual LAG, pairs of 2) |
-| **Stacking** | Yes (up to 8 switches, single IP management, uses QSFP+ 40G ports as stacking links; ring or daisy-chain topology) |
+| **Forwarding Rate** | 960 Mpps |
+| **MTU / Jumbo** | 9,216 bytes |
+| **MAC Table** | 128,000 entries |
+| **Form Factor** | 1RU (44 × 439 × 513 mm, 10.5 kg / 23.1 lb) |
+| **OS** | IBM Networking OS (ENOS) up to 7.x, Lenovo Networking OS 8.x (CNOS); ONIE compatible |
+| **Management** | isCLI, SNMP (v1/v3), Netconf (XML), Telnet, SSH (v1/v2), SCP, sFTP, optional Lenovo XClarity |
 | **Class** | Enterprise / Data Center TOR |
 | **Released** | ~2012 |
-| **EOL** | ~2018 (IBM sold networking to Lenovo 2014, became G8272 line) |
-| **Notes** | Originally IBM System Networking, later Lenovo RackSwitch. Mature enterprise TOR switch with rich L2/L3 feature set. CEE/FCoE capable for converged fabrics. |
+| **EOL** | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering) |
+| **MTBF** | 165,990 hours @ 40°C ambient |
+| **Notes** | Originally IBM System Networking (BNT), later Lenovo RackSwitch. Mature enterprise TOR switch. CEE/DCB/FCoE capable for converged fabrics. Supports Virtual Fabric (vNICs), VMready, EVB (802.1Qbg), OpenFlow 1.0/1.3.1. SDN-ready. |
+| | |
+| **— Power —** | |
+| **PSU** | 2x 450W AC (100-240V, IEC 320-C14), load-sharing, redundant, hot-swap |
+| **System Typical** | ~330W (per Lenovo Press TIPS1272 — "typically uses 330W of power") |
+| **System Idle** | ~180-220W estimated (ASIC + management CPU + fans, no transceivers) |
+| **System Max** | ~400-430W estimated (all 52 ports populated with optics, high traffic, fans at full speed) |
+| **Per-Port: DAC (passive copper, SFP+)** | ~0.5-0.7W (SerDes only, no PHY/laser; SFP+ MSA passive cable spec) |
+| **Per-Port: Active Optic (SR SFP+)** | ~0.8-1.0W (10G SR SFP+ typical per MSA) |
+| **Per-Port: Active Optic (LR SFP+)** | ~1.0-1.5W (10G LR SFP+ typical per MSA) |
+| **Per-Port: RJ45 SFP (1GbE copper)** | ~1.0-1.5W (1000BASE-T SFP includes PHY chip) |
+| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes) |
+| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
+| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
+| **Per-Port: Empty cage** | ~0W |
+| **PoE** | Not supported |
+| **Cooling** | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow |
+| **Power Source** | Lenovo Press TIPS1272, SFP/SFP+/QSFP+ MSA power specifications |
+| | |
+| **— Latency —** | |
+| **Baseline (DAC, L2, 64B)** | ~880ns cut-through (per TIPS1272: "as low as 880 nanoseconds switching latency") |
+| **Switching Mode** | Cut-through |
+| **Modifier: Fiber optic (SR SFP+)** | +0ns switching (same SerDes path as DAC; fiber adds ~5ns/m cable latency) |
+| **Modifier: Fiber optic (LR SFP+)** | +0ns switching (same SerDes; LR optic has ~10-50ns internal laser/driver delay) |
+| **Modifier: RJ45 SFP (1GbE copper)** | +~3-5µs (1GbE PHY processing + store-and-forward for speed mismatch 10G→1G) |
+| **Modifier: Speed mismatch (10G↔40G)** | +~variable (QSFP+ breakout to SFP+ adds minimal latency; cross-speed forwarding may add buffering) |
+| **L3 Routing vs L2** | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline) |
+| **ACL/QoS Impact** | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN) |
+| **Latency Source** | Lenovo Press TIPS1272 |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) |
+| **Private VLAN** | Yes (per RFC 5517) |
+| **Protocol-Based VLAN** | Yes |
+| **Voice VLAN** | Not documented (use QoS 802.1p priority + VLAN assignment) |
+| **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
+| **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
+| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
+| **Storm Control** | Yes (broadcast and multicast storm control) |
+| **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups) |
+| **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
+| **L2 Failover** | Yes (trunk failover for NIC teaming active/standby) |
+| | |
+| **— Link Aggregation —** | |
+| **Static LAG** | Yes |
+| **LACP (802.3ad)** | Yes (IEEE 802.3ad) |
+| **Max LAGs / Ports per LAG** | 64 LAG groups / 32 ports per LAG |
+| **Hash Modes** | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk |
+| **L4 (port-based) Hash** | Not documented in TIPS1272 (hash is L2/L3 based) |
+| **Symmetric Hashing** | Not explicitly documented |
+| **Cross-Stack LAG** | Yes (in stacking mode, LAGs can span stacked switches) |
+| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG Variant** | vLAG (IBM/Lenovo Virtual LAG) |
+| **Protocol** | Proprietary (IBM/Lenovo vLAG protocol) |
+| **Interoperable** | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two G8264s |
+| **Max MC-LAG Peers** | 2 (active-active pair) |
+| **vLAG Peer Gateway** | Yes (improved utilization of inter-switch link) |
+| **Two-Tier vLAG** | Yes (with VRRP for active/active routing — reduces routing latency) |
+| **Failover Time** | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config) |
+| **Split-Brain Handling** | Peer-link + keepalive heartbeat between vLAG peers |
+| | |
+| **— First-Hop Redundancy —** | |
+| **VRRP** | Yes (IPv4 VRRP) |
+| **VRRP + vLAG** | Yes (two-tier vLAG with active/active VRRP for reduced routing latency) |
+| **HSRP** | No (Cisco proprietary) |
+| **GLBP** | No (Cisco proprietary) |
+| **Anycast Gateway** | No (not supported in ENOS/CNOS; no EVPN) |
+| **VRRP Failover Time** | ~3-4s default (configurable advertisement interval × dead multiplier) |
+| **Preemption** | Yes (VRRP preempt) |
+| **Tracking** | Interface tracking for VRRP priority adjustment |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes (up to 128 static routes) |
+| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
+| **BGP** | Yes (IPv4; IPv6 BGP not supported per TIPS1272 limitations) |
+| **RIP** | Yes (v1, v2 — IPv4 only) |
+| **IS-IS** | Not documented |
+| **Policy-Based Routing** | Yes (IPv4 PBR) |
+| **VRF / VRF-lite** | Not documented in TIPS1272 |
+| **BFD** | Not documented |
+| **ECMP** | Yes (via OSPF/BGP equal-cost paths) |
+| **PIM Multicast** | Yes (PIM-SM, PIM-DM) |
+| **DHCP Relay** | Yes |
+| **IP Interfaces** | Up to 128 per switch |
+| | |
+| **— Converged Fabric —** | |
+| **CEE/DCB** | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB) |
+| **FCoE** | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions) |
+| **iSCSI** | Yes (convergence support via CEE) |
+| | |
+| **— Virtualization —** | |
+| **Virtual Fabric (vNICs)** | Yes (up to 8 vNICs per dual-port 10G adapter) |
+| **UFP (Unified Fabric Port)** | Yes (up to 8 vPorts with Emulex VFA, up to 4 with QLogic VFA) |
+| **VMready** | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs) |
+| **EVB (802.1Qbg)** | Yes (VEB, VEPA, ECP, VDP) |
+| **OpenFlow** | 1.0, 1.3.1 |
+| | |
+| **— Security —** | |
+| **ACLs** | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6) |
+| **802.1X** | Yes (port-based network access control) |
+| **RADIUS / TACACS+ / LDAP** | Yes (all three, including LDAPS) |
+| **SSH** | v1, v2 |
+| **SCP / sFTP** | Yes |
+| **RBAC** | Yes (Role-Based Access Control) |
+| **NIST 800-131A** | Yes (encryption compliance) |
+| **DHCP Snooping** | Not explicitly documented in TIPS1272 |
+| **Dynamic ARP Inspection** | Not documented |
+| **IP Source Guard** | Not documented |
+| **MACsec (802.1AE)** | Not supported |
+| **Control Plane Policing** | Not documented |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v3 |
+| **sFlow** | Yes (hardware-sampled) |
+| **RMON** | Yes (statistics and proactive monitoring) |
+| **Port Mirroring** | Yes |
+| **LLDP** | Yes |
+| **Syslog** | Yes (remote logging) |
+| **NTP** | Yes |
+| **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
+| **Netconf** | Yes (XML) |
+| | |
+| **— QoS —** | |
+| **Classification** | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN) |
+| **Queues** | 8 CoS queues per port |
+| **Scheduling** | Traffic shaping and re-marking based on defined policies |
+| **WRED** | Yes (with ECN — Explicit Congestion Notification) |
+| **ACL Metering** | Yes (IPv4/IPv6) |
+| | |
+| **Stacking** | Yes (up to 8 switches, single IP management, uses QSFP+ 40G ports as stacking links; ring or daisy-chain topology; supports vNIC/UFP/802.1Qbg in stack) |
 
 ---
 
