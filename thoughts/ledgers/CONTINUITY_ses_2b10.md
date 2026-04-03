@@ -1,58 +1,71 @@
 ---
 session: ses_2b10
-updated: 2026-04-02T22:50:41.146Z
+updated: 2026-04-03T02:19:13.178Z
 ---
 
 
 
-## Summary of Work Done
+## Conversation Summary
 
-### Project Overview
-Building network infrastructure documentation for a homelab with IBM/Lenovo switches and SONiC-based switches, documented across two main files.
+### Overall Task
+Systematically enrich all 21 network devices in `doc/inventory/routing-and-switching.md` with detailed power draw, packet latency, and feature matrix data. One device at a time, commit after each. Framework files guide the process.
 
-### Completed Work
+### Framework Files (Phase 0) ✅
+- `doc/inventory/standard-attributes.md` — 11 categories (A-K), 80+ attributes per device
+- `doc/inventory/enrichment-checklist.md` — 21 devices tracked with checkboxes
 
-#### 1. Network Topology Design ✅
-- **File:** `docs/network-topology.md`
-- 3-VLAN hybrid port topology with DX010 MC-LAG pair and Mono routers
-- MTU, PMTUD, ARP sysctls all decided
+### Completed Devices (5/21) ✅
 
-#### 2. Inventory Doc Stacking Corrections ✅
-- **File:** `doc/inventory/routing-and-switching.md` (913 lines)
-- **G8264 stacking** (line ~51): Changed "No" → "Yes (up to 8 switches, QSFP+ 40G, ring or daisy-chain)" per Lenovo Press TIPS1272
-- **G8264e stacking** (line ~76): Changed "No" → "Likely yes (same platform/firmware)"
-- **Stacking Reference Table** (lines 508-510): Updated G8264=Yes, G8264e=Likely, G8316=No
-- **Summary Table** (lines 528-529): Updated stacking columns
-- Added TIPS1272 and TIPS0842 references
+| #   | Device          | Inventory Commit | Checklist Commit | Key Specs                                                                                                         |
+| --- | --------------- | ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1   | Celestica DX010 | `b09c98f0`         | `e72de144`         | 2×800W, ~150-200W typ, ~400ns (BCM56960), LACP L3+L4, MC-LAG ICCP, VRRP+SAG, BGP/OSPF/IS-IS via FRR, VXLAN EVPN   |
+| 2   | IBM G8264       | `8ce14724`         | `459c0da6`         | 2×450W, ~330W typ, 880ns, LACP L2/L3, vLAG pairs/2, VRRP IPv4, OSPF/BGP/RIP, CEE/FCoE, OpenFlow                   |
+| 3   | IBM G8264e      | `ac06be90`         | `dab0ebe9`         | Copper variant: 48×10GBASE-T, ~450-550W typ, ~2-4µs (PHY DSP), same ENOS features                                 |
+| 4   | IBM G8316       | `0a7245a8`         | `c52e7ca3`         | 16×QSFP+ spine, 2×450W, ~330W, 880ns, same ENOS, No stacking/VXLAN/VRF                                            |
+| 5   | Mellanox SX6036 | `eca93772`         | `7baa8d68`         | 36×QSFP VPI (IB FDR 56G or 40GbE), SwitchX-2, 170ns IB/~300ns Eth, 126W/231W, native IB RDMA + RoCE, SM 648 nodes |
 
-#### 3. G8316 Deep-Dive Link Review ✅
-Reviewed 8 user-provided URLs for the G8316:
+### In Progress: #6 Arista 7050QX-32-F
 
-- **Key discovery:** IBM Support overview page lists **"Stacking LEDs to indicate Master/Member"** under Physical specs → LEDs, yet stacking is NOT listed as a software feature in TIPS0842. This is ambiguous.
-- **G8316 confirmed capabilities from TIPS0842:** vLAG, VRRP, LACP (64 trunk groups/32 ports), Hot Links, MSTP, RSTP, full L3 (OSPF v2, BGP, RIP), OpenFlow 1.0/1.3.1, VMready, CEE/DCB, FCoE transit, 128K MAC, 9216 jumbo, 1.28 Tbps, <1µs latency, single ASIC.
-- Several URLs were dead, paywalled, or raw PDFs; cataloged which are new vs already referenced.
+**State: Enriched section written to temp file and SPLICED into inventory, but NOT YET COMMITTED.**
 
-### Pending Edits (Immediate Next Steps)
-These specific changes have NOT yet been applied to the inventory doc:
+The splice command (`head -n 739 ... tail -n +765`) ran successfully. The enriched section replaces lines 740-764 (old 25 rows) with ~130 enriched rows covering:
+- ASIC: Intel (Fulcrum) FM6000 (fixed garbled "Memory Memoria" name)
+- Power: 2×PWR-460AC-F (460W), ~150W typical (4.5W/port)
+- Latency: 550ns cut-through
+- L2: VLANs 4094, STP/RSTP/MSTP/RPVST+, storm control, IGMP/MLD snooping
+- LAG: LACP, up to 2000 port-channels, symmetric/resilient hashing, L2/L3/L4 hash
+- MLAG: pairs/2, ISSU, sub-second failover
+- FHRP: VRRP v2/v3 (IPv4+IPv6), virtual-router active-active, anycast gateway (VXLAN EVPN)
+- L3: BGP v4/v6/EVPN, OSPF v2/v3, IS-IS, 64-way ECMP, VRF, PBR, BFD, VXLAN HW VTEP
+- Security: ACLs TCAM, 802.1X, DHCP snooping, DAI, CoPP, no MACsec (FM6000 limitation)
+- Monitoring: sFlow, LANZ (microburst), eAPI JSON-RPC, gNMI, CloudVision, ERSPAN, PTP 1588v2
+- HA: SSU, MLAG ISSU, SFR, dual images, SONiC compatible
+- QoS: PFC, ECN, ETS, DCBX (RoCE-ready)
+- EOS 4.24 max version
 
-1. **G8316 stacking** in Stacking Reference Table (line 510) and Summary Table (line 527): Change "No" → **"Unclear"**
-2. **Add 3 new reference links** after line 652:
-   - IBM Install Guide PDF
-   - Switch Center 8.1.4 Release Notes PDF
-   - Scribd document
-3. **Add dead/unresolvable links subsection** with officecentral.com URL
+**Next steps for Arista:**
+1. Verify splice is clean (check line boundaries around new section and `---` separator to next section)
+2. `git add && git commit`
+3. Update checklist, commit checklist
+4. Move to device #7
 
-### Pending Work (Broader Project)
-- 🔲 SONiC MC-LAG config for DX010-1/DX010-2
-- 🔲 OpenWrt config for Monos
-- 🔲 Intermediate switch selection
-- 🔲 SONiC version/build
+### Remaining Devices (15 after Arista)
+7-Mono Gateway (OpenWrt), 8-Cisco 2811, 9-Cisco 1841, 10-Cisco 881, 11-Netgear XS712T, 12-TRENDnet TEG-30284, 13-TP-Link SG3210XHP-M2, 14-Dell PowerConnect 5448, 15-Cisco SG300-52, 16-Netgear GS116E, 17-Cisco 3560, 18-Cisco 2960, 19-Cisco ASA 5505, 20-Cisco 4402 WLC, 21-Calix GP1101X
 
-### Hardware Inventory
-- 2× G8316 (16×40G), 2× G8264 (48×10G SFP+ + 4×40G), 1× G8264e (48×10GBase-T + 4×40G)
-- 4× Celestica DX010 (1 missing fans/PSU), 1× Arista 7050QX-32-F, 1× Mellanox SX6036
-- 3× Mono Gateways, various Cisco/Dell/Netgear switches
+### Phases Remaining
+- Phase 1: Complete remaining 16 devices (Arista partially done)
+- Phase 2: Gap analysis
+- Phase 3: Summary
 
-### Key Constraints
-- Prosumer switch supports LACP but cannot form MC-LAGs itself
-- Build system uses `just` and `nix flake`; changes must keep builds working
+### Key Technical Decisions
+- G8264e latency ~2-4µs (copper PHY DSP adds ~1.5-3µs over 880ns ASIC)
+- G8264e power ~450-550W (48 PHYs at ~3-4W each)
+- G8316 stacking confirmed NO (LEDs are hardware artifact)
+- SX6036: IB-only, Eth-only, or mixed VPI per port; RDMA native on IB, RoCE is adapter-level
+- Use temp file + head/tail splice when edit tool hits JSON size limits
+- Prosumer switches support LACP but cannot form MC-LAGs
+
+### Key Files
+- `doc/inventory/routing-and-switching.md` — main file (~1525+ lines now)
+- `doc/inventory/standard-attributes.md` — 197 lines
+- `doc/inventory/enrichment-checklist.md` — 34 lines

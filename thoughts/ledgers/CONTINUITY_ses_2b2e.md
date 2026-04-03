@@ -1,66 +1,81 @@
 ---
 session: ses_2b2e
-updated: 2026-04-03T00:32:43.573Z
+updated: 2026-04-03T01:46:24.648Z
 ---
 
 
 
-## Summary
+## Summary of Conversation
 
 ### Current Task
-Add missing tests for Phase 1 Parts 1-3 of the pkgs/id collaborative web platform roadmap, then spot-check each feature via chrome-devtools in a real browser.
+**Phase 1 Part 4: Auto-save on idle** for the `pkgs/id` collaborative web platform.
 
-### Accomplishments
+### What Was Done
 
-**6-Phase Roadmap**: Approved and committed. Plan at `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/README.md`.
+#### Phase 1 Parts 1-3 (Previously Completed)
+- Part 1: NEW_VERSION handler (`dae1f33b`)
+- Part 2: Re-key collab by filename (`eceac4d4`)
+- Part 3: Name-first URLs (`62570d15`+)
+- Tests for Parts 1-3: 4 Rust unit + 3 E2E tests (`772fbdbf`)
+- Chrome-devtools spot-check all 5 features: ALL PASS
 
-**Phase 1 Parts 1-3 — All Implemented & Committed:**
+#### Phase 1 Part 4: Auto-save on Idle (This Session)
 
-1. **Part 1: NEW_VERSION handler** (`dae1f33b`) — Added `MSG.NEW_VERSION = 7` to collab.ts, `case 7` handler in `handleMessage`, `onNewVersion` callback in `initCollab()`. main.ts updates `dataset.docId` on receipt.
+**Design doc** committed: `08adcd51` — `thoughts/shared/designs/2026-04-02-autosave-on-idle-design.md`
 
-2. **Part 2: Re-key collab by filename** (`eceac4d4`) — Added `pub hash: RwLock<String>` to Document. CollabState HashMap keyed by filename instead of hash. `get_or_create(filename, hash, content)`, `notify_new_version(filename, new_hash)`. Templates emit `data-doc-id={filename}` + `data-hash={hash}`.
+**Implementation plan** created: `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/phase-1-part-4-autosave.md`
 
-3. **Part 3: Name-first URLs** (`62570d15` + `4afccdac` + `afa9e981`) — `/edit/*name` primary route, `/hash/:hash` redirects to `/edit/{name}`, `/view/*name` stub redirects to `/edit/{name}`. Updated templates, main.ts, e2e tests, nix tests.
+**5 implementation tasks all completed and committed:**
 
-**All existing tests pass**: 549 unit + 74 integration + 343 TS tests, clippy, fmt, biome clean.
+| Task | Commit   | Description                                                                                                                                                                                 |
+| ---- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `0a3ce640` | `saveFile()` refactored to return `SaveResult`, fix disabled-forever bug (re-enable button in `finally` block)                                                                                    |
+| 2    | `4232b9e9` | `AutoSaveManager` class (~160 lines) — state machine: idle→unsaved→saving→saved/rate-limited/error, 2s debounce                                                                               |
+| 3    | `71950437` | Wiring: AutoSaveManager created in `openEditor()`, cleaned up in `closeEditor()`, `editor:change` listener, `onNewVersion` cancels pending save, Ctrl+S calls `saveNow()`, `triggerSave()` method added |
+| 4    | `89585365` | Template update: save button onclick changed from `saveFile()` to `triggerSave()`                                                                                                               |
+| 5    | `706f4e76` | 7 Playwright E2E tests in new `autosave.spec.ts`                                                                                                                                              |
 
-### Critical Gap Identified
-**Zero new tests were written for Parts 1-3.** Only existing tests were updated to not break. No new unit tests, no new e2e tests, no chrome-devtools verification.
+All `just id check` passed after each task.
 
-### Test Plan (Ready to Implement)
+### Chrome-Devtools Spot-Check (In Progress — Issue Found)
 
-**Rust unit tests to add in `collab.rs` `mod tests`:**
-1. `test_collab_state_keys_by_filename` — create doc with filename "test.txt" and hash "hash1", call get_or_create again with same filename but different hash → returns same Arc<Document>, hash still "hash1"
-2. `test_notify_new_version_updates_hash` — create doc, subscribe to broadcast, call notify_new_version with new_hash → hash field updated, NewVersion message received
-3. `test_notify_new_version_missing_doc` — call notify on non-existent filename → no panic, no broadcast
-4. `test_remove_document_by_filename` — create doc, remove, get_or_create again → new document
+Started dev server (`just id serve`, port 3000), navigated to editor page. Found:
 
-**E2E tests to add in `websocket.spec.ts`:**
-1. `test_hash_redirect` — Navigate to `/hash/{hash}`, assert URL redirects to `/edit/{name}`
-2. `test_view_redirect` — Navigate to `/view/{name}`, assert URL redirects to `/edit/{name}`
-3. `test_collab_persists_across_save` — Two users, one saves, verify both still connected and can edit
+1. **`window.idApp.autoSave` exists** on the app object (confirmed in code at line 882/1226)
+2. **But `editor:change` events from chrome-devtools typing may not trigger the AutoSaveManager properly** — when typing "Hello auto save" via devtools, the button stayed at "save" (not "save •" for unsaved). The `editor:change` events ARE firing (30+ seen in console logs), but:
+   - A version mismatch occurred during rapid typing → collab reconnected
+   - After reconnect, editor was re-initialized with server content (remote change, no `editor:change` dispatched)
+   - The AutoSaveManager IS wired up (code confirmed), but after reconnect the content came from server as remote change, so correctly no auto-save triggered
 
-**Pattern notes:**
-- Rust tests: `CollabState` is `#[derive(Default)]`, testable standalone. Pattern: `#[allow(clippy::unwrap_used, clippy::panic)]` on each test fn.
-- E2E: Use `POST /api/new` to get hash, navigate to `/hash/{hash}`, assert `page.waitForURL()` and `page.url().toContain("/edit/")`.
-- collab.ts has ZERO unit tests (no WebSocket mocking exists). Collab tested only via E2E.
+3. **No `/api/save` network requests** were made — which is correct since after the reconnect, there were no LOCAL content changes
 
-### Key Files
-- `pkgs/id/src/web/collab.rs` — CollabState, Document, tests module at line ~1223
-- `pkgs/id/src/web/routes.rs` — HTTP handlers, hash_redirect_handler, view_handler
-- `pkgs/id/src/web/templates.rs` — HTML rendering
-- `pkgs/id/web/src/main.ts` — Client-side app
-- `pkgs/id/web/src/collab.ts` — WebSocket collab client
-- `pkgs/id/e2e/tests/websocket.spec.ts` — E2E WebSocket/collab tests
+### What Needs to Be Done Next
 
-### Exact Next Steps
-1. Write the 4 Rust unit tests in collab.rs
-2. Write the 3 E2E tests in websocket.spec.ts
-3. Run `just id::check` to verify all pass
-4. Commit the new tests
-5. Spot-check all 3 features via chrome-devtools (start server, open browser, manually verify)
+1. **Complete spot-check**: Type fresh content AFTER the stable reconnect and verify:
+   - Button shows "save •" (unsaved indicator) immediately after typing
+   - After 2s idle, button shows "saving…" then "saved ✓"
+   - `/api/save` appears in network requests
+   - Button returns to "save" after 2s
+2. **If auto-save doesn't trigger via devtools typing**: This may be a devtools-specific issue where `type_text` doesn't properly trigger ProseMirror's `dispatchTransaction`. Try using `press_key` for individual characters or Ctrl+S manual save instead.
+3. **Verify manual save (Ctrl+S)** still works
+4. **If everything works**: Commit any remaining changes, update progress
+
+### Key Files Modified
+- `pkgs/id/web/src/main.ts` — AutoSaveManager class (lines 22-190), SaveResult type, saveFile refactor, wiring in openEditor/closeEditor/Ctrl+S
+- `pkgs/id/src/web/templates.rs` — save button onclick → `triggerSave()`
+- `pkgs/id/e2e/tests/autosave.spec.ts` — 7 new E2E tests
+
+### Key Architecture Decisions
+- [Decision: AutoSaveManager as class in main.ts rather than separate file — keeps all save logic co-located, ~160 lines is manageable]
+- [Decision: Reuse save button text as state indicator rather than adding new DOM element — less template/CSS changes needed]
+- [Decision: On NewVersion, cancel pending auto-save and mark as "saved" — prevents saving stale content, hash already updated by existing handler]
+- [Decision: On 429 rate limit, auto-retry with server-provided delay + 500ms buffer — expected behavior during rapid editing, not an error]
+- [Decision: On network error, do NOT auto-retry — prevents infinite retry loops on network outage]
+
+### Running Processes
+- Dev server was running on `pty_c6dd3cec` (port 3000) — may need to be restarted after compaction
 
 ### Constraints
-- `just` + `nix flake` build system
-- Commit after every meaningful step, never revert/force/rebase
-- Document everything including failed explorations
+- `just` + nix flake build system, commit every step, never revert/force/rebase
+- Run `just id check` to verify changes
+- Document everything in `thoughts/shared/` directories
