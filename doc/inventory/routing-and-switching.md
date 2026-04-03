@@ -895,19 +895,115 @@
 | Attribute | Value |
 |---|---|
 | **Ports** | 2x SFP+ 10GbE + 3x RJ45 1GbE per unit |
-| **SoC** | NXP LS1046A (quad-core ARM Cortex-A72, 1.8GHz) |
-| **Hardware Offload** | DPAA (Data Path Acceleration Architecture) for L3/NAT at near-line-rate |
-| **Throughput** | ~10Gbps routing/NAT (hardware-accelerated) |
-| **Latency** | ~10-50 us (DPAA hardware path) |
-| **OS** | OpenWrt |
-| **Management** | LuCI web GUI, UCI CLI, SSH |
-| **L3 Features** | Static routes, NAT/masquerade, firewall (nftables), DHCP, DNS, VRRP (keepalived) |
-| **VPN** | WireGuard, OpenVPN, IPsec (strongSwan) |
-| **Bonding** | Yes (balance-tlb recommended for mixed SFP+/RJ45 speeds) |
-| **Class** | Prosumer / SMB |
-| **Manufacturer** | mono.si |
-| **Released** | ~2021-2023 |
-| **Notes** | Purpose-built OpenWrt routers with 10G SFP+ and hardware offload. DPAA acceleration means NAT/routing is not software-only. Three units available for edge + internal gateway redundancy (VRRP). |
+| **SoC** | NXP Layerscape LS1046A (quad-core ARM Cortex-A72, 1.6 GHz) — up to 26 Gbps line-rate throughput per NXP spec |
+| **RAM** | 8 GB LPDDR4, 2100 MT/s, ECC support |
+| **Storage** | 32 GB eMMC (OS/data) + 64 MB NOR flash (bootloader) |
+| **Hardware Offload** | DPAA (Data Path Acceleration Architecture) — L2/L3/NAT at near-line-rate; licensed feature enabled on all dev units (Jeff Geerling review confirmed) |
+| **Throughput** | 17+ Gbps L4/L7 real-world (CyPerf tested), 18+ Gbps L2/L3; 850K-1.1M pps HTTP (Jeff Geerling + ServeTheHome CyPerf test, Jan 2026) |
+| **MTU / Jumbo** | 9,000 bytes (OpenWrt configurable; SFP+ ports support jumbo) |
+| **Form Factor** | Desktop / 1U-mountable (threaded holes for custom rack ears); ~Nano-ITX PCB |
+| **OS** | OpenWrt (preloaded); also compatible with VyOS, VPP+DPDK, any ARM64 Linux distro |
+| **Management** | LuCI web GUI, UCI CLI, SSH, serial console (USB-C UART), JTAG debugging |
+| **WiFi** | 2x M.2 Key-E slots: WiFi 6 2x2 MU-MIMO + tri-radio (WiFi 5 + Bluetooth + Thread) |
+| **USB** | 1x USB-C 3.0 (host) |
+| **Manufacturer** | mono.si (Tomaž Zaman and team) |
+| **Class** | Prosumer / SMB / Homelab Router |
+| **Released** | ~2024-2025 (dev kits shipping Jun-Sep 2025) |
+| **Price** | $600 (development kit) |
+| **Variants** | Development kit (polycarbonate enclosure), Founders Edition (CNC aluminum), Rackmount (sheet metal) — all same PCB |
+| **Sensors** | 8 power sensors + 2 temperature sensors for real-time monitoring; 100+ test points on PCB |
+| **Notes** | Purpose-built open-source 10G router. DPAA hardware offload means NAT/routing is NOT software-only — CPU barely utilised during 20Gbps routing (htop shows near-zero CPU during CyPerf runs). Three units available for edge + internal gateway redundancy (VRRP). Near-silent at idle. USB-C PD powered (65W GaN charger included). |
+| | |
+| **— Power —** | |
+| **Power Input** | USB-C PD 3.0 (65W GaN charger included) |
+| **System Idle** | ~8-12W estimated (ARM SoC at idle, no traffic, fan at low speed) |
+| **System Typical** | ~15-25W estimated (moderate routing traffic, SFP+ optics active) |
+| **System Max** | ~40-50W estimated (full 10G bidirectional traffic, DPAA active, WiFi radios, USB devices, fans at max) |
+| **Per-Port: SFP+ DAC (passive copper)** | ~0.5-1.0W (SerDes only) |
+| **Per-Port: SFP+ SR/LR optic** | ~0.8-1.5W (10G SFP+ per MSA) |
+| **Per-Port: SFP+ Empty cage** | ~0W |
+| **Per-Port: RJ45 1GbE** | ~0.5W per port (integrated PHY) |
+| **PoE** | Not supported (USB-C PD powered device) |
+| **Cooling** | Active — 2x 4-pin PWM 5V fan headers; heatsink from "world-leading manufacturers"; near-silent at normal load |
+| **Power Source** | mono.si product page: USB-C PD 3.0, 65W; power estimates based on NXP LS1046A TDP (~7W SoC) + peripherals |
+| | |
+| **— Latency —** | |
+| **Baseline: DPAA hardware path (L3/NAT)** | ~10-50µs estimated (DPAA acceleration bypasses Linux netfilter stack; latency depends on packet size and flow table hit) |
+| **Baseline: Software path (Linux netfilter)** | ~100-500µs (software forwarding without DPAA; varies with firewall rule count and CPU load) |
+| **Forwarding Mode** | DPAA hardware offload (default with licensed firmware); falls back to software for complex flows not offloadable |
+| **Modifier: NAT/masquerade** | Negligible with DPAA (hardware offloaded); +50-200µs in software path |
+| **Modifier: Firewall rules (nftables)** | +variable with rule count in software path; DPAA offloads conntrack-based flows |
+| **Modifier: VPN (WireGuard)** | WireGuard runs in software (~1-3Gbps throughput, ~100-500µs added latency; no hardware crypto offload for WireGuard on LS1046A) |
+| **Modifier: VPN (IPsec)** | IPsec has hardware crypto acceleration on LS1046A (CAAM engine) — higher throughput than WireGuard |
+| **L3 Routing vs NAT** | ~same with DPAA (both hardware offloaded) |
+| **Latency Source** | Estimated from NXP LS1046A DPAA documentation and general ARM router benchmarks; CyPerf tested throughput but latency not published |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | Yes (802.1Q via OpenWrt/Linux bridge + VLAN filtering; standard Linux VLAN support) |
+| **STP** | N/A — router, not a switch (bridge mode available but not primary use case) |
+| **IGMP Snooping** | N/A — router (IGMP proxy available in OpenWrt for multicast routing) |
+| **LLDP** | Available via OpenWrt package (not installed by default) |
+| | |
+| **— Link Aggregation —** | |
+| **Bonding** | Yes (Linux bonding driver; balance-tlb recommended for mixed SFP+/RJ45 speeds) |
+| **LACP (802.3ad)** | Yes (via Linux bonding driver in 802.3ad mode) |
+| **Hash Modes** | L2, L3, L3+L4 (via xmit_hash_policy in Linux bonding) |
+| **Max Bonds** | Limited by port count (5 ports total: 2 SFP+ + 3 RJ45) |
+| **Cross-Speed Bonding** | Yes (balance-tlb handles 10G SFP+ + 1G RJ45 mixed speeds gracefully) |
+| **LAG Latency Impact** | Negligible (Linux kernel bonding in software; DPAA may not offload bonded interfaces) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG** | N/A — router device, not a switch; multi-chassis redundancy via VRRP |
+| | |
+| **— First-Hop Redundancy —** | |
+| **VRRP** | Yes (keepalived package in OpenWrt; 3 units enable active/standby VRRP for gateway redundancy) |
+| **HSRP** | No (Cisco proprietary) |
+| **GLBP** | No (Cisco proprietary) |
+| **VRRP Failover Time** | ~1-3s typical (keepalived default timers; configurable down to sub-second) |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes (Linux ip route / OpenWrt UCI) |
+| **OSPF** | Yes (via FRR or BIRD package in OpenWrt) |
+| **BGP** | Yes (via FRR or BIRD package in OpenWrt) |
+| **IS-IS** | Yes (via FRR package) |
+| **RIP** | Yes (via FRR package) |
+| **Policy-Based Routing** | Yes (Linux ip rule / nftables marks / OpenWrt mwan3 for multi-WAN PBR) |
+| **VRF** | Yes (Linux VRF support in kernel) |
+| **BFD** | Yes (via FRR package) |
+| **ECMP** | Yes (Linux kernel ECMP; configurable via FRR/BIRD) |
+| **NAT / Masquerade** | Yes (nftables/iptables; hardware offloaded via DPAA for conntrack flows) |
+| **Firewall** | nftables (OpenWrt fw4); zone-based with LuCI GUI; stateful connection tracking |
+| **DHCP Server/Relay** | Yes (dnsmasq default; ISC DHCP available) |
+| **DNS** | Yes (dnsmasq default; unbound, kresd available) |
+| **IPv6** | Full (DHCPv6, SLAAC, RA, NPTv6, native routing) |
+| **VPN** | WireGuard (software, ~1-3Gbps), OpenVPN, IPsec (strongSwan, hardware crypto via CAAM) |
+| | |
+| **— Security —** | |
+| **Firewall** | nftables (OpenWrt fw4) with zone-based policies; stateful packet inspection |
+| **ACLs** | nftables rules (L2/L3/L4 matching) |
+| **802.1X** | Available via hostapd/wpa_supplicant packages |
+| **SSH** | Yes (dropbear default; OpenSSH available) |
+| **HTTPS** | Yes (uhttpd with LuCI; can add nginx/caddy) |
+| **Crypto Hardware** | NXP CAAM (Cryptographic Acceleration and Assurance Module) — IPsec hardware offload |
+| **DHCP Snooping** | N/A — router (DHCP server/relay role) |
+| **MACsec** | Not documented for LS1046A |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | Yes (via snmpd package in OpenWrt) |
+| **sFlow / NetFlow** | softflowd / fprobe packages available |
+| **Syslog** | Yes (logd default; rsyslog available for remote logging) |
+| **NTP** | Yes (busybox ntpd default; chrony available) |
+| **Prometheus/Grafana** | Yes (node_exporter + prometheus-node-exporter-lua packages) |
+| **Built-in Sensors** | 8 power sensors + 2 temperature sensors (real-time via sysfs/hwmon) |
+| **LLDP** | Available via package |
+| | |
+| **— QoS —** | |
+| **Traffic Shaping** | Yes (tc/HTB/CAKE via OpenWrt SQM — excellent bufferbloat management) |
+| **SQM (Smart Queue Management)** | Yes (CAKE/fq_codel — highly recommended for low-latency internet access) |
+| **DSCP Classification** | Yes (nftables DSCP marking + tc classification) |
+| **Per-Interface Shaping** | Yes |
+| | |
+| **Stacking** | N/A — standalone router; redundancy via VRRP with 3 available units |
 
 ---
 
