@@ -116,3 +116,5 @@ ses_*/*.json
 .iroh*
 test.*
 pkgs/roc/platforms/rust-basic-cli
+codedb.snapshot
+**/codedb.snapshot
