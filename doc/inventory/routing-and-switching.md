@@ -1501,7 +1501,7 @@
 | **PoE Budget** | 240W (802.3at/af) |
 | **Switching Capacity** | 80 Gbps |
 | **Forwarding Rate** | 59.52 Mpps |
-| **Latency** | ~3-5 us |
+| **Latency** | ~3-5 µs |
 | **MTU / Jumbo** | 9,000 bytes |
 | **Form Factor** | 1RU (half-depth) |
 | **OS** | TP-Link Omada firmware (Omada SDN cloud managed) |
@@ -1515,6 +1515,78 @@
 | **Released** | ~2022 |
 | **Status** | Current |
 | **Notes** | 2.5GbE PoE+ switch ideal for WiFi 6 APs and PoE devices. Omada SDN provides centralized cloud management across sites. 2x 10G SFP+ uplinks. Good for PoE access layer (cameras, APs, phones). |
+| | |
+| **— Power —** | |
+| System (no PoE load) | ~20-25 W (switch ASIC + fans, no PoE draw) |
+| System typical (moderate PoE) | ~100-140 W (switch + 4-6 PoE devices at ~15-20 W each) |
+| System maximum | ~265 W (switch ~25 W + 240 W full PoE budget) |
+| Per-port: 2.5GBASE-T PoE+ (active, no PD) | ~0.5-0.8 W (PHY only, no PoE draw) |
+| Per-port: PoE+ PD connected | Up to 30 W per port (802.3at Class 4) |
+| Per-port: PoE PD connected | Up to 15.4 W per port (802.3af Class 3) |
+| Per-port: SFP+ DAC | ~0.5-1 W |
+| Per-port: SFP+ SR optic | ~1-1.5 W |
+| PoE total budget | 240 W shared across 8 ports (no per-port guarantee beyond class) |
+| PSU | Internal, 100-240 VAC, non-redundant |
+| | |
+| **— Latency —** | |
+| Forwarding mode | Store-and-forward only |
+| 2.5G → 2.5G (64 B) | ~3-5 µs |
+| 2.5G → SFP+ 10G (64 B) | ~3-5 µs |
+| SFP+ → SFP+ (64 B) | ~1-3 µs |
+| With ACL / QoS | Negligible additional (hardware TCAM) |
+| L3 static routing | +~1-2 µs (inter-VLAN, hardware-forwarded) |
+| | |
+| **— L2 Features —** | |
+| VLANs | 802.1Q, up to 4094 VLAN IDs |
+| Private VLAN | No (port isolation per-port only) |
+| Voice VLAN | Yes (OUI-based) |
+| Q-in-Q (802.1ad) | No |
+| Trunking | 802.1Q tagged trunks, configurable PVID |
+| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
+| Storm control | Yes (broadcast / multicast / unknown-unicast) |
+| IGMP snooping | v1 / v2 / v3, with fast-leave |
+| LLDP / LLDP-MED | Yes (auto-voice VLAN, PoE negotiation) |
+| MAC table | 8 K entries |
+| | |
+| **— LAG —** | |
+| Static LAG | Yes |
+| LACP (802.3ad) | Yes |
+| Max groups | 8 |
+| Max ports / group | 8 |
+| Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
+| Cross-stack LAG | N/A (no stacking) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG | Not supported |
+| | |
+| **— L3 Routing —** | |
+| Static routes | Up to 48 IPv4 static routes |
+| IP interfaces | Up to 64 VLAN interfaces |
+| Dynamic routing | None |
+| Inter-VLAN routing | Yes (hardware-forwarded) |
+| DHCP server | Yes (built-in, per-VLAN pools) |
+| DHCP relay | Yes |
+| | |
+| **— Security —** | |
+| 802.1X | Yes (port-based, MAC-based) |
+| ACLs | L2/L3/L4 ACLs (MAC, IP, TCP/UDP) |
+| DHCP snooping | Yes |
+| Dynamic ARP inspection | Yes |
+| IP source guard | Yes |
+| Port security | Yes (MAC limit, sticky MAC) |
+| MACsec (802.1AE) | No |
+| RADIUS | Yes |
+| TACACS+ | Yes |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 |
+| sFlow / NetFlow | No |
+| Port mirroring (SPAN) | Yes (local SPAN) |
+| RMON | Yes (groups 1, 2, 3, 9) |
+| Syslog | Yes |
+| NTP | Yes |
+| CLI | Yes (SSH, Telnet) |
+| Omada SDN | Yes (cloud dashboard, topology view, per-switch stats) |
 
 ---
 
