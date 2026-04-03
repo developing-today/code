@@ -741,28 +741,151 @@
 
 | Attribute | Value |
 |---|---|
-| **Ports** | 32x QSFP+ 40GbE (7050QX-32S variant adds 4x SFP+ 10GbE) |
+| **Ports** | 32x QSFP+ 40GbE |
 | **Breakout** | 4x10GbE per QSFP+ (up to 128x 10GbE) |
-| **ASIC** | Memory Memoria (Memory FM6000 series) |
+| **ASIC** | Intel (Fulcrum) FM6000 series (single-chip, non-blocking, cut-through) |
 | **Switching Capacity** | 2.56 Tbps |
 | **Forwarding Rate** | 1,440 Mpps |
-| **Latency** | 550 ns (sub-microsecond, cut-through) |
-| **MTU / Jumbo** | 9216 bytes |
-| **Form Factor** | 1RU, front-to-back airflow (-F suffix) |
-| **OS** | Arista EOS (Extensible Operating System, Linux-based) |
-| **Management** | CLI, eAPI (JSON-RPC), SNMP, CloudVision, OpenConfig/gNMI |
-| **L2 Features** | VLAN (4094), LACP, STP/RSTP/MSTP, storm control |
-| **L3 Features** | Static routes, OSPF, BGP, IS-IS, ECMP (64-way), VRRP, PBR, VRF |
-| **MC-LAG** | Yes (MLAG - Arista Multi-Chassis LAG, pairs of 2) |
-| **VXLAN** | Yes (hardware VTEP) |
-| **Stacking** | No (uses MLAG/ECMP for multi-chassis) |
-| **MAC Table** | 288K entries |
-| **Route Table** | 208K IPv4 host routes |
-| **Class** | Enterprise / Data Center |
+| **MAC Table** | 288,000 entries |
+| **Route Table** | 208K IPv4 host routes; ~104K IPv4 LPM; ~104K IPv6 host; ~4K IPv6 LPM (varies by forwarding profile) |
+| **MTU / Jumbo** | 9,216 bytes |
+| **Form Factor** | 1RU, front-to-back airflow (-F suffix); rear-to-front (-R suffix) available |
+| **OS** | Arista EOS (Extensible Operating System, Linux-based); also SONiC compatible (platform: x86_64-arista_7050_qx32) |
+| **Management** | CLI (bash + Arista CLI), eAPI (JSON-RPC over HTTP/HTTPS), SNMP v1/v2c/v3, CloudVision, OpenConfig/gNMI, serial console |
+| **Software** | EOS 4.24 is last supported version (EOS-2GB variant dropped in 4.25+); full Linux shell access (bash) |
+| **Class** | Enterprise / Data Center Leaf-Spine |
 | **Released** | ~2013 |
-| **EOL** | ~2020 (EOS software support continues longer) |
-| **Notes** | Top-tier data center switch with Arista EOS (best-in-class NOS). MLAG is rock-solid and well-documented. EOS is Linux underneath with full shell access. Extremely programmable via eAPI. SSU (Smart System Upgrade) for hitless upgrades. This is arguably the most capable switch in this inventory for general data center use. |
-
+| **EOL** | ~2020 (EOS 4.24 last release, per Arista advisory; TAC support continues through EOS) |
+| **SKU Variants** | 7050QX-32-F (front-to-rear, 2xAC), 7050QX-32-R (rear-to-front, 2xAC), 7050QX-32-# (no fans/PSU), 7050QX-32-D# (SSD, no fans/PSU); 7050QX-32S adds 4x SFP+ 10GbE |
+| **Notes** | Top-tier data center switch with Arista EOS — Linux-based NOS with full shell access and programmability. MLAG is rock-solid. SSU for hitless upgrades. LANZ for microburst detection. eAPI for automation. Also runs SONiC (confirmed by ServeTheHome). This is arguably the most capable switch in this inventory for general data center use. |
+| | |
+| **— Power —** | |
+| **PSU** | 2x PWR-460AC-F (460W each, 100-240VAC, 50-60Hz), hot-swap, load-sharing, redundant (1+1); C13-C14 power cords included |
+| **System Idle** | ~100-120W estimated (ASIC + CPU + fans at low speed, empty QSFP+ cages) |
+| **System Typical** | ~150W (Arista product page: "Typical Power Draw: 150W (4.5W per port)") |
+| **System Max** | ~350-400W estimated (all 32 QSFP+ ports active with optics, full traffic, fans at max) |
+| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes) |
+| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
+| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
+| **Per-Port: QSFP+ PLR4/PSM4** | ~1.5-2.0W (parallel single-mode) |
+| **Per-Port: Empty QSFP+ cage** | ~0W |
+| **Per-Port: Breakout 4x10G DAC** | ~1.0-1.5W total (passive copper) |
+| **Per-Port: Breakout 4x10G optic** | ~2.0-4.0W total (4x SFP+ SR/LR) |
+| **PoE** | Not supported |
+| **Cooling** | 4 hot-swap fan modules, reversible airflow (-F front-to-rear, -R rear-to-front) |
+| **Power Source** | Arista 7050X product page: 150W typical, 4.5W/port; PSU model from end-of-support advisory |
+| | |
+| **— Latency —** | |
+| **Baseline (QSFP+ DAC, L2, 64B)** | ~550ns cut-through (Arista datasheet and product page) |
+| **Forwarding Mode** | Cut-through (default); store-and-forward available |
+| **ASIC Switching Latency** | ~550ns (Intel FM6000, single-chip, consistent port-to-port) |
+| **Modifier: QSFP+ SR4 optic** | ~550ns + negligible optical PHY latency (~10-20ns) + fiber (~5ns/m) |
+| **Modifier: QSFP+ LR4 optic** | ~550ns + LR4 WDM mux/demux (~20-50ns) + fiber (~5ns/m) |
+| **Modifier: Breakout 4x10G** | ~550ns (same ASIC pipeline; breakout handled in SerDes) |
+| **Modifier: Speed mismatch (40G→10G)** | +variable buffering for speed adaptation |
+| **L3 Routing vs L2** | ~same (hardware L2/L3/L4 forwarding in single ASIC pipeline) |
+| **ACL/QoS Impact** | Negligible (hardware TCAM-based, processed in pipeline) |
+| **Latency Source** | Arista 7050X product page and 7050QX-32 datasheet: 550ns |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | 802.1Q, up to 4,094 VLANs |
+| **Private VLAN** | Yes (community, isolated, promiscuous) |
+| **Protocol-Based VLAN** | Yes |
+| **Voice VLAN** | Yes |
+| **Trunking** | 802.1Q tagged trunks |
+| **Trunk Negotiation** | Manual (no DTP — Arista does not use Cisco DTP) |
+| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s), RPVST+ (Rapid Per-VLAN Spanning Tree) |
+| **Storm Control** | Yes (broadcast, multicast, unknown unicast; per-port rate limiting) |
+| **IGMP Snooping** | Yes (v1/v2/v3) |
+| **MLD Snooping** | Yes (IPv6 multicast) |
+| **LLDP** | Yes |
+| **CDP** | Yes (Cisco Discovery Protocol interop) |
+| | |
+| **— Link Aggregation —** | |
+| **Static LAG** | Yes |
+| **LACP (802.3ad)** | Yes |
+| **Max LAGs / Ports per LAG** | Up to 2,000 port-channels (EOS); up to 64 member ports per LAG (varies by EOS version) |
+| **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst TCP/UDP port); configurable, symmetric hashing available |
+| **Symmetric Hashing** | Yes (ensures same hash for bidirectional flows — critical for stateful monitoring) |
+| **Resilient Hashing** | Yes (minimizes flow redistribution when LAG membership changes) |
+| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG Variant** | MLAG (Arista Multi-Chassis Link Aggregation) |
+| **Protocol** | Proprietary (Arista MLAG with peer-link and keepalive) |
+| **Interoperable** | Yes — downstream sees standard LACP; MLAG peer protocol is proprietary between two Arista switches |
+| **Max MLAG Peers** | 2 (active-active pair) |
+| **MLAG ISSU** | Yes (In-Service Software Upgrade with MLAG — hitless upgrades without traffic loss) |
+| **Failover Time** | Sub-second typical (MLAG + LACP fast timers) |
+| **Split-Brain Handling** | Peer-link + keepalive heartbeat; configurable reload-delay for recovery |
+| | |
+| **— First-Hop Redundancy —** | |
+| **VRRP** | Yes (v2 RFC 3768, v3 RFC 5798; IPv4 and IPv6) |
+| **Virtual-Router (Arista)** | Yes (Arista virtual-router for active-active FHRP with MLAG — both switches forward, no standby waste) |
+| **HSRP** | No (Cisco proprietary) |
+| **GLBP** | No (Cisco proprietary) |
+| **Anycast Gateway** | Yes (with VXLAN EVPN — distributed anycast gateway across all VTEPs) |
+| **VRRP Failover Time** | ~1-3s default; sub-second with fast advertisement timers |
+| **Preemption** | Yes |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes |
+| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
+| **BGP** | Yes (IPv4/IPv6 unicast, EVPN address family for VXLAN) |
+| **IS-IS** | Yes |
+| **RIP** | Yes (v1, v2) |
+| **Policy-Based Routing** | Yes |
+| **VRF / VRF-lite** | Yes (multi-VRF, VRF-lite for L3 segmentation) |
+| **BFD** | Yes (Bidirectional Forwarding Detection for fast failure detection) |
+| **ECMP** | Yes (up to 64-way, hardware-based, resilient ECMP) |
+| **Route Table Capacity** | 208K IPv4 host, ~104K IPv4 LPM, ~104K IPv6 host, ~4K IPv6 LPM (varies by forwarding profile) |
+| **PIM Multicast** | Yes (PIM-SM, PIM-SSM) |
+| **DHCP Relay** | Yes |
+| **VXLAN** | Yes (hardware VTEP, VXLAN routing, EVPN for control plane) |
+| | |
+| **— Security —** | |
+| **ACLs** | L3/L4 hardware TCAM-based ACLs (IPv4 and IPv6); MAC ACLs |
+| **802.1X** | Yes (port-based NAC) |
+| **RADIUS / TACACS+** | Yes |
+| **SSH** | Yes (v2) |
+| **HTTPS** | Yes (eAPI) |
+| **RBAC** | Yes (privilege levels, AAA) |
+| **DHCP Snooping** | Yes |
+| **Dynamic ARP Inspection** | Yes |
+| **IP Source Guard** | Not documented for FM6000 |
+| **MACsec (802.1AE)** | Not supported (FM6000 ASIC limitation; MACsec introduced on later Arista platforms) |
+| **Control Plane Policing** | Yes (CoPP) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2c, v3 |
+| **sFlow** | Yes (hardware-sampled) |
+| **LANZ** | Yes (Latency Analyzer — Arista-unique microburst detection with per-port queue depth monitoring and timestamped logging) |
+| **eAPI** | Yes (JSON-RPC over HTTP/HTTPS — full programmatic access to all EOS commands) |
+| **OpenConfig / gNMI** | Yes (streaming telemetry) |
+| **CloudVision** | Yes (Arista network-wide management, automation, telemetry, compliance) |
+| **Port Mirroring / SPAN** | Yes (SPAN, RSPAN, ERSPAN) |
+| **LLDP** | Yes |
+| **Syslog** | Yes |
+| **NTP** | Yes |
+| **PTP** | Yes (IEEE 1588v2) |
+| | |
+| **— QoS —** | |
+| **Classification** | 802.1p, DSCP, ACL-based |
+| **Queues** | 8 egress queues per port |
+| **Scheduling** | Strict priority, WRR, DWRR |
+| **ECN** | Yes (for DCTCP/RoCE congestion signaling) |
+| **PFC (802.1Qbb)** | Yes (Priority Flow Control for lossless Ethernet — required for RoCE) |
+| **ETS (802.1Qaz)** | Yes (Enhanced Transmission Selection) |
+| **DCBX** | Yes (auto-negotiation of PFC/ETS) |
+| | |
+| **— High Availability —** | |
+| **SSU** | Yes (Smart System Upgrade — hitless EOS upgrades with minimal traffic disruption) |
+| **MLAG ISSU** | Yes (upgrade one MLAG peer at a time without traffic loss) |
+| **SFR** | Yes (Stateful Fault Repair — self-healing state recovery after agent restart) |
+| **Dual Software Images** | Yes (active/standby for safe rollback) |
+| **SONiC Compatible** | Yes (confirmed by ServeTheHome; platform x86_64-arista_7050_qx32; community-supported) |
+| | |
+| **Stacking** | No (uses MLAG for multi-chassis L2, ECMP for multi-chassis L3; scales to 64-way ECMP) |
 ---
 
 ## Routers
