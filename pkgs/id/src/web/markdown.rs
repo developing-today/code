@@ -639,7 +639,22 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             })
         }
 
-        "table" => NodeValue::Table(Box::new(comrak::nodes::NodeTable::default())),
+        "table" => {
+            // Count columns from first row's children, and count rows
+            let rows = json["content"].as_array();
+            let num_columns = rows
+                .and_then(|r| r.first())
+                .and_then(|row| row["content"].as_array())
+                .map(|cells| cells.len())
+                .unwrap_or(0);
+            let num_rows = rows.map(|r| r.len()).unwrap_or(0);
+            NodeValue::Table(Box::new(comrak::nodes::NodeTable {
+                alignments: vec![comrak::nodes::TableAlignment::None; num_columns],
+                num_columns,
+                num_rows,
+                num_nonempty_cells: 0,
+            }))
+        }
 
         "table_row" => {
             // Determine if this is a header row by checking if children are table_header
@@ -1271,5 +1286,46 @@ mod tests {
         assert!(result.contains("H2"), "Should have header H2: {result}");
         assert!(result.contains('A'), "Should have cell A: {result}");
         assert!(result.contains('B'), "Should have cell B: {result}");
+    }
+
+    #[test]
+    fn test_pm_to_md_table() {
+        // Test the PM JSON → markdown direction specifically.
+        // This exercises the NodeTable metadata (num_columns, alignments)
+        // that comrak needs to render a valid markdown table.
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {
+                        "type": "table_row",
+                        "content": [
+                            {"type": "table_header", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Name"}]}]},
+                            {"type": "table_header", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Age"}]}]}
+                        ]
+                    },
+                    {
+                        "type": "table_row",
+                        "content": [
+                            {"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Alice"}]}]},
+                            {"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "30"}]}]}
+                        ]
+                    }
+                ]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert!(md.contains("Name"), "Should have Name: {md}");
+        assert!(md.contains("Age"), "Should have Age: {md}");
+        assert!(md.contains("Alice"), "Should have Alice: {md}");
+        assert!(md.contains("30"), "Should have 30: {md}");
+        assert!(md.contains("---"), "Should have separator: {md}");
+
+        // Now roundtrip: MD back to PM should produce table nodes
+        let doc = markdown_to_prosemirror(&md);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "table");
     }
 }
