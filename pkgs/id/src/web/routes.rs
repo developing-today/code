@@ -455,21 +455,17 @@ async fn hash_redirect_handler(
 ) -> impl IntoResponse {
     tracing::info!("[routes] hash_redirect_handler called for hash: {}", hash);
 
-    match get_file_name(&state.store, &hash).await {
-        Some(name) => {
-            let encoded_name = urlencoding::encode(&name);
-            let redirect_url = format!("/edit/{encoded_name}");
-            tracing::info!(
-                "[routes] Redirecting /hash/{} -> {}",
-                hash,
-                redirect_url
-            );
-            Redirect::to(&redirect_url).into_response()
-        }
-        None => {
-            tracing::warn!("[routes] hash_redirect_handler: no file found for hash {}", hash);
-            (StatusCode::NOT_FOUND, "File not found for hash").into_response()
-        }
+    if let Some(name) = get_file_name(&state.store, &hash).await {
+        let encoded_name = urlencoding::encode(&name);
+        let redirect_url = format!("/edit/{encoded_name}");
+        tracing::info!("[routes] Redirecting /hash/{} -> {}", hash, redirect_url);
+        Redirect::to(&redirect_url).into_response()
+    } else {
+        tracing::warn!(
+            "[routes] hash_redirect_handler: no file found for hash {}",
+            hash
+        );
+        (StatusCode::NOT_FOUND, "File not found for hash").into_response()
     }
 }
 
