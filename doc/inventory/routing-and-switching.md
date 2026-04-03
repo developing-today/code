@@ -11,23 +11,114 @@
 | Attribute | Value |
 |---|---|
 | **Ports** | 32x QSFP28 100GbE |
-| **Breakout** | 4x25GbE or 4x10GbE per QSFP28 (up to 128x 25G or 128x 10G) |
-| **ASIC** | Broadcom Memory BCM56960 (Tomahawk) |
+| **Breakout** | 4x25GbE, 2x50GbE, or 4x10GbE per QSFP28 (up to 128x 25G or 128x 10G) |
+| **ASIC** | Broadcom BCM56960 (Tomahawk) |
 | **Switching Capacity** | 3.2 Tbps |
 | **Forwarding Rate** | 2,380 Mpps |
-| **Latency** | ~1-2 us (cut-through capable) |
 | **MTU / Jumbo** | 9216 bytes |
+| **MAC Table** | 128K entries |
+| **Route Table** | 16K IPv4 / 8K IPv6 (default), up to 128K with memory_profile_l3 |
 | **Form Factor** | 1RU |
 | **OS** | SONiC (Open Network Install Environment / ONIE compatible) |
-| **Management** | CLI, REST API, gNMI, SNMP |
-| **L2 Features** | VLAN, LACP, MC-LAG, STP (limited in SONiC) |
-| **L3 Features** | Static routes, BGP, OSPF, ECMP, SVIs, anycast gateway |
-| **MC-LAG** | Yes (SONiC MC-LAG, pairs of 2) |
-| **Stacking** | No (not applicable, spine-class switch) |
+| **Management** | CLI, REST API, gNMI, SNMP (v1/v2c/v3), LLDP, NTP, syslog |
 | **Class** | Enterprise / Data Center |
 | **Released** | ~2016 |
 | **Status** | Community-supported via SONiC, active open-source development |
-| **Notes** | Bare-metal white-box switch. Originally designed for hyperscale data centers. Used/surplus units, potential for hardware failure. |
+| **Notes** | Bare-metal white-box switch. Originally designed for hyperscale data centers. Used/surplus units, potential for hardware failure. Intel Atom C2000 management CPU, 4GB DDR3, mSATA storage. 5 CPLDs for board control, 1x RJ45 mgmt, 1x serial console, 1x USB. |
+| | |
+| **— Power —** | |
+| **PSU** | 2x 800W Delta (1+1 redundant, hot-swap), AC input 100-240V |
+| **System Idle** | ~120-140W estimated (ASIC ~110W TDP + CPU ~10W + fans ~10-20W, no transceivers) |
+| **System Typical** | ~150-200W (normal traffic, mix of DACs and optics) |
+| **System Max** | ~250-300W (all 32 ports active with optics, high traffic, fans full speed) |
+| **Per-Port: DAC (passive copper)** | ~0.5-1W (SerDes only, no PHY/laser) |
+| **Per-Port: Active Optic (SR/LR)** | ~1.5-3.5W (QSFP28 100G SR4 ~2.5W typical; LR4 ~3.5W) |
+| **Per-Port: Empty cage** | ~0W (cage unpowered when empty on Tomahawk) |
+| **Per-Port: Active copper (RJ45 SFP)** | N/A (QSFP28 — no RJ45 SFP modules at 100G) |
+| **PoE** | Not supported |
+| **Power Source** | STH review, Broadcom Tomahawk datasheet, Delta PSU specs, QSFP28 MSA power specs |
+| | |
+| **— Latency —** | |
+| **Baseline (DAC, L2, 64B)** | ~400ns cut-through (Memory BCM56960 ASIC specification) |
+| **Typical (SONiC software path)** | ~1-2µs (includes SONiC control plane overhead for ACL/QoS lookup) |
+| **Switching Mode** | Cut-through (default), store-and-forward configurable |
+| **Modifier: Fiber optic (SR)** | +0ns switching (same SerDes path as DAC; fiber latency is cable-length, ~5ns/m) |
+| **Modifier: Fiber optic (LR)** | +0ns switching (same SerDes path; LR optic has ~10-50ns internal laser/driver delay) |
+| **Modifier: Active copper SFP** | N/A at 100G (no QSFP28 RJ45 modules exist) |
+| **Modifier: Speed mismatch** | +variable (breakout 100G→25G/10G adds minor buffering; cross-speed L2 adds µs-range store-and-forward) |
+| **L3 Routing vs L2** | ~same (Tomahawk does L2/L3 in single pipeline pass in hardware) |
+| **ACL/QoS Impact** | Negligible in hardware TCAM; complex sobftware ACLs may add ~1-5µs |
+| **Latency Source** | Broadcom Tomahawk datasheet, SONiC community benchmarks |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | 802.1Q, up to 4094 VLANs |
+| **Private VLAN** | Not supported in SONiC (as of 2024) |
+| **Voice VLAN** | Not natively supported (use LLDP-MED + VLAN assignment) |
+| **Trunking** | 802.1Q tagged trunks, native VLAN (PVID), allowed VLAN filtering |
+| **Trunk Negotiation** | Manual only (no DTP — DTP is Cisco proprietary) |
+| **STP** | PVST+ and RSTP supported in SONiC; MSTP partial/limited |
+| **Storm Control** | Yes (broadcast/multicast/unknown-unicast, per-port, kbps/percent) |
+| **IGMP Snooping** | Yes (v1/v2/v3) |
+| | |
+| **— Link Aggregation —** | |
+| **Static LAG** | Yes |
+| **LACP (802.3ad)** | Yes (802.1AX) |
+| **Max LAGs / Ports per LAG** | 128 LAG groups / 64 ports per LAG (Tomahawk hardware limit) |
+| **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port), L3+L4; configurable via SONiC CLI |
+| **Symmetric Hashing** | Yes (configurable in SONiC for L3/L4) |
+| **Cross-Stack LAG** | N/A (no stacking) |
+| **LAG Latency Impact** | Negligible (~0ns additional — hash computed in ASIC pipeline) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG** | Yes (SONiC MC-LAG, pairs of 2 peers) |
+| **Protocol** | SONiC ICCP-based MC-LAG (standard ICCP per RFC 7275) |
+| **Interoperable** | Yes — downstream sees standard LACP; peer protocol is SONiC-specific |
+| **Max MC-LAG Peers** | 2 (active-active pair) |
+| **Failover Time** | ~200-500ms (ICCP keepalive + LACP timeout; fast LACP ~3s timeout, detection ~1s) |
+| **Split-Brain Handling** | Peer-link + keepalive IP; orphan port support; configurable MAC aging |
+| | |
+| **— First-Hop Redundancy —** | |
+| **VRRP** | Yes (SONiC supports VRRPv2/v3 since 2021.11) |
+| **HSRP** | No (Cisco proprietary, not in SONiC) |
+| **GLBP** | No (Cisco proprietary, not in SONiC) |
+| **Anycast Gateway** | Yes (SAG — Static Anycast Gateway in SONiC; same virtual MAC/IP on both MC-LAG peers) |
+| **VRRP Failover Time** | ~3-4s default (1s advertisement interval × 3 miss); tunable to sub-second with BFD |
+| **Anycast GW Failover** | Instant for MC-LAG member links (both peers active); ~200-500ms if entire peer fails |
+| **Preemption** | Yes (VRRP preempt configurable) |
+| **Tracking** | Interface tracking in SONiC VRRP; limited object tracking |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes |
+| **OSPF** | Yes (v2, v3 for IPv6) |
+| **BGP** | Yes (v4, v6; SONiC uses FRRouting — full BGP implementation) |
+| **RIP** | Yes (v1/v2 via FRR, rarely used) |
+| **IS-IS** | Yes (via FRR) |
+| **Policy-Based Routing** | Yes (PBR via FRR, hardware-accelerated on Tomahawk) |
+| **VRF / VRF-lite** | Yes (VRF support in SONiC) |
+| **BFD** | Yes (Bidirectional Forwarding Detection, hardware-assisted) |
+| **ECMP** | Yes, up to 64 equal-cost paths (Tomahawk hardware) |
+| **ECMP Hash** | L3 (src/dst IP) + L4 (src/dst port), configurable |
+| **VXLAN** | Yes (VXLAN EVPN with BGP control plane) |
+| | |
+| **— Security —** | |
+| **ACLs** | Port-based, VLAN-based (ingress/egress), L2/L3/L4 match fields |
+| **802.1X** | Not natively supported in SONiC (as of 2024) |
+| **DHCP Snooping** | Limited (DHCP relay supported; full snooping in development) |
+| **Dynamic ARP Inspection** | Not supported in SONiC (as of 2024) |
+| **IP Source Guard** | Not supported in SONiC (as of 2024) |
+| **MACsec (802.1AE)** | Yes (SONiC MACsec support added 2022; requires capable optics/DACs) |
+| **Control Plane Policing** | Yes (CoPP — built into SONiC) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2c, v3 |
+| **sFlow** | Yes (hardware-sampled, Memory BCM56960 native support) |
+| **NetFlow / IPFIX** | No (Memory Tomahawk supports sFlow natively; NetFlow not implemented in SONiC) |
+| **SPAN / Mirror** | Yes (port mirroring; ERSPAN supported in newer SONiC builds) |
+| **REST API** | Yes (SONiC REST API / SONiC Management Framework) |
+| **gNMI** | Yes (OpenConfig gNMI telemetry) |
+| **Syslog** | Yes (remote syslog configurable) |
+| **NTP** | Yes |
+| **Stacking** | No (not applicable — spine-class switch, use MC-LAG for redundancy) |
 
 ---
 
