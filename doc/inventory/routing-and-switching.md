@@ -1404,7 +1404,7 @@
 | **Ports** | 24x Gigabit RJ45 + 4x 10G SFP+ |
 | **Switching Capacity** | 128 Gbps |
 | **Forwarding Rate** | 95.2 Mpps |
-| **Latency** | ~3-5 us |
+| **Latency** | ~3-5 µs |
 | **MTU / Jumbo** | 12,288 bytes |
 | **Form Factor** | 1RU, fanless |
 | **OS** | TRENDnet Web Smart firmware (TRENDnet Hive cloud optional) |
@@ -1418,6 +1418,76 @@
 | **Released** | ~2018 |
 | **Status** | Current (v2.5R) |
 | **Notes** | Affordable L2+ switch with 10G SFP+ uplinks. Fanless = silent operation. Limited static routing. Good for small office aggregation or as an intermediate/management switch. 4x 10G SFP+ slots provide uplink capability to 10G fabric. |
+| | |
+| **— Power —** | |
+| System idle | ~10 W (fanless, GbE PHYs low-power states, SFP+ slots empty) |
+| System typical | ~15-20 W (12-18 GbE ports active, 1-2 SFP+ uplinks) |
+| System maximum | ~28-32 W (all 24 GbE + 4 SFP+ active, full traffic) |
+| Per-port: GbE RJ45 (active) | ~0.3-0.5 W |
+| Per-port: SFP+ DAC | ~0.5-1 W |
+| Per-port: SFP+ SR optic | ~1-1.5 W |
+| Per-port: SFP+ empty | ~0 W |
+| PoE | Not supported |
+| PSU | Internal, 100-240 VAC, non-redundant; fanless = no fan power |
+| | |
+| **— Latency —** | |
+| Forwarding mode | Store-and-forward only |
+| GbE → GbE (64 B) | ~3-5 µs |
+| GbE → SFP+ 10G (64 B) | ~3-5 µs (speed-change buffering minimal at 64 B) |
+| SFP+ → SFP+ (64 B) | ~1-3 µs |
+| With ACL / QoS | Negligible additional (hardware TCAM) |
+| L3 static routing | +~1-2 µs (inter-VLAN, hardware-forwarded) |
+| | |
+| **— L2 Features —** | |
+| VLANs | 802.1Q, 256 groups, VLAN ID range 1-4094 |
+| Private VLAN | No |
+| Voice VLAN | Yes (OUI-based auto-detection) |
+| Q-in-Q (802.1ad) | No |
+| Trunking | 802.1Q tagged trunks, configurable PVID |
+| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
+| Storm control | Yes (broadcast / multicast / unknown-unicast, rate-based) |
+| IGMP snooping | v1 / v2 / v3, IGMP querier |
+| LLDP | Yes |
+| MAC table | 16 K entries |
+| | |
+| **— LAG —** | |
+| Static LAG | Yes |
+| LACP (802.3ad) | Yes |
+| Max groups | 8 |
+| Max ports / group | 8 |
+| Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
+| Cross-stack LAG | N/A (no stacking) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG | Not supported |
+| | |
+| **— L3 Routing —** | |
+| Static routes | Up to 32 IPv4 + 32 IPv6 static routes |
+| IP interfaces | Up to 6 VLAN interfaces |
+| Dynamic routing | None (no OSPF / BGP / RIP) |
+| Inter-VLAN routing | Yes (hardware-forwarded between configured IP interfaces) |
+| DHCP relay | Yes |
+| | |
+| **— Security —** | |
+| 802.1X | Yes (port-based and MAC-based) |
+| ACLs | L2 (MAC), L3 (IP), L4 (TCP/UDP port); ingress + egress |
+| DHCP snooping | Yes |
+| Dynamic ARP inspection | Yes (DAI) |
+| IP source guard | Yes |
+| DoS protection | Yes (built-in DoS defend profiles) |
+| Port security | Yes (MAC limit) |
+| MACsec (802.1AE) | No |
+| RADIUS | Yes |
+| TACACS+ | Yes |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 |
+| sFlow / NetFlow | No |
+| Port mirroring (SPAN) | Yes (local SPAN, 1 session) |
+| RMON | Yes (groups 1, 2, 3, 9) |
+| Syslog | Yes |
+| NTP | Yes |
+| CLI | Yes (Telnet, SSH) |
 
 ---
 
