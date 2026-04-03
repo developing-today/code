@@ -9,7 +9,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 |---|------|--------|-------|-------|
 | 1 | [x] | Celestica DX010 | DC Fabric (SONiC) | 2x800W PSU, ~150-200W typ, ~400ns cut-through, LACP L3+L4 hash, MC-LAG ICCP pairs, VRRP+SAG anycast-gw, BGP/OSPF/IS-IS via FRR, VXLAN EVPN, 128K MAC, sFlow/gNMI |
 | 2 | [x] | IBM G8264 | DC TOR (ENOS) | 2x450W, ~330W typ, 880ns cut-through, LACP L2/L3 hash, vLAG (pairs/2)+peer-gw, VRRP IPv4, OSPF/BGP/RIP/PBR, CEE/FCoE/iSCSI, 802.1X, OpenFlow 1.0/1.3.1, sFlow, PTP |
-| 3 | [ ] | IBM G8264e | DC TOR (ENOS) | |
+| 3 | [x] | IBM G8264e | DC TOR (ENOS) | Copper variant of G8264: 48x10GBASE-T+4xQSFP+, ~550-750W PSU est, ~450-550W typ (48 PHYs add ~144-168W), ~2-4µs latency (copper PHY DSP ~1.5-3µs + 880ns ASIC), LACP L2/L3 hash, vLAG pairs/2, VRRP IPv4, OSPF/BGP, CEE/FCoE, all features same as G8264 ENOS |
 | 4 | [ ] | IBM G8316 | DC Spine (ENOS) | |
 | 5 | [ ] | Mellanox SX6036 | HPC/DC (MLNX-OS) | |
 | 6 | [ ] | Arista 7050QX-32-F | DC (EOS) | |
