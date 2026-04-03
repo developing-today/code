@@ -1322,7 +1322,7 @@
 | **Ports** | 12x 10GBASE-T RJ45 + 2x SFP+ 10GbE combo (shared with 2 of the 12 RJ45) |
 | **Switching Capacity** | 240 Gbps |
 | **Forwarding Rate** | 178 Mpps |
-| **Latency** | ~3-5 us (10GBASE-T copper PHY) |
+| **Latency** | ~3-5 µs (10GBASE-T copper PHY) |
 | **MTU / Jumbo** | 9198 bytes |
 | **Form Factor** | 1RU (half-depth, fanless at low loads / quiet fans) |
 | **OS** | Netgear Smart Managed firmware |
@@ -1335,6 +1335,65 @@
 | **Released** | ~2014 |
 | **Status** | Discontinued but still widely available refurbished |
 | **Notes** | One of the few affordable 10GBASE-T copper switches. 12 ports of 10G copper using standard Cat6a cabling. Smart managed (not full CLI). Good for connecting servers/NAS with 10GBASE-T NICs. No L3. No SFP+ dedicated uplinks (combo only). Higher power consumption than SFP+ equivalents due to 10GBASE-T PHY (~50-80W typical). |
+| | |
+| **— Power —** | |
+| System idle (no links) | ~25 W (ASIC + fans idle, 10GBASE-T PHYs powered down) |
+| System typical | ~50-65 W (8-10 active 10GBASE-T links, moderate traffic) |
+| System maximum | ~80-95 W (all 12 10GBASE-T + 2 SFP+ active, full load) |
+| Per-port: 10GBASE-T RJ45 (active link) | ~4-5 W (Broadcom 10GBASE-T PHY per port) |
+| Per-port: SFP+ DAC | ~0.5-1 W |
+| Per-port: SFP+ SR optic | ~1-1.5 W |
+| Per-port: SFP+ empty/down | ~0.1 W |
+| PoE | Not supported |
+| PSU | Internal, 100-240 VAC, non-redundant, no hot-swap |
+| | |
+| **— Latency —** | |
+| Forwarding mode | Store-and-forward only |
+| 10GBASE-T → 10GBASE-T (64 B) | ~5-8 µs (includes ~2-3 µs per 10GBASE-T PHY encode/decode) |
+| SFP+ DAC → SFP+ DAC (64 B) | ~1-2 µs (bypass copper PHY overhead) |
+| SFP+ optic → SFP+ optic (64 B) | ~1-2 µs |
+| With ACL / QoS rules | Negligible additional (hardware TCAM) |
+| | |
+| **— L2 Features —** | |
+| VLANs | 802.1Q, up to 256 VLAN IDs |
+| Private VLAN | No |
+| Voice VLAN | Yes (LLDP-MED auto-voice) |
+| Q-in-Q (802.1ad) | No |
+| Trunking | 802.1Q tagged trunks, configurable native VLAN |
+| STP | STP (802.1D), RSTP (802.1w); no MSTP |
+| Storm control | Yes (broadcast / multicast / unknown-unicast, rate-based) |
+| IGMP snooping | v1 / v2 / v3 |
+| LLDP | Yes |
+| MAC table | 16 K entries |
+| | |
+| **— LAG —** | |
+| Static LAG | Yes |
+| LACP (802.3ad) | Yes |
+| Max groups | 8 |
+| Max ports / group | 8 |
+| Hash modes | L2 (src/dst MAC), L3 (src/dst IP); no L4 hash |
+| Cross-stack LAG | N/A (no stacking) |
+| | |
+| **— MC-LAG —** | |
+| MC-LAG | Not supported (no stacking, no multi-chassis protocol) |
+| | |
+| **— Security —** | |
+| 802.1X | Yes (port-based, basic — smart-managed level) |
+| ACLs | Basic L2/L3 port ACLs (MAC, IP, limited depth) |
+| DHCP snooping | No |
+| Dynamic ARP inspection | No |
+| Port security | Yes (MAC limit / sticky MAC) |
+| MACsec (802.1AE) | No |
+| RADIUS / TACACS+ | RADIUS only (for 802.1X); no TACACS+ |
+| | |
+| **— Monitoring —** | |
+| SNMP | v1, v2c, v3 |
+| sFlow / NetFlow | No |
+| Port mirroring (SPAN) | Yes (local SPAN, 1 session) |
+| RMON | Basic (groups 1, 2, 3, 9) |
+| Syslog | Yes |
+| NTP | Yes |
+| CLI | No (web GUI only; no SSH/Telnet CLI) |
 
 ---
 
