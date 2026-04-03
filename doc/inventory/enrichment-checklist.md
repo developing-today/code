@@ -20,7 +20,7 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 11 | [x] | Netgear XS712T | Prosumer 10GbE | 12x10GBASE-T+2xSFP+ combo, ~25W idle / ~50-65W typ / ~80-95W max, 10GBASE-T PHY ~4-5W/port, S&F ~5-8µs copper / ~1-2µs SFP+, 256 VLANs, LACP 8×8, RSTP only, basic 802.1X/ACLs, SNMP v1/v2c/v3, no CLI/sFlow/L3 |
 | 12 | [x] | TRENDnet TEG-30284 | Prosumer L2+ | 24xGbE+4xSFP+, fanless ~10-20W typ / ~28-32W max, S&F ~3-5µs GbE / ~1-3µs SFP+, 256 VLANs, LACP 8×8, STP/RSTP/MSTP, 32 static routes, 802.1X/RADIUS/TACACS+/ACLs/DHCP-snoop/DAI, SNMP v3, CLI |
 | 13 | [x] | TP-Link SG3210XHP-M2 | Prosumer PoE | 8x2.5G-PoE+2xSFP+, 240W PoE, ~20-25W no-PoE / ~265W max, S&F ~3-5µs, 4K VLANs, LACP 8×8, MSTP, 48 static routes, DHCP server, 802.1X/RADIUS/TACACS+, SNMP v3, Omada SDN |
-| 14 | [ ] | Dell PowerConnect 5448 | Prosumer stackable | |
+| 14 | [x] | Dell PowerConnect 5448 | Prosumer stackable | 48xGbE+4xSFP combo, ~30-35W idle / ~45-55W typ / ~65-75W max, stack up to 12 units (48Gbps backplane, cross-stack LAG), S&F ~5-10µs local / ~15-25µs cross-stack, 256 VLANs, LACP 6×8, RSTP only, 802.1X/RADIUS/DHCP-snoop, SNMP v3 |
 | 15 | [ ] | Cisco SG300-52 | SMB L3-lite | |
 | 16 | [ ] | Netgear GS116E | Consumer | |
 | 17 | [ ] | Cisco 3560 | Enterprise L3 | |
