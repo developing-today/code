@@ -102,6 +102,7 @@
     ".opencode/instructions/codedb.md",
     ".opencode/instructions/chrome-devtools.md",
     ".opencode/instructions/context7.md",
+    ".opencode/instructions/fff.md",
   ],
   "compaction": {
     "reserved": 8192,
@@ -134,6 +135,10 @@
       "environment": {
         "CODEDB_NO_TELEMETRY": "1",
       },
+    },
+    "fff": {
+      "type": "local",
+      "command": ["/home/user/.local/bin/fff-mcp"],
     },
     "chrome-devtools": {
       "type": "local",

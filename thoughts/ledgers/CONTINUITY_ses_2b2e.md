@@ -1,49 +1,66 @@
 ---
 session: ses_2b2e
-updated: 2026-04-02T21:56:09.646Z
+updated: 2026-04-03T00:32:43.573Z
 ---
 
 
 
 ## Summary
 
-### Task
-Review ~35 unpushed commits in `pkgs/id`, validate features, fix lint issues, assess the website, and create a prioritized roadmap for transforming it into a live collaborative platform.
+### Current Task
+Add missing tests for Phase 1 Parts 1-3 of the pkgs/id collaborative web platform roadmap, then spot-check each feature via chrome-devtools in a real browser.
 
 ### Accomplishments
-1. **Build fix**: Wrapped `libsql::Database` in `Arc` in `identity.rs` to fix `Clone` derive
-2. **Live feature verification**: All 10 features PASS (DaisyUI, identity, collab editing, peer discovery, etc.)
-3. **Test documentation**: 8 screenshots + markdown report in `tests/results/2026-04-02T07-46-50Z/`
-4. **Display name warning UI**: Soft warning at >8 chars in `templates.rs` + `main.ts`
-5. **Lint fixes committed** as `e6a01637`: clippy pedantic, fmt, biome lint cleanups
-6. **`just check` passes**: 549 unit + 74 integration + 343 TS tests
-7. **Deep codebase analysis**: 7-area assessment (file mgmt, markdown/images, save behavior, keys/identity, iroh-docs, p2pandas, collaboration architecture)
-8. **Prioritized 6-phase roadmap created** — submitted twice, nearly approved
 
-### The 6-Phase Roadmap (content approved, path format needs fix)
-1. **Fix Save & Collab** (critical): Decouple sessions from hashes, fix NewVersion MSG type 7, name-first URLs, auto-save
-2. **Markdown Polish** (parallel): GFM tables/strikethrough, image alt-text/browser/resize
-3. **Identity/Auth**: Binary key-value tags (null-separated), ownership (first-created-wins), CLI tags, challenge-response one-time tokens with permission levels, QR codes
-4. **iroh-docs Versioning**: Client-scoped namespaces, ProseMirror as canonical format, version DAG with fork/merge
-5. **p2panda Integration**: Core crates, native groups/RBAC, streams/chatrooms, cross-node sync, offline editing
-6. **UX Essentials**: Sidebar tree, drag-drop upload, folders via tags, keyboard shortcuts, mobile responsive
+**6-Phase Roadmap**: Approved and committed. Plan at `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/README.md`.
 
-**Implementation methodology**: One phase at a time, phase docs + validation docs with test specs before coding, evidence-based sign-off with screenshots, commit after every step, never revert/force/rebase, document everything.
+**Phase 1 Parts 1-3 — All Implemented & Committed:**
 
-### What Needs to Happen Next
-1. **Resubmit the plan** with one fix: phase doc paths should use subdirectory format `thoughts/shared/plans/pkgs-id-collaborative-web-platform-roadmap/phase-N-{name}.md` (not direct files in `thoughts/shared/plans/`)
-2. Once approved, begin Phase 1 implementation
+1. **Part 1: NEW_VERSION handler** (`dae1f33b`) — Added `MSG.NEW_VERSION = 7` to collab.ts, `case 7` handler in `handleMessage`, `onNewVersion` callback in `initCollab()`. main.ts updates `dataset.docId` on receipt.
+
+2. **Part 2: Re-key collab by filename** (`eceac4d4`) — Added `pub hash: RwLock<String>` to Document. CollabState HashMap keyed by filename instead of hash. `get_or_create(filename, hash, content)`, `notify_new_version(filename, new_hash)`. Templates emit `data-doc-id={filename}` + `data-hash={hash}`.
+
+3. **Part 3: Name-first URLs** (`62570d15` + `4afccdac` + `afa9e981`) — `/edit/*name` primary route, `/hash/:hash` redirects to `/edit/{name}`, `/view/*name` stub redirects to `/edit/{name}`. Updated templates, main.ts, e2e tests, nix tests.
+
+**All existing tests pass**: 549 unit + 74 integration + 343 TS tests, clippy, fmt, biome clean.
+
+### Critical Gap Identified
+**Zero new tests were written for Parts 1-3.** Only existing tests were updated to not break. No new unit tests, no new e2e tests, no chrome-devtools verification.
+
+### Test Plan (Ready to Implement)
+
+**Rust unit tests to add in `collab.rs` `mod tests`:**
+1. `test_collab_state_keys_by_filename` — create doc with filename "test.txt" and hash "hash1", call get_or_create again with same filename but different hash → returns same Arc<Document>, hash still "hash1"
+2. `test_notify_new_version_updates_hash` — create doc, subscribe to broadcast, call notify_new_version with new_hash → hash field updated, NewVersion message received
+3. `test_notify_new_version_missing_doc` — call notify on non-existent filename → no panic, no broadcast
+4. `test_remove_document_by_filename` — create doc, remove, get_or_create again → new document
+
+**E2E tests to add in `websocket.spec.ts`:**
+1. `test_hash_redirect` — Navigate to `/hash/{hash}`, assert URL redirects to `/edit/{name}`
+2. `test_view_redirect` — Navigate to `/view/{name}`, assert URL redirects to `/edit/{name}`
+3. `test_collab_persists_across_save` — Two users, one saves, verify both still connected and can edit
+
+**Pattern notes:**
+- Rust tests: `CollabState` is `#[derive(Default)]`, testable standalone. Pattern: `#[allow(clippy::unwrap_used, clippy::panic)]` on each test fn.
+- E2E: Use `POST /api/new` to get hash, navigate to `/hash/{hash}`, assert `page.waitForURL()` and `page.url().toContain("/edit/")`.
+- collab.ts has ZERO unit tests (no WebSocket mocking exists). Collab tested only via E2E.
 
 ### Key Files
-- `pkgs/id/src/web/identity.rs` — IdentityStore
-- `pkgs/id/src/web/collab.rs` — CollabState, MSG types
-- `pkgs/id/src/web/routes.rs` — HTTP handlers, save_handler
+- `pkgs/id/src/web/collab.rs` — CollabState, Document, tests module at line ~1223
+- `pkgs/id/src/web/routes.rs` — HTTP handlers, hash_redirect_handler, view_handler
 - `pkgs/id/src/web/templates.rs` — HTML rendering
-- `pkgs/id/web/src/main.ts` — Client-side app logic
-- `pkgs/id/web/src/collab.ts` — WebSocket collab client (missing NEW_VERSION=7 handler)
+- `pkgs/id/web/src/main.ts` — Client-side app
+- `pkgs/id/web/src/collab.ts` — WebSocket collab client
+- `pkgs/id/e2e/tests/websocket.spec.ts` — E2E WebSocket/collab tests
 
-### Key Constraints / Preferences
-- Build with `just` and `nix flake`; keep generated artifacts synced
-- If it builds and screenshots look right, proceed to next steps
-- Commit after every step; never revert/force/rebase
+### Exact Next Steps
+1. Write the 4 Rust unit tests in collab.rs
+2. Write the 3 E2E tests in websocket.spec.ts
+3. Run `just id::check` to verify all pass
+4. Commit the new tests
+5. Spot-check all 3 features via chrome-devtools (start server, open browser, manually verify)
+
+### Constraints
+- `just` + `nix flake` build system
+- Commit after every meaningful step, never revert/force/rebase
 - Document everything including failed explorations

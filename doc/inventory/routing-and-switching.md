@@ -281,22 +281,151 @@
 |---|---|
 | **Ports** | 48x 10GBASE-T RJ45 + 4x QSFP+ 40GbE |
 | **Breakout** | 4x10GbE per QSFP+ (up to 64x 10GbE total) |
-| **ASIC** | Memory (same platform as G8264) |
+| **ASIC** | Same as G8264 (single-chip design) |
 | **Switching Capacity** | 1.28 Tbps |
 | **Forwarding Rate** | 952 Mpps |
-| **Latency** | ~2-4 us (copper PHY adds latency vs SFP+) |
-| **MTU / Jumbo** | 9216 bytes |
+| **MAC Table** | 128,000 entries |
+| **MTU / Jumbo** | 9,216 bytes |
 | **Form Factor** | 1RU |
 | **OS** | IBM ENOS or Lenovo CNOS; ONIE compatible |
-| **Management** | CLI, SNMP, web GUI |
-| **L2 Features** | VLAN, LACP, STP/RSTP/MSTP, vLAG |
-| **L3 Features** | Static routes, OSPF, BGP, ECMP, VRRP, SVIs |
-| **MC-LAG** | Yes (vLAG) |
-| **Stacking** | Likely yes (same platform/firmware as G8264; no dedicated product guide to confirm independently, but shares ASIC, NOS, and QSFP+ stacking port design) |
+| **Management** | CLI (isCLI), SNMP v1/v3, web GUI, Netconf (XML) |
 | **Class** | Enterprise / Data Center TOR |
 | **Released** | ~2012 |
-| **EOL** | ~2018 |
-| **Notes** | Copper 10GBASE-T variant of G8264. Higher power consumption (~300-400W vs ~200W for SFP+ model) due to copper PHY. Uses standard Cat6a/Cat7 cabling. Useful for connecting servers without SFP+ NICs. Stacking uses the same 4x QSFP+ 40G ports as the G8264; cross-model stacking with G8264 SFP+ units is plausible but unconfirmed. |
+| **EOL** | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering) |
+| **Notes** | Copper 10GBASE-T variant of G8264. All software features identical to G8264 — runs same ENOS/CNOS firmware. Higher power consumption due to 48 integrated copper PHY chips (~3-4W each). Uses standard Cat6a/Cat7 cabling (up to 100m). Useful for connecting servers without SFP+ NICs. No dedicated Lenovo Press product guide exists; all specs inferred from G8264 TIPS1272 and general 10GBASE-T PHY characteristics. |
+| | |
+| **— Power —** | |
+| **PSU** | 2x AC (100-240V, IEC 320-C14), load-sharing, redundant, hot-swap (estimated 550-750W per PSU based on G8264CS having 550/750W PSUs for similar port density; G8264 SFP+ model has 450W PSUs) |
+| **System Idle** | ~250-300W estimated (ASIC + management CPU + fans + 48 idle PHY chips at ~1W each) |
+| **System Typical** | ~450-550W estimated (48 PHYs active at ~3-3.5W each ≈ 144-168W PHY power alone + ~330W G8264 base typical; copper PHY adds ~120-220W over SFP+ model) |
+| **System Max** | ~600-700W estimated (all 52 ports active, full traffic, fans at full speed) |
+| **Per-Port: 10GBASE-T RJ45 (active link)** | ~3-4W per port (integrated 10GBASE-T PHY chip; includes analog front-end, DSP, and SerDes) |
+| **Per-Port: 10GBASE-T RJ45 (idle/link-down)** | ~1-1.5W per port (PHY powered but no link training active; EEE may reduce further) |
+| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes) |
+| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
+| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
+| **Per-Port: Empty QSFP+ cage** | ~0W |
+| **PoE** | Not supported |
+| **Cooling** | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow |
+| **Power Source** | Estimated based on G8264 TIPS1272 baseline (~330W typical) + 10GBASE-T PHY power specs (IEEE 802.3an PHY ~3-4W per port, e.g., Marvell Alaska, Broadcom BCM84xxx series); G8264CS TIPS1273 PSU sizes as reference for copper-port variants |
+| | |
+| **— Latency —** | |
+| **Baseline (10GBASE-T, L2, 64B)** | ~2-4µs (dominated by 10GBASE-T PHY processing: PAM-16 encoding/decoding, echo cancellation, crosstalk cancellation adds ~1.5-3µs per copper PHY traversal on top of ASIC switching) |
+| **ASIC Switching Latency** | ~880ns cut-through (same ASIC as G8264 per TIPS1272) |
+| **Copper PHY Latency** | ~1.5-3µs per traversal (10GBASE-T PHY includes DSP processing for PAM-16 modulation over Cat6a/Cat7; this is additive to ASIC latency) |
+| **Total Port-to-Port (copper→copper)** | ~4-7µs estimated (ingress PHY ~2-3µs + ASIC ~880ns + egress PHY ~2-3µs; varies by cable quality and length) |
+| **Switching Mode** | Cut-through (within ASIC; copper PHY is inherently store-and-forward due to DSP) |
+| **Modifier: QSFP+ DAC uplink** | ~880ns (bypasses copper PHY entirely — same as G8264 baseline) |
+| **Modifier: QSFP+ fiber optic** | ~880ns + fiber cable latency (~5ns/m) |
+| **Modifier: Copper-to-QSFP+ (cross-port type)** | ~2-4µs (one copper PHY traversal + ASIC switching) |
+| **Modifier: Speed mismatch (10G↔40G)** | +variable buffering latency for speed adaptation |
+| **L3 Routing vs L2** | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline) |
+| **ACL/QoS Impact** | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN) |
+| **Latency Source** | G8264 TIPS1272 ASIC latency + IEEE 802.3an 10GBASE-T PHY latency characteristics |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) — same as G8264 |
+| **Private VLAN** | Yes (per RFC 5517) |
+| **Protocol-Based VLAN** | Yes |
+| **Voice VLAN** | Not documented (use QoS 802.1p priority + VLAN assignment) |
+| **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
+| **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
+| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
+| **Storm Control** | Yes (broadcast and multicast storm control) |
+| **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups) |
+| **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
+| **L2 Failover** | Yes (trunk failover for NIC teaming active/standby) |
+| | |
+| **— Link Aggregation —** | |
+| **Static LAG** | Yes |
+| **LACP (802.3ad)** | Yes (IEEE 802.3ad) |
+| **Max LAGs / Ports per LAG** | 64 LAG groups / 32 ports per LAG |
+| **Hash Modes** | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk |
+| **L4 (port-based) Hash** | Not documented in TIPS1272 (hash is L2/L3 based) |
+| **Symmetric Hashing** | Not explicitly documented |
+| **Cross-Stack LAG** | Yes (in stacking mode, LAGs can span stacked switches) |
+| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG Variant** | vLAG (IBM/Lenovo Virtual LAG) |
+| **Protocol** | Proprietary (IBM/Lenovo vLAG protocol) |
+| **Interoperable** | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two switches |
+| **Max MC-LAG Peers** | 2 (active-active pair) |
+| **vLAG Peer Gateway** | Yes (improved utilization of inter-switch link) |
+| **Two-Tier vLAG** | Yes (with VRRP for active/active routing — reduces routing latency) |
+| **Failover Time** | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config) |
+| **Split-Brain Handling** | Peer-link + keepalive heartbeat between vLAG peers |
+| **Cross-Model vLAG** | Plausible with G8264 SFP+ model (same ENOS firmware) but unconfirmed |
+| | |
+| **— First-Hop Redundancy —** | |
+| **VRRP** | Yes (IPv4 VRRP) |
+| **VRRP + vLAG** | Yes (two-tier vLAG with active/active VRRP for reduced routing latency) |
+| **HSRP** | No (Cisco proprietary) |
+| **GLBP** | No (Cisco proprietary) |
+| **Anycast Gateway** | No (not supported in ENOS/CNOS; no EVPN) |
+| **VRRP Failover Time** | ~3-4s default (configurable advertisement interval × dead multiplier) |
+| **Preemption** | Yes (VRRP preempt) |
+| **Tracking** | Interface tracking for VRRP priority adjustment |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes (up to 128 static routes) |
+| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
+| **BGP** | Yes (IPv4; IPv6 BGP not supported per TIPS1272 limitations) |
+| **RIP** | Yes (v1, v2 — IPv4 only) |
+| **IS-IS** | Not documented |
+| **Policy-Based Routing** | Yes (IPv4 PBR) |
+| **VRF / VRF-lite** | Not documented in TIPS1272 |
+| **BFD** | Not documented |
+| **ECMP** | Yes (via OSPF/BGP equal-cost paths) |
+| **PIM Multicast** | Yes (PIM-SM, PIM-DM) |
+| **DHCP Relay** | Yes |
+| **IP Interfaces** | Up to 128 per switch |
+| | |
+| **— Converged Fabric —** | |
+| **CEE/DCB** | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB) |
+| **FCoE** | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions) |
+| **iSCSI** | Yes (convergence support via CEE) |
+| | |
+| **— Virtualization —** | |
+| **Virtual Fabric (vNICs)** | Yes (up to 8 vNICs per dual-port 10G adapter) |
+| **UFP (Unified Fabric Port)** | Yes (up to 8 vPorts with Emulex VFA, up to 4 with QLogic VFA) |
+| **VMready** | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs) |
+| **EVB (802.1Qbg)** | Yes (VEB, VEPA, ECP, VDP) |
+| **OpenFlow** | 1.0, 1.3.1 |
+| | |
+| **— Security —** | |
+| **ACLs** | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6) |
+| **802.1X** | Yes (port-based network access control) |
+| **RADIUS / TACACS+ / LDAP** | Yes (all three, including LDAPS) |
+| **SSH** | v1, v2 |
+| **SCP / sFTP** | Yes |
+| **RBAC** | Yes (Role-Based Access Control) |
+| **NIST 800-131A** | Yes (encryption compliance) |
+| **DHCP Snooping** | Not explicitly documented in TIPS1272 |
+| **Dynamic ARP Inspection** | Not documented |
+| **IP Source Guard** | Not documented |
+| **MACsec (802.1AE)** | Not supported |
+| **Control Plane Policing** | Not documented |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v3 |
+| **sFlow** | Yes (hardware-sampled) |
+| **RMON** | Yes (statistics and proactive monitoring) |
+| **Port Mirroring** | Yes |
+| **LLDP** | Yes |
+| **Syslog** | Yes (remote logging) |
+| **NTP** | Yes |
+| **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
+| **Netconf** | Yes (XML) |
+| | |
+| **— QoS —** | |
+| **Classification** | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN) |
+| **Queues** | 8 CoS queues per port |
+| **Scheduling** | Traffic shaping and re-marking based on defined policies |
+| **WRED** | Yes (with ECN — Explicit Congestion Notification) |
+| **ACL Metering** | Yes (IPv4/IPv6) |
+| | |
+| **Stacking** | Likely yes (same platform/firmware as G8264; shares ASIC, NOS, and QSFP+ stacking port design; no dedicated product guide to confirm independently; uses 4x QSFP+ 40G ports; cross-model stacking with G8264 SFP+ units plausible but unconfirmed) |
 
 ---
 
