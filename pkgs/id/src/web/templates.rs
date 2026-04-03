@@ -434,7 +434,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     // Save button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.saveFile?.()\" disabled>save</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
     html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\">dl</button>\n");
