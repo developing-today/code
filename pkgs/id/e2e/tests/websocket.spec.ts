@@ -709,4 +709,84 @@ test.describe("Multi-User Collab", () => {
       await context2.close();
     }
   });
+
+  test("collab persists across save — both clients stay connected", async ({ browser, baseURL }) => {
+    const { context1, context2, page1, page2, fileName } = await setupCollabPair(browser, baseURL!);
+
+    try {
+      // User 1 types content
+      await setEditorContent(page1, "Before save");
+      await page1.waitForTimeout(2_000);
+      await expect(page2.locator("#editor .ProseMirror")).toContainText("Before save", { timeout: 20_000 });
+
+      // User 1 saves (POST /api/save)
+      const hash = await page1.evaluate(() => {
+        const el = document.getElementById("editor-container");
+        return el?.dataset.hash ?? "";
+      });
+      const doc = await page1.evaluate(() => {
+        const app = (window as unknown as { idApp: { collab: { editor: { view: any } } } }).idApp;
+        return app.collab.editor.view.state.doc.toJSON();
+      });
+      const saveResp = await page1.request.post(`${baseURL}/api/save`, {
+        data: { doc_id: hash, name: fileName, doc },
+      });
+      expect(saveResp.ok()).toBeTruthy();
+
+      // Both clients should still be connected after save
+      await page1.waitForTimeout(1_000);
+      await expect(page1.locator("#editor-status")).toHaveText("connected", { timeout: 10_000 });
+      await expect(page2.locator("#editor-status")).toHaveText("connected", { timeout: 10_000 });
+
+      // User 2 can still type and User 1 sees it
+      const editor2 = page2.locator("#editor .ProseMirror");
+      await editor2.click();
+      await page2.keyboard.press("Control+End");
+      await page2.waitForTimeout(200);
+      await page2.keyboard.type(" after-save", { delay: 100 });
+
+      await expect(page1.locator("#editor .ProseMirror")).toContainText("after-save", { timeout: 20_000 });
+    } finally {
+      await context1.close();
+      await context2.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. URL Scheme — Name-First Routes (Part 3)
+// ---------------------------------------------------------------------------
+
+test.describe("Name-First URL Scheme", () => {
+  test("/hash/{hash} redirects to /edit/{name}", async ({ page, baseURL }) => {
+    // Create a file via API to get its hash
+    const fileName = `redirect-test-${Date.now()}.txt`;
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: fileName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const { hash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Navigate to /hash/{hash} — should redirect to /edit/{name}
+    await page.goto(`/hash/${hash}`);
+    await page.waitForURL(/\/edit\//, { timeout: 10_000 });
+    expect(page.url()).toContain(`/edit/${encodeURIComponent(fileName)}`);
+
+    // Editor should load
+    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+  });
+
+  test("/view/{name} redirects to /edit/{name}", async ({ page, baseURL }) => {
+    const fileName = `view-test-${Date.now()}.txt`;
+    // Create file first
+    const createResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: fileName },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    // Navigate to /view/{name} — should redirect to /edit/{name}
+    await page.goto(`/view/${encodeURIComponent(fileName)}`);
+    await page.waitForURL(/\/edit\//, { timeout: 10_000 });
+    expect(page.url()).toContain(`/edit/${encodeURIComponent(fileName)}`);
+  });
 });

@@ -1610,4 +1610,108 @@ mod tests {
             _ => panic!("Expected Error message"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // CollabState tests — verify filename-keyed session management (Part 2)
+    // -----------------------------------------------------------------------
+
+    #[allow(clippy::unwrap_used)]
+    #[tokio::test]
+    async fn test_collab_state_keys_by_filename() {
+        let collab = CollabState::default();
+
+        // Create a document keyed by filename
+        let doc1 = collab
+            .get_or_create("test.txt", "hash_aaa", Some(b"hello"))
+            .await;
+        assert_eq!(*doc1.hash.read().await, "hash_aaa");
+
+        // Same filename, different hash → returns same document (session persists)
+        let doc2 = collab
+            .get_or_create("test.txt", "hash_bbb", Some(b"world"))
+            .await;
+        assert!(
+            Arc::ptr_eq(&doc1, &doc2),
+            "Same filename must return the same Document Arc"
+        );
+        // Hash should remain from the first creation (not overwritten)
+        assert_eq!(*doc2.hash.read().await, "hash_aaa");
+
+        // Different filename → different document
+        let doc3 = collab
+            .get_or_create("other.md", "hash_ccc", Some(b"# Title"))
+            .await;
+        assert!(
+            !Arc::ptr_eq(&doc1, &doc3),
+            "Different filename must create a new Document"
+        );
+        assert_eq!(*doc3.hash.read().await, "hash_ccc");
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_notify_new_version_updates_hash_and_broadcasts() {
+        let collab = CollabState::default();
+
+        // Create a document and subscribe to its broadcast channel
+        let doc = collab
+            .get_or_create("readme.md", "old_hash", Some(b"# Hello"))
+            .await;
+        let mut rx = doc.broadcast.subscribe();
+        assert_eq!(*doc.hash.read().await, "old_hash");
+
+        // Notify new version
+        collab.notify_new_version("readme.md", "new_hash_abc").await;
+
+        // Hash should be updated
+        assert_eq!(*doc.hash.read().await, "new_hash_abc");
+
+        // Should have received the NewVersion broadcast
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            CollabMessage::NewVersion { hash, name } => {
+                assert_eq!(hash, "new_hash_abc");
+                assert_eq!(name, "readme.md");
+            }
+            _ => panic!("Expected NewVersion message, got {msg:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_notify_new_version_missing_doc_is_noop() {
+        let collab = CollabState::default();
+
+        // Notify for a document that doesn't exist — should not panic
+        collab
+            .notify_new_version("nonexistent.txt", "some_hash")
+            .await;
+
+        // Verify no documents were created as a side effect
+        let read = collab.documents.read().await;
+        assert!(read.is_empty());
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[tokio::test]
+    async fn test_remove_document_by_filename() {
+        let collab = CollabState::default();
+
+        let doc1 = collab
+            .get_or_create("temp.txt", "hash_1", Some(b"temporary"))
+            .await;
+        assert_eq!(*doc1.hash.read().await, "hash_1");
+
+        // Remove by filename
+        collab.remove_document("temp.txt").await;
+
+        // Creating again should yield a new Document (not the old one)
+        let doc2 = collab
+            .get_or_create("temp.txt", "hash_2", Some(b"new content"))
+            .await;
+        assert!(
+            !Arc::ptr_eq(&doc1, &doc2),
+            "After removal, get_or_create must return a new Document"
+        );
+        assert_eq!(*doc2.hash.read().await, "hash_2");
+    }
 }
