@@ -23,11 +23,11 @@ from `standard-attributes.md`. One device at a time, commit after each.
 | 14 | [x] | Dell PowerConnect 5448 | Prosumer stackable | 48xGbE+4xSFP combo, ~30-35W idle / ~45-55W typ / ~65-75W max, stack up to 12 units (48Gbps backplane, cross-stack LAG), S&F ~5-10µs local / ~15-25µs cross-stack, 256 VLANs, LACP 6×8, RSTP only, 802.1X/RADIUS/DHCP-snoop, SNMP v3 |
 | 15 | [x] | Cisco SG300-52 | SMB L3-lite | 50xGbE+2xSFP combo, ~15-20W idle / ~35-42W typ / ~55-60W max, S&F ~5-8µs GbE / ~3-5µs SFP, 4094 VLANs, LACP 8×8, STP/RSTP/MSTP, L3-lite 128 static routes / 64 SVIs / inter-VLAN / DHCP relay+server, private VLAN, 802.1X multi-session / RADIUS / TACACS+ / ACLs L2-L4 / DHCP-snoop / DAI / IP-src-guard, SNMP v3, RMON, SPAN |
 | 16 | [x] | Netgear GS116E | Consumer | 16xGbE desktop, ~5W idle / ~7-8W typ / ~10W max, ext 12V PSU, S&F ~3-5µs, 64 VLANs only, no LACP/STP/802.1X/ACL/CLI, loop-detect only, 4K MAC, IGMP snoop v1/v2, SNMP v1/v2c, 1 SPAN session, Plus web GUI only |
-| 17 | [ ] | Cisco 3560 | Enterprise L3 | |
-| 18 | [ ] | Cisco 2960 | Enterprise L2 | |
-| 19 | [ ] | Cisco ASA 5505 | Firewall | |
-| 20 | [ ] | Cisco 4402 WLC | WLAN Controller | |
-| 21 | [ ] | Calix GP1101X | ISP CPE (ONT) | |
+| 17 | [x] | Cisco 3560 | Enterprise L3 | 24/48xGbE+4xSFP, ~25-30W idle / ~35-50W typ / ~60-80W max (non-PoE), ~370W PoE models, S&F ~3-6µs GbE / ~2-4µs SFP, 4094 VLANs+PVLAN, LACP 48×8 L2/L3/L4 hash, no stacking (3750 is stackable), HSRP v1/v2+VRRP+GLBP (IP Svc), OSPF/EIGRP/BGP/PBR/VRF-lite, SPAN/RSPAN, IP SLA, EEM, 802.1X multi-auth/RADIUS/TACACS+/DAI/IPSG/port-sec |
+| 18 | [x] | Cisco 2960 | Enterprise L2 | 24/48xGbE+2-4xSFP, ~15-25W idle / ~25-40W typ / ~45-60W max (non-PoE), ~740W PoE+ models, S&F ~3-6µs / +10-20µs cross-stack, 4094 VLANs LAN Base / 64 LAN Lite, LACP 48×8 L2/L3, cross-stack LAG (FlexStack S/X), no MC-LAG, L2 only (limited static on S/X), 802.1X multi-auth/MAB/RADIUS/TACACS+/DAI/IPSG, SNMP v3, RMON, SPAN/RSPAN, no NetFlow |
+| 19 | [x] | Cisco ASA 5505 | Firewall | 8xFE switch, ~12-15W idle / ~18-22W typ / ~25-30W max, ext 12V PSU fanless, 2-port PoE 7W total, ~0.5-2ms firewall / +1-5ms VPN, 3 VLANs base / 20 Security Plus, no STP/LACP/LLDP, 150Mbps stateful FW, 100Mbps VPN (3DES/AES), 10/25 IPsec peers, SSL VPN 2 peers, A/S failover (Sec+), NSEL NetFlow, RADIUS/TACACS+, SNMP v3, ASDM GUI |
+| 20 | [x] | Cisco 4402 WLC | WLAN Controller | 4xGbE (2 dist+2 svc), ~65-85W typ, internal AC single PSU, 802.11a/b/g only (54Mbps max, no n/ac/ax), up to 50 APs (base 12/25), ~1-3ms CAPWAP tunnel / ~5-10ms roaming, RRM auto RF, WPA/WPA2 enterprise (EAP-TLS/PEAP/EAP-FAST), rogue AP detect+contain, wIPS (MSE), WMM QoS, SNMP v3, WCS/Prime |
+| 21 | [x] | Calix GP1101X | ISP CPE (ONT) | 1x10GBASE-T+1xPOTS, XGS-PON 10G/10G, ~5-7W idle / ~8-10W typ / ~12-15W max, ext 12V DC, optional battery 4-8hr VoIP standby, ~100-500µs total pass-through (PON grant ~125µs-1ms + PHY ~2-3µs), ISP-configured 802.1Q/QoS only, no user config, OMCI/AXOS/SMx mgmt, LED status only, ISP remote diagnostics |
 
 ## Gaps
 
