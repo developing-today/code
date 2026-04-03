@@ -589,25 +589,151 @@
 
 | Attribute | Value |
 |---|---|
-| **Ports** | 36x QSFP (FDR InfiniBand 56Gbps or 40GbE Ethernet) |
-| **Breakout** | 4x10GbE per QSFP in Ethernet mode (up to 144x 10GbE) |
-| **ASIC** | Mellanox SwitchX-2 |
-| **Switching Capacity** | 4.0 Tbps (InfiniBand) / 2.88 Tbps (Ethernet) |
+| **Ports** | 36x QSFP (FDR InfiniBand 56Gbps or 40GbE Ethernet per port — VPI) |
+| **Port Mode** | VPI (Virtual Protocol Interconnect): each port independently configurable as InfiniBand FDR or 40GbE Ethernet. Can mix IB and Ethernet ports on the same switch. IB-only, Ethernet-only, or hybrid deployments all supported. |
+| **Breakout** | 4x FDR10 (10Gbps IB) or 4x10GbE per QSFP (up to 144x 10GbE in Ethernet mode) |
+| **ASIC** | Mellanox SwitchX-2 (single-chip, non-blocking) |
+| **Switching Capacity** | 4.032 Tbps (InfiniBand FDR) / 2.88 Tbps (Ethernet 40GbE) |
 | **Forwarding Rate** | ~1,080 Mpps (Ethernet mode) |
-| **Latency** | ~170 ns (InfiniBand), ~300 ns (Ethernet) |
-| **MTU / Jumbo** | 9216 bytes (Ethernet), 4KB (InfiniBand) |
-| **Form Factor** | 1RU |
-| **OS** | MLNX-OS (Mellanox/NVIDIA Networking OS) |
-| **Management** | CLI, SNMP, web GUI, REST API |
-| **L2 Features** | VLAN, LACP, STP/RSTP, IGMP snooping (Ethernet mode) |
-| **L3 Features** | Static routes, OSPF, BGP (Ethernet mode, varies by firmware) |
-| **MC-LAG** | No (not natively in MLNX-OS for this generation) |
-| **VPI** | Yes - Virtual Protocol Interconnect (can mix InfiniBand + Ethernet ports) |
-| **Stacking** | No |
-| **Class** | Enterprise / HPC |
-| **Released** | ~2013 |
-| **EOL** | ~2019 (Mellanox acquired by NVIDIA 2020) |
-| **Notes** | Dual-personality switch: can run InfiniBand FDR (56Gb/s, RDMA native) or Ethernet (40GbE) per port. Extremely low latency. Originally designed for HPC clusters. In Ethernet mode it's a competent 40GbE switch. VPI allows mixed InfiniBand+Ethernet deployment if both are needed. |
+| **Forwarding Database** | 4 x 48K-entry linear forwarding tables (InfiniBand LFT) |
+| **MTU / Jumbo** | 256B to 4KB (InfiniBand, configurable), 9,216 bytes (Ethernet mode) |
+| **IB Virtual Lanes** | 9 per port (8 data + 1 management VL15, per IBTA spec) |
+| **IB Compliance** | IBTA 1.2.1 and 1.3 compliant; FDR and FDR10 with Forward Error Correction (FEC) |
+| **Form Factor** | 1RU (standard depth and short depth variants available) |
+| **OS** | MLNX-OS (Mellanox/NVIDIA Networking OS — IB and Ethernet switching) |
+| **Management** | CLI, WebUI, SNMP v1/v2c/v3, REST API, XML gateway, 2x 100M/1Gb Ethernet OOB mgmt ports, 1x USB, 1x RJ45 serial console, 1x I2C diagnostic |
+| **Fabric Management** | UFM (Unified Fabric Manager) for large-scale fabric orchestration, monitoring, and diagnostics |
+| **Class** | Enterprise / HPC / Data Center Fabric |
+| **Released** | ~2012-2013 |
+| **EOL** | ~2019 (Mellanox acquired by NVIDIA 2020; SwitchX-2 succeeded by Spectrum/Quantum) |
+| **Variants** | MSX6036F-1SFR (standard, front-to-rear), MSX6036T-1SFR (standard, rear-to-front), MSX6036F-1BRR (short depth, front-to-rear), MSX6036T-1BRR (short depth, rear-to-front) |
+| **Notes** | Dual-personality (VPI) switch: each port independently configurable as InfiniBand FDR (56Gb/s, native RDMA) or Ethernet (40GbE). Originally designed for HPC clusters but capable as 40GbE DC fabric switch in Ethernet mode. VPI eliminates need for separate IB and Ethernet switches. SwitchX-2 ASIC is non-blocking with consistent port-to-port latency. |
+| | |
+| **— RDMA & Protocol Modes —** | |
+| **VPI** | Yes — per-port selection of InfiniBand or Ethernet; ports can be mixed freely within same chassis |
+| **InfiniBand Mode** | FDR (56Gb/s per port, 14Gb/s per lane x 4); FDR10 (40Gb/s, 10Gb/s x 4); backward-compatible QDR (40Gb/s) and DDR (20Gb/s) |
+| **Ethernet Mode** | 40GbE per QSFP; breakout to 4x10GbE via DAC or optics |
+| **IB Standards** | IBTA 1.2.1, IBTA 1.3 |
+| **RDMA (InfiniBand)** | Native — zero-copy, kernel-bypass RDMA over IB verbs (libibverbs). No software overhead. Primary design target of the switch. |
+| **RDMA (Ethernet / RoCE)** | RoCE is an adapter-level feature (ConnectX-3 VPI NICs support RoCEv1 and RoCEv2). Switch provides PFC (802.1Qbb) and ECN for lossless Ethernet transport. Switch does NOT terminate RDMA — it provides the lossless L2/L3 fabric. RoCEv2 preferred (routable, UDP/IP). |
+| **RoCE Concerns** | RoCEv1 is L2-only (no subnet crossing). RoCEv2 routable but needs PFC/ECN/DCQCN tuning. PFC storms are a known failure mode — requires PFC watchdog. Native IB RDMA is simpler (credit-based flow control, inherently lossless, no PFC needed). |
+| **iSER** | iSCSI Extensions for RDMA — RDMA-accelerated iSCSI on IB ports |
+| **SRP** | SCSI RDMA Protocol — RDMA-based block storage on IB ports |
+| **FCoIB** | Fibre Channel over InfiniBand — gateway for FC SAN access via IB |
+| **EoIB** | Ethernet over InfiniBand — encapsulates Ethernet frames over IB (BridgeX gateway) |
+| **FCoE** | Supported in Ethernet mode (FC-BB5 compliant with ConnectX-3 VPI adapters) |
+| **IPoIB** | IP over InfiniBand — standard TCP/IP stack over IB for legacy apps |
+| | |
+| **— Power —** | |
+| **PSU** | Auto-sensing 100-240 VAC, 50-60Hz; ships with 1 PSU, optional 2nd for 1+1 redundancy; hot-swap |
+| **System Idle** | ~100-126W estimated (ASIC + mgmt CPU + fans at low speed, passive cables or empty cages) |
+| **System Typical (passive cables)** | ~126W (StorageReview measured with passive copper DACs) |
+| **System Typical (active cables)** | ~231W (StorageReview measured with active optical cables) |
+| **System Max** | ~300W estimated (all 36 ports active with optics, full traffic, fans at full speed) |
+| **Per-Port: QSFP passive DAC** | ~0.5-1.0W (SerDes only, no optical components) |
+| **Per-Port: QSFP active optical (AOC)** | ~2.0W max per module (StorageReview: 2W max per QSFP with active cables) |
+| **Per-Port: QSFP SR4 optic** | ~1.5-2.5W (40G SR4 QSFP per MSA) |
+| **Per-Port: QSFP LR4 optic** | ~2.5-3.5W (40G LR4 QSFP per MSA) |
+| **Per-Port: Empty QSFP cage** | ~0W |
+| **PoE** | Not supported |
+| **Cooling** | Hot-swap redundant fan module; front-to-rear (F) or rear-to-front (T) airflow per SKU |
+| **Power Source** | StorageReview SX6036 review (Sept 2012): 126W passive, 231W active measured; 2W/module max |
+| | |
+| **— Latency —** | |
+| **Baseline: InfiniBand FDR (port-to-port)** | ~170ns (StorageReview measured; SwitchX-2 cut-through) |
+| **Baseline: Ethernet 40GbE (L2, 64B)** | ~300ns cut-through (SwitchX-2 Ethernet; higher than IB due to framing overhead) |
+| **Forwarding Mode** | Cut-through (both IB and Ethernet modes) |
+| **Modifier: FDR10 (40Gb/s IB)** | ~170-200ns (same ASIC, slightly different SerDes encoding) |
+| **Modifier: Breakout 4x10GbE** | ~300-400ns (Ethernet mode, 10G SerDes) |
+| **Modifier: QSFP SR4/LR4 optic** | +negligible optical PHY latency (~10-20ns) + fiber (~5ns/m) |
+| **Modifier: Speed mismatch** | +variable buffering latency (e.g., 56G IB to 10G breakout) |
+| **L3 Routing vs L2 (Ethernet)** | ~same (hardware forwarding in SwitchX-2 pipeline) |
+| **IB QoS VL Impact** | 9 VLs with SL-to-VL mapping; no queuing latency at low utilization |
+| **Latency Source** | StorageReview professional review (Sept 2012): 170ns IB; Ethernet ~300ns per Mellanox brief |
+| | |
+| **— L2 Features (Ethernet mode) —** | |
+| **VLANs** | 802.1Q (up to 4,094 VLANs) |
+| **Private VLAN** | Not documented for SwitchX-2 |
+| **Protocol-Based VLAN** | Not documented |
+| **Voice VLAN** | Not documented |
+| **Trunking** | 802.1Q tagged trunks |
+| **Trunk Negotiation** | Manual (no DTP) |
+| **STP** | STP (802.1D), RSTP (802.1w); MSTP varies by firmware version |
+| **Storm Control** | Yes (broadcast/multicast) |
+| **IGMP Snooping** | Yes |
+| **LLDP** | Yes |
+| | |
+| **— InfiniBand Fabric Features —** | |
+| **Subnet Manager (SM)** | Integrated OpenSM — manages up to 648 IB nodes; LID assignment, routing, topology discovery |
+| **SM High Availability** | Yes (active/standby SM failover) |
+| **IB Partitioning (PKeys)** | Yes — logical isolation within IB fabric (analogous to VLANs) |
+| **IB Router** | Yes — inter-subnet routing for IB traffic |
+| **Adaptive Routing** | Yes (SwitchX-2 congestion-aware adaptive routing) |
+| **Credit-Based Flow Control** | Yes (native IB link-level; inherently lossless — no PFC needed) |
+| **Congestion Control** | IB native (IBTA Annex A17/A18) |
+| **Unbreakable-Link** | Yes (MLNX-OS link integrity monitoring + auto re-routing) |
+| | |
+| **— Link Aggregation (Ethernet mode) —** | |
+| **Static LAG** | Yes |
+| **LACP (802.3ad)** | Yes |
+| **Max LAGs / Ports per LAG** | Varies by firmware (typical: up to 64 LAGs) |
+| **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) — varies by MLNX-OS version |
+| **Symmetric Hashing** | Supported in later MLNX-OS versions |
+| **LAG Latency Impact** | Negligible (hardware hash in ASIC) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG** | Not supported on SwitchX-2 (MLAG introduced on Spectrum ASIC / Onyx NOS) |
+| | |
+| **— First-Hop Redundancy (Ethernet mode) —** | |
+| **VRRP** | Not documented for MLNX-OS on SwitchX-2 |
+| **HSRP** | No (Cisco proprietary) |
+| **GLBP** | No (Cisco proprietary) |
+| **Anycast Gateway** | Not supported (no EVPN on SwitchX-2) |
+| | |
+| **— L3 Routing (Ethernet mode) —** | |
+| **Static Routing** | Yes |
+| **OSPF** | Yes (v2 IPv4; varies by firmware) |
+| **BGP** | Yes (IPv4; varies by firmware and license) |
+| **RIP** | Not documented |
+| **IS-IS** | Not documented |
+| **VRF / VRF-lite** | Not documented for SwitchX-2 |
+| **BFD** | Not documented for SwitchX-2 |
+| **ECMP** | Yes (hardware ECMP in SwitchX-2 ASIC) |
+| **PIM Multicast** | IB: native IB multicast groups; Ethernet: IGMP snooping |
+| **DHCP Relay** | Yes (Ethernet mode) |
+| **Route Table Capacity** | Not documented for SX6036 |
+| | |
+| **— Security —** | |
+| **ACLs** | Yes (L2/L3/L4 in Ethernet mode; IB partitioning for isolation in IB mode) |
+| **802.1X** | Not documented for MLNX-OS |
+| **RADIUS / TACACS+** | Yes (management authentication) |
+| **SSH** | Yes (v2) |
+| **HTTPS** | Yes (WebUI) |
+| **RBAC** | Yes |
+| **IB Partition Keys (PKeys)** | Yes — security isolation in IB mode (shared PKey required to communicate) |
+| **DHCP Snooping** | Not documented |
+| **Dynamic ARP Inspection** | Not documented |
+| **MACsec (802.1AE)** | Not supported on SwitchX-2 |
+| **Control Plane Policing** | Yes (CoPP — per MLNX-OS user manual) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2c, v3 |
+| **sFlow / NetFlow** | Not documented for SwitchX-2 (sFlow on Spectrum and later) |
+| **Port Mirroring** | Yes |
+| **LLDP** | Yes (Ethernet mode) |
+| **Syslog** | Yes |
+| **NTP** | Yes |
+| **PTP** | Not documented for SX6036 |
+| **IB Diagnostics** | ibdiagnet, ibstat, ibswitches — standard IB tools; integrated in UFM |
+| | |
+| **— QoS —** | |
+| **IB QoS** | 9 virtual lanes per port (8 data + 1 management VL15); SL-to-VL mapping; per-VL flow control |
+| **Ethernet QoS** | 802.1p, DSCP classification, PFC (802.1Qbb) for lossless Ethernet (required for RoCE) |
+| **ETS (802.1Qaz)** | Yes (Enhanced Transmission Selection — bandwidth allocation) |
+| **DCBX (802.1AB)** | Yes (auto-negotiation of PFC/ETS parameters) |
+| **ECN** | Yes (for RoCEv2 / DCQCN congestion control) |
+| | |
+| **Stacking** | No (standalone fabric switch; scale-out via fat-tree or other IB topologies) |
 
 ---
 
