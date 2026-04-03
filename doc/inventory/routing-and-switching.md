@@ -1011,18 +1011,114 @@
 
 | Attribute | Value |
 |---|---|
-| **Ports** | 2x GbE RJ45 (built-in) + HWIC/NM expansion slots |
-| **CPU** | MIPS-based |
-| **RAM** | 256MB-768MB (model dependent) |
-| **OS** | Cisco IOS |
-| **Management** | CLI (console/telnet/SSH), SNMP, SDM (web GUI with some images) |
+| **Ports** | 2x GbE RJ45 (built-in HWIC-2FE/HWIC-4ESW optional) + 4x HWIC slots + 1x NM slot + 1x AIM slot |
+| **CPU** | MIPS64 (Cavium CN5010-based, ~300 MHz) |
+| **RAM** | 256MB default (max 768MB) |
+| **Flash** | 64MB default (max 256MB) |
+| **OS** | Cisco IOS 12.4 / 15.1 (last supported train) |
+| **Management** | CLI (console/telnet/SSH), SNMP, SDM (Security Device Manager web GUI) |
 | **L3 Features** | Static, OSPF, BGP, EIGRP, RIP, PBR, NAT, HSRP/VRRP, GRE, IPsec VPN |
 | **Firewall** | IOS Firewall / ZBF (Zone-Based Firewall) |
-| **Voice** | CME (CallManager Express) capable |
-| **Class** | Enterprise Branch Router |
+| **Voice** | CME (CallManager Express) — up to 36 IP phones with CME license |
+| **Crypto** | Hardware VPN acceleration module (AIM-VPN/BPII) optional; ~85 Mbps 3DES/AES with AIM |
+| **Form Factor** | 2RU, rack-mountable |
+| **Class** | Enterprise Branch Router (ISR G1) |
 | **Released** | ~2005 |
 | **EOL** | 2011 (End of Sale), 2016 (End of Support) |
-| **Notes** | Classic ISR G1 (Integrated Services Router). Very capable L3 router for its era but ancient by modern standards. Throughput ~100-200Mbps with services enabled. Expansion slots (HWIC, NM, AIM) for serial, T1/E1, additional Ethernet, voice. Power-hungry for what it delivers today. |
+| **Notes** | Classic ISR G1 (Integrated Services Router). Very capable L3 router for its era but ancient by modern standards. Expansion slots (HWIC, NM, AIM) for serial, T1/E1, additional Ethernet, voice. Power-hungry for what it delivers today. Two units available for HSRP pair. |
+| | |
+| **— Power —** | |
+| **Power Input** | AC (100-240V, 50/60Hz); IEC C14 connector; internal PSU |
+| **PSU Rating** | 130W internal AC PSU (single, non-redundant); optional DC version available |
+| **Redundancy** | Single PSU only (no redundant option on 2811) |
+| **System Idle** | ~60-70W (no expansion modules, minimal config) |
+| **System Typical** | ~80-100W (1-2 HWICs populated, moderate traffic) |
+| **System Max** | ~130W (all slots populated, full crypto + voice load, max traffic) |
+| **Per-Port: RJ45 GbE (built-in)** | Included in system power (integrated PHY) |
+| **PoE** | Not supported natively; HWIC-4ESW-POE adds 4-port PoE (15.4W/port 802.3af, 80W PoE budget with PoE PSU upgrade) |
+| **Power Source** | Cisco 2811 datasheet; Cisco Power Calculator |
+| | |
+| **— Latency —** | |
+| **Forwarding Mode** | Software (process/CEF). Cisco Express Forwarding (CEF) for L3 — hardware-assisted FIB lookup but packet processing in software |
+| **Baseline: L3 CEF forwarding** | ~50-200µs (64-byte packets, CEF-switched, no services — depends heavily on IOS process load) |
+| **Baseline: Process-switched** | ~500-2000µs (packets punted to CPU for features not in CEF fast path) |
+| **Modifier: NAT** | +20-100µs (NAT in CEF fast path for established flows; first packet process-switched) |
+| **Modifier: ACL** | +5-30µs (simple ACLs in CEF path; complex/reflexive ACLs may be process-switched) |
+| **Modifier: Firewall (ZBF)** | +50-200µs (stateful inspection adds per-packet overhead; process-switched for connection setup) |
+| **Modifier: IPsec (with AIM)** | +100-500µs (hardware crypto offload via AIM-VPN module; without AIM: +500-2000µs software crypto) |
+| **Modifier: QoS policies** | +10-50µs (queuing/shaping adds serialization delay at low bandwidths) |
+| **Throughput Ceiling** | ~100-200 Mbps routing with CEF; ~40-80 Mbps with NAT+ZBF+QoS; ~85 Mbps IPsec with AIM-VPN |
+| **Latency Source** | Cisco ISR G1 performance whitepapers; empirical testing in Cisco community forums |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | Yes — via 802.1Q sub-interfaces on router ports (router-on-a-stick) or via HWIC-4ESW switchport VLANs |
+| **STP** | Only on HWIC-4ESW switch module (basic STP/RSTP); router interfaces do not participate in STP |
+| **LLDP** | No (CDP only on IOS 12.4/15.1 for ISR G1 — LLDP added in later IOS versions for ISR G2+) |
+| **CDP** | Yes |
+| **IGMP** | Yes (IGMP v1/v2/v3 for multicast routing; PIM-SM, PIM-DM, PIM-SSM) |
+| **Jumbo Frames** | No (standard 1500 MTU on built-in GbE; sub-interfaces limited to 1500) |
+| | |
+| **— Link Aggregation —** | |
+| **EtherChannel** | Yes (static or LACP/PAgP on GbE interfaces) |
+| **LACP (802.3ad)** | Yes |
+| **Max Groups** | Limited by interface count (typically 1-2 with built-in ports + HWICs) |
+| **Max Ports per Group** | 8 (per Cisco EtherChannel standard) |
+| **Hash Modes** | src-dst-ip (default), src-ip, dst-ip, src-dst-mac (port-channel load-balance command) |
+| | |
+| **— MC-LAG / Multi-Chassis —** | |
+| **MC-LAG** | N/A — router, not a switch |
+| | |
+| **— First-Hop Redundancy —** | |
+| **HSRP** | Yes (v1 and v2; Cisco proprietary — primary FHRP for Cisco routers) |
+| **VRRP** | Yes (v2 RFC 3768; with IP Services or Advanced IP Services license) |
+| **GLBP** | Yes (Cisco proprietary active-active gateway load balancing) |
+| **FHRP Failover Time** | HSRP: ~3-10s default; ~1s with millisecond timers; <1s with BFD |
+| **Preemption** | Yes (configurable on HSRP/VRRP/GLBP) |
+| **Object Tracking** | Yes (interface tracking, IP route tracking, IP SLA tracking for FHRP) |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes |
+| **OSPF** | Yes (v2 for IPv4; v3 for IPv6 with Advanced IP Services) |
+| **BGP** | Yes (eBGP/iBGP with IP Services license; max ~100K routes with 768MB RAM — not practical for full table) |
+| **EIGRP** | Yes (Cisco proprietary; primary IGP) |
+| **RIP** | Yes (v1/v2) |
+| **IS-IS** | Yes (with Advanced IP Services) |
+| **PBR** | Yes |
+| **VRF / VRF-lite** | Yes (max ~100 VRFs, memory-dependent) |
+| **Route Table Capacity** | ~250K IPv4 routes max (768MB RAM); practical limit ~50K with services |
+| **BFD** | Yes (IOS 15.1; 50ms min interval) |
+| **ECMP** | Yes (max 16 equal-cost paths, CEF per-destination or per-packet load balancing) |
+| **NAT** | Yes (static, dynamic, PAT; hardware-assisted in CEF fast path for established flows) |
+| **Multicast** | Yes (PIM-SM, PIM-DM, PIM-SSM, MSDP, IGMP v1/v2/v3) |
+| **IPv6** | Yes (dual-stack, IPv6 ACLs, OSPFv3, BGP4+; requires Advanced IP Services) |
+| | |
+| **— Router/Firewall Specific —** | |
+| **NAT Performance** | ~50-100 Mbps NAT throughput; ~8,000 translations/sec; max ~128K concurrent NAT sessions |
+| **IPsec VPN Throughput** | ~85 Mbps with AIM-VPN/BPII (3DES/AES); ~20-30 Mbps software-only; max 800 IPsec tunnels |
+| **Stateful Firewall** | IOS ZBF: ~50-100 Mbps with stateful inspection; ~25K concurrent sessions |
+| **GRE Tunnels** | Yes (up to hundreds; limited by CPU/memory) |
+| **DMVPN** | Yes (mGRE + NHRP + IPsec; hub or spoke) |
+| **Hardware Crypto** | Optional AIM-VPN/BPII module (~85 Mbps AES-256); without AIM all crypto is software |
+| | |
+| **— Security —** | |
+| **ACLs** | Standard, extended, named, time-based, reflexive; applied per-interface |
+| **802.1X** | Yes (on HWIC-4ESW switch ports; not on router interfaces) |
+| **DHCP Snooping** | On HWIC-4ESW only |
+| **DAI** | On HWIC-4ESW only |
+| **uRPF** | Yes (unicast Reverse Path Forwarding — anti-spoofing) |
+| **CoPP** | Yes (Control Plane Policing) |
+| **AAA** | Yes (RADIUS, TACACS+, local) |
+| **SSH** | Yes (v2 with crypto image) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2c, v3 |
+| **NetFlow** | Yes (v5/v9; traditional NetFlow on GbE interfaces) |
+| **IP SLA** | Yes (ICMP echo, jitter, UDP echo, HTTP — active probing for SLA monitoring) |
+| **SPAN** | Yes (local SPAN on router interfaces; no RSPAN/ERSPAN) |
+| **Syslog** | Yes |
+| **NTP** | Yes (client and server) |
+| **CDP** | Yes |
+| **EEM** | Yes (Embedded Event Manager — script-based event-driven automation) |
 
 ---
 
@@ -1031,15 +1127,93 @@
 | Attribute | Value |
 |---|---|
 | **Ports** | 2x FastEthernet 10/100 RJ45 + 2x HWIC slots |
-| **CPU** | MIPS-based |
-| **RAM** | 128MB-384MB |
-| **OS** | Cisco IOS |
-| **Management** | CLI, SNMP |
+| **CPU** | MIPS (RM5261-based, ~240 MHz) |
+| **RAM** | 128MB default (max 384MB) |
+| **Flash** | 32MB default (max 128MB) |
+| **OS** | Cisco IOS 12.4 / 15.1 (last supported train) |
+| **Management** | CLI (console/telnet/SSH), SNMP |
 | **L3 Features** | Static, OSPF, BGP, EIGRP, RIP, NAT, HSRP, GRE, IPsec VPN |
-| **Class** | Enterprise Small Branch Router |
+| **Crypto** | Built-in hardware crypto (AIM-VPN/SSL-1 optional; ~20 Mbps AES without AIM) |
+| **Form Factor** | 1RU, rack-mountable (compact) |
+| **Class** | Enterprise Small Branch Router (ISR G1) |
 | **Released** | ~2005 |
 | **EOL** | 2010 (End of Sale), 2015 (End of Support) |
-| **Notes** | ISR G1. FastEthernet only (no GbE built-in). Max throughput ~40-80Mbps with services. Primarily useful as a lab/learning device for IOS. Not practical for production use at any modern traffic level. |
+| **Notes** | ISR G1, smaller sibling of 2811. FastEthernet only (no GbE built-in). Max throughput ~40-80Mbps with services. Primarily useful as a lab/learning device for IOS. |
+| | |
+| **— Power —** | |
+| **Power Input** | AC (100-240V, 50/60Hz); IEC C14 connector; internal PSU |
+| **PSU Rating** | 50W internal AC PSU (single, non-redundant) |
+| **System Idle** | ~30-40W (no HWIC modules) |
+| **System Typical** | ~40-50W (1 HWIC, moderate traffic) |
+| **System Max** | ~50W (all slots populated, full load) |
+| **Per-Port: FastEthernet** | Included in system power |
+| **PoE** | Not supported |
+| **Power Source** | Cisco 1841 datasheet |
+| | |
+| **— Latency —** | |
+| **Forwarding Mode** | Software (CEF) |
+| **Baseline: L3 CEF forwarding** | ~100-300µs (64-byte packets, CEF-switched; slower CPU than 2811) |
+| **Baseline: Process-switched** | ~1-5ms |
+| **Modifier: NAT** | +30-150µs (CEF fast path) |
+| **Modifier: ACL** | +10-50µs |
+| **Modifier: IPsec** | +200-1000µs (software crypto without AIM; ~20 Mbps max) |
+| **Throughput Ceiling** | ~40-80 Mbps CEF routing; ~15-30 Mbps with NAT+ACL; ~20 Mbps IPsec |
+| **Latency Source** | Cisco 1841 datasheet; ISR G1 performance documentation |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | Yes — via 802.1Q sub-interfaces (router-on-a-stick); HWIC-4ESW adds switchport VLANs |
+| **STP** | Only on HWIC-4ESW |
+| **LLDP** | No (CDP only) |
+| **CDP** | Yes |
+| **Jumbo Frames** | No (FastEthernet, 1500 MTU) |
+| | |
+| **— Link Aggregation —** | |
+| **EtherChannel** | Limited (only 2x FE built-in; possible but rarely useful at FastEthernet speeds) |
+| **LACP** | Yes (in IOS config) |
+| | |
+| **— MC-LAG —** | |
+| **MC-LAG** | N/A — router |
+| | |
+| **— First-Hop Redundancy —** | |
+| **HSRP** | Yes (v1/v2) |
+| **VRRP** | Yes (v2; with appropriate license) |
+| **GLBP** | Yes (with appropriate license) |
+| **FHRP Failover Time** | Same as 2811 (HSRP ~3-10s default, ~1s tuned) |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes |
+| **OSPF** | Yes (v2/v3) |
+| **BGP** | Yes (limited by RAM — ~10K routes practical max with 384MB) |
+| **EIGRP** | Yes |
+| **RIP** | Yes (v1/v2) |
+| **PBR** | Yes |
+| **VRF-lite** | Yes |
+| **Route Table Capacity** | ~50K IPv4 routes max (384MB RAM) |
+| **BFD** | Yes (IOS 15.1) |
+| **NAT** | Yes |
+| **IPv6** | Yes (with Advanced IP Services) |
+| | |
+| **— Router/Firewall Specific —** | |
+| **NAT Performance** | ~20-40 Mbps; max ~64K concurrent NAT sessions |
+| **IPsec VPN Throughput** | ~20 Mbps (software or with AIM-VPN/SSL-1); max 200 tunnels |
+| **Stateful Firewall** | IOS ZBF: ~20-40 Mbps; ~10K concurrent sessions |
+| **DMVPN** | Yes |
+| | |
+| **— Security —** | |
+| **ACLs** | Standard, extended, named, reflexive |
+| **uRPF** | Yes |
+| **CoPP** | Yes |
+| **AAA** | Yes (RADIUS, TACACS+, local) |
+| **SSH** | Yes (v2 with crypto image) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2c, v3 |
+| **NetFlow** | Yes (v5/v9) |
+| **IP SLA** | Yes |
+| **Syslog** | Yes |
+| **NTP** | Yes |
+| **CDP** | Yes |
+| **EEM** | Yes |
 
 ---
 
@@ -1047,17 +1221,95 @@
 
 | Attribute | Value |
 |---|---|
-| **Ports** | 4x FastEthernet 10/100 LAN RJ45 + 1x FastEthernet 10/100 WAN RJ45 (some models have GbE WAN) |
-| **CPU** | MIPS/ARM (Cavium) |
-| **RAM** | 256MB |
-| **OS** | Cisco IOS |
-| **Management** | CLI, SNMP, CCP (web GUI) |
-| **L3 Features** | Static, OSPF, EIGRP, NAT, DHCP, IPsec VPN |
+| **Ports** | 4x FastEthernet 10/100 LAN RJ45 (integrated switch) + 1x FastEthernet 10/100 WAN RJ45 |
+| **CPU** | Cavium CN5010 (MIPS64, ~300 MHz) |
+| **RAM** | 256MB (fixed) |
+| **Flash** | 128MB (fixed) |
+| **OS** | Cisco IOS 15.1 (last supported train) |
+| **Management** | CLI (console/SSH), SNMP, CCP (Cisco Configuration Professional web GUI) |
+| **L3 Features** | Static, OSPF, EIGRP, NAT, DHCP, IPsec VPN, GRE |
 | **Firewall** | IOS ZBF |
-| **Class** | Enterprise Small Branch / SOHO |
+| **Form Factor** | Desktop (compact, no rack mount without adapter) |
+| **Class** | Enterprise SOHO / Small Branch Router (ISR G1) |
 | **Released** | ~2008 |
 | **EOL** | ~2015 (End of Sale), ~2020 (End of Support) |
-| **Notes** | ISR G1 compact form factor. Integrated 4-port FE switch. Designed for small branch/SOHO. Very limited throughput by modern standards (<100Mbps). Desktop form factor, no rack mount. |
+| **Notes** | ISR G1 compact form factor. Integrated 4-port FE switch with inter-VLAN routing. Designed for small branch/SOHO. Very limited throughput by modern standards. Desktop form factor, fanless. |
+| | |
+| **— Power —** | |
+| **Power Input** | DC (12V external power adapter, 2.5A); barrel connector |
+| **PSU Rating** | 30W external AC-DC adapter |
+| **System Idle** | ~12-15W (fanless, no traffic) |
+| **System Typical** | ~15-20W (moderate traffic, NAT active) |
+| **System Max** | ~25-30W (full traffic + VPN + all ports active) |
+| **Per-Port: FastEthernet** | Included in system power |
+| **PoE** | Not supported (881 non-POE model; 881-POE variant has 2-port PoE at 15.4W/port) |
+| **Power Source** | Cisco 880 Series datasheet |
+| | |
+| **— Latency —** | |
+| **Forwarding Mode** | Software (CEF) |
+| **Baseline: L3 CEF forwarding** | ~50-200µs (integrated switch ports to WAN, CEF-switched; same CPU class as 2811) |
+| **Baseline: Inter-VLAN on integrated switch** | ~100-300µs (packets go through CPU for inter-VLAN routing) |
+| **Modifier: NAT** | +20-100µs |
+| **Modifier: ZBF** | +50-200µs |
+| **Modifier: IPsec** | +200-1000µs (software crypto; no AIM slot) |
+| **Throughput Ceiling** | ~50-100 Mbps CEF routing; ~25-50 Mbps with NAT+ZBF; ~15-25 Mbps IPsec (software only) |
+| **Latency Source** | Cisco 880 Series performance documentation |
+| | |
+| **— L2 Features —** | |
+| **VLANs** | Yes — integrated 4-port switch supports VLANs; inter-VLAN routing via BVI (Bridged Virtual Interface) |
+| **STP** | Yes (basic STP on integrated switch ports) |
+| **LLDP** | No (CDP only on ISR G1) |
+| **CDP** | Yes |
+| **IGMP Snooping** | Yes (on integrated switch) |
+| **Jumbo Frames** | No (FastEthernet, 1500 MTU) |
+| | |
+| **— Link Aggregation —** | |
+| **EtherChannel** | No (integrated switch does not support EtherChannel; WAN port is single FE) |
+| | |
+| **— MC-LAG —** | |
+| **MC-LAG** | N/A — SOHO router |
+| | |
+| **— First-Hop Redundancy —** | |
+| **HSRP** | Yes (but impractical — single unit, SOHO role) |
+| **VRRP** | Yes (with appropriate license) |
+| **FHRP Failover Time** | Standard IOS timers |
+| **Notes** | FHRP not typically deployed on SOHO routers — single unit, no redundant pair |
+| | |
+| **— L3 Routing —** | |
+| **Static Routing** | Yes |
+| **OSPF** | Yes (v2; v3 with Advanced license) |
+| **EIGRP** | Yes |
+| **RIP** | Yes (v1/v2) |
+| **BGP** | Limited (supported with appropriate license; ~5-10K routes max practical) |
+| **PBR** | Yes |
+| **VRF-lite** | Yes (limited by RAM) |
+| **Route Table Capacity** | ~50K IPv4 routes (256MB RAM) |
+| **NAT** | Yes (PAT/static/dynamic) |
+| **IPv6** | Yes (with Advanced IP Services) |
+| | |
+| **— Router/Firewall Specific —** | |
+| **NAT Performance** | ~30-60 Mbps; max ~64K concurrent sessions |
+| **IPsec VPN Throughput** | ~15-25 Mbps (software only, no hardware crypto module); max 20 tunnels |
+| **Stateful Firewall** | IOS ZBF: ~30-60 Mbps; ~15K concurrent sessions |
+| **DMVPN** | Yes |
+| | |
+| **— Security —** | |
+| **ACLs** | Standard, extended, named |
+| **802.1X** | Yes (on integrated switch ports) |
+| **DHCP Snooping** | Yes (on integrated switch) |
+| **uRPF** | Yes |
+| **CoPP** | Yes |
+| **AAA** | Yes (RADIUS, TACACS+, local) |
+| **SSH** | Yes (v2 with crypto image) |
+| | |
+| **— Monitoring —** | |
+| **SNMP** | v1, v2c, v3 |
+| **NetFlow** | Yes (v5/v9) |
+| **IP SLA** | Yes |
+| **Syslog** | Yes |
+| **NTP** | Yes |
+| **CDP** | Yes |
+| **EEM** | Yes |
 
 ---
 
