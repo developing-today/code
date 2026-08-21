@@ -71,6 +71,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.tasklist = true;
     options.extension.table = true;
     options.parse.smart = false; // Don't convert quotes/dashes
+    options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
     options
 }
 
@@ -311,6 +312,15 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         // Unsupported nodes - pass through as best we can
         NodeValue::HtmlBlock(html) => {
+            // Check if this is an <img> tag with width/height
+            let trimmed = html.literal.trim();
+            if let Some(img_node) = parse_img_tag(trimmed) {
+                // Wrap in paragraph since this is block-level
+                return json!({
+                    "type": "paragraph",
+                    "content": [img_node]
+                });
+            }
             // Convert HTML blocks to code blocks (safe fallback)
             let text = html.literal.strip_suffix('\n').unwrap_or(&html.literal);
             if text.is_empty() {
@@ -325,7 +335,11 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::HtmlInline(html) => {
-            // Inline HTML becomes plain text
+            // Check if this is an <img> tag with width/height
+            if let Some(img_attrs) = parse_img_tag(html) {
+                return img_attrs;
+            }
+            // Other inline HTML becomes plain text
             text_node_with_marks(html, active_marks)
         }
 
@@ -531,6 +545,49 @@ fn collect_text<'a>(node: &'a AstNode<'a>, text: &mut String) {
     }
 }
 
+/// Parse an HTML `<img>` tag and extract attributes into a ProseMirror image node.
+///
+/// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
+fn parse_img_tag(html: &str) -> Option<Value> {
+    let trimmed = html.trim();
+    if !trimmed.starts_with("<img ") && !trimmed.starts_with("<img>") {
+        return None;
+    }
+
+    // Simple attribute extraction (no full HTML parser needed for self-closing <img>)
+    fn attr_value<'a>(html: &'a str, name: &str) -> Option<&'a str> {
+        let pattern = format!("{name}=\"");
+        let start = html.find(&pattern)? + pattern.len();
+        let end = start + html[start..].find('"')?;
+        Some(&html[start..end])
+    }
+
+    let src = attr_value(trimmed, "src")?; // src is required
+    let mut attrs = json!({"src": src});
+
+    if let Some(alt) = attr_value(trimmed, "alt") {
+        attrs["alt"] = json!(alt);
+    }
+    if let Some(title) = attr_value(trimmed, "title") {
+        attrs["title"] = json!(title);
+    }
+    if let Some(w) = attr_value(trimmed, "width") {
+        if let Ok(n) = w.parse::<u64>() {
+            attrs["width"] = json!(n);
+        }
+    }
+    if let Some(h) = attr_value(trimmed, "height") {
+        if let Ok(n) = h.parse::<u64>() {
+            attrs["height"] = json!(n);
+        }
+    }
+
+    Some(json!({
+        "type": "image",
+        "attrs": attrs
+    }))
+}
+
 /// Convert `ProseMirror` JSON document to markdown text.
 ///
 /// # Arguments
@@ -671,11 +728,34 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "image" => {
             let src = json["attrs"]["src"].as_str().unwrap_or("");
             let title = json["attrs"]["title"].as_str().unwrap_or("");
-            // Alt text will be added as child text node
-            NodeValue::Image(Box::new(comrak::nodes::NodeLink {
-                url: src.to_owned(),
-                title: title.to_owned(),
-            }))
+            let alt = json["attrs"]["alt"].as_str().unwrap_or("");
+            let width = json["attrs"]["width"].as_u64();
+            let height = json["attrs"]["height"].as_u64();
+
+            // If image has explicit dimensions, emit as HTML <img> tag
+            if width.is_some() || height.is_some() {
+                let mut tag = format!("<img src=\"{src}\"");
+                if !alt.is_empty() {
+                    tag.push_str(&format!(" alt=\"{alt}\""));
+                }
+                if !title.is_empty() {
+                    tag.push_str(&format!(" title=\"{title}\""));
+                }
+                if let Some(w) = width {
+                    tag.push_str(&format!(" width=\"{w}\""));
+                }
+                if let Some(h) = height {
+                    tag.push_str(&format!(" height=\"{h}\""));
+                }
+                tag.push_str(" />");
+                NodeValue::HtmlInline(tag)
+            } else {
+                // Standard markdown image syntax
+                NodeValue::Image(Box::new(comrak::nodes::NodeLink {
+                    url: src.to_owned(),
+                    title: title.to_owned(),
+                }))
+            }
         }
 
         "hard_break" => NodeValue::LineBreak,
@@ -727,8 +807,9 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
     }
 
-    // Special case: image needs alt text as child
+    // Special case: image needs alt text as child (but NOT for HtmlInline, i.e. sized images)
     if node_type == "image"
+        && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
         && let Some(alt) = json["attrs"]["alt"].as_str()
         && !alt.is_empty()
     {
@@ -1327,5 +1408,89 @@ mod tests {
         let doc = markdown_to_prosemirror(&md);
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "table");
+    }
+
+    #[test]
+    fn test_image_basic() {
+        let md = "![photo](http://example.com/img.png)\n";
+        let doc = markdown_to_prosemirror(md);
+        let content = &doc["content"][0]; // paragraph
+        let img = &content["content"][0];
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["attrs"]["src"], "http://example.com/img.png");
+        assert_eq!(img["attrs"]["alt"], "photo");
+    }
+
+    #[test]
+    fn test_image_with_dimensions_pm_to_md() {
+        // PM JSON with width/height should serialize as HTML <img> tag
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {
+                        "src": "/blob/abc123",
+                        "alt": "my photo",
+                        "width": 400,
+                        "height": 300
+                    }
+                }]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert!(md.contains("<img"), "Should contain <img tag: {md}");
+        assert!(md.contains("src=\"/blob/abc123\""), "Should have src: {md}");
+        assert!(md.contains("alt=\"my photo\""), "Should have alt: {md}");
+        assert!(md.contains("width=\"400\""), "Should have width: {md}");
+        assert!(md.contains("height=\"300\""), "Should have height: {md}");
+    }
+
+    #[test]
+    fn test_image_without_dimensions_uses_standard_syntax() {
+        // PM JSON without width/height should use standard markdown ![alt](src)
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {
+                        "src": "/blob/abc123",
+                        "alt": "photo"
+                    }
+                }]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert!(
+            md.contains("![photo](/blob/abc123)"),
+            "Should use standard syntax: {md}"
+        );
+        assert!(!md.contains("<img"), "Should NOT contain <img tag: {md}");
+    }
+
+    #[test]
+    fn test_image_with_dimensions_roundtrip() {
+        // HTML <img> tag with dimensions should roundtrip through PM JSON
+        let md = "<img src=\"/blob/abc\" alt=\"pic\" width=\"200\" height=\"150\" />\n";
+        let doc = markdown_to_prosemirror(md);
+
+        // Should parse as image node with dimensions
+        let content = &doc["content"];
+        // The <img> may be wrapped in a paragraph
+        let img = if content[0]["type"] == "paragraph" {
+            &content[0]["content"][0]
+        } else {
+            &content[0]
+        };
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["attrs"]["src"], "/blob/abc");
+        assert_eq!(img["attrs"]["alt"], "pic");
+        assert_eq!(img["attrs"]["width"], 200);
+        assert_eq!(img["attrs"]["height"], 150);
     }
 }

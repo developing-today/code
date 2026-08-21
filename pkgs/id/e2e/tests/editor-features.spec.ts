@@ -1589,3 +1589,206 @@ test.describe("Tables", () => {
     await expect(cells.nth(1)).toContainText("Red");
   });
 });
+
+// =============================================================================
+// Phase 2 Part 4: Image Alt-Text Editing
+// =============================================================================
+
+test.describe("Image Alt-Text", () => {
+  test("image nodeView renders and shows alt-text popover on click", async ({
+    page,
+    baseURL,
+  }) => {
+    // Create a .md file with an image node
+    const mdName = `alt-text-test-${Date.now()}.md`;
+
+    // First create the file
+    const newResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(newResp.ok()).toBeTruthy();
+
+    // Save with an image node that has alt text
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "image",
+                  attrs: {
+                    src: "/blob/fakehash?filename=test.png",
+                    alt: "original alt",
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Load the page
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({
+      timeout: 10_000,
+    });
+    await waitForEditorReady(page);
+
+    // Verify image renders inside the custom nodeView figure wrapper
+    const figure = page.locator("#editor .ProseMirror figure.pm-image-view");
+    await expect(figure).toBeVisible({ timeout: 10_000 });
+
+    // Click the image to show the alt-text popover
+    await figure.click();
+
+    // Verify the popover appears
+    const popover = page.locator(".pm-image-popover");
+    await expect(popover).toBeVisible({ timeout: 5_000 });
+
+    // Verify the alt-text input has the correct value
+    const input = popover.locator(".pm-image-popover-input");
+    await expect(input).toHaveValue("original alt");
+  });
+});
+
+// =============================================================================
+// Phase 2 Part 5: Image Resize
+// =============================================================================
+
+test.describe("Image Resize", () => {
+  test("image with dimensions roundtrips through save and reload", async ({
+    page,
+    baseURL,
+  }) => {
+    // Create a .md file with an image that has width/height
+    const mdName = `resize-test-${Date.now()}.md`;
+
+    const newResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(newResp.ok()).toBeTruthy();
+
+    // Save with an image node that has explicit dimensions
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        name: mdName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "image",
+                  attrs: {
+                    src: "/blob/fakehash?filename=sized.png",
+                    alt: "sized image",
+                    width: 300,
+                    height: 200,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+
+    // Load the page
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({
+      timeout: 10_000,
+    });
+    await waitForEditorReady(page);
+
+    // The image should render with the figure wrapper
+    const figure = page.locator("#editor .ProseMirror figure.pm-image-view");
+    await expect(figure).toBeVisible({ timeout: 10_000 });
+
+    // Verify resize handles are present (visible on hover)
+    const handles = figure.locator(".pm-image-resize-handle");
+    await expect(handles).toHaveCount(4);
+
+    // Check that the image has the correct inline styles for dimensions
+    const img = figure.locator("img.pm-image");
+    await expect(img).toBeVisible();
+    await expect(img).toHaveCSS("width", "300px");
+    await expect(img).toHaveCSS("height", "200px");
+  });
+});
+
+// =============================================================================
+// Phase 2 Part 6: Image Browser
+// =============================================================================
+
+test.describe("Image Browser", () => {
+  test("image browser API returns uploaded images", async ({
+    page,
+    baseURL,
+  }) => {
+    // Upload an image first
+    const PIXEL_PNG = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const filename = `browser-test-${Date.now()}.png`;
+    const uploadResp = await page.request.post(`${baseURL}/api/upload`, {
+      multipart: {
+        file: {
+          name: filename,
+          mimeType: "image/png",
+          buffer: PIXEL_PNG,
+        },
+      },
+    });
+    expect(uploadResp.ok()).toBeTruthy();
+
+    // Query the images API
+    const imagesResp = await page.request.get(`${baseURL}/api/images`);
+    expect(imagesResp.ok()).toBeTruthy();
+
+    const images = (await imagesResp.json()) as Array<{
+      hash: string;
+      name: string;
+      url: string;
+    }>;
+    expect(Array.isArray(images)).toBeTruthy();
+
+    // The uploaded image should be in the list
+    const found = images.find((img) => img.name === filename);
+    expect(found).toBeTruthy();
+    expect(found?.url).toMatch(/^\/blob\//);
+  });
+
+  test("browse images button visible in toolbar", async ({
+    page,
+    baseURL,
+  }) => {
+    // Create a markdown file to get the toolbar
+    const mdName = `browser-btn-${Date.now()}.md`;
+    const newResp = await page.request.post(`${baseURL}/api/new`, {
+      data: { name: mdName },
+    });
+    expect(newResp.ok()).toBeTruthy();
+
+    await page.goto(`/edit/${encodeURIComponent(mdName)}`);
+    await expect(page.locator("#editor-container")).toBeVisible({
+      timeout: 10_000,
+    });
+    await waitForEditorReady(page);
+
+    // The browse images button should be in the menubar
+    // It uses the label "🖼"
+    const menubar = page.locator("#editor .ProseMirror-menubar");
+    await expect(menubar).toBeVisible();
+    // Check that the button text is present somewhere in the toolbar
+    await expect(menubar.locator("text=🖼")).toBeVisible({ timeout: 5_000 });
+  });
+});

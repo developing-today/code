@@ -54,9 +54,11 @@
 | **VLANs** | 802.1Q, up to 4094 VLANs |
 | **Private VLAN** | Not supported in SONiC (as of 2024) |
 | **Voice VLAN** | Not natively supported (use LLDP-MED + VLAN assignment) |
+| **Protocol-based VLAN** | No — not supported in SONiC |
 | **Trunking** | 802.1Q tagged trunks, native VLAN (PVID), allowed VLAN filtering |
 | **Trunk Negotiation** | Manual only (no DTP — DTP is Cisco proprietary) |
 | **STP** | PVST+ and RSTP supported in SONiC; MSTP partial/limited |
+| **STP convergence** | RSTP: ~1-3s typical |
 | **Storm Control** | Yes (broadcast/multicast/unknown-unicast, per-port, kbps/percent) |
 | **IGMP Snooping** | Yes (v1/v2/v3) |
 | | |
@@ -67,6 +69,8 @@
 | **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port), L3+L4; configurable via SONiC CLI |
 | **Symmetric Hashing** | Yes (configurable in SONiC for L3/L4) |
 | **Cross-Stack LAG** | N/A (no stacking) |
+| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution within PortChannel) |
+| **Min-links** | Supported — configurable minimum active members before PortChannel goes down (SONiC PortChannel min-links) |
 | **LAG Latency Impact** | Negligible (~0ns additional — hash computed in ASIC pipeline) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -108,6 +112,7 @@
 | **IP Source Guard** | Not supported in SONiC (as of 2024) |
 | **MACsec (802.1AE)** | Yes (SONiC MACsec support added 2022; requires capable optics/DACs) |
 | **Control Plane Policing** | Yes (CoPP — built into SONiC) |
+| **Port security** | Not typical — DC leaf fabric environment; MAC limiting not natively supported in SONiC |
 | | |
 | **— Monitoring —** | |
 | **SNMP** | v1, v2c, v3 |
@@ -118,6 +123,7 @@
 | **gNMI** | Yes (OpenConfig gNMI telemetry) |
 | **Syslog** | Yes (remote syslog configurable) |
 | **NTP** | Yes |
+| **DNS** | Yes (Linux system resolver — SONiC runs on Debian Linux) |
 | **Stacking** | No (not applicable — spine-class switch, use MC-LAG for redundancy) |
 
 ---
@@ -178,6 +184,7 @@
 | **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
 | **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
 | **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
+| **STP convergence** | RSTP: ~1-3s typical; MSTP: ~1-5s typical |
 | **Storm Control** | Yes (broadcast and multicast storm control) |
 | **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups) |
 | **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
@@ -191,6 +198,8 @@
 | **L4 (port-based) Hash** | Not documented in TIPS1272 (hash is L2/L3 based) |
 | **Symmetric Hashing** | Not explicitly documented |
 | **Cross-Stack LAG** | Yes (in stacking mode, LAGs can span stacked switches) |
+| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution) |
+| **Min-links** | Supported — configurable minimum active members before LAG goes down |
 | **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -252,6 +261,7 @@
 | **IP Source Guard** | Not documented |
 | **MACsec (802.1AE)** | Not supported |
 | **Control Plane Policing** | Not documented |
+| **Port security** | Not typical — DC TOR fabric environment |
 | | |
 | **— Monitoring —** | |
 | **SNMP** | v1, v3 |
@@ -261,6 +271,7 @@
 | **LLDP** | Yes |
 | **Syslog** | Yes (remote logging) |
 | **NTP** | Yes |
+| **DNS** | Yes (DNS client for management lookups) |
 | **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
 | **Netconf** | Yes (XML) |
 | | |
@@ -331,6 +342,7 @@
 | **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
 | **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
 | **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
+| **STP convergence** | RSTP: ~1-3s typical; MSTP: ~1-5s typical |
 | **Storm Control** | Yes (broadcast and multicast storm control) |
 | **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups) |
 | **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
@@ -344,6 +356,8 @@
 | **L4 (port-based) Hash** | Not documented in TIPS1272 (hash is L2/L3 based) |
 | **Symmetric Hashing** | Not explicitly documented |
 | **Cross-Stack LAG** | Yes (in stacking mode, LAGs can span stacked switches) |
+| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution) |
+| **Min-links** | Supported — configurable minimum active members before LAG goes down |
 | **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -406,6 +420,7 @@
 | **IP Source Guard** | Not documented |
 | **MACsec (802.1AE)** | Not supported |
 | **Control Plane Policing** | Not documented |
+| **Port security** | Not typical — DC TOR fabric environment |
 | | |
 | **— Monitoring —** | |
 | **SNMP** | v1, v3 |
@@ -415,6 +430,7 @@
 | **LLDP** | Yes |
 | **Syslog** | Yes (remote logging) |
 | **NTP** | Yes |
+| **DNS** | Yes (DNS client for management lookups) |
 | **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
 | **Netconf** | Yes (XML) |
 | | |
@@ -486,6 +502,7 @@
 | **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
 | **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
 | **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
+| **STP convergence** | RSTP: ~1-3s typical; MSTP: ~1-5s typical |
 | **Storm Control** | Yes (broadcast and multicast storm control) |
 | **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups, IGMP relay) |
 | **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
@@ -499,6 +516,8 @@
 | **L4 (port-based) Hash** | Not documented in TIPS0842 (hash is L2/L3 based) |
 | **Symmetric Hashing** | Not explicitly documented |
 | **Cross-Stack LAG** | N/A (no stacking support on G8316) |
+| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution) |
+| **Min-links** | Supported — configurable minimum active members before LAG goes down |
 | **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -562,6 +581,7 @@
 | **IP Source Guard** | Not documented |
 | **MACsec (802.1AE)** | Not supported |
 | **Control Plane Policing** | Yes (CoPP — listed in QoS features, TIPS0842) |
+| **Port security** | Not typical — DC spine/aggregation fabric environment |
 | | |
 | **— Monitoring —** | |
 | **SNMP** | v1, v2, v3 |
@@ -571,6 +591,7 @@
 | **LLDP** | Yes |
 | **Syslog** | Yes (remote logging) |
 | **NTP** | Yes |
+| **DNS** | Yes (DNS client for management lookups) |
 | **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
 | **Netconf** | Yes (XML) |
 | | |
@@ -659,6 +680,7 @@
 | **Trunking** | 802.1Q tagged trunks |
 | **Trunk Negotiation** | Manual (no DTP) |
 | **STP** | STP (802.1D), RSTP (802.1w); MSTP varies by firmware version |
+| **STP convergence** | RSTP: ~1-3s typical (Ethernet mode) |
 | **Storm Control** | Yes (broadcast/multicast) |
 | **IGMP Snooping** | Yes |
 | **LLDP** | Yes |
@@ -679,6 +701,8 @@
 | **Max LAGs / Ports per LAG** | Varies by firmware (typical: up to 64 LAGs) |
 | **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) — varies by MLNX-OS version |
 | **Symmetric Hashing** | Supported in later MLNX-OS versions |
+| **LAG failover** | <50 ms with LACP (Ethernet mode; near-instantaneous redistribution) |
+| **Min-links** | Not documented for SwitchX-2 |
 | **LAG Latency Impact** | Negligible (hardware hash in ASIC) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -715,6 +739,7 @@
 | **Dynamic ARP Inspection** | Not documented |
 | **MACsec (802.1AE)** | Not supported on SwitchX-2 |
 | **Control Plane Policing** | Yes (CoPP — per MLNX-OS user manual) |
+| **Port security** | N/A — HPC/DC fabric environment |
 | | |
 | **— Monitoring —** | |
 | **SNMP** | v1, v2c, v3 |
@@ -723,6 +748,7 @@
 | **LLDP** | Yes (Ethernet mode) |
 | **Syslog** | Yes |
 | **NTP** | Yes |
+| **DNS** | Yes (management resolver via MLNX-OS) |
 | **PTP** | Not documented for SX6036 |
 | **IB Diagnostics** | ibdiagnet, ibstat, ibswitches — standard IB tools; integrated in UFM |
 | | |
@@ -795,6 +821,7 @@
 | **Trunking** | 802.1Q tagged trunks |
 | **Trunk Negotiation** | Manual (no DTP — Arista does not use Cisco DTP) |
 | **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s), RPVST+ (Rapid Per-VLAN Spanning Tree) |
+| **STP convergence** | RSTP/MSTP: ~1-3s typical; RPVST+: ~1-3s typical |
 | **Storm Control** | Yes (broadcast, multicast, unknown unicast; per-port rate limiting) |
 | **IGMP Snooping** | Yes (v1/v2/v3) |
 | **MLD Snooping** | Yes (IPv6 multicast) |
@@ -808,6 +835,8 @@
 | **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst TCP/UDP port); configurable, symmetric hashing available |
 | **Symmetric Hashing** | Yes (ensures same hash for bidirectional flows — critical for stateful monitoring) |
 | **Resilient Hashing** | Yes (minimizes flow redistribution when LAG membership changes) |
+| **LAG failover** | <50 ms with LACP fast timers (near-instantaneous redistribution) |
+| **Min-links** | Supported — configurable minimum active members before port-channel goes down (EOS lacp min-links) |
 | **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -855,6 +884,7 @@
 | **IP Source Guard** | Not documented for FM6000 |
 | **MACsec (802.1AE)** | Not supported (FM6000 ASIC limitation; MACsec introduced on later Arista platforms) |
 | **Control Plane Policing** | Yes (CoPP) |
+| **Port security** | Not typical — DC leaf/spine fabric environment |
 | | |
 | **— Monitoring —** | |
 | **SNMP** | v1, v2c, v3 |
@@ -867,6 +897,7 @@
 | **LLDP** | Yes |
 | **Syslog** | Yes |
 | **NTP** | Yes |
+| **DNS** | Yes (EOS system resolver for management lookups) |
 | **PTP** | Yes (IEEE 1588v2) |
 | | |
 | **— QoS —** | |
@@ -950,6 +981,8 @@
 | **Hash Modes** | L2, L3, L3+L4 (via xmit_hash_policy in Linux bonding) |
 | **Max Bonds** | Limited by port count (5 ports total: 2 SFP+ + 3 RJ45) |
 | **Cross-Speed Bonding** | Yes (balance-tlb handles 10G SFP+ + 1G RJ45 mixed speeds gracefully) |
+| **LAG failover** | <50 ms with Linux bonding driver (near-instantaneous link failover) |
+| **Min-links** | Supported — configurable via Linux bonding min_links parameter |
 | **LAG Latency Impact** | Negligible (Linux kernel bonding in software; DPAA may not offload bonded interfaces) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
@@ -1052,7 +1085,10 @@
 | | |
 | **— L2 Features —** | |
 | **VLANs** | Yes — via 802.1Q sub-interfaces on router ports (router-on-a-stick) or via HWIC-4ESW switchport VLANs |
+| **Protocol-based VLAN** | N/A (router — uses 802.1Q sub-interfaces for VLAN separation) |
 | **STP** | Only on HWIC-4ESW switch module (basic STP/RSTP); router interfaces do not participate in STP |
+| **STP convergence** | HWIC-4ESW: RSTP ~1-3s typical; router interfaces do not participate in STP |
+| **Trunk negotiation** | DTP supported on HWIC-4ESW switch module (Cisco proprietary) |
 | **LLDP** | No (CDP only on IOS 12.4/15.1 for ISR G1 — LLDP added in later IOS versions for ISR G2+) |
 | **CDP** | Yes |
 | **IGMP** | Yes (IGMP v1/v2/v3 for multicast routing; PIM-SM, PIM-DM, PIM-SSM) |
@@ -1064,6 +1100,8 @@
 | **Max Groups** | Limited by interface count (typically 1-2 with built-in ports + HWICs) |
 | **Max Ports per Group** | 8 (per Cisco EtherChannel standard) |
 | **Hash Modes** | src-dst-ip (default), src-ip, dst-ip, src-dst-mac (port-channel load-balance command) |
+| **LAG failover** | <50 ms with LACP fast timers |
+| **Min-links** | Supported (IOS `port-channel min-links` command) |
 | | |
 | **— MC-LAG / Multi-Chassis —** | |
 | **MC-LAG** | N/A — router, not a switch |
@@ -1107,6 +1145,7 @@
 | **DAI** | On HWIC-4ESW only |
 | **uRPF** | Yes (unicast Reverse Path Forwarding — anti-spoofing) |
 | **CoPP** | Yes (Control Plane Policing) |
+| **Port security** | Supported — MAC limit per port on HWIC-4ESW switch module |
 | **AAA** | Yes (RADIUS, TACACS+, local) |
 | **SSH** | Yes (v2 with crypto image) |
 | | |
@@ -1119,6 +1158,7 @@
 | **NTP** | Yes (client and server) |
 | **CDP** | Yes |
 | **EEM** | Yes (Embedded Event Manager — script-based event-driven automation) |
+| **DNS** | Yes (`ip name-server` — DNS client for hostname resolution) |
 
 ---
 
@@ -1162,7 +1202,10 @@
 | | |
 | **— L2 Features —** | |
 | **VLANs** | Yes — via 802.1Q sub-interfaces (router-on-a-stick); HWIC-4ESW adds switchport VLANs |
+| **Protocol-based VLAN** | N/A (router — uses 802.1Q sub-interfaces for VLAN separation) |
 | **STP** | Only on HWIC-4ESW |
+| **STP convergence** | HWIC-4ESW: RSTP ~1-3s typical; router interfaces do not participate in STP |
+| **Trunk negotiation** | DTP supported on HWIC-4ESW switch module (Cisco proprietary) |
 | **LLDP** | No (CDP only) |
 | **CDP** | Yes |
 | **Jumbo Frames** | No (FastEthernet, 1500 MTU) |
@@ -1170,6 +1213,8 @@
 | **— Link Aggregation —** | |
 | **EtherChannel** | Limited (only 2x FE built-in; possible but rarely useful at FastEthernet speeds) |
 | **LACP** | Yes (in IOS config) |
+| **LAG failover** | <50 ms with LACP fast timers |
+| **Min-links** | Supported (IOS `port-channel min-links` command) |
 | | |
 | **— MC-LAG —** | |
 | **MC-LAG** | N/A — router |
@@ -1203,6 +1248,7 @@
 | **ACLs** | Standard, extended, named, reflexive |
 | **uRPF** | Yes |
 | **CoPP** | Yes |
+| **Port security** | On HWIC-4ESW only (MAC limit per switchport) |
 | **AAA** | Yes (RADIUS, TACACS+, local) |
 | **SSH** | Yes (v2 with crypto image) |
 | | |
@@ -1214,6 +1260,7 @@
 | **NTP** | Yes |
 | **CDP** | Yes |
 | **EEM** | Yes |
+| **DNS** | Yes (`ip name-server` — DNS client for hostname resolution) |
 
 ---
 
@@ -1257,7 +1304,10 @@
 | | |
 | **— L2 Features —** | |
 | **VLANs** | Yes — integrated 4-port switch supports VLANs; inter-VLAN routing via BVI (Bridged Virtual Interface) |
+| **Protocol-based VLAN** | N/A (SOHO router — VLANs are port-based on integrated switch) |
 | **STP** | Yes (basic STP on integrated switch ports) |
+| **STP convergence** | 802.1D STP: ~30-50s (classic STP on integrated switch; no RSTP support on 881 integrated switch) |
+| **Trunk negotiation** | N/A (no DTP — integrated switch does not support trunk negotiation) |
 | **LLDP** | No (CDP only on ISR G1) |
 | **CDP** | Yes |
 | **IGMP Snooping** | Yes (on integrated switch) |
@@ -1265,6 +1315,8 @@
 | | |
 | **— Link Aggregation —** | |
 | **EtherChannel** | No (integrated switch does not support EtherChannel; WAN port is single FE) |
+| **LAG failover** | N/A (no LAG support on integrated switch) |
+| **Min-links** | N/A (no LAG support) |
 | | |
 | **— MC-LAG —** | |
 | **MC-LAG** | N/A — SOHO router |
@@ -1299,6 +1351,7 @@
 | **DHCP Snooping** | Yes (on integrated switch) |
 | **uRPF** | Yes |
 | **CoPP** | Yes |
+| **Port security** | Not documented for 881 integrated switch |
 | **AAA** | Yes (RADIUS, TACACS+, local) |
 | **SSH** | Yes (v2 with crypto image) |
 | | |
@@ -1310,6 +1363,7 @@
 | **NTP** | Yes |
 | **CDP** | Yes |
 | **EEM** | Yes |
+| **DNS** | Yes (`ip name-server` — DNS client for hostname resolution) |
 
 ---
 
@@ -1358,9 +1412,12 @@
 | VLANs | 802.1Q, up to 256 VLAN IDs |
 | Private VLAN | No |
 | Voice VLAN | Yes (LLDP-MED auto-voice) |
+| Protocol-based VLAN | No |
 | Q-in-Q (802.1ad) | No |
 | Trunking | 802.1Q tagged trunks, configurable native VLAN |
+| Trunk negotiation | Manual only (no DTP — not a Cisco device) |
 | STP | STP (802.1D), RSTP (802.1w); no MSTP |
+| STP convergence | RSTP: ~1-3s typical |
 | Storm control | Yes (broadcast / multicast / unknown-unicast, rate-based) |
 | IGMP snooping | v1 / v2 / v3 |
 | LLDP | Yes |
@@ -1373,6 +1430,8 @@
 | Max ports / group | 8 |
 | Hash modes | L2 (src/dst MAC), L3 (src/dst IP); no L4 hash |
 | Cross-stack LAG | N/A (no stacking) |
+| LAG failover | <50 ms with LACP |
+| Min-links | No |
 | | |
 | **— MC-LAG —** | |
 | MC-LAG | Not supported (no stacking, no multi-chassis protocol) |
@@ -1384,6 +1443,7 @@
 | Dynamic ARP inspection | No |
 | Port security | Yes (MAC limit / sticky MAC) |
 | MACsec (802.1AE) | No |
+| CoPP / CPU protection | No (smart-managed firmware — no CoPP feature) |
 | RADIUS / TACACS+ | RADIUS only (for 802.1X); no TACACS+ |
 | | |
 | **— Monitoring —** | |
@@ -1393,6 +1453,7 @@
 | RMON | Basic (groups 1, 2, 3, 9) |
 | Syslog | Yes |
 | NTP | Yes |
+| DNS | Yes (DNS client for management) |
 | CLI | No (web GUI only; no SSH/Telnet CLI) |
 
 ---
@@ -1442,9 +1503,12 @@
 | VLANs | 802.1Q, 256 groups, VLAN ID range 1-4094 |
 | Private VLAN | No |
 | Voice VLAN | Yes (OUI-based auto-detection) |
+| Protocol-based VLAN | No |
 | Q-in-Q (802.1ad) | No |
 | Trunking | 802.1Q tagged trunks, configurable PVID |
+| Trunk negotiation | Manual only (no DTP) |
 | STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
+| STP convergence | RSTP/MSTP: ~1-3s typical |
 | Storm control | Yes (broadcast / multicast / unknown-unicast, rate-based) |
 | IGMP snooping | v1 / v2 / v3, IGMP querier |
 | LLDP | Yes |
@@ -1457,6 +1521,8 @@
 | Max ports / group | 8 |
 | Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
 | Cross-stack LAG | N/A (no stacking) |
+| LAG failover | <50 ms with LACP |
+| Min-links | No |
 | | |
 | **— MC-LAG —** | |
 | MC-LAG | Not supported |
@@ -1477,6 +1543,7 @@
 | DoS protection | Yes (built-in DoS defend profiles) |
 | Port security | Yes (MAC limit) |
 | MACsec (802.1AE) | No |
+| CoPP / CPU protection | No (L2+ switch — no CoPP feature) |
 | RADIUS | Yes |
 | TACACS+ | Yes |
 | | |
@@ -1487,6 +1554,7 @@
 | RMON | Yes (groups 1, 2, 3, 9) |
 | Syslog | Yes |
 | NTP | Yes |
+| DNS | Yes (DNS client for management) |
 | CLI | Yes (Telnet, SSH) |
 
 ---
@@ -1540,9 +1608,12 @@
 | VLANs | 802.1Q, up to 4094 VLAN IDs |
 | Private VLAN | No (port isolation per-port only) |
 | Voice VLAN | Yes (OUI-based) |
+| Protocol-based VLAN | No |
 | Q-in-Q (802.1ad) | No |
 | Trunking | 802.1Q tagged trunks, configurable PVID |
+| Trunk negotiation | Manual only (no DTP) |
 | STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
+| STP convergence | RSTP/MSTP: ~1-3s typical |
 | Storm control | Yes (broadcast / multicast / unknown-unicast) |
 | IGMP snooping | v1 / v2 / v3, with fast-leave |
 | LLDP / LLDP-MED | Yes (auto-voice VLAN, PoE negotiation) |
@@ -1555,6 +1626,8 @@
 | Max ports / group | 8 |
 | Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
 | Cross-stack LAG | N/A (no stacking) |
+| LAG failover | <50 ms with LACP |
+| Min-links | No |
 | | |
 | **— MC-LAG —** | |
 | MC-LAG | Not supported |
@@ -1575,6 +1648,7 @@
 | IP source guard | Yes |
 | Port security | Yes (MAC limit, sticky MAC) |
 | MACsec (802.1AE) | No |
+| CoPP / CPU protection | Not supported |
 | RADIUS | Yes |
 | TACACS+ | Yes |
 | | |
@@ -1585,6 +1659,7 @@
 | RMON | Yes (groups 1, 2, 3, 9) |
 | Syslog | Yes |
 | NTP | Yes |
+| DNS | DNS client supported |
 | CLI | Yes (SSH, Telnet) |
 | Omada SDN | Yes (cloud dashboard, topology view, per-switch stats) |
 
@@ -1634,9 +1709,12 @@
 | VLANs | 802.1Q, up to 256 VLAN IDs |
 | Private VLAN | No |
 | Voice VLAN | Yes (auto-voice via LLDP-MED / OUI) |
+| Protocol-based VLAN | No / Not supported |
 | Q-in-Q (802.1ad) | No |
 | Trunking | 802.1Q tagged trunks, configurable native VLAN |
+| Trunk negotiation | Manual only (no DTP) |
 | STP | STP (802.1D), RSTP (802.1w); no MSTP |
+| STP convergence | RSTP: ~1-3s typical |
 | Storm control | Yes (broadcast / multicast / unknown-unicast) |
 | IGMP snooping | v1 / v2 |
 | LLDP | Yes |
@@ -1649,6 +1727,8 @@
 | Max ports / group | 8 |
 | Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
 | Cross-stack LAG | Yes (when stacked, LAG members can span units) |
+| LAG failover | <50 ms with LACP |
+| Min-links | Not supported |
 | | |
 | **— MC-LAG —** | |
 | MC-LAG | Not supported (stacking is single-chassis logical; no independent-chassis MC-LAG) |
@@ -1659,6 +1739,7 @@
 | DHCP snooping | Yes (basic) |
 | Port security | Yes (MAC limit / lockdown) |
 | MACsec (802.1AE) | No |
+| CoPP / CPU protection | Not supported |
 | RADIUS | Yes |
 | TACACS+ | No (2007-era Dell firmware; RADIUS only) |
 | SSH | Yes (v1/v2) |
@@ -1670,6 +1751,7 @@
 | RMON | Yes (groups 1, 2, 3, 9) |
 | Syslog | Yes |
 | NTP | Yes |
+| DNS | DNS client supported |
 | CLI | Yes (console serial, Telnet, SSH) |
 
 ---
@@ -1719,10 +1801,13 @@
 | Max active VLANs | 4094 |
 | Private VLAN | Yes (community, isolated) |
 | Voice VLAN | Yes (auto via LLDP-MED / CDP) |
+| Protocol-based VLAN | No |
 | Q-in-Q | No |
 | Trunking | 802.1Q tagged, native VLAN configurable, general/access/trunk modes |
+| Trunk negotiation | Manual only (no DTP — Cisco Small Business line does not support DTP) |
 | STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
 | STP instances | MSTP: 8 instances |
+| STP convergence | RSTP: ~1-3s; MSTP: ~1-5s |
 | BPDU guard / root guard | Yes / Yes |
 | Storm control | Yes (broadcast/multicast/unknown-unicast, rate-based per port) |
 | IGMP snooping | v1/v2/v3 with querier |
@@ -1738,6 +1823,8 @@
 | Max ports per LAG | 8 |
 | Load-balance hash | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) |
 | Cross-stack LAG | N/A (no stacking) |
+| LAG failover | <50 ms with LACP |
+| Min-links | Not supported |
 | | |
 | **— MC-LAG —** | |
 | MC-LAG | Not supported |

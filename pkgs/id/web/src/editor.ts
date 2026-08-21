@@ -32,6 +32,8 @@ import { createActiveLinePlugin } from "./active-line";
 import { createCursorPlugin, type SendCursorFn } from "./cursors";
 import { createGotoLinePlugin } from "./goto-line";
 import { createSyntaxHighlightPlugin } from "./highlight";
+import { openImageBrowser } from "./image-browser";
+import { ImageNodeView } from "./image-node-view";
 import { createImageUploadPlugin } from "./image-upload";
 import { createIndentPlugin } from "./indent";
 import { createSearchPlugins } from "./search-panel";
@@ -48,7 +50,43 @@ export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "bin
  * Extends prosemirror-schema-basic with strikethrough mark, task list nodes, and table nodes.
  */
 export const richSchema = new Schema({
-  nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block").append({
+  nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block")
+    .update("image", {
+      inline: true,
+      group: "inline",
+      draggable: true,
+      attrs: {
+        src: {},
+        alt: { default: null },
+        title: { default: null },
+        width: { default: null },
+        height: { default: null },
+      },
+      parseDOM: [
+        {
+          tag: "img[src]",
+          getAttrs(dom) {
+            const el = dom as HTMLImageElement;
+            return {
+              src: el.getAttribute("src"),
+              alt: el.getAttribute("alt"),
+              title: el.getAttribute("title"),
+              width: el.getAttribute("width") ? Number(el.getAttribute("width")) : null,
+              height: el.getAttribute("height") ? Number(el.getAttribute("height")) : null,
+            };
+          },
+        },
+      ],
+      toDOM(node) {
+        const attrs: Record<string, string> = { src: node.attrs.src };
+        if (node.attrs.alt) attrs.alt = node.attrs.alt;
+        if (node.attrs.title) attrs.title = node.attrs.title;
+        if (node.attrs.width) attrs.width = String(node.attrs.width);
+        if (node.attrs.height) attrs.height = String(node.attrs.height);
+        return ["img", attrs];
+      },
+    })
+    .append({
     task_list: {
       group: "block",
       content: "task_list_item+",
@@ -340,6 +378,15 @@ export function initEditor(
         })
       : null;
 
+    // Create "Browse images" menu item
+    const browseImages = new MenuItem({
+      title: "Browse uploaded images",
+      label: "🖼",
+      run(state, _dispatch, edView) {
+        openImageBrowser(edView, editorSchema);
+      },
+    });
+
     // Build flattened menu structure:
     // Row 1: inline formatting (bold, italic, code, strikethrough, link)
     // Row 2: block types (paragraph, code, H1-H6) + undo/redo
@@ -353,6 +400,7 @@ export function initEditor(
         toggleStrikethrough,
         menuItems.toggleLink,
         menuItems.insertImage,
+        browseImages,
       ]),
       // Block types flattened + undo/redo
       cut([makeParagraph, makeCodeBlock, ...makeHeadings, undoItem, redoItem]),
@@ -478,6 +526,10 @@ export function initEditor(
             return true;
           },
         };
+      },
+      // Custom nodeView for images: alt-text popover + resize handles
+      image(node: Node, imgView: EditorView, getPos: () => number | undefined) {
+        return new ImageNodeView(node, imgView, getPos);
       },
     },
     dispatchTransaction(transaction: Transaction) {

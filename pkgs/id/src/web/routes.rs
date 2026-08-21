@@ -230,6 +230,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/hard-delete", post(hard_delete_handler))
         // Image upload API
         .route("/api/upload", post(upload_handler))
+        // Image listing API
+        .route("/api/images", get(images_list_handler))
         // Tag REST API
         .route(
             "/api/tags",
@@ -922,6 +924,15 @@ struct UploadResponse {
     url: String,
 }
 
+/// Entry in the image listing response.
+#[derive(Debug, Serialize)]
+struct ImageEntry {
+    hash: String,
+    name: String,
+    url: String,
+    size: u64,
+}
+
 /// Request body for renaming a file.
 #[derive(Debug, Deserialize)]
 struct RenameRequest {
@@ -1324,6 +1335,66 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         url,
     })
     .into_response()
+}
+
+/// List all uploaded images.
+///
+/// Scans blob tags for entries with image content-type metadata.
+/// Returns a JSON array of `ImageEntry` objects.
+async fn images_list_handler(State(state): State<AppState>) -> Response {
+    use futures_lite::StreamExt;
+
+    let mut images: Vec<ImageEntry> = Vec::new();
+
+    // List all tags (named blobs) and filter to those with image content-types
+    let mut tags_stream = match state.store.tags().list().await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!("[routes] Failed to list tags for images: {}", err);
+            return Json(images).into_response();
+        }
+    };
+    while let Some(Ok(tag_info)) = tags_stream.next().await {
+        let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+        let hash_str = tag_info.hash.to_string();
+
+        // Skip internal tags
+        if crate::tags::is_internal_tag(&name) {
+            continue;
+        }
+
+        // Check content-type metadata via tag store
+        let ct_tags = state
+            .tag_store
+            .get_by_key(
+                &state.tag_store.global,
+                name.as_bytes(),
+                b"content-type",
+            )
+            .await
+            .unwrap_or_default();
+
+        let ct = ct_tags
+            .first()
+            .and_then(|t| t.value.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if !ALLOWED_IMAGE_TYPES.contains(&ct) {
+            continue;
+        }
+
+        let url = format!("/blob/{hash_str}?filename={name}");
+
+        images.push(ImageEntry {
+            hash: hash_str,
+            name,
+            url,
+            size: 0, // Size not readily available; browser doesn't need it
+        });
+    }
+
+    Json(images).into_response()
 }
 
 /// Rename a file by changing its tag name.

@@ -1254,3 +1254,225 @@ img.ProseMirror-separator {
 .ProseMirror table.pm-table tr:hover th {
   background: oklch(var(--bc) / 0.03);
 }
+
+/* ── Image NodeView (alt-text + resize) ── */
+
+.ProseMirror .pm-image-view {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: outline 0.15s;
+}
+
+.ProseMirror .pm-image-view:hover {
+  outline: 2px solid oklch(var(--p) / 0.3);
+}
+
+.ProseMirror .pm-image-view.ProseMirror-selectednode {
+  outline: 2px solid oklch(var(--p) / 0.8);
+}
+
+.ProseMirror .pm-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* Resize handles */
+.ProseMirror .pm-image-resize-handle {
+  display: none;
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: oklch(var(--p));
+  border: 1px solid oklch(var(--b1));
+  border-radius: 2px;
+  z-index: 5;
+}
+
+.ProseMirror .pm-image-view:hover .pm-image-resize-handle,
+.ProseMirror .pm-image-view.ProseMirror-selectednode .pm-image-resize-handle {
+  display: block;
+}
+
+.ProseMirror .pm-image-resize-nw { top: -5px; left: -5px; cursor: nw-resize; }
+.ProseMirror .pm-image-resize-ne { top: -5px; right: -5px; cursor: ne-resize; }
+.ProseMirror .pm-image-resize-sw { bottom: -5px; left: -5px; cursor: sw-resize; }
+.ProseMirror .pm-image-resize-se { bottom: -5px; right: -5px; cursor: se-resize; }
+
+.ProseMirror .pm-image-view.pm-image-resizing {
+  outline: 2px solid oklch(var(--p));
+}
+
+/* Alt-text popover */
+.pm-image-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: oklch(var(--b1));
+  border: 1px solid oklch(var(--bc) / 0.2);
+  border-radius: 6px;
+  padding: 0.5em 0.75em;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.15);
+  z-index: 20;
+  margin-bottom: 6px;
+}
+
+.pm-image-popover-label {
+  font-size: 0.8em;
+  color: oklch(var(--bc) / 0.6);
+}
+
+.pm-image-popover-input {
+  font-size: 0.85em;
+  padding: 0.2em 0.4em;
+  border: 1px solid oklch(var(--bc) / 0.2);
+  border-radius: 4px;
+  background: oklch(var(--b2));
+  color: oklch(var(--bc));
+  min-width: 200px;
+}
+
+.pm-image-popover-input:focus {
+  outline: 2px solid oklch(var(--p) / 0.5);
+}
+
+.pm-image-popover-size {
+  font-size: 0.75em;
+  color: oklch(var(--bc) / 0.4);
+}
+
+/* ── Image Browser Dialog ── */
+
+.pm-image-browser-overlay {
+  position: fixed;
+  inset: 0;
+  background: oklch(0 0 0 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pm-image-browser-dialog {
+  background: oklch(var(--b1));
+  border-radius: 12px;
+  width: min(90vw, 700px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px oklch(0 0 0 / 0.25);
+}
+
+.pm-image-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1em 1.25em;
+  border-bottom: 1px solid oklch(var(--bc) / 0.1);
+}
+
+.pm-image-browser-title {
+  margin: 0;
+  font-size: 1.1em;
+}
+
+.pm-image-browser-close {
+  background: none;
+  border: none;
+  font-size: 1.2em;
+  cursor: pointer;
+  color: oklch(var(--bc) / 0.5);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+}
+
+.pm-image-browser-close:hover {
+  background: oklch(var(--bc) / 0.1);
+}
+
+.pm-image-browser-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1em;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.75em;
+  min-height: 150px;
+}
+
+.pm-image-browser-card {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  display: flex;
+  flex-direction: column;
+  background: oklch(var(--b2));
+}
+
+.pm-image-browser-card:hover {
+  border-color: oklch(var(--bc) / 0.2);
+}
+
+.pm-image-browser-card.selected {
+  border-color: oklch(var(--p));
+}
+
+.pm-image-browser-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+.pm-image-browser-name {
+  padding: 0.3em 0.5em;
+  font-size: 0.75em;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  color: oklch(var(--bc) / 0.6);
+}
+
+.pm-image-browser-footer {
+  padding: 0.75em 1.25em;
+  border-top: 1px solid oklch(var(--bc) / 0.1);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pm-image-browser-insert {
+  padding: 0.4em 1.2em;
+  background: oklch(var(--p));
+  color: oklch(var(--pc));
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+
+.pm-image-browser-insert:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pm-image-browser-insert:not(:disabled):hover {
+  opacity: 0.9;
+}
+
+.pm-image-browser-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: oklch(var(--bc) / 0.4);
+  padding: 2em 1em;
+  font-style: italic;
+}
