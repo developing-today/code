@@ -265,6 +265,10 @@ rec {
       url = "github:anomalyco/opencode";
       # inputs.nixpkgs.follows = "nixpkgs-master";
     };
+    omasnap = {
+      url = "github:tobi/omasnap";
+      flake = false;
+    };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
     id-nixpkgs.follows = "nixpkgs-master";
     id-systems.follows = "systems";
