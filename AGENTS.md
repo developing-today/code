@@ -52,6 +52,18 @@ git update-index --no-skip-worktree doc/hardware
 The script prints that command whenever it sets the flag. The same pattern links
 `hardware-doc/archive -> ../repo-archive` when the archive exists locally.
 
+### Archived artifacts
+
+An artifact moved into the archive leaves **three committed files** at its original path:
+a symlink standing in for it, a mandatory `*.ARCHIVED.md` placeholder, and a `*.ARCHIVED.link`.
+Symlinks route through the repo's own `archive/` link, so moving the archive means changing
+one symlink, not hundreds. `./scripts/init.sh --link-archived` in `hardware-doc` refreshes them.
+
+The placeholder is the contract and must always exist, carrying — or naming where to find —
+two or more independent re-acquisition URLs plus whatever sourcing is known. Detail may live
+in a directory-level record or the acquisition manifest instead; what is never acceptable is a
+fact missing with no pointer to it. Full rules in `doc/hardware/AGENTS.md`.
+
 ### Committing hardware research
 
 `doc/hardware`, `archive/`, `scratch/` (and the `doc/` variants) are symlinks into **other
@@ -75,12 +87,11 @@ all of it, so one commit covers both. (`git add .` stages only the directory you
 Commit freely in `archive/` and `scratch/` — including temporary or undecided material. An
 uncommitted artifact is the one that gets lost.
 
-### Do not disturb work you did not create
+### Don't overthink other agents' files
 
-These checkouts are shared between sessions. **Never** `git reset`, `git stash`,
-`git checkout -- <path>`, `git clean`, or delete files you did not create — in any of the
-three repositories. Another session may be mid-task, and uncommitted work is unrecoverable.
-If something is in the way, commit it or report it; do not clear it.
+`git add -A` and commit. It respects `.gitignore`, and sweeping up another session's
+in-progress files is harmless. Just don't `reset`, `stash`, `checkout --` or `clean` — those
+discard work irrecoverably — and avoid staging deletions in `archive/` unless they're renames.
 
 ## Web retrieval fallback
 
