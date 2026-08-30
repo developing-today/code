@@ -100,62 +100,103 @@ else
   fi
 fi
 
-# --- symlink ------------------------------------------------------------------
-# The repo tracks doc/hardware as the relative link ../../hardware-doc, which is correct
-# whenever the checkout sits directly beside hardware-doc. It is NOT correct inside a
-# linked worktree that lives somewhere else entirely (a common setup), because ../..
-# then resolves relative to the worktree's parent, not the real repo's parent.
+# --- symlink helper -----------------------------------------------------------
+# Both links below are committed in RELATIVE form, because that is correct for the
+# normal sibling layout and keeps every clone byte-identical to HEAD. The relative
+# form breaks only when a checkout lives somewhere that "../.." does not reach - most
+# often a linked worktree parked outside the repo parent. In that case we substitute
+# an ABSOLUTE path derived from the git common dir.
 #
-# So: prefer the tracked relative form when it actually resolves to $TARGET; otherwise
-# retarget to the absolute path derived from the git common dir, and mark the path
-# --skip-worktree so the local deviation does not show up as a modification forever.
-# (.gitignore cannot do this - it does not apply to tracked paths.)
-REL_DEFAULT="../../$DIR_NAME"
+# Substituting means the worktree now differs from HEAD, so we mark the path
+# --skip-worktree to stop it showing as a permanent modification.
+#
+#   .gitignore CANNOT do this. It only applies to untracked paths; a tracked file
+#   keeps reporting changes no matter what .gitignore says. --skip-worktree is the
+#   only thing that suppresses it.
+#
+# CAVEAT, and the reason we print the undo command: while --skip-worktree is set, git
+# will refuse to update that path. If the committed link target ever legitimately
+# changes upstream, a clone carrying the flag will NOT pick it up on pull, and merges
+# or checkouts touching it can fail with "Entry ... not uptodate". Clear it with:
+#
+#   git update-index --no-skip-worktree <path>
+#
+# We only ever set the flag when the relative default genuinely does not work here.
+#
+# ensure_link <repo-workdir> <path-relative-to-that-workdir> <relative-target> <absolute-target>
+ensure_link() {
+  local wd="$1" rel="$2" reltgt="$3" abstgt="$4"
+  local link="$wd/$rel"
 
-link_resolves_to_target() {
-  [ -L "$LINK_PATH" ] || return 1
-  [ -d "$LINK_PATH" ] || return 1
-  [ "$(cd "$LINK_PATH" && pwd -P)" = "$(cd "$TARGET" && pwd -P)" ]
-}
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    err "$rel exists and is not a symlink - refusing to replace it"
+    return 1
+  fi
+  mkdir -p "$(dirname "$link")"
 
-mkdir -p "$(dirname "$LINK_PATH")"
+  _resolves() { [ -L "$link" ] && [ -e "$link" ] && \
+                [ "$(cd "$link" && pwd -P)" = "$(cd "$abstgt" && pwd -P)" ]; }
 
-if [ -e "$LINK_PATH" ] && [ ! -L "$LINK_PATH" ]; then
-  err "$LINK_PATH exists and is not a symlink - refusing to replace it"
-  exit 1
-fi
-
-if link_resolves_to_target; then
-  ok "$LINK_REL -> $(readlink "$LINK_PATH")"
-else
-  # try the tracked relative default first, so most clones stay byte-identical to HEAD
-  ln -sfn "$REL_DEFAULT" "$LINK_PATH"
-  if link_resolves_to_target; then
-    ok "$LINK_REL -> $REL_DEFAULT"
+  if _resolves; then
+    ok "$rel -> $(readlink "$link")"
   else
-    ln -sfn "$TARGET" "$LINK_PATH"
-    if link_resolves_to_target; then
-      ok "$LINK_REL -> $TARGET  ${c_dim}(absolute: ../.. does not reach the target from here)${c_off}"
+    ln -sfn "$reltgt" "$link"
+    if _resolves; then
+      ok "$rel -> $reltgt"
     else
-      warn "$LINK_REL -> $TARGET  (does not resolve yet)"
+      ln -sfn "$abstgt" "$link"
+      if _resolves; then
+        ok "$rel -> $abstgt  ${c_dim}(absolute: $reltgt does not reach it from here)${c_off}"
+      else
+        warn "$rel -> $reltgt  (target missing; link left in relative form)"
+        ln -sfn "$reltgt" "$link"
+        return 0
+      fi
     fi
   fi
-fi
 
-# Suppress the diff if the link now differs from what HEAD records.
-if git -C "$WORKTREE_ROOT" ls-files --error-unmatch "$LINK_REL" >/dev/null 2>&1; then
-  if [ -n "$(git -C "$WORKTREE_ROOT" status --porcelain -- "$LINK_REL")" ]; then
-    git -C "$WORKTREE_ROOT" update-index --skip-worktree "$LINK_REL" 2>/dev/null \
-      && info "${c_dim}  marked --skip-worktree (undo: git update-index --no-skip-worktree $LINK_REL)${c_off}"
+  # Suppress the diff only if the path is tracked and now differs from HEAD.
+  if git -C "$wd" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    # Compare WORKTREE against INDEX only. Using `status` here would also fire for a
+    # merely-staged-but-uncommitted path, which is not a local deviation at all.
+    if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
+      git -C "$wd" update-index --skip-worktree "$rel" 2>/dev/null \
+        && info "${c_dim}  marked --skip-worktree; undo: git -C $wd update-index --no-skip-worktree $rel${c_off}"
+    fi
+  fi
+}
+
+# --- link 1: this repo -> hardware-doc ----------------------------------------
+ensure_link "$WORKTREE_ROOT" "$LINK_REL" "../../$DIR_NAME" "$TARGET"
+
+# --- link 2: hardware-doc/archive -> hardware-doc-archive ---------------------
+# The archive is a sibling of hardware-doc holding bulk artifacts moved out of it.
+# It is its own git repository but is normally unpublished/private because of its
+# size, so we only link to it when it already exists locally - we never clone it.
+#
+#   TO WIRE IN A CLONEABLE ARCHIVE REPO: give it a URL, and mirror the clone/update
+#   block used for hardware-doc above, e.g.
+#
+#     ARCHIVE_URL="${HARDWARE_DOC_ARCHIVE_URL:-}"
+#     [ -n "$ARCHIVE_URL" ] && [ ! -e "$ARCHIVE_DIR" ] && git clone "$ARCHIVE_URL" "$ARCHIVE_DIR"
+#
+#   Keep the same safety rules: fast-forward only, never touch a dirty checkout.
+ARCHIVE_DIR="$(dirname "$TARGET")/hardware-doc-archive"
+
+if [ -d "$TARGET/.git" ] || [ -d "$TARGET" ]; then
+  if [ -d "$ARCHIVE_DIR" ]; then
+    ensure_link "$TARGET" "archive" "../hardware-doc-archive" "$ARCHIVE_DIR"
+  else
+    info "${c_dim}archive absent: $ARCHIVE_DIR - skipping archive symlink${c_off}"
   fi
 fi
 
-# --- archive (informational) --------------------------------------------------
-ARCHIVE="$PARENT/hardware-doc-archive"
-if [ -d "$ARCHIVE" ]; then
-  ok "archive present: $ARCHIVE ($(du -sh "$ARCHIVE" 2>/dev/null | cut -f1))"
+# --- archive summary ----------------------------------------------------------
+if [ -d "$ARCHIVE_DIR" ]; then
+  ok "archive: $ARCHIVE_DIR ($(du -sh "$ARCHIVE_DIR" 2>/dev/null | cut -f1))"
 else
-  info "${c_dim}archive absent: $ARCHIVE${c_off}"
-  info "${c_dim}  bulk artifacts moved out of hardware-doc live there; *.ARCHIVED.md${c_off}"
-  info "${c_dim}  placeholders carry hashes and recovery URLs, so it is optional.${c_off}"
+  info "${c_dim}archive absent: $ARCHIVE_DIR${c_off}"
+  info "${c_dim}  Bulk artifacts moved out of hardware-doc live there. Every one leaves a${c_off}"
+  info "${c_dim}  *.ARCHIVED.md placeholder carrying size, SHA-256 and recovery URLs, so the${c_off}"
+  info "${c_dim}  archive is optional - its absence costs convenience, not information.${c_off}"
 fi

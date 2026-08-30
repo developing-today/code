@@ -36,6 +36,22 @@ PARENT="$(dirname "$ROOT")"     # $PARENT/hardware-doc  and  $PARENT/hardware-do
 Use `--git-common-dir`, not `--show-toplevel`: inside a linked worktree the toplevel is the
 worktree, whose parent is the wrong directory.
 
+`doc/hardware` is a **tracked symlink**, committed relative as `../../hardware-doc`, so a
+fresh clone gets a working link with nothing to run. Where that relative form cannot resolve
+— typically a worktree outside the repo parent — the init script substitutes an absolute
+path and marks the file `--skip-worktree`, because **`.gitignore` does not apply to tracked
+paths** and cannot suppress the resulting diff.
+
+While the flag is set git will not update that path, so if the committed target ever changes
+upstream a flagged clone will not pick it up. Undo with:
+
+```bash
+git update-index --no-skip-worktree doc/hardware
+```
+
+The script prints that command whenever it sets the flag. The same pattern links
+`hardware-doc/archive -> ../hardware-doc-archive` when the archive exists locally.
+
 ## Web retrieval fallback
 
 When retrieving public web content with `curl`, `wget`, Python HTTP clients, or similar tools:
