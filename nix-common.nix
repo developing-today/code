@@ -155,6 +155,12 @@ in
       fi
     fi
 
+    # hardware-doc: separate repo (developing-today/hardware-doc), symlinked at
+    # doc/hardware. Not a submodule and not committed here — it is ~440 MB.
+    if [ -x "$PWD/scripts/hardware-doc-init.sh" ]; then
+      "$PWD/scripts/hardware-doc-init.sh" || echo "hardware-doc-init: skipped (non-fatal)"
+    fi
+
     echo ""
     just --list
     echo ""

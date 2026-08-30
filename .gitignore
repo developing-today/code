@@ -119,3 +119,44 @@ pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
 **/codedb.snapshot
 *bfg-report/
+
+# --- doc/hardware: vendored upstream source trees ---
+# The build-artifact rules above (notably `**/main`, but also `**/build`, `**/out`,
+# `**/*.a`, `**/*.so`, `tags`, `result*`, `test.*`) are meant for this repo's own
+# Rust/C builds. They also match real, irreplaceable source files inside the hardware
+# research tree, which vendors upstream ESP-IDF projects where `main/` is the
+# application source directory, not a build output.
+#
+# Without these negations, `**/main` silently excludes the application source of every
+# vendored ESP-IDF project - main.c / main.cpp / user_config.h (pin definitions) /
+# Kconfig.projbuild - plus BlueKnob's entire ble/ and ui/ trees. Those files are the
+# only content in doc/hardware that cannot be re-downloaded from a vendor, so losing
+# them on clone is the worst possible failure mode.
+#
+# Negations must come last: the final matching pattern wins. Directories are negated
+# with a trailing slash because git cannot re-include a file whose parent directory is
+# itself excluded.
+!doc/hardware/**/main/
+!doc/hardware/**/build/
+!doc/hardware/**/out/
+!doc/hardware/**/*.a
+!doc/hardware/**/*.so
+!doc/hardware/**/tags
+!doc/hardware/**/result*
+!doc/hardware/**/test.*
+
+# hardware-doc is a separate repository (developing-today/hardware-doc), cloned to
+# <repo-parent>/hardware-doc by scripts/hardware-doc-init.sh. Its ~440 MB of content is
+# NOT committed here - that would make every clone of this repo ~6.5x larger.
+#
+# The symlink doc/hardware IS tracked (as ../../hardware-doc), so a fresh clone gets a
+# working link for the standard sibling layout without running anything.
+#
+# This entry is therefore inert for the tracked symlink itself - .gitignore does not
+# apply to already-tracked paths. It exists to stop the symlink's *contents* being
+# added if someone replaces the link with a real directory.
+#
+# hardware-doc-init.sh may retarget the link (worktrees resolve ../.. to the wrong
+# parent) and then marks it --skip-worktree, which is what actually suppresses the
+# local modification. To undo that: git update-index --no-skip-worktree doc/hardware
+doc/hardware/*
