@@ -237,9 +237,22 @@ fi
 # --- archive summary ----------------------------------------------------------
 if [ -d "$ARCHIVE_DIR" ]; then
   ok "archive: $ARCHIVE_DIR ($(du -sh "$ARCHIVE_DIR" 2>/dev/null | cut -f1))"
+  # Archived artifacts are stood in for by committed symlinks routed through
+  # hardware-doc's own archive/ link, so a checkout holding the archive behaves as
+  # though nothing was moved out. They are committed, so a fresh clone already has
+  # them; this only reports drift, and never repairs it silently.
+  if [ -x "$TARGET/tools/link_archived.py" ] && command -v python3 >/dev/null 2>&1; then
+    missing="$(cd "$TARGET" && python3 tools/link_archived.py 2>/dev/null | head -1)"
+    case "$missing" in
+      "would link 0 "*) : ;;
+      "would link "*)
+        info "${c_dim}  $missing - run: (cd $TARGET && python3 tools/link_archived.py --apply)${c_off}" ;;
+    esac
+  fi
 else
   info "${c_dim}archive absent: $ARCHIVE_DIR${c_off}"
   info "${c_dim}  Bulk artifacts moved out of hardware-doc live there. Every one leaves a${c_off}"
   info "${c_dim}  *.ARCHIVED.md placeholder carrying size, SHA-256 and recovery URLs, so the${c_off}"
+  info "${c_dim}  archive is optional. The artifact symlinks will dangle until it is present.${c_off}"
   info "${c_dim}  archive is optional - its absence costs convenience, not information.${c_off}"
 fi
