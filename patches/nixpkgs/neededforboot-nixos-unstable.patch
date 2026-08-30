@@ -1,0 +1,63 @@
+From 6a21e770120538984c68668d61dc98f07467bc61 Mon Sep 17 00:00:00 2001
+From: Rien Maertens <rien.maertens@posteo.be>
+Date: Fri, 14 Jan 2022 16:37:00 +0100
+Subject: [PATCH] nixos/networking: add option neededForBoot
+
+Adds an option neededForBoot which is default set to true (old
+behavior). If set to false, the network-address-${device} service
+doesn't set wanted-by and will not block booting if the
+device is not present.
+
+Fixes #154737
+Related to #155017
+
+Co-authored-by: Rien Maertens <rien.maertens@oosteo.be>
+Co-authored-by: rnhmjoj <rnhmjoj@inventati.org>
+Co-authored-by: Drewry Pope <drewrypope@gmail.com>
+---
+ nixos/modules/tasks/network-interfaces-scripted.nix | 6 +++---
+ nixos/modules/tasks/network-interfaces.nix          | 9 +++++++++
+ 2 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/nixos/modules/tasks/network-interfaces-scripted.nix b/nixos/modules/tasks/network-interfaces-scripted.nix
+index 7b96e1efc025..138ca7441b58 100644
+--- a/nixos/modules/tasks/network-interfaces-scripted.nix
++++ b/nixos/modules/tasks/network-interfaces-scripted.nix
+@@ -235,11 +235,11 @@ let
+           in
+           nameValuePair "network-addresses-${i.name}" {
+             description = "Address configuration of ${i.name}";
+-
+-            wantedBy =
++            wantedBy = mkIf i.neededForBoot (
+               deviceDependency i.name
+               ++ optional config.boot.isContainer "network.target"
+-              ++ optional (isDefaultGateway4 || isDefaultGateway6) "network-online.target";
++              ++ optional (isDefaultGateway4 || isDefaultGateway6) "network-online.target"
++            );
+             bindsTo = deviceDependency i.name;
+             partOf = [ "networking-scripted.target" ];
+             after = [
+diff --git a/nixos/modules/tasks/network-interfaces.nix b/nixos/modules/tasks/network-interfaces.nix
+index 06b38deff6b6..40eb1220da01 100644
+--- a/nixos/modules/tasks/network-interfaces.nix
++++ b/nixos/modules/tasks/network-interfaces.nix
+@@ -419,6 +419,15 @@ let
+             '';
+           };
+         };
++
++        neededForBoot = mkOption {
++          type = types.bool;
++          default = true;
++          description = ''
++            Whether to depend on the presence of this device on boot.
++            Set this to <literal>false</literal> if this is a pluggable ethernet device (like an Ethernet USB dongle).
++          '';
++        };
+       };
+ 
+       config = {
+-- 
+2.53.0
+

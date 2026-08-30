@@ -56,6 +56,7 @@ let
       openssl
 
       nix
+      nix-output-monitor # nom; used by lib/rebuild*.sh
       home-manager
       git
       sops

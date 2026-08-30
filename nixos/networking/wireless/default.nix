@@ -26,10 +26,9 @@
       #       useful for manual configuration
       secretsFile = config.sops.templates.wireless-secrets.path;
       allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
-      userControlled = {
-        enable = true;
-        group = "network";
-      };
+      # was { enable = true; group = "network"; }; now a plain bool, group fixed to wpa_supplicant
+      # NOTE: users needing control must be in the `wpa_supplicant` group now
+      userControlled = true;
       # whats extraConfig.update_config=1 do?
       extraConfig = ''
         update_config=1

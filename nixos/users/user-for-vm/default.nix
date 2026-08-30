@@ -17,6 +17,7 @@
       "docker"
       "video"
       "network"
+      "wpa_supplicant" # group for wpa_cli/wpa_gui control (was userControlled.group="network"; now fixed upstream)
       "kvm"
       "beep"
     ];

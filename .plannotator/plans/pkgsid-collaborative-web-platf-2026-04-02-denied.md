@@ -22,6 +22,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 **Priority**: Critical — current save is broken when collaboration is active
 
 ### Goals
+
 - Decouple sessions from content hashes (sessions persist across edits)
 - Fix `NewVersion` MSG type 7 in `collab.ts` (currently unhandled)
 - Name-first URL scheme: `/edit/{name}`, `/view/{name}`, `/hash/{hash}`, `/user/{pubkey}`
@@ -29,6 +30,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 - Auto-save on idle (debounced ~2s after last edit)
 
 ### Key Files
+
 - `pkgs/id/src/web/collab.rs` — server-side collab state
 - `pkgs/id/src/web/routes.rs` — HTTP route handlers, `save_handler`
 - `pkgs/id/web/src/collab.ts` — client-side WebSocket collab
@@ -43,12 +45,14 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 **Priority**: High — improves everyday editing experience
 
 ### Goals
+
 - GFM extensions: tables, strikethrough, task lists
 - Image alt-text support in rendered markdown
 - Image browser (list/pick from uploaded images)
 - Resize handles for images (future: pretext + 2D canvas)
 
 ### Key Files
+
 - `pkgs/id/src/web/templates.rs` — HTML rendering
 - `pkgs/id/web/src/main.ts` — editor UI
 
@@ -61,6 +65,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 **Priority**: High — foundation for ownership and permissions
 
 ### Goals
+
 - Binary key-value tags: null-separated pairs (explore escaping strategies)
 - Ownership model: first-created-wins, user namespaces
 - CLI flags: `--tags`, `--tags-json`, `--tags-json-file`
@@ -69,6 +74,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 - QR code generation: terminal, image file, and web display
 
 ### Key Files
+
 - `pkgs/id/src/web/identity.rs` — IdentityStore
 - `pkgs/id/src/identity.rs` — core identity logic
 - `pkgs/id/src/cli.rs` — CLI argument handling
@@ -82,12 +88,14 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 **Priority**: Medium — enables version history and document namespaces
 
 ### Goals
+
 - Client-scoped namespaces (not per-doc) for iroh-docs
 - ProseMirror as canonical storage format (upgrade on first edit, export back to markdown)
 - Version DAG with fork and merge support
 - Replace archive tags with proper versioning
 
 ### Key Files
+
 - `pkgs/id/src/web/collab.rs` — collab state management
 - iroh-docs integration files (TBD during phase doc creation)
 
@@ -100,6 +108,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 **Priority**: Medium — adds p2p sync, groups, and advanced collaboration
 
 ### Goals
+
 - Integrate p2panda core crates: core/net/auth/sync/encryption/spaces
 - Native groups with RBAC (role-based access control)
 - Streams: chatrooms, line-comments-in-PM-blobs, firehose
@@ -108,6 +117,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 - Offline editing with eventual consistency
 
 ### Key Files
+
 - New integration layer (TBD during phase doc creation)
 - `pkgs/id/src/web/collab.rs` — collab architecture updates
 
@@ -120,6 +130,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 **Priority**: Medium — polish and usability
 
 ### Goals
+
 - Sidebar tree navigation for documents
 - Drag-drop file upload
 - Folders via tags (virtual folder structure)
@@ -127,6 +138,7 @@ Transform `pkgs/id` web UI from a single-user markdown editor into a live collab
 - Mobile responsive layout
 
 ### Key Files
+
 - `pkgs/id/web/src/main.ts` — UI components
 - `pkgs/id/src/web/templates.rs` — layout templates
 - `pkgs/id/web/styles/` — CSS/styling
@@ -145,7 +157,6 @@ Phase 2 (Markdown Polish) ────┘                                       
 
 Phases 1 and 2 can proceed in parallel. Phase 3 depends on stable save/collab from Phase 1. Phases 4-6 are sequential.
 
-
 ---
 
 # Plan Feedback
@@ -153,6 +164,7 @@ Phases 1 and 2 can proceed in parallel. Phase 3 depends on stable save/collab fr
 I've reviewed this plan and have 1 piece of feedback:
 
 ## 1. Feedback on: "Phases 1 and 2 can proceed in parallel. Phase 3 depends on stable save/collab from Phase 1. Phases 4-6 are sequential."
+
 > this is accurate but don't overindex, try to focus on how to best and most thoroughly complete the phase and parts you are working on. use parallel if it will help in implementation for what you are working on to have something else done or midway. commit regularly.
 
 ---

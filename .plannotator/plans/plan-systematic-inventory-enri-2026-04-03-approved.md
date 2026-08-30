@@ -1,7 +1,7 @@
-
 # Plan: Systematic Inventory Enrichment
 
 ## Overview
+
 Enrich all 21 devices in `doc/inventory/routing-and-switching.md` with detailed power, latency, and feature data. Process one device at a time, commit after each, using a standard questions file and a device checklist file.
 
 ---
@@ -9,11 +9,13 @@ Enrich all 21 devices in `doc/inventory/routing-and-switching.md` with detailed 
 ## Phase 0: Create Framework Files
 
 ### Step 0.1 — Create Standard Questions File
+
 **File:** `doc/inventory/standard-attributes.md`
 
 Write a comprehensive list of attributes every device must answer. Organized by category:
 
 #### A. Power Draw
+
 1. System idle power (W) — no transceivers, minimal config
 2. System typical power (W) — normal operation, typical port utilization
 3. System max power (W) — all ports active, worst-case
@@ -29,6 +31,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 9. Power supply type (AC/DC, voltage range)
 
 #### B. Packet Latency
+
 1. Baseline switching latency — DAC-to-DAC, L2 forwarding, 64-byte frames
 2. Latency measurement method (cut-through vs store-and-forward, which mode?)
 3. Modifiers:
@@ -40,6 +43,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 5. ACL/QoS processing impact on latency
 
 #### C. L2 Feature Matrix
+
 1. VLAN support — 802.1Q, max VLANs, private VLAN, voice VLAN, protocol-based VLAN
 2. Trunking — 802.1Q trunk, native VLAN, allowed VLAN filtering, trunk negotiation (DTP or manual)
 3. STP variants — STP (802.1D), RSTP (802.1w), MSTP (802.1s), PVST+, proprietary
@@ -48,6 +52,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 6. IGMP snooping
 
 #### D. Link Aggregation
+
 1. Static LAG (manual port-channel)
 2. LACP (802.3ad / 802.1AX) — yes/no
 3. Max LAG groups, max ports per LAG
@@ -56,6 +61,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 6. Latency impact: LAG hashing overhead (typically negligible)
 
 #### E. Multi-Chassis LAG / Redundancy
+
 1. MC-LAG variant supported: MC-LAG / VPC / VLT / VSX / vLAG / MLAG / VSS / StackWise Virtual / none
 2. Protocol/standard: proprietary or standard-based
 3. Interoperable with other vendors (downstream sees standard LACP)
@@ -64,6 +70,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 6. Split-brain handling (orphan ports, peer-link, keepalive)
 
 #### F. First-Hop Redundancy
+
 1. VRRP (v2/v3) — standard, interoperable
 2. HSRP (v1/v2) — Cisco proprietary
 3. GLBP — Cisco proprietary, load-balancing
@@ -73,6 +80,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 7. Tracking (interface, route, object)
 
 #### G. L3 Routing (if applicable)
+
 1. Static routing
 2. OSPF (v2, v3)
 3. BGP (v4, v6)
@@ -85,6 +93,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 10. ECMP — max paths, hash algorithm
 
 #### H. Router-Specific (routers, firewalls)
+
 1. NAT performance (sessions/sec, concurrent sessions)
 2. VPN throughput (IPsec, SSL/TLS)
 3. Firewall throughput (stateful inspection)
@@ -93,12 +102,14 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 6. Interface queue depth / QoS architecture
 
 #### I. Wireless Controller-Specific
+
 1. Max APs managed
 2. Max clients
 3. RF standards supported (a/b/g/n/ac/ax)
 4. Roaming protocol (802.11r, proprietary)
 
 #### J. Security Features
+
 1. ACL types (standard, extended, port-based, VLAN-based)
 2. 802.1X port authentication
 3. DHCP snooping
@@ -108,6 +119,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 7. Control plane policing
 
 #### K. Monitoring & Management
+
 1. SNMP (v1/v2c/v3)
 2. sFlow / NetFlow / IPFIX
 3. SPAN / RSPAN / ERSPAN
@@ -117,6 +129,7 @@ Write a comprehensive list of attributes every device must answer. Organized by 
 **Commit** after creating this file.
 
 ### Step 0.2 — Create Device Checklist File
+
 **File:** `doc/inventory/enrichment-checklist.md`
 
 A checklist of all 21 devices with columns: `[x]`, Device Name, Class, Status/Notes.
@@ -158,6 +171,7 @@ A checklist of all 21 devices with columns: `[x]`, Device Name, Class, Status/No
 For **each device** in the checklist, in order:
 
 ### Step 1.N.1 — Research
+
 - Read `doc/inventory/standard-attributes.md` to load the question set
 - Read the device's current section in `doc/inventory/routing-and-switching.md`
 - Read the device's references section for existing links
@@ -167,6 +181,7 @@ For **each device** in the checklist, in order:
 - For features: find feature matrices, config guides, release notes
 
 ### Step 1.N.2 — Update Inventory
+
 - Add new attribute rows to the device's detail table in `routing-and-switching.md`
 - Organize under sub-headers within the table: Power, Latency, L2 Features, LAG, MC-LAG, FHRP, L3, Security, Monitoring
 - Add any new references found during research to the device's references section
@@ -174,6 +189,7 @@ For **each device** in the checklist, in order:
 - If research reveals a new class-specific question not yet in `standard-attributes.md`, add it there too
 
 ### Step 1.N.3 — Commit & Check Off
+
 - `git add` the changed files
 - `git commit -m "inventory: enrich {Device Name} with power/latency/features"`
 - Update `enrichment-checklist.md`: mark device `[x]`, add short summary in Notes column (e.g., "150W typ, 480ns L2, LACP L3+L4 hash, vLAG, VRRP")
@@ -181,6 +197,7 @@ For **each device** in the checklist, in order:
 - If `standard-attributes.md` was updated with new questions, commit that too
 
 ### Step 1.N.4 — Context Management
+
 - Since research burns context, after committing, the enrichment for that device is **done**
 - The next device starts fresh by re-reading the standard questions file
 
@@ -189,6 +206,7 @@ For **each device** in the checklist, in order:
 ## Phase 2: Gap Analysis & Remediation
 
 ### Step 2.1 — Final Review
+
 - Re-read `doc/inventory/standard-attributes.md` for the complete question set
 - For **each** of the 21 devices, verify every question has an answer in the inventory
 - Create a gap list in `enrichment-checklist.md` under a new `## Gaps` section:
@@ -197,12 +215,14 @@ For **each device** in the checklist, in order:
   ```
 
 ### Step 2.2 — Fill Gaps (repeat until none remain)
+
 - For each gap, do targeted research
 - Update the device's section in `routing-and-switching.md`
 - Commit after each device update
 - Remove the gap from the list when resolved
 
 ### Step 2.3 — Final Verification
+
 - Confirm all gaps resolved
 - Confirm all 21 devices checked off
 - Commit final checklist state
@@ -221,6 +241,7 @@ For **each device** in the checklist, in order:
 ---
 
 ## Execution Rules
+
 1. **One device at a time** — never batch multiple devices
 2. **Commit after every file change** — atomic commits
 3. **Re-read standard questions** at the start of each device — context may have been compacted

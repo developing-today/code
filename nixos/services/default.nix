@@ -1,16 +1,10 @@
 { pkgs, inputs, ... }:
 {
-  imports = [ inputs.solaar.nixosModules.default ];
+  # solaar module was upstreamed into nixpkgs (programs.solaar); flake input removed
   services = {
     # desktop only
     gvfs.enable = true;
-    solaar = {
-      enable = true; # Enable the service
-      package = pkgs.solaar; # The package to use
-      window = "hide"; # Show the window on startup (show, *hide*, only [window only])
-      batteryIcons = "regular"; # Which battery icons to use (*regular*, symbolic, solaar)
-      extraArgs = ""; # Extra arguments to pass to solaar on startup
-    };
+    # solaar: see programs.solaar below (upstreamed to nixpkgs)
     tailscale.enable = true; # needed? # split this out or add to tailscale-autoconnect
     printing.enable = true;
     pipewire = {
@@ -92,6 +86,15 @@
         layout = "us";
         variant = "";
       };
+    };
+  };
+  programs.solaar = {
+    enable = true;
+    userService = {
+      enable = true;
+      window = "hide"; # Show the window on startup (show, *hide*, only)
+      batteryIcons = "regular"; # Which battery icons to use (*regular*, symbolic, solaar)
+      extraArgs = [ ]; # Extra arguments to pass to solaar on startup (now a list)
     };
   };
 }

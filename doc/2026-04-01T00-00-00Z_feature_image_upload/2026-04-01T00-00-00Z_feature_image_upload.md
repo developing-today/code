@@ -4,7 +4,6 @@
 >
 > See [design document](../../thoughts/shared/designs/2026-04-01-image-upload-design.md)
 
-
 ## Feature Summary
 
 Users can insert images into the ProseMirror editor through three methods:
@@ -15,22 +14,21 @@ Users can insert images into the ProseMirror editor through three methods:
 
 Uploaded images are stored as content-addressed blobs in the iroh blob store. Each blob receives a named tag and metadata (created timestamp, modified timestamp, content-type). The server returns a blob URL in the form `/blob/{hash}?filename={name}`, which the editor uses as the image `src`. Because blobs are content-addressed, duplicate uploads naturally deduplicate — identical bytes always produce the same hash.
 
-
 ## Architecture
 
 ### Server: `POST /api/upload`
 
 The upload endpoint in `src/web/routes.rs` accepts `multipart/form-data` requests. It validates the uploaded file's MIME type against an allowlist of 7 image types:
 
-| MIME Type | Extension |
-|-----------|-----------|
-| `image/png` | `.png` |
-| `image/jpeg` | `.jpg` |
-| `image/gif` | `.gif` |
-| `image/webp` | `.webp` |
-| `image/svg+xml` | `.svg` |
-| `image/bmp` | `.bmp` |
-| `image/x-icon` | `.ico` |
+| MIME Type       | Extension |
+| --------------- | --------- |
+| `image/png`     | `.png`    |
+| `image/jpeg`    | `.jpg`    |
+| `image/gif`     | `.gif`    |
+| `image/webp`    | `.webp`   |
+| `image/svg+xml` | `.svg`    |
+| `image/bmp`     | `.bmp`    |
+| `image/x-icon`  | `.ico`    |
 
 Request size is capped at 10MB via axum's `DefaultBodyLimit`. On successful validation, the handler:
 
@@ -66,7 +64,6 @@ Section 17 in `web/src/editor-compat.css` provides styles for:
 - **Placeholder animation** — Pulsing opacity effect while upload is in progress
 - **Image display** — `max-width: 100%`, `border-radius`, and `margin` for inline images
 - **Hover/selected outlines** — Visual feedback when images are hovered or selected in the editor
-
 
 ## Data Flow
 
@@ -106,19 +103,17 @@ Image nodes participate in the existing ProseMirror ↔ Markdown serialization:
 
 This means images pasted into a markdown document are preserved when the document is saved and reloaded, with the blob URL appearing as the image source in the markdown text.
 
-
 ## Files Changed
 
-| File | Change | Description |
-|------|--------|-------------|
-| `src/web/routes.rs` | Modified | Added `POST /api/upload` handler, `UploadResponse` struct, `ALLOWED_IMAGE_TYPES` constant, `mime_to_extension()` and `generate_paste_filename()` helpers, 4 unit tests |
-| `Cargo.toml` | Modified | Added `"multipart"` to axum features (pulls `encoding_rs` + `multer` as transitive deps) |
-| `web/src/image-upload.ts` | **New** | ProseMirror plugin with `handlePaste`, `handleDrop`, placeholder decorations, upload logic (~244 lines) |
-| `web/src/image-upload.test.ts` | **New** | 39 vitest unit tests covering MIME validation, extension mapping, filename generation, plugin creation, upload mocking |
-| `web/src/editor.ts` | Modified | Plugin registration after `createIndentPlugin()`, toolbar "Insert Image" button in Row 1 |
-| `web/src/editor-compat.css` | Modified | Section 17: placeholder animation, image display styles, hover/selected outlines |
-| `e2e/tests/editor-features.spec.ts` | Modified | 5 new image upload E2E tests |
-
+| File                                | Change   | Description                                                                                                                                                            |
+| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/web/routes.rs`                 | Modified | Added `POST /api/upload` handler, `UploadResponse` struct, `ALLOWED_IMAGE_TYPES` constant, `mime_to_extension()` and `generate_paste_filename()` helpers, 4 unit tests |
+| `Cargo.toml`                        | Modified | Added `"multipart"` to axum features (pulls `encoding_rs` + `multer` as transitive deps)                                                                               |
+| `web/src/image-upload.ts`           | **New**  | ProseMirror plugin with `handlePaste`, `handleDrop`, placeholder decorations, upload logic (~244 lines)                                                                |
+| `web/src/image-upload.test.ts`      | **New**  | 39 vitest unit tests covering MIME validation, extension mapping, filename generation, plugin creation, upload mocking                                                 |
+| `web/src/editor.ts`                 | Modified | Plugin registration after `createIndentPlugin()`, toolbar "Insert Image" button in Row 1                                                                               |
+| `web/src/editor-compat.css`         | Modified | Section 17: placeholder animation, image display styles, hover/selected outlines                                                                                       |
+| `e2e/tests/editor-features.spec.ts` | Modified | 5 new image upload E2E tests                                                                                                                                           |
 
 ## Design Decisions
 
@@ -145,7 +140,6 @@ Pasted images typically lack filenames (the clipboard provides raw image data, n
 ### Natural deduplication
 
 Because iroh's blob store is content-addressed, uploading the same image twice produces the same hash and reuses the existing blob. The named tag is updated to point to the same hash, so storage is not wasted on duplicate uploads.
-
 
 ## Testing
 
@@ -177,7 +171,6 @@ In `e2e/tests/editor-features.spec.ts`:
 - Blob URL returned by upload is accessible and serves the image
 - Uploaded image appears in the file list with correct name
 - Image renders correctly in the markdown editor view
-
 
 ## References
 

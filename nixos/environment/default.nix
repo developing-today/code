@@ -6,6 +6,131 @@
   ...
 }:
 let
+  espIdf5 = inputs.esp-dev.packages.${system}.esp-idf-full;
+  espIdf6 = inputs.esp-dev-6.packages.${system}.esp-idf-full;
+  mkEspIdfSystemPackage =
+    {
+      espIdf,
+      version,
+      default ? false,
+    }:
+    let
+      toolEnv = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") espIdf.toolEnv
+      );
+      path = lib.makeBinPath (
+        [
+          pkgs.git
+          pkgs.wget
+          pkgs.gnumake
+          pkgs.flex
+          pkgs.bison
+          pkgs.gperf
+          pkgs.pkg-config
+          pkgs.cmake
+          pkgs.ninja
+          pkgs.ncurses5
+          pkgs.dfu-util
+        ]
+        ++ builtins.attrValues espIdf.tools
+      );
+      environment = ''
+        export IDF_PATH=${lib.escapeShellArg "${espIdf}"}
+        export IDF_TOOLS_PATH="$IDF_PATH/tools"
+        export IDF_PYTHON_CHECK_CONSTRAINTS=no
+        export IDF_PYTHON_ENV_PATH=${lib.escapeShellArg "${espIdf}/python-env"}
+        export GIT_CONFIG_SYSTEM=${lib.escapeShellArg "${espIdf}/etc/gitconfig"}
+        ${toolEnv}
+        export PATH="$IDF_PYTHON_ENV_PATH/bin":${lib.escapeShellArg path}:"$IDF_PATH/tools":"$IDF_PATH/components/espcoredump":"$IDF_PATH/components/partition_table":"$IDF_PATH/components/app_update":$PATH
+      '';
+      idfCommand = pkgs.writeShellScriptBin "idf${version}.py" ''
+        ${environment}
+        exec "$IDF_PYTHON_ENV_PATH/bin/python" "$IDF_PATH/tools/idf.py" "$@"
+      '';
+      idfShell = pkgs.writeShellScriptBin "esp-idf-${version}" ''
+        ${environment}
+        exec ${pkgs.bashInteractive}/bin/bash "$@"
+      '';
+      defaultCommand = pkgs.writeShellScriptBin "idf.py" ''
+        exec ${idfCommand}/bin/idf${version}.py "$@"
+      '';
+    in
+    pkgs.symlinkJoin {
+      name = "esp-idf-${version}-system";
+      paths = [
+        espIdf
+        idfCommand
+        idfShell
+      ]
+      ++ lib.optional default defaultCommand;
+    };
+  espIdf5System = mkEspIdfSystemPackage {
+    espIdf = espIdf5;
+    version = "5";
+    default = true;
+  };
+  espIdf6System = mkEspIdfSystemPackage {
+    espIdf = espIdf6;
+    version = "6";
+  };
+  # SquareLine Studio: proprietary LVGL UI editor, distributed as an unpackaged zip.
+  # Update version/url/hash on new releases from https://squareline.io/downloads
+  squareline-studio =
+    let
+      squareline-studio-unwrapped = pkgs.stdenv.mkDerivation {
+        pname = "squareline-studio-unwrapped";
+        version = "1.6.1";
+        src = pkgs.fetchurl {
+          url = "https://static.squareline.io/downloads/SquareLine_Studio_Linux_v1_6_1.zip";
+          hash = "sha256-KLz71HWtFnDsaIEXy/7rvWsL7bUrFuZAEdTG7spHq10=";
+        };
+        nativeBuildInputs = [ pkgs.unzip ];
+        sourceRoot = ".";
+        dontPatchELF = true;
+        dontAutoPatchelf = true;
+        installPhase = ''
+          mkdir -p $out/lib/squareline-studio
+          cp -r . $out/lib/squareline-studio/
+          find $out/lib/squareline-studio -type f \( -name "*.x86_64" -o -name "*.so" \) -exec chmod +x {} +
+        '';
+      };
+      squareline-run =
+        (pkgs.writeShellScriptBin "squareline-run" ''
+          exe=$(find ${squareline-studio-unwrapped}/lib/squareline-studio -type f -name SquareLine_Studio.x86_64 | head -n1)
+          exec "$exe" "$@"
+        '').overrideAttrs
+          (_: {
+            passthru.squareline-studio-unwrapped = squareline-studio-unwrapped;
+          });
+    in
+    pkgs.buildFHSEnv {
+      name = "squareline-studio";
+      targetPkgs =
+        p: with p; [
+          alsa-lib
+          curl
+          dbus
+          fontconfig
+          freetype
+          gtk3
+          libGL
+          nspr
+          nss
+          udev
+          xorg.libX11
+          xorg.libXcursor
+          xorg.libXext
+          xorg.libXi
+          xorg.libXrandr
+          xorg.libXrender
+          zlib
+        ];
+      runScript = "${squareline-run}/bin/squareline-run";
+      extraInstallCommands = ''
+        mkdir -p $out/share/applications
+        sed "s|__folder__|squareline-studio|g" ${squareline-studio-unwrapped}/lib/squareline-studio/squareline_studio.desktop.template > $out/share/applications/squareline-studio.desktop || true
+      '';
+    };
   my-kubernetes-helm = pkgs.wrapHelm pkgs.kubernetes-helm {
     plugins = builtins.attrValues (
       lib.filterAttrs (name: _: lib.hasPrefix "helm-" name) pkgs.kubernetes-helmPlugins
@@ -13,21 +138,31 @@ let
   };
   my-helmfile = pkgs.helmfile-wrapped.override { inherit (my-kubernetes-helm) pluginsDir; };
 
-  # # Fix opencode-desktop: upstream flake is missing outputHashes for git dependencies
-  # ref: https://github.com/Vishal2002/opencode/tree/fix/auth-to-body-provider-dialogs
-  # NOTE: auth->body sed patches removed; SDK types expect `auth` and tsgo -b fails with `body`
-  opencode-desktop = inputs.opencode.packages.${system}.desktop.overrideAttrs (old: {
-    cargoDeps = pkgs.rustPlatform.importCargoLock {
-      lockFile = inputs.opencode + "/packages/desktop/src-tauri/Cargo.lock";
-      outputHashes = {
-        "specta-2.0.0-rc.22" = "sha256-YsyOAnXELLKzhNlJ35dHA6KGbs0wTAX/nlQoW8wWyJQ=";
-        "tauri-2.9.5" = "sha256-dv5E/+A49ZBvnUQUkCGGJ21iHrVvrhHKNcpUctivJ8M=";
-        "tauri-specta-2.0.0-rc.21" = "sha256-n2VJ+B1nVrh6zQoZyfMoctqP+Csh7eVHRXwUQuiQjaQ=";
-      };
-    };
-  });
+  # opencode-desktop: upstream rewrote the desktop app (electron/bun, no more tauri/cargo),
+  # so the old outputHashes overrideAttrs is no longer needed
+  inherit (inputs.opencode.packages.${system}) opencode-desktop;
 in
 {
+  nixpkgs.overlays = [
+    # zulip-term: 4 tests fail on nixpkgs master 2026-08-21 (upstream test breakage)
+    (final: prev: {
+      zulip-term = prev.zulip-term.overridePythonAttrs (_: {
+        doCheck = false;
+      });
+    })
+    # neovim nightly: treesitter functional tests fail (nightly flakiness)
+    (final: prev: {
+      neovim-unwrapped = prev.neovim-unwrapped.overrideAttrs (_: {
+        doCheck = false;
+      });
+    })
+    # mise: 29 unit tests fail in sandbox (network-dependent tests)
+    (final: prev: {
+      mise = prev.mise.overrideAttrs (_: {
+        doCheck = false;
+      });
+    })
+  ];
   environment = {
     sessionVariables = {
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
@@ -51,6 +186,8 @@ in
     # or just because
     # etc.
     systemPackages = [
+      espIdf5System
+      espIdf6System
       my-helmfile
       my-kubernetes-helm
       opencode-desktop
@@ -64,8 +201,10 @@ in
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
+      # OMP ("Oh My Pi") harness, from https://omp.sh -> github:can1357/oh-my-pi
+      oh-my-pi.packages.${system}.omp
     ])
-    ++ (with inputs.roc.packages.${system}; [ full ])
+    ++ (with inputs.roc.packages.${system}; [ nightly ])
     ++ (with inputs.affinity-nix.packages.${system}; [
       photo
       publisher
@@ -75,6 +214,221 @@ in
     ++ (with pkgs; [
       age
       wpa_supplicant_gui
+    ])
+    ++ (with pkgs; [
+      # AI coding agents / LLM CLIs.
+      # NOTE: opencode is installed above from its own flake input, and
+      # oh-my-posh comes from programs.oh-my-posh in home/common/default.nix.
+      claude-code # Anthropic Claude Code
+      codex # OpenAI Codex CLI
+      openclaw # OpenClaw (openclaw.ai) assistant
+      gemini-cli # Google Gemini
+      qwen-code # Alibaba Qwen Code
+      crush # Charm agentic coder
+      amp-cli # Sourcegraph Amp
+      goose-cli # Block Goose
+      aider-chat # Aider pair programmer
+      cursor-cli # Cursor agent
+      aichat # multi-provider LLM CLI
+      mods # Charm LLM pipe tool
+      tgpt # no-auth LLM CLI
+    ])
+    ++ [
+      # Mojo (Modular). Prebuilt upstream wheels, unfree license.
+      # See pkgs/mojo/default.nix for why we track stable PyPI over nightly.
+      (pkgs.callPackage ../../pkgs/mojo { })
+      # Agent harnesses not packaged in nixpkgs. OMP comes from its own
+      # upstream flake input above; these two we package ourselves.
+      (pkgs.callPackage ../../pkgs/hermes-agent { }) # https://hermes-agent.nousresearch.com
+      (pkgs.callPackage ../../pkgs/pi-coding-agent { }) # https://pi.dev
+    ]
+    ++ (with pkgs; [
+      # Embedded development: ESP32/ESP8266, Arduino, RP2040, AVR, ARM and RISC-V
+      esptool
+      esptool-ck
+      espflash
+      espflash # was cargo-espflash, renamed upstream
+      cargo-espmonitor
+      espup
+      esp-generate
+      python3Packages.esp-idf-size
+      platformio
+      gcc-arm-embedded
+      pkgsCross.arm-embedded.stdenv.cc
+      pkgsCross.arm-embedded.buildPackages.gdb
+      pkgsCross.riscv32-embedded.stdenv.cc
+      pkgsCross.riscv32-embedded.buildPackages.gdb
+      pkgsCross.riscv64-embedded.stdenv.cc
+      pkgsCross.riscv64-embedded.buildPackages.gdb
+      pkgsCross.avr.stdenv.cc
+      pkgsCross.avr.buildPackages.gdb
+      pkgsCross.avr.libc # was bare avrlibc; top-level avrlibc now refuses to eval on x86_64
+      avra
+      avrdude
+      simavr # upstream now uses pkgsCross.avr.libc internally
+      gdb
+      openocd
+      openocd-rp2040
+      probe-rs-tools
+      pyocd
+      stlink
+      dfu-util
+      dfu-programmer
+      flashrom
+      flashprog
+      picotool
+      pico-sdk
+      elf2uf2-rs
+      bossa-arduino
+      teensy-loader-cli
+      srecord
+
+      # MicroPython and CircuitPython workflows
+      (micropython.overrideAttrs (_: {
+        # 10 tests fail on nixpkgs master 2026-08-21 (upstream breakage)
+        doCheck = false;
+      }))
+      mpremote
+      thonny
+      rshell
+      adafruit-ampy
+      circup
+
+      # Meshtastic, MeshCore, Reticulum/RNode and LoRaWAN
+      meshtastic
+      meshtasticd
+      meshtastic-web
+      meshcore-cli
+      rns
+      rnsapi
+      rns-proxy
+      rs-reticulum
+      lxmf-rs
+      reticulum-go
+      reticulum-group-chat
+      nomadnet
+      sideband
+      loramon
+      chirpstack-gateway-bridge
+      chirpstack-concentratord
+      chirpstack-gateway-mesh
+      chirpstack-mqtt-forwarder
+      chirpstack-udp-forwarder
+      chirpstack-rest-api
+      chirpstack-fuota-server
+
+      # Flipper Zero, Raspberry Pi and common board utilities
+      qFlipper
+      python3Packages.pyflipper
+      rpi-imager
+      raspberrypi-eeprom
+      ubootTools
+      binwalk
+      cutter
+
+      # Serial, USB, GPIO and hardware buses
+      tio
+      picocom
+      serial-studio
+      moserial
+      gtkterm
+      cutecom
+      grabserial
+      libserialport
+      usbtree
+      i2c-tools
+      spi-tools
+      can-utils
+      savvycan
+
+      # Logic analyzers, oscilloscopes and packet analysis
+      sigrok-cli
+      pulseview
+      sigrok-firmware-fx2lafw
+      wireshark
+      kismet
+      direwolf
+      chirp
+      mosquitto
+      mqttx
+      mqttx-cli
+      mqtt-explorer
+      mqttui
+      home-assistant-cli
+      python3Packages.paho-mqtt
+      libcoap
+      rtl_433
+
+      # Wireless ecosystem tooling: Matter/Thread/Zigbee/BLE and embedded serialization
+      esphome
+      zigbee2mqtt
+      bluez
+      nanopb
+      flatbuffers
+      cbor-diag
+
+      # Software-defined radio and LoRa signal analysis
+      gnuradio
+      gnuradioPackages.osmosdr
+      gnuradioPackages.lora_sdr
+      gqrx
+      sdrangel
+      urh
+      inspectrum
+      hackrf
+      rtl-sdr
+      soapysdr-with-plugins
+      uhd
+      airspy
+      airspyhf
+      libbladeRF
+
+      # FPGA, HDL and programmable logic
+      yosys
+      nextpnrWithGui
+      nextpnr-xilinx
+      iverilog
+      verilator
+      ghdl
+      gtkwave
+      sby
+      icestorm
+      trellis
+      openfpgaloader
+      icesprog
+      fujprog
+      vhdl-ls
+      verible
+      slang
+      surfer
+
+      # Electronics, displays and firmware asset creation
+      kicad
+      fritzing
+      librepcb
+      horizon-eda
+      # geda # removed from nixpkgs 2026-07-26: unmaintained upstream
+      gerbv
+      appimage-run # for other proprietary AppImage tools
+      squareline-studio
+      imagemagick
+      lv_font_conv
+      pngquant
+      optipng
+      oxipng
+      svgo
+      resvg
+      potrace
+
+      # GPS/GNSS receivers, mapping and positioning
+      gpsd
+      gpsbabel
+      gpsprune
+      gpxsee
+      # foxtrotgps # removed from nixpkgs: GTK2/libglade deprecated
+      gnss-sdr
+      gnss-share
+      rtklib-ex
     ])
     ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
     ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
@@ -124,7 +478,12 @@ in
       # bob-nvim
       bun
       nodejs # npm, npx
-      mise # rtx
+      (mise.overrideAttrs (old: {
+        # 29 unit tests fail in sandbox (network-dependent); raw master input bypasses nixpkgs.overlays
+        doCheck = false;
+        # libz-ng-sys build script requires cmake
+        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.cmake ];
+      })) # rtx
       espanso
 
       # TODO: cleanup systemPackages
@@ -153,7 +512,7 @@ in
       arduino-ide
       arduino-language-server
       arduino-mk
-      arduinoOTA
+      arduino-ota # renamed from arduinoOTA
       #code-cursor
       gamemode
       argo-workflows
@@ -257,11 +616,11 @@ in
       emacs.pkgs.fortune-cookie
 
       # fancycat
-      xorg.libX11
+      libx11
       # xorg.libXcursor
-      xorg.libXi
-      xorg.libXinerama
-      xorg.libXrandr
+      libxi
+      libxinerama
+      libxrandr
       alsa-lib
       # emscripten
       # libGL
@@ -288,7 +647,7 @@ in
       fontforge
       fontpreview
       fortune
-      jmtpfs
+      # jmtpfs # removed from nixpkgs: unmaintained (simple-mtpfs below)
       go-mtpfs
       usbutils # for lsusb
       libmtp
@@ -491,7 +850,7 @@ in
       ffmpeg
       gimp
       vlc
-      wineWowPackages.stable
+      wineWow64Packages.stable # renamed from wineWowPackages
       #fontconfig
       font-manager
 
@@ -507,17 +866,17 @@ in
       pavucontrol # Pulse audio controls
 
       # Messaging and chat applications
-      cider # Apple Music on Linux
+      # cider # Apple Music on Linux; removed from nixpkgs: unmaintained, archived upstream
       discord
-      hexchat # Chat
+      # hexchat # removed from nixpkgs: archived upstream, gtk2
       fractal # Matrix.org messaging app
       #tdesktop # telegram desktop
 
       # Testing and development tools
       #beekeeper-studio # electron 31 eol
       cypress # Functional testing framework using headless chrome
-      chromium
-      chromedriver
+      inputs.nixpkgs-unstable.legacyPackages.${system}.chromium # nixos-unstable channel: cached (master chromium is not)
+      inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
       playwright-driver
       direnv
       rofi
@@ -539,8 +898,8 @@ in
       unixtools.ifconfig
       unixtools.netstat
       xclip # For the org-download package in Emacs
-      xorg.xwininfo # Provides a cursor to click and learn about windows
-      xorg.xrandr
+      xwininfo # Provides a cursor to click and learn about windows; moved to top-level
+      xrandr
 
       # File and system utilities
       inotify-tools # inotifywait, inotifywatch - For file system events

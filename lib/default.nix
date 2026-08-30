@@ -300,9 +300,26 @@ let
       lib = _self;
     };
 
+  # nixpkgs source with repo-local patches applied (see patches/nixpkgs/).
+  # applyPatches needs a concrete system for its stdenv; use the host's.
+  patched-nixpkgs-src =
+    config:
+    config.inputs.nixpkgs.legacyPackages.${config.system}.applyPatches {
+      name = "nixpkgs-patched";
+      src = config.inputs.nixpkgs;
+      patches = [ (from-root "patches/nixpkgs/neededforboot-nixos-unstable.patch") ];
+    };
+
   make-nixos-from-config =
     config:
-    lib.nixosSystem {
+    let
+      src = patched-nixpkgs-src config;
+      # replicate nixpkgs flake's nixosSystem wrapper, but against the PATCHED
+      # source so nixos module files come from the patched tree
+      patched-lib = import (src + "/lib");
+    in
+    import (src + "/nixos/lib/eval-config.nix") {
+      lib = patched-lib;
       system = null;
       specialArgs = {
         inherit (config)
@@ -314,7 +331,15 @@ let
           lib
           ;
       };
-      modules = ensure-list config.host.init;
+      modules = ensure-list config.host.init ++ [
+        # keep pkgs.path / <nixpkgs> pointing at the patched tree
+        (
+          { ... }:
+          {
+            config.nixpkgs.flake.source = src.outPath;
+          }
+        )
+      ];
     };
 
   make-nixos-configurations = lib.mapAttrs (
@@ -381,6 +406,7 @@ let
               "olm-3.2.16"
               "electron"
               "qtwebkit-5.212.0-alpha4"
+              "openclaw-2026.6.33"
             ];
           };
           overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
@@ -429,41 +455,43 @@ let
       inherit (clan.config) nixosConfigurations clanInternals;
       clan = clan.config;
       devShells =
-        inputs.clan-core.inputs.nixpkgs.lib.genAttrs
-          [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
-          (
-            system:
-            let
-              pkgs = import inputs.clan-core.inputs.nixpkgs {
-                inherit system;
-                overlays = [ (import inputs.id-rust-overlay) ];
-              };
-              # Import shared configuration (same as shell.nix)
-              nixCommon = import ../nix-common.nix { inherit pkgs; };
-            in
-            {
-              default = pkgs.mkShell {
-                inherit (nixCommon)
-                  NIX_CONFIG
-                  TREEFMT_TREE_ROOT_CMD
-                  buildInputs
-                  nativeBuildInputs
-                  shellHook
-                  ;
-                # OpenSSL configuration for native builds
-                inherit (nixCommon.opensslEnv)
-                  OPENSSL_DIR
-                  OPENSSL_LIB_DIR
-                  OPENSSL_INCLUDE_DIR
-                  PKG_CONFIG_PATH
-                  ;
-                # Shared packages + clan-cli (only available via flake input)
-                packages = nixCommon.packages ++ [
-                  inputs.clan-core.packages.${system}.clan-cli
-                ];
-              };
-            }
-          );
+        # was: inputs.clan-core.inputs.nixpkgs.lib.genAttrs — switched to the repo's own
+        # nixpkgs-unstable so `nix develop` matches shell.nix and the system flake
+        # (clan-core pins its own nixpkgs rev, which drifted from ours)
+        inputs.nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ] (
+          system:
+          let
+            # pkgs = import inputs.clan-core.inputs.nixpkgs {
+            pkgs = import inputs.nixpkgs-unstable {
+              inherit system;
+              overlays = [ (import inputs.id-rust-overlay) ];
+            };
+            # Import shared configuration (same as shell.nix)
+            nixCommon = import ../nix-common.nix { inherit pkgs; };
+          in
+          {
+            default = pkgs.mkShell {
+              inherit (nixCommon)
+                NIX_CONFIG
+                TREEFMT_TREE_ROOT_CMD
+                buildInputs
+                nativeBuildInputs
+                shellHook
+                ;
+              # OpenSSL configuration for native builds
+              inherit (nixCommon.opensslEnv)
+                OPENSSL_DIR
+                OPENSSL_LIB_DIR
+                OPENSSL_INCLUDE_DIR
+                PKG_CONFIG_PATH
+                ;
+              # Shared packages + clan-cli (only available via flake input)
+              packages = nixCommon.packages ++ [
+                inputs.clan-core.packages.${system}.clan-cli
+              ];
+            };
+          }
+        );
     };
 
   make-root-apps = inputs.flake-utils.lib.eachDefaultSystem (

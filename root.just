@@ -3,6 +3,20 @@ list:
   @just --list
 
 # =============================================================================
+# Nix Store Lock Diagnostics
+# =============================================================================
+
+# List processes holding/waiting on the nix store big-lock
+[group('nix-store')]
+nix-lock-check:
+    ./lib/nix-unstick.sh
+
+# Kill lock holders: default = orphans only; "all" = everything but the daemon
+[group('nix-store')]
+nix-unstick mode="":
+    ./lib/nix-unstick.sh {{ if mode == "" { "" } else { mode } }}
+
+# =============================================================================
 # Flake Input Management
 # =============================================================================
 

@@ -9,7 +9,9 @@ https://github.com/NeuralNomadsAI/CodeNomad
 https://github.com/morapelker/hive
 bun add -g btca opencode-ai
 btca connect --provider opencode --model claude-haiku-4-5
+
 ---
+
 https://github.com/fishfolk/bones
 https://github.com/rustonbsd/rustpatcher
 https://github.com/p2panda/p2panda

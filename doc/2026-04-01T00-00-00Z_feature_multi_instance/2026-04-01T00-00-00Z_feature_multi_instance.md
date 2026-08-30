@@ -18,7 +18,6 @@ Three coordinated changes:
 2. **`--data-dir` and `--new` global flags** for CLI-level instance isolation
 3. **NixOS multi-instance module** using `services.id.instances.<name>` submodule pattern
 
-
 ## JSON Lock File
 
 The serve lock file (`.iroh-serve.lock`) was upgraded from a line-based text format to structured JSON using `serde_json`.
@@ -59,7 +58,6 @@ The struct derives `Serialize` and `Deserialize` (serde). Lock file creation use
 
 `get_serve_info()` reads the lock file, deserializes the JSON, then checks whether the PID is still alive using `libc::kill(pid, 0)` on Unix. Stale lock files are automatically cleaned up.
 
-
 ## CLI Instance Isolation
 
 Two new global flags on the `Cli` struct enable running multiple independent instances.
@@ -91,6 +89,7 @@ id --new serve
 ```
 
 **Validation rules:**
+
 - Name must not contain `/`, `\`, or `..` (rejects path traversal)
 - Instance directory must not already exist (prevents accidental reuse; use `--data-dir` for existing dirs)
 - Conflicts with `--data-dir` (clap enforces mutual exclusivity)
@@ -104,7 +103,6 @@ Rather than threading a `data_dir: PathBuf` through every function that touches 
 - `id` is a single-process binary (no library consumers calling `set_current_dir` concurrently)
 - All data paths are already CWD-relative constants (`KEY_FILE`, `STORE_PATH`, `SERVE_LOCK`)
 - Zero changes required to existing path logic in `store.rs`, `serve.rs`, `client.rs`, etc.
-
 
 ## NixOS Multi-Instance Module
 
@@ -136,18 +134,18 @@ services.id = {
 
 Each instance supports:
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enable` | bool | — | Enable this instance |
-| `web` | bool | `true` | Enable web interface |
-| `port` | port | `3000` | Web interface port |
-| `irohPort` | port | `0` | QUIC endpoint port (0 = random) |
-| `ephemeral` | bool | `false` | In-memory storage |
-| `noRelay` | bool | `false` | Disable relay servers |
-| `noGossip` | bool | `false` | Disable gossip peer discovery |
-| `noMdns` | bool | `false` | Disable mDNS discovery |
-| `extraArgs` | list of str | `[]` | Extra CLI arguments |
-| `openFirewall` | bool | `false` | Open web port in firewall |
+| Option         | Type        | Default | Description                     |
+| -------------- | ----------- | ------- | ------------------------------- |
+| `enable`       | bool        | —       | Enable this instance            |
+| `web`          | bool        | `true`  | Enable web interface            |
+| `port`         | port        | `3000`  | Web interface port              |
+| `irohPort`     | port        | `0`     | QUIC endpoint port (0 = random) |
+| `ephemeral`    | bool        | `false` | In-memory storage               |
+| `noRelay`      | bool        | `false` | Disable relay servers           |
+| `noGossip`     | bool        | `false` | Disable gossip peer discovery   |
+| `noMdns`       | bool        | `false` | Disable mDNS discovery          |
+| `extraArgs`    | list of str | `[]`    | Extra CLI arguments             |
+| `openFirewall` | bool        | `false` | Open web port in firewall       |
 
 ### Systemd service generation
 
@@ -161,7 +159,6 @@ Hardening: `DynamicUser`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `
 ### Firewall integration
 
 Ports from instances with both `openFirewall = true` and `web = true` are automatically collected via `lib.concatMap` over `lib.attrsToList enabledInstances` and added to `networking.firewall.allowedTCPPorts`.
-
 
 ## NixOS Test Coverage
 
@@ -186,17 +183,18 @@ All three NixOS test files were updated to exercise dual-instance deployments:
 - 4 total Playwright runs: `chromium-primary`, `chromium-secondary`, `firefox-primary`, `firefox-secondary`
 - Timeout doubled to 1200s for 4 runs per VM
 
-
 ## Rust Integration Tests
 
 11 new tests added to `tests/cli_integration.rs` (96 total):
 
 ### `--data-dir` tests (3)
+
 - `test_data_dir_creates_and_uses_directory` — verifies store/key/lock created in specified dir
 - `test_data_dir_isolation` — two servers with different data dirs are independent
 - `test_data_dir_list_uses_correct_instance` — `id --data-dir X list` reads from X's lock file
 
 ### `--new` flag tests (5)
+
 - `test_new_flag_creates_iroh_subdir` — verifies `.iroh/<name>/` directory creation
 - `test_new_flag_random_name` — `--new` without name generates 8-hex-char dir
 - `test_new_flag_rejects_path_separator` — `/` in name → error
@@ -204,6 +202,7 @@ All three NixOS test files were updated to exercise dual-instance deployments:
 - `test_new_flag_conflicts_with_data_dir` — mutual exclusivity enforced
 
 ### JSON lock file tests (3)
+
 - `test_lock_file_is_json` — lock file parses as valid `ServeInfo` JSON
 - `test_lock_file_contains_web_port` — `web_port` present when `--web` used
 - `test_lock_file_no_web_port_without_web` — `web_port` is null without `--web`
@@ -212,10 +211,10 @@ All three NixOS test files were updated to exercise dual-instance deployments:
 
 `ServerHandle` gained `spawn_with_global_args()` which injects global flags (`--data-dir`, `--new=`) before the `serve` subcommand. Background stderr capture thread drains into `Arc<Mutex<String>>` for diagnostic output on failures.
 
-
 ## Files Changed
 
 ### Core feature (committed `42fcecac`)
+
 - `src/commands/serve.rs` — `ServeInfo` struct with Serialize/Deserialize, JSON lock file read/write, `web_port` parameter
 - `src/cli.rs` — `--data-dir` and `--new` global flags on `Cli` struct
 - `src/main.rs` — `set_current_dir` dispatch for `--data-dir` / `--new`, name validation
@@ -223,24 +222,25 @@ All three NixOS test files were updated to exercise dual-instance deployments:
 - `Cargo.toml` — added `serde`, `serde_json`, `rand` dependencies
 
 ### Justfile recipes (committed `5495d42d`)
+
 - `pkgs/id/justfile` — `serve-new`, `serve-new-web`, `serve-new-lib` recipes
 
 ### Integration tests (committed `0814e632`)
+
 - `tests/cli_integration.rs` — 11 new tests, `spawn_with_global_args()` helper
 
 ### NixOS module + tests (committed `e2f05339`)
+
 - `nix/id-module.nix` — multi-instance submodule pattern
 - `nix/tests/serve-test.nix` — dual-instance API tests
 - `nix/tests/e2e-test.nix` — dual-instance DOM tests
 - `nix/tests/playwright-e2e-test.nix` — 4-run multi-instance Playwright tests
-
 
 ## Known Issues
 
 ### Playwright flaky websocket tests
 
 `websocket.spec.ts` tests 474 ("can save file and content persists") and 638 ("edits from one user appear in other user's editor") are intermittently flaky in NixOS VM environments. This is a pre-existing timing issue unrelated to multi-instance support. 71/73 tests pass consistently; the 2 failures are race conditions in WebSocket message ordering within the VM test sandbox.
-
 
 ## References
 
