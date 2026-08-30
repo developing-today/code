@@ -12,7 +12,7 @@
 #   ├── <this repo>/
 #   │   └── doc/hardware  ->  ../../hardware-doc     (relative symlink)
 #   ├── hardware-doc/                                 (cloned by this script)
-#   └── hardware-doc-archive/                         (bulk artifacts; separate repo, usually unpublished)
+#   └── repo-archive/                         (bulk artifacts; separate repo, usually unpublished)
 #
 # Safety guarantees:
 #   * Never discards uncommitted work. If the checkout is dirty or cannot fast-forward,
@@ -169,7 +169,7 @@ ensure_link() {
 # --- link 1: this repo -> hardware-doc ----------------------------------------
 ensure_link "$WORKTREE_ROOT" "$LINK_REL" "../../$DIR_NAME" "$TARGET"
 
-# --- link 2: hardware-doc/archive -> hardware-doc-archive ---------------------
+# --- link 2: hardware-doc/archive -> repo-archive ---------------------
 # The archive is a sibling of hardware-doc holding bulk artifacts moved out of it.
 # It is its own git repository but is normally unpublished/private because of its
 # size, so we only link to it when it already exists locally - we never clone it.
@@ -181,15 +181,15 @@ ensure_link "$WORKTREE_ROOT" "$LINK_REL" "../../$DIR_NAME" "$TARGET"
 #     [ -n "$ARCHIVE_URL" ] && [ ! -e "$ARCHIVE_DIR" ] && git clone "$ARCHIVE_URL" "$ARCHIVE_DIR"
 #
 #   Keep the same safety rules: fast-forward only, never touch a dirty checkout.
-ARCHIVE_ROOT="${REPO_ARCHIVE_ROOT:-$(dirname "$TARGET")/hardware-doc-archive}"
+ARCHIVE_ROOT="${REPO_ARCHIVE_ROOT:-$(dirname "$TARGET")/repo-archive}"
 # Namespaced by source repository, so a second repo's material sits beside ours.
 ARCHIVE_DIR="$ARCHIVE_ROOT/$DIR_NAME"
 SCRATCH_DIR="$ARCHIVE_ROOT/scratch/$DIR_NAME"
 
 if [ -d "$TARGET/.git" ] || [ -d "$TARGET" ]; then
   if [ -d "$ARCHIVE_DIR" ]; then
-    ensure_link "$TARGET" "archive" "../hardware-doc-archive/$DIR_NAME" "$ARCHIVE_DIR"
-    [ -d "$SCRATCH_DIR" ] && ensure_link "$TARGET" "scratch" "../hardware-doc-archive/scratch/$DIR_NAME" "$SCRATCH_DIR"
+    ensure_link "$TARGET" "archive" "../repo-archive/$DIR_NAME" "$ARCHIVE_DIR"
+    [ -d "$SCRATCH_DIR" ] && ensure_link "$TARGET" "scratch" "../repo-archive/scratch/$DIR_NAME" "$SCRATCH_DIR"
   else
     info "${c_dim}archive absent: $ARCHIVE_DIR - skipping archive symlink${c_off}"
   fi
@@ -198,7 +198,7 @@ fi
 # --- links 3 & 4: convenience shortcuts in this repo ---------------------------
 # Chained through the links above, so they resolve only once hardware-doc AND the
 # archive are both present:
-#   archive     -> doc/hardware/archive -> ../../hardware-doc/archive -> ../hardware-doc-archive
+#   archive     -> doc/hardware/archive -> ../../hardware-doc/archive -> ../repo-archive
 #   doc/archive -> hardware/archive     -> (same)
 # Purely ergonomic: they let you write ./archive/... from this repo's root.
 if [ -d "$ARCHIVE_DIR" ]; then

@@ -32,7 +32,7 @@ out beside this one and symlinked in at `doc/hardware`:
 ├── code/                       ← this repo
 │   └── doc/hardware  ────────┐   symlink (gitignored)
 ├── hardware-doc/        ←────┘   the knowledge base — WRITE HERE
-└── hardware-doc-archive/         bulk artifacts (separate repo, usually unpublished)
+└── repo-archive/         bulk artifacts (separate repo, usually unpublished)
 ```
 
 Set it up — clones if missing, fast-forwards if clean, never clobbers local work:
@@ -60,11 +60,11 @@ hardware-doc/
 └── tools/                           # netlist parsers, archiver, image tools
 ```
 
-Bulky derived artifacts move to **`../hardware-doc-archive`** — a sibling of the *real*
+Bulky derived artifacts move to **`../repo-archive`** — a sibling of the *real*
 repository root, resolved worktree-safely:
 
 ```bash
-ARCHIVE="$(dirname "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")/hardware-doc-archive"
+ARCHIVE="$(dirname "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")/repo-archive"
 ```
 
 Use `--git-common-dir`, not `--show-toplevel`: in a linked worktree the toplevel is the
@@ -346,7 +346,7 @@ Record failed or blocked reacquisition honestly (`automatic`, `manual`, `blocked
 
 **Placeholder conventions vary** (`*.ARCHIVED.md`, `*.REMOVED.md`, `*.DUPLICATE.md`, `ARCHIVED-*.md`, directory `README.md`). When auditing coverage, walk **all ancestor directories** — a directory-level placeholder shadows everything beneath it, and checking only a file's immediate parent reports large numbers of false gaps.
 
-**Use one archive root.** Do not create a near-identical sibling (`hardware-doc-archive` vs `hardware-docs-archive`); check for existing roots before creating one, and prefer a symlink over a second directory.
+**Use one archive root.** Do not create a near-identical sibling (`repo-archive` vs `repo-archive`); check for existing roots before creating one, and prefer a symlink over a second directory.
 
 Never save an error page or HTML response with a `.pdf`, `.zip`, or firmware extension. Validate file type from content, not just URL or suffix.
 

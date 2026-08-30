@@ -11,7 +11,7 @@ out beside this one and symlinked in at `doc/hardware` (gitignored).
 ├── code/                      ← this repo
 │   └── doc/hardware  ───────┐   symlink
 ├── hardware-doc/       ←────┘   the knowledge base
-└── hardware-doc-archive/        bulk artifacts (separate repo, usually unpublished)
+└── repo-archive/        bulk artifacts (separate repo, usually unpublished)
 ```
 
 ```bash
@@ -30,7 +30,7 @@ Two sibling paths, both relative to the **real repository root** (worktree-safe)
 
 ```bash
 ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-PARENT="$(dirname "$ROOT")"     # $PARENT/hardware-doc  and  $PARENT/hardware-doc-archive
+PARENT="$(dirname "$ROOT")"     # $PARENT/hardware-doc  and  $PARENT/repo-archive
 ```
 
 Use `--git-common-dir`, not `--show-toplevel`: inside a linked worktree the toplevel is the
@@ -50,7 +50,7 @@ git update-index --no-skip-worktree doc/hardware
 ```
 
 The script prints that command whenever it sets the flag. The same pattern links
-`hardware-doc/archive -> ../hardware-doc-archive` when the archive exists locally.
+`hardware-doc/archive -> ../repo-archive` when the archive exists locally.
 
 ## Web retrieval fallback
 
