@@ -218,3 +218,22 @@ chown:
     user="$(id -u)"
     group="$(id -g)"
     sudo chown -R "$user:$group" .
+
+# =============================================================================
+# Documentation Staging
+# =============================================================================
+
+# Stage new + modified docs under doc/hardware (never stages deletions)
+[group('docs')]
+stage-docs *args:
+    ./scripts/stage-docs.sh {{args}}
+
+# Preview what stage-docs would stage, without changing anything
+[group('docs')]
+stage-docs-dry *args:
+    ./scripts/stage-docs.sh --dry-run {{args}}
+
+# Stage new + modified docs across the whole repository (never stages deletions)
+[group('docs')]
+stage-docs-all *args:
+    ./scripts/stage-docs.sh --all {{args}}

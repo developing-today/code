@@ -1,45 +1,22 @@
 {
-  "aliases": {
-    "assets": { "attributes": [], "name": "assets", "target": "web-assets" },
-    "build-cargo": { "attributes": [], "name": "build-cargo", "target": "build-web-cargo" },
-    "build-force": { "attributes": [], "name": "build-force", "target": "build-web-force" },
-    "build-lib-release": { "attributes": [], "name": "build-lib-release", "target": "release-lib" },
-    "build-release": { "attributes": [], "name": "build-release", "target": "release" },
-    "build-web": { "attributes": [], "name": "build-web", "target": "build" },
-    "build-web-release": { "attributes": [], "name": "build-web-release", "target": "release" },
-    "check-all": { "attributes": [], "name": "check-all", "target": "check" },
-    "check-nix": { "attributes": [], "name": "check-nix", "target": "test-nix" },
-    "nix-check": { "attributes": [], "name": "nix-check", "target": "test-nix" },
-    "release-force": { "attributes": [], "name": "release-force", "target": "release-web-force" },
-    "test-cargo": { "attributes": [], "name": "test-cargo", "target": "test-rust" },
-    "test-full": { "attributes": [], "name": "test-full", "target": "test-nix" },
-    "test-int": { "attributes": [], "name": "test-int", "target": "test-integration" },
-    "test-lib": { "attributes": [], "name": "test-lib", "target": "test-unit" },
-    "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
-    "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
-    "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" },
-    "watch-build": { "attributes": [], "name": "watch-build", "target": "watch" },
-    "web-build": { "attributes": [], "name": "web-build", "target": "web" },
-    "web-dev": { "attributes": [], "name": "web-dev", "target": "web-assets-dev" },
-    "web-force": { "attributes": [], "name": "web-force", "target": "web-assets-force" },
-    "web-typecheck": { "attributes": [], "name": "web-typecheck", "target": "test-web" }
-  },
   "assignments": {},
   "first": "default",
   "doc": null,
   "groups": [],
+  "module_path": "",
   "modules": {
     "root": {
+      "assignments": {},
+      "first": "list",
+      "doc": null,
+      "groups": [],
+      "module_path": "root",
+      "modules": {},
       "aliases": {
         "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
         "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
         "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" }
       },
-      "assignments": {},
-      "first": "list",
-      "doc": null,
-      "groups": [],
-      "modules": {},
       "recipes": {
         "_nixpkgs-inputs": {
           "attributes": ["private"],
@@ -62,9 +39,13 @@
             {
               "default": "",
               "export": false,
+              "flag": false,
               "help": null,
               "kind": "singular",
               "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
               "name": "ref",
               "pattern": null,
               "short": null,
@@ -101,9 +82,9 @@
           "attributes": [{ "group": "format" }],
           "body": [],
           "dependencies": [
-            { "arguments": [], "recipe": "strip-whitespace" },
-            { "arguments": [], "recipe": "lockfiles" },
-            { "arguments": [["variable", "args"]], "recipe": "fmt" }
+            { "arguments": [], "recipe": "strip-whitespace", "star": null },
+            { "arguments": [], "recipe": "lockfiles", "star": null },
+            { "arguments": [["variable", "args"]], "recipe": "fmt", "star": null }
           ],
           "doc": "Run all fixers: strip whitespace, regenerate lockfiles, format",
           "name": "fix",
@@ -111,9 +92,13 @@
             {
               "default": null,
               "export": false,
+              "flag": false,
               "help": null,
               "kind": "star",
               "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
               "name": "args",
               "pattern": null,
               "short": null,
@@ -129,16 +114,20 @@
         "fmt": {
           "attributes": [{ "group": "format" }],
           "body": [],
-          "dependencies": [{ "arguments": [["variable", "args"]], "recipe": "treefmt" }],
+          "dependencies": [{ "arguments": [["variable", "args"]], "recipe": "treefmt", "star": null }],
           "doc": "Format all code (via treefmt)",
           "name": "fmt",
           "parameters": [
             {
               "default": null,
               "export": false,
+              "flag": false,
               "help": null,
               "kind": "star",
               "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
               "name": "args",
               "pattern": null,
               "short": null,
@@ -183,7 +172,7 @@
         "lockfiles": {
           "attributes": [{ "group": "deps" }],
           "body": [],
-          "dependencies": [{ "arguments": [], "recipe": "just-recipes" }],
+          "dependencies": [{ "arguments": [], "recipe": "just-recipes", "star": null }],
           "doc": "Regenerate all lockfiles (just-recipes.json)",
           "name": "lockfiles",
           "parameters": [],
@@ -191,6 +180,145 @@
           "private": false,
           "quiet": false,
           "namepath": "root::lockfiles",
+          "shebang": false
+        },
+        "lootbox-kill": {
+          "attributes": [{ "group": "util" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\\K[0-9]+' || true)"],
+            ["if [ -n \"$pid\" ]; then"],
+            ["    kill \"$pid\""],
+            ["    echo \"Killed lootbox server (PID $pid)\""],
+            ["else"],
+            ["    echo \"No lootbox server running on port 9420\""],
+            ["fi"]
+          ],
+          "dependencies": [],
+          "doc": "Kill running lootbox server",
+          "name": "lootbox-kill",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::lootbox-kill",
+          "shebang": true
+        },
+        "lootbox-server": {
+          "attributes": [{ "group": "util" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
+            ["    echo \"Lootbox server already running on port 9420\""],
+            ["else"],
+            ["    echo \"Starting lootbox server...\""],
+            ["    nohup lootbox server --port 9420 &>/dev/null &"],
+            ["    disown"],
+            ["    sleep 1"],
+            ["    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
+            ["        echo \"Lootbox server started on port 9420\""],
+            ["    else"],
+            ["        echo \"Lootbox server may still be starting up...\""],
+            ["    fi"],
+            ["fi"]
+          ],
+          "dependencies": [],
+          "doc": "Start lootbox server (if not already running)",
+          "name": "lootbox-server",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::lootbox-server",
+          "shebang": true
+        },
+        "stage-docs": {
+          "attributes": [{ "group": "docs" }],
+          "body": [["./scripts/stage-docs.sh ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Stage new + modified docs under doc/hardware (never stages deletions)",
+          "name": "stage-docs",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::stage-docs",
+          "shebang": false
+        },
+        "stage-docs-all": {
+          "attributes": [{ "group": "docs" }],
+          "body": [["./scripts/stage-docs.sh --all ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Stage new + modified docs across the whole repository (never stages deletions)",
+          "name": "stage-docs-all",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::stage-docs-all",
+          "shebang": false
+        },
+        "stage-docs-dry": {
+          "attributes": [{ "group": "docs" }],
+          "body": [["./scripts/stage-docs.sh --dry-run ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Preview what stage-docs would stage, without changing anything",
+          "name": "stage-docs-dry",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::stage-docs-dry",
           "shebang": false
         },
         "strip-whitespace": {
@@ -249,9 +377,13 @@
             {
               "default": null,
               "export": false,
+              "flag": false,
               "help": null,
               "kind": "star",
               "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
               "name": "args",
               "pattern": null,
               "short": null,
@@ -285,9 +417,13 @@
             {
               "default": null,
               "export": false,
+              "flag": false,
               "help": null,
               "kind": "star",
               "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
               "name": "args",
               "pattern": null,
               "short": null,
@@ -317,9 +453,13 @@
             {
               "default": null,
               "export": false,
+              "flag": false,
               "help": null,
               "kind": "plus",
               "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
               "name": "inputs",
               "pattern": null,
               "short": null,
@@ -344,6 +484,25 @@
           "quiet": false,
           "namepath": "root::update-inputs-all",
           "shebang": false
+        },
+        "update-lootbox": {
+          "attributes": [{ "group": "util" }],
+          "body": [
+            ["#!/usr/bin/env bash"],
+            ["set -euo pipefail"],
+            ["echo \"Updating lootbox...\""],
+            ["curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash"],
+            ["echo \"lootbox updated to $(lootbox --version)\""]
+          ],
+          "dependencies": [],
+          "doc": "Reinstall/update lootbox binary from latest source",
+          "name": "update-lootbox",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::update-lootbox",
+          "shebang": true
         },
         "update-nixpkgs": {
           "attributes": [{ "group": "nixpkgs" }],
@@ -467,6 +626,9 @@
       "settings": {
         "allow_duplicate_recipes": false,
         "allow_duplicate_variables": false,
+        "default_list": false,
+        "default_script": false,
+        "dotenv_command": [],
         "dotenv_filename": null,
         "dotenv_load": false,
         "dotenv_override": false,
@@ -476,7 +638,10 @@
         "fallback": false,
         "guards": false,
         "ignore_comments": false,
+        "indentation": null,
         "lazy": false,
+        "lists": false,
+        "no_cd": false,
         "no_exit_message": false,
         "positional_arguments": false,
         "quiet": false,
@@ -487,10 +652,35 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/code/pkgs/id/../../root.just",
+      "source": "/home/user/code/root.just",
       "unexports": [],
       "warnings": []
     }
+  },
+  "aliases": {
+    "assets": { "attributes": [], "name": "assets", "target": "web-assets" },
+    "build-cargo": { "attributes": [], "name": "build-cargo", "target": "build-web-cargo" },
+    "build-force": { "attributes": [], "name": "build-force", "target": "build-web-force" },
+    "build-lib-release": { "attributes": [], "name": "build-lib-release", "target": "release-lib" },
+    "build-release": { "attributes": [], "name": "build-release", "target": "release" },
+    "build-web": { "attributes": [], "name": "build-web", "target": "build" },
+    "build-web-release": { "attributes": [], "name": "build-web-release", "target": "release" },
+    "check-all": { "attributes": [], "name": "check-all", "target": "check" },
+    "check-nix": { "attributes": [], "name": "check-nix", "target": "test-nix" },
+    "nix-check": { "attributes": [], "name": "nix-check", "target": "test-nix" },
+    "release-force": { "attributes": [], "name": "release-force", "target": "release-web-force" },
+    "test-cargo": { "attributes": [], "name": "test-cargo", "target": "test-rust" },
+    "test-full": { "attributes": [], "name": "test-full", "target": "test-nix" },
+    "test-int": { "attributes": [], "name": "test-int", "target": "test-integration" },
+    "test-lib": { "attributes": [], "name": "test-lib", "target": "test-unit" },
+    "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
+    "update-all-inputs": { "attributes": [], "name": "update-all-inputs", "target": "update-inputs-all" },
+    "update-inputs": { "attributes": [], "name": "update-inputs", "target": "update-input" },
+    "watch-build": { "attributes": [], "name": "watch-build", "target": "watch" },
+    "web-build": { "attributes": [], "name": "web-build", "target": "web" },
+    "web-dev": { "attributes": [], "name": "web-dev", "target": "web-assets-dev" },
+    "web-force": { "attributes": [], "name": "web-force", "target": "web-assets-force" },
+    "web-typecheck": { "attributes": [], "name": "web-typecheck", "target": "test-web" }
   },
   "recipes": {
     "_nixpkgs-inputs": {
@@ -514,9 +704,13 @@
         {
           "default": "",
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ref",
           "pattern": null,
           "short": null,
@@ -558,7 +752,10 @@
     "build-check": {
       "attributes": [{ "group": "workflow" }],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "build" }, { "arguments": [], "recipe": "check" }],
+      "dependencies": [
+        { "arguments": [], "recipe": "build", "star": null },
+        { "arguments": [], "recipe": "check", "star": null }
+      ],
       "doc": "Build and check [bun]",
       "name": "build-check",
       "parameters": [],
@@ -572,9 +769,9 @@
       "attributes": [{ "group": "workflow" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "build" },
-        { "arguments": [], "recipe": "check" },
-        { "arguments": [["variable", "ARGS"]], "recipe": "serve" }
+        { "arguments": [], "recipe": "build", "star": null },
+        { "arguments": [], "recipe": "check", "star": null },
+        { "arguments": [["variable", "ARGS"]], "recipe": "serve", "star": null }
       ],
       "doc": "Build, check, and serve with web UI [bun]",
       "name": "build-check-serve",
@@ -582,9 +779,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -601,9 +802,9 @@
       "attributes": [{ "group": "workflow" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "build-lib" },
-        { "arguments": [], "recipe": "ci" },
-        { "arguments": [], "recipe": "serve-lib" }
+        { "arguments": [], "recipe": "build-lib", "star": null },
+        { "arguments": [], "recipe": "ci", "star": null },
+        { "arguments": [], "recipe": "serve-lib", "star": null }
       ],
       "doc": "Build, check, and serve without web UI",
       "name": "build-check-serve-lib",
@@ -644,8 +845,8 @@
       "attributes": [{ "group": "build" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "build-lib-cargo" },
-        { "arguments": [], "recipe": "mark-variant-lib" }
+        { "arguments": [], "recipe": "build-lib-cargo", "star": null },
+        { "arguments": [], "recipe": "mark-variant-lib", "star": null }
       ],
       "doc": "Force rebuild debug binary without web UI",
       "name": "build-lib-force",
@@ -686,8 +887,8 @@
       "attributes": [{ "group": "run" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "build" },
-        { "arguments": [["variable", "ARGS"]], "recipe": "serve" }
+        { "arguments": [], "recipe": "build", "star": null },
+        { "arguments": [["variable", "ARGS"]], "recipe": "serve", "star": null }
       ],
       "doc": "Build then serve with web UI [bun]",
       "name": "build-serve",
@@ -695,9 +896,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -713,7 +918,10 @@
     "build-serve-lib": {
       "attributes": [{ "group": "workflow" }],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "build-lib" }, { "arguments": [], "recipe": "serve-lib" }],
+      "dependencies": [
+        { "arguments": [], "recipe": "build-lib", "star": null },
+        { "arguments": [], "recipe": "serve-lib", "star": null }
+      ],
       "doc": "Build and serve without web UI",
       "name": "build-serve-lib",
       "parameters": [],
@@ -740,9 +948,9 @@
       "attributes": [{ "group": "build" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "web" },
-        { "arguments": [], "recipe": "build-web-cargo" },
-        { "arguments": [], "recipe": "mark-variant-web" }
+        { "arguments": [], "recipe": "web", "star": null },
+        { "arguments": [], "recipe": "build-web-cargo", "star": null },
+        { "arguments": [], "recipe": "mark-variant-web", "star": null }
       ],
       "doc": "Force rebuild debug binary with web UI [bun]",
       "name": "build-web-force",
@@ -821,7 +1029,10 @@
     "check": {
       "attributes": [{ "group": "check" }],
       "body": [["@echo \"✓ All checks passed!\""]],
-      "dependencies": [{ "arguments": [], "recipe": "fix" }, { "arguments": [], "recipe": "ci" }],
+      "dependencies": [
+        { "arguments": [], "recipe": "fix", "star": null },
+        { "arguments": [], "recipe": "ci", "star": null }
+      ],
       "doc": "Run all checks (with auto-fix first) [bun]",
       "name": "check",
       "parameters": [],
@@ -867,9 +1078,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "NAME",
           "pattern": null,
           "short": null,
@@ -912,8 +1127,8 @@
       "attributes": [{ "group": "workflow" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "check" },
-        { "arguments": [["variable", "ARGS"]], "recipe": "serve" }
+        { "arguments": [], "recipe": "check", "star": null },
+        { "arguments": [["variable", "ARGS"]], "recipe": "serve", "star": null }
       ],
       "doc": "Check and serve with web UI [bun]",
       "name": "check-serve",
@@ -921,9 +1136,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1038,17 +1257,17 @@
       "attributes": [{ "group": "check" }],
       "body": [["@echo \"✓ CI checks passed!\""]],
       "dependencies": [
-        { "arguments": [], "recipe": "cargo-fmt-check" },
-        { "arguments": [], "recipe": "web-fmt-check" },
-        { "arguments": [], "recipe": "cargo-check" },
-        { "arguments": [], "recipe": "clippy-lint" },
-        { "arguments": [], "recipe": "web-lint" },
-        { "arguments": [], "recipe": "test-sandbox" },
-        { "arguments": [], "recipe": "test-web-unit" },
-        { "arguments": [], "recipe": "test-web-typecheck" },
-        { "arguments": [], "recipe": "doc" },
-        { "arguments": [], "recipe": "build" },
-        { "arguments": [], "recipe": "release" }
+        { "arguments": [], "recipe": "cargo-fmt-check", "star": null },
+        { "arguments": [], "recipe": "web-fmt-check", "star": null },
+        { "arguments": [], "recipe": "cargo-check", "star": null },
+        { "arguments": [], "recipe": "clippy-lint", "star": null },
+        { "arguments": [], "recipe": "web-lint", "star": null },
+        { "arguments": [], "recipe": "test-sandbox", "star": null },
+        { "arguments": [], "recipe": "test-web-unit", "star": null },
+        { "arguments": [], "recipe": "test-web-typecheck", "star": null },
+        { "arguments": [], "recipe": "doc", "star": null },
+        { "arguments": [], "recipe": "build", "star": null },
+        { "arguments": [], "recipe": "release", "star": null }
       ],
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
@@ -1140,7 +1359,7 @@
     "default": {
       "attributes": [],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "kill-serve" }],
+      "dependencies": [{ "arguments": [], "recipe": "kill-serve", "star": null }],
       "doc": "Default recipe — kill existing server and serve with web UI [bun]",
       "name": "default",
       "parameters": [],
@@ -1180,10 +1399,10 @@
       "attributes": [{ "group": "check" }],
       "body": [["@echo \"✓ Fixed what could be fixed\""]],
       "dependencies": [
-        { "arguments": [], "recipe": "strip-whitespace" },
-        { "arguments": [], "recipe": "lockfiles" },
-        { "arguments": [["variable", "args"]], "recipe": "fmt" },
-        { "arguments": [], "recipe": "lint-fix" }
+        { "arguments": [], "recipe": "strip-whitespace", "star": null },
+        { "arguments": [], "recipe": "lockfiles", "star": null },
+        { "arguments": [["variable", "args"]], "recipe": "fmt", "star": null },
+        { "arguments": [], "recipe": "lint-fix", "star": null }
       ],
       "doc": "Auto-fix formatting and lint issues",
       "name": "fix",
@@ -1191,9 +1410,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "args",
           "pattern": null,
           "short": null,
@@ -1209,16 +1432,20 @@
     "fmt": {
       "attributes": [{ "group": "format" }],
       "body": [],
-      "dependencies": [{ "arguments": [["variable", "args"]], "recipe": "treefmt" }],
+      "dependencies": [{ "arguments": [["variable", "args"]], "recipe": "treefmt", "star": null }],
       "doc": "Format all code (via treefmt)",
       "name": "fmt",
       "parameters": [
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "args",
           "pattern": null,
           "short": null,
@@ -1235,8 +1462,8 @@
       "attributes": [{ "group": "format" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "cargo-fmt-check" },
-        { "arguments": [], "recipe": "web-fmt-check" }
+        { "arguments": [], "recipe": "cargo-fmt-check", "star": null },
+        { "arguments": [], "recipe": "web-fmt-check", "star": null }
       ],
       "doc": "Check all formatting (no changes)",
       "name": "fmt-check",
@@ -1280,9 +1507,9 @@
       "attributes": [{ "group": "run" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "kill" },
-        { "arguments": [], "recipe": "sleep" },
-        { "arguments": [["variable", "ARGS"]], "recipe": "serve" }
+        { "arguments": [], "recipe": "kill", "star": null },
+        { "arguments": [], "recipe": "sleep", "star": null },
+        { "arguments": [["variable", "ARGS"]], "recipe": "serve", "star": null }
       ],
       "doc": "Kill and restart serve with web UI [bun] [alias: default]",
       "name": "kill-serve",
@@ -1290,9 +1517,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1308,7 +1539,10 @@
     "lint": {
       "attributes": [{ "group": "lint" }],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "clippy-lint" }, { "arguments": [], "recipe": "web-lint" }],
+      "dependencies": [
+        { "arguments": [], "recipe": "clippy-lint", "star": null },
+        { "arguments": [], "recipe": "web-lint", "star": null }
+      ],
       "doc": "Run all linters (Rust + web)",
       "name": "lint",
       "parameters": [],
@@ -1321,7 +1555,10 @@
     "lint-fix": {
       "attributes": [{ "group": "lint" }],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "clippy-lint-fix" }, { "arguments": [], "recipe": "web-lint-fix" }],
+      "dependencies": [
+        { "arguments": [], "recipe": "clippy-lint-fix", "star": null },
+        { "arguments": [], "recipe": "web-lint-fix", "star": null }
+      ],
       "doc": "Run all linters with auto-fix",
       "name": "lint-fix",
       "parameters": [],
@@ -1361,9 +1598,9 @@
       "attributes": [{ "group": "deps" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "bun2nix" },
-        { "arguments": [], "recipe": "bun2nix-e2e" },
-        { "arguments": [], "recipe": "just-recipes" }
+        { "arguments": [], "recipe": "bun2nix", "star": null },
+        { "arguments": [], "recipe": "bun2nix-e2e", "star": null },
+        { "arguments": [], "recipe": "just-recipes", "star": null }
       ],
       "doc": "Regenerate all lockfiles (bun2nix + just-recipes.json)",
       "name": "lockfiles",
@@ -1495,8 +1732,8 @@
       "attributes": [{ "group": "build" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "release-lib-cargo" },
-        { "arguments": [], "recipe": "mark-variant-release-lib" }
+        { "arguments": [], "recipe": "release-lib-cargo", "star": null },
+        { "arguments": [], "recipe": "mark-variant-release-lib", "star": null }
       ],
       "doc": "Force rebuild release binary without web UI",
       "name": "release-lib-force",
@@ -1524,9 +1761,9 @@
       "attributes": [{ "group": "build" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "web" },
-        { "arguments": [], "recipe": "release-web-cargo" },
-        { "arguments": [], "recipe": "mark-variant-release-web" }
+        { "arguments": [], "recipe": "web", "star": null },
+        { "arguments": [], "recipe": "release-web-cargo", "star": null },
+        { "arguments": [], "recipe": "mark-variant-release-web", "star": null }
       ],
       "doc": "Force rebuild release binary with web UI [bun]",
       "name": "release-web-force",
@@ -1560,9 +1797,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1579,8 +1820,8 @@
       "attributes": [{ "group": "run" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "web" },
-        { "arguments": [["variable", "ARGS"]], "recipe": "serve-web" }
+        { "arguments": [], "recipe": "web", "star": null },
+        { "arguments": [["variable", "ARGS"]], "recipe": "serve-web", "star": null }
       ],
       "doc": "Serve with web UI (default) [bun]",
       "name": "serve",
@@ -1588,9 +1829,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1613,9 +1858,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1632,8 +1881,8 @@
       "attributes": [{ "group": "run" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "web" },
-        { "arguments": [["variable", "NAME"], ["variable", "ARGS"]], "recipe": "serve-new-web" }
+        { "arguments": [], "recipe": "web", "star": null },
+        { "arguments": [["variable", "NAME"], ["variable", "ARGS"]], "recipe": "serve-new-web", "star": null }
       ],
       "doc": "Serve a new instance with web UI and auto-assigned port (creates .iroh/<name>/) [bun]",
       "name": "serve-new",
@@ -1641,9 +1890,13 @@
         {
           "default": "",
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "NAME",
           "pattern": null,
           "short": null,
@@ -1652,9 +1905,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1684,9 +1941,13 @@
         {
           "default": "",
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "NAME",
           "pattern": null,
           "short": null,
@@ -1695,9 +1956,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1727,9 +1992,13 @@
         {
           "default": "",
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "NAME",
           "pattern": null,
           "short": null,
@@ -1738,9 +2007,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1763,9 +2036,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "ARGS",
           "pattern": null,
           "short": null,
@@ -1788,9 +2065,13 @@
         {
           "default": "0.6",
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "SECONDS",
           "pattern": null,
           "short": null,
@@ -1845,9 +2126,9 @@
       "attributes": [{ "group": "test" }],
       "body": [["@echo \"✓ All fast tests passed (Rust + TypeScript)!\""]],
       "dependencies": [
-        { "arguments": [], "recipe": "test-rust" },
-        { "arguments": [], "recipe": "test-web-unit" },
-        { "arguments": [], "recipe": "test-web-typecheck" }
+        { "arguments": [], "recipe": "test-rust", "star": null },
+        { "arguments": [], "recipe": "test-web-unit", "star": null },
+        { "arguments": [], "recipe": "test-web-typecheck", "star": null }
       ],
       "doc": "Run all fast tests (Rust + TypeScript unit + typecheck)",
       "name": "test",
@@ -1861,7 +2142,7 @@
     "test-e2e": {
       "attributes": [{ "group": "e2e" }],
       "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test"]],
-      "dependencies": [{ "arguments": [], "recipe": "build" }],
+      "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (both chromium and firefox)",
       "name": "test-e2e",
       "parameters": [],
@@ -1874,7 +2155,7 @@
     "test-e2e-chromium": {
       "attributes": [{ "group": "e2e" }],
       "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium"]],
-      "dependencies": [{ "arguments": [], "recipe": "build" }],
+      "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (chromium only)",
       "name": "test-e2e-chromium",
       "parameters": [],
@@ -1887,7 +2168,7 @@
     "test-e2e-firefox": {
       "attributes": [{ "group": "e2e" }],
       "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox"]],
-      "dependencies": [{ "arguments": [], "recipe": "build" }],
+      "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (firefox only)",
       "name": "test-e2e-firefox",
       "parameters": [],
@@ -1953,10 +2234,10 @@
       "attributes": [{ "group": "nix" }],
       "body": [],
       "dependencies": [
-        { "arguments": [], "recipe": "test-nixos-serve" },
-        { "arguments": [], "recipe": "test-nixos-e2e" },
-        { "arguments": [], "recipe": "test-nixos-playwright-e2e" },
-        { "arguments": [], "recipe": "test-nixos-integration" }
+        { "arguments": [], "recipe": "test-nixos-serve", "star": null },
+        { "arguments": [], "recipe": "test-nixos-e2e", "star": null },
+        { "arguments": [], "recipe": "test-nixos-playwright-e2e", "star": null },
+        { "arguments": [], "recipe": "test-nixos-integration", "star": null }
       ],
       "doc": "Run all NixOS VM tests (requires KVM, Linux only)",
       "name": "test-nixos",
@@ -2029,9 +2310,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "singular",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "NAME",
           "pattern": null,
           "short": null,
@@ -2100,9 +2385,9 @@
       "attributes": [{ "group": "test" }],
       "body": [["@echo \"✓ All web tests passed!\""]],
       "dependencies": [
-        { "arguments": [], "recipe": "test-rust" },
-        { "arguments": [], "recipe": "test-web-unit" },
-        { "arguments": [], "recipe": "test-web-typecheck" }
+        { "arguments": [], "recipe": "test-rust", "star": null },
+        { "arguments": [], "recipe": "test-web-unit", "star": null },
+        { "arguments": [], "recipe": "test-web-typecheck", "star": null }
       ],
       "doc": "[bun] Run web tests (Rust + TypeScript unit tests + type checking)",
       "name": "test-web",
@@ -2117,9 +2402,9 @@
       "attributes": [{ "group": "test" }],
       "body": [["@echo \"✓ All web tests passed (sandbox)!\""]],
       "dependencies": [
-        { "arguments": [], "recipe": "test-sandbox" },
-        { "arguments": [], "recipe": "test-web-unit" },
-        { "arguments": [], "recipe": "test-web-typecheck" }
+        { "arguments": [], "recipe": "test-sandbox", "star": null },
+        { "arguments": [], "recipe": "test-web-unit", "star": null },
+        { "arguments": [], "recipe": "test-web-typecheck", "star": null }
       ],
       "doc": "[bun] Run web tests (sandbox-safe: excludes serve_tests requiring network)",
       "name": "test-web-sandbox",
@@ -2195,9 +2480,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "args",
           "pattern": null,
           "short": null,
@@ -2236,9 +2525,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "star",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "args",
           "pattern": null,
           "short": null,
@@ -2281,9 +2574,13 @@
         {
           "default": null,
           "export": false,
+          "flag": false,
           "help": null,
           "kind": "plus",
           "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
           "name": "inputs",
           "pattern": null,
           "short": null,
@@ -2469,7 +2766,7 @@
     "web": {
       "attributes": [{ "group": "web" }],
       "body": [],
-      "dependencies": [{ "arguments": [], "recipe": "web-assets" }],
+      "dependencies": [{ "arguments": [], "recipe": "web-assets", "star": null }],
       "doc": "[bun] Build web frontend assets",
       "name": "web",
       "parameters": [],
@@ -2574,6 +2871,9 @@
   "settings": {
     "allow_duplicate_recipes": false,
     "allow_duplicate_variables": false,
+    "default_list": false,
+    "default_script": false,
+    "dotenv_command": [],
     "dotenv_filename": null,
     "dotenv_load": false,
     "dotenv_override": false,
@@ -2583,7 +2883,10 @@
     "fallback": false,
     "guards": false,
     "ignore_comments": false,
+    "indentation": null,
     "lazy": false,
+    "lists": false,
+    "no_cd": false,
     "no_exit_message": false,
     "positional_arguments": false,
     "quiet": false,

@@ -15,14 +15,7 @@ import { buildMenuItems, exampleSetup } from "prosemirror-example-setup";
 import { gapCursor } from "prosemirror-gapcursor";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
-import {
-  MenuItem,
-  blockTypeItem,
-  liftItem,
-  redoItem,
-  selectParentNodeItem,
-  undoItem,
-} from "prosemirror-menu";
+import { MenuItem, blockTypeItem, liftItem, redoItem, selectParentNodeItem, undoItem } from "prosemirror-menu";
 import { type MarkType, Node, Schema } from "prosemirror-model";
 import { schema as basicSchema } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
@@ -87,95 +80,95 @@ export const richSchema = new Schema({
       },
     })
     .append({
-    task_list: {
-      group: "block",
-      content: "task_list_item+",
-      parseDOM: [
-        {
-          tag: "ul",
-          getAttrs(dom) {
-            // Match <ul> that contains task list items (with checkboxes)
-            const el = dom as HTMLElement;
-            if (el.classList.contains("contains-task-list")) return {};
-            // Also match if first child li has a checkbox
-            const firstLi = el.querySelector("li");
-            if (firstLi?.querySelector('input[type="checkbox"]')) return {};
-            return false;
-          },
-        },
-      ],
-      toDOM() {
-        return ["ul", { class: "contains-task-list" }, 0];
-      },
-    },
-    task_list_item: {
-      content: "paragraph block*",
-      defining: true,
-      attrs: { checked: { default: false } },
-      parseDOM: [
-        {
-          tag: "li",
-          getAttrs(dom) {
-            const el = dom as HTMLElement;
-            const checkbox = el.querySelector('input[type="checkbox"]');
-            if (!checkbox) return false;
-            return { checked: (checkbox as HTMLInputElement).checked };
-          },
-        },
-      ],
-      toDOM(node) {
-        return [
-          "li",
-          { class: `task-list-item${node.attrs.checked ? " task-list-item-checked" : ""}` },
-          [
-            "input",
-            {
-              type: "checkbox",
-              ...(node.attrs.checked ? { checked: "" } : {}),
-              // Note: actual toggle is handled by nodeView
+      task_list: {
+        group: "block",
+        content: "task_list_item+",
+        parseDOM: [
+          {
+            tag: "ul",
+            getAttrs(dom) {
+              // Match <ul> that contains task list items (with checkboxes)
+              const el = dom as HTMLElement;
+              if (el.classList.contains("contains-task-list")) return {};
+              // Also match if first child li has a checkbox
+              const firstLi = el.querySelector("li");
+              if (firstLi?.querySelector('input[type="checkbox"]')) return {};
+              return false;
             },
-          ],
-          ["div", { class: "task-list-item-content" }, 0],
-        ];
+          },
+        ],
+        toDOM() {
+          return ["ul", { class: "contains-task-list" }, 0];
+        },
       },
-    },
-    table: {
-      content: "table_row+",
-      tableRole: "table",
-      group: "block",
-      isolating: true,
-      parseDOM: [{ tag: "table" }],
-      toDOM() {
-        return ["table", { class: "pm-table" }, ["tbody", 0]];
+      task_list_item: {
+        content: "paragraph block*",
+        defining: true,
+        attrs: { checked: { default: false } },
+        parseDOM: [
+          {
+            tag: "li",
+            getAttrs(dom) {
+              const el = dom as HTMLElement;
+              const checkbox = el.querySelector('input[type="checkbox"]');
+              if (!checkbox) return false;
+              return { checked: (checkbox as HTMLInputElement).checked };
+            },
+          },
+        ],
+        toDOM(node) {
+          return [
+            "li",
+            { class: `task-list-item${node.attrs.checked ? " task-list-item-checked" : ""}` },
+            [
+              "input",
+              {
+                type: "checkbox",
+                ...(node.attrs.checked ? { checked: "" } : {}),
+                // Note: actual toggle is handled by nodeView
+              },
+            ],
+            ["div", { class: "task-list-item-content" }, 0],
+          ];
+        },
       },
-    },
-    table_row: {
-      content: "(table_cell | table_header)+",
-      tableRole: "row",
-      parseDOM: [{ tag: "tr" }],
-      toDOM() {
-        return ["tr", 0];
+      table: {
+        content: "table_row+",
+        tableRole: "table",
+        group: "block",
+        isolating: true,
+        parseDOM: [{ tag: "table" }],
+        toDOM() {
+          return ["table", { class: "pm-table" }, ["tbody", 0]];
+        },
       },
-    },
-    table_cell: {
-      content: "paragraph+",
-      tableRole: "cell",
-      isolating: true,
-      parseDOM: [{ tag: "td" }],
-      toDOM() {
-        return ["td", 0];
+      table_row: {
+        content: "(table_cell | table_header)+",
+        tableRole: "row",
+        parseDOM: [{ tag: "tr" }],
+        toDOM() {
+          return ["tr", 0];
+        },
       },
-    },
-    table_header: {
-      content: "paragraph+",
-      tableRole: "header_cell",
-      isolating: true,
-      parseDOM: [{ tag: "th" }],
-      toDOM() {
-        return ["th", 0];
+      table_cell: {
+        content: "paragraph+",
+        tableRole: "cell",
+        isolating: true,
+        parseDOM: [{ tag: "td" }],
+        toDOM() {
+          return ["td", 0];
+        },
       },
-    },
-  }),
+      table_header: {
+        content: "paragraph+",
+        tableRole: "header_cell",
+        isolating: true,
+        parseDOM: [{ tag: "th" }],
+        toDOM() {
+          return ["th", 0];
+        },
+      },
+    }),
   marks: basicSchema.spec.marks.append({
     strikethrough: {
       parseDOM: [
@@ -263,10 +256,7 @@ export interface CollabState {
  * Create a menu item that toggles a mark on the current selection.
  * Used for inline formatting buttons (strikethrough, etc.).
  */
-function markMenuItem(
-  markType: MarkType,
-  options: { title: string; label: string },
-): InstanceType<typeof MenuItem> {
+function markMenuItem(markType: MarkType, options: { title: string; label: string }): InstanceType<typeof MenuItem> {
   const cmd = toggleMark(markType);
   return new MenuItem({
     title: options.title,
@@ -279,7 +269,7 @@ function markMenuItem(
     },
     active(state) {
       const { from, $from, to, empty } = state.selection;
-      if (empty) return !!(markType.isInSet(state.storedMarks || $from.marks()));
+      if (empty) return !!markType.isInSet(state.storedMarks || $from.marks());
       return state.doc.rangeHasMark(from, to, markType);
     },
   });

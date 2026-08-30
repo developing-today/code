@@ -45,16 +45,8 @@
   # };
   # TODO: ensure home manager standalone can still work
   # TODO: factor out modules into shared files
-  nixpkgs.config = {
-    allowBroken = true;
-    allowUnfree = true;
-    allowUnfreePredicate = _: true;
-    permittedInsecurePackages = [
-      "olm-3.2.16"
-      "electron" # le sigh
-      "qtwebkit-5.212.0-alpha4" # ???
-    ];
-  };
+  # nixpkgs.config removed: conflicts with home-manager.useGlobalPkgs (warning);
+  # allowUnfree/permittedInsecure are set at the NixOS level in lib/default.nix
   gtk = {
     enable = true;
     gtk3.extraConfig.gtk-decoration-layout = "menu:";
@@ -271,6 +263,8 @@
     #eza.enable = true;
     firefox = {
       enable = true;
+      # pin legacy path explicitly; default changed to xdg.configHome in 26.05
+      configPath = ".mozilla/firefox";
       policies = {
         BlockAboutConfig = true;
       };
@@ -303,7 +297,11 @@
         # };
       };
     };
-    fzf.enable = true;
+    fzf = {
+      enable = true;
+      # mcfly owns Ctrl-R for bash; avoid double-binding
+      enableBashIntegration = false;
+    };
     gh.enable = true;
     # git-credential-oauth.enable = true; # can't get browser to return back
     git = {
@@ -367,7 +365,7 @@
     gpg.enable = true;
     havoc.enable = true;
     #     helix.enable = true; # try again vs binary? didn't like editor override.
-    hexchat.enable = true;
+    # hexchat.enable = true; # removed from nixpkgs: HexChat archived upstream, GTK2
     # htop.enable = true;
     i3status-rust.enable = true;
     i3status.enable = true;
@@ -417,7 +415,7 @@
     };
     tealdeer.enable = true;
     terminator.enable = true;
-    termite.enable = true;
+    # termite.enable = true; # removed from nixpkgs: broken and unmaintained upstream
     #texlive.enable = true; # failed on wsl
     # thunderbird.enable = true;
     tiny.enable = true;
@@ -790,7 +788,7 @@
         # dogdns # dns for dogs
         kdePackages.dolphin
         dprint
-        dracula-theme # gtk theme
+        # dracula-theme # gtk theme # removed from nixpkgs: depended on gtk-engine-murrine (GTK2, unmaintained)
         drill
         dust
         dua
@@ -874,7 +872,7 @@
         just
         k9s
         kalker
-        kdash
+        # kdash # removed from nixpkgs: upstream tag changes broke the source derivation
         kibi
         kickoff
         killall
@@ -894,7 +892,7 @@
         libnotify
         #libsForQt5.polkit-kde-agent
         kdePackages.polkit-kde-agent-1
-        libsForQt5.qt5.qtwayland
+        qt5.qtwayland # was libsForQt5.qt5.qtwayland
         kdePackages.yakuake
         libtool
         libva-utils
@@ -931,14 +929,14 @@
         nickel
         nil
         ninja
-        nitrogen
+        # nitrogen # removed from nixpkgs: depended on deprecated gtk2/gtkmm2
         nix-init
         nix-melt
-        nixfmt-rfc-style
+        nixfmt # nixfmt-rfc-style is now just pkgs.nixfmt
         nixpkgs-fmt # ??
         bash-language-server # nodepackages removed 2026-04-03
         eslint # nodepackages removed 2026-04-03
-        prettier #nodepackages  nodepackages removed?? # removed 2026-04-03
+        prettier # nodepackages  nodepackages removed?? # removed 2026-04-03
         #nodePackages.prettier-plugin-toml
         #nodePackages.typescript
         #nodePackages.typescript-language-server
@@ -987,7 +985,7 @@
         #python3Full
         qt5.qmake
         qt5.qtwayland
-        libsForQt5.qt5ct
+        libsForQt5.qt5ct # qt5.* top-level attrs removed; pkg stays under libsForQt5
         qt6.qmake
         qt6.qtwayland
         qt6Packages.qt6ct
@@ -1013,7 +1011,7 @@
         shellcheck
         shellharden
         shfmt
-        silver-searcher
+        silver-searcher-ng # was silver-searcher, removed (pcre1)
         skim
         slack
         slurp
@@ -1033,7 +1031,7 @@
         swayidle
         swaylock
         swaynotificationcenter
-        swww
+        awww # renamed from swww
         sxhkd
         synergy
         systeroid
@@ -1087,9 +1085,9 @@
         xdg-desktop-portal-hyprland
         xdg-utils
         xdg-utils # for opening default programs when clicking links
-        xfce.thunar
+        thunar # moved to top-level from xfce.thunar
         xh
-        xorg.libX11
+        libx11 # xorg set deprecated
         # xorg.libXcursor
         xournalpp # xournal
         #xsv # https://github.com/NixOS/nixpkgs/issues/141368

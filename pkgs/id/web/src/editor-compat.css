@@ -1298,10 +1298,26 @@ img.ProseMirror-separator {
   display: block;
 }
 
-.ProseMirror .pm-image-resize-nw { top: -5px; left: -5px; cursor: nw-resize; }
-.ProseMirror .pm-image-resize-ne { top: -5px; right: -5px; cursor: ne-resize; }
-.ProseMirror .pm-image-resize-sw { bottom: -5px; left: -5px; cursor: sw-resize; }
-.ProseMirror .pm-image-resize-se { bottom: -5px; right: -5px; cursor: se-resize; }
+.ProseMirror .pm-image-resize-nw {
+  top: -5px;
+  left: -5px;
+  cursor: nw-resize;
+}
+.ProseMirror .pm-image-resize-ne {
+  top: -5px;
+  right: -5px;
+  cursor: ne-resize;
+}
+.ProseMirror .pm-image-resize-sw {
+  bottom: -5px;
+  left: -5px;
+  cursor: sw-resize;
+}
+.ProseMirror .pm-image-resize-se {
+  bottom: -5px;
+  right: -5px;
+  cursor: se-resize;
+}
 
 .ProseMirror .pm-image-view.pm-image-resizing {
   outline: 2px solid oklch(var(--p));

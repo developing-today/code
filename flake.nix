@@ -31,11 +31,10 @@ rec {
       inputs.flake-utils.follows = "flake-utils";
     };
     roc = {
-      url = "github:roc-lang/roc"; # ?shallow=1";
+      # old flake.nix was removed from roc-lang/roc main; official flake moved to roc-overlay
+      url = "github:roc-lang/roc-overlay"; # ?shallow=1";
       #inputs.nixpkgs.follows = "nixpkgs"; # https://roc.zulipchat.com/#narrow/channel/231634-beginners/topic/roc.20nix.20flake/near/553273845
-      # inputs.rust-overlay.follows = "rust-overlay";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.flake-compat.follows = "flake-compat";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     #hyprland-qtutils = {
     #   url = "github:hyprwm/hyprland-qtutils";
@@ -49,14 +48,9 @@ rec {
     #   inputs.systems.follows = "systems";
     #   inputs.hyprlang.follows = "hyprlang";
     # };
-    solaar = {
-      url = "https://flakehub.com/f/Svenum/Solaar-Flake/*.tar.gz"; # For latest stable version
-      #url = "https://flakehub.com/f/Svenum/Solaar-Flake/0.1.1.tar.gz" # uncomment line for solaar version 1.1.13
-      #url = "github:Svenum/Solaar-Flake/main"; # Uncomment line for latest unstable version
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
+    # solaar flake removed: module upstreamed into nixpkgs as programs.solaar
+    #url = "https://flakehub.com/f/Svenum/Solaar-Flake/0.1.1.tar.gz" # uncomment line for solaar version 1.1.13
+    #url = "github:Svenum/Solaar-Flake/main"; # Uncomment line for latest unstable version
     # TODO: ?? use git instead of github ?? "git+https://github.com/NixOS/nixpkgs"; #?shallow=1&ref=nixpkgs-unstable";
     #rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor"; #?shallow=1";
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules"; # ?shallow=1";
@@ -73,6 +67,9 @@ rec {
     microvm.url = "github:astro/microvm.nix"; # ?shallow=1";
     zen-browser.url = "github:0xc000022070/zen-browser-flake"; # ?shallow=1";
     nix-search.url = "github:diamondburned/nix-search"; # ?shallow=1";
+    esp-dev.url = "github:mirrexagon/nixpkgs-esp-dev/5287d6e1ca9e15ebd5113c41b9590c468e1e001b";
+    # ESP-IDF 6.0.1 packaging candidate; kept separate from the supported 5.5 toolchain.
+    esp-dev-6.url = "github:dvdvgt/nixpkgs-esp-dev/f9b1e211262a4cc9c1a265b227def56ef01c2d56";
     nix-flatpak.url = "github:gmodena/nix-flatpak"; # ?shallow=1";
     # determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/0.1"; # "; #?shallow=1
     ssh-to-age.url = "github:Mic92/ssh-to-age"; # ?shallow=1";
@@ -87,11 +84,12 @@ rec {
     # # TODO: update! way out of date even as of 2026-03
     unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
 
-    # actually 2026-03-14
-    nixpkgs.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
-    nixpkgs-25.url = "github:developing-today-forks/nixpkgs/2025-11-01_nixos-unstable"; # ?shallow=1";
+    # 2026-08-21: rebased fork patch (neededForBoot) onto latest master
+    # neededForBoot patch applied via patches/nixpkgs/neededforboot-nixos-unstable.patch (see lib/default.nix)
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
+    nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
     nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # channel branch: fully cached on cache.nixos.org (master is not)
     nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
 
     sops-nix = {
@@ -111,12 +109,12 @@ rec {
     };
     flake-utils = {
       # TODO: use this?
-      url = "https://flakehub.com/f/numtide/flake-utils/*.tar.gz"; # "; #?shallow=1
+      url = "github:numtide/flake-utils"; # ?shallow=1
       inputs.systems.follows = "systems";
     };
     flake-compat = {
       # TODO: use this?
-      url = "https://flakehub.com/f/edolstra/flake-compat/1.0.1.tar.gz"; # "; #?shallow=1
+      url = "github:edolstra/flake-compat"; # ?shallow=1
       flake = false;
     };
     gitignore = {

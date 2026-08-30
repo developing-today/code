@@ -300,9 +300,26 @@ let
       lib = _self;
     };
 
+  # nixpkgs source with repo-local patches applied (see patches/nixpkgs/).
+  # applyPatches needs a concrete system for its stdenv; use the host's.
+  patched-nixpkgs-src =
+    config:
+    config.inputs.nixpkgs.legacyPackages.${config.system}.applyPatches {
+      name = "nixpkgs-patched";
+      src = config.inputs.nixpkgs;
+      patches = [ (from-root "patches/nixpkgs/neededforboot-nixos-unstable.patch") ];
+    };
+
   make-nixos-from-config =
     config:
-    lib.nixosSystem {
+    let
+      src = patched-nixpkgs-src config;
+      # replicate nixpkgs flake's nixosSystem wrapper, but against the PATCHED
+      # source so nixos module files come from the patched tree
+      patched-lib = import (src + "/lib");
+    in
+    import (src + "/nixos/lib/eval-config.nix") {
+      lib = patched-lib;
       system = null;
       specialArgs = {
         inherit (config)
@@ -314,7 +331,15 @@ let
           lib
           ;
       };
-      modules = ensure-list config.host.init;
+      modules = ensure-list config.host.init ++ [
+        # keep pkgs.path / <nixpkgs> pointing at the patched tree
+        (
+          { ... }:
+          {
+            config.nixpkgs.flake.source = src.outPath;
+          }
+        )
+      ];
     };
 
   make-nixos-configurations = lib.mapAttrs (

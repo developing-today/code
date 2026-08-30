@@ -137,6 +137,7 @@ ensure_link() {
   _resolves() { [ -L "$link" ] && [ -e "$link" ] && \
                 [ "$(cd "$link" && pwd -P)" = "$(cd "$abstgt" && pwd -P)" ]; }
 
+  local used_absolute=0
   if _resolves; then
     ok "$rel -> $(readlink "$link")"
   else
@@ -144,6 +145,7 @@ ensure_link() {
     if _resolves; then
       ok "$rel -> $reltgt"
     else
+      used_absolute=1
       ln -sfn "$abstgt" "$link"
       if _resolves; then
         ok "$rel -> $abstgt  ${c_dim}(absolute: $reltgt does not reach it from here)${c_off}"
@@ -155,13 +157,26 @@ ensure_link() {
     fi
   fi
 
-  # Suppress the diff only if the path is tracked and now differs from HEAD.
-  if git -C "$wd" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+  # Suppress the diff ONLY when we fell back to an absolute path - that is a genuine
+  # clone-specific override (this checkout cannot reach the target relatively).
+  #
+  # If the RELATIVE default worked, any disk/index mismatch means the committed value is
+  # stale - a repository-level problem that should be fixed by committing the new default,
+  # not hidden per-clone. Flagging it here would silently mask the real fix, which has
+  # already happened twice during this layout migration.
+  if [ "$used_absolute" = "1" ] && git -C "$wd" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
     # Compare WORKTREE against INDEX only. Using `status` here would also fire for a
     # merely-staged-but-uncommitted path, which is not a local deviation at all.
     if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
       git -C "$wd" update-index --skip-worktree "$rel" 2>/dev/null \
         && info "${c_dim}  marked --skip-worktree; undo: git -C $wd update-index --no-skip-worktree $rel${c_off}"
+    fi
+  elif git -C "$wd" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
+      warn "$rel differs from its committed value - the tracked default looks stale."
+      info "${c_dim}    committed: $(git -C "$wd" show ":$rel" 2>/dev/null)${c_off}"
+      info "${c_dim}    on disk:   $(readlink "$link")${c_off}"
+      info "${c_dim}    If the new value is right, commit it: git -C $wd add $rel${c_off}"
     fi
   fi
 }

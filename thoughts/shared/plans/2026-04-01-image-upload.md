@@ -53,7 +53,7 @@ Add:
 
 2. Add `UploadResponse` struct (near other response structs):
    - `hash: String`
-   - `name: String`  
+   - `name: String`
    - `url: String`
 
 3. Add `upload_handler` function:
@@ -173,7 +173,7 @@ Note: Testing actual paste/drop in Playwright is complex (requires `page.dispatc
 **Commands** (sequential):
 1. `just build` — full web build
 2. `just test-web-unit` — all TS unit tests pass
-3. `just test-web-typecheck` — no TS errors  
+3. `just test-web-typecheck` — no TS errors
 4. `just test-e2e-firefox` — all E2E tests pass
 5. `touch src/web/assets.rs` — force rust-embed recompile
 6. Individual nix checks: `nix build -L .#checks.x86_64-linux.id-test-web-unit` etc.

@@ -1366,11 +1366,7 @@ async fn images_list_handler(State(state): State<AppState>) -> Response {
         // Check content-type metadata via tag store
         let ct_tags = state
             .tag_store
-            .get_by_key(
-                &state.tag_store.global,
-                name.as_bytes(),
-                b"content-type",
-            )
+            .get_by_key(&state.tag_store.global, name.as_bytes(), b"content-type")
             .await
             .unwrap_or_default();
 

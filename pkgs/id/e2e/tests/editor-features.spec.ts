@@ -1256,9 +1256,12 @@ test.describe("Strikethrough", () => {
 
     // The strikethrough button should be visible in the menu bar
     // It has title containing "strikethrough" and label "~~S~~"
-    const strikeBtn = page.locator(".ProseMirror-menubar .ProseMirror-menu-active, .ProseMirror-menubar .ProseMirror-menuitem", {
-      hasText: "~~S~~",
-    });
+    const strikeBtn = page.locator(
+      ".ProseMirror-menubar .ProseMirror-menu-active, .ProseMirror-menubar .ProseMirror-menuitem",
+      {
+        hasText: "~~S~~",
+      },
+    );
     await expect(strikeBtn.first()).toBeVisible({ timeout: 10_000 });
   });
 });
@@ -1595,10 +1598,7 @@ test.describe("Tables", () => {
 // =============================================================================
 
 test.describe("Image Alt-Text", () => {
-  test("image nodeView renders and shows alt-text popover on click", async ({
-    page,
-    baseURL,
-  }) => {
+  test("image nodeView renders and shows alt-text popover on click", async ({ page, baseURL }) => {
     // Create a .md file with an image node
     const mdName = `alt-text-test-${Date.now()}.md`;
 
@@ -1662,10 +1662,7 @@ test.describe("Image Alt-Text", () => {
 // =============================================================================
 
 test.describe("Image Resize", () => {
-  test("image with dimensions roundtrips through save and reload", async ({
-    page,
-    baseURL,
-  }) => {
+  test("image with dimensions roundtrips through save and reload", async ({ page, baseURL }) => {
     // Create a .md file with an image that has width/height
     const mdName = `resize-test-${Date.now()}.md`;
 
@@ -1729,10 +1726,7 @@ test.describe("Image Resize", () => {
 // =============================================================================
 
 test.describe("Image Browser", () => {
-  test("image browser API returns uploaded images", async ({
-    page,
-    baseURL,
-  }) => {
+  test("image browser API returns uploaded images", async ({ page, baseURL }) => {
     // Upload an image first
     const PIXEL_PNG = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
@@ -1767,10 +1761,7 @@ test.describe("Image Browser", () => {
     expect(found?.url).toMatch(/^\/blob\//);
   });
 
-  test("browse images button visible in toolbar", async ({
-    page,
-    baseURL,
-  }) => {
+  test("browse images button visible in toolbar", async ({ page, baseURL }) => {
     // Create a markdown file to get the toolbar
     const mdName = `browser-btn-${Date.now()}.md`;
     const newResp = await page.request.post(`${baseURL}/api/new`, {

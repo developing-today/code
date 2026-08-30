@@ -31,8 +31,8 @@
 //! - `strikethrough`: Strikethrough text (GFM `~~text~~`)
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
-use comrak::{format_commonmark, parse_document, Arena, Options};
-use serde_json::{json, Value};
+use comrak::{Arena, Options, format_commonmark, parse_document};
+use serde_json::{Value, json};
 
 /// Error type for markdown conversion.
 #[derive(Debug)]
@@ -1147,10 +1147,12 @@ mod tests {
 
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], "code_block");
-        assert!(content[0]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("function test()"));
+        assert!(
+            content[0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("function test()")
+        );
     }
 
     #[test]
