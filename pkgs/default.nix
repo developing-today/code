@@ -11,6 +11,13 @@ rec {
   compiz = pkgs.callPackage ./compiz { };
   hyprbars = pkgs.callPackage ./hyprbars { };
 
+  # Mojo language (prebuilt upstream wheels; unfree)
+  mojo = pkgs.callPackage ./mojo { };
+
+  # Agent harnesses not yet in nixpkgs
+  hermes-agent = pkgs.callPackage ./hermes-agent { };
+  pi-coding-agent = pkgs.callPackage ./pi-coding-agent { };
+
   # Personal scripts
   pass-wofi = pkgs.callPackage ./pass-wofi { };
   xpo = pkgs.callPackage ./xpo { };

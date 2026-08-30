@@ -263,6 +263,14 @@ rec {
       url = "github:anomalyco/opencode";
       # inputs.nixpkgs.follows = "nixpkgs-master";
     };
+    # OMP ("Oh My Pi") coding agent harness. Upstream ships an official flake
+    # exposing packages.<system>.omp plus overlay/nixos/home-manager modules.
+    # NOTE: the npm packages named `omp` and `oh-my-pi` are unrelated squats;
+    # upstream publishes as @oh-my-pi/pi-coding-agent.
+    oh-my-pi = {
+      url = "github:can1357/oh-my-pi";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
     id-nixpkgs.follows = "nixpkgs-master";
     id-systems.follows = "systems";
@@ -400,7 +408,11 @@ rec {
     # extraOptions = ''
     #   flake-registry = ""
     # '';
-    auto-optimise-store = true;
+    # Disabled: /nix is ext4 without `large_dir`, so /nix/store/.links has hit the
+    # 2-level htree limit (~8.7M entries, 829MB) and link() returns ENOSPC despite
+    # ~2TB free. Dedup isn't worth it at 38% disk usage. Run `nix store optimise`
+    # manually if space ever gets tight.
+    auto-optimise-store = false;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?

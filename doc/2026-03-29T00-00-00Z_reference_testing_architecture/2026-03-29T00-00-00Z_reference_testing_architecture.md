@@ -67,6 +67,7 @@ The project has six distinct test layers, from fastest/narrowest to slowest/broa
 | Other files | ~50 | Various (put, get, list, peers, tag, serve, mod) |
 
 **How to run:**
+
 ```bash
 just test-unit              # cargo test --all-features --lib
 just check-one test-unit    # Sandboxed (nix build .#checks...test-unit)
@@ -83,6 +84,7 @@ just check-one test-unit    # Sandboxed (nix build .#checks...test-unit)
 **Where defined:** `tests/cli_integration.rs`
 
 **What they test:**
+
 - File operations: put, get, find, list, cat, show, peek
 - Tag operations: set, delete, list, search with structured query syntax
 - Remote operations: node ID detection, client/server protocol
@@ -92,6 +94,7 @@ just check-one test-unit    # Sandboxed (nix build .#checks...test-unit)
 **Network requirement:** The `serve_tests` subset requires network access (bind/listen on loopback). These are **skipped in the sandbox** `test-int` check but **run in the VM** via `nixos-integration` — so `just test-nix` (`nix flake check`) covers everything.
 
 **How to run:**
+
 ```bash
 just test-int               # cargo test --all-features --test cli_integration (includes serve_tests)
 just test-int-sandbox       # Same but skip serve_tests (for sandbox environments)
@@ -108,15 +111,18 @@ just test-nixos-integration # VM: runs serve_tests (nix build .#checks...nixos-i
 **What:** Bun-native unit tests for frontend TypeScript code.
 
 **Where defined:**
+
 - `web/src/cursor-utils.test.ts` — 76 test/it blocks (cursor position calculation, selection ranges)
 - `web/src/editor.test.ts` — 40 test/it blocks (ProseMirror editor initialization, state management)
 
 **What they test:**
+
 - Cursor position calculation across ProseMirror document nodes
 - Selection range handling for collaborative editing
 - Editor state initialization and document model
 
 **How to run:**
+
 ```bash
 just test-web-unit          # cd web && bun test
 just check-one test-web-unit  # Sandboxed (nix build .#checks...test-web-unit)
@@ -133,6 +139,7 @@ just check-one test-web-unit  # Sandboxed (nix build .#checks...test-web-unit)
 **Where defined:** `web/tsconfig.json`
 
 **How to run:**
+
 ```bash
 just test-web-typecheck     # cd web && bun run typecheck
 just check-one test-web-typecheck  # Sandboxed (nix build .#checks...test-web-typecheck)
@@ -151,6 +158,7 @@ just check-one test-web-typecheck  # Sandboxed (nix build .#checks...test-web-ty
 **Configuration:** `e2e/playwright.config.ts`
 
 **Architecture:**
+
 - Each browser project (Chromium, Firefox) gets its own ephemeral server instance on a different port to avoid shared state
 - Chromium server: port 4173
 - Firefox server: port 4174
@@ -160,24 +168,24 @@ just check-one test-web-typecheck  # Sandboxed (nix build .#checks...test-web-ty
 
 #### basic.spec.ts — Web UI Fundamentals (19 tests)
 
-| Test Group | Tests | What It Covers |
-|-----------|-------|----------------|
-| **Home Page** | 7 | Page title, file list card, new file form, search input, show-deleted checkbox, theme toggle in footer, empty state |
-| **File Creation** | 5 | Create file → navigate to editor, editor has rename/copy buttons, tag panel, ProseMirror editor element |
-| **Navigation** | 2 | Editor → file list navigation, created file appears in list |
-| **Theme** | 2 | Default `data-theme="sneak"` attribute, theme switcher buttons on editor page |
-| **Editor Features** | 3 | Save button, download dropdown, editor container data attributes |
+| Test Group          | Tests | What It Covers                                                                                                      |
+| ------------------- | ----- | ------------------------------------------------------------------------------------------------------------------- |
+| **Home Page**       | 7     | Page title, file list card, new file form, search input, show-deleted checkbox, theme toggle in footer, empty state |
+| **File Creation**   | 5     | Create file → navigate to editor, editor has rename/copy buttons, tag panel, ProseMirror editor element             |
+| **Navigation**      | 2     | Editor → file list navigation, created file appears in list                                                         |
+| **Theme**           | 2     | Default `data-theme="sneak"` attribute, theme switcher buttons on editor page                                       |
+| **Editor Features** | 3     | Save button, download dropdown, editor container data attributes                                                    |
 
 #### websocket.spec.ts — WebSocket + Real-time Collaboration (19 tests)
 
-| Test Group | Tests | What It Covers |
-|-----------|-------|----------------|
-| **WS Connection + Editor Ready** | 4 | Editor status shows "connected" after WS handshake, ProseMirror is interactive after WS init, connecting state shown initially, initial document received via WS Init message |
-| **WS Disconnect + Reconnect** | 4 | Detects disconnect → shows "disconnected" status, automatic reconnect, editor functional after reconnect, survives multiple disconnect/reconnect cycles |
-| **Tag WS Live Updates** | 3 | Tag added via API appears without reload, tag removed disappears without reload, tag changes for different file don't affect current editor |
-| **Editor Typing + Save** | 3 | Type into ProseMirror, save file with content persistence, Ctrl+S triggers save |
-| **Error Recovery** | 2 | Editor recovers from WS error event, clean disconnect (code 1000) doesn't trigger reconnect |
-| **Multi-User Collab** | 3 | Two tabs open same file simultaneously, edits from one user appear in other's editor, bidirectional editing works |
+| Test Group                       | Tests | What It Covers                                                                                                                                                                |
+| -------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **WS Connection + Editor Ready** | 4     | Editor status shows "connected" after WS handshake, ProseMirror is interactive after WS init, connecting state shown initially, initial document received via WS Init message |
+| **WS Disconnect + Reconnect**    | 4     | Detects disconnect → shows "disconnected" status, automatic reconnect, editor functional after reconnect, survives multiple disconnect/reconnect cycles                       |
+| **Tag WS Live Updates**          | 3     | Tag added via API appears without reload, tag removed disappears without reload, tag changes for different file don't affect current editor                                   |
+| **Editor Typing + Save**         | 3     | Type into ProseMirror, save file with content persistence, Ctrl+S triggers save                                                                                               |
+| **Error Recovery**               | 2     | Editor recovers from WS error event, clean disconnect (code 1000) doesn't trigger reconnect                                                                                   |
+| **Multi-User Collab**            | 3     | Two tabs open same file simultaneously, edits from one user appear in other's editor, bidirectional editing works                                                             |
 
 #### Fresh Browser Fixture (websocket.spec.ts only)
 
@@ -190,15 +198,18 @@ const IS_NIX_BUILD = !!process.env.NIX_BUILD_TOP;
 ```
 
 When `NIX_BUILD_TOP` is set (automatically by nix inside the build sandbox):
+
 - `projects = [firefoxProject]` — Chromium is excluded entirely
 - `webServers = [firefoxServer]` — only Firefox's server starts
 - Offline flags added: `--no-mdns --no-relay --no-gossip`
 
 When NOT set (dev machine, `just test-e2e`):
+
 - Both Chromium and Firefox projects run
 - No offline flags
 
 **How to run:**
+
 ```bash
 # Developer (both browsers, 146 tests)
 just test-e2e                   # Builds binary first, then runs Playwright
@@ -224,6 +235,7 @@ just check-test-e2e                 # nix build .#checks.x86_64-linux.test-e2e
 **Where defined:** `nix/tests/serve-test.nix`
 
 **What it tests:**
+
 1. **Boot & readiness:** systemd unit starts, port opens
 2. **Home page:** HTML contains "Files" heading
 3. **Static assets:** `/assets/manifest.json` served correctly
@@ -247,6 +259,7 @@ just check-test-e2e                 # nix build .#checks.x86_64-linux.test-e2e
 **Important: This is NOT Playwright.** It uses `chromium --headless --dump-dom` which renders the page (including JavaScript execution), then prints the final DOM as HTML to stdout. The test parses this HTML with string matching. There is **no interactivity** — no clicking, no typing, no WebSocket connections, no page navigation, no multi-tab scenarios.
 
 **What it tests (using `chromium --headless --dump-dom`):**
+
 1. Home page renders with "Files" heading and `new-file-name` form
 2. Created file appears in rendered file list
 3. Editor page has `editor` element and filename
@@ -257,6 +270,7 @@ just check-test-e2e                 # nix build .#checks.x86_64-linux.test-e2e
 **Browser:** Chromium only, via `chromium --headless --disable-gpu --no-sandbox --dump-dom`. This validates JS execution in a real browser but is NOT interactive (no clicks, no WebSocket, no typing).
 
 **How to run:**
+
 ```bash
 just test-nixos-serve           # nix build -L .#checks.x86_64-linux.nixos-serve
 just test-nixos-e2e             # nix build -L .#checks.x86_64-linux.nixos-e2e
@@ -295,14 +309,15 @@ just test-nix                   # nix flake check — all 27 checks including VM
 └─────────────────────────────────────────────────────────┘
 ```
 
-| VM | Role | Details |
-|----|------|---------|
-| `chromium_server` | `id` service on :4173 | systemd-managed, ephemeral, P2P disabled |
-| `firefox_server` | `id` service on :4174 | systemd-managed, ephemeral, P2P disabled |
-| `chromium_client` | Runs Chromium Playwright | 4GB RAM, 2 cores, Node.js + Playwright |
-| `firefox_client` | Runs Firefox Playwright | 4GB RAM, 2 cores, Node.js + Playwright |
+| VM                | Role                     | Details                                  |
+| ----------------- | ------------------------ | ---------------------------------------- |
+| `chromium_server` | `id` service on :4173    | systemd-managed, ephemeral, P2P disabled |
+| `firefox_server`  | `id` service on :4174    | systemd-managed, ephemeral, P2P disabled |
+| `chromium_client` | Runs Chromium Playwright | 4GB RAM, 2 cores, Node.js + Playwright   |
+| `firefox_client`  | Runs Firefox Playwright  | 4GB RAM, 2 cores, Node.js + Playwright   |
 
 **What it tests:**
+
 - The full Playwright test suite (basic.spec.ts + websocket.spec.ts) against both browsers
 - Server-client communication across VMs over the virtual network
 - WebSocket collaboration: connections, ProseMirror steps broadcast, cursor sharing
@@ -310,12 +325,14 @@ just test-nix                   # nix flake check — all 27 checks including VM
 - All the same things `just test-e2e` tests, but hermetically in VMs
 
 **What enables this:**
+
 - `playwright.config.ts` has a **VM test mode** (`PLAYWRIGHT_VM_TEST=1`): enables both browsers, disables local webServer (servers are on separate VMs), uses `CHROMIUM_BASE_URL`/`FIREFOX_BASE_URL` env vars for cross-VM URLs
 - `e2eTestRunner` nix derivation: pre-built `e2e/` directory with bun dependencies resolved offline, copied to a writable `/tmp/e2e` at test time
 - `playwrightBrowsers`: nix-provided browser binaries (from `playwright-driver.browsers`)
 - Chromium uses `--no-sandbox --no-zygote --disable-dev-shm-usage --disable-gpu` flags (set via `CHROMIUM_NIX_ARGS` in config)
 
 **Test flow:**
+
 1. All 4 VMs boot and join the virtual network
 2. Wait for `id.service` on both servers, verify HTTP reachable via `curl`
 3. Copy `e2eTestRunner` to writable `/tmp/e2e` on each client VM
@@ -324,6 +341,7 @@ just test-nix                   # nix flake check — all 27 checks including VM
 6. 10-minute global timeout (actual runtime: ~170 seconds)
 
 **How to run:**
+
 ```bash
 just test-nixos-playwright-e2e  # nix build .#checks...nixos-playwright-e2e
 
@@ -341,17 +359,18 @@ just test-nix                   # nix flake check — all 27 checks
 
 Each cell shows: ✅ works / ⛔ skipped / ❌ crashes / — not applicable
 
-| Test Set | `just test-e2e` | `just check-test-e2e` (sandbox) | `just test-nixos-e2e` (VM) | `just test-nixos-playwright-e2e` (4-VM) |
-|----------|-----------------|--------------------------------|----------------------------|-----------------------------------------|
-| basic.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — | ✅ Chromium ✅ Firefox |
-| websocket.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox | — | ✅ Chromium ✅ Firefox |
-| nixos-e2e DOM dumps (~10) | — | — | ✅ Chromium (`--dump-dom`, not interactive) | — |
-| **Total per-browser** | **38 + 38 = 76** | **0 + 38 = 38** | **~10 Chromium** | **38 + 38 = 76** |
-| **Grand total** | **146** | **78** (Firefox) | **~10** | **146** (Chromium + Firefox) |
+| Test Set                     | `just test-e2e`        | `just check-test-e2e` (sandbox) | `just test-nixos-e2e` (VM)                  | `just test-nixos-playwright-e2e` (4-VM) |
+| ---------------------------- | ---------------------- | ------------------------------- | ------------------------------------------- | --------------------------------------- |
+| basic.spec.ts (19 tests)     | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox          | —                                           | ✅ Chromium ✅ Firefox                  |
+| websocket.spec.ts (19 tests) | ✅ Chromium ✅ Firefox | ⛔ Chromium ✅ Firefox          | —                                           | ✅ Chromium ✅ Firefox                  |
+| nixos-e2e DOM dumps (~10)    | —                      | —                               | ✅ Chromium (`--dump-dom`, not interactive) | —                                       |
+| **Total per-browser**        | **38 + 38 = 76**       | **0 + 38 = 38**                 | **~10 Chromium**                            | **38 + 38 = 76**                        |
+| **Grand total**              | **146**                | **78** (Firefox)                | **~10**                                     | **146** (Chromium + Firefox)            |
 
 ### Why Chromium Fails in Nix Build Sandbox
 
 Chromium's multi-process architecture relies on kernel features that the nix build sandbox restricts:
+
 - **Namespaces:** Chromium spawns sandboxed renderer processes using user namespaces. Nix sandbox already uses namespaces, creating conflicts.
 - **Process management:** Chromium's zygote process forks renderers. The sandbox's PID namespace and seccomp filters interfere.
 - **/proc access:** Chromium reads `/proc/self/exe` and other procfs entries that behave differently in the sandbox.
@@ -368,29 +387,29 @@ No combination of flags (`--no-sandbox`, `--no-zygote`, `--disable-gpu`, `--disa
 
 These run as part of `just ci` and `just test-nix` (`nix flake check`):
 
-| Check | Tool | What | just command | nix check name |
-|-------|------|------|-------------|----------------|
-| Rust formatting | rustfmt | `*.rs` files | `just cargo-fmt-check` | `rustfmt-check` |
-| TS/JS/CSS/JSON formatting | biome | `*.ts`, `*.js`, `*.css`, `*.json` | `just web-fmt-check` | `biome-check` |
-| Rust linting | clippy | All clippy lints | `just clippy-lint` | `clippy-lint` |
-| TS/JS linting | biome | lint rules | `just web-lint` | `web-lint` |
-| Nix formatting | nixfmt | `*.nix` files | via `nix fmt` | `nix-fmt-check` |
-| Nix linting | statix | Anti-patterns in nix | — | `statix-check` |
-| Shell formatting | shfmt | `*.sh` files | — | `shfmt-check` |
-| Shell linting | shellcheck | `*.sh` files | — | `shellcheck-check` |
-| TOML validation | taplo | `*.toml` files | — | `taplo-check` |
-| Multi-formatter | treefmt | Orchestrates all formatters | `just treefmt` | `treefmt-check` |
-| Cargo check | cargo check | Type checking without codegen | `just cargo-check` | `cargo-check` |
-| Rust docs | cargo doc | Build documentation | `just doc` | `doc` |
+| Check                     | Tool        | What                              | just command           | nix check name     |
+| ------------------------- | ----------- | --------------------------------- | ---------------------- | ------------------ |
+| Rust formatting           | rustfmt     | `*.rs` files                      | `just cargo-fmt-check` | `rustfmt-check`    |
+| TS/JS/CSS/JSON formatting | biome       | `*.ts`, `*.js`, `*.css`, `*.json` | `just web-fmt-check`   | `biome-check`      |
+| Rust linting              | clippy      | All clippy lints                  | `just clippy-lint`     | `clippy-lint`      |
+| TS/JS linting             | biome       | lint rules                        | `just web-lint`        | `web-lint`         |
+| Nix formatting            | nixfmt      | `*.nix` files                     | via `nix fmt`          | `nix-fmt-check`    |
+| Nix linting               | statix      | Anti-patterns in nix              | —                      | `statix-check`     |
+| Shell formatting          | shfmt       | `*.sh` files                      | —                      | `shfmt-check`      |
+| Shell linting             | shellcheck  | `*.sh` files                      | —                      | `shellcheck-check` |
+| TOML validation           | taplo       | `*.toml` files                    | —                      | `taplo-check`      |
+| Multi-formatter           | treefmt     | Orchestrates all formatters       | `just treefmt`         | `treefmt-check`    |
+| Cargo check               | cargo check | Type checking without codegen     | `just cargo-check`     | `cargo-check`      |
+| Rust docs                 | cargo doc   | Build documentation               | `just doc`             | `doc`              |
 
 ---
 
 ## Combined Commands
 
-| Command | What It Runs | E2E? | Network? |
-|---------|-------------|------|----------|
-| `just check` | `fix` (auto-format) → `ci` | No | Yes (serve_tests) |
-| `just ci` | fmt checks → clippy → web-lint → test-sandbox → web-unit → typecheck → doc → build → release | No | No (sandbox-safe) |
+| Command         | What It Runs                                                                                                                      | E2E?                                                         | Network?                              |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------- |
+| `just check`    | `fix` (auto-format) → `ci`                                                                                                        | No                                                           | Yes (serve_tests)                     |
+| `just ci`       | fmt checks → clippy → web-lint → test-sandbox → web-unit → typecheck → doc → build → release                                      | No                                                           | No (sandbox-safe)                     |
 | `just test-nix` | `nix flake check` — all 27 checks (lint + test + E2E Firefox + NixOS VM tests + VM Playwright + VM integration — runs everything) | Yes (Firefox sandbox + VM both browsers + Chromium DOM dump) | No (sandboxed, serve_tests run in VM) |
 
 ---
@@ -399,67 +418,69 @@ These run as part of `just ci` and `just test-nix` (`nix flake check`):
 
 All 27 checks that run in the nix build sandbox:
 
-| # | Check Name | What It Does |
-|---|-----------|-------------|
-| 1 | `default` | Runs `just ci` (combined lint + test + build) |
-| 2 | `cargo-fmt-check` | rustfmt `--check` on all `.rs` files |
-| 3 | `web-fmt-check` | biome format check on TS/JS/CSS/JSON |
-| 4 | `clippy-lint` | Clippy lints on all Rust code |
-| 5 | `web-lint` | biome lint check on TS/JS |
-| 6 | `test` | `cargo test --skip serve_tests` (all Rust tests, sandbox-safe) |
-| 7 | `test-unit` | `cargo test --lib` (unit tests only) |
-| 8 | `test-int` | `cargo test --test cli_integration --skip serve_tests` |
-| 9 | `test-web` | TS unit + typecheck + Rust tests (sandbox-safe) |
-| 10 | `test-web-unit` | `bun test` (TypeScript unit tests) |
-| 11 | `test-web-typecheck` | `tsc --noEmit` |
-| 12 | `doc` | `cargo doc --no-deps` |
-| 13 | `cargo-check` | `cargo check` |
-| 14 | `test-e2e` | Full Playwright suite — **Firefox only** in sandbox (78 tests) |
-| 15 | `nix-fmt-check` | `nixfmt --check` on all `.nix` files |
-| 16 | `treefmt-check` | treefmt `--ci` orchestrated format check |
-| 17 | `biome-check` | biome format on TS/JS/CSS/JSON (standalone) |
-| 18 | `rustfmt-check` | rustfmt `--check` (standalone) |
-| 19 | `statix-check` | statix lint on `.nix` files |
-| 20 | `shfmt-check` | shfmt format check on `.sh` files |
-| 21 | `shellcheck-check` | shellcheck lint on `.sh` files |
-| 22 | `taplo-check` | taplo validation on `.toml` files |
-| 23 | `nixos-serve` | NixOS VM: HTTP API test (~15 assertions) |
-| 24 | `nixos-e2e` | NixOS VM: Chromium `--dump-dom` DOM rendering (~10 assertions, **not Playwright**) |
-| 25 | `nixos-playwright-e2e` | NixOS 4-VM: Full Playwright suite, Chromium + Firefox (146 interactive tests) |
-| 26 | `nixos-integration` | NixOS VM: Full cli_integration test suite including serve_tests (~83 tests) |
-| 27 | — | (Nix evaluates the build derivations as implicit checks) |
+| #   | Check Name             | What It Does                                                                       |
+| --- | ---------------------- | ---------------------------------------------------------------------------------- |
+| 1   | `default`              | Runs `just ci` (combined lint + test + build)                                      |
+| 2   | `cargo-fmt-check`      | rustfmt `--check` on all `.rs` files                                               |
+| 3   | `web-fmt-check`        | biome format check on TS/JS/CSS/JSON                                               |
+| 4   | `clippy-lint`          | Clippy lints on all Rust code                                                      |
+| 5   | `web-lint`             | biome lint check on TS/JS                                                          |
+| 6   | `test`                 | `cargo test --skip serve_tests` (all Rust tests, sandbox-safe)                     |
+| 7   | `test-unit`            | `cargo test --lib` (unit tests only)                                               |
+| 8   | `test-int`             | `cargo test --test cli_integration --skip serve_tests`                             |
+| 9   | `test-web`             | TS unit + typecheck + Rust tests (sandbox-safe)                                    |
+| 10  | `test-web-unit`        | `bun test` (TypeScript unit tests)                                                 |
+| 11  | `test-web-typecheck`   | `tsc --noEmit`                                                                     |
+| 12  | `doc`                  | `cargo doc --no-deps`                                                              |
+| 13  | `cargo-check`          | `cargo check`                                                                      |
+| 14  | `test-e2e`             | Full Playwright suite — **Firefox only** in sandbox (78 tests)                     |
+| 15  | `nix-fmt-check`        | `nixfmt --check` on all `.nix` files                                               |
+| 16  | `treefmt-check`        | treefmt `--ci` orchestrated format check                                           |
+| 17  | `biome-check`          | biome format on TS/JS/CSS/JSON (standalone)                                        |
+| 18  | `rustfmt-check`        | rustfmt `--check` (standalone)                                                     |
+| 19  | `statix-check`         | statix lint on `.nix` files                                                        |
+| 20  | `shfmt-check`          | shfmt format check on `.sh` files                                                  |
+| 21  | `shellcheck-check`     | shellcheck lint on `.sh` files                                                     |
+| 22  | `taplo-check`          | taplo validation on `.toml` files                                                  |
+| 23  | `nixos-serve`          | NixOS VM: HTTP API test (~15 assertions)                                           |
+| 24  | `nixos-e2e`            | NixOS VM: Chromium `--dump-dom` DOM rendering (~10 assertions, **not Playwright**) |
+| 25  | `nixos-playwright-e2e` | NixOS 4-VM: Full Playwright suite, Chromium + Firefox (146 interactive tests)      |
+| 26  | `nixos-integration`    | NixOS VM: Full cli_integration test suite including serve_tests (~83 tests)        |
+| 27  | —                      | (Nix evaluates the build derivations as implicit checks)                           |
 
 ---
 
 ## Environment Comparison
 
-| Property | `just test-*` (dev shell) | `just test-nix` (`nix flake check`) | `just check-one *` (sandbox) | `just test-nixos-*` (VM) | `just test-nixos-playwright-e2e` (4-VM) |
-|----------|--------------------------|-------------------------------------|------------------------------|---------------------------|-------------------------------|
-| **Runs in** | Host OS | Nix build sandbox | Nix build sandbox | NixOS VM (QEMU/KVM) | 4 NixOS VMs (QEMU/KVM) |
-| **Network** | Full | None | None | Loopback only | Virtual network (inter-VM) |
-| **Filesystem** | Full | Read-only source + tmp | Read-only source + tmp | Full VM filesystem | Full VM filesystem |
-| **Kernel features** | Full | Restricted (namespaces, seccomp) | Restricted (namespaces, seccomp) | Full Linux kernel | Full Linux kernel |
-| **Chromium** | ✅ Works | ❌ Hangs (kernel restrictions) | ❌ Hangs (kernel restrictions) | ✅ Works (`--dump-dom` only) | ✅ Works (full Playwright) |
-| **Firefox** | ✅ Works | ✅ Works | ✅ Works | Not installed | ✅ Works (full Playwright) |
-| **What runs** | Individual test sets | All 27 checks (lint + test + E2E + VM) | Individual check | NixOS VM test | Full Playwright suite (146 tests) |
-| **Binary source** | `cargo build` (local) | `cargo build` (in sandbox) | `cargo build` (in sandbox) | `just build-nix` (nix package) | `just build-nix` (nix package) |
-| **Browser source** | System/nix dev shell | `playwright-driver.browsers` (nix store) | `playwright-driver.browsers` (nix store) | `pkgs.chromium` (system package) | `playwright-driver.browsers` (nix store) |
-| **Server mode** | `--ephemeral` | `--ephemeral --no-mdns --no-relay --no-gossip` | `--ephemeral --no-mdns --no-relay --no-gossip` | systemd `services.id` (ephemeral, no P2P) | systemd `services.id` (ephemeral, no P2P) |
-| **Reproducible** | Mostly (nix shell tools) | Yes (hermetic) | Yes (hermetic) | Yes (hermetic VM) | Yes (hermetic VM) |
-| **RAM required** | ~500MB | ~2GB+ (cargo build + VM tests) | ~2GB (cargo build) | ~2GB per VM | ~4GB per client VM (×2), ~512MB per server VM (×2) |
-| **Runtime** | ~1.5 min (E2E) | ~15+ min (all checks + VM tests) | ~10+ min (cargo build + E2E) | ~3–5 min per VM test | ~3 min (boot + 146 tests) |
+| Property            | `just test-*` (dev shell) | `just test-nix` (`nix flake check`)            | `just check-one *` (sandbox)                   | `just test-nixos-*` (VM)                  | `just test-nixos-playwright-e2e` (4-VM)            |
+| ------------------- | ------------------------- | ---------------------------------------------- | ---------------------------------------------- | ----------------------------------------- | -------------------------------------------------- |
+| **Runs in**         | Host OS                   | Nix build sandbox                              | Nix build sandbox                              | NixOS VM (QEMU/KVM)                       | 4 NixOS VMs (QEMU/KVM)                             |
+| **Network**         | Full                      | None                                           | None                                           | Loopback only                             | Virtual network (inter-VM)                         |
+| **Filesystem**      | Full                      | Read-only source + tmp                         | Read-only source + tmp                         | Full VM filesystem                        | Full VM filesystem                                 |
+| **Kernel features** | Full                      | Restricted (namespaces, seccomp)               | Restricted (namespaces, seccomp)               | Full Linux kernel                         | Full Linux kernel                                  |
+| **Chromium**        | ✅ Works                  | ❌ Hangs (kernel restrictions)                 | ❌ Hangs (kernel restrictions)                 | ✅ Works (`--dump-dom` only)              | ✅ Works (full Playwright)                         |
+| **Firefox**         | ✅ Works                  | ✅ Works                                       | ✅ Works                                       | Not installed                             | ✅ Works (full Playwright)                         |
+| **What runs**       | Individual test sets      | All 27 checks (lint + test + E2E + VM)         | Individual check                               | NixOS VM test                             | Full Playwright suite (146 tests)                  |
+| **Binary source**   | `cargo build` (local)     | `cargo build` (in sandbox)                     | `cargo build` (in sandbox)                     | `just build-nix` (nix package)            | `just build-nix` (nix package)                     |
+| **Browser source**  | System/nix dev shell      | `playwright-driver.browsers` (nix store)       | `playwright-driver.browsers` (nix store)       | `pkgs.chromium` (system package)          | `playwright-driver.browsers` (nix store)           |
+| **Server mode**     | `--ephemeral`             | `--ephemeral --no-mdns --no-relay --no-gossip` | `--ephemeral --no-mdns --no-relay --no-gossip` | systemd `services.id` (ephemeral, no P2P) | systemd `services.id` (ephemeral, no P2P)          |
+| **Reproducible**    | Mostly (nix shell tools)  | Yes (hermetic)                                 | Yes (hermetic)                                 | Yes (hermetic VM)                         | Yes (hermetic VM)                                  |
+| **RAM required**    | ~500MB                    | ~2GB+ (cargo build + VM tests)                 | ~2GB (cargo build)                             | ~2GB per VM                               | ~4GB per client VM (×2), ~512MB per server VM (×2) |
+| **Runtime**         | ~1.5 min (E2E)            | ~15+ min (all checks + VM tests)               | ~10+ min (cargo build + E2E)                   | ~3–5 min per VM test                      | ~3 min (boot + 146 tests)                          |
 
 ---
 
 ## Nix App vs Nix Check — When to Use Which
 
 **`just test-nix`** (maximum coverage, aliases: `test-full`, `check-nix`, `nix-check`):
+
 - Runs `nix flake check` — all 27 checks including VM Playwright and VM integration (both browsers, serve_tests)
 - Hermetic and reproducible — **runs everything**
 - ~15+ min (cargo build + tests + VM boot)
 - **Use for:** Pre-release verification, maximum confidence, CI
 
 **`just test-e2e`** (fast development, both browsers):
+
 - Both Chromium and Firefox on the host
 - Uses locally built binary (`cargo build`)
 - Full 146 tests
@@ -467,6 +488,7 @@ All 27 checks that run in the nix build sandbox:
 - **Use for:** Full browser coverage during development
 
 **`just check-test-e2e`** (sandbox E2E, Firefox only):
+
 - Builds everything from scratch inside nix sandbox (`nix build .#checks...test-e2e`)
 - Firefox only (Chromium crashes in sandbox)
 - 78 tests
@@ -474,6 +496,7 @@ All 27 checks that run in the nix build sandbox:
 - **Use for:** CI/reproducible verification that E2E tests pass
 
 **`just test-nixos-e2e`** (VM DOM smoke test):
+
 - Spins up full NixOS VM (`nix build .#checks...nixos-e2e`)
 - Chromium `--dump-dom` only (~10 DOM structure assertions, **not interactive**)
 - No clicking, no typing, no WebSocket, no navigation — just renders page and checks HTML output
@@ -481,6 +504,7 @@ All 27 checks that run in the nix build sandbox:
 - **Use for:** Fast smoke test — validating the NixOS module, systemd integration, and that JS renders correct DOM
 
 **`just test-nixos-playwright-e2e`** (4-VM Playwright):
+
 - Spins up 4 NixOS VMs: 2 servers + 2 clients (`nix build .#checks...nixos-playwright-e2e`)
 - Full Playwright suite, both Chromium AND Firefox (146 interactive tests)
 - Exercises WebSocket collaboration, multi-user editing, all UI interactions
@@ -489,6 +513,7 @@ All 27 checks that run in the nix build sandbox:
 - **Use for:** Complete E2E validation when you need hermetic, reproducible, both-browser Playwright coverage
 
 **`just test-nixos-integration`** (VM integration):
+
 - Spins up 1 NixOS VM (2GB RAM, 2 cores) (`nix build .#checks...nixos-integration`)
 - Runs the full `cli_integration` test binary including `serve_tests` (~83 tests)
 - Uses pre-built test binary (`integrationTestRunner`) with `ID_BINARY` env var pointing to nix-built `id`
@@ -555,54 +580,62 @@ nix/tests/
 Use this decision tree when you need to add a new test:
 
 ### Pure logic (parsing, encoding, formatting, data structures)
+
 **Add to:** Rust unit tests in the relevant `src/*.rs` file, `#[cfg(test)] mod tests`
 
 Tests here run in milliseconds. No I/O, no network, no filesystem. Examples: tag search query parsing, binary key encoding, CLI argument validation, content type detection, markdown rendering.
 
 ### Command behavior (CLI I/O, end-to-end command flow)
+
 **Add to:** `tests/cli_integration.rs`
 
 Tests the full command pipeline: parse args → open store → execute → format output. If the test needs network (e.g., `serve` command), put it in the `serve_tests` module — it will be skipped in the nix sandbox `test-int` check but runs in the `nixos-integration` VM check, so `just test-nix` still covers it.
 
 ### Frontend logic (ProseMirror, cursor math, editor state)
+
 **Add to:** `web/src/*.test.ts` files (bun unit tests)
 
 Pure TypeScript logic tests. No browser, no DOM. Fast (~2 seconds for all). Examples: cursor position calculation, selection range handling.
 
 ### Web UI interaction (click, type, navigate, visible state)
+
 **Add to:** `e2e/tests/basic.spec.ts`
 
 Tests that exercise the web UI through a real browser. Page loads, form submissions, navigation, theme switching, visual element presence. No WebSocket or real-time features.
 
 ### WebSocket, collaboration, real-time features
+
 **Add to:** `e2e/tests/websocket.spec.ts`
 
 Tests that need WebSocket connections: connect/disconnect/reconnect, collaborative editing, cursor sharing, tag live updates, multi-user scenarios. This file uses a fresh browser fixture to avoid Firefox WS degradation.
 
 ### Deployment and systemd integration
+
 **Add to:** `nix/tests/serve-test.nix` or `nix/tests/e2e-test.nix`
 
 Tests that validate the nix-packaged binary works correctly as a systemd service. `serve-test.nix` for HTTP API behavior (curl-based), `e2e-test.nix` for DOM rendering (Chromium `--dump-dom`). These run in a single NixOS VM.
 
 ### Adding new Playwright spec files
+
 When you add a new `e2e/tests/*.spec.ts` file, it is automatically picked up by all three Playwright execution modes (local, nix sandbox, VM). The VM Playwright test (`playwright-e2e-test.nix`) runs `--project=chromium` and `--project=firefox` without specifying individual test files, so new spec files are included automatically.
 
 ### Do I still need local E2E (`just test-e2e`)?
+
 **Yes, for development speed.** Local E2E runs in ~90 seconds with both browsers and gives immediate feedback. The VM Playwright test takes ~3 minutes and requires a full nix rebuild if any source changed. Use `just test-e2e` during development, rely on `just test-nix` (which includes VM Playwright) for pre-push verification.
 
 ### What are the limits of each test set?
 
-| Test set | Limitation |
-|----------|-----------|
-| Rust unit tests | No I/O, no network, no browser |
-| Rust integration | No browser, no web UI. `serve_tests` subset needs network (skipped in sandbox, runs in `nixos-integration` VM) |
-| TS unit tests | No browser, no DOM, no WebSocket — pure logic only |
-| Playwright sandbox (`just check-test-e2e`) | **Firefox only** — Chromium crashes in nix build sandbox |
-| nixos-e2e | Chromium `--dump-dom` only — **no interactivity** (no clicks, typing, WS, navigation) |
-| nixos-serve | **No browser** at all — curl + JSON parsing only |
-| nixos-playwright-e2e | Full coverage, but **~3 min** and requires KVM. Playwright stdout only visible on failure |
-| nixos-integration | Full cli_integration suite in VM, but requires KVM. 2 flaky web serve tests skipped (pre-existing) |
-| Local E2E (`just test-e2e`) | Both browsers, full coverage, but **not hermetic** — depends on host state |
+| Test set                                   | Limitation                                                                                                     |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Rust unit tests                            | No I/O, no network, no browser                                                                                 |
+| Rust integration                           | No browser, no web UI. `serve_tests` subset needs network (skipped in sandbox, runs in `nixos-integration` VM) |
+| TS unit tests                              | No browser, no DOM, no WebSocket — pure logic only                                                             |
+| Playwright sandbox (`just check-test-e2e`) | **Firefox only** — Chromium crashes in nix build sandbox                                                       |
+| nixos-e2e                                  | Chromium `--dump-dom` only — **no interactivity** (no clicks, typing, WS, navigation)                          |
+| nixos-serve                                | **No browser** at all — curl + JSON parsing only                                                               |
+| nixos-playwright-e2e                       | Full coverage, but **~3 min** and requires KVM. Playwright stdout only visible on failure                      |
+| nixos-integration                          | Full cli_integration suite in VM, but requires KVM. 2 flaky web serve tests skipped (pre-existing)             |
+| Local E2E (`just test-e2e`)                | Both browsers, full coverage, but **not hermetic** — depends on host state                                     |
 
 ---
 

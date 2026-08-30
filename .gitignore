@@ -168,3 +168,5 @@ archive/*
 doc/archive/*
 scratch/*
 doc/scratch/*
+.opencode/opencode-notifier-state.json
+/.opencode/opencode-notifier-state.json

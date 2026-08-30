@@ -6,1364 +6,1365 @@
 
 ## Core Fabric Switches
 
-### Celestica DX010 (4x) (*- 1 is missing fans/psu)
+### Celestica DX010 (4x) (\*- 1 is missing fans/psu)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 32x QSFP28 100GbE |
-| **Breakout** | 4x25GbE, 2x50GbE, or 4x10GbE per QSFP28 (up to 128x 25G or 128x 10G) |
-| **ASIC** | Broadcom BCM56960 (Tomahawk) |
-| **Switching Capacity** | 3.2 Tbps |
-| **Forwarding Rate** | 2,380 Mpps |
-| **MTU / Jumbo** | 9216 bytes |
-| **MAC Table** | 128K entries |
-| **Route Table** | 16K IPv4 / 8K IPv6 (default), up to 128K with memory_profile_l3 |
-| **Form Factor** | 1RU |
-| **OS** | SONiC (Open Network Install Environment / ONIE compatible) |
-| **Management** | CLI, REST API, gNMI, SNMP (v1/v2c/v3), LLDP, NTP, syslog |
-| **Class** | Enterprise / Data Center |
-| **Released** | ~2016 |
-| **Status** | Community-supported via SONiC, active open-source development |
-| **Notes** | Bare-metal white-box switch. Originally designed for hyperscale data centers. Used/surplus units, potential for hardware failure. Intel Atom C2000 management CPU, 4GB DDR3, mSATA storage. 5 CPLDs for board control, 1x RJ45 mgmt, 1x serial console, 1x USB. |
-| | |
-| **— Power —** | |
-| **PSU** | 2x 800W Delta (1+1 redundant, hot-swap), AC input 100-240V |
-| **System Idle** | ~120-140W estimated (ASIC ~110W TDP + CPU ~10W + fans ~10-20W, no transceivers) |
-| **System Typical** | ~150-200W (normal traffic, mix of DACs and optics) |
-| **System Max** | ~250-300W (all 32 ports active with optics, high traffic, fans full speed) |
-| **Per-Port: DAC (passive copper)** | ~0.5-1W (SerDes only, no PHY/laser) |
-| **Per-Port: Active Optic (SR/LR)** | ~1.5-3.5W (QSFP28 100G SR4 ~2.5W typical; LR4 ~3.5W) |
-| **Per-Port: Empty cage** | ~0W (cage unpowered when empty on Tomahawk) |
-| **Per-Port: Active copper (RJ45 SFP)** | N/A (QSFP28 — no RJ45 SFP modules at 100G) |
-| **PoE** | Not supported |
-| **Power Source** | STH review, Broadcom Tomahawk datasheet, Delta PSU specs, QSFP28 MSA power specs |
-| | |
-| **— Latency —** | |
-| **Baseline (DAC, L2, 64B)** | ~400ns cut-through (Memory BCM56960 ASIC specification) |
-| **Typical (SONiC software path)** | ~1-2µs (includes SONiC control plane overhead for ACL/QoS lookup) |
-| **Switching Mode** | Cut-through (default), store-and-forward configurable |
-| **Modifier: Fiber optic (SR)** | +0ns switching (same SerDes path as DAC; fiber latency is cable-length, ~5ns/m) |
-| **Modifier: Fiber optic (LR)** | +0ns switching (same SerDes path; LR optic has ~10-50ns internal laser/driver delay) |
-| **Modifier: Active copper SFP** | N/A at 100G (no QSFP28 RJ45 modules exist) |
-| **Modifier: Speed mismatch** | +variable (breakout 100G→25G/10G adds minor buffering; cross-speed L2 adds µs-range store-and-forward) |
-| **L3 Routing vs L2** | ~same (Tomahawk does L2/L3 in single pipeline pass in hardware) |
-| **ACL/QoS Impact** | Negligible in hardware TCAM; complex sobftware ACLs may add ~1-5µs |
-| **Latency Source** | Broadcom Tomahawk datasheet, SONiC community benchmarks |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | 802.1Q, up to 4094 VLANs |
-| **Private VLAN** | Not supported in SONiC (as of 2024) |
-| **Voice VLAN** | Not natively supported (use LLDP-MED + VLAN assignment) |
-| **Protocol-based VLAN** | No — not supported in SONiC |
-| **Trunking** | 802.1Q tagged trunks, native VLAN (PVID), allowed VLAN filtering |
-| **Trunk Negotiation** | Manual only (no DTP — DTP is Cisco proprietary) |
-| **STP** | PVST+ and RSTP supported in SONiC; MSTP partial/limited |
-| **STP convergence** | RSTP: ~1-3s typical |
-| **Storm Control** | Yes (broadcast/multicast/unknown-unicast, per-port, kbps/percent) |
-| **IGMP Snooping** | Yes (v1/v2/v3) |
-| | |
-| **— Link Aggregation —** | |
-| **Static LAG** | Yes |
-| **LACP (802.3ad)** | Yes (802.1AX) |
-| **Max LAGs / Ports per LAG** | 128 LAG groups / 64 ports per LAG (Tomahawk hardware limit) |
-| **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port), L3+L4; configurable via SONiC CLI |
-| **Symmetric Hashing** | Yes (configurable in SONiC for L3/L4) |
-| **Cross-Stack LAG** | N/A (no stacking) |
-| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution within PortChannel) |
-| **Min-links** | Supported — configurable minimum active members before PortChannel goes down (SONiC PortChannel min-links) |
-| **LAG Latency Impact** | Negligible (~0ns additional — hash computed in ASIC pipeline) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG** | Yes (SONiC MC-LAG, pairs of 2 peers) |
-| **Protocol** | SONiC ICCP-based MC-LAG (standard ICCP per RFC 7275) |
-| **Interoperable** | Yes — downstream sees standard LACP; peer protocol is SONiC-specific |
-| **Max MC-LAG Peers** | 2 (active-active pair) |
-| **Failover Time** | ~200-500ms (ICCP keepalive + LACP timeout; fast LACP ~3s timeout, detection ~1s) |
-| **Split-Brain Handling** | Peer-link + keepalive IP; orphan port support; configurable MAC aging |
-| | |
-| **— First-Hop Redundancy —** | |
-| **VRRP** | Yes (SONiC supports VRRPv2/v3 since 2021.11) |
-| **HSRP** | No (Cisco proprietary, not in SONiC) |
-| **GLBP** | No (Cisco proprietary, not in SONiC) |
-| **Anycast Gateway** | Yes (SAG — Static Anycast Gateway in SONiC; same virtual MAC/IP on both MC-LAG peers) |
-| **VRRP Failover Time** | ~3-4s default (1s advertisement interval × 3 miss); tunable to sub-second with BFD |
-| **Anycast GW Failover** | Instant for MC-LAG member links (both peers active); ~200-500ms if entire peer fails |
-| **Preemption** | Yes (VRRP preempt configurable) |
-| **Tracking** | Interface tracking in SONiC VRRP; limited object tracking |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes |
-| **OSPF** | Yes (v2, v3 for IPv6) |
-| **BGP** | Yes (v4, v6; SONiC uses FRRouting — full BGP implementation) |
-| **RIP** | Yes (v1/v2 via FRR, rarely used) |
-| **IS-IS** | Yes (via FRR) |
-| **Policy-Based Routing** | Yes (PBR via FRR, hardware-accelerated on Tomahawk) |
-| **VRF / VRF-lite** | Yes (VRF support in SONiC) |
-| **BFD** | Yes (Bidirectional Forwarding Detection, hardware-assisted) |
-| **ECMP** | Yes, up to 64 equal-cost paths (Tomahawk hardware) |
-| **ECMP Hash** | L3 (src/dst IP) + L4 (src/dst port), configurable |
-| **VXLAN** | Yes (VXLAN EVPN with BGP control plane) |
-| | |
-| **— Security —** | |
-| **ACLs** | Port-based, VLAN-based (ingress/egress), L2/L3/L4 match fields |
-| **802.1X** | Not natively supported in SONiC (as of 2024) |
-| **DHCP Snooping** | Limited (DHCP relay supported; full snooping in development) |
-| **Dynamic ARP Inspection** | Not supported in SONiC (as of 2024) |
-| **IP Source Guard** | Not supported in SONiC (as of 2024) |
-| **MACsec (802.1AE)** | Yes (SONiC MACsec support added 2022; requires capable optics/DACs) |
-| **Control Plane Policing** | Yes (CoPP — built into SONiC) |
-| **Port security** | Not typical — DC leaf fabric environment; MAC limiting not natively supported in SONiC |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2c, v3 |
-| **sFlow** | Yes (hardware-sampled, Memory BCM56960 native support) |
-| **NetFlow / IPFIX** | No (Memory Tomahawk supports sFlow natively; NetFlow not implemented in SONiC) |
-| **SPAN / Mirror** | Yes (port mirroring; ERSPAN supported in newer SONiC builds) |
-| **REST API** | Yes (SONiC REST API / SONiC Management Framework) |
-| **gNMI** | Yes (OpenConfig gNMI telemetry) |
-| **Syslog** | Yes (remote syslog configurable) |
-| **NTP** | Yes |
-| **DNS** | Yes (Linux system resolver — SONiC runs on Debian Linux) |
-| **Stacking** | No (not applicable — spine-class switch, use MC-LAG for redundancy) |
+| Attribute                              | Value                                                                                                                                                                                                                                                           |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                              | 32x QSFP28 100GbE                                                                                                                                                                                                                                               |
+| **Breakout**                           | 4x25GbE, 2x50GbE, or 4x10GbE per QSFP28 (up to 128x 25G or 128x 10G)                                                                                                                                                                                            |
+| **ASIC**                               | Broadcom BCM56960 (Tomahawk)                                                                                                                                                                                                                                    |
+| **Switching Capacity**                 | 3.2 Tbps                                                                                                                                                                                                                                                        |
+| **Forwarding Rate**                    | 2,380 Mpps                                                                                                                                                                                                                                                      |
+| **MTU / Jumbo**                        | 9216 bytes                                                                                                                                                                                                                                                      |
+| **MAC Table**                          | 128K entries                                                                                                                                                                                                                                                    |
+| **Route Table**                        | 16K IPv4 / 8K IPv6 (default), up to 128K with memory_profile_l3                                                                                                                                                                                                 |
+| **Form Factor**                        | 1RU                                                                                                                                                                                                                                                             |
+| **OS**                                 | SONiC (Open Network Install Environment / ONIE compatible)                                                                                                                                                                                                      |
+| **Management**                         | CLI, REST API, gNMI, SNMP (v1/v2c/v3), LLDP, NTP, syslog                                                                                                                                                                                                        |
+| **Class**                              | Enterprise / Data Center                                                                                                                                                                                                                                        |
+| **Released**                           | ~2016                                                                                                                                                                                                                                                           |
+| **Status**                             | Community-supported via SONiC, active open-source development                                                                                                                                                                                                   |
+| **Notes**                              | Bare-metal white-box switch. Originally designed for hyperscale data centers. Used/surplus units, potential for hardware failure. Intel Atom C2000 management CPU, 4GB DDR3, mSATA storage. 5 CPLDs for board control, 1x RJ45 mgmt, 1x serial console, 1x USB. |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— Power —**                          |                                                                                                                                                                                                                                                                 |
+| **PSU**                                | 2x 800W Delta (1+1 redundant, hot-swap), AC input 100-240V                                                                                                                                                                                                      |
+| **System Idle**                        | ~120-140W estimated (ASIC ~110W TDP + CPU ~10W + fans ~10-20W, no transceivers)                                                                                                                                                                                 |
+| **System Typical**                     | ~150-200W (normal traffic, mix of DACs and optics)                                                                                                                                                                                                              |
+| **System Max**                         | ~250-300W (all 32 ports active with optics, high traffic, fans full speed)                                                                                                                                                                                      |
+| **Per-Port: DAC (passive copper)**     | ~0.5-1W (SerDes only, no PHY/laser)                                                                                                                                                                                                                             |
+| **Per-Port: Active Optic (SR/LR)**     | ~1.5-3.5W (QSFP28 100G SR4 ~2.5W typical; LR4 ~3.5W)                                                                                                                                                                                                            |
+| **Per-Port: Empty cage**               | ~0W (cage unpowered when empty on Tomahawk)                                                                                                                                                                                                                     |
+| **Per-Port: Active copper (RJ45 SFP)** | N/A (QSFP28 — no RJ45 SFP modules at 100G)                                                                                                                                                                                                                      |
+| **PoE**                                | Not supported                                                                                                                                                                                                                                                   |
+| **Power Source**                       | STH review, Broadcom Tomahawk datasheet, Delta PSU specs, QSFP28 MSA power specs                                                                                                                                                                                |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— Latency —**                        |                                                                                                                                                                                                                                                                 |
+| **Baseline (DAC, L2, 64B)**            | ~400ns cut-through (Memory BCM56960 ASIC specification)                                                                                                                                                                                                         |
+| **Typical (SONiC software path)**      | ~1-2µs (includes SONiC control plane overhead for ACL/QoS lookup)                                                                                                                                                                                               |
+| **Switching Mode**                     | Cut-through (default), store-and-forward configurable                                                                                                                                                                                                           |
+| **Modifier: Fiber optic (SR)**         | +0ns switching (same SerDes path as DAC; fiber latency is cable-length, ~5ns/m)                                                                                                                                                                                 |
+| **Modifier: Fiber optic (LR)**         | +0ns switching (same SerDes path; LR optic has ~10-50ns internal laser/driver delay)                                                                                                                                                                            |
+| **Modifier: Active copper SFP**        | N/A at 100G (no QSFP28 RJ45 modules exist)                                                                                                                                                                                                                      |
+| **Modifier: Speed mismatch**           | +variable (breakout 100G→25G/10G adds minor buffering; cross-speed L2 adds µs-range store-and-forward)                                                                                                                                                          |
+| **L3 Routing vs L2**                   | ~same (Tomahawk does L2/L3 in single pipeline pass in hardware)                                                                                                                                                                                                 |
+| **ACL/QoS Impact**                     | Negligible in hardware TCAM; complex sobftware ACLs may add ~1-5µs                                                                                                                                                                                              |
+| **Latency Source**                     | Broadcom Tomahawk datasheet, SONiC community benchmarks                                                                                                                                                                                                         |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— L2 Features —**                    |                                                                                                                                                                                                                                                                 |
+| **VLANs**                              | 802.1Q, up to 4094 VLANs                                                                                                                                                                                                                                        |
+| **Private VLAN**                       | Not supported in SONiC (as of 2024)                                                                                                                                                                                                                             |
+| **Voice VLAN**                         | Not natively supported (use LLDP-MED + VLAN assignment)                                                                                                                                                                                                         |
+| **Protocol-based VLAN**                | No — not supported in SONiC                                                                                                                                                                                                                                     |
+| **Trunking**                           | 802.1Q tagged trunks, native VLAN (PVID), allowed VLAN filtering                                                                                                                                                                                                |
+| **Trunk Negotiation**                  | Manual only (no DTP — DTP is Cisco proprietary)                                                                                                                                                                                                                 |
+| **STP**                                | PVST+ and RSTP supported in SONiC; MSTP partial/limited                                                                                                                                                                                                         |
+| **STP convergence**                    | RSTP: ~1-3s typical                                                                                                                                                                                                                                             |
+| **Storm Control**                      | Yes (broadcast/multicast/unknown-unicast, per-port, kbps/percent)                                                                                                                                                                                               |
+| **IGMP Snooping**                      | Yes (v1/v2/v3)                                                                                                                                                                                                                                                  |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— Link Aggregation —**               |                                                                                                                                                                                                                                                                 |
+| **Static LAG**                         | Yes                                                                                                                                                                                                                                                             |
+| **LACP (802.3ad)**                     | Yes (802.1AX)                                                                                                                                                                                                                                                   |
+| **Max LAGs / Ports per LAG**           | 128 LAG groups / 64 ports per LAG (Tomahawk hardware limit)                                                                                                                                                                                                     |
+| **Hash Modes**                         | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port), L3+L4; configurable via SONiC CLI                                                                                                                                                                         |
+| **Symmetric Hashing**                  | Yes (configurable in SONiC for L3/L4)                                                                                                                                                                                                                           |
+| **Cross-Stack LAG**                    | N/A (no stacking)                                                                                                                                                                                                                                               |
+| **LAG failover**                       | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution within PortChannel)                                                                                                                                                                    |
+| **Min-links**                          | Supported — configurable minimum active members before PortChannel goes down (SONiC PortChannel min-links)                                                                                                                                                      |
+| **LAG Latency Impact**                 | Negligible (~0ns additional — hash computed in ASIC pipeline)                                                                                                                                                                                                   |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— MC-LAG / Multi-Chassis —**         |                                                                                                                                                                                                                                                                 |
+| **MC-LAG**                             | Yes (SONiC MC-LAG, pairs of 2 peers)                                                                                                                                                                                                                            |
+| **Protocol**                           | SONiC ICCP-based MC-LAG (standard ICCP per RFC 7275)                                                                                                                                                                                                            |
+| **Interoperable**                      | Yes — downstream sees standard LACP; peer protocol is SONiC-specific                                                                                                                                                                                            |
+| **Max MC-LAG Peers**                   | 2 (active-active pair)                                                                                                                                                                                                                                          |
+| **Failover Time**                      | ~200-500ms (ICCP keepalive + LACP timeout; fast LACP ~3s timeout, detection ~1s)                                                                                                                                                                                |
+| **Split-Brain Handling**               | Peer-link + keepalive IP; orphan port support; configurable MAC aging                                                                                                                                                                                           |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— First-Hop Redundancy —**           |                                                                                                                                                                                                                                                                 |
+| **VRRP**                               | Yes (SONiC supports VRRPv2/v3 since 2021.11)                                                                                                                                                                                                                    |
+| **HSRP**                               | No (Cisco proprietary, not in SONiC)                                                                                                                                                                                                                            |
+| **GLBP**                               | No (Cisco proprietary, not in SONiC)                                                                                                                                                                                                                            |
+| **Anycast Gateway**                    | Yes (SAG — Static Anycast Gateway in SONiC; same virtual MAC/IP on both MC-LAG peers)                                                                                                                                                                           |
+| **VRRP Failover Time**                 | ~3-4s default (1s advertisement interval × 3 miss); tunable to sub-second with BFD                                                                                                                                                                              |
+| **Anycast GW Failover**                | Instant for MC-LAG member links (both peers active); ~200-500ms if entire peer fails                                                                                                                                                                            |
+| **Preemption**                         | Yes (VRRP preempt configurable)                                                                                                                                                                                                                                 |
+| **Tracking**                           | Interface tracking in SONiC VRRP; limited object tracking                                                                                                                                                                                                       |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— L3 Routing —**                     |                                                                                                                                                                                                                                                                 |
+| **Static Routing**                     | Yes                                                                                                                                                                                                                                                             |
+| **OSPF**                               | Yes (v2, v3 for IPv6)                                                                                                                                                                                                                                           |
+| **BGP**                                | Yes (v4, v6; SONiC uses FRRouting — full BGP implementation)                                                                                                                                                                                                    |
+| **RIP**                                | Yes (v1/v2 via FRR, rarely used)                                                                                                                                                                                                                                |
+| **IS-IS**                              | Yes (via FRR)                                                                                                                                                                                                                                                   |
+| **Policy-Based Routing**               | Yes (PBR via FRR, hardware-accelerated on Tomahawk)                                                                                                                                                                                                             |
+| **VRF / VRF-lite**                     | Yes (VRF support in SONiC)                                                                                                                                                                                                                                      |
+| **BFD**                                | Yes (Bidirectional Forwarding Detection, hardware-assisted)                                                                                                                                                                                                     |
+| **ECMP**                               | Yes, up to 64 equal-cost paths (Tomahawk hardware)                                                                                                                                                                                                              |
+| **ECMP Hash**                          | L3 (src/dst IP) + L4 (src/dst port), configurable                                                                                                                                                                                                               |
+| **VXLAN**                              | Yes (VXLAN EVPN with BGP control plane)                                                                                                                                                                                                                         |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— Security —**                       |                                                                                                                                                                                                                                                                 |
+| **ACLs**                               | Port-based, VLAN-based (ingress/egress), L2/L3/L4 match fields                                                                                                                                                                                                  |
+| **802.1X**                             | Not natively supported in SONiC (as of 2024)                                                                                                                                                                                                                    |
+| **DHCP Snooping**                      | Limited (DHCP relay supported; full snooping in development)                                                                                                                                                                                                    |
+| **Dynamic ARP Inspection**             | Not supported in SONiC (as of 2024)                                                                                                                                                                                                                             |
+| **IP Source Guard**                    | Not supported in SONiC (as of 2024)                                                                                                                                                                                                                             |
+| **MACsec (802.1AE)**                   | Yes (SONiC MACsec support added 2022; requires capable optics/DACs)                                                                                                                                                                                             |
+| **Control Plane Policing**             | Yes (CoPP — built into SONiC)                                                                                                                                                                                                                                   |
+| **Port security**                      | Not typical — DC leaf fabric environment; MAC limiting not natively supported in SONiC                                                                                                                                                                          |
+|                                        |                                                                                                                                                                                                                                                                 |
+| **— Monitoring —**                     |                                                                                                                                                                                                                                                                 |
+| **SNMP**                               | v1, v2c, v3                                                                                                                                                                                                                                                     |
+| **sFlow**                              | Yes (hardware-sampled, Memory BCM56960 native support)                                                                                                                                                                                                          |
+| **NetFlow / IPFIX**                    | No (Memory Tomahawk supports sFlow natively; NetFlow not implemented in SONiC)                                                                                                                                                                                  |
+| **SPAN / Mirror**                      | Yes (port mirroring; ERSPAN supported in newer SONiC builds)                                                                                                                                                                                                    |
+| **REST API**                           | Yes (SONiC REST API / SONiC Management Framework)                                                                                                                                                                                                               |
+| **gNMI**                               | Yes (OpenConfig gNMI telemetry)                                                                                                                                                                                                                                 |
+| **Syslog**                             | Yes (remote syslog configurable)                                                                                                                                                                                                                                |
+| **NTP**                                | Yes                                                                                                                                                                                                                                                             |
+| **DNS**                                | Yes (Linux system resolver — SONiC runs on Debian Linux)                                                                                                                                                                                                        |
+| **Stacking**                           | No (not applicable — spine-class switch, use MC-LAG for redundancy)                                                                                                                                                                                             |
 
 ---
 
 ### IBM RackSwitch G8264 (3x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 48x SFP/SFP+ (1/10GbE) + 4x QSFP+ (40GbE or 4x10GbE breakout) |
-| **Breakout** | 4x10GbE per QSFP+ via DAC/AOC breakout cables (up to 64x 10GbE total) |
-| **ASIC** | BNT/BLADE design (acquired by IBM; single-chip non-blocking architecture) |
-| **Switching Capacity** | 1.28 Tbps |
-| **Forwarding Rate** | 960 Mpps |
-| **MTU / Jumbo** | 9,216 bytes |
-| **MAC Table** | 128,000 entries |
-| **Form Factor** | 1RU (44 × 439 × 513 mm, 10.5 kg / 23.1 lb) |
-| **OS** | IBM Networking OS (ENOS) up to 7.x, Lenovo Networking OS 8.x (CNOS); ONIE compatible |
-| **Management** | isCLI, SNMP (v1/v3), Netconf (XML), Telnet, SSH (v1/v2), SCP, sFTP, optional Lenovo XClarity |
-| **Class** | Enterprise / Data Center TOR |
-| **Released** | ~2012 |
-| **EOL** | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering) |
-| **MTBF** | 165,990 hours @ 40°C ambient |
-| **Notes** | Originally IBM System Networking (BNT), later Lenovo RackSwitch. Mature enterprise TOR switch. CEE/DCB/FCoE capable for converged fabrics. Supports Virtual Fabric (vNICs), VMready, EVB (802.1Qbg), OpenFlow 1.0/1.3.1. SDN-ready. |
-| | |
-| **— Power —** | |
-| **PSU** | 2x 450W AC (100-240V, IEC 320-C14), load-sharing, redundant, hot-swap |
-| **System Typical** | ~330W (per Lenovo Press TIPS1272 — "typically uses 330W of power") |
-| **System Idle** | ~180-220W estimated (ASIC + management CPU + fans, no transceivers) |
-| **System Max** | ~400-430W estimated (all 52 ports populated with optics, high traffic, fans at full speed) |
-| **Per-Port: DAC (passive copper, SFP+)** | ~0.5-0.7W (SerDes only, no PHY/laser; SFP+ MSA passive cable spec) |
-| **Per-Port: Active Optic (SR SFP+)** | ~0.8-1.0W (10G SR SFP+ typical per MSA) |
-| **Per-Port: Active Optic (LR SFP+)** | ~1.0-1.5W (10G LR SFP+ typical per MSA) |
-| **Per-Port: RJ45 SFP (1GbE copper)** | ~1.0-1.5W (1000BASE-T SFP includes PHY chip) |
-| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes) |
-| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
-| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
-| **Per-Port: Empty cage** | ~0W |
-| **PoE** | Not supported |
-| **Cooling** | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow |
-| **Power Source** | Lenovo Press TIPS1272, SFP/SFP+/QSFP+ MSA power specifications |
-| | |
-| **— Latency —** | |
-| **Baseline (DAC, L2, 64B)** | ~880ns cut-through (per TIPS1272: "as low as 880 nanoseconds switching latency") |
-| **Switching Mode** | Cut-through |
-| **Modifier: Fiber optic (SR SFP+)** | +0ns switching (same SerDes path as DAC; fiber adds ~5ns/m cable latency) |
-| **Modifier: Fiber optic (LR SFP+)** | +0ns switching (same SerDes; LR optic has ~10-50ns internal laser/driver delay) |
-| **Modifier: RJ45 SFP (1GbE copper)** | +~3-5µs (1GbE PHY processing + store-and-forward for speed mismatch 10G→1G) |
-| **Modifier: Speed mismatch (10G↔40G)** | +~variable (QSFP+ breakout to SFP+ adds minimal latency; cross-speed forwarding may add buffering) |
-| **L3 Routing vs L2** | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline) |
-| **ACL/QoS Impact** | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN) |
-| **Latency Source** | Lenovo Press TIPS1272 |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) |
-| **Private VLAN** | Yes (per RFC 5517) |
-| **Protocol-Based VLAN** | Yes |
-| **Voice VLAN** | Not documented (use QoS 802.1p priority + VLAN assignment) |
-| **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
-| **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
-| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
-| **STP convergence** | RSTP: ~1-3s typical; MSTP: ~1-5s typical |
-| **Storm Control** | Yes (broadcast and multicast storm control) |
-| **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups) |
-| **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
-| **L2 Failover** | Yes (trunk failover for NIC teaming active/standby) |
-| | |
-| **— Link Aggregation —** | |
-| **Static LAG** | Yes |
-| **LACP (802.3ad)** | Yes (IEEE 802.3ad) |
-| **Max LAGs / Ports per LAG** | 64 LAG groups / 32 ports per LAG |
-| **Hash Modes** | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk |
-| **L4 (port-based) Hash** | Not documented in TIPS1272 (hash is L2/L3 based) |
-| **Symmetric Hashing** | Not explicitly documented |
-| **Cross-Stack LAG** | Yes (in stacking mode, LAGs can span stacked switches) |
-| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution) |
-| **Min-links** | Supported — configurable minimum active members before LAG goes down |
-| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG Variant** | vLAG (IBM/Lenovo Virtual LAG) |
-| **Protocol** | Proprietary (IBM/Lenovo vLAG protocol) |
-| **Interoperable** | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two G8264s |
-| **Max MC-LAG Peers** | 2 (active-active pair) |
-| **vLAG Peer Gateway** | Yes (improved utilization of inter-switch link) |
-| **Two-Tier vLAG** | Yes (with VRRP for active/active routing — reduces routing latency) |
-| **Failover Time** | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config) |
-| **Split-Brain Handling** | Peer-link + keepalive heartbeat between vLAG peers |
-| | |
-| **— First-Hop Redundancy —** | |
-| **VRRP** | Yes (IPv4 VRRP) |
-| **VRRP + vLAG** | Yes (two-tier vLAG with active/active VRRP for reduced routing latency) |
-| **HSRP** | No (Cisco proprietary) |
-| **GLBP** | No (Cisco proprietary) |
-| **Anycast Gateway** | No (not supported in ENOS/CNOS; no EVPN) |
-| **VRRP Failover Time** | ~3-4s default (configurable advertisement interval × dead multiplier) |
-| **Preemption** | Yes (VRRP preempt) |
-| **Tracking** | Interface tracking for VRRP priority adjustment |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes (up to 128 static routes) |
-| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
-| **BGP** | Yes (IPv4; IPv6 BGP not supported per TIPS1272 limitations) |
-| **RIP** | Yes (v1, v2 — IPv4 only) |
-| **IS-IS** | Not documented |
-| **Policy-Based Routing** | Yes (IPv4 PBR) |
-| **VRF / VRF-lite** | Not documented in TIPS1272 |
-| **BFD** | Not documented |
-| **ECMP** | Yes (via OSPF/BGP equal-cost paths) |
-| **PIM Multicast** | Yes (PIM-SM, PIM-DM) |
-| **DHCP Relay** | Yes |
-| **IP Interfaces** | Up to 128 per switch |
-| | |
-| **— Converged Fabric —** | |
-| **CEE/DCB** | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB) |
-| **FCoE** | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions) |
-| **iSCSI** | Yes (convergence support via CEE) |
-| | |
-| **— Virtualization —** | |
-| **Virtual Fabric (vNICs)** | Yes (up to 8 vNICs per dual-port 10G adapter) |
-| **UFP (Unified Fabric Port)** | Yes (up to 8 vPorts with Emulex VFA, up to 4 with QLogic VFA) |
-| **VMready** | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs) |
-| **EVB (802.1Qbg)** | Yes (VEB, VEPA, ECP, VDP) |
-| **OpenFlow** | 1.0, 1.3.1 |
-| | |
-| **— Security —** | |
-| **ACLs** | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6) |
-| **802.1X** | Yes (port-based network access control) |
-| **RADIUS / TACACS+ / LDAP** | Yes (all three, including LDAPS) |
-| **SSH** | v1, v2 |
-| **SCP / sFTP** | Yes |
-| **RBAC** | Yes (Role-Based Access Control) |
-| **NIST 800-131A** | Yes (encryption compliance) |
-| **DHCP Snooping** | Not explicitly documented in TIPS1272 |
-| **Dynamic ARP Inspection** | Not documented |
-| **IP Source Guard** | Not documented |
-| **MACsec (802.1AE)** | Not supported |
-| **Control Plane Policing** | Not documented |
-| **Port security** | Not typical — DC TOR fabric environment |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v3 |
-| **sFlow** | Yes (hardware-sampled) |
-| **RMON** | Yes (statistics and proactive monitoring) |
-| **Port Mirroring** | Yes |
-| **LLDP** | Yes |
-| **Syslog** | Yes (remote logging) |
-| **NTP** | Yes |
-| **DNS** | Yes (DNS client for management lookups) |
-| **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
-| **Netconf** | Yes (XML) |
-| | |
-| **— QoS —** | |
-| **Classification** | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN) |
-| **Queues** | 8 CoS queues per port |
-| **Scheduling** | Traffic shaping and re-marking based on defined policies |
-| **WRED** | Yes (with ECN — Explicit Congestion Notification) |
-| **ACL Metering** | Yes (IPv4/IPv6) |
-| | |
-| **Stacking** | Yes (up to 8 switches, single IP management, uses QSFP+ 40G ports as stacking links; ring or daisy-chain topology; supports vNIC/UFP/802.1Qbg in stack) |
+| Attribute                                | Value                                                                                                                                                                                                                               |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                                | 48x SFP/SFP+ (1/10GbE) + 4x QSFP+ (40GbE or 4x10GbE breakout)                                                                                                                                                                       |
+| **Breakout**                             | 4x10GbE per QSFP+ via DAC/AOC breakout cables (up to 64x 10GbE total)                                                                                                                                                               |
+| **ASIC**                                 | BNT/BLADE design (acquired by IBM; single-chip non-blocking architecture)                                                                                                                                                           |
+| **Switching Capacity**                   | 1.28 Tbps                                                                                                                                                                                                                           |
+| **Forwarding Rate**                      | 960 Mpps                                                                                                                                                                                                                            |
+| **MTU / Jumbo**                          | 9,216 bytes                                                                                                                                                                                                                         |
+| **MAC Table**                            | 128,000 entries                                                                                                                                                                                                                     |
+| **Form Factor**                          | 1RU (44 × 439 × 513 mm, 10.5 kg / 23.1 lb)                                                                                                                                                                                          |
+| **OS**                                   | IBM Networking OS (ENOS) up to 7.x, Lenovo Networking OS 8.x (CNOS); ONIE compatible                                                                                                                                                |
+| **Management**                           | isCLI, SNMP (v1/v3), Netconf (XML), Telnet, SSH (v1/v2), SCP, sFTP, optional Lenovo XClarity                                                                                                                                        |
+| **Class**                                | Enterprise / Data Center TOR                                                                                                                                                                                                        |
+| **Released**                             | ~2012                                                                                                                                                                                                                               |
+| **EOL**                                  | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering)                                                                                                                                                                 |
+| **MTBF**                                 | 165,990 hours @ 40°C ambient                                                                                                                                                                                                        |
+| **Notes**                                | Originally IBM System Networking (BNT), later Lenovo RackSwitch. Mature enterprise TOR switch. CEE/DCB/FCoE capable for converged fabrics. Supports Virtual Fabric (vNICs), VMready, EVB (802.1Qbg), OpenFlow 1.0/1.3.1. SDN-ready. |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Power —**                            |                                                                                                                                                                                                                                     |
+| **PSU**                                  | 2x 450W AC (100-240V, IEC 320-C14), load-sharing, redundant, hot-swap                                                                                                                                                               |
+| **System Typical**                       | ~330W (per Lenovo Press TIPS1272 — "typically uses 330W of power")                                                                                                                                                                  |
+| **System Idle**                          | ~180-220W estimated (ASIC + management CPU + fans, no transceivers)                                                                                                                                                                 |
+| **System Max**                           | ~400-430W estimated (all 52 ports populated with optics, high traffic, fans at full speed)                                                                                                                                          |
+| **Per-Port: DAC (passive copper, SFP+)** | ~0.5-0.7W (SerDes only, no PHY/laser; SFP+ MSA passive cable spec)                                                                                                                                                                  |
+| **Per-Port: Active Optic (SR SFP+)**     | ~0.8-1.0W (10G SR SFP+ typical per MSA)                                                                                                                                                                                             |
+| **Per-Port: Active Optic (LR SFP+)**     | ~1.0-1.5W (10G LR SFP+ typical per MSA)                                                                                                                                                                                             |
+| **Per-Port: RJ45 SFP (1GbE copper)**     | ~1.0-1.5W (1000BASE-T SFP includes PHY chip)                                                                                                                                                                                        |
+| **Per-Port: QSFP+ DAC (40G passive)**    | ~1.0-1.5W (SerDes only, 4 lanes)                                                                                                                                                                                                    |
+| **Per-Port: QSFP+ SR4 optic**            | ~1.5-2.5W (40G SR4 QSFP+ per MSA)                                                                                                                                                                                                   |
+| **Per-Port: QSFP+ LR4 optic**            | ~2.5-3.5W (40G LR4 QSFP+ per MSA)                                                                                                                                                                                                   |
+| **Per-Port: Empty cage**                 | ~0W                                                                                                                                                                                                                                 |
+| **PoE**                                  | Not supported                                                                                                                                                                                                                       |
+| **Cooling**                              | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow                                                                                                                                                   |
+| **Power Source**                         | Lenovo Press TIPS1272, SFP/SFP+/QSFP+ MSA power specifications                                                                                                                                                                      |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Latency —**                          |                                                                                                                                                                                                                                     |
+| **Baseline (DAC, L2, 64B)**              | ~880ns cut-through (per TIPS1272: "as low as 880 nanoseconds switching latency")                                                                                                                                                    |
+| **Switching Mode**                       | Cut-through                                                                                                                                                                                                                         |
+| **Modifier: Fiber optic (SR SFP+)**      | +0ns switching (same SerDes path as DAC; fiber adds ~5ns/m cable latency)                                                                                                                                                           |
+| **Modifier: Fiber optic (LR SFP+)**      | +0ns switching (same SerDes; LR optic has ~10-50ns internal laser/driver delay)                                                                                                                                                     |
+| **Modifier: RJ45 SFP (1GbE copper)**     | +~3-5µs (1GbE PHY processing + store-and-forward for speed mismatch 10G→1G)                                                                                                                                                         |
+| **Modifier: Speed mismatch (10G↔40G)**  | +~variable (QSFP+ breakout to SFP+ adds minimal latency; cross-speed forwarding may add buffering)                                                                                                                                  |
+| **L3 Routing vs L2**                     | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline)                                                                                                                                                                     |
+| **ACL/QoS Impact**                       | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN)                                                                                                                                                |
+| **Latency Source**                       | Lenovo Press TIPS1272                                                                                                                                                                                                               |
+|                                          |                                                                                                                                                                                                                                     |
+| **— L2 Features —**                      |                                                                                                                                                                                                                                     |
+| **VLANs**                                | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management)                                                                                                                                                                       |
+| **Private VLAN**                         | Yes (per RFC 5517)                                                                                                                                                                                                                  |
+| **Protocol-Based VLAN**                  | Yes                                                                                                                                                                                                                                 |
+| **Voice VLAN**                           | Not documented (use QoS 802.1p priority + VLAN assignment)                                                                                                                                                                          |
+| **Trunking**                             | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling)                                                                                                                                                                       |
+| **Trunk Negotiation**                    | Manual (no DTP — Cisco proprietary)                                                                                                                                                                                                 |
+| **STP**                                  | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances)                                                                                                                                                     |
+| **STP convergence**                      | RSTP: ~1-3s typical; MSTP: ~1-5s typical                                                                                                                                                                                            |
+| **Storm Control**                        | Yes (broadcast and multicast storm control)                                                                                                                                                                                         |
+| **IGMP Snooping**                        | Yes (v1/v2/v3, up to 2K IGMP groups)                                                                                                                                                                                                |
+| **Hot Links**                            | Yes (basic link redundancy with fast recovery, STP-free)                                                                                                                                                                            |
+| **L2 Failover**                          | Yes (trunk failover for NIC teaming active/standby)                                                                                                                                                                                 |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Link Aggregation —**                 |                                                                                                                                                                                                                                     |
+| **Static LAG**                           | Yes                                                                                                                                                                                                                                 |
+| **LACP (802.3ad)**                       | Yes (IEEE 802.3ad)                                                                                                                                                                                                                  |
+| **Max LAGs / Ports per LAG**             | 64 LAG groups / 32 ports per LAG                                                                                                                                                                                                    |
+| **Hash Modes**                           | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk                                                                                                           |
+| **L4 (port-based) Hash**                 | Not documented in TIPS1272 (hash is L2/L3 based)                                                                                                                                                                                    |
+| **Symmetric Hashing**                    | Not explicitly documented                                                                                                                                                                                                           |
+| **Cross-Stack LAG**                      | Yes (in stacking mode, LAGs can span stacked switches)                                                                                                                                                                              |
+| **LAG failover**                         | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution)                                                                                                                                                           |
+| **Min-links**                            | Supported — configurable minimum active members before LAG goes down                                                                                                                                                                |
+| **LAG Latency Impact**                   | Negligible (hardware hash in ASIC pipeline)                                                                                                                                                                                         |
+|                                          |                                                                                                                                                                                                                                     |
+| **— MC-LAG / Multi-Chassis —**           |                                                                                                                                                                                                                                     |
+| **MC-LAG Variant**                       | vLAG (IBM/Lenovo Virtual LAG)                                                                                                                                                                                                       |
+| **Protocol**                             | Proprietary (IBM/Lenovo vLAG protocol)                                                                                                                                                                                              |
+| **Interoperable**                        | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two G8264s                                                                                                                                           |
+| **Max MC-LAG Peers**                     | 2 (active-active pair)                                                                                                                                                                                                              |
+| **vLAG Peer Gateway**                    | Yes (improved utilization of inter-switch link)                                                                                                                                                                                     |
+| **Two-Tier vLAG**                        | Yes (with VRRP for active/active routing — reduces routing latency)                                                                                                                                                                 |
+| **Failover Time**                        | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config)                                                                                                                                                          |
+| **Split-Brain Handling**                 | Peer-link + keepalive heartbeat between vLAG peers                                                                                                                                                                                  |
+|                                          |                                                                                                                                                                                                                                     |
+| **— First-Hop Redundancy —**             |                                                                                                                                                                                                                                     |
+| **VRRP**                                 | Yes (IPv4 VRRP)                                                                                                                                                                                                                     |
+| **VRRP + vLAG**                          | Yes (two-tier vLAG with active/active VRRP for reduced routing latency)                                                                                                                                                             |
+| **HSRP**                                 | No (Cisco proprietary)                                                                                                                                                                                                              |
+| **GLBP**                                 | No (Cisco proprietary)                                                                                                                                                                                                              |
+| **Anycast Gateway**                      | No (not supported in ENOS/CNOS; no EVPN)                                                                                                                                                                                            |
+| **VRRP Failover Time**                   | ~3-4s default (configurable advertisement interval × dead multiplier)                                                                                                                                                               |
+| **Preemption**                           | Yes (VRRP preempt)                                                                                                                                                                                                                  |
+| **Tracking**                             | Interface tracking for VRRP priority adjustment                                                                                                                                                                                     |
+|                                          |                                                                                                                                                                                                                                     |
+| **— L3 Routing —**                       |                                                                                                                                                                                                                                     |
+| **Static Routing**                       | Yes (up to 128 static routes)                                                                                                                                                                                                       |
+| **OSPF**                                 | Yes (v2 for IPv4, v3 for IPv6)                                                                                                                                                                                                      |
+| **BGP**                                  | Yes (IPv4; IPv6 BGP not supported per TIPS1272 limitations)                                                                                                                                                                         |
+| **RIP**                                  | Yes (v1, v2 — IPv4 only)                                                                                                                                                                                                            |
+| **IS-IS**                                | Not documented                                                                                                                                                                                                                      |
+| **Policy-Based Routing**                 | Yes (IPv4 PBR)                                                                                                                                                                                                                      |
+| **VRF / VRF-lite**                       | Not documented in TIPS1272                                                                                                                                                                                                          |
+| **BFD**                                  | Not documented                                                                                                                                                                                                                      |
+| **ECMP**                                 | Yes (via OSPF/BGP equal-cost paths)                                                                                                                                                                                                 |
+| **PIM Multicast**                        | Yes (PIM-SM, PIM-DM)                                                                                                                                                                                                                |
+| **DHCP Relay**                           | Yes                                                                                                                                                                                                                                 |
+| **IP Interfaces**                        | Up to 128 per switch                                                                                                                                                                                                                |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Converged Fabric —**                 |                                                                                                                                                                                                                                     |
+| **CEE/DCB**                              | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB)                                                                                                                                                                                      |
+| **FCoE**                                 | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions)                                                                                                                                                      |
+| **iSCSI**                                | Yes (convergence support via CEE)                                                                                                                                                                                                   |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Virtualization —**                   |                                                                                                                                                                                                                                     |
+| **Virtual Fabric (vNICs)**               | Yes (up to 8 vNICs per dual-port 10G adapter)                                                                                                                                                                                       |
+| **UFP (Unified Fabric Port)**            | Yes (up to 8 vPorts with Emulex VFA, up to 4 with QLogic VFA)                                                                                                                                                                       |
+| **VMready**                              | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs)                                                                                                                                                                  |
+| **EVB (802.1Qbg)**                       | Yes (VEB, VEPA, ECP, VDP)                                                                                                                                                                                                           |
+| **OpenFlow**                             | 1.0, 1.3.1                                                                                                                                                                                                                          |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Security —**                         |                                                                                                                                                                                                                                     |
+| **ACLs**                                 | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6)                                                                                                                                                                          |
+| **802.1X**                               | Yes (port-based network access control)                                                                                                                                                                                             |
+| **RADIUS / TACACS+ / LDAP**              | Yes (all three, including LDAPS)                                                                                                                                                                                                    |
+| **SSH**                                  | v1, v2                                                                                                                                                                                                                              |
+| **SCP / sFTP**                           | Yes                                                                                                                                                                                                                                 |
+| **RBAC**                                 | Yes (Role-Based Access Control)                                                                                                                                                                                                     |
+| **NIST 800-131A**                        | Yes (encryption compliance)                                                                                                                                                                                                         |
+| **DHCP Snooping**                        | Not explicitly documented in TIPS1272                                                                                                                                                                                               |
+| **Dynamic ARP Inspection**               | Not documented                                                                                                                                                                                                                      |
+| **IP Source Guard**                      | Not documented                                                                                                                                                                                                                      |
+| **MACsec (802.1AE)**                     | Not supported                                                                                                                                                                                                                       |
+| **Control Plane Policing**               | Not documented                                                                                                                                                                                                                      |
+| **Port security**                        | Not typical — DC TOR fabric environment                                                                                                                                                                                             |
+|                                          |                                                                                                                                                                                                                                     |
+| **— Monitoring —**                       |                                                                                                                                                                                                                                     |
+| **SNMP**                                 | v1, v3                                                                                                                                                                                                                              |
+| **sFlow**                                | Yes (hardware-sampled)                                                                                                                                                                                                              |
+| **RMON**                                 | Yes (statistics and proactive monitoring)                                                                                                                                                                                           |
+| **Port Mirroring**                       | Yes                                                                                                                                                                                                                                 |
+| **LLDP**                                 | Yes                                                                                                                                                                                                                                 |
+| **Syslog**                               | Yes (remote logging)                                                                                                                                                                                                                |
+| **NTP**                                  | Yes                                                                                                                                                                                                                                 |
+| **DNS**                                  | Yes (DNS client for management lookups)                                                                                                                                                                                             |
+| **PTP**                                  | Yes (IEEE 1588 Precision Time Protocol)                                                                                                                                                                                             |
+| **Netconf**                              | Yes (XML)                                                                                                                                                                                                                           |
+|                                          |                                                                                                                                                                                                                                     |
+| **— QoS —**                              |                                                                                                                                                                                                                                     |
+| **Classification**                       | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN)                                                                                                                                                                               |
+| **Queues**                               | 8 CoS queues per port                                                                                                                                                                                                               |
+| **Scheduling**                           | Traffic shaping and re-marking based on defined policies                                                                                                                                                                            |
+| **WRED**                                 | Yes (with ECN — Explicit Congestion Notification)                                                                                                                                                                                   |
+| **ACL Metering**                         | Yes (IPv4/IPv6)                                                                                                                                                                                                                     |
+|                                          |                                                                                                                                                                                                                                     |
+| **Stacking**                             | Yes (up to 8 switches, single IP management, uses QSFP+ 40G ports as stacking links; ring or daisy-chain topology; supports vNIC/UFP/802.1Qbg in stack)                                                                             |
 
 ---
 
 ### IBM RackSwitch G8264e (1x) (G8264T)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 48x 10GBASE-T RJ45 + 4x QSFP+ 40GbE |
-| **Breakout** | 4x10GbE per QSFP+ (up to 64x 10GbE total) |
-| **ASIC** | Same as G8264 (single-chip design) |
-| **Switching Capacity** | 1.28 Tbps |
-| **Forwarding Rate** | 952 Mpps |
-| **MAC Table** | 128,000 entries |
-| **MTU / Jumbo** | 9,216 bytes |
-| **Form Factor** | 1RU |
-| **OS** | IBM ENOS or Lenovo CNOS; ONIE compatible |
-| **Management** | CLI (isCLI), SNMP v1/v3, web GUI, Netconf (XML) |
-| **Class** | Enterprise / Data Center TOR |
-| **Released** | ~2012 |
-| **EOL** | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering) |
-| **Notes** | Copper 10GBASE-T variant of G8264. All software features identical to G8264 — runs same ENOS/CNOS firmware. Higher power consumption due to 48 integrated copper PHY chips (~3-4W each). Uses standard Cat6a/Cat7 cabling (up to 100m). Useful for connecting servers without SFP+ NICs. No dedicated Lenovo Press product guide exists; all specs inferred from G8264 TIPS1272 and general 10GBASE-T PHY characteristics. |
-| | |
-| **— Power —** | |
-| **PSU** | 2x AC (100-240V, IEC 320-C14), load-sharing, redundant, hot-swap (estimated 550-750W per PSU based on G8264CS having 550/750W PSUs for similar port density; G8264 SFP+ model has 450W PSUs) |
-| **System Idle** | ~250-300W estimated (ASIC + management CPU + fans + 48 idle PHY chips at ~1W each) |
-| **System Typical** | ~450-550W estimated (48 PHYs active at ~3-3.5W each ≈ 144-168W PHY power alone + ~330W G8264 base typical; copper PHY adds ~120-220W over SFP+ model) |
-| **System Max** | ~600-700W estimated (all 52 ports active, full traffic, fans at full speed) |
-| **Per-Port: 10GBASE-T RJ45 (active link)** | ~3-4W per port (integrated 10GBASE-T PHY chip; includes analog front-end, DSP, and SerDes) |
-| **Per-Port: 10GBASE-T RJ45 (idle/link-down)** | ~1-1.5W per port (PHY powered but no link training active; EEE may reduce further) |
-| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes) |
-| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
-| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
-| **Per-Port: Empty QSFP+ cage** | ~0W |
-| **PoE** | Not supported |
-| **Cooling** | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow |
-| **Power Source** | Estimated based on G8264 TIPS1272 baseline (~330W typical) + 10GBASE-T PHY power specs (IEEE 802.3an PHY ~3-4W per port, e.g., Marvell Alaska, Broadcom BCM84xxx series); G8264CS TIPS1273 PSU sizes as reference for copper-port variants |
-| | |
-| **— Latency —** | |
-| **Baseline (10GBASE-T, L2, 64B)** | ~2-4µs (dominated by 10GBASE-T PHY processing: PAM-16 encoding/decoding, echo cancellation, crosstalk cancellation adds ~1.5-3µs per copper PHY traversal on top of ASIC switching) |
-| **ASIC Switching Latency** | ~880ns cut-through (same ASIC as G8264 per TIPS1272) |
-| **Copper PHY Latency** | ~1.5-3µs per traversal (10GBASE-T PHY includes DSP processing for PAM-16 modulation over Cat6a/Cat7; this is additive to ASIC latency) |
-| **Total Port-to-Port (copper→copper)** | ~4-7µs estimated (ingress PHY ~2-3µs + ASIC ~880ns + egress PHY ~2-3µs; varies by cable quality and length) |
-| **Switching Mode** | Cut-through (within ASIC; copper PHY is inherently store-and-forward due to DSP) |
-| **Modifier: QSFP+ DAC uplink** | ~880ns (bypasses copper PHY entirely — same as G8264 baseline) |
-| **Modifier: QSFP+ fiber optic** | ~880ns + fiber cable latency (~5ns/m) |
-| **Modifier: Copper-to-QSFP+ (cross-port type)** | ~2-4µs (one copper PHY traversal + ASIC switching) |
-| **Modifier: Speed mismatch (10G↔40G)** | +variable buffering latency for speed adaptation |
-| **L3 Routing vs L2** | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline) |
-| **ACL/QoS Impact** | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN) |
-| **Latency Source** | G8264 TIPS1272 ASIC latency + IEEE 802.3an 10GBASE-T PHY latency characteristics |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) — same as G8264 |
-| **Private VLAN** | Yes (per RFC 5517) |
-| **Protocol-Based VLAN** | Yes |
-| **Voice VLAN** | Not documented (use QoS 802.1p priority + VLAN assignment) |
-| **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
-| **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
-| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
-| **STP convergence** | RSTP: ~1-3s typical; MSTP: ~1-5s typical |
-| **Storm Control** | Yes (broadcast and multicast storm control) |
-| **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups) |
-| **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
-| **L2 Failover** | Yes (trunk failover for NIC teaming active/standby) |
-| | |
-| **— Link Aggregation —** | |
-| **Static LAG** | Yes |
-| **LACP (802.3ad)** | Yes (IEEE 802.3ad) |
-| **Max LAGs / Ports per LAG** | 64 LAG groups / 32 ports per LAG |
-| **Hash Modes** | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk |
-| **L4 (port-based) Hash** | Not documented in TIPS1272 (hash is L2/L3 based) |
-| **Symmetric Hashing** | Not explicitly documented |
-| **Cross-Stack LAG** | Yes (in stacking mode, LAGs can span stacked switches) |
-| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution) |
-| **Min-links** | Supported — configurable minimum active members before LAG goes down |
-| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG Variant** | vLAG (IBM/Lenovo Virtual LAG) |
-| **Protocol** | Proprietary (IBM/Lenovo vLAG protocol) |
-| **Interoperable** | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two switches |
-| **Max MC-LAG Peers** | 2 (active-active pair) |
-| **vLAG Peer Gateway** | Yes (improved utilization of inter-switch link) |
-| **Two-Tier vLAG** | Yes (with VRRP for active/active routing — reduces routing latency) |
-| **Failover Time** | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config) |
-| **Split-Brain Handling** | Peer-link + keepalive heartbeat between vLAG peers |
-| **Cross-Model vLAG** | Plausible with G8264 SFP+ model (same ENOS firmware) but unconfirmed |
-| | |
-| **— First-Hop Redundancy —** | |
-| **VRRP** | Yes (IPv4 VRRP) |
-| **VRRP + vLAG** | Yes (two-tier vLAG with active/active VRRP for reduced routing latency) |
-| **HSRP** | No (Cisco proprietary) |
-| **GLBP** | No (Cisco proprietary) |
-| **Anycast Gateway** | No (not supported in ENOS/CNOS; no EVPN) |
-| **VRRP Failover Time** | ~3-4s default (configurable advertisement interval × dead multiplier) |
-| **Preemption** | Yes (VRRP preempt) |
-| **Tracking** | Interface tracking for VRRP priority adjustment |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes (up to 128 static routes) |
-| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
-| **BGP** | Yes (IPv4; IPv6 BGP not supported per TIPS1272 limitations) |
-| **RIP** | Yes (v1, v2 — IPv4 only) |
-| **IS-IS** | Not documented |
-| **Policy-Based Routing** | Yes (IPv4 PBR) |
-| **VRF / VRF-lite** | Not documented in TIPS1272 |
-| **BFD** | Not documented |
-| **ECMP** | Yes (via OSPF/BGP equal-cost paths) |
-| **PIM Multicast** | Yes (PIM-SM, PIM-DM) |
-| **DHCP Relay** | Yes |
-| **IP Interfaces** | Up to 128 per switch |
-| | |
-| **— Converged Fabric —** | |
-| **CEE/DCB** | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB) |
-| **FCoE** | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions) |
-| **iSCSI** | Yes (convergence support via CEE) |
-| | |
-| **— Virtualization —** | |
-| **Virtual Fabric (vNICs)** | Yes (up to 8 vNICs per dual-port 10G adapter) |
-| **UFP (Unified Fabric Port)** | Yes (up to 8 vPorts with Emulex VFA, up to 4 with QLogic VFA) |
-| **VMready** | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs) |
-| **EVB (802.1Qbg)** | Yes (VEB, VEPA, ECP, VDP) |
-| **OpenFlow** | 1.0, 1.3.1 |
-| | |
-| **— Security —** | |
-| **ACLs** | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6) |
-| **802.1X** | Yes (port-based network access control) |
-| **RADIUS / TACACS+ / LDAP** | Yes (all three, including LDAPS) |
-| **SSH** | v1, v2 |
-| **SCP / sFTP** | Yes |
-| **RBAC** | Yes (Role-Based Access Control) |
-| **NIST 800-131A** | Yes (encryption compliance) |
-| **DHCP Snooping** | Not explicitly documented in TIPS1272 |
-| **Dynamic ARP Inspection** | Not documented |
-| **IP Source Guard** | Not documented |
-| **MACsec (802.1AE)** | Not supported |
-| **Control Plane Policing** | Not documented |
-| **Port security** | Not typical — DC TOR fabric environment |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v3 |
-| **sFlow** | Yes (hardware-sampled) |
-| **RMON** | Yes (statistics and proactive monitoring) |
-| **Port Mirroring** | Yes |
-| **LLDP** | Yes |
-| **Syslog** | Yes (remote logging) |
-| **NTP** | Yes |
-| **DNS** | Yes (DNS client for management lookups) |
-| **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
-| **Netconf** | Yes (XML) |
-| | |
-| **— QoS —** | |
-| **Classification** | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN) |
-| **Queues** | 8 CoS queues per port |
-| **Scheduling** | Traffic shaping and re-marking based on defined policies |
-| **WRED** | Yes (with ECN — Explicit Congestion Notification) |
-| **ACL Metering** | Yes (IPv4/IPv6) |
-| | |
-| **Stacking** | Likely yes (same platform/firmware as G8264; shares ASIC, NOS, and QSFP+ stacking port design; no dedicated product guide to confirm independently; uses 4x QSFP+ 40G ports; cross-model stacking with G8264 SFP+ units plausible but unconfirmed) |
+| Attribute                                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                                       | 48x 10GBASE-T RJ45 + 4x QSFP+ 40GbE                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Breakout**                                    | 4x10GbE per QSFP+ (up to 64x 10GbE total)                                                                                                                                                                                                                                                                                                                                                                                  |
+| **ASIC**                                        | Same as G8264 (single-chip design)                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Switching Capacity**                          | 1.28 Tbps                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Forwarding Rate**                             | 952 Mpps                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **MAC Table**                                   | 128,000 entries                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **MTU / Jumbo**                                 | 9,216 bytes                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Form Factor**                                 | 1RU                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **OS**                                          | IBM ENOS or Lenovo CNOS; ONIE compatible                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Management**                                  | CLI (isCLI), SNMP v1/v3, web GUI, Netconf (XML)                                                                                                                                                                                                                                                                                                                                                                            |
+| **Class**                                       | Enterprise / Data Center TOR                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Released**                                    | ~2012                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **EOL**                                         | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering)                                                                                                                                                                                                                                                                                                                                                        |
+| **Notes**                                       | Copper 10GBASE-T variant of G8264. All software features identical to G8264 — runs same ENOS/CNOS firmware. Higher power consumption due to 48 integrated copper PHY chips (~3-4W each). Uses standard Cat6a/Cat7 cabling (up to 100m). Useful for connecting servers without SFP+ NICs. No dedicated Lenovo Press product guide exists; all specs inferred from G8264 TIPS1272 and general 10GBASE-T PHY characteristics. |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Power —**                                   |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **PSU**                                         | 2x AC (100-240V, IEC 320-C14), load-sharing, redundant, hot-swap (estimated 550-750W per PSU based on G8264CS having 550/750W PSUs for similar port density; G8264 SFP+ model has 450W PSUs)                                                                                                                                                                                                                               |
+| **System Idle**                                 | ~250-300W estimated (ASIC + management CPU + fans + 48 idle PHY chips at ~1W each)                                                                                                                                                                                                                                                                                                                                         |
+| **System Typical**                              | ~450-550W estimated (48 PHYs active at ~3-3.5W each ≈ 144-168W PHY power alone + ~330W G8264 base typical; copper PHY adds ~120-220W over SFP+ model)                                                                                                                                                                                                                                                                      |
+| **System Max**                                  | ~600-700W estimated (all 52 ports active, full traffic, fans at full speed)                                                                                                                                                                                                                                                                                                                                                |
+| **Per-Port: 10GBASE-T RJ45 (active link)**      | ~3-4W per port (integrated 10GBASE-T PHY chip; includes analog front-end, DSP, and SerDes)                                                                                                                                                                                                                                                                                                                                 |
+| **Per-Port: 10GBASE-T RJ45 (idle/link-down)**   | ~1-1.5W per port (PHY powered but no link training active; EEE may reduce further)                                                                                                                                                                                                                                                                                                                                         |
+| **Per-Port: QSFP+ DAC (40G passive)**           | ~1.0-1.5W (SerDes only, 4 lanes)                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Per-Port: QSFP+ SR4 optic**                   | ~1.5-2.5W (40G SR4 QSFP+ per MSA)                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Per-Port: QSFP+ LR4 optic**                   | ~2.5-3.5W (40G LR4 QSFP+ per MSA)                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Per-Port: Empty QSFP+ cage**                  | ~0W                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **PoE**                                         | Not supported                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Cooling**                                     | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow                                                                                                                                                                                                                                                                                                                                          |
+| **Power Source**                                | Estimated based on G8264 TIPS1272 baseline (~330W typical) + 10GBASE-T PHY power specs (IEEE 802.3an PHY ~3-4W per port, e.g., Marvell Alaska, Broadcom BCM84xxx series); G8264CS TIPS1273 PSU sizes as reference for copper-port variants                                                                                                                                                                                 |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Latency —**                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Baseline (10GBASE-T, L2, 64B)**               | ~2-4µs (dominated by 10GBASE-T PHY processing: PAM-16 encoding/decoding, echo cancellation, crosstalk cancellation adds ~1.5-3µs per copper PHY traversal on top of ASIC switching)                                                                                                                                                                                                                                        |
+| **ASIC Switching Latency**                      | ~880ns cut-through (same ASIC as G8264 per TIPS1272)                                                                                                                                                                                                                                                                                                                                                                       |
+| **Copper PHY Latency**                          | ~1.5-3µs per traversal (10GBASE-T PHY includes DSP processing for PAM-16 modulation over Cat6a/Cat7; this is additive to ASIC latency)                                                                                                                                                                                                                                                                                     |
+| **Total Port-to-Port (copper→copper)**          | ~4-7µs estimated (ingress PHY ~2-3µs + ASIC ~880ns + egress PHY ~2-3µs; varies by cable quality and length)                                                                                                                                                                                                                                                                                                                |
+| **Switching Mode**                              | Cut-through (within ASIC; copper PHY is inherently store-and-forward due to DSP)                                                                                                                                                                                                                                                                                                                                           |
+| **Modifier: QSFP+ DAC uplink**                  | ~880ns (bypasses copper PHY entirely — same as G8264 baseline)                                                                                                                                                                                                                                                                                                                                                             |
+| **Modifier: QSFP+ fiber optic**                 | ~880ns + fiber cable latency (~5ns/m)                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Modifier: Copper-to-QSFP+ (cross-port type)** | ~2-4µs (one copper PHY traversal + ASIC switching)                                                                                                                                                                                                                                                                                                                                                                         |
+| **Modifier: Speed mismatch (10G↔40G)**         | +variable buffering latency for speed adaptation                                                                                                                                                                                                                                                                                                                                                                           |
+| **L3 Routing vs L2**                            | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline)                                                                                                                                                                                                                                                                                                                                                            |
+| **ACL/QoS Impact**                              | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN)                                                                                                                                                                                                                                                                                                                                       |
+| **Latency Source**                              | G8264 TIPS1272 ASIC latency + IEEE 802.3an 10GBASE-T PHY latency characteristics                                                                                                                                                                                                                                                                                                                                           |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— L2 Features —**                             |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **VLANs**                                       | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) — same as G8264                                                                                                                                                                                                                                                                                                                                              |
+| **Private VLAN**                                | Yes (per RFC 5517)                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Protocol-Based VLAN**                         | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Voice VLAN**                                  | Not documented (use QoS 802.1p priority + VLAN assignment)                                                                                                                                                                                                                                                                                                                                                                 |
+| **Trunking**                                    | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling)                                                                                                                                                                                                                                                                                                                                                              |
+| **Trunk Negotiation**                           | Manual (no DTP — Cisco proprietary)                                                                                                                                                                                                                                                                                                                                                                                        |
+| **STP**                                         | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances)                                                                                                                                                                                                                                                                                                                                            |
+| **STP convergence**                             | RSTP: ~1-3s typical; MSTP: ~1-5s typical                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Storm Control**                               | Yes (broadcast and multicast storm control)                                                                                                                                                                                                                                                                                                                                                                                |
+| **IGMP Snooping**                               | Yes (v1/v2/v3, up to 2K IGMP groups)                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Hot Links**                                   | Yes (basic link redundancy with fast recovery, STP-free)                                                                                                                                                                                                                                                                                                                                                                   |
+| **L2 Failover**                                 | Yes (trunk failover for NIC teaming active/standby)                                                                                                                                                                                                                                                                                                                                                                        |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Link Aggregation —**                        |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Static LAG**                                  | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **LACP (802.3ad)**                              | Yes (IEEE 802.3ad)                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Max LAGs / Ports per LAG**                    | 64 LAG groups / 32 ports per LAG                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Hash Modes**                                  | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk                                                                                                                                                                                                                                                                                                  |
+| **L4 (port-based) Hash**                        | Not documented in TIPS1272 (hash is L2/L3 based)                                                                                                                                                                                                                                                                                                                                                                           |
+| **Symmetric Hashing**                           | Not explicitly documented                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Cross-Stack LAG**                             | Yes (in stacking mode, LAGs can span stacked switches)                                                                                                                                                                                                                                                                                                                                                                     |
+| **LAG failover**                                | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution)                                                                                                                                                                                                                                                                                                                                                  |
+| **Min-links**                                   | Supported — configurable minimum active members before LAG goes down                                                                                                                                                                                                                                                                                                                                                       |
+| **LAG Latency Impact**                          | Negligible (hardware hash in ASIC pipeline)                                                                                                                                                                                                                                                                                                                                                                                |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— MC-LAG / Multi-Chassis —**                  |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **MC-LAG Variant**                              | vLAG (IBM/Lenovo Virtual LAG)                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Protocol**                                    | Proprietary (IBM/Lenovo vLAG protocol)                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Interoperable**                               | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two switches                                                                                                                                                                                                                                                                                                                                |
+| **Max MC-LAG Peers**                            | 2 (active-active pair)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **vLAG Peer Gateway**                           | Yes (improved utilization of inter-switch link)                                                                                                                                                                                                                                                                                                                                                                            |
+| **Two-Tier vLAG**                               | Yes (with VRRP for active/active routing — reduces routing latency)                                                                                                                                                                                                                                                                                                                                                        |
+| **Failover Time**                               | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config)                                                                                                                                                                                                                                                                                                                                                 |
+| **Split-Brain Handling**                        | Peer-link + keepalive heartbeat between vLAG peers                                                                                                                                                                                                                                                                                                                                                                         |
+| **Cross-Model vLAG**                            | Plausible with G8264 SFP+ model (same ENOS firmware) but unconfirmed                                                                                                                                                                                                                                                                                                                                                       |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— First-Hop Redundancy —**                    |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **VRRP**                                        | Yes (IPv4 VRRP)                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **VRRP + vLAG**                                 | Yes (two-tier vLAG with active/active VRRP for reduced routing latency)                                                                                                                                                                                                                                                                                                                                                    |
+| **HSRP**                                        | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **GLBP**                                        | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Anycast Gateway**                             | No (not supported in ENOS/CNOS; no EVPN)                                                                                                                                                                                                                                                                                                                                                                                   |
+| **VRRP Failover Time**                          | ~3-4s default (configurable advertisement interval × dead multiplier)                                                                                                                                                                                                                                                                                                                                                      |
+| **Preemption**                                  | Yes (VRRP preempt)                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Tracking**                                    | Interface tracking for VRRP priority adjustment                                                                                                                                                                                                                                                                                                                                                                            |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— L3 Routing —**                              |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Static Routing**                              | Yes (up to 128 static routes)                                                                                                                                                                                                                                                                                                                                                                                              |
+| **OSPF**                                        | Yes (v2 for IPv4, v3 for IPv6)                                                                                                                                                                                                                                                                                                                                                                                             |
+| **BGP**                                         | Yes (IPv4; IPv6 BGP not supported per TIPS1272 limitations)                                                                                                                                                                                                                                                                                                                                                                |
+| **RIP**                                         | Yes (v1, v2 — IPv4 only)                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **IS-IS**                                       | Not documented                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Policy-Based Routing**                        | Yes (IPv4 PBR)                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **VRF / VRF-lite**                              | Not documented in TIPS1272                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **BFD**                                         | Not documented                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **ECMP**                                        | Yes (via OSPF/BGP equal-cost paths)                                                                                                                                                                                                                                                                                                                                                                                        |
+| **PIM Multicast**                               | Yes (PIM-SM, PIM-DM)                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **DHCP Relay**                                  | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **IP Interfaces**                               | Up to 128 per switch                                                                                                                                                                                                                                                                                                                                                                                                       |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Converged Fabric —**                        |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **CEE/DCB**                                     | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB)                                                                                                                                                                                                                                                                                                                                                                             |
+| **FCoE**                                        | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions)                                                                                                                                                                                                                                                                                                                                             |
+| **iSCSI**                                       | Yes (convergence support via CEE)                                                                                                                                                                                                                                                                                                                                                                                          |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Virtualization —**                          |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Virtual Fabric (vNICs)**                      | Yes (up to 8 vNICs per dual-port 10G adapter)                                                                                                                                                                                                                                                                                                                                                                              |
+| **UFP (Unified Fabric Port)**                   | Yes (up to 8 vPorts with Emulex VFA, up to 4 with QLogic VFA)                                                                                                                                                                                                                                                                                                                                                              |
+| **VMready**                                     | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs)                                                                                                                                                                                                                                                                                                                                                         |
+| **EVB (802.1Qbg)**                              | Yes (VEB, VEPA, ECP, VDP)                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **OpenFlow**                                    | 1.0, 1.3.1                                                                                                                                                                                                                                                                                                                                                                                                                 |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Security —**                                |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **ACLs**                                        | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6)                                                                                                                                                                                                                                                                                                                                                                 |
+| **802.1X**                                      | Yes (port-based network access control)                                                                                                                                                                                                                                                                                                                                                                                    |
+| **RADIUS / TACACS+ / LDAP**                     | Yes (all three, including LDAPS)                                                                                                                                                                                                                                                                                                                                                                                           |
+| **SSH**                                         | v1, v2                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **SCP / sFTP**                                  | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **RBAC**                                        | Yes (Role-Based Access Control)                                                                                                                                                                                                                                                                                                                                                                                            |
+| **NIST 800-131A**                               | Yes (encryption compliance)                                                                                                                                                                                                                                                                                                                                                                                                |
+| **DHCP Snooping**                               | Not explicitly documented in TIPS1272                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Dynamic ARP Inspection**                      | Not documented                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **IP Source Guard**                             | Not documented                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **MACsec (802.1AE)**                            | Not supported                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Control Plane Policing**                      | Not documented                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Port security**                               | Not typical — DC TOR fabric environment                                                                                                                                                                                                                                                                                                                                                                                    |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— Monitoring —**                              |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **SNMP**                                        | v1, v3                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **sFlow**                                       | Yes (hardware-sampled)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **RMON**                                        | Yes (statistics and proactive monitoring)                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Port Mirroring**                              | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **LLDP**                                        | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Syslog**                                      | Yes (remote logging)                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **NTP**                                         | Yes                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **DNS**                                         | Yes (DNS client for management lookups)                                                                                                                                                                                                                                                                                                                                                                                    |
+| **PTP**                                         | Yes (IEEE 1588 Precision Time Protocol)                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Netconf**                                     | Yes (XML)                                                                                                                                                                                                                                                                                                                                                                                                                  |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **— QoS —**                                     |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Classification**                              | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN)                                                                                                                                                                                                                                                                                                                                                                      |
+| **Queues**                                      | 8 CoS queues per port                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Scheduling**                                  | Traffic shaping and re-marking based on defined policies                                                                                                                                                                                                                                                                                                                                                                   |
+| **WRED**                                        | Yes (with ECN — Explicit Congestion Notification)                                                                                                                                                                                                                                                                                                                                                                          |
+| **ACL Metering**                                | Yes (IPv4/IPv6)                                                                                                                                                                                                                                                                                                                                                                                                            |
+|                                                 |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Stacking**                                    | Likely yes (same platform/firmware as G8264; shares ASIC, NOS, and QSFP+ stacking port design; no dedicated product guide to confirm independently; uses 4x QSFP+ 40G ports; cross-model stacking with G8264 SFP+ units plausible but unconfirmed)                                                                                                                                                                         |
 
 ---
 
 ### IBM RackSwitch G8316 (4x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 16x QSFP+ 40GbE |
-| **Breakout** | 4x10GbE per QSFP+ via breakout DAC or optical (up to 64x 10GbE total) |
-| **ASIC** | Single-chip design (consistent port-to-port latency, same ASIC family as G8264) |
-| **Switching Capacity** | 1.28 Tbps |
-| **Forwarding Rate** | 952 Mpps |
-| **MAC Table** | 128,000 entries |
-| **MTU / Jumbo** | 9,216 bytes |
-| **Form Factor** | 1RU, 44mm × 439mm × 445mm, 10.0 kg |
-| **OS** | IBM ENOS or Lenovo CNOS; ONIE compatible |
-| **Management** | isCLI (scriptable), SNMP v1/v2/v3, HTTP/HTTPS web GUI, Telnet, SSH v1/v2, SCP, SLP, LLDP, serial console |
-| **Class** | Enterprise / Data Center Spine/Aggregation |
-| **Released** | ~2012 |
-| **EOL** | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering) |
-| **Environmental** | Operating: 0-40°C, 10-90% RH non-condensing, up to 1,800m altitude; acoustic: <65 dB |
-| **Software Images** | Dual software images (active/standby for hitless upgrades) |
-| **Notes** | Spine/aggregation switch designed to sit above G8264 TOR switches. All 16 ports are 40GbE QSFP+, no 10GbE access ports. Intended for leaf-spine or aggregation tier. Same ENOS firmware family as G8264/G8264e — identical software feature set. No VXLAN (CNOS-only feature on successor G8332). No VRF (not supported on ENOS). |
-| | |
-| **— Power —** | |
-| **PSU** | 2x 450W AC (100-240V, 50-60Hz), IEC 320-C14 connector, load-sharing, redundant (1+1), hot-swap |
-| **System Idle** | ~200-250W estimated (ASIC + management CPU + fans at low speed, 16 empty QSFP+ cages draw negligible power) |
-| **System Typical** | ~330W (per TIPS0842; fewer ports than G8264 but all 40G — similar ASIC power) |
-| **System Max** | ~400-450W estimated (all 16 QSFP+ ports active with optics, full traffic, fans at full speed) |
-| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes × ~0.25-0.375W) |
-| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
-| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
-| **Per-Port: QSFP+ PLR4/PSM4** | ~1.5-2.0W (parallel single-mode, lower power than LR4 WDM) |
-| **Per-Port: Empty QSFP+ cage** | ~0W |
-| **Per-Port: Breakout 4x10G DAC** | ~1.0-1.5W total (4x10G passive copper, SerDes only) |
-| **Per-Port: Breakout 4x10G optic** | ~2.0-4.0W total (4× SFP+ SR/LR optics) |
-| **PoE** | Not supported |
-| **Cooling** | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow (order correct SKU) |
-| **Power Source** | TIPS0842 (Lenovo Press G8316 Product Guide) — 330W typical, 450W PSU rating |
-| | |
-| **— Latency —** | |
-| **Baseline (QSFP+ DAC, L2, 64B)** | ~880ns cut-through (TIPS0842: "880 nanoseconds" in Benefits section; "below 1 microsecond" in Introduction) |
-| **Forwarding Mode** | Cut-through (default); store-and-forward available |
-| **ASIC Switching Latency** | ~880ns (single-chip design, same ASIC family as G8264) |
-| **Modifier: QSFP+ SR4 optic** | ~880ns + negligible optical PHY latency (~10-20ns) + fiber cable latency (~5ns/m) |
-| **Modifier: QSFP+ LR4 optic** | ~880ns + LR4 WDM mux/demux latency (~20-50ns) + fiber cable latency (~5ns/m) |
-| **Modifier: Breakout 4x10G** | ~880ns (same ASIC pipeline; breakout is handled in SerDes layer) |
-| **Modifier: Speed mismatch (40G→10G breakout)** | +variable buffering latency for speed adaptation (packet serialization at lower rate) |
-| **L3 Routing vs L2** | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline) |
-| **ACL/QoS Impact** | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN) |
-| **Latency Source** | TIPS0842 Lenovo Press G8316 Product Guide — Benefits section states "880 nanoseconds" |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management) |
-| **Private VLAN** | Yes (per RFC 5517) |
-| **Protocol-Based VLAN** | Yes |
-| **Voice VLAN** | Not documented (use QoS 802.1p priority + VLAN assignment) |
-| **Trunking** | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling) |
-| **Trunk Negotiation** | Manual (no DTP — Cisco proprietary) |
-| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances) |
-| **STP convergence** | RSTP: ~1-3s typical; MSTP: ~1-5s typical |
-| **Storm Control** | Yes (broadcast and multicast storm control) |
-| **IGMP Snooping** | Yes (v1/v2/v3, up to 2K IGMP groups, IGMP relay) |
-| **Hot Links** | Yes (basic link redundancy with fast recovery, STP-free) |
-| **L2 Failover** | Yes (trunk failover for NIC teaming active/standby) |
-| | |
-| **— Link Aggregation —** | |
-| **Static LAG** | Yes |
-| **LACP (802.3ad)** | Yes (IEEE 802.3ad) |
-| **Max LAGs / Ports per LAG** | 64 LAG groups / 32 ports per LAG |
-| **Hash Modes** | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk |
-| **L4 (port-based) Hash** | Not documented in TIPS0842 (hash is L2/L3 based) |
-| **Symmetric Hashing** | Not explicitly documented |
-| **Cross-Stack LAG** | N/A (no stacking support on G8316) |
-| **LAG failover** | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution) |
-| **Min-links** | Supported — configurable minimum active members before LAG goes down |
-| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG Variant** | vLAG (IBM/Lenovo Virtual LAG) |
-| **Protocol** | Proprietary (IBM/Lenovo vLAG protocol) |
-| **Interoperable** | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two switches |
-| **Max MC-LAG Peers** | 2 (active-active pair) |
-| **vLAG Peer Gateway** | Yes (improved utilization of inter-switch link) |
-| **Two-Tier vLAG** | Yes (with VRRP for active/active routing — reduces routing latency) |
-| **Failover Time** | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config) |
-| **Split-Brain Handling** | Peer-link + keepalive heartbeat between vLAG peers |
-| **Cross-Model vLAG** | Plausible with G8264 (same ENOS firmware family) but unconfirmed for cross-platform vLAG |
-| | |
-| **— First-Hop Redundancy —** | |
-| **VRRP** | Yes (IPv4 VRRP only — IPv6 VRRP NOT supported per TIPS0842) |
-| **VRRP + vLAG** | Yes (two-tier vLAG with active/active VRRP for reduced routing latency) |
-| **HSRP** | No (Cisco proprietary) |
-| **GLBP** | No (Cisco proprietary) |
-| **Anycast Gateway** | No (not supported in ENOS; no EVPN/VXLAN on G8316) |
-| **VRRP Failover Time** | ~3-4s default (configurable advertisement interval × dead multiplier) |
-| **Preemption** | Yes (VRRP preempt) |
-| **Tracking** | Interface tracking for VRRP priority adjustment |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes (up to 128 static routes) |
-| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
-| **BGP** | Yes (IPv4 only — IPv6 BGP NOT supported per TIPS0842) |
-| **RIP** | Yes (v1, v2 — IPv4 only) |
-| **IS-IS** | Not documented |
-| **Policy-Based Routing** | Yes (IPv4 PBR) |
-| **VRF / VRF-lite** | Not supported on ENOS (CNOS-only feature on successor G8332) |
-| **BFD** | Not documented |
-| **ECMP** | Yes (via OSPF/BGP equal-cost paths) |
-| **Route Table Capacity** | ~15,498 IPv4 / ~600 IPv6 dynamic routes (from G8332 TIPS1274 with same ENOS; G8316-specific limits not documented) |
-| **PIM Multicast** | Yes (PIM-SM, PIM-DM) |
-| **DHCP Relay** | Yes |
-| **IP Interfaces** | Up to 126 per switch (128 total, 2 reserved for OOB management) |
-| | |
-| **— Converged Fabric —** | |
-| **CEE/DCB** | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB) |
-| **FCoE** | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions) |
-| **iSCSI** | Yes (convergence support via CEE) |
-| | |
-| **— Virtualization —** | |
-| **Virtual Fabric (vNICs)** | Yes (up to 8 vNICs per dual-port 10G adapter) |
-| **EVB (802.1Qbg)** | Yes (VEB, VEPA, ECP, VDP) |
-| **VMready** | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs) |
-| **OpenFlow** | 1.0, 1.3.1 |
-| **VXLAN** | Not supported (CNOS-only feature on successor G8332) |
-| | |
-| **— Security —** | |
-| **ACLs** | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6) |
-| **802.1X** | Yes (port-based network access control) |
-| **RADIUS / TACACS+ / LDAP** | Yes (all three, including LDAPS) |
-| **SSH** | v1, v2 |
-| **SCP / sFTP** | Yes |
-| **RBAC** | Yes (Role-Based Access Control) |
-| **NIST 800-131A** | Yes (encryption compliance) |
-| **DHCP Snooping** | Not documented in TIPS0842 |
-| **Dynamic ARP Inspection** | Not documented |
-| **IP Source Guard** | Not documented |
-| **MACsec (802.1AE)** | Not supported |
-| **Control Plane Policing** | Yes (CoPP — listed in QoS features, TIPS0842) |
-| **Port security** | Not typical — DC spine/aggregation fabric environment |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2, v3 |
-| **sFlow** | Yes (hardware-sampled) |
-| **RMON** | Yes (statistics and proactive monitoring) |
-| **Port Mirroring** | Yes |
-| **LLDP** | Yes |
-| **Syslog** | Yes (remote logging) |
-| **NTP** | Yes |
-| **DNS** | Yes (DNS client for management lookups) |
-| **PTP** | Yes (IEEE 1588 Precision Time Protocol) |
-| **Netconf** | Yes (XML) |
-| | |
-| **— QoS —** | |
-| **Classification** | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN) |
-| **Queues** | 8 CoS queues per port |
-| **Scheduling** | Traffic shaping and re-marking based on defined policies |
-| **WRED** | Yes (with ECN — Explicit Congestion Notification) |
-| **ACL Metering** | Yes (IPv4/IPv6) |
-| | |
-| **Stacking** | No (confirmed — TIPS0842 does not list stacking as a software feature; "Stacking LEDs" on IBM Support page are a hardware artifact from shared chassis design; G8316 is spine/aggregation and uses vLAG for multi-chassis redundancy, not physical stacking) |
+| Attribute                                       | Value                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                                       | 16x QSFP+ 40GbE                                                                                                                                                                                                                                                                                                                   |
+| **Breakout**                                    | 4x10GbE per QSFP+ via breakout DAC or optical (up to 64x 10GbE total)                                                                                                                                                                                                                                                             |
+| **ASIC**                                        | Single-chip design (consistent port-to-port latency, same ASIC family as G8264)                                                                                                                                                                                                                                                   |
+| **Switching Capacity**                          | 1.28 Tbps                                                                                                                                                                                                                                                                                                                         |
+| **Forwarding Rate**                             | 952 Mpps                                                                                                                                                                                                                                                                                                                          |
+| **MAC Table**                                   | 128,000 entries                                                                                                                                                                                                                                                                                                                   |
+| **MTU / Jumbo**                                 | 9,216 bytes                                                                                                                                                                                                                                                                                                                       |
+| **Form Factor**                                 | 1RU, 44mm × 439mm × 445mm, 10.0 kg                                                                                                                                                                                                                                                                                                |
+| **OS**                                          | IBM ENOS or Lenovo CNOS; ONIE compatible                                                                                                                                                                                                                                                                                          |
+| **Management**                                  | isCLI (scriptable), SNMP v1/v2/v3, HTTP/HTTPS web GUI, Telnet, SSH v1/v2, SCP, SLP, LLDP, serial console                                                                                                                                                                                                                          |
+| **Class**                                       | Enterprise / Data Center Spine/Aggregation                                                                                                                                                                                                                                                                                        |
+| **Released**                                    | ~2012                                                                                                                                                                                                                                                                                                                             |
+| **EOL**                                         | ~2018 (IBM sold networking to Lenovo 2014; withdrawn from ordering)                                                                                                                                                                                                                                                               |
+| **Environmental**                               | Operating: 0-40°C, 10-90% RH non-condensing, up to 1,800m altitude; acoustic: <65 dB                                                                                                                                                                                                                                              |
+| **Software Images**                             | Dual software images (active/standby for hitless upgrades)                                                                                                                                                                                                                                                                        |
+| **Notes**                                       | Spine/aggregation switch designed to sit above G8264 TOR switches. All 16 ports are 40GbE QSFP+, no 10GbE access ports. Intended for leaf-spine or aggregation tier. Same ENOS firmware family as G8264/G8264e — identical software feature set. No VXLAN (CNOS-only feature on successor G8332). No VRF (not supported on ENOS). |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Power —**                                   |                                                                                                                                                                                                                                                                                                                                   |
+| **PSU**                                         | 2x 450W AC (100-240V, 50-60Hz), IEC 320-C14 connector, load-sharing, redundant (1+1), hot-swap                                                                                                                                                                                                                                    |
+| **System Idle**                                 | ~200-250W estimated (ASIC + management CPU + fans at low speed, 16 empty QSFP+ cages draw negligible power)                                                                                                                                                                                                                       |
+| **System Typical**                              | ~330W (per TIPS0842; fewer ports than G8264 but all 40G — similar ASIC power)                                                                                                                                                                                                                                                     |
+| **System Max**                                  | ~400-450W estimated (all 16 QSFP+ ports active with optics, full traffic, fans at full speed)                                                                                                                                                                                                                                     |
+| **Per-Port: QSFP+ DAC (40G passive)**           | ~1.0-1.5W (SerDes only, 4 lanes × ~0.25-0.375W)                                                                                                                                                                                                                                                                                   |
+| **Per-Port: QSFP+ SR4 optic**                   | ~1.5-2.5W (40G SR4 QSFP+ per MSA)                                                                                                                                                                                                                                                                                                 |
+| **Per-Port: QSFP+ LR4 optic**                   | ~2.5-3.5W (40G LR4 QSFP+ per MSA)                                                                                                                                                                                                                                                                                                 |
+| **Per-Port: QSFP+ PLR4/PSM4**                   | ~1.5-2.0W (parallel single-mode, lower power than LR4 WDM)                                                                                                                                                                                                                                                                        |
+| **Per-Port: Empty QSFP+ cage**                  | ~0W                                                                                                                                                                                                                                                                                                                               |
+| **Per-Port: Breakout 4x10G DAC**                | ~1.0-1.5W total (4x10G passive copper, SerDes only)                                                                                                                                                                                                                                                                               |
+| **Per-Port: Breakout 4x10G optic**              | ~2.0-4.0W total (4× SFP+ SR/LR optics)                                                                                                                                                                                                                                                                                            |
+| **PoE**                                         | Not supported                                                                                                                                                                                                                                                                                                                     |
+| **Cooling**                                     | 4 hot-swap fan assemblies (3+1 redundant), front-to-rear or rear-to-front airflow (order correct SKU)                                                                                                                                                                                                                             |
+| **Power Source**                                | TIPS0842 (Lenovo Press G8316 Product Guide) — 330W typical, 450W PSU rating                                                                                                                                                                                                                                                       |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Latency —**                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **Baseline (QSFP+ DAC, L2, 64B)**               | ~880ns cut-through (TIPS0842: "880 nanoseconds" in Benefits section; "below 1 microsecond" in Introduction)                                                                                                                                                                                                                       |
+| **Forwarding Mode**                             | Cut-through (default); store-and-forward available                                                                                                                                                                                                                                                                                |
+| **ASIC Switching Latency**                      | ~880ns (single-chip design, same ASIC family as G8264)                                                                                                                                                                                                                                                                            |
+| **Modifier: QSFP+ SR4 optic**                   | ~880ns + negligible optical PHY latency (~10-20ns) + fiber cable latency (~5ns/m)                                                                                                                                                                                                                                                 |
+| **Modifier: QSFP+ LR4 optic**                   | ~880ns + LR4 WDM mux/demux latency (~20-50ns) + fiber cable latency (~5ns/m)                                                                                                                                                                                                                                                      |
+| **Modifier: Breakout 4x10G**                    | ~880ns (same ASIC pipeline; breakout is handled in SerDes layer)                                                                                                                                                                                                                                                                  |
+| **Modifier: Speed mismatch (40G→10G breakout)** | +variable buffering latency for speed adaptation (packet serialization at lower rate)                                                                                                                                                                                                                                             |
+| **L3 Routing vs L2**                            | ~same (hardware-based L2/L3 forwarding in single ASIC pipeline)                                                                                                                                                                                                                                                                   |
+| **ACL/QoS Impact**                              | Negligible (hardware TCAM-based ACL processing; 8 CoS queues per port with WRED/ECN)                                                                                                                                                                                                                                              |
+| **Latency Source**                              | TIPS0842 Lenovo Press G8316 Product Guide — Benefits section states "880 nanoseconds"                                                                                                                                                                                                                                             |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— L2 Features —**                             |                                                                                                                                                                                                                                                                                                                                   |
+| **VLANs**                                       | 802.1Q, up to 4,095 VLANs (VLAN 4095 reserved for management)                                                                                                                                                                                                                                                                     |
+| **Private VLAN**                                | Yes (per RFC 5517)                                                                                                                                                                                                                                                                                                                |
+| **Protocol-Based VLAN**                         | Yes                                                                                                                                                                                                                                                                                                                               |
+| **Voice VLAN**                                  | Not documented (use QoS 802.1p priority + VLAN assignment)                                                                                                                                                                                                                                                                        |
+| **Trunking**                                    | 802.1Q tagged trunks, ingress VLAN tagging (Q-in-Q tunneling)                                                                                                                                                                                                                                                                     |
+| **Trunk Negotiation**                           | Manual (no DTP — Cisco proprietary)                                                                                                                                                                                                                                                                                               |
+| **STP**                                         | STP (802.1D), RSTP (802.1w), MSTP (802.1s, 32 instances), PVRST (256 instances)                                                                                                                                                                                                                                                   |
+| **STP convergence**                             | RSTP: ~1-3s typical; MSTP: ~1-5s typical                                                                                                                                                                                                                                                                                          |
+| **Storm Control**                               | Yes (broadcast and multicast storm control)                                                                                                                                                                                                                                                                                       |
+| **IGMP Snooping**                               | Yes (v1/v2/v3, up to 2K IGMP groups, IGMP relay)                                                                                                                                                                                                                                                                                  |
+| **Hot Links**                                   | Yes (basic link redundancy with fast recovery, STP-free)                                                                                                                                                                                                                                                                          |
+| **L2 Failover**                                 | Yes (trunk failover for NIC teaming active/standby)                                                                                                                                                                                                                                                                               |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Link Aggregation —**                        |                                                                                                                                                                                                                                                                                                                                   |
+| **Static LAG**                                  | Yes                                                                                                                                                                                                                                                                                                                               |
+| **LACP (802.3ad)**                              | Yes (IEEE 802.3ad)                                                                                                                                                                                                                                                                                                                |
+| **Max LAGs / Ports per LAG**                    | 64 LAG groups / 32 ports per LAG                                                                                                                                                                                                                                                                                                  |
+| **Hash Modes**                                  | Source IP, destination IP, source MAC, destination MAC, or combinations (src+dst IP, src+dst MAC); configurable per trunk                                                                                                                                                                                                         |
+| **L4 (port-based) Hash**                        | Not documented in TIPS0842 (hash is L2/L3 based)                                                                                                                                                                                                                                                                                  |
+| **Symmetric Hashing**                           | Not explicitly documented                                                                                                                                                                                                                                                                                                         |
+| **Cross-Stack LAG**                             | N/A (no stacking support on G8316)                                                                                                                                                                                                                                                                                                |
+| **LAG failover**                                | <50 ms with LACP (3×fast=3s detection; near-instantaneous redistribution)                                                                                                                                                                                                                                                         |
+| **Min-links**                                   | Supported — configurable minimum active members before LAG goes down                                                                                                                                                                                                                                                              |
+| **LAG Latency Impact**                          | Negligible (hardware hash in ASIC pipeline)                                                                                                                                                                                                                                                                                       |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— MC-LAG / Multi-Chassis —**                  |                                                                                                                                                                                                                                                                                                                                   |
+| **MC-LAG Variant**                              | vLAG (IBM/Lenovo Virtual LAG)                                                                                                                                                                                                                                                                                                     |
+| **Protocol**                                    | Proprietary (IBM/Lenovo vLAG protocol)                                                                                                                                                                                                                                                                                            |
+| **Interoperable**                               | Yes — downstream sees standard LACP; vLAG peer protocol is proprietary between two switches                                                                                                                                                                                                                                       |
+| **Max MC-LAG Peers**                            | 2 (active-active pair)                                                                                                                                                                                                                                                                                                            |
+| **vLAG Peer Gateway**                           | Yes (improved utilization of inter-switch link)                                                                                                                                                                                                                                                                                   |
+| **Two-Tier vLAG**                               | Yes (with VRRP for active/active routing — reduces routing latency)                                                                                                                                                                                                                                                               |
+| **Failover Time**                               | ~200-500ms typical (vLAG keepalive + LACP timeout; varies by timer config)                                                                                                                                                                                                                                                        |
+| **Split-Brain Handling**                        | Peer-link + keepalive heartbeat between vLAG peers                                                                                                                                                                                                                                                                                |
+| **Cross-Model vLAG**                            | Plausible with G8264 (same ENOS firmware family) but unconfirmed for cross-platform vLAG                                                                                                                                                                                                                                          |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— First-Hop Redundancy —**                    |                                                                                                                                                                                                                                                                                                                                   |
+| **VRRP**                                        | Yes (IPv4 VRRP only — IPv6 VRRP NOT supported per TIPS0842)                                                                                                                                                                                                                                                                       |
+| **VRRP + vLAG**                                 | Yes (two-tier vLAG with active/active VRRP for reduced routing latency)                                                                                                                                                                                                                                                           |
+| **HSRP**                                        | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                            |
+| **GLBP**                                        | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                            |
+| **Anycast Gateway**                             | No (not supported in ENOS; no EVPN/VXLAN on G8316)                                                                                                                                                                                                                                                                                |
+| **VRRP Failover Time**                          | ~3-4s default (configurable advertisement interval × dead multiplier)                                                                                                                                                                                                                                                             |
+| **Preemption**                                  | Yes (VRRP preempt)                                                                                                                                                                                                                                                                                                                |
+| **Tracking**                                    | Interface tracking for VRRP priority adjustment                                                                                                                                                                                                                                                                                   |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— L3 Routing —**                              |                                                                                                                                                                                                                                                                                                                                   |
+| **Static Routing**                              | Yes (up to 128 static routes)                                                                                                                                                                                                                                                                                                     |
+| **OSPF**                                        | Yes (v2 for IPv4, v3 for IPv6)                                                                                                                                                                                                                                                                                                    |
+| **BGP**                                         | Yes (IPv4 only — IPv6 BGP NOT supported per TIPS0842)                                                                                                                                                                                                                                                                             |
+| **RIP**                                         | Yes (v1, v2 — IPv4 only)                                                                                                                                                                                                                                                                                                          |
+| **IS-IS**                                       | Not documented                                                                                                                                                                                                                                                                                                                    |
+| **Policy-Based Routing**                        | Yes (IPv4 PBR)                                                                                                                                                                                                                                                                                                                    |
+| **VRF / VRF-lite**                              | Not supported on ENOS (CNOS-only feature on successor G8332)                                                                                                                                                                                                                                                                      |
+| **BFD**                                         | Not documented                                                                                                                                                                                                                                                                                                                    |
+| **ECMP**                                        | Yes (via OSPF/BGP equal-cost paths)                                                                                                                                                                                                                                                                                               |
+| **Route Table Capacity**                        | ~15,498 IPv4 / ~600 IPv6 dynamic routes (from G8332 TIPS1274 with same ENOS; G8316-specific limits not documented)                                                                                                                                                                                                                |
+| **PIM Multicast**                               | Yes (PIM-SM, PIM-DM)                                                                                                                                                                                                                                                                                                              |
+| **DHCP Relay**                                  | Yes                                                                                                                                                                                                                                                                                                                               |
+| **IP Interfaces**                               | Up to 126 per switch (128 total, 2 reserved for OOB management)                                                                                                                                                                                                                                                                   |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Converged Fabric —**                        |                                                                                                                                                                                                                                                                                                                                   |
+| **CEE/DCB**                                     | Yes (PFC 802.1Qbb, ETS 802.1Qaz, DCBX 802.1AB)                                                                                                                                                                                                                                                                                    |
+| **FCoE**                                        | Yes (FCoE transit switch, FC-BB5 compliant, FIP snooping, 2,048 FCoE sessions)                                                                                                                                                                                                                                                    |
+| **iSCSI**                                       | Yes (convergence support via CEE)                                                                                                                                                                                                                                                                                                 |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Virtualization —**                          |                                                                                                                                                                                                                                                                                                                                   |
+| **Virtual Fabric (vNICs)**                      | Yes (up to 8 vNICs per dual-port 10G adapter)                                                                                                                                                                                                                                                                                     |
+| **EVB (802.1Qbg)**                              | Yes (VEB, VEPA, ECP, VDP)                                                                                                                                                                                                                                                                                                         |
+| **VMready**                                     | Yes (auto VM discovery, NMotion for VM migration, up to 4,096 VEs)                                                                                                                                                                                                                                                                |
+| **OpenFlow**                                    | 1.0, 1.3.1                                                                                                                                                                                                                                                                                                                        |
+| **VXLAN**                                       | Not supported (CNOS-only feature on successor G8332)                                                                                                                                                                                                                                                                              |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Security —**                                |                                                                                                                                                                                                                                                                                                                                   |
+| **ACLs**                                        | VLAN-based, MAC-based, IP-based (up to 256 IPv4, 128 IPv6)                                                                                                                                                                                                                                                                        |
+| **802.1X**                                      | Yes (port-based network access control)                                                                                                                                                                                                                                                                                           |
+| **RADIUS / TACACS+ / LDAP**                     | Yes (all three, including LDAPS)                                                                                                                                                                                                                                                                                                  |
+| **SSH**                                         | v1, v2                                                                                                                                                                                                                                                                                                                            |
+| **SCP / sFTP**                                  | Yes                                                                                                                                                                                                                                                                                                                               |
+| **RBAC**                                        | Yes (Role-Based Access Control)                                                                                                                                                                                                                                                                                                   |
+| **NIST 800-131A**                               | Yes (encryption compliance)                                                                                                                                                                                                                                                                                                       |
+| **DHCP Snooping**                               | Not documented in TIPS0842                                                                                                                                                                                                                                                                                                        |
+| **Dynamic ARP Inspection**                      | Not documented                                                                                                                                                                                                                                                                                                                    |
+| **IP Source Guard**                             | Not documented                                                                                                                                                                                                                                                                                                                    |
+| **MACsec (802.1AE)**                            | Not supported                                                                                                                                                                                                                                                                                                                     |
+| **Control Plane Policing**                      | Yes (CoPP — listed in QoS features, TIPS0842)                                                                                                                                                                                                                                                                                     |
+| **Port security**                               | Not typical — DC spine/aggregation fabric environment                                                                                                                                                                                                                                                                             |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— Monitoring —**                              |                                                                                                                                                                                                                                                                                                                                   |
+| **SNMP**                                        | v1, v2, v3                                                                                                                                                                                                                                                                                                                        |
+| **sFlow**                                       | Yes (hardware-sampled)                                                                                                                                                                                                                                                                                                            |
+| **RMON**                                        | Yes (statistics and proactive monitoring)                                                                                                                                                                                                                                                                                         |
+| **Port Mirroring**                              | Yes                                                                                                                                                                                                                                                                                                                               |
+| **LLDP**                                        | Yes                                                                                                                                                                                                                                                                                                                               |
+| **Syslog**                                      | Yes (remote logging)                                                                                                                                                                                                                                                                                                              |
+| **NTP**                                         | Yes                                                                                                                                                                                                                                                                                                                               |
+| **DNS**                                         | Yes (DNS client for management lookups)                                                                                                                                                                                                                                                                                           |
+| **PTP**                                         | Yes (IEEE 1588 Precision Time Protocol)                                                                                                                                                                                                                                                                                           |
+| **Netconf**                                     | Yes (XML)                                                                                                                                                                                                                                                                                                                         |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **— QoS —**                                     |                                                                                                                                                                                                                                                                                                                                   |
+| **Classification**                              | 802.1p, IP ToS/DSCP, ACL-based (MAC/IP src/dst, VLAN)                                                                                                                                                                                                                                                                             |
+| **Queues**                                      | 8 CoS queues per port                                                                                                                                                                                                                                                                                                             |
+| **Scheduling**                                  | Traffic shaping and re-marking based on defined policies                                                                                                                                                                                                                                                                          |
+| **WRED**                                        | Yes (with ECN — Explicit Congestion Notification)                                                                                                                                                                                                                                                                                 |
+| **ACL Metering**                                | Yes (IPv4/IPv6)                                                                                                                                                                                                                                                                                                                   |
+|                                                 |                                                                                                                                                                                                                                                                                                                                   |
+| **Stacking**                                    | No (confirmed — TIPS0842 does not list stacking as a software feature; "Stacking LEDs" on IBM Support page are a hardware artifact from shared chassis design; G8316 is spine/aggregation and uses vLAG for multi-chassis redundancy, not physical stacking)                                                                      |
 
 ---
 
 ### IBM Mellanox SX6036 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 36x QSFP (FDR InfiniBand 56Gbps or 40GbE Ethernet per port — VPI) |
-| **Port Mode** | VPI (Virtual Protocol Interconnect): each port independently configurable as InfiniBand FDR or 40GbE Ethernet. Can mix IB and Ethernet ports on the same switch. IB-only, Ethernet-only, or hybrid deployments all supported. |
-| **Breakout** | 4x FDR10 (10Gbps IB) or 4x10GbE per QSFP (up to 144x 10GbE in Ethernet mode) |
-| **ASIC** | Mellanox SwitchX-2 (single-chip, non-blocking) |
-| **Switching Capacity** | 4.032 Tbps (InfiniBand FDR) / 2.88 Tbps (Ethernet 40GbE) |
-| **Forwarding Rate** | ~1,080 Mpps (Ethernet mode) |
-| **Forwarding Database** | 4 x 48K-entry linear forwarding tables (InfiniBand LFT) |
-| **MTU / Jumbo** | 256B to 4KB (InfiniBand, configurable), 9,216 bytes (Ethernet mode) |
-| **IB Virtual Lanes** | 9 per port (8 data + 1 management VL15, per IBTA spec) |
-| **IB Compliance** | IBTA 1.2.1 and 1.3 compliant; FDR and FDR10 with Forward Error Correction (FEC) |
-| **Form Factor** | 1RU (standard depth and short depth variants available) |
-| **OS** | MLNX-OS (Mellanox/NVIDIA Networking OS — IB and Ethernet switching) |
-| **Management** | CLI, WebUI, SNMP v1/v2c/v3, REST API, XML gateway, 2x 100M/1Gb Ethernet OOB mgmt ports, 1x USB, 1x RJ45 serial console, 1x I2C diagnostic |
-| **Fabric Management** | UFM (Unified Fabric Manager) for large-scale fabric orchestration, monitoring, and diagnostics |
-| **Class** | Enterprise / HPC / Data Center Fabric |
-| **Released** | ~2012-2013 |
-| **EOL** | ~2019 (Mellanox acquired by NVIDIA 2020; SwitchX-2 succeeded by Spectrum/Quantum) |
-| **Variants** | MSX6036F-1SFR (standard, front-to-rear), MSX6036T-1SFR (standard, rear-to-front), MSX6036F-1BRR (short depth, front-to-rear), MSX6036T-1BRR (short depth, rear-to-front) |
-| **Notes** | Dual-personality (VPI) switch: each port independently configurable as InfiniBand FDR (56Gb/s, native RDMA) or Ethernet (40GbE). Originally designed for HPC clusters but capable as 40GbE DC fabric switch in Ethernet mode. VPI eliminates need for separate IB and Ethernet switches. SwitchX-2 ASIC is non-blocking with consistent port-to-port latency. |
-| | |
-| **— RDMA & Protocol Modes —** | |
-| **VPI** | Yes — per-port selection of InfiniBand or Ethernet; ports can be mixed freely within same chassis |
-| **InfiniBand Mode** | FDR (56Gb/s per port, 14Gb/s per lane x 4); FDR10 (40Gb/s, 10Gb/s x 4); backward-compatible QDR (40Gb/s) and DDR (20Gb/s) |
-| **Ethernet Mode** | 40GbE per QSFP; breakout to 4x10GbE via DAC or optics |
-| **IB Standards** | IBTA 1.2.1, IBTA 1.3 |
-| **RDMA (InfiniBand)** | Native — zero-copy, kernel-bypass RDMA over IB verbs (libibverbs). No software overhead. Primary design target of the switch. |
-| **RDMA (Ethernet / RoCE)** | RoCE is an adapter-level feature (ConnectX-3 VPI NICs support RoCEv1 and RoCEv2). Switch provides PFC (802.1Qbb) and ECN for lossless Ethernet transport. Switch does NOT terminate RDMA — it provides the lossless L2/L3 fabric. RoCEv2 preferred (routable, UDP/IP). |
-| **RoCE Concerns** | RoCEv1 is L2-only (no subnet crossing). RoCEv2 routable but needs PFC/ECN/DCQCN tuning. PFC storms are a known failure mode — requires PFC watchdog. Native IB RDMA is simpler (credit-based flow control, inherently lossless, no PFC needed). |
-| **iSER** | iSCSI Extensions for RDMA — RDMA-accelerated iSCSI on IB ports |
-| **SRP** | SCSI RDMA Protocol — RDMA-based block storage on IB ports |
-| **FCoIB** | Fibre Channel over InfiniBand — gateway for FC SAN access via IB |
-| **EoIB** | Ethernet over InfiniBand — encapsulates Ethernet frames over IB (BridgeX gateway) |
-| **FCoE** | Supported in Ethernet mode (FC-BB5 compliant with ConnectX-3 VPI adapters) |
-| **IPoIB** | IP over InfiniBand — standard TCP/IP stack over IB for legacy apps |
-| | |
-| **— Power —** | |
-| **PSU** | Auto-sensing 100-240 VAC, 50-60Hz; ships with 1 PSU, optional 2nd for 1+1 redundancy; hot-swap |
-| **System Idle** | ~100-126W estimated (ASIC + mgmt CPU + fans at low speed, passive cables or empty cages) |
-| **System Typical (passive cables)** | ~126W (StorageReview measured with passive copper DACs) |
-| **System Typical (active cables)** | ~231W (StorageReview measured with active optical cables) |
-| **System Max** | ~300W estimated (all 36 ports active with optics, full traffic, fans at full speed) |
-| **Per-Port: QSFP passive DAC** | ~0.5-1.0W (SerDes only, no optical components) |
-| **Per-Port: QSFP active optical (AOC)** | ~2.0W max per module (StorageReview: 2W max per QSFP with active cables) |
-| **Per-Port: QSFP SR4 optic** | ~1.5-2.5W (40G SR4 QSFP per MSA) |
-| **Per-Port: QSFP LR4 optic** | ~2.5-3.5W (40G LR4 QSFP per MSA) |
-| **Per-Port: Empty QSFP cage** | ~0W |
-| **PoE** | Not supported |
-| **Cooling** | Hot-swap redundant fan module; front-to-rear (F) or rear-to-front (T) airflow per SKU |
-| **Power Source** | StorageReview SX6036 review (Sept 2012): 126W passive, 231W active measured; 2W/module max |
-| | |
-| **— Latency —** | |
-| **Baseline: InfiniBand FDR (port-to-port)** | ~170ns (StorageReview measured; SwitchX-2 cut-through) |
-| **Baseline: Ethernet 40GbE (L2, 64B)** | ~300ns cut-through (SwitchX-2 Ethernet; higher than IB due to framing overhead) |
-| **Forwarding Mode** | Cut-through (both IB and Ethernet modes) |
-| **Modifier: FDR10 (40Gb/s IB)** | ~170-200ns (same ASIC, slightly different SerDes encoding) |
-| **Modifier: Breakout 4x10GbE** | ~300-400ns (Ethernet mode, 10G SerDes) |
-| **Modifier: QSFP SR4/LR4 optic** | +negligible optical PHY latency (~10-20ns) + fiber (~5ns/m) |
-| **Modifier: Speed mismatch** | +variable buffering latency (e.g., 56G IB to 10G breakout) |
-| **L3 Routing vs L2 (Ethernet)** | ~same (hardware forwarding in SwitchX-2 pipeline) |
-| **IB QoS VL Impact** | 9 VLs with SL-to-VL mapping; no queuing latency at low utilization |
-| **Latency Source** | StorageReview professional review (Sept 2012): 170ns IB; Ethernet ~300ns per Mellanox brief |
-| | |
-| **— L2 Features (Ethernet mode) —** | |
-| **VLANs** | 802.1Q (up to 4,094 VLANs) |
-| **Private VLAN** | Not documented for SwitchX-2 |
-| **Protocol-Based VLAN** | Not documented |
-| **Voice VLAN** | Not documented |
-| **Trunking** | 802.1Q tagged trunks |
-| **Trunk Negotiation** | Manual (no DTP) |
-| **STP** | STP (802.1D), RSTP (802.1w); MSTP varies by firmware version |
-| **STP convergence** | RSTP: ~1-3s typical (Ethernet mode) |
-| **Storm Control** | Yes (broadcast/multicast) |
-| **IGMP Snooping** | Yes |
-| **LLDP** | Yes |
-| | |
-| **— InfiniBand Fabric Features —** | |
-| **Subnet Manager (SM)** | Integrated OpenSM — manages up to 648 IB nodes; LID assignment, routing, topology discovery |
-| **SM High Availability** | Yes (active/standby SM failover) |
-| **IB Partitioning (PKeys)** | Yes — logical isolation within IB fabric (analogous to VLANs) |
-| **IB Router** | Yes — inter-subnet routing for IB traffic |
-| **Adaptive Routing** | Yes (SwitchX-2 congestion-aware adaptive routing) |
-| **Credit-Based Flow Control** | Yes (native IB link-level; inherently lossless — no PFC needed) |
-| **Congestion Control** | IB native (IBTA Annex A17/A18) |
-| **Unbreakable-Link** | Yes (MLNX-OS link integrity monitoring + auto re-routing) |
-| | |
-| **— Link Aggregation (Ethernet mode) —** | |
-| **Static LAG** | Yes |
-| **LACP (802.3ad)** | Yes |
-| **Max LAGs / Ports per LAG** | Varies by firmware (typical: up to 64 LAGs) |
-| **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) — varies by MLNX-OS version |
-| **Symmetric Hashing** | Supported in later MLNX-OS versions |
-| **LAG failover** | <50 ms with LACP (Ethernet mode; near-instantaneous redistribution) |
-| **Min-links** | Not documented for SwitchX-2 |
-| **LAG Latency Impact** | Negligible (hardware hash in ASIC) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG** | Not supported on SwitchX-2 (MLAG introduced on Spectrum ASIC / Onyx NOS) |
-| | |
-| **— First-Hop Redundancy (Ethernet mode) —** | |
-| **VRRP** | Not documented for MLNX-OS on SwitchX-2 |
-| **HSRP** | No (Cisco proprietary) |
-| **GLBP** | No (Cisco proprietary) |
-| **Anycast Gateway** | Not supported (no EVPN on SwitchX-2) |
-| | |
-| **— L3 Routing (Ethernet mode) —** | |
-| **Static Routing** | Yes |
-| **OSPF** | Yes (v2 IPv4; varies by firmware) |
-| **BGP** | Yes (IPv4; varies by firmware and license) |
-| **RIP** | Not documented |
-| **IS-IS** | Not documented |
-| **VRF / VRF-lite** | Not documented for SwitchX-2 |
-| **BFD** | Not documented for SwitchX-2 |
-| **ECMP** | Yes (hardware ECMP in SwitchX-2 ASIC) |
-| **PIM Multicast** | IB: native IB multicast groups; Ethernet: IGMP snooping |
-| **DHCP Relay** | Yes (Ethernet mode) |
-| **Route Table Capacity** | Not documented for SX6036 |
-| | |
-| **— Security —** | |
-| **ACLs** | Yes (L2/L3/L4 in Ethernet mode; IB partitioning for isolation in IB mode) |
-| **802.1X** | Not documented for MLNX-OS |
-| **RADIUS / TACACS+** | Yes (management authentication) |
-| **SSH** | Yes (v2) |
-| **HTTPS** | Yes (WebUI) |
-| **RBAC** | Yes |
-| **IB Partition Keys (PKeys)** | Yes — security isolation in IB mode (shared PKey required to communicate) |
-| **DHCP Snooping** | Not documented |
-| **Dynamic ARP Inspection** | Not documented |
-| **MACsec (802.1AE)** | Not supported on SwitchX-2 |
-| **Control Plane Policing** | Yes (CoPP — per MLNX-OS user manual) |
-| **Port security** | N/A — HPC/DC fabric environment |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2c, v3 |
-| **sFlow / NetFlow** | Not documented for SwitchX-2 (sFlow on Spectrum and later) |
-| **Port Mirroring** | Yes |
-| **LLDP** | Yes (Ethernet mode) |
-| **Syslog** | Yes |
-| **NTP** | Yes |
-| **DNS** | Yes (management resolver via MLNX-OS) |
-| **PTP** | Not documented for SX6036 |
-| **IB Diagnostics** | ibdiagnet, ibstat, ibswitches — standard IB tools; integrated in UFM |
-| | |
-| **— QoS —** | |
-| **IB QoS** | 9 virtual lanes per port (8 data + 1 management VL15); SL-to-VL mapping; per-VL flow control |
-| **Ethernet QoS** | 802.1p, DSCP classification, PFC (802.1Qbb) for lossless Ethernet (required for RoCE) |
-| **ETS (802.1Qaz)** | Yes (Enhanced Transmission Selection — bandwidth allocation) |
-| **DCBX (802.1AB)** | Yes (auto-negotiation of PFC/ETS parameters) |
-| **ECN** | Yes (for RoCEv2 / DCQCN congestion control) |
-| | |
-| **Stacking** | No (standalone fabric switch; scale-out via fat-tree or other IB topologies) |
+| Attribute                                    | Value                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                                    | 36x QSFP (FDR InfiniBand 56Gbps or 40GbE Ethernet per port — VPI)                                                                                                                                                                                                                                                                                             |
+| **Port Mode**                                | VPI (Virtual Protocol Interconnect): each port independently configurable as InfiniBand FDR or 40GbE Ethernet. Can mix IB and Ethernet ports on the same switch. IB-only, Ethernet-only, or hybrid deployments all supported.                                                                                                                                 |
+| **Breakout**                                 | 4x FDR10 (10Gbps IB) or 4x10GbE per QSFP (up to 144x 10GbE in Ethernet mode)                                                                                                                                                                                                                                                                                  |
+| **ASIC**                                     | Mellanox SwitchX-2 (single-chip, non-blocking)                                                                                                                                                                                                                                                                                                                |
+| **Switching Capacity**                       | 4.032 Tbps (InfiniBand FDR) / 2.88 Tbps (Ethernet 40GbE)                                                                                                                                                                                                                                                                                                      |
+| **Forwarding Rate**                          | ~1,080 Mpps (Ethernet mode)                                                                                                                                                                                                                                                                                                                                   |
+| **Forwarding Database**                      | 4 x 48K-entry linear forwarding tables (InfiniBand LFT)                                                                                                                                                                                                                                                                                                       |
+| **MTU / Jumbo**                              | 256B to 4KB (InfiniBand, configurable), 9,216 bytes (Ethernet mode)                                                                                                                                                                                                                                                                                           |
+| **IB Virtual Lanes**                         | 9 per port (8 data + 1 management VL15, per IBTA spec)                                                                                                                                                                                                                                                                                                        |
+| **IB Compliance**                            | IBTA 1.2.1 and 1.3 compliant; FDR and FDR10 with Forward Error Correction (FEC)                                                                                                                                                                                                                                                                               |
+| **Form Factor**                              | 1RU (standard depth and short depth variants available)                                                                                                                                                                                                                                                                                                       |
+| **OS**                                       | MLNX-OS (Mellanox/NVIDIA Networking OS — IB and Ethernet switching)                                                                                                                                                                                                                                                                                           |
+| **Management**                               | CLI, WebUI, SNMP v1/v2c/v3, REST API, XML gateway, 2x 100M/1Gb Ethernet OOB mgmt ports, 1x USB, 1x RJ45 serial console, 1x I2C diagnostic                                                                                                                                                                                                                     |
+| **Fabric Management**                        | UFM (Unified Fabric Manager) for large-scale fabric orchestration, monitoring, and diagnostics                                                                                                                                                                                                                                                                |
+| **Class**                                    | Enterprise / HPC / Data Center Fabric                                                                                                                                                                                                                                                                                                                         |
+| **Released**                                 | ~2012-2013                                                                                                                                                                                                                                                                                                                                                    |
+| **EOL**                                      | ~2019 (Mellanox acquired by NVIDIA 2020; SwitchX-2 succeeded by Spectrum/Quantum)                                                                                                                                                                                                                                                                             |
+| **Variants**                                 | MSX6036F-1SFR (standard, front-to-rear), MSX6036T-1SFR (standard, rear-to-front), MSX6036F-1BRR (short depth, front-to-rear), MSX6036T-1BRR (short depth, rear-to-front)                                                                                                                                                                                      |
+| **Notes**                                    | Dual-personality (VPI) switch: each port independently configurable as InfiniBand FDR (56Gb/s, native RDMA) or Ethernet (40GbE). Originally designed for HPC clusters but capable as 40GbE DC fabric switch in Ethernet mode. VPI eliminates need for separate IB and Ethernet switches. SwitchX-2 ASIC is non-blocking with consistent port-to-port latency. |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— RDMA & Protocol Modes —**                |                                                                                                                                                                                                                                                                                                                                                               |
+| **VPI**                                      | Yes — per-port selection of InfiniBand or Ethernet; ports can be mixed freely within same chassis                                                                                                                                                                                                                                                             |
+| **InfiniBand Mode**                          | FDR (56Gb/s per port, 14Gb/s per lane x 4); FDR10 (40Gb/s, 10Gb/s x 4); backward-compatible QDR (40Gb/s) and DDR (20Gb/s)                                                                                                                                                                                                                                     |
+| **Ethernet Mode**                            | 40GbE per QSFP; breakout to 4x10GbE via DAC or optics                                                                                                                                                                                                                                                                                                         |
+| **IB Standards**                             | IBTA 1.2.1, IBTA 1.3                                                                                                                                                                                                                                                                                                                                          |
+| **RDMA (InfiniBand)**                        | Native — zero-copy, kernel-bypass RDMA over IB verbs (libibverbs). No software overhead. Primary design target of the switch.                                                                                                                                                                                                                                 |
+| **RDMA (Ethernet / RoCE)**                   | RoCE is an adapter-level feature (ConnectX-3 VPI NICs support RoCEv1 and RoCEv2). Switch provides PFC (802.1Qbb) and ECN for lossless Ethernet transport. Switch does NOT terminate RDMA — it provides the lossless L2/L3 fabric. RoCEv2 preferred (routable, UDP/IP).                                                                                        |
+| **RoCE Concerns**                            | RoCEv1 is L2-only (no subnet crossing). RoCEv2 routable but needs PFC/ECN/DCQCN tuning. PFC storms are a known failure mode — requires PFC watchdog. Native IB RDMA is simpler (credit-based flow control, inherently lossless, no PFC needed).                                                                                                               |
+| **iSER**                                     | iSCSI Extensions for RDMA — RDMA-accelerated iSCSI on IB ports                                                                                                                                                                                                                                                                                                |
+| **SRP**                                      | SCSI RDMA Protocol — RDMA-based block storage on IB ports                                                                                                                                                                                                                                                                                                     |
+| **FCoIB**                                    | Fibre Channel over InfiniBand — gateway for FC SAN access via IB                                                                                                                                                                                                                                                                                              |
+| **EoIB**                                     | Ethernet over InfiniBand — encapsulates Ethernet frames over IB (BridgeX gateway)                                                                                                                                                                                                                                                                             |
+| **FCoE**                                     | Supported in Ethernet mode (FC-BB5 compliant with ConnectX-3 VPI adapters)                                                                                                                                                                                                                                                                                    |
+| **IPoIB**                                    | IP over InfiniBand — standard TCP/IP stack over IB for legacy apps                                                                                                                                                                                                                                                                                            |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— Power —**                                |                                                                                                                                                                                                                                                                                                                                                               |
+| **PSU**                                      | Auto-sensing 100-240 VAC, 50-60Hz; ships with 1 PSU, optional 2nd for 1+1 redundancy; hot-swap                                                                                                                                                                                                                                                                |
+| **System Idle**                              | ~100-126W estimated (ASIC + mgmt CPU + fans at low speed, passive cables or empty cages)                                                                                                                                                                                                                                                                      |
+| **System Typical (passive cables)**          | ~126W (StorageReview measured with passive copper DACs)                                                                                                                                                                                                                                                                                                       |
+| **System Typical (active cables)**           | ~231W (StorageReview measured with active optical cables)                                                                                                                                                                                                                                                                                                     |
+| **System Max**                               | ~300W estimated (all 36 ports active with optics, full traffic, fans at full speed)                                                                                                                                                                                                                                                                           |
+| **Per-Port: QSFP passive DAC**               | ~0.5-1.0W (SerDes only, no optical components)                                                                                                                                                                                                                                                                                                                |
+| **Per-Port: QSFP active optical (AOC)**      | ~2.0W max per module (StorageReview: 2W max per QSFP with active cables)                                                                                                                                                                                                                                                                                      |
+| **Per-Port: QSFP SR4 optic**                 | ~1.5-2.5W (40G SR4 QSFP per MSA)                                                                                                                                                                                                                                                                                                                              |
+| **Per-Port: QSFP LR4 optic**                 | ~2.5-3.5W (40G LR4 QSFP per MSA)                                                                                                                                                                                                                                                                                                                              |
+| **Per-Port: Empty QSFP cage**                | ~0W                                                                                                                                                                                                                                                                                                                                                           |
+| **PoE**                                      | Not supported                                                                                                                                                                                                                                                                                                                                                 |
+| **Cooling**                                  | Hot-swap redundant fan module; front-to-rear (F) or rear-to-front (T) airflow per SKU                                                                                                                                                                                                                                                                         |
+| **Power Source**                             | StorageReview SX6036 review (Sept 2012): 126W passive, 231W active measured; 2W/module max                                                                                                                                                                                                                                                                    |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— Latency —**                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **Baseline: InfiniBand FDR (port-to-port)**  | ~170ns (StorageReview measured; SwitchX-2 cut-through)                                                                                                                                                                                                                                                                                                        |
+| **Baseline: Ethernet 40GbE (L2, 64B)**       | ~300ns cut-through (SwitchX-2 Ethernet; higher than IB due to framing overhead)                                                                                                                                                                                                                                                                               |
+| **Forwarding Mode**                          | Cut-through (both IB and Ethernet modes)                                                                                                                                                                                                                                                                                                                      |
+| **Modifier: FDR10 (40Gb/s IB)**              | ~170-200ns (same ASIC, slightly different SerDes encoding)                                                                                                                                                                                                                                                                                                    |
+| **Modifier: Breakout 4x10GbE**               | ~300-400ns (Ethernet mode, 10G SerDes)                                                                                                                                                                                                                                                                                                                        |
+| **Modifier: QSFP SR4/LR4 optic**             | +negligible optical PHY latency (~10-20ns) + fiber (~5ns/m)                                                                                                                                                                                                                                                                                                   |
+| **Modifier: Speed mismatch**                 | +variable buffering latency (e.g., 56G IB to 10G breakout)                                                                                                                                                                                                                                                                                                    |
+| **L3 Routing vs L2 (Ethernet)**              | ~same (hardware forwarding in SwitchX-2 pipeline)                                                                                                                                                                                                                                                                                                             |
+| **IB QoS VL Impact**                         | 9 VLs with SL-to-VL mapping; no queuing latency at low utilization                                                                                                                                                                                                                                                                                            |
+| **Latency Source**                           | StorageReview professional review (Sept 2012): 170ns IB; Ethernet ~300ns per Mellanox brief                                                                                                                                                                                                                                                                   |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— L2 Features (Ethernet mode) —**          |                                                                                                                                                                                                                                                                                                                                                               |
+| **VLANs**                                    | 802.1Q (up to 4,094 VLANs)                                                                                                                                                                                                                                                                                                                                    |
+| **Private VLAN**                             | Not documented for SwitchX-2                                                                                                                                                                                                                                                                                                                                  |
+| **Protocol-Based VLAN**                      | Not documented                                                                                                                                                                                                                                                                                                                                                |
+| **Voice VLAN**                               | Not documented                                                                                                                                                                                                                                                                                                                                                |
+| **Trunking**                                 | 802.1Q tagged trunks                                                                                                                                                                                                                                                                                                                                          |
+| **Trunk Negotiation**                        | Manual (no DTP)                                                                                                                                                                                                                                                                                                                                               |
+| **STP**                                      | STP (802.1D), RSTP (802.1w); MSTP varies by firmware version                                                                                                                                                                                                                                                                                                  |
+| **STP convergence**                          | RSTP: ~1-3s typical (Ethernet mode)                                                                                                                                                                                                                                                                                                                           |
+| **Storm Control**                            | Yes (broadcast/multicast)                                                                                                                                                                                                                                                                                                                                     |
+| **IGMP Snooping**                            | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **LLDP**                                     | Yes                                                                                                                                                                                                                                                                                                                                                           |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— InfiniBand Fabric Features —**           |                                                                                                                                                                                                                                                                                                                                                               |
+| **Subnet Manager (SM)**                      | Integrated OpenSM — manages up to 648 IB nodes; LID assignment, routing, topology discovery                                                                                                                                                                                                                                                                   |
+| **SM High Availability**                     | Yes (active/standby SM failover)                                                                                                                                                                                                                                                                                                                              |
+| **IB Partitioning (PKeys)**                  | Yes — logical isolation within IB fabric (analogous to VLANs)                                                                                                                                                                                                                                                                                                 |
+| **IB Router**                                | Yes — inter-subnet routing for IB traffic                                                                                                                                                                                                                                                                                                                     |
+| **Adaptive Routing**                         | Yes (SwitchX-2 congestion-aware adaptive routing)                                                                                                                                                                                                                                                                                                             |
+| **Credit-Based Flow Control**                | Yes (native IB link-level; inherently lossless — no PFC needed)                                                                                                                                                                                                                                                                                               |
+| **Congestion Control**                       | IB native (IBTA Annex A17/A18)                                                                                                                                                                                                                                                                                                                                |
+| **Unbreakable-Link**                         | Yes (MLNX-OS link integrity monitoring + auto re-routing)                                                                                                                                                                                                                                                                                                     |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— Link Aggregation (Ethernet mode) —**     |                                                                                                                                                                                                                                                                                                                                                               |
+| **Static LAG**                               | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **LACP (802.3ad)**                           | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **Max LAGs / Ports per LAG**                 | Varies by firmware (typical: up to 64 LAGs)                                                                                                                                                                                                                                                                                                                   |
+| **Hash Modes**                               | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) — varies by MLNX-OS version                                                                                                                                                                                                                                                                              |
+| **Symmetric Hashing**                        | Supported in later MLNX-OS versions                                                                                                                                                                                                                                                                                                                           |
+| **LAG failover**                             | <50 ms with LACP (Ethernet mode; near-instantaneous redistribution)                                                                                                                                                                                                                                                                                           |
+| **Min-links**                                | Not documented for SwitchX-2                                                                                                                                                                                                                                                                                                                                  |
+| **LAG Latency Impact**                       | Negligible (hardware hash in ASIC)                                                                                                                                                                                                                                                                                                                            |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— MC-LAG / Multi-Chassis —**               |                                                                                                                                                                                                                                                                                                                                                               |
+| **MC-LAG**                                   | Not supported on SwitchX-2 (MLAG introduced on Spectrum ASIC / Onyx NOS)                                                                                                                                                                                                                                                                                      |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— First-Hop Redundancy (Ethernet mode) —** |                                                                                                                                                                                                                                                                                                                                                               |
+| **VRRP**                                     | Not documented for MLNX-OS on SwitchX-2                                                                                                                                                                                                                                                                                                                       |
+| **HSRP**                                     | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                                                        |
+| **GLBP**                                     | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                                                        |
+| **Anycast Gateway**                          | Not supported (no EVPN on SwitchX-2)                                                                                                                                                                                                                                                                                                                          |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— L3 Routing (Ethernet mode) —**           |                                                                                                                                                                                                                                                                                                                                                               |
+| **Static Routing**                           | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **OSPF**                                     | Yes (v2 IPv4; varies by firmware)                                                                                                                                                                                                                                                                                                                             |
+| **BGP**                                      | Yes (IPv4; varies by firmware and license)                                                                                                                                                                                                                                                                                                                    |
+| **RIP**                                      | Not documented                                                                                                                                                                                                                                                                                                                                                |
+| **IS-IS**                                    | Not documented                                                                                                                                                                                                                                                                                                                                                |
+| **VRF / VRF-lite**                           | Not documented for SwitchX-2                                                                                                                                                                                                                                                                                                                                  |
+| **BFD**                                      | Not documented for SwitchX-2                                                                                                                                                                                                                                                                                                                                  |
+| **ECMP**                                     | Yes (hardware ECMP in SwitchX-2 ASIC)                                                                                                                                                                                                                                                                                                                         |
+| **PIM Multicast**                            | IB: native IB multicast groups; Ethernet: IGMP snooping                                                                                                                                                                                                                                                                                                       |
+| **DHCP Relay**                               | Yes (Ethernet mode)                                                                                                                                                                                                                                                                                                                                           |
+| **Route Table Capacity**                     | Not documented for SX6036                                                                                                                                                                                                                                                                                                                                     |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— Security —**                             |                                                                                                                                                                                                                                                                                                                                                               |
+| **ACLs**                                     | Yes (L2/L3/L4 in Ethernet mode; IB partitioning for isolation in IB mode)                                                                                                                                                                                                                                                                                     |
+| **802.1X**                                   | Not documented for MLNX-OS                                                                                                                                                                                                                                                                                                                                    |
+| **RADIUS / TACACS+**                         | Yes (management authentication)                                                                                                                                                                                                                                                                                                                               |
+| **SSH**                                      | Yes (v2)                                                                                                                                                                                                                                                                                                                                                      |
+| **HTTPS**                                    | Yes (WebUI)                                                                                                                                                                                                                                                                                                                                                   |
+| **RBAC**                                     | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **IB Partition Keys (PKeys)**                | Yes — security isolation in IB mode (shared PKey required to communicate)                                                                                                                                                                                                                                                                                     |
+| **DHCP Snooping**                            | Not documented                                                                                                                                                                                                                                                                                                                                                |
+| **Dynamic ARP Inspection**                   | Not documented                                                                                                                                                                                                                                                                                                                                                |
+| **MACsec (802.1AE)**                         | Not supported on SwitchX-2                                                                                                                                                                                                                                                                                                                                    |
+| **Control Plane Policing**                   | Yes (CoPP — per MLNX-OS user manual)                                                                                                                                                                                                                                                                                                                          |
+| **Port security**                            | N/A — HPC/DC fabric environment                                                                                                                                                                                                                                                                                                                               |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— Monitoring —**                           |                                                                                                                                                                                                                                                                                                                                                               |
+| **SNMP**                                     | v1, v2c, v3                                                                                                                                                                                                                                                                                                                                                   |
+| **sFlow / NetFlow**                          | Not documented for SwitchX-2 (sFlow on Spectrum and later)                                                                                                                                                                                                                                                                                                    |
+| **Port Mirroring**                           | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **LLDP**                                     | Yes (Ethernet mode)                                                                                                                                                                                                                                                                                                                                           |
+| **Syslog**                                   | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **NTP**                                      | Yes                                                                                                                                                                                                                                                                                                                                                           |
+| **DNS**                                      | Yes (management resolver via MLNX-OS)                                                                                                                                                                                                                                                                                                                         |
+| **PTP**                                      | Not documented for SX6036                                                                                                                                                                                                                                                                                                                                     |
+| **IB Diagnostics**                           | ibdiagnet, ibstat, ibswitches — standard IB tools; integrated in UFM                                                                                                                                                                                                                                                                                          |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **— QoS —**                                  |                                                                                                                                                                                                                                                                                                                                                               |
+| **IB QoS**                                   | 9 virtual lanes per port (8 data + 1 management VL15); SL-to-VL mapping; per-VL flow control                                                                                                                                                                                                                                                                  |
+| **Ethernet QoS**                             | 802.1p, DSCP classification, PFC (802.1Qbb) for lossless Ethernet (required for RoCE)                                                                                                                                                                                                                                                                         |
+| **ETS (802.1Qaz)**                           | Yes (Enhanced Transmission Selection — bandwidth allocation)                                                                                                                                                                                                                                                                                                  |
+| **DCBX (802.1AB)**                           | Yes (auto-negotiation of PFC/ETS parameters)                                                                                                                                                                                                                                                                                                                  |
+| **ECN**                                      | Yes (for RoCEv2 / DCQCN congestion control)                                                                                                                                                                                                                                                                                                                   |
+|                                              |                                                                                                                                                                                                                                                                                                                                                               |
+| **Stacking**                                 | No (standalone fabric switch; scale-out via fat-tree or other IB topologies)                                                                                                                                                                                                                                                                                  |
 
 ---
 
 ### Arista DCS-7050QX-32-F (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 32x QSFP+ 40GbE |
-| **Breakout** | 4x10GbE per QSFP+ (up to 128x 10GbE) |
-| **ASIC** | Intel (Fulcrum) FM6000 series (single-chip, non-blocking, cut-through) |
-| **Switching Capacity** | 2.56 Tbps |
-| **Forwarding Rate** | 1,440 Mpps |
-| **MAC Table** | 288,000 entries |
-| **Route Table** | 208K IPv4 host routes; ~104K IPv4 LPM; ~104K IPv6 host; ~4K IPv6 LPM (varies by forwarding profile) |
-| **MTU / Jumbo** | 9,216 bytes |
-| **Form Factor** | 1RU, front-to-back airflow (-F suffix); rear-to-front (-R suffix) available |
-| **OS** | Arista EOS (Extensible Operating System, Linux-based); also SONiC compatible (platform: x86_64-arista_7050_qx32) |
-| **Management** | CLI (bash + Arista CLI), eAPI (JSON-RPC over HTTP/HTTPS), SNMP v1/v2c/v3, CloudVision, OpenConfig/gNMI, serial console |
-| **Software** | EOS 4.24 is last supported version (EOS-2GB variant dropped in 4.25+); full Linux shell access (bash) |
-| **Class** | Enterprise / Data Center Leaf-Spine |
-| **Released** | ~2013 |
-| **EOL** | ~2020 (EOS 4.24 last release, per Arista advisory; TAC support continues through EOS) |
-| **SKU Variants** | 7050QX-32-F (front-to-rear, 2xAC), 7050QX-32-R (rear-to-front, 2xAC), 7050QX-32-# (no fans/PSU), 7050QX-32-D# (SSD, no fans/PSU); 7050QX-32S adds 4x SFP+ 10GbE |
-| **Notes** | Top-tier data center switch with Arista EOS — Linux-based NOS with full shell access and programmability. MLAG is rock-solid. SSU for hitless upgrades. LANZ for microburst detection. eAPI for automation. Also runs SONiC (confirmed by ServeTheHome). This is arguably the most capable switch in this inventory for general data center use. |
-| | |
-| **— Power —** | |
-| **PSU** | 2x PWR-460AC-F (460W each, 100-240VAC, 50-60Hz), hot-swap, load-sharing, redundant (1+1); C13-C14 power cords included |
-| **System Idle** | ~100-120W estimated (ASIC + CPU + fans at low speed, empty QSFP+ cages) |
-| **System Typical** | ~150W (Arista product page: "Typical Power Draw: 150W (4.5W per port)") |
-| **System Max** | ~350-400W estimated (all 32 QSFP+ ports active with optics, full traffic, fans at max) |
-| **Per-Port: QSFP+ DAC (40G passive)** | ~1.0-1.5W (SerDes only, 4 lanes) |
-| **Per-Port: QSFP+ SR4 optic** | ~1.5-2.5W (40G SR4 QSFP+ per MSA) |
-| **Per-Port: QSFP+ LR4 optic** | ~2.5-3.5W (40G LR4 QSFP+ per MSA) |
-| **Per-Port: QSFP+ PLR4/PSM4** | ~1.5-2.0W (parallel single-mode) |
-| **Per-Port: Empty QSFP+ cage** | ~0W |
-| **Per-Port: Breakout 4x10G DAC** | ~1.0-1.5W total (passive copper) |
-| **Per-Port: Breakout 4x10G optic** | ~2.0-4.0W total (4x SFP+ SR/LR) |
-| **PoE** | Not supported |
-| **Cooling** | 4 hot-swap fan modules, reversible airflow (-F front-to-rear, -R rear-to-front) |
-| **Power Source** | Arista 7050X product page: 150W typical, 4.5W/port; PSU model from end-of-support advisory |
-| | |
-| **— Latency —** | |
-| **Baseline (QSFP+ DAC, L2, 64B)** | ~550ns cut-through (Arista datasheet and product page) |
-| **Forwarding Mode** | Cut-through (default); store-and-forward available |
-| **ASIC Switching Latency** | ~550ns (Intel FM6000, single-chip, consistent port-to-port) |
-| **Modifier: QSFP+ SR4 optic** | ~550ns + negligible optical PHY latency (~10-20ns) + fiber (~5ns/m) |
-| **Modifier: QSFP+ LR4 optic** | ~550ns + LR4 WDM mux/demux (~20-50ns) + fiber (~5ns/m) |
-| **Modifier: Breakout 4x10G** | ~550ns (same ASIC pipeline; breakout handled in SerDes) |
-| **Modifier: Speed mismatch (40G→10G)** | +variable buffering for speed adaptation |
-| **L3 Routing vs L2** | ~same (hardware L2/L3/L4 forwarding in single ASIC pipeline) |
-| **ACL/QoS Impact** | Negligible (hardware TCAM-based, processed in pipeline) |
-| **Latency Source** | Arista 7050X product page and 7050QX-32 datasheet: 550ns |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | 802.1Q, up to 4,094 VLANs |
-| **Private VLAN** | Yes (community, isolated, promiscuous) |
-| **Protocol-Based VLAN** | Yes |
-| **Voice VLAN** | Yes |
-| **Trunking** | 802.1Q tagged trunks |
-| **Trunk Negotiation** | Manual (no DTP — Arista does not use Cisco DTP) |
-| **STP** | STP (802.1D), RSTP (802.1w), MSTP (802.1s), RPVST+ (Rapid Per-VLAN Spanning Tree) |
-| **STP convergence** | RSTP/MSTP: ~1-3s typical; RPVST+: ~1-3s typical |
-| **Storm Control** | Yes (broadcast, multicast, unknown unicast; per-port rate limiting) |
-| **IGMP Snooping** | Yes (v1/v2/v3) |
-| **MLD Snooping** | Yes (IPv6 multicast) |
-| **LLDP** | Yes |
-| **CDP** | Yes (Cisco Discovery Protocol interop) |
-| | |
-| **— Link Aggregation —** | |
-| **Static LAG** | Yes |
-| **LACP (802.3ad)** | Yes |
-| **Max LAGs / Ports per LAG** | Up to 2,000 port-channels (EOS); up to 64 member ports per LAG (varies by EOS version) |
-| **Hash Modes** | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst TCP/UDP port); configurable, symmetric hashing available |
-| **Symmetric Hashing** | Yes (ensures same hash for bidirectional flows — critical for stateful monitoring) |
-| **Resilient Hashing** | Yes (minimizes flow redistribution when LAG membership changes) |
-| **LAG failover** | <50 ms with LACP fast timers (near-instantaneous redistribution) |
-| **Min-links** | Supported — configurable minimum active members before port-channel goes down (EOS lacp min-links) |
-| **LAG Latency Impact** | Negligible (hardware hash in ASIC pipeline) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG Variant** | MLAG (Arista Multi-Chassis Link Aggregation) |
-| **Protocol** | Proprietary (Arista MLAG with peer-link and keepalive) |
-| **Interoperable** | Yes — downstream sees standard LACP; MLAG peer protocol is proprietary between two Arista switches |
-| **Max MLAG Peers** | 2 (active-active pair) |
-| **MLAG ISSU** | Yes (In-Service Software Upgrade with MLAG — hitless upgrades without traffic loss) |
-| **Failover Time** | Sub-second typical (MLAG + LACP fast timers) |
-| **Split-Brain Handling** | Peer-link + keepalive heartbeat; configurable reload-delay for recovery |
-| | |
-| **— First-Hop Redundancy —** | |
-| **VRRP** | Yes (v2 RFC 3768, v3 RFC 5798; IPv4 and IPv6) |
-| **Virtual-Router (Arista)** | Yes (Arista virtual-router for active-active FHRP with MLAG — both switches forward, no standby waste) |
-| **HSRP** | No (Cisco proprietary) |
-| **GLBP** | No (Cisco proprietary) |
-| **Anycast Gateway** | Yes (with VXLAN EVPN — distributed anycast gateway across all VTEPs) |
-| **VRRP Failover Time** | ~1-3s default; sub-second with fast advertisement timers |
-| **Preemption** | Yes |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes |
-| **OSPF** | Yes (v2 for IPv4, v3 for IPv6) |
-| **BGP** | Yes (IPv4/IPv6 unicast, EVPN address family for VXLAN) |
-| **IS-IS** | Yes |
-| **RIP** | Yes (v1, v2) |
-| **Policy-Based Routing** | Yes |
-| **VRF / VRF-lite** | Yes (multi-VRF, VRF-lite for L3 segmentation) |
-| **BFD** | Yes (Bidirectional Forwarding Detection for fast failure detection) |
-| **ECMP** | Yes (up to 64-way, hardware-based, resilient ECMP) |
-| **Route Table Capacity** | 208K IPv4 host, ~104K IPv4 LPM, ~104K IPv6 host, ~4K IPv6 LPM (varies by forwarding profile) |
-| **PIM Multicast** | Yes (PIM-SM, PIM-SSM) |
-| **DHCP Relay** | Yes |
-| **VXLAN** | Yes (hardware VTEP, VXLAN routing, EVPN for control plane) |
-| | |
-| **— Security —** | |
-| **ACLs** | L3/L4 hardware TCAM-based ACLs (IPv4 and IPv6); MAC ACLs |
-| **802.1X** | Yes (port-based NAC) |
-| **RADIUS / TACACS+** | Yes |
-| **SSH** | Yes (v2) |
-| **HTTPS** | Yes (eAPI) |
-| **RBAC** | Yes (privilege levels, AAA) |
-| **DHCP Snooping** | Yes |
-| **Dynamic ARP Inspection** | Yes |
-| **IP Source Guard** | Not documented for FM6000 |
-| **MACsec (802.1AE)** | Not supported (FM6000 ASIC limitation; MACsec introduced on later Arista platforms) |
-| **Control Plane Policing** | Yes (CoPP) |
-| **Port security** | Not typical — DC leaf/spine fabric environment |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2c, v3 |
-| **sFlow** | Yes (hardware-sampled) |
-| **LANZ** | Yes (Latency Analyzer — Arista-unique microburst detection with per-port queue depth monitoring and timestamped logging) |
-| **eAPI** | Yes (JSON-RPC over HTTP/HTTPS — full programmatic access to all EOS commands) |
-| **OpenConfig / gNMI** | Yes (streaming telemetry) |
-| **CloudVision** | Yes (Arista network-wide management, automation, telemetry, compliance) |
-| **Port Mirroring / SPAN** | Yes (SPAN, RSPAN, ERSPAN) |
-| **LLDP** | Yes |
-| **Syslog** | Yes |
-| **NTP** | Yes |
-| **DNS** | Yes (EOS system resolver for management lookups) |
-| **PTP** | Yes (IEEE 1588v2) |
-| | |
-| **— QoS —** | |
-| **Classification** | 802.1p, DSCP, ACL-based |
-| **Queues** | 8 egress queues per port |
-| **Scheduling** | Strict priority, WRR, DWRR |
-| **ECN** | Yes (for DCTCP/RoCE congestion signaling) |
-| **PFC (802.1Qbb)** | Yes (Priority Flow Control for lossless Ethernet — required for RoCE) |
-| **ETS (802.1Qaz)** | Yes (Enhanced Transmission Selection) |
-| **DCBX** | Yes (auto-negotiation of PFC/ETS) |
-| | |
-| **— High Availability —** | |
-| **SSU** | Yes (Smart System Upgrade — hitless EOS upgrades with minimal traffic disruption) |
-| **MLAG ISSU** | Yes (upgrade one MLAG peer at a time without traffic loss) |
-| **SFR** | Yes (Stateful Fault Repair — self-healing state recovery after agent restart) |
-| **Dual Software Images** | Yes (active/standby for safe rollback) |
-| **SONiC Compatible** | Yes (confirmed by ServeTheHome; platform x86_64-arista_7050_qx32; community-supported) |
-| | |
-| **Stacking** | No (uses MLAG for multi-chassis L2, ECMP for multi-chassis L3; scales to 64-way ECMP) |
+| Attribute                              | Value                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Ports**                              | 32x QSFP+ 40GbE                                                                                                                                                                                                                                                                                                                                  |
+| **Breakout**                           | 4x10GbE per QSFP+ (up to 128x 10GbE)                                                                                                                                                                                                                                                                                                             |
+| **ASIC**                               | Intel (Fulcrum) FM6000 series (single-chip, non-blocking, cut-through)                                                                                                                                                                                                                                                                           |
+| **Switching Capacity**                 | 2.56 Tbps                                                                                                                                                                                                                                                                                                                                        |
+| **Forwarding Rate**                    | 1,440 Mpps                                                                                                                                                                                                                                                                                                                                       |
+| **MAC Table**                          | 288,000 entries                                                                                                                                                                                                                                                                                                                                  |
+| **Route Table**                        | 208K IPv4 host routes; ~104K IPv4 LPM; ~104K IPv6 host; ~4K IPv6 LPM (varies by forwarding profile)                                                                                                                                                                                                                                              |
+| **MTU / Jumbo**                        | 9,216 bytes                                                                                                                                                                                                                                                                                                                                      |
+| **Form Factor**                        | 1RU, front-to-back airflow (-F suffix); rear-to-front (-R suffix) available                                                                                                                                                                                                                                                                      |
+| **OS**                                 | Arista EOS (Extensible Operating System, Linux-based); also SONiC compatible (platform: x86_64-arista_7050_qx32)                                                                                                                                                                                                                                 |
+| **Management**                         | CLI (bash + Arista CLI), eAPI (JSON-RPC over HTTP/HTTPS), SNMP v1/v2c/v3, CloudVision, OpenConfig/gNMI, serial console                                                                                                                                                                                                                           |
+| **Software**                           | EOS 4.24 is last supported version (EOS-2GB variant dropped in 4.25+); full Linux shell access (bash)                                                                                                                                                                                                                                            |
+| **Class**                              | Enterprise / Data Center Leaf-Spine                                                                                                                                                                                                                                                                                                              |
+| **Released**                           | ~2013                                                                                                                                                                                                                                                                                                                                            |
+| **EOL**                                | ~2020 (EOS 4.24 last release, per Arista advisory; TAC support continues through EOS)                                                                                                                                                                                                                                                            |
+| **SKU Variants**                       | 7050QX-32-F (front-to-rear, 2xAC), 7050QX-32-R (rear-to-front, 2xAC), 7050QX-32-# (no fans/PSU), 7050QX-32-D# (SSD, no fans/PSU); 7050QX-32S adds 4x SFP+ 10GbE                                                                                                                                                                                  |
+| **Notes**                              | Top-tier data center switch with Arista EOS — Linux-based NOS with full shell access and programmability. MLAG is rock-solid. SSU for hitless upgrades. LANZ for microburst detection. eAPI for automation. Also runs SONiC (confirmed by ServeTheHome). This is arguably the most capable switch in this inventory for general data center use. |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— Power —**                          |                                                                                                                                                                                                                                                                                                                                                  |
+| **PSU**                                | 2x PWR-460AC-F (460W each, 100-240VAC, 50-60Hz), hot-swap, load-sharing, redundant (1+1); C13-C14 power cords included                                                                                                                                                                                                                           |
+| **System Idle**                        | ~100-120W estimated (ASIC + CPU + fans at low speed, empty QSFP+ cages)                                                                                                                                                                                                                                                                          |
+| **System Typical**                     | ~150W (Arista product page: "Typical Power Draw: 150W (4.5W per port)")                                                                                                                                                                                                                                                                          |
+| **System Max**                         | ~350-400W estimated (all 32 QSFP+ ports active with optics, full traffic, fans at max)                                                                                                                                                                                                                                                           |
+| **Per-Port: QSFP+ DAC (40G passive)**  | ~1.0-1.5W (SerDes only, 4 lanes)                                                                                                                                                                                                                                                                                                                 |
+| **Per-Port: QSFP+ SR4 optic**          | ~1.5-2.5W (40G SR4 QSFP+ per MSA)                                                                                                                                                                                                                                                                                                                |
+| **Per-Port: QSFP+ LR4 optic**          | ~2.5-3.5W (40G LR4 QSFP+ per MSA)                                                                                                                                                                                                                                                                                                                |
+| **Per-Port: QSFP+ PLR4/PSM4**          | ~1.5-2.0W (parallel single-mode)                                                                                                                                                                                                                                                                                                                 |
+| **Per-Port: Empty QSFP+ cage**         | ~0W                                                                                                                                                                                                                                                                                                                                              |
+| **Per-Port: Breakout 4x10G DAC**       | ~1.0-1.5W total (passive copper)                                                                                                                                                                                                                                                                                                                 |
+| **Per-Port: Breakout 4x10G optic**     | ~2.0-4.0W total (4x SFP+ SR/LR)                                                                                                                                                                                                                                                                                                                  |
+| **PoE**                                | Not supported                                                                                                                                                                                                                                                                                                                                    |
+| **Cooling**                            | 4 hot-swap fan modules, reversible airflow (-F front-to-rear, -R rear-to-front)                                                                                                                                                                                                                                                                  |
+| **Power Source**                       | Arista 7050X product page: 150W typical, 4.5W/port; PSU model from end-of-support advisory                                                                                                                                                                                                                                                       |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— Latency —**                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **Baseline (QSFP+ DAC, L2, 64B)**      | ~550ns cut-through (Arista datasheet and product page)                                                                                                                                                                                                                                                                                           |
+| **Forwarding Mode**                    | Cut-through (default); store-and-forward available                                                                                                                                                                                                                                                                                               |
+| **ASIC Switching Latency**             | ~550ns (Intel FM6000, single-chip, consistent port-to-port)                                                                                                                                                                                                                                                                                      |
+| **Modifier: QSFP+ SR4 optic**          | ~550ns + negligible optical PHY latency (~10-20ns) + fiber (~5ns/m)                                                                                                                                                                                                                                                                              |
+| **Modifier: QSFP+ LR4 optic**          | ~550ns + LR4 WDM mux/demux (~20-50ns) + fiber (~5ns/m)                                                                                                                                                                                                                                                                                           |
+| **Modifier: Breakout 4x10G**           | ~550ns (same ASIC pipeline; breakout handled in SerDes)                                                                                                                                                                                                                                                                                          |
+| **Modifier: Speed mismatch (40G→10G)** | +variable buffering for speed adaptation                                                                                                                                                                                                                                                                                                         |
+| **L3 Routing vs L2**                   | ~same (hardware L2/L3/L4 forwarding in single ASIC pipeline)                                                                                                                                                                                                                                                                                     |
+| **ACL/QoS Impact**                     | Negligible (hardware TCAM-based, processed in pipeline)                                                                                                                                                                                                                                                                                          |
+| **Latency Source**                     | Arista 7050X product page and 7050QX-32 datasheet: 550ns                                                                                                                                                                                                                                                                                         |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— L2 Features —**                    |                                                                                                                                                                                                                                                                                                                                                  |
+| **VLANs**                              | 802.1Q, up to 4,094 VLANs                                                                                                                                                                                                                                                                                                                        |
+| **Private VLAN**                       | Yes (community, isolated, promiscuous)                                                                                                                                                                                                                                                                                                           |
+| **Protocol-Based VLAN**                | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **Voice VLAN**                         | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **Trunking**                           | 802.1Q tagged trunks                                                                                                                                                                                                                                                                                                                             |
+| **Trunk Negotiation**                  | Manual (no DTP — Arista does not use Cisco DTP)                                                                                                                                                                                                                                                                                                  |
+| **STP**                                | STP (802.1D), RSTP (802.1w), MSTP (802.1s), RPVST+ (Rapid Per-VLAN Spanning Tree)                                                                                                                                                                                                                                                                |
+| **STP convergence**                    | RSTP/MSTP: ~1-3s typical; RPVST+: ~1-3s typical                                                                                                                                                                                                                                                                                                  |
+| **Storm Control**                      | Yes (broadcast, multicast, unknown unicast; per-port rate limiting)                                                                                                                                                                                                                                                                              |
+| **IGMP Snooping**                      | Yes (v1/v2/v3)                                                                                                                                                                                                                                                                                                                                   |
+| **MLD Snooping**                       | Yes (IPv6 multicast)                                                                                                                                                                                                                                                                                                                             |
+| **LLDP**                               | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **CDP**                                | Yes (Cisco Discovery Protocol interop)                                                                                                                                                                                                                                                                                                           |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— Link Aggregation —**               |                                                                                                                                                                                                                                                                                                                                                  |
+| **Static LAG**                         | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **LACP (802.3ad)**                     | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **Max LAGs / Ports per LAG**           | Up to 2,000 port-channels (EOS); up to 64 member ports per LAG (varies by EOS version)                                                                                                                                                                                                                                                           |
+| **Hash Modes**                         | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst TCP/UDP port); configurable, symmetric hashing available                                                                                                                                                                                                                                          |
+| **Symmetric Hashing**                  | Yes (ensures same hash for bidirectional flows — critical for stateful monitoring)                                                                                                                                                                                                                                                               |
+| **Resilient Hashing**                  | Yes (minimizes flow redistribution when LAG membership changes)                                                                                                                                                                                                                                                                                  |
+| **LAG failover**                       | <50 ms with LACP fast timers (near-instantaneous redistribution)                                                                                                                                                                                                                                                                                 |
+| **Min-links**                          | Supported — configurable minimum active members before port-channel goes down (EOS lacp min-links)                                                                                                                                                                                                                                               |
+| **LAG Latency Impact**                 | Negligible (hardware hash in ASIC pipeline)                                                                                                                                                                                                                                                                                                      |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— MC-LAG / Multi-Chassis —**         |                                                                                                                                                                                                                                                                                                                                                  |
+| **MC-LAG Variant**                     | MLAG (Arista Multi-Chassis Link Aggregation)                                                                                                                                                                                                                                                                                                     |
+| **Protocol**                           | Proprietary (Arista MLAG with peer-link and keepalive)                                                                                                                                                                                                                                                                                           |
+| **Interoperable**                      | Yes — downstream sees standard LACP; MLAG peer protocol is proprietary between two Arista switches                                                                                                                                                                                                                                               |
+| **Max MLAG Peers**                     | 2 (active-active pair)                                                                                                                                                                                                                                                                                                                           |
+| **MLAG ISSU**                          | Yes (In-Service Software Upgrade with MLAG — hitless upgrades without traffic loss)                                                                                                                                                                                                                                                              |
+| **Failover Time**                      | Sub-second typical (MLAG + LACP fast timers)                                                                                                                                                                                                                                                                                                     |
+| **Split-Brain Handling**               | Peer-link + keepalive heartbeat; configurable reload-delay for recovery                                                                                                                                                                                                                                                                          |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— First-Hop Redundancy —**           |                                                                                                                                                                                                                                                                                                                                                  |
+| **VRRP**                               | Yes (v2 RFC 3768, v3 RFC 5798; IPv4 and IPv6)                                                                                                                                                                                                                                                                                                    |
+| **Virtual-Router (Arista)**            | Yes (Arista virtual-router for active-active FHRP with MLAG — both switches forward, no standby waste)                                                                                                                                                                                                                                           |
+| **HSRP**                               | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                                           |
+| **GLBP**                               | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                                           |
+| **Anycast Gateway**                    | Yes (with VXLAN EVPN — distributed anycast gateway across all VTEPs)                                                                                                                                                                                                                                                                             |
+| **VRRP Failover Time**                 | ~1-3s default; sub-second with fast advertisement timers                                                                                                                                                                                                                                                                                         |
+| **Preemption**                         | Yes                                                                                                                                                                                                                                                                                                                                              |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— L3 Routing —**                     |                                                                                                                                                                                                                                                                                                                                                  |
+| **Static Routing**                     | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **OSPF**                               | Yes (v2 for IPv4, v3 for IPv6)                                                                                                                                                                                                                                                                                                                   |
+| **BGP**                                | Yes (IPv4/IPv6 unicast, EVPN address family for VXLAN)                                                                                                                                                                                                                                                                                           |
+| **IS-IS**                              | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **RIP**                                | Yes (v1, v2)                                                                                                                                                                                                                                                                                                                                     |
+| **Policy-Based Routing**               | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **VRF / VRF-lite**                     | Yes (multi-VRF, VRF-lite for L3 segmentation)                                                                                                                                                                                                                                                                                                    |
+| **BFD**                                | Yes (Bidirectional Forwarding Detection for fast failure detection)                                                                                                                                                                                                                                                                              |
+| **ECMP**                               | Yes (up to 64-way, hardware-based, resilient ECMP)                                                                                                                                                                                                                                                                                               |
+| **Route Table Capacity**               | 208K IPv4 host, ~104K IPv4 LPM, ~104K IPv6 host, ~4K IPv6 LPM (varies by forwarding profile)                                                                                                                                                                                                                                                     |
+| **PIM Multicast**                      | Yes (PIM-SM, PIM-SSM)                                                                                                                                                                                                                                                                                                                            |
+| **DHCP Relay**                         | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **VXLAN**                              | Yes (hardware VTEP, VXLAN routing, EVPN for control plane)                                                                                                                                                                                                                                                                                       |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— Security —**                       |                                                                                                                                                                                                                                                                                                                                                  |
+| **ACLs**                               | L3/L4 hardware TCAM-based ACLs (IPv4 and IPv6); MAC ACLs                                                                                                                                                                                                                                                                                         |
+| **802.1X**                             | Yes (port-based NAC)                                                                                                                                                                                                                                                                                                                             |
+| **RADIUS / TACACS+**                   | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **SSH**                                | Yes (v2)                                                                                                                                                                                                                                                                                                                                         |
+| **HTTPS**                              | Yes (eAPI)                                                                                                                                                                                                                                                                                                                                       |
+| **RBAC**                               | Yes (privilege levels, AAA)                                                                                                                                                                                                                                                                                                                      |
+| **DHCP Snooping**                      | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **Dynamic ARP Inspection**             | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **IP Source Guard**                    | Not documented for FM6000                                                                                                                                                                                                                                                                                                                        |
+| **MACsec (802.1AE)**                   | Not supported (FM6000 ASIC limitation; MACsec introduced on later Arista platforms)                                                                                                                                                                                                                                                              |
+| **Control Plane Policing**             | Yes (CoPP)                                                                                                                                                                                                                                                                                                                                       |
+| **Port security**                      | Not typical — DC leaf/spine fabric environment                                                                                                                                                                                                                                                                                                   |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— Monitoring —**                     |                                                                                                                                                                                                                                                                                                                                                  |
+| **SNMP**                               | v1, v2c, v3                                                                                                                                                                                                                                                                                                                                      |
+| **sFlow**                              | Yes (hardware-sampled)                                                                                                                                                                                                                                                                                                                           |
+| **LANZ**                               | Yes (Latency Analyzer — Arista-unique microburst detection with per-port queue depth monitoring and timestamped logging)                                                                                                                                                                                                                         |
+| **eAPI**                               | Yes (JSON-RPC over HTTP/HTTPS — full programmatic access to all EOS commands)                                                                                                                                                                                                                                                                    |
+| **OpenConfig / gNMI**                  | Yes (streaming telemetry)                                                                                                                                                                                                                                                                                                                        |
+| **CloudVision**                        | Yes (Arista network-wide management, automation, telemetry, compliance)                                                                                                                                                                                                                                                                          |
+| **Port Mirroring / SPAN**              | Yes (SPAN, RSPAN, ERSPAN)                                                                                                                                                                                                                                                                                                                        |
+| **LLDP**                               | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **Syslog**                             | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **NTP**                                | Yes                                                                                                                                                                                                                                                                                                                                              |
+| **DNS**                                | Yes (EOS system resolver for management lookups)                                                                                                                                                                                                                                                                                                 |
+| **PTP**                                | Yes (IEEE 1588v2)                                                                                                                                                                                                                                                                                                                                |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— QoS —**                            |                                                                                                                                                                                                                                                                                                                                                  |
+| **Classification**                     | 802.1p, DSCP, ACL-based                                                                                                                                                                                                                                                                                                                          |
+| **Queues**                             | 8 egress queues per port                                                                                                                                                                                                                                                                                                                         |
+| **Scheduling**                         | Strict priority, WRR, DWRR                                                                                                                                                                                                                                                                                                                       |
+| **ECN**                                | Yes (for DCTCP/RoCE congestion signaling)                                                                                                                                                                                                                                                                                                        |
+| **PFC (802.1Qbb)**                     | Yes (Priority Flow Control for lossless Ethernet — required for RoCE)                                                                                                                                                                                                                                                                            |
+| **ETS (802.1Qaz)**                     | Yes (Enhanced Transmission Selection)                                                                                                                                                                                                                                                                                                            |
+| **DCBX**                               | Yes (auto-negotiation of PFC/ETS)                                                                                                                                                                                                                                                                                                                |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **— High Availability —**              |                                                                                                                                                                                                                                                                                                                                                  |
+| **SSU**                                | Yes (Smart System Upgrade — hitless EOS upgrades with minimal traffic disruption)                                                                                                                                                                                                                                                                |
+| **MLAG ISSU**                          | Yes (upgrade one MLAG peer at a time without traffic loss)                                                                                                                                                                                                                                                                                       |
+| **SFR**                                | Yes (Stateful Fault Repair — self-healing state recovery after agent restart)                                                                                                                                                                                                                                                                    |
+| **Dual Software Images**               | Yes (active/standby for safe rollback)                                                                                                                                                                                                                                                                                                           |
+| **SONiC Compatible**                   | Yes (confirmed by ServeTheHome; platform x86_64-arista_7050_qx32; community-supported)                                                                                                                                                                                                                                                           |
+|                                        |                                                                                                                                                                                                                                                                                                                                                  |
+| **Stacking**                           | No (uses MLAG for multi-chassis L2, ECMP for multi-chassis L3; scales to 64-way ECMP)                                                                                                                                                                                                                                                            |
+
 ---
 
 ## Routers
 
 ### Mono Gateway Router (3x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 2x SFP+ 10GbE + 3x RJ45 1GbE per unit |
-| **SoC** | NXP Layerscape LS1046A (quad-core ARM Cortex-A72, 1.6 GHz) — up to 26 Gbps line-rate throughput per NXP spec |
-| **RAM** | 8 GB LPDDR4, 2100 MT/s, ECC support |
-| **Storage** | 32 GB eMMC (OS/data) + 64 MB NOR flash (bootloader) |
-| **Hardware Offload** | DPAA (Data Path Acceleration Architecture) — L2/L3/NAT at near-line-rate; licensed feature enabled on all dev units (Jeff Geerling review confirmed) |
-| **Throughput** | 17+ Gbps L4/L7 real-world (CyPerf tested), 18+ Gbps L2/L3; 850K-1.1M pps HTTP (Jeff Geerling + ServeTheHome CyPerf test, Jan 2026) |
-| **MTU / Jumbo** | 9,000 bytes (OpenWrt configurable; SFP+ ports support jumbo) |
-| **Form Factor** | Desktop / 1U-mountable (threaded holes for custom rack ears); ~Nano-ITX PCB |
-| **OS** | OpenWrt (preloaded); also compatible with VyOS, VPP+DPDK, any ARM64 Linux distro |
-| **Management** | LuCI web GUI, UCI CLI, SSH, serial console (USB-C UART), JTAG debugging |
-| **WiFi** | 2x M.2 Key-E slots: WiFi 6 2x2 MU-MIMO + tri-radio (WiFi 5 + Bluetooth + Thread) |
-| **USB** | 1x USB-C 3.0 (host) |
-| **Manufacturer** | mono.si (Tomaž Zaman and team) |
-| **Class** | Prosumer / SMB / Homelab Router |
-| **Released** | ~2024-2025 (dev kits shipping Jun-Sep 2025) |
-| **Price** | $600 (development kit) |
-| **Variants** | Development kit (polycarbonate enclosure), Founders Edition (CNC aluminum), Rackmount (sheet metal) — all same PCB |
-| **Sensors** | 8 power sensors + 2 temperature sensors for real-time monitoring; 100+ test points on PCB |
-| **Notes** | Purpose-built open-source 10G router. DPAA hardware offload means NAT/routing is NOT software-only — CPU barely utilised during 20Gbps routing (htop shows near-zero CPU during CyPerf runs). Three units available for edge + internal gateway redundancy (VRRP). Near-silent at idle. USB-C PD powered (65W GaN charger included). |
-| | |
-| **— Power —** | |
-| **Power Input** | USB-C PD 3.0 (65W GaN charger included) |
-| **System Idle** | ~8-12W estimated (ARM SoC at idle, no traffic, fan at low speed) |
-| **System Typical** | ~15-25W estimated (moderate routing traffic, SFP+ optics active) |
-| **System Max** | ~40-50W estimated (full 10G bidirectional traffic, DPAA active, WiFi radios, USB devices, fans at max) |
-| **Per-Port: SFP+ DAC (passive copper)** | ~0.5-1.0W (SerDes only) |
-| **Per-Port: SFP+ SR/LR optic** | ~0.8-1.5W (10G SFP+ per MSA) |
-| **Per-Port: SFP+ Empty cage** | ~0W |
-| **Per-Port: RJ45 1GbE** | ~0.5W per port (integrated PHY) |
-| **PoE** | Not supported (USB-C PD powered device) |
-| **Cooling** | Active — 2x 4-pin PWM 5V fan headers; heatsink from "world-leading manufacturers"; near-silent at normal load |
-| **Power Source** | mono.si product page: USB-C PD 3.0, 65W; power estimates based on NXP LS1046A TDP (~7W SoC) + peripherals |
-| | |
-| **— Latency —** | |
-| **Baseline: DPAA hardware path (L3/NAT)** | ~10-50µs estimated (DPAA acceleration bypasses Linux netfilter stack; latency depends on packet size and flow table hit) |
-| **Baseline: Software path (Linux netfilter)** | ~100-500µs (software forwarding without DPAA; varies with firewall rule count and CPU load) |
-| **Forwarding Mode** | DPAA hardware offload (default with licensed firmware); falls back to software for complex flows not offloadable |
-| **Modifier: NAT/masquerade** | Negligible with DPAA (hardware offloaded); +50-200µs in software path |
-| **Modifier: Firewall rules (nftables)** | +variable with rule count in software path; DPAA offloads conntrack-based flows |
-| **Modifier: VPN (WireGuard)** | WireGuard runs in software (~1-3Gbps throughput, ~100-500µs added latency; no hardware crypto offload for WireGuard on LS1046A) |
-| **Modifier: VPN (IPsec)** | IPsec has hardware crypto acceleration on LS1046A (CAAM engine) — higher throughput than WireGuard |
-| **L3 Routing vs NAT** | ~same with DPAA (both hardware offloaded) |
-| **Latency Source** | Estimated from NXP LS1046A DPAA documentation and general ARM router benchmarks; CyPerf tested throughput but latency not published |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | Yes (802.1Q via OpenWrt/Linux bridge + VLAN filtering; standard Linux VLAN support) |
-| **STP** | N/A — router, not a switch (bridge mode available but not primary use case) |
-| **IGMP Snooping** | N/A — router (IGMP proxy available in OpenWrt for multicast routing) |
-| **LLDP** | Available via OpenWrt package (not installed by default) |
-| | |
-| **— Link Aggregation —** | |
-| **Bonding** | Yes (Linux bonding driver; balance-tlb recommended for mixed SFP+/RJ45 speeds) |
-| **LACP (802.3ad)** | Yes (via Linux bonding driver in 802.3ad mode) |
-| **Hash Modes** | L2, L3, L3+L4 (via xmit_hash_policy in Linux bonding) |
-| **Max Bonds** | Limited by port count (5 ports total: 2 SFP+ + 3 RJ45) |
-| **Cross-Speed Bonding** | Yes (balance-tlb handles 10G SFP+ + 1G RJ45 mixed speeds gracefully) |
-| **LAG failover** | <50 ms with Linux bonding driver (near-instantaneous link failover) |
-| **Min-links** | Supported — configurable via Linux bonding min_links parameter |
-| **LAG Latency Impact** | Negligible (Linux kernel bonding in software; DPAA may not offload bonded interfaces) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG** | N/A — router device, not a switch; multi-chassis redundancy via VRRP |
-| | |
-| **— First-Hop Redundancy —** | |
-| **VRRP** | Yes (keepalived package in OpenWrt; 3 units enable active/standby VRRP for gateway redundancy) |
-| **HSRP** | No (Cisco proprietary) |
-| **GLBP** | No (Cisco proprietary) |
-| **VRRP Failover Time** | ~1-3s typical (keepalived default timers; configurable down to sub-second) |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes (Linux ip route / OpenWrt UCI) |
-| **OSPF** | Yes (via FRR or BIRD package in OpenWrt) |
-| **BGP** | Yes (via FRR or BIRD package in OpenWrt) |
-| **IS-IS** | Yes (via FRR package) |
-| **RIP** | Yes (via FRR package) |
-| **Policy-Based Routing** | Yes (Linux ip rule / nftables marks / OpenWrt mwan3 for multi-WAN PBR) |
-| **VRF** | Yes (Linux VRF support in kernel) |
-| **BFD** | Yes (via FRR package) |
-| **ECMP** | Yes (Linux kernel ECMP; configurable via FRR/BIRD) |
-| **NAT / Masquerade** | Yes (nftables/iptables; hardware offloaded via DPAA for conntrack flows) |
-| **Firewall** | nftables (OpenWrt fw4); zone-based with LuCI GUI; stateful connection tracking |
-| **DHCP Server/Relay** | Yes (dnsmasq default; ISC DHCP available) |
-| **DNS** | Yes (dnsmasq default; unbound, kresd available) |
-| **IPv6** | Full (DHCPv6, SLAAC, RA, NPTv6, native routing) |
-| **VPN** | WireGuard (software, ~1-3Gbps), OpenVPN, IPsec (strongSwan, hardware crypto via CAAM) |
-| | |
-| **— Security —** | |
-| **Firewall** | nftables (OpenWrt fw4) with zone-based policies; stateful packet inspection |
-| **ACLs** | nftables rules (L2/L3/L4 matching) |
-| **802.1X** | Available via hostapd/wpa_supplicant packages |
-| **SSH** | Yes (dropbear default; OpenSSH available) |
-| **HTTPS** | Yes (uhttpd with LuCI; can add nginx/caddy) |
-| **Crypto Hardware** | NXP CAAM (Cryptographic Acceleration and Assurance Module) — IPsec hardware offload |
-| **DHCP Snooping** | N/A — router (DHCP server/relay role) |
-| **MACsec** | Not documented for LS1046A |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | Yes (via snmpd package in OpenWrt) |
-| **sFlow / NetFlow** | softflowd / fprobe packages available |
-| **Syslog** | Yes (logd default; rsyslog available for remote logging) |
-| **NTP** | Yes (busybox ntpd default; chrony available) |
-| **Prometheus/Grafana** | Yes (node_exporter + prometheus-node-exporter-lua packages) |
-| **Built-in Sensors** | 8 power sensors + 2 temperature sensors (real-time via sysfs/hwmon) |
-| **LLDP** | Available via package |
-| | |
-| **— QoS —** | |
-| **Traffic Shaping** | Yes (tc/HTB/CAKE via OpenWrt SQM — excellent bufferbloat management) |
-| **SQM (Smart Queue Management)** | Yes (CAKE/fq_codel — highly recommended for low-latency internet access) |
-| **DSCP Classification** | Yes (nftables DSCP marking + tc classification) |
-| **Per-Interface Shaping** | Yes |
-| | |
-| **Stacking** | N/A — standalone router; redundancy via VRRP with 3 available units |
+| Attribute                                     | Value                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Ports**                                     | 2x SFP+ 10GbE + 3x RJ45 1GbE per unit                                                                                                                                                                                                                                                                                                |
+| **SoC**                                       | NXP Layerscape LS1046A (quad-core ARM Cortex-A72, 1.6 GHz) — up to 26 Gbps line-rate throughput per NXP spec                                                                                                                                                                                                                         |
+| **RAM**                                       | 8 GB LPDDR4, 2100 MT/s, ECC support                                                                                                                                                                                                                                                                                                  |
+| **Storage**                                   | 32 GB eMMC (OS/data) + 64 MB NOR flash (bootloader)                                                                                                                                                                                                                                                                                  |
+| **Hardware Offload**                          | DPAA (Data Path Acceleration Architecture) — L2/L3/NAT at near-line-rate; licensed feature enabled on all dev units (Jeff Geerling review confirmed)                                                                                                                                                                                 |
+| **Throughput**                                | 17+ Gbps L4/L7 real-world (CyPerf tested), 18+ Gbps L2/L3; 850K-1.1M pps HTTP (Jeff Geerling + ServeTheHome CyPerf test, Jan 2026)                                                                                                                                                                                                   |
+| **MTU / Jumbo**                               | 9,000 bytes (OpenWrt configurable; SFP+ ports support jumbo)                                                                                                                                                                                                                                                                         |
+| **Form Factor**                               | Desktop / 1U-mountable (threaded holes for custom rack ears); ~Nano-ITX PCB                                                                                                                                                                                                                                                          |
+| **OS**                                        | OpenWrt (preloaded); also compatible with VyOS, VPP+DPDK, any ARM64 Linux distro                                                                                                                                                                                                                                                     |
+| **Management**                                | LuCI web GUI, UCI CLI, SSH, serial console (USB-C UART), JTAG debugging                                                                                                                                                                                                                                                              |
+| **WiFi**                                      | 2x M.2 Key-E slots: WiFi 6 2x2 MU-MIMO + tri-radio (WiFi 5 + Bluetooth + Thread)                                                                                                                                                                                                                                                     |
+| **USB**                                       | 1x USB-C 3.0 (host)                                                                                                                                                                                                                                                                                                                  |
+| **Manufacturer**                              | mono.si (Tomaž Zaman and team)                                                                                                                                                                                                                                                                                                       |
+| **Class**                                     | Prosumer / SMB / Homelab Router                                                                                                                                                                                                                                                                                                      |
+| **Released**                                  | ~2024-2025 (dev kits shipping Jun-Sep 2025)                                                                                                                                                                                                                                                                                          |
+| **Price**                                     | $600 (development kit)                                                                                                                                                                                                                                                                                                               |
+| **Variants**                                  | Development kit (polycarbonate enclosure), Founders Edition (CNC aluminum), Rackmount (sheet metal) — all same PCB                                                                                                                                                                                                                   |
+| **Sensors**                                   | 8 power sensors + 2 temperature sensors for real-time monitoring; 100+ test points on PCB                                                                                                                                                                                                                                            |
+| **Notes**                                     | Purpose-built open-source 10G router. DPAA hardware offload means NAT/routing is NOT software-only — CPU barely utilised during 20Gbps routing (htop shows near-zero CPU during CyPerf runs). Three units available for edge + internal gateway redundancy (VRRP). Near-silent at idle. USB-C PD powered (65W GaN charger included). |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— Power —**                                 |                                                                                                                                                                                                                                                                                                                                      |
+| **Power Input**                               | USB-C PD 3.0 (65W GaN charger included)                                                                                                                                                                                                                                                                                              |
+| **System Idle**                               | ~8-12W estimated (ARM SoC at idle, no traffic, fan at low speed)                                                                                                                                                                                                                                                                     |
+| **System Typical**                            | ~15-25W estimated (moderate routing traffic, SFP+ optics active)                                                                                                                                                                                                                                                                     |
+| **System Max**                                | ~40-50W estimated (full 10G bidirectional traffic, DPAA active, WiFi radios, USB devices, fans at max)                                                                                                                                                                                                                               |
+| **Per-Port: SFP+ DAC (passive copper)**       | ~0.5-1.0W (SerDes only)                                                                                                                                                                                                                                                                                                              |
+| **Per-Port: SFP+ SR/LR optic**                | ~0.8-1.5W (10G SFP+ per MSA)                                                                                                                                                                                                                                                                                                         |
+| **Per-Port: SFP+ Empty cage**                 | ~0W                                                                                                                                                                                                                                                                                                                                  |
+| **Per-Port: RJ45 1GbE**                       | ~0.5W per port (integrated PHY)                                                                                                                                                                                                                                                                                                      |
+| **PoE**                                       | Not supported (USB-C PD powered device)                                                                                                                                                                                                                                                                                              |
+| **Cooling**                                   | Active — 2x 4-pin PWM 5V fan headers; heatsink from "world-leading manufacturers"; near-silent at normal load                                                                                                                                                                                                                        |
+| **Power Source**                              | mono.si product page: USB-C PD 3.0, 65W; power estimates based on NXP LS1046A TDP (~7W SoC) + peripherals                                                                                                                                                                                                                            |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— Latency —**                               |                                                                                                                                                                                                                                                                                                                                      |
+| **Baseline: DPAA hardware path (L3/NAT)**     | ~10-50µs estimated (DPAA acceleration bypasses Linux netfilter stack; latency depends on packet size and flow table hit)                                                                                                                                                                                                             |
+| **Baseline: Software path (Linux netfilter)** | ~100-500µs (software forwarding without DPAA; varies with firewall rule count and CPU load)                                                                                                                                                                                                                                          |
+| **Forwarding Mode**                           | DPAA hardware offload (default with licensed firmware); falls back to software for complex flows not offloadable                                                                                                                                                                                                                     |
+| **Modifier: NAT/masquerade**                  | Negligible with DPAA (hardware offloaded); +50-200µs in software path                                                                                                                                                                                                                                                                |
+| **Modifier: Firewall rules (nftables)**       | +variable with rule count in software path; DPAA offloads conntrack-based flows                                                                                                                                                                                                                                                      |
+| **Modifier: VPN (WireGuard)**                 | WireGuard runs in software (~1-3Gbps throughput, ~100-500µs added latency; no hardware crypto offload for WireGuard on LS1046A)                                                                                                                                                                                                      |
+| **Modifier: VPN (IPsec)**                     | IPsec has hardware crypto acceleration on LS1046A (CAAM engine) — higher throughput than WireGuard                                                                                                                                                                                                                                   |
+| **L3 Routing vs NAT**                         | ~same with DPAA (both hardware offloaded)                                                                                                                                                                                                                                                                                            |
+| **Latency Source**                            | Estimated from NXP LS1046A DPAA documentation and general ARM router benchmarks; CyPerf tested throughput but latency not published                                                                                                                                                                                                  |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— L2 Features —**                           |                                                                                                                                                                                                                                                                                                                                      |
+| **VLANs**                                     | Yes (802.1Q via OpenWrt/Linux bridge + VLAN filtering; standard Linux VLAN support)                                                                                                                                                                                                                                                  |
+| **STP**                                       | N/A — router, not a switch (bridge mode available but not primary use case)                                                                                                                                                                                                                                                          |
+| **IGMP Snooping**                             | N/A — router (IGMP proxy available in OpenWrt for multicast routing)                                                                                                                                                                                                                                                                 |
+| **LLDP**                                      | Available via OpenWrt package (not installed by default)                                                                                                                                                                                                                                                                             |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— Link Aggregation —**                      |                                                                                                                                                                                                                                                                                                                                      |
+| **Bonding**                                   | Yes (Linux bonding driver; balance-tlb recommended for mixed SFP+/RJ45 speeds)                                                                                                                                                                                                                                                       |
+| **LACP (802.3ad)**                            | Yes (via Linux bonding driver in 802.3ad mode)                                                                                                                                                                                                                                                                                       |
+| **Hash Modes**                                | L2, L3, L3+L4 (via xmit_hash_policy in Linux bonding)                                                                                                                                                                                                                                                                                |
+| **Max Bonds**                                 | Limited by port count (5 ports total: 2 SFP+ + 3 RJ45)                                                                                                                                                                                                                                                                               |
+| **Cross-Speed Bonding**                       | Yes (balance-tlb handles 10G SFP+ + 1G RJ45 mixed speeds gracefully)                                                                                                                                                                                                                                                                 |
+| **LAG failover**                              | <50 ms with Linux bonding driver (near-instantaneous link failover)                                                                                                                                                                                                                                                                  |
+| **Min-links**                                 | Supported — configurable via Linux bonding min_links parameter                                                                                                                                                                                                                                                                       |
+| **LAG Latency Impact**                        | Negligible (Linux kernel bonding in software; DPAA may not offload bonded interfaces)                                                                                                                                                                                                                                                |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— MC-LAG / Multi-Chassis —**                |                                                                                                                                                                                                                                                                                                                                      |
+| **MC-LAG**                                    | N/A — router device, not a switch; multi-chassis redundancy via VRRP                                                                                                                                                                                                                                                                 |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— First-Hop Redundancy —**                  |                                                                                                                                                                                                                                                                                                                                      |
+| **VRRP**                                      | Yes (keepalived package in OpenWrt; 3 units enable active/standby VRRP for gateway redundancy)                                                                                                                                                                                                                                       |
+| **HSRP**                                      | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                               |
+| **GLBP**                                      | No (Cisco proprietary)                                                                                                                                                                                                                                                                                                               |
+| **VRRP Failover Time**                        | ~1-3s typical (keepalived default timers; configurable down to sub-second)                                                                                                                                                                                                                                                           |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— L3 Routing —**                            |                                                                                                                                                                                                                                                                                                                                      |
+| **Static Routing**                            | Yes (Linux ip route / OpenWrt UCI)                                                                                                                                                                                                                                                                                                   |
+| **OSPF**                                      | Yes (via FRR or BIRD package in OpenWrt)                                                                                                                                                                                                                                                                                             |
+| **BGP**                                       | Yes (via FRR or BIRD package in OpenWrt)                                                                                                                                                                                                                                                                                             |
+| **IS-IS**                                     | Yes (via FRR package)                                                                                                                                                                                                                                                                                                                |
+| **RIP**                                       | Yes (via FRR package)                                                                                                                                                                                                                                                                                                                |
+| **Policy-Based Routing**                      | Yes (Linux ip rule / nftables marks / OpenWrt mwan3 for multi-WAN PBR)                                                                                                                                                                                                                                                               |
+| **VRF**                                       | Yes (Linux VRF support in kernel)                                                                                                                                                                                                                                                                                                    |
+| **BFD**                                       | Yes (via FRR package)                                                                                                                                                                                                                                                                                                                |
+| **ECMP**                                      | Yes (Linux kernel ECMP; configurable via FRR/BIRD)                                                                                                                                                                                                                                                                                   |
+| **NAT / Masquerade**                          | Yes (nftables/iptables; hardware offloaded via DPAA for conntrack flows)                                                                                                                                                                                                                                                             |
+| **Firewall**                                  | nftables (OpenWrt fw4); zone-based with LuCI GUI; stateful connection tracking                                                                                                                                                                                                                                                       |
+| **DHCP Server/Relay**                         | Yes (dnsmasq default; ISC DHCP available)                                                                                                                                                                                                                                                                                            |
+| **DNS**                                       | Yes (dnsmasq default; unbound, kresd available)                                                                                                                                                                                                                                                                                      |
+| **IPv6**                                      | Full (DHCPv6, SLAAC, RA, NPTv6, native routing)                                                                                                                                                                                                                                                                                      |
+| **VPN**                                       | WireGuard (software, ~1-3Gbps), OpenVPN, IPsec (strongSwan, hardware crypto via CAAM)                                                                                                                                                                                                                                                |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— Security —**                              |                                                                                                                                                                                                                                                                                                                                      |
+| **Firewall**                                  | nftables (OpenWrt fw4) with zone-based policies; stateful packet inspection                                                                                                                                                                                                                                                          |
+| **ACLs**                                      | nftables rules (L2/L3/L4 matching)                                                                                                                                                                                                                                                                                                   |
+| **802.1X**                                    | Available via hostapd/wpa_supplicant packages                                                                                                                                                                                                                                                                                        |
+| **SSH**                                       | Yes (dropbear default; OpenSSH available)                                                                                                                                                                                                                                                                                            |
+| **HTTPS**                                     | Yes (uhttpd with LuCI; can add nginx/caddy)                                                                                                                                                                                                                                                                                          |
+| **Crypto Hardware**                           | NXP CAAM (Cryptographic Acceleration and Assurance Module) — IPsec hardware offload                                                                                                                                                                                                                                                  |
+| **DHCP Snooping**                             | N/A — router (DHCP server/relay role)                                                                                                                                                                                                                                                                                                |
+| **MACsec**                                    | Not documented for LS1046A                                                                                                                                                                                                                                                                                                           |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— Monitoring —**                            |                                                                                                                                                                                                                                                                                                                                      |
+| **SNMP**                                      | Yes (via snmpd package in OpenWrt)                                                                                                                                                                                                                                                                                                   |
+| **sFlow / NetFlow**                           | softflowd / fprobe packages available                                                                                                                                                                                                                                                                                                |
+| **Syslog**                                    | Yes (logd default; rsyslog available for remote logging)                                                                                                                                                                                                                                                                             |
+| **NTP**                                       | Yes (busybox ntpd default; chrony available)                                                                                                                                                                                                                                                                                         |
+| **Prometheus/Grafana**                        | Yes (node_exporter + prometheus-node-exporter-lua packages)                                                                                                                                                                                                                                                                          |
+| **Built-in Sensors**                          | 8 power sensors + 2 temperature sensors (real-time via sysfs/hwmon)                                                                                                                                                                                                                                                                  |
+| **LLDP**                                      | Available via package                                                                                                                                                                                                                                                                                                                |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **— QoS —**                                   |                                                                                                                                                                                                                                                                                                                                      |
+| **Traffic Shaping**                           | Yes (tc/HTB/CAKE via OpenWrt SQM — excellent bufferbloat management)                                                                                                                                                                                                                                                                 |
+| **SQM (Smart Queue Management)**              | Yes (CAKE/fq_codel — highly recommended for low-latency internet access)                                                                                                                                                                                                                                                             |
+| **DSCP Classification**                       | Yes (nftables DSCP marking + tc classification)                                                                                                                                                                                                                                                                                      |
+| **Per-Interface Shaping**                     | Yes                                                                                                                                                                                                                                                                                                                                  |
+|                                               |                                                                                                                                                                                                                                                                                                                                      |
+| **Stacking**                                  | N/A — standalone router; redundancy via VRRP with 3 available units                                                                                                                                                                                                                                                                  |
 
 ---
 
 ### Cisco 2811 (2x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 2x GbE RJ45 (built-in HWIC-2FE/HWIC-4ESW optional) + 4x HWIC slots + 1x NM slot + 1x AIM slot |
-| **CPU** | MIPS64 (Cavium CN5010-based, ~300 MHz) |
-| **RAM** | 256MB default (max 768MB) |
-| **Flash** | 64MB default (max 256MB) |
-| **OS** | Cisco IOS 12.4 / 15.1 (last supported train) |
-| **Management** | CLI (console/telnet/SSH), SNMP, SDM (Security Device Manager web GUI) |
-| **L3 Features** | Static, OSPF, BGP, EIGRP, RIP, PBR, NAT, HSRP/VRRP, GRE, IPsec VPN |
-| **Firewall** | IOS Firewall / ZBF (Zone-Based Firewall) |
-| **Voice** | CME (CallManager Express) — up to 36 IP phones with CME license |
-| **Crypto** | Hardware VPN acceleration module (AIM-VPN/BPII) optional; ~85 Mbps 3DES/AES with AIM |
-| **Form Factor** | 2RU, rack-mountable |
-| **Class** | Enterprise Branch Router (ISR G1) |
-| **Released** | ~2005 |
-| **EOL** | 2011 (End of Sale), 2016 (End of Support) |
-| **Notes** | Classic ISR G1 (Integrated Services Router). Very capable L3 router for its era but ancient by modern standards. Expansion slots (HWIC, NM, AIM) for serial, T1/E1, additional Ethernet, voice. Power-hungry for what it delivers today. Two units available for HSRP pair. |
-| | |
-| **— Power —** | |
-| **Power Input** | AC (100-240V, 50/60Hz); IEC C14 connector; internal PSU |
-| **PSU Rating** | 130W internal AC PSU (single, non-redundant); optional DC version available |
-| **Redundancy** | Single PSU only (no redundant option on 2811) |
-| **System Idle** | ~60-70W (no expansion modules, minimal config) |
-| **System Typical** | ~80-100W (1-2 HWICs populated, moderate traffic) |
-| **System Max** | ~130W (all slots populated, full crypto + voice load, max traffic) |
-| **Per-Port: RJ45 GbE (built-in)** | Included in system power (integrated PHY) |
-| **PoE** | Not supported natively; HWIC-4ESW-POE adds 4-port PoE (15.4W/port 802.3af, 80W PoE budget with PoE PSU upgrade) |
-| **Power Source** | Cisco 2811 datasheet; Cisco Power Calculator |
-| | |
-| **— Latency —** | |
-| **Forwarding Mode** | Software (process/CEF). Cisco Express Forwarding (CEF) for L3 — hardware-assisted FIB lookup but packet processing in software |
-| **Baseline: L3 CEF forwarding** | ~50-200µs (64-byte packets, CEF-switched, no services — depends heavily on IOS process load) |
-| **Baseline: Process-switched** | ~500-2000µs (packets punted to CPU for features not in CEF fast path) |
-| **Modifier: NAT** | +20-100µs (NAT in CEF fast path for established flows; first packet process-switched) |
-| **Modifier: ACL** | +5-30µs (simple ACLs in CEF path; complex/reflexive ACLs may be process-switched) |
-| **Modifier: Firewall (ZBF)** | +50-200µs (stateful inspection adds per-packet overhead; process-switched for connection setup) |
-| **Modifier: IPsec (with AIM)** | +100-500µs (hardware crypto offload via AIM-VPN module; without AIM: +500-2000µs software crypto) |
-| **Modifier: QoS policies** | +10-50µs (queuing/shaping adds serialization delay at low bandwidths) |
-| **Throughput Ceiling** | ~100-200 Mbps routing with CEF; ~40-80 Mbps with NAT+ZBF+QoS; ~85 Mbps IPsec with AIM-VPN |
-| **Latency Source** | Cisco ISR G1 performance whitepapers; empirical testing in Cisco community forums |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | Yes — via 802.1Q sub-interfaces on router ports (router-on-a-stick) or via HWIC-4ESW switchport VLANs |
-| **Protocol-based VLAN** | N/A (router — uses 802.1Q sub-interfaces for VLAN separation) |
-| **STP** | Only on HWIC-4ESW switch module (basic STP/RSTP); router interfaces do not participate in STP |
-| **STP convergence** | HWIC-4ESW: RSTP ~1-3s typical; router interfaces do not participate in STP |
-| **Trunk negotiation** | DTP supported on HWIC-4ESW switch module (Cisco proprietary) |
-| **LLDP** | No (CDP only on IOS 12.4/15.1 for ISR G1 — LLDP added in later IOS versions for ISR G2+) |
-| **CDP** | Yes |
-| **IGMP** | Yes (IGMP v1/v2/v3 for multicast routing; PIM-SM, PIM-DM, PIM-SSM) |
-| **Jumbo Frames** | No (standard 1500 MTU on built-in GbE; sub-interfaces limited to 1500) |
-| | |
-| **— Link Aggregation —** | |
-| **EtherChannel** | Yes (static or LACP/PAgP on GbE interfaces) |
-| **LACP (802.3ad)** | Yes |
-| **Max Groups** | Limited by interface count (typically 1-2 with built-in ports + HWICs) |
-| **Max Ports per Group** | 8 (per Cisco EtherChannel standard) |
-| **Hash Modes** | src-dst-ip (default), src-ip, dst-ip, src-dst-mac (port-channel load-balance command) |
-| **LAG failover** | <50 ms with LACP fast timers |
-| **Min-links** | Supported (IOS `port-channel min-links` command) |
-| | |
-| **— MC-LAG / Multi-Chassis —** | |
-| **MC-LAG** | N/A — router, not a switch |
-| | |
-| **— First-Hop Redundancy —** | |
-| **HSRP** | Yes (v1 and v2; Cisco proprietary — primary FHRP for Cisco routers) |
-| **VRRP** | Yes (v2 RFC 3768; with IP Services or Advanced IP Services license) |
-| **GLBP** | Yes (Cisco proprietary active-active gateway load balancing) |
-| **FHRP Failover Time** | HSRP: ~3-10s default; ~1s with millisecond timers; <1s with BFD |
-| **Preemption** | Yes (configurable on HSRP/VRRP/GLBP) |
-| **Object Tracking** | Yes (interface tracking, IP route tracking, IP SLA tracking for FHRP) |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes |
-| **OSPF** | Yes (v2 for IPv4; v3 for IPv6 with Advanced IP Services) |
-| **BGP** | Yes (eBGP/iBGP with IP Services license; max ~100K routes with 768MB RAM — not practical for full table) |
-| **EIGRP** | Yes (Cisco proprietary; primary IGP) |
-| **RIP** | Yes (v1/v2) |
-| **IS-IS** | Yes (with Advanced IP Services) |
-| **PBR** | Yes |
-| **VRF / VRF-lite** | Yes (max ~100 VRFs, memory-dependent) |
-| **Route Table Capacity** | ~250K IPv4 routes max (768MB RAM); practical limit ~50K with services |
-| **BFD** | Yes (IOS 15.1; 50ms min interval) |
-| **ECMP** | Yes (max 16 equal-cost paths, CEF per-destination or per-packet load balancing) |
-| **NAT** | Yes (static, dynamic, PAT; hardware-assisted in CEF fast path for established flows) |
-| **Multicast** | Yes (PIM-SM, PIM-DM, PIM-SSM, MSDP, IGMP v1/v2/v3) |
-| **IPv6** | Yes (dual-stack, IPv6 ACLs, OSPFv3, BGP4+; requires Advanced IP Services) |
-| | |
-| **— Router/Firewall Specific —** | |
-| **NAT Performance** | ~50-100 Mbps NAT throughput; ~8,000 translations/sec; max ~128K concurrent NAT sessions |
-| **IPsec VPN Throughput** | ~85 Mbps with AIM-VPN/BPII (3DES/AES); ~20-30 Mbps software-only; max 800 IPsec tunnels |
-| **Stateful Firewall** | IOS ZBF: ~50-100 Mbps with stateful inspection; ~25K concurrent sessions |
-| **GRE Tunnels** | Yes (up to hundreds; limited by CPU/memory) |
-| **DMVPN** | Yes (mGRE + NHRP + IPsec; hub or spoke) |
-| **Hardware Crypto** | Optional AIM-VPN/BPII module (~85 Mbps AES-256); without AIM all crypto is software |
-| | |
-| **— Security —** | |
-| **ACLs** | Standard, extended, named, time-based, reflexive; applied per-interface |
-| **802.1X** | Yes (on HWIC-4ESW switch ports; not on router interfaces) |
-| **DHCP Snooping** | On HWIC-4ESW only |
-| **DAI** | On HWIC-4ESW only |
-| **uRPF** | Yes (unicast Reverse Path Forwarding — anti-spoofing) |
-| **CoPP** | Yes (Control Plane Policing) |
-| **Port security** | Supported — MAC limit per port on HWIC-4ESW switch module |
-| **AAA** | Yes (RADIUS, TACACS+, local) |
-| **SSH** | Yes (v2 with crypto image) |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2c, v3 |
-| **NetFlow** | Yes (v5/v9; traditional NetFlow on GbE interfaces) |
-| **IP SLA** | Yes (ICMP echo, jitter, UDP echo, HTTP — active probing for SLA monitoring) |
-| **SPAN** | Yes (local SPAN on router interfaces; no RSPAN/ERSPAN) |
-| **Syslog** | Yes |
-| **NTP** | Yes (client and server) |
-| **CDP** | Yes |
-| **EEM** | Yes (Embedded Event Manager — script-based event-driven automation) |
-| **DNS** | Yes (`ip name-server` — DNS client for hostname resolution) |
+| Attribute                         | Value                                                                                                                                                                                                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                         | 2x GbE RJ45 (built-in HWIC-2FE/HWIC-4ESW optional) + 4x HWIC slots + 1x NM slot + 1x AIM slot                                                                                                                                                                               |
+| **CPU**                           | MIPS64 (Cavium CN5010-based, ~300 MHz)                                                                                                                                                                                                                                      |
+| **RAM**                           | 256MB default (max 768MB)                                                                                                                                                                                                                                                   |
+| **Flash**                         | 64MB default (max 256MB)                                                                                                                                                                                                                                                    |
+| **OS**                            | Cisco IOS 12.4 / 15.1 (last supported train)                                                                                                                                                                                                                                |
+| **Management**                    | CLI (console/telnet/SSH), SNMP, SDM (Security Device Manager web GUI)                                                                                                                                                                                                       |
+| **L3 Features**                   | Static, OSPF, BGP, EIGRP, RIP, PBR, NAT, HSRP/VRRP, GRE, IPsec VPN                                                                                                                                                                                                          |
+| **Firewall**                      | IOS Firewall / ZBF (Zone-Based Firewall)                                                                                                                                                                                                                                    |
+| **Voice**                         | CME (CallManager Express) — up to 36 IP phones with CME license                                                                                                                                                                                                             |
+| **Crypto**                        | Hardware VPN acceleration module (AIM-VPN/BPII) optional; ~85 Mbps 3DES/AES with AIM                                                                                                                                                                                        |
+| **Form Factor**                   | 2RU, rack-mountable                                                                                                                                                                                                                                                         |
+| **Class**                         | Enterprise Branch Router (ISR G1)                                                                                                                                                                                                                                           |
+| **Released**                      | ~2005                                                                                                                                                                                                                                                                       |
+| **EOL**                           | 2011 (End of Sale), 2016 (End of Support)                                                                                                                                                                                                                                   |
+| **Notes**                         | Classic ISR G1 (Integrated Services Router). Very capable L3 router for its era but ancient by modern standards. Expansion slots (HWIC, NM, AIM) for serial, T1/E1, additional Ethernet, voice. Power-hungry for what it delivers today. Two units available for HSRP pair. |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— Power —**                     |                                                                                                                                                                                                                                                                             |
+| **Power Input**                   | AC (100-240V, 50/60Hz); IEC C14 connector; internal PSU                                                                                                                                                                                                                     |
+| **PSU Rating**                    | 130W internal AC PSU (single, non-redundant); optional DC version available                                                                                                                                                                                                 |
+| **Redundancy**                    | Single PSU only (no redundant option on 2811)                                                                                                                                                                                                                               |
+| **System Idle**                   | ~60-70W (no expansion modules, minimal config)                                                                                                                                                                                                                              |
+| **System Typical**                | ~80-100W (1-2 HWICs populated, moderate traffic)                                                                                                                                                                                                                            |
+| **System Max**                    | ~130W (all slots populated, full crypto + voice load, max traffic)                                                                                                                                                                                                          |
+| **Per-Port: RJ45 GbE (built-in)** | Included in system power (integrated PHY)                                                                                                                                                                                                                                   |
+| **PoE**                           | Not supported natively; HWIC-4ESW-POE adds 4-port PoE (15.4W/port 802.3af, 80W PoE budget with PoE PSU upgrade)                                                                                                                                                             |
+| **Power Source**                  | Cisco 2811 datasheet; Cisco Power Calculator                                                                                                                                                                                                                                |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— Latency —**                   |                                                                                                                                                                                                                                                                             |
+| **Forwarding Mode**               | Software (process/CEF). Cisco Express Forwarding (CEF) for L3 — hardware-assisted FIB lookup but packet processing in software                                                                                                                                              |
+| **Baseline: L3 CEF forwarding**   | ~50-200µs (64-byte packets, CEF-switched, no services — depends heavily on IOS process load)                                                                                                                                                                                |
+| **Baseline: Process-switched**    | ~500-2000µs (packets punted to CPU for features not in CEF fast path)                                                                                                                                                                                                       |
+| **Modifier: NAT**                 | +20-100µs (NAT in CEF fast path for established flows; first packet process-switched)                                                                                                                                                                                       |
+| **Modifier: ACL**                 | +5-30µs (simple ACLs in CEF path; complex/reflexive ACLs may be process-switched)                                                                                                                                                                                           |
+| **Modifier: Firewall (ZBF)**      | +50-200µs (stateful inspection adds per-packet overhead; process-switched for connection setup)                                                                                                                                                                             |
+| **Modifier: IPsec (with AIM)**    | +100-500µs (hardware crypto offload via AIM-VPN module; without AIM: +500-2000µs software crypto)                                                                                                                                                                           |
+| **Modifier: QoS policies**        | +10-50µs (queuing/shaping adds serialization delay at low bandwidths)                                                                                                                                                                                                       |
+| **Throughput Ceiling**            | ~100-200 Mbps routing with CEF; ~40-80 Mbps with NAT+ZBF+QoS; ~85 Mbps IPsec with AIM-VPN                                                                                                                                                                                   |
+| **Latency Source**                | Cisco ISR G1 performance whitepapers; empirical testing in Cisco community forums                                                                                                                                                                                           |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— L2 Features —**               |                                                                                                                                                                                                                                                                             |
+| **VLANs**                         | Yes — via 802.1Q sub-interfaces on router ports (router-on-a-stick) or via HWIC-4ESW switchport VLANs                                                                                                                                                                       |
+| **Protocol-based VLAN**           | N/A (router — uses 802.1Q sub-interfaces for VLAN separation)                                                                                                                                                                                                               |
+| **STP**                           | Only on HWIC-4ESW switch module (basic STP/RSTP); router interfaces do not participate in STP                                                                                                                                                                               |
+| **STP convergence**               | HWIC-4ESW: RSTP ~1-3s typical; router interfaces do not participate in STP                                                                                                                                                                                                  |
+| **Trunk negotiation**             | DTP supported on HWIC-4ESW switch module (Cisco proprietary)                                                                                                                                                                                                                |
+| **LLDP**                          | No (CDP only on IOS 12.4/15.1 for ISR G1 — LLDP added in later IOS versions for ISR G2+)                                                                                                                                                                                    |
+| **CDP**                           | Yes                                                                                                                                                                                                                                                                         |
+| **IGMP**                          | Yes (IGMP v1/v2/v3 for multicast routing; PIM-SM, PIM-DM, PIM-SSM)                                                                                                                                                                                                          |
+| **Jumbo Frames**                  | No (standard 1500 MTU on built-in GbE; sub-interfaces limited to 1500)                                                                                                                                                                                                      |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— Link Aggregation —**          |                                                                                                                                                                                                                                                                             |
+| **EtherChannel**                  | Yes (static or LACP/PAgP on GbE interfaces)                                                                                                                                                                                                                                 |
+| **LACP (802.3ad)**                | Yes                                                                                                                                                                                                                                                                         |
+| **Max Groups**                    | Limited by interface count (typically 1-2 with built-in ports + HWICs)                                                                                                                                                                                                      |
+| **Max Ports per Group**           | 8 (per Cisco EtherChannel standard)                                                                                                                                                                                                                                         |
+| **Hash Modes**                    | src-dst-ip (default), src-ip, dst-ip, src-dst-mac (port-channel load-balance command)                                                                                                                                                                                       |
+| **LAG failover**                  | <50 ms with LACP fast timers                                                                                                                                                                                                                                                |
+| **Min-links**                     | Supported (IOS `port-channel min-links` command)                                                                                                                                                                                                                            |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— MC-LAG / Multi-Chassis —**    |                                                                                                                                                                                                                                                                             |
+| **MC-LAG**                        | N/A — router, not a switch                                                                                                                                                                                                                                                  |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— First-Hop Redundancy —**      |                                                                                                                                                                                                                                                                             |
+| **HSRP**                          | Yes (v1 and v2; Cisco proprietary — primary FHRP for Cisco routers)                                                                                                                                                                                                         |
+| **VRRP**                          | Yes (v2 RFC 3768; with IP Services or Advanced IP Services license)                                                                                                                                                                                                         |
+| **GLBP**                          | Yes (Cisco proprietary active-active gateway load balancing)                                                                                                                                                                                                                |
+| **FHRP Failover Time**            | HSRP: ~3-10s default; ~1s with millisecond timers; <1s with BFD                                                                                                                                                                                                             |
+| **Preemption**                    | Yes (configurable on HSRP/VRRP/GLBP)                                                                                                                                                                                                                                        |
+| **Object Tracking**               | Yes (interface tracking, IP route tracking, IP SLA tracking for FHRP)                                                                                                                                                                                                       |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— L3 Routing —**                |                                                                                                                                                                                                                                                                             |
+| **Static Routing**                | Yes                                                                                                                                                                                                                                                                         |
+| **OSPF**                          | Yes (v2 for IPv4; v3 for IPv6 with Advanced IP Services)                                                                                                                                                                                                                    |
+| **BGP**                           | Yes (eBGP/iBGP with IP Services license; max ~100K routes with 768MB RAM — not practical for full table)                                                                                                                                                                    |
+| **EIGRP**                         | Yes (Cisco proprietary; primary IGP)                                                                                                                                                                                                                                        |
+| **RIP**                           | Yes (v1/v2)                                                                                                                                                                                                                                                                 |
+| **IS-IS**                         | Yes (with Advanced IP Services)                                                                                                                                                                                                                                             |
+| **PBR**                           | Yes                                                                                                                                                                                                                                                                         |
+| **VRF / VRF-lite**                | Yes (max ~100 VRFs, memory-dependent)                                                                                                                                                                                                                                       |
+| **Route Table Capacity**          | ~250K IPv4 routes max (768MB RAM); practical limit ~50K with services                                                                                                                                                                                                       |
+| **BFD**                           | Yes (IOS 15.1; 50ms min interval)                                                                                                                                                                                                                                           |
+| **ECMP**                          | Yes (max 16 equal-cost paths, CEF per-destination or per-packet load balancing)                                                                                                                                                                                             |
+| **NAT**                           | Yes (static, dynamic, PAT; hardware-assisted in CEF fast path for established flows)                                                                                                                                                                                        |
+| **Multicast**                     | Yes (PIM-SM, PIM-DM, PIM-SSM, MSDP, IGMP v1/v2/v3)                                                                                                                                                                                                                          |
+| **IPv6**                          | Yes (dual-stack, IPv6 ACLs, OSPFv3, BGP4+; requires Advanced IP Services)                                                                                                                                                                                                   |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— Router/Firewall Specific —**  |                                                                                                                                                                                                                                                                             |
+| **NAT Performance**               | ~50-100 Mbps NAT throughput; ~8,000 translations/sec; max ~128K concurrent NAT sessions                                                                                                                                                                                     |
+| **IPsec VPN Throughput**          | ~85 Mbps with AIM-VPN/BPII (3DES/AES); ~20-30 Mbps software-only; max 800 IPsec tunnels                                                                                                                                                                                     |
+| **Stateful Firewall**             | IOS ZBF: ~50-100 Mbps with stateful inspection; ~25K concurrent sessions                                                                                                                                                                                                    |
+| **GRE Tunnels**                   | Yes (up to hundreds; limited by CPU/memory)                                                                                                                                                                                                                                 |
+| **DMVPN**                         | Yes (mGRE + NHRP + IPsec; hub or spoke)                                                                                                                                                                                                                                     |
+| **Hardware Crypto**               | Optional AIM-VPN/BPII module (~85 Mbps AES-256); without AIM all crypto is software                                                                                                                                                                                         |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— Security —**                  |                                                                                                                                                                                                                                                                             |
+| **ACLs**                          | Standard, extended, named, time-based, reflexive; applied per-interface                                                                                                                                                                                                     |
+| **802.1X**                        | Yes (on HWIC-4ESW switch ports; not on router interfaces)                                                                                                                                                                                                                   |
+| **DHCP Snooping**                 | On HWIC-4ESW only                                                                                                                                                                                                                                                           |
+| **DAI**                           | On HWIC-4ESW only                                                                                                                                                                                                                                                           |
+| **uRPF**                          | Yes (unicast Reverse Path Forwarding — anti-spoofing)                                                                                                                                                                                                                       |
+| **CoPP**                          | Yes (Control Plane Policing)                                                                                                                                                                                                                                                |
+| **Port security**                 | Supported — MAC limit per port on HWIC-4ESW switch module                                                                                                                                                                                                                   |
+| **AAA**                           | Yes (RADIUS, TACACS+, local)                                                                                                                                                                                                                                                |
+| **SSH**                           | Yes (v2 with crypto image)                                                                                                                                                                                                                                                  |
+|                                   |                                                                                                                                                                                                                                                                             |
+| **— Monitoring —**                |                                                                                                                                                                                                                                                                             |
+| **SNMP**                          | v1, v2c, v3                                                                                                                                                                                                                                                                 |
+| **NetFlow**                       | Yes (v5/v9; traditional NetFlow on GbE interfaces)                                                                                                                                                                                                                          |
+| **IP SLA**                        | Yes (ICMP echo, jitter, UDP echo, HTTP — active probing for SLA monitoring)                                                                                                                                                                                                 |
+| **SPAN**                          | Yes (local SPAN on router interfaces; no RSPAN/ERSPAN)                                                                                                                                                                                                                      |
+| **Syslog**                        | Yes                                                                                                                                                                                                                                                                         |
+| **NTP**                           | Yes (client and server)                                                                                                                                                                                                                                                     |
+| **CDP**                           | Yes                                                                                                                                                                                                                                                                         |
+| **EEM**                           | Yes (Embedded Event Manager — script-based event-driven automation)                                                                                                                                                                                                         |
+| **DNS**                           | Yes (`ip name-server` — DNS client for hostname resolution)                                                                                                                                                                                                                 |
 
 ---
 
 ### Cisco 1841 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 2x FastEthernet 10/100 RJ45 + 2x HWIC slots |
-| **CPU** | MIPS (RM5261-based, ~240 MHz) |
-| **RAM** | 128MB default (max 384MB) |
-| **Flash** | 32MB default (max 128MB) |
-| **OS** | Cisco IOS 12.4 / 15.1 (last supported train) |
-| **Management** | CLI (console/telnet/SSH), SNMP |
-| **L3 Features** | Static, OSPF, BGP, EIGRP, RIP, NAT, HSRP, GRE, IPsec VPN |
-| **Crypto** | Built-in hardware crypto (AIM-VPN/SSL-1 optional; ~20 Mbps AES without AIM) |
-| **Form Factor** | 1RU, rack-mountable (compact) |
-| **Class** | Enterprise Small Branch Router (ISR G1) |
-| **Released** | ~2005 |
-| **EOL** | 2010 (End of Sale), 2015 (End of Support) |
-| **Notes** | ISR G1, smaller sibling of 2811. FastEthernet only (no GbE built-in). Max throughput ~40-80Mbps with services. Primarily useful as a lab/learning device for IOS. |
-| | |
-| **— Power —** | |
-| **Power Input** | AC (100-240V, 50/60Hz); IEC C14 connector; internal PSU |
-| **PSU Rating** | 50W internal AC PSU (single, non-redundant) |
-| **System Idle** | ~30-40W (no HWIC modules) |
-| **System Typical** | ~40-50W (1 HWIC, moderate traffic) |
-| **System Max** | ~50W (all slots populated, full load) |
-| **Per-Port: FastEthernet** | Included in system power |
-| **PoE** | Not supported |
-| **Power Source** | Cisco 1841 datasheet |
-| | |
-| **— Latency —** | |
-| **Forwarding Mode** | Software (CEF) |
-| **Baseline: L3 CEF forwarding** | ~100-300µs (64-byte packets, CEF-switched; slower CPU than 2811) |
-| **Baseline: Process-switched** | ~1-5ms |
-| **Modifier: NAT** | +30-150µs (CEF fast path) |
-| **Modifier: ACL** | +10-50µs |
-| **Modifier: IPsec** | +200-1000µs (software crypto without AIM; ~20 Mbps max) |
-| **Throughput Ceiling** | ~40-80 Mbps CEF routing; ~15-30 Mbps with NAT+ACL; ~20 Mbps IPsec |
-| **Latency Source** | Cisco 1841 datasheet; ISR G1 performance documentation |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | Yes — via 802.1Q sub-interfaces (router-on-a-stick); HWIC-4ESW adds switchport VLANs |
-| **Protocol-based VLAN** | N/A (router — uses 802.1Q sub-interfaces for VLAN separation) |
-| **STP** | Only on HWIC-4ESW |
-| **STP convergence** | HWIC-4ESW: RSTP ~1-3s typical; router interfaces do not participate in STP |
-| **Trunk negotiation** | DTP supported on HWIC-4ESW switch module (Cisco proprietary) |
-| **LLDP** | No (CDP only) |
-| **CDP** | Yes |
-| **Jumbo Frames** | No (FastEthernet, 1500 MTU) |
-| | |
-| **— Link Aggregation —** | |
-| **EtherChannel** | Limited (only 2x FE built-in; possible but rarely useful at FastEthernet speeds) |
-| **LACP** | Yes (in IOS config) |
-| **LAG failover** | <50 ms with LACP fast timers |
-| **Min-links** | Supported (IOS `port-channel min-links` command) |
-| | |
-| **— MC-LAG —** | |
-| **MC-LAG** | N/A — router |
-| | |
-| **— First-Hop Redundancy —** | |
-| **HSRP** | Yes (v1/v2) |
-| **VRRP** | Yes (v2; with appropriate license) |
-| **GLBP** | Yes (with appropriate license) |
-| **FHRP Failover Time** | Same as 2811 (HSRP ~3-10s default, ~1s tuned) |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes |
-| **OSPF** | Yes (v2/v3) |
-| **BGP** | Yes (limited by RAM — ~10K routes practical max with 384MB) |
-| **EIGRP** | Yes |
-| **RIP** | Yes (v1/v2) |
-| **PBR** | Yes |
-| **VRF-lite** | Yes |
-| **Route Table Capacity** | ~50K IPv4 routes max (384MB RAM) |
-| **BFD** | Yes (IOS 15.1) |
-| **NAT** | Yes |
-| **IPv6** | Yes (with Advanced IP Services) |
-| | |
-| **— Router/Firewall Specific —** | |
-| **NAT Performance** | ~20-40 Mbps; max ~64K concurrent NAT sessions |
-| **IPsec VPN Throughput** | ~20 Mbps (software or with AIM-VPN/SSL-1); max 200 tunnels |
-| **Stateful Firewall** | IOS ZBF: ~20-40 Mbps; ~10K concurrent sessions |
-| **DMVPN** | Yes |
-| | |
-| **— Security —** | |
-| **ACLs** | Standard, extended, named, reflexive |
-| **uRPF** | Yes |
-| **CoPP** | Yes |
-| **Port security** | On HWIC-4ESW only (MAC limit per switchport) |
-| **AAA** | Yes (RADIUS, TACACS+, local) |
-| **SSH** | Yes (v2 with crypto image) |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2c, v3 |
-| **NetFlow** | Yes (v5/v9) |
-| **IP SLA** | Yes |
-| **Syslog** | Yes |
-| **NTP** | Yes |
-| **CDP** | Yes |
-| **EEM** | Yes |
-| **DNS** | Yes (`ip name-server` — DNS client for hostname resolution) |
+| Attribute                        | Value                                                                                                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                        | 2x FastEthernet 10/100 RJ45 + 2x HWIC slots                                                                                                                       |
+| **CPU**                          | MIPS (RM5261-based, ~240 MHz)                                                                                                                                     |
+| **RAM**                          | 128MB default (max 384MB)                                                                                                                                         |
+| **Flash**                        | 32MB default (max 128MB)                                                                                                                                          |
+| **OS**                           | Cisco IOS 12.4 / 15.1 (last supported train)                                                                                                                      |
+| **Management**                   | CLI (console/telnet/SSH), SNMP                                                                                                                                    |
+| **L3 Features**                  | Static, OSPF, BGP, EIGRP, RIP, NAT, HSRP, GRE, IPsec VPN                                                                                                          |
+| **Crypto**                       | Built-in hardware crypto (AIM-VPN/SSL-1 optional; ~20 Mbps AES without AIM)                                                                                       |
+| **Form Factor**                  | 1RU, rack-mountable (compact)                                                                                                                                     |
+| **Class**                        | Enterprise Small Branch Router (ISR G1)                                                                                                                           |
+| **Released**                     | ~2005                                                                                                                                                             |
+| **EOL**                          | 2010 (End of Sale), 2015 (End of Support)                                                                                                                         |
+| **Notes**                        | ISR G1, smaller sibling of 2811. FastEthernet only (no GbE built-in). Max throughput ~40-80Mbps with services. Primarily useful as a lab/learning device for IOS. |
+|                                  |                                                                                                                                                                   |
+| **— Power —**                    |                                                                                                                                                                   |
+| **Power Input**                  | AC (100-240V, 50/60Hz); IEC C14 connector; internal PSU                                                                                                           |
+| **PSU Rating**                   | 50W internal AC PSU (single, non-redundant)                                                                                                                       |
+| **System Idle**                  | ~30-40W (no HWIC modules)                                                                                                                                         |
+| **System Typical**               | ~40-50W (1 HWIC, moderate traffic)                                                                                                                                |
+| **System Max**                   | ~50W (all slots populated, full load)                                                                                                                             |
+| **Per-Port: FastEthernet**       | Included in system power                                                                                                                                          |
+| **PoE**                          | Not supported                                                                                                                                                     |
+| **Power Source**                 | Cisco 1841 datasheet                                                                                                                                              |
+|                                  |                                                                                                                                                                   |
+| **— Latency —**                  |                                                                                                                                                                   |
+| **Forwarding Mode**              | Software (CEF)                                                                                                                                                    |
+| **Baseline: L3 CEF forwarding**  | ~100-300µs (64-byte packets, CEF-switched; slower CPU than 2811)                                                                                                  |
+| **Baseline: Process-switched**   | ~1-5ms                                                                                                                                                            |
+| **Modifier: NAT**                | +30-150µs (CEF fast path)                                                                                                                                         |
+| **Modifier: ACL**                | +10-50µs                                                                                                                                                          |
+| **Modifier: IPsec**              | +200-1000µs (software crypto without AIM; ~20 Mbps max)                                                                                                           |
+| **Throughput Ceiling**           | ~40-80 Mbps CEF routing; ~15-30 Mbps with NAT+ACL; ~20 Mbps IPsec                                                                                                 |
+| **Latency Source**               | Cisco 1841 datasheet; ISR G1 performance documentation                                                                                                            |
+|                                  |                                                                                                                                                                   |
+| **— L2 Features —**              |                                                                                                                                                                   |
+| **VLANs**                        | Yes — via 802.1Q sub-interfaces (router-on-a-stick); HWIC-4ESW adds switchport VLANs                                                                              |
+| **Protocol-based VLAN**          | N/A (router — uses 802.1Q sub-interfaces for VLAN separation)                                                                                                     |
+| **STP**                          | Only on HWIC-4ESW                                                                                                                                                 |
+| **STP convergence**              | HWIC-4ESW: RSTP ~1-3s typical; router interfaces do not participate in STP                                                                                        |
+| **Trunk negotiation**            | DTP supported on HWIC-4ESW switch module (Cisco proprietary)                                                                                                      |
+| **LLDP**                         | No (CDP only)                                                                                                                                                     |
+| **CDP**                          | Yes                                                                                                                                                               |
+| **Jumbo Frames**                 | No (FastEthernet, 1500 MTU)                                                                                                                                       |
+|                                  |                                                                                                                                                                   |
+| **— Link Aggregation —**         |                                                                                                                                                                   |
+| **EtherChannel**                 | Limited (only 2x FE built-in; possible but rarely useful at FastEthernet speeds)                                                                                  |
+| **LACP**                         | Yes (in IOS config)                                                                                                                                               |
+| **LAG failover**                 | <50 ms with LACP fast timers                                                                                                                                      |
+| **Min-links**                    | Supported (IOS `port-channel min-links` command)                                                                                                                  |
+|                                  |                                                                                                                                                                   |
+| **— MC-LAG —**                   |                                                                                                                                                                   |
+| **MC-LAG**                       | N/A — router                                                                                                                                                      |
+|                                  |                                                                                                                                                                   |
+| **— First-Hop Redundancy —**     |                                                                                                                                                                   |
+| **HSRP**                         | Yes (v1/v2)                                                                                                                                                       |
+| **VRRP**                         | Yes (v2; with appropriate license)                                                                                                                                |
+| **GLBP**                         | Yes (with appropriate license)                                                                                                                                    |
+| **FHRP Failover Time**           | Same as 2811 (HSRP ~3-10s default, ~1s tuned)                                                                                                                     |
+|                                  |                                                                                                                                                                   |
+| **— L3 Routing —**               |                                                                                                                                                                   |
+| **Static Routing**               | Yes                                                                                                                                                               |
+| **OSPF**                         | Yes (v2/v3)                                                                                                                                                       |
+| **BGP**                          | Yes (limited by RAM — ~10K routes practical max with 384MB)                                                                                                       |
+| **EIGRP**                        | Yes                                                                                                                                                               |
+| **RIP**                          | Yes (v1/v2)                                                                                                                                                       |
+| **PBR**                          | Yes                                                                                                                                                               |
+| **VRF-lite**                     | Yes                                                                                                                                                               |
+| **Route Table Capacity**         | ~50K IPv4 routes max (384MB RAM)                                                                                                                                  |
+| **BFD**                          | Yes (IOS 15.1)                                                                                                                                                    |
+| **NAT**                          | Yes                                                                                                                                                               |
+| **IPv6**                         | Yes (with Advanced IP Services)                                                                                                                                   |
+|                                  |                                                                                                                                                                   |
+| **— Router/Firewall Specific —** |                                                                                                                                                                   |
+| **NAT Performance**              | ~20-40 Mbps; max ~64K concurrent NAT sessions                                                                                                                     |
+| **IPsec VPN Throughput**         | ~20 Mbps (software or with AIM-VPN/SSL-1); max 200 tunnels                                                                                                        |
+| **Stateful Firewall**            | IOS ZBF: ~20-40 Mbps; ~10K concurrent sessions                                                                                                                    |
+| **DMVPN**                        | Yes                                                                                                                                                               |
+|                                  |                                                                                                                                                                   |
+| **— Security —**                 |                                                                                                                                                                   |
+| **ACLs**                         | Standard, extended, named, reflexive                                                                                                                              |
+| **uRPF**                         | Yes                                                                                                                                                               |
+| **CoPP**                         | Yes                                                                                                                                                               |
+| **Port security**                | On HWIC-4ESW only (MAC limit per switchport)                                                                                                                      |
+| **AAA**                          | Yes (RADIUS, TACACS+, local)                                                                                                                                      |
+| **SSH**                          | Yes (v2 with crypto image)                                                                                                                                        |
+|                                  |                                                                                                                                                                   |
+| **— Monitoring —**               |                                                                                                                                                                   |
+| **SNMP**                         | v1, v2c, v3                                                                                                                                                       |
+| **NetFlow**                      | Yes (v5/v9)                                                                                                                                                       |
+| **IP SLA**                       | Yes                                                                                                                                                               |
+| **Syslog**                       | Yes                                                                                                                                                               |
+| **NTP**                          | Yes                                                                                                                                                               |
+| **CDP**                          | Yes                                                                                                                                                               |
+| **EEM**                          | Yes                                                                                                                                                               |
+| **DNS**                          | Yes (`ip name-server` — DNS client for hostname resolution)                                                                                                       |
 
 ---
 
 ### Cisco 881 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 4x FastEthernet 10/100 LAN RJ45 (integrated switch) + 1x FastEthernet 10/100 WAN RJ45 |
-| **CPU** | Cavium CN5010 (MIPS64, ~300 MHz) |
-| **RAM** | 256MB (fixed) |
-| **Flash** | 128MB (fixed) |
-| **OS** | Cisco IOS 15.1 (last supported train) |
-| **Management** | CLI (console/SSH), SNMP, CCP (Cisco Configuration Professional web GUI) |
-| **L3 Features** | Static, OSPF, EIGRP, NAT, DHCP, IPsec VPN, GRE |
-| **Firewall** | IOS ZBF |
-| **Form Factor** | Desktop (compact, no rack mount without adapter) |
-| **Class** | Enterprise SOHO / Small Branch Router (ISR G1) |
-| **Released** | ~2008 |
-| **EOL** | ~2015 (End of Sale), ~2020 (End of Support) |
-| **Notes** | ISR G1 compact form factor. Integrated 4-port FE switch with inter-VLAN routing. Designed for small branch/SOHO. Very limited throughput by modern standards. Desktop form factor, fanless. |
-| | |
-| **— Power —** | |
-| **Power Input** | DC (12V external power adapter, 2.5A); barrel connector |
-| **PSU Rating** | 30W external AC-DC adapter |
-| **System Idle** | ~12-15W (fanless, no traffic) |
-| **System Typical** | ~15-20W (moderate traffic, NAT active) |
-| **System Max** | ~25-30W (full traffic + VPN + all ports active) |
-| **Per-Port: FastEthernet** | Included in system power |
-| **PoE** | Not supported (881 non-POE model; 881-POE variant has 2-port PoE at 15.4W/port) |
-| **Power Source** | Cisco 880 Series datasheet |
-| | |
-| **— Latency —** | |
-| **Forwarding Mode** | Software (CEF) |
-| **Baseline: L3 CEF forwarding** | ~50-200µs (integrated switch ports to WAN, CEF-switched; same CPU class as 2811) |
-| **Baseline: Inter-VLAN on integrated switch** | ~100-300µs (packets go through CPU for inter-VLAN routing) |
-| **Modifier: NAT** | +20-100µs |
-| **Modifier: ZBF** | +50-200µs |
-| **Modifier: IPsec** | +200-1000µs (software crypto; no AIM slot) |
-| **Throughput Ceiling** | ~50-100 Mbps CEF routing; ~25-50 Mbps with NAT+ZBF; ~15-25 Mbps IPsec (software only) |
-| **Latency Source** | Cisco 880 Series performance documentation |
-| | |
-| **— L2 Features —** | |
-| **VLANs** | Yes — integrated 4-port switch supports VLANs; inter-VLAN routing via BVI (Bridged Virtual Interface) |
-| **Protocol-based VLAN** | N/A (SOHO router — VLANs are port-based on integrated switch) |
-| **STP** | Yes (basic STP on integrated switch ports) |
-| **STP convergence** | 802.1D STP: ~30-50s (classic STP on integrated switch; no RSTP support on 881 integrated switch) |
-| **Trunk negotiation** | N/A (no DTP — integrated switch does not support trunk negotiation) |
-| **LLDP** | No (CDP only on ISR G1) |
-| **CDP** | Yes |
-| **IGMP Snooping** | Yes (on integrated switch) |
-| **Jumbo Frames** | No (FastEthernet, 1500 MTU) |
-| | |
-| **— Link Aggregation —** | |
-| **EtherChannel** | No (integrated switch does not support EtherChannel; WAN port is single FE) |
-| **LAG failover** | N/A (no LAG support on integrated switch) |
-| **Min-links** | N/A (no LAG support) |
-| | |
-| **— MC-LAG —** | |
-| **MC-LAG** | N/A — SOHO router |
-| | |
-| **— First-Hop Redundancy —** | |
-| **HSRP** | Yes (but impractical — single unit, SOHO role) |
-| **VRRP** | Yes (with appropriate license) |
-| **FHRP Failover Time** | Standard IOS timers |
-| **Notes** | FHRP not typically deployed on SOHO routers — single unit, no redundant pair |
-| | |
-| **— L3 Routing —** | |
-| **Static Routing** | Yes |
-| **OSPF** | Yes (v2; v3 with Advanced license) |
-| **EIGRP** | Yes |
-| **RIP** | Yes (v1/v2) |
-| **BGP** | Limited (supported with appropriate license; ~5-10K routes max practical) |
-| **PBR** | Yes |
-| **VRF-lite** | Yes (limited by RAM) |
-| **Route Table Capacity** | ~50K IPv4 routes (256MB RAM) |
-| **NAT** | Yes (PAT/static/dynamic) |
-| **IPv6** | Yes (with Advanced IP Services) |
-| | |
-| **— Router/Firewall Specific —** | |
-| **NAT Performance** | ~30-60 Mbps; max ~64K concurrent sessions |
-| **IPsec VPN Throughput** | ~15-25 Mbps (software only, no hardware crypto module); max 20 tunnels |
-| **Stateful Firewall** | IOS ZBF: ~30-60 Mbps; ~15K concurrent sessions |
-| **DMVPN** | Yes |
-| | |
-| **— Security —** | |
-| **ACLs** | Standard, extended, named |
-| **802.1X** | Yes (on integrated switch ports) |
-| **DHCP Snooping** | Yes (on integrated switch) |
-| **uRPF** | Yes |
-| **CoPP** | Yes |
-| **Port security** | Not documented for 881 integrated switch |
-| **AAA** | Yes (RADIUS, TACACS+, local) |
-| **SSH** | Yes (v2 with crypto image) |
-| | |
-| **— Monitoring —** | |
-| **SNMP** | v1, v2c, v3 |
-| **NetFlow** | Yes (v5/v9) |
-| **IP SLA** | Yes |
-| **Syslog** | Yes |
-| **NTP** | Yes |
-| **CDP** | Yes |
-| **EEM** | Yes |
-| **DNS** | Yes (`ip name-server` — DNS client for hostname resolution) |
+| Attribute                                     | Value                                                                                                                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                                     | 4x FastEthernet 10/100 LAN RJ45 (integrated switch) + 1x FastEthernet 10/100 WAN RJ45                                                                                                       |
+| **CPU**                                       | Cavium CN5010 (MIPS64, ~300 MHz)                                                                                                                                                            |
+| **RAM**                                       | 256MB (fixed)                                                                                                                                                                               |
+| **Flash**                                     | 128MB (fixed)                                                                                                                                                                               |
+| **OS**                                        | Cisco IOS 15.1 (last supported train)                                                                                                                                                       |
+| **Management**                                | CLI (console/SSH), SNMP, CCP (Cisco Configuration Professional web GUI)                                                                                                                     |
+| **L3 Features**                               | Static, OSPF, EIGRP, NAT, DHCP, IPsec VPN, GRE                                                                                                                                              |
+| **Firewall**                                  | IOS ZBF                                                                                                                                                                                     |
+| **Form Factor**                               | Desktop (compact, no rack mount without adapter)                                                                                                                                            |
+| **Class**                                     | Enterprise SOHO / Small Branch Router (ISR G1)                                                                                                                                              |
+| **Released**                                  | ~2008                                                                                                                                                                                       |
+| **EOL**                                       | ~2015 (End of Sale), ~2020 (End of Support)                                                                                                                                                 |
+| **Notes**                                     | ISR G1 compact form factor. Integrated 4-port FE switch with inter-VLAN routing. Designed for small branch/SOHO. Very limited throughput by modern standards. Desktop form factor, fanless. |
+|                                               |                                                                                                                                                                                             |
+| **— Power —**                                 |                                                                                                                                                                                             |
+| **Power Input**                               | DC (12V external power adapter, 2.5A); barrel connector                                                                                                                                     |
+| **PSU Rating**                                | 30W external AC-DC adapter                                                                                                                                                                  |
+| **System Idle**                               | ~12-15W (fanless, no traffic)                                                                                                                                                               |
+| **System Typical**                            | ~15-20W (moderate traffic, NAT active)                                                                                                                                                      |
+| **System Max**                                | ~25-30W (full traffic + VPN + all ports active)                                                                                                                                             |
+| **Per-Port: FastEthernet**                    | Included in system power                                                                                                                                                                    |
+| **PoE**                                       | Not supported (881 non-POE model; 881-POE variant has 2-port PoE at 15.4W/port)                                                                                                             |
+| **Power Source**                              | Cisco 880 Series datasheet                                                                                                                                                                  |
+|                                               |                                                                                                                                                                                             |
+| **— Latency —**                               |                                                                                                                                                                                             |
+| **Forwarding Mode**                           | Software (CEF)                                                                                                                                                                              |
+| **Baseline: L3 CEF forwarding**               | ~50-200µs (integrated switch ports to WAN, CEF-switched; same CPU class as 2811)                                                                                                            |
+| **Baseline: Inter-VLAN on integrated switch** | ~100-300µs (packets go through CPU for inter-VLAN routing)                                                                                                                                  |
+| **Modifier: NAT**                             | +20-100µs                                                                                                                                                                                   |
+| **Modifier: ZBF**                             | +50-200µs                                                                                                                                                                                   |
+| **Modifier: IPsec**                           | +200-1000µs (software crypto; no AIM slot)                                                                                                                                                  |
+| **Throughput Ceiling**                        | ~50-100 Mbps CEF routing; ~25-50 Mbps with NAT+ZBF; ~15-25 Mbps IPsec (software only)                                                                                                       |
+| **Latency Source**                            | Cisco 880 Series performance documentation                                                                                                                                                  |
+|                                               |                                                                                                                                                                                             |
+| **— L2 Features —**                           |                                                                                                                                                                                             |
+| **VLANs**                                     | Yes — integrated 4-port switch supports VLANs; inter-VLAN routing via BVI (Bridged Virtual Interface)                                                                                       |
+| **Protocol-based VLAN**                       | N/A (SOHO router — VLANs are port-based on integrated switch)                                                                                                                               |
+| **STP**                                       | Yes (basic STP on integrated switch ports)                                                                                                                                                  |
+| **STP convergence**                           | 802.1D STP: ~30-50s (classic STP on integrated switch; no RSTP support on 881 integrated switch)                                                                                            |
+| **Trunk negotiation**                         | N/A (no DTP — integrated switch does not support trunk negotiation)                                                                                                                         |
+| **LLDP**                                      | No (CDP only on ISR G1)                                                                                                                                                                     |
+| **CDP**                                       | Yes                                                                                                                                                                                         |
+| **IGMP Snooping**                             | Yes (on integrated switch)                                                                                                                                                                  |
+| **Jumbo Frames**                              | No (FastEthernet, 1500 MTU)                                                                                                                                                                 |
+|                                               |                                                                                                                                                                                             |
+| **— Link Aggregation —**                      |                                                                                                                                                                                             |
+| **EtherChannel**                              | No (integrated switch does not support EtherChannel; WAN port is single FE)                                                                                                                 |
+| **LAG failover**                              | N/A (no LAG support on integrated switch)                                                                                                                                                   |
+| **Min-links**                                 | N/A (no LAG support)                                                                                                                                                                        |
+|                                               |                                                                                                                                                                                             |
+| **— MC-LAG —**                                |                                                                                                                                                                                             |
+| **MC-LAG**                                    | N/A — SOHO router                                                                                                                                                                           |
+|                                               |                                                                                                                                                                                             |
+| **— First-Hop Redundancy —**                  |                                                                                                                                                                                             |
+| **HSRP**                                      | Yes (but impractical — single unit, SOHO role)                                                                                                                                              |
+| **VRRP**                                      | Yes (with appropriate license)                                                                                                                                                              |
+| **FHRP Failover Time**                        | Standard IOS timers                                                                                                                                                                         |
+| **Notes**                                     | FHRP not typically deployed on SOHO routers — single unit, no redundant pair                                                                                                                |
+|                                               |                                                                                                                                                                                             |
+| **— L3 Routing —**                            |                                                                                                                                                                                             |
+| **Static Routing**                            | Yes                                                                                                                                                                                         |
+| **OSPF**                                      | Yes (v2; v3 with Advanced license)                                                                                                                                                          |
+| **EIGRP**                                     | Yes                                                                                                                                                                                         |
+| **RIP**                                       | Yes (v1/v2)                                                                                                                                                                                 |
+| **BGP**                                       | Limited (supported with appropriate license; ~5-10K routes max practical)                                                                                                                   |
+| **PBR**                                       | Yes                                                                                                                                                                                         |
+| **VRF-lite**                                  | Yes (limited by RAM)                                                                                                                                                                        |
+| **Route Table Capacity**                      | ~50K IPv4 routes (256MB RAM)                                                                                                                                                                |
+| **NAT**                                       | Yes (PAT/static/dynamic)                                                                                                                                                                    |
+| **IPv6**                                      | Yes (with Advanced IP Services)                                                                                                                                                             |
+|                                               |                                                                                                                                                                                             |
+| **— Router/Firewall Specific —**              |                                                                                                                                                                                             |
+| **NAT Performance**                           | ~30-60 Mbps; max ~64K concurrent sessions                                                                                                                                                   |
+| **IPsec VPN Throughput**                      | ~15-25 Mbps (software only, no hardware crypto module); max 20 tunnels                                                                                                                      |
+| **Stateful Firewall**                         | IOS ZBF: ~30-60 Mbps; ~15K concurrent sessions                                                                                                                                              |
+| **DMVPN**                                     | Yes                                                                                                                                                                                         |
+|                                               |                                                                                                                                                                                             |
+| **— Security —**                              |                                                                                                                                                                                             |
+| **ACLs**                                      | Standard, extended, named                                                                                                                                                                   |
+| **802.1X**                                    | Yes (on integrated switch ports)                                                                                                                                                            |
+| **DHCP Snooping**                             | Yes (on integrated switch)                                                                                                                                                                  |
+| **uRPF**                                      | Yes                                                                                                                                                                                         |
+| **CoPP**                                      | Yes                                                                                                                                                                                         |
+| **Port security**                             | Not documented for 881 integrated switch                                                                                                                                                    |
+| **AAA**                                       | Yes (RADIUS, TACACS+, local)                                                                                                                                                                |
+| **SSH**                                       | Yes (v2 with crypto image)                                                                                                                                                                  |
+|                                               |                                                                                                                                                                                             |
+| **— Monitoring —**                            |                                                                                                                                                                                             |
+| **SNMP**                                      | v1, v2c, v3                                                                                                                                                                                 |
+| **NetFlow**                                   | Yes (v5/v9)                                                                                                                                                                                 |
+| **IP SLA**                                    | Yes                                                                                                                                                                                         |
+| **Syslog**                                    | Yes                                                                                                                                                                                         |
+| **NTP**                                       | Yes                                                                                                                                                                                         |
+| **CDP**                                       | Yes                                                                                                                                                                                         |
+| **EEM**                                       | Yes                                                                                                                                                                                         |
+| **DNS**                                       | Yes (`ip name-server` — DNS client for hostname resolution)                                                                                                                                 |
 
 ---
 
@@ -1371,191 +1372,191 @@
 
 ### Netgear ProSafe XS712T-100NES (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 12x 10GBASE-T RJ45 + 2x SFP+ 10GbE combo (shared with 2 of the 12 RJ45) |
-| **Switching Capacity** | 240 Gbps |
-| **Forwarding Rate** | 178 Mpps |
-| **Latency** | ~3-5 µs (10GBASE-T copper PHY) |
-| **MTU / Jumbo** | 9198 bytes |
-| **Form Factor** | 1RU (half-depth, fanless at low loads / quiet fans) |
-| **OS** | Netgear Smart Managed firmware |
-| **Management** | Web GUI, SNMP |
-| **L2 Features** | VLAN (up to 256), LACP (up to 8 groups), STP/RSTP, IGMP snooping |
-| **L3 Features** | None (L2 only) |
-| **MC-LAG** | No |
-| **Stacking** | No |
-| **Class** | Prosumer / SMB |
-| **Released** | ~2014 |
-| **Status** | Discontinued but still widely available refurbished |
-| **Notes** | One of the few affordable 10GBASE-T copper switches. 12 ports of 10G copper using standard Cat6a cabling. Smart managed (not full CLI). Good for connecting servers/NAS with 10GBASE-T NICs. No L3. No SFP+ dedicated uplinks (combo only). Higher power consumption than SFP+ equivalents due to 10GBASE-T PHY (~50-80W typical). |
-| | |
-| **— Power —** | |
-| System idle (no links) | ~25 W (ASIC + fans idle, 10GBASE-T PHYs powered down) |
-| System typical | ~50-65 W (8-10 active 10GBASE-T links, moderate traffic) |
-| System maximum | ~80-95 W (all 12 10GBASE-T + 2 SFP+ active, full load) |
-| Per-port: 10GBASE-T RJ45 (active link) | ~4-5 W (Broadcom 10GBASE-T PHY per port) |
-| Per-port: SFP+ DAC | ~0.5-1 W |
-| Per-port: SFP+ SR optic | ~1-1.5 W |
-| Per-port: SFP+ empty/down | ~0.1 W |
-| PoE | Not supported |
-| PSU | Internal, 100-240 VAC, non-redundant, no hot-swap |
-| | |
-| **— Latency —** | |
-| Forwarding mode | Store-and-forward only |
-| 10GBASE-T → 10GBASE-T (64 B) | ~5-8 µs (includes ~2-3 µs per 10GBASE-T PHY encode/decode) |
-| SFP+ DAC → SFP+ DAC (64 B) | ~1-2 µs (bypass copper PHY overhead) |
-| SFP+ optic → SFP+ optic (64 B) | ~1-2 µs |
-| With ACL / QoS rules | Negligible additional (hardware TCAM) |
-| | |
-| **— L2 Features —** | |
-| VLANs | 802.1Q, up to 256 VLAN IDs |
-| Private VLAN | No |
-| Voice VLAN | Yes (LLDP-MED auto-voice) |
-| Protocol-based VLAN | No |
-| Q-in-Q (802.1ad) | No |
-| Trunking | 802.1Q tagged trunks, configurable native VLAN |
-| Trunk negotiation | Manual only (no DTP — not a Cisco device) |
-| STP | STP (802.1D), RSTP (802.1w); no MSTP |
-| STP convergence | RSTP: ~1-3s typical |
-| Storm control | Yes (broadcast / multicast / unknown-unicast, rate-based) |
-| IGMP snooping | v1 / v2 / v3 |
-| LLDP | Yes |
-| MAC table | 16 K entries |
-| | |
-| **— LAG —** | |
-| Static LAG | Yes |
-| LACP (802.3ad) | Yes |
-| Max groups | 8 |
-| Max ports / group | 8 |
-| Hash modes | L2 (src/dst MAC), L3 (src/dst IP); no L4 hash |
-| Cross-stack LAG | N/A (no stacking) |
-| LAG failover | <50 ms with LACP |
-| Min-links | No |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG | Not supported (no stacking, no multi-chassis protocol) |
-| | |
-| **— Security —** | |
-| 802.1X | Yes (port-based, basic — smart-managed level) |
-| ACLs | Basic L2/L3 port ACLs (MAC, IP, limited depth) |
-| DHCP snooping | No |
-| Dynamic ARP inspection | No |
-| Port security | Yes (MAC limit / sticky MAC) |
-| MACsec (802.1AE) | No |
-| CoPP / CPU protection | No (smart-managed firmware — no CoPP feature) |
-| RADIUS / TACACS+ | RADIUS only (for 802.1X); no TACACS+ |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 |
-| sFlow / NetFlow | No |
-| Port mirroring (SPAN) | Yes (local SPAN, 1 session) |
-| RMON | Basic (groups 1, 2, 3, 9) |
-| Syslog | Yes |
-| NTP | Yes |
-| DNS | Yes (DNS client for management) |
-| CLI | No (web GUI only; no SSH/Telnet CLI) |
+| Attribute                              | Value                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                              | 12x 10GBASE-T RJ45 + 2x SFP+ 10GbE combo (shared with 2 of the 12 RJ45)                                                                                                                                                                                                                                                            |
+| **Switching Capacity**                 | 240 Gbps                                                                                                                                                                                                                                                                                                                           |
+| **Forwarding Rate**                    | 178 Mpps                                                                                                                                                                                                                                                                                                                           |
+| **Latency**                            | ~3-5 µs (10GBASE-T copper PHY)                                                                                                                                                                                                                                                                                                     |
+| **MTU / Jumbo**                        | 9198 bytes                                                                                                                                                                                                                                                                                                                         |
+| **Form Factor**                        | 1RU (half-depth, fanless at low loads / quiet fans)                                                                                                                                                                                                                                                                                |
+| **OS**                                 | Netgear Smart Managed firmware                                                                                                                                                                                                                                                                                                     |
+| **Management**                         | Web GUI, SNMP                                                                                                                                                                                                                                                                                                                      |
+| **L2 Features**                        | VLAN (up to 256), LACP (up to 8 groups), STP/RSTP, IGMP snooping                                                                                                                                                                                                                                                                   |
+| **L3 Features**                        | None (L2 only)                                                                                                                                                                                                                                                                                                                     |
+| **MC-LAG**                             | No                                                                                                                                                                                                                                                                                                                                 |
+| **Stacking**                           | No                                                                                                                                                                                                                                                                                                                                 |
+| **Class**                              | Prosumer / SMB                                                                                                                                                                                                                                                                                                                     |
+| **Released**                           | ~2014                                                                                                                                                                                                                                                                                                                              |
+| **Status**                             | Discontinued but still widely available refurbished                                                                                                                                                                                                                                                                                |
+| **Notes**                              | One of the few affordable 10GBASE-T copper switches. 12 ports of 10G copper using standard Cat6a cabling. Smart managed (not full CLI). Good for connecting servers/NAS with 10GBASE-T NICs. No L3. No SFP+ dedicated uplinks (combo only). Higher power consumption than SFP+ equivalents due to 10GBASE-T PHY (~50-80W typical). |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— Power —**                          |                                                                                                                                                                                                                                                                                                                                    |
+| System idle (no links)                 | ~25 W (ASIC + fans idle, 10GBASE-T PHYs powered down)                                                                                                                                                                                                                                                                              |
+| System typical                         | ~50-65 W (8-10 active 10GBASE-T links, moderate traffic)                                                                                                                                                                                                                                                                           |
+| System maximum                         | ~80-95 W (all 12 10GBASE-T + 2 SFP+ active, full load)                                                                                                                                                                                                                                                                             |
+| Per-port: 10GBASE-T RJ45 (active link) | ~4-5 W (Broadcom 10GBASE-T PHY per port)                                                                                                                                                                                                                                                                                           |
+| Per-port: SFP+ DAC                     | ~0.5-1 W                                                                                                                                                                                                                                                                                                                           |
+| Per-port: SFP+ SR optic                | ~1-1.5 W                                                                                                                                                                                                                                                                                                                           |
+| Per-port: SFP+ empty/down              | ~0.1 W                                                                                                                                                                                                                                                                                                                             |
+| PoE                                    | Not supported                                                                                                                                                                                                                                                                                                                      |
+| PSU                                    | Internal, 100-240 VAC, non-redundant, no hot-swap                                                                                                                                                                                                                                                                                  |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— Latency —**                        |                                                                                                                                                                                                                                                                                                                                    |
+| Forwarding mode                        | Store-and-forward only                                                                                                                                                                                                                                                                                                             |
+| 10GBASE-T → 10GBASE-T (64 B)           | ~5-8 µs (includes ~2-3 µs per 10GBASE-T PHY encode/decode)                                                                                                                                                                                                                                                                         |
+| SFP+ DAC → SFP+ DAC (64 B)             | ~1-2 µs (bypass copper PHY overhead)                                                                                                                                                                                                                                                                                               |
+| SFP+ optic → SFP+ optic (64 B)         | ~1-2 µs                                                                                                                                                                                                                                                                                                                            |
+| With ACL / QoS rules                   | Negligible additional (hardware TCAM)                                                                                                                                                                                                                                                                                              |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— L2 Features —**                    |                                                                                                                                                                                                                                                                                                                                    |
+| VLANs                                  | 802.1Q, up to 256 VLAN IDs                                                                                                                                                                                                                                                                                                         |
+| Private VLAN                           | No                                                                                                                                                                                                                                                                                                                                 |
+| Voice VLAN                             | Yes (LLDP-MED auto-voice)                                                                                                                                                                                                                                                                                                          |
+| Protocol-based VLAN                    | No                                                                                                                                                                                                                                                                                                                                 |
+| Q-in-Q (802.1ad)                       | No                                                                                                                                                                                                                                                                                                                                 |
+| Trunking                               | 802.1Q tagged trunks, configurable native VLAN                                                                                                                                                                                                                                                                                     |
+| Trunk negotiation                      | Manual only (no DTP — not a Cisco device)                                                                                                                                                                                                                                                                                          |
+| STP                                    | STP (802.1D), RSTP (802.1w); no MSTP                                                                                                                                                                                                                                                                                               |
+| STP convergence                        | RSTP: ~1-3s typical                                                                                                                                                                                                                                                                                                                |
+| Storm control                          | Yes (broadcast / multicast / unknown-unicast, rate-based)                                                                                                                                                                                                                                                                          |
+| IGMP snooping                          | v1 / v2 / v3                                                                                                                                                                                                                                                                                                                       |
+| LLDP                                   | Yes                                                                                                                                                                                                                                                                                                                                |
+| MAC table                              | 16 K entries                                                                                                                                                                                                                                                                                                                       |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— LAG —**                            |                                                                                                                                                                                                                                                                                                                                    |
+| Static LAG                             | Yes                                                                                                                                                                                                                                                                                                                                |
+| LACP (802.3ad)                         | Yes                                                                                                                                                                                                                                                                                                                                |
+| Max groups                             | 8                                                                                                                                                                                                                                                                                                                                  |
+| Max ports / group                      | 8                                                                                                                                                                                                                                                                                                                                  |
+| Hash modes                             | L2 (src/dst MAC), L3 (src/dst IP); no L4 hash                                                                                                                                                                                                                                                                                      |
+| Cross-stack LAG                        | N/A (no stacking)                                                                                                                                                                                                                                                                                                                  |
+| LAG failover                           | <50 ms with LACP                                                                                                                                                                                                                                                                                                                   |
+| Min-links                              | No                                                                                                                                                                                                                                                                                                                                 |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— MC-LAG —**                         |                                                                                                                                                                                                                                                                                                                                    |
+| MC-LAG                                 | Not supported (no stacking, no multi-chassis protocol)                                                                                                                                                                                                                                                                             |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— Security —**                       |                                                                                                                                                                                                                                                                                                                                    |
+| 802.1X                                 | Yes (port-based, basic — smart-managed level)                                                                                                                                                                                                                                                                                      |
+| ACLs                                   | Basic L2/L3 port ACLs (MAC, IP, limited depth)                                                                                                                                                                                                                                                                                     |
+| DHCP snooping                          | No                                                                                                                                                                                                                                                                                                                                 |
+| Dynamic ARP inspection                 | No                                                                                                                                                                                                                                                                                                                                 |
+| Port security                          | Yes (MAC limit / sticky MAC)                                                                                                                                                                                                                                                                                                       |
+| MACsec (802.1AE)                       | No                                                                                                                                                                                                                                                                                                                                 |
+| CoPP / CPU protection                  | No (smart-managed firmware — no CoPP feature)                                                                                                                                                                                                                                                                                      |
+| RADIUS / TACACS+                       | RADIUS only (for 802.1X); no TACACS+                                                                                                                                                                                                                                                                                               |
+|                                        |                                                                                                                                                                                                                                                                                                                                    |
+| **— Monitoring —**                     |                                                                                                                                                                                                                                                                                                                                    |
+| SNMP                                   | v1, v2c, v3                                                                                                                                                                                                                                                                                                                        |
+| sFlow / NetFlow                        | No                                                                                                                                                                                                                                                                                                                                 |
+| Port mirroring (SPAN)                  | Yes (local SPAN, 1 session)                                                                                                                                                                                                                                                                                                        |
+| RMON                                   | Basic (groups 1, 2, 3, 9)                                                                                                                                                                                                                                                                                                          |
+| Syslog                                 | Yes                                                                                                                                                                                                                                                                                                                                |
+| NTP                                    | Yes                                                                                                                                                                                                                                                                                                                                |
+| DNS                                    | Yes (DNS client for management)                                                                                                                                                                                                                                                                                                    |
+| CLI                                    | No (web GUI only; no SSH/Telnet CLI)                                                                                                                                                                                                                                                                                               |
 
 ---
 
 ### TRENDnet TEG-30284 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 24x Gigabit RJ45 + 4x 10G SFP+ |
-| **Switching Capacity** | 128 Gbps |
-| **Forwarding Rate** | 95.2 Mpps |
-| **Latency** | ~3-5 µs |
-| **MTU / Jumbo** | 12,288 bytes |
-| **Form Factor** | 1RU, fanless |
-| **OS** | TRENDnet Web Smart firmware (TRENDnet Hive cloud optional) |
-| **Management** | Web GUI, CLI (Telnet/SSH), SNMP v1/v2c/v3 |
-| **L2 Features** | VLAN (256 groups, ID 1-4094), LACP, STP/RSTP/MSTP, port mirroring, IGMP snooping |
-| **L3 Features** | IPv4/IPv6 static routing (up to 32 routes, 6 IP interfaces) |
-| **MC-LAG** | No |
-| **Stacking** | No |
-| **Security** | 802.1X, RADIUS, TACACS+, ACLs (L2-L4), DHCP snooping, DAI, DoS defend |
-| **Class** | Prosumer / SMB |
-| **Released** | ~2018 |
-| **Status** | Current (v2.5R) |
-| **Notes** | Affordable L2+ switch with 10G SFP+ uplinks. Fanless = silent operation. Limited static routing. Good for small office aggregation or as an intermediate/management switch. 4x 10G SFP+ slots provide uplink capability to 10G fabric. |
-| | |
-| **— Power —** | |
-| System idle | ~10 W (fanless, GbE PHYs low-power states, SFP+ slots empty) |
-| System typical | ~15-20 W (12-18 GbE ports active, 1-2 SFP+ uplinks) |
-| System maximum | ~28-32 W (all 24 GbE + 4 SFP+ active, full traffic) |
-| Per-port: GbE RJ45 (active) | ~0.3-0.5 W |
-| Per-port: SFP+ DAC | ~0.5-1 W |
-| Per-port: SFP+ SR optic | ~1-1.5 W |
-| Per-port: SFP+ empty | ~0 W |
-| PoE | Not supported |
-| PSU | Internal, 100-240 VAC, non-redundant; fanless = no fan power |
-| | |
-| **— Latency —** | |
-| Forwarding mode | Store-and-forward only |
-| GbE → GbE (64 B) | ~3-5 µs |
-| GbE → SFP+ 10G (64 B) | ~3-5 µs (speed-change buffering minimal at 64 B) |
-| SFP+ → SFP+ (64 B) | ~1-3 µs |
-| With ACL / QoS | Negligible additional (hardware TCAM) |
-| L3 static routing | +~1-2 µs (inter-VLAN, hardware-forwarded) |
-| | |
-| **— L2 Features —** | |
-| VLANs | 802.1Q, 256 groups, VLAN ID range 1-4094 |
-| Private VLAN | No |
-| Voice VLAN | Yes (OUI-based auto-detection) |
-| Protocol-based VLAN | No |
-| Q-in-Q (802.1ad) | No |
-| Trunking | 802.1Q tagged trunks, configurable PVID |
-| Trunk negotiation | Manual only (no DTP) |
-| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
-| STP convergence | RSTP/MSTP: ~1-3s typical |
-| Storm control | Yes (broadcast / multicast / unknown-unicast, rate-based) |
-| IGMP snooping | v1 / v2 / v3, IGMP querier |
-| LLDP | Yes |
-| MAC table | 16 K entries |
-| | |
-| **— LAG —** | |
-| Static LAG | Yes |
-| LACP (802.3ad) | Yes |
-| Max groups | 8 |
-| Max ports / group | 8 |
-| Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
-| Cross-stack LAG | N/A (no stacking) |
-| LAG failover | <50 ms with LACP |
-| Min-links | No |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG | Not supported |
-| | |
-| **— L3 Routing —** | |
-| Static routes | Up to 32 IPv4 + 32 IPv6 static routes |
-| IP interfaces | Up to 6 VLAN interfaces |
-| Dynamic routing | None (no OSPF / BGP / RIP) |
-| Inter-VLAN routing | Yes (hardware-forwarded between configured IP interfaces) |
-| DHCP relay | Yes |
-| | |
-| **— Security —** | |
-| 802.1X | Yes (port-based and MAC-based) |
-| ACLs | L2 (MAC), L3 (IP), L4 (TCP/UDP port); ingress + egress |
-| DHCP snooping | Yes |
-| Dynamic ARP inspection | Yes (DAI) |
-| IP source guard | Yes |
-| DoS protection | Yes (built-in DoS defend profiles) |
-| Port security | Yes (MAC limit) |
-| MACsec (802.1AE) | No |
-| CoPP / CPU protection | No (L2+ switch — no CoPP feature) |
-| RADIUS | Yes |
-| TACACS+ | Yes |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 |
-| sFlow / NetFlow | No |
-| Port mirroring (SPAN) | Yes (local SPAN, 1 session) |
-| RMON | Yes (groups 1, 2, 3, 9) |
-| Syslog | Yes |
-| NTP | Yes |
-| DNS | Yes (DNS client for management) |
-| CLI | Yes (Telnet, SSH) |
+| Attribute                   | Value                                                                                                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                   | 24x Gigabit RJ45 + 4x 10G SFP+                                                                                                                                                                                                         |
+| **Switching Capacity**      | 128 Gbps                                                                                                                                                                                                                               |
+| **Forwarding Rate**         | 95.2 Mpps                                                                                                                                                                                                                              |
+| **Latency**                 | ~3-5 µs                                                                                                                                                                                                                                |
+| **MTU / Jumbo**             | 12,288 bytes                                                                                                                                                                                                                           |
+| **Form Factor**             | 1RU, fanless                                                                                                                                                                                                                           |
+| **OS**                      | TRENDnet Web Smart firmware (TRENDnet Hive cloud optional)                                                                                                                                                                             |
+| **Management**              | Web GUI, CLI (Telnet/SSH), SNMP v1/v2c/v3                                                                                                                                                                                              |
+| **L2 Features**             | VLAN (256 groups, ID 1-4094), LACP, STP/RSTP/MSTP, port mirroring, IGMP snooping                                                                                                                                                       |
+| **L3 Features**             | IPv4/IPv6 static routing (up to 32 routes, 6 IP interfaces)                                                                                                                                                                            |
+| **MC-LAG**                  | No                                                                                                                                                                                                                                     |
+| **Stacking**                | No                                                                                                                                                                                                                                     |
+| **Security**                | 802.1X, RADIUS, TACACS+, ACLs (L2-L4), DHCP snooping, DAI, DoS defend                                                                                                                                                                  |
+| **Class**                   | Prosumer / SMB                                                                                                                                                                                                                         |
+| **Released**                | ~2018                                                                                                                                                                                                                                  |
+| **Status**                  | Current (v2.5R)                                                                                                                                                                                                                        |
+| **Notes**                   | Affordable L2+ switch with 10G SFP+ uplinks. Fanless = silent operation. Limited static routing. Good for small office aggregation or as an intermediate/management switch. 4x 10G SFP+ slots provide uplink capability to 10G fabric. |
+|                             |                                                                                                                                                                                                                                        |
+| **— Power —**               |                                                                                                                                                                                                                                        |
+| System idle                 | ~10 W (fanless, GbE PHYs low-power states, SFP+ slots empty)                                                                                                                                                                           |
+| System typical              | ~15-20 W (12-18 GbE ports active, 1-2 SFP+ uplinks)                                                                                                                                                                                    |
+| System maximum              | ~28-32 W (all 24 GbE + 4 SFP+ active, full traffic)                                                                                                                                                                                    |
+| Per-port: GbE RJ45 (active) | ~0.3-0.5 W                                                                                                                                                                                                                             |
+| Per-port: SFP+ DAC          | ~0.5-1 W                                                                                                                                                                                                                               |
+| Per-port: SFP+ SR optic     | ~1-1.5 W                                                                                                                                                                                                                               |
+| Per-port: SFP+ empty        | ~0 W                                                                                                                                                                                                                                   |
+| PoE                         | Not supported                                                                                                                                                                                                                          |
+| PSU                         | Internal, 100-240 VAC, non-redundant; fanless = no fan power                                                                                                                                                                           |
+|                             |                                                                                                                                                                                                                                        |
+| **— Latency —**             |                                                                                                                                                                                                                                        |
+| Forwarding mode             | Store-and-forward only                                                                                                                                                                                                                 |
+| GbE → GbE (64 B)            | ~3-5 µs                                                                                                                                                                                                                                |
+| GbE → SFP+ 10G (64 B)       | ~3-5 µs (speed-change buffering minimal at 64 B)                                                                                                                                                                                       |
+| SFP+ → SFP+ (64 B)          | ~1-3 µs                                                                                                                                                                                                                                |
+| With ACL / QoS              | Negligible additional (hardware TCAM)                                                                                                                                                                                                  |
+| L3 static routing           | +~1-2 µs (inter-VLAN, hardware-forwarded)                                                                                                                                                                                              |
+|                             |                                                                                                                                                                                                                                        |
+| **— L2 Features —**         |                                                                                                                                                                                                                                        |
+| VLANs                       | 802.1Q, 256 groups, VLAN ID range 1-4094                                                                                                                                                                                               |
+| Private VLAN                | No                                                                                                                                                                                                                                     |
+| Voice VLAN                  | Yes (OUI-based auto-detection)                                                                                                                                                                                                         |
+| Protocol-based VLAN         | No                                                                                                                                                                                                                                     |
+| Q-in-Q (802.1ad)            | No                                                                                                                                                                                                                                     |
+| Trunking                    | 802.1Q tagged trunks, configurable PVID                                                                                                                                                                                                |
+| Trunk negotiation           | Manual only (no DTP)                                                                                                                                                                                                                   |
+| STP                         | STP (802.1D), RSTP (802.1w), MSTP (802.1s)                                                                                                                                                                                             |
+| STP convergence             | RSTP/MSTP: ~1-3s typical                                                                                                                                                                                                               |
+| Storm control               | Yes (broadcast / multicast / unknown-unicast, rate-based)                                                                                                                                                                              |
+| IGMP snooping               | v1 / v2 / v3, IGMP querier                                                                                                                                                                                                             |
+| LLDP                        | Yes                                                                                                                                                                                                                                    |
+| MAC table                   | 16 K entries                                                                                                                                                                                                                           |
+|                             |                                                                                                                                                                                                                                        |
+| **— LAG —**                 |                                                                                                                                                                                                                                        |
+| Static LAG                  | Yes                                                                                                                                                                                                                                    |
+| LACP (802.3ad)              | Yes                                                                                                                                                                                                                                    |
+| Max groups                  | 8                                                                                                                                                                                                                                      |
+| Max ports / group           | 8                                                                                                                                                                                                                                      |
+| Hash modes                  | L2 (src/dst MAC), L3 (src/dst IP)                                                                                                                                                                                                      |
+| Cross-stack LAG             | N/A (no stacking)                                                                                                                                                                                                                      |
+| LAG failover                | <50 ms with LACP                                                                                                                                                                                                                       |
+| Min-links                   | No                                                                                                                                                                                                                                     |
+|                             |                                                                                                                                                                                                                                        |
+| **— MC-LAG —**              |                                                                                                                                                                                                                                        |
+| MC-LAG                      | Not supported                                                                                                                                                                                                                          |
+|                             |                                                                                                                                                                                                                                        |
+| **— L3 Routing —**          |                                                                                                                                                                                                                                        |
+| Static routes               | Up to 32 IPv4 + 32 IPv6 static routes                                                                                                                                                                                                  |
+| IP interfaces               | Up to 6 VLAN interfaces                                                                                                                                                                                                                |
+| Dynamic routing             | None (no OSPF / BGP / RIP)                                                                                                                                                                                                             |
+| Inter-VLAN routing          | Yes (hardware-forwarded between configured IP interfaces)                                                                                                                                                                              |
+| DHCP relay                  | Yes                                                                                                                                                                                                                                    |
+|                             |                                                                                                                                                                                                                                        |
+| **— Security —**            |                                                                                                                                                                                                                                        |
+| 802.1X                      | Yes (port-based and MAC-based)                                                                                                                                                                                                         |
+| ACLs                        | L2 (MAC), L3 (IP), L4 (TCP/UDP port); ingress + egress                                                                                                                                                                                 |
+| DHCP snooping               | Yes                                                                                                                                                                                                                                    |
+| Dynamic ARP inspection      | Yes (DAI)                                                                                                                                                                                                                              |
+| IP source guard             | Yes                                                                                                                                                                                                                                    |
+| DoS protection              | Yes (built-in DoS defend profiles)                                                                                                                                                                                                     |
+| Port security               | Yes (MAC limit)                                                                                                                                                                                                                        |
+| MACsec (802.1AE)            | No                                                                                                                                                                                                                                     |
+| CoPP / CPU protection       | No (L2+ switch — no CoPP feature)                                                                                                                                                                                                      |
+| RADIUS                      | Yes                                                                                                                                                                                                                                    |
+| TACACS+                     | Yes                                                                                                                                                                                                                                    |
+|                             |                                                                                                                                                                                                                                        |
+| **— Monitoring —**          |                                                                                                                                                                                                                                        |
+| SNMP                        | v1, v2c, v3                                                                                                                                                                                                                            |
+| sFlow / NetFlow             | No                                                                                                                                                                                                                                     |
+| Port mirroring (SPAN)       | Yes (local SPAN, 1 session)                                                                                                                                                                                                            |
+| RMON                        | Yes (groups 1, 2, 3, 9)                                                                                                                                                                                                                |
+| Syslog                      | Yes                                                                                                                                                                                                                                    |
+| NTP                         | Yes                                                                                                                                                                                                                                    |
+| DNS                         | Yes (DNS client for management)                                                                                                                                                                                                        |
+| CLI                         | Yes (Telnet, SSH)                                                                                                                                                                                                                      |
 
 ---
 
@@ -1563,377 +1564,377 @@
 
 ### TP-Link Omada SG3210XHP-M2 (2x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 8x 2.5GBASE-T RJ45 PoE+ + 2x 10G SFP+ |
-| **PoE Budget** | 240W (802.3at/af) |
-| **Switching Capacity** | 80 Gbps |
-| **Forwarding Rate** | 59.52 Mpps |
-| **Latency** | ~3-5 µs |
-| **MTU / Jumbo** | 9,000 bytes |
-| **Form Factor** | 1RU (half-depth) |
-| **OS** | TP-Link Omada firmware (Omada SDN cloud managed) |
-| **Management** | Web GUI, CLI, SNMP v1/v2c/v3, Omada Cloud Controller |
-| **L2 Features** | VLAN (4K), LACP (8 groups x 8 ports), STP/RSTP/MSTP, IGMP snooping |
-| **L3 Features** | Static routing (48 routes, 64 IP interfaces), DHCP server/relay |
-| **MC-LAG** | No |
-| **Stacking** | No |
-| **Security** | 802.1X, RADIUS, TACACS+, ACLs, DHCP snooping, ARP inspection, port security |
-| **Class** | Prosumer / SMB |
-| **Released** | ~2022 |
-| **Status** | Current |
-| **Notes** | 2.5GbE PoE+ switch ideal for WiFi 6 APs and PoE devices. Omada SDN provides centralized cloud management across sites. 2x 10G SFP+ uplinks. Good for PoE access layer (cameras, APs, phones). |
-| | |
-| **— Power —** | |
-| System (no PoE load) | ~20-25 W (switch ASIC + fans, no PoE draw) |
-| System typical (moderate PoE) | ~100-140 W (switch + 4-6 PoE devices at ~15-20 W each) |
-| System maximum | ~265 W (switch ~25 W + 240 W full PoE budget) |
-| Per-port: 2.5GBASE-T PoE+ (active, no PD) | ~0.5-0.8 W (PHY only, no PoE draw) |
-| Per-port: PoE+ PD connected | Up to 30 W per port (802.3at Class 4) |
-| Per-port: PoE PD connected | Up to 15.4 W per port (802.3af Class 3) |
-| Per-port: SFP+ DAC | ~0.5-1 W |
-| Per-port: SFP+ SR optic | ~1-1.5 W |
-| PoE total budget | 240 W shared across 8 ports (no per-port guarantee beyond class) |
-| PSU | Internal, 100-240 VAC, non-redundant |
-| | |
-| **— Latency —** | |
-| Forwarding mode | Store-and-forward only |
-| 2.5G → 2.5G (64 B) | ~3-5 µs |
-| 2.5G → SFP+ 10G (64 B) | ~3-5 µs |
-| SFP+ → SFP+ (64 B) | ~1-3 µs |
-| With ACL / QoS | Negligible additional (hardware TCAM) |
-| L3 static routing | +~1-2 µs (inter-VLAN, hardware-forwarded) |
-| | |
-| **— L2 Features —** | |
-| VLANs | 802.1Q, up to 4094 VLAN IDs |
-| Private VLAN | No (port isolation per-port only) |
-| Voice VLAN | Yes (OUI-based) |
-| Protocol-based VLAN | No |
-| Q-in-Q (802.1ad) | No |
-| Trunking | 802.1Q tagged trunks, configurable PVID |
-| Trunk negotiation | Manual only (no DTP) |
-| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
-| STP convergence | RSTP/MSTP: ~1-3s typical |
-| Storm control | Yes (broadcast / multicast / unknown-unicast) |
-| IGMP snooping | v1 / v2 / v3, with fast-leave |
-| LLDP / LLDP-MED | Yes (auto-voice VLAN, PoE negotiation) |
-| MAC table | 8 K entries |
-| | |
-| **— LAG —** | |
-| Static LAG | Yes |
-| LACP (802.3ad) | Yes |
-| Max groups | 8 |
-| Max ports / group | 8 |
-| Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
-| Cross-stack LAG | N/A (no stacking) |
-| LAG failover | <50 ms with LACP |
-| Min-links | No |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG | Not supported |
-| | |
-| **— L3 Routing —** | |
-| Static routes | Up to 48 IPv4 static routes |
-| IP interfaces | Up to 64 VLAN interfaces |
-| Dynamic routing | None |
-| Inter-VLAN routing | Yes (hardware-forwarded) |
-| DHCP server | Yes (built-in, per-VLAN pools) |
-| DHCP relay | Yes |
-| | |
-| **— Security —** | |
-| 802.1X | Yes (port-based, MAC-based) |
-| ACLs | L2/L3/L4 ACLs (MAC, IP, TCP/UDP) |
-| DHCP snooping | Yes |
-| Dynamic ARP inspection | Yes |
-| IP source guard | Yes |
-| Port security | Yes (MAC limit, sticky MAC) |
-| MACsec (802.1AE) | No |
-| CoPP / CPU protection | Not supported |
-| RADIUS | Yes |
-| TACACS+ | Yes |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 |
-| sFlow / NetFlow | No |
-| Port mirroring (SPAN) | Yes (local SPAN) |
-| RMON | Yes (groups 1, 2, 3, 9) |
-| Syslog | Yes |
-| NTP | Yes |
-| DNS | DNS client supported |
-| CLI | Yes (SSH, Telnet) |
-| Omada SDN | Yes (cloud dashboard, topology view, per-switch stats) |
+| Attribute                                 | Value                                                                                                                                                                                         |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                                 | 8x 2.5GBASE-T RJ45 PoE+ + 2x 10G SFP+                                                                                                                                                         |
+| **PoE Budget**                            | 240W (802.3at/af)                                                                                                                                                                             |
+| **Switching Capacity**                    | 80 Gbps                                                                                                                                                                                       |
+| **Forwarding Rate**                       | 59.52 Mpps                                                                                                                                                                                    |
+| **Latency**                               | ~3-5 µs                                                                                                                                                                                       |
+| **MTU / Jumbo**                           | 9,000 bytes                                                                                                                                                                                   |
+| **Form Factor**                           | 1RU (half-depth)                                                                                                                                                                              |
+| **OS**                                    | TP-Link Omada firmware (Omada SDN cloud managed)                                                                                                                                              |
+| **Management**                            | Web GUI, CLI, SNMP v1/v2c/v3, Omada Cloud Controller                                                                                                                                          |
+| **L2 Features**                           | VLAN (4K), LACP (8 groups x 8 ports), STP/RSTP/MSTP, IGMP snooping                                                                                                                            |
+| **L3 Features**                           | Static routing (48 routes, 64 IP interfaces), DHCP server/relay                                                                                                                               |
+| **MC-LAG**                                | No                                                                                                                                                                                            |
+| **Stacking**                              | No                                                                                                                                                                                            |
+| **Security**                              | 802.1X, RADIUS, TACACS+, ACLs, DHCP snooping, ARP inspection, port security                                                                                                                   |
+| **Class**                                 | Prosumer / SMB                                                                                                                                                                                |
+| **Released**                              | ~2022                                                                                                                                                                                         |
+| **Status**                                | Current                                                                                                                                                                                       |
+| **Notes**                                 | 2.5GbE PoE+ switch ideal for WiFi 6 APs and PoE devices. Omada SDN provides centralized cloud management across sites. 2x 10G SFP+ uplinks. Good for PoE access layer (cameras, APs, phones). |
+|                                           |                                                                                                                                                                                               |
+| **— Power —**                             |                                                                                                                                                                                               |
+| System (no PoE load)                      | ~20-25 W (switch ASIC + fans, no PoE draw)                                                                                                                                                    |
+| System typical (moderate PoE)             | ~100-140 W (switch + 4-6 PoE devices at ~15-20 W each)                                                                                                                                        |
+| System maximum                            | ~265 W (switch ~25 W + 240 W full PoE budget)                                                                                                                                                 |
+| Per-port: 2.5GBASE-T PoE+ (active, no PD) | ~0.5-0.8 W (PHY only, no PoE draw)                                                                                                                                                            |
+| Per-port: PoE+ PD connected               | Up to 30 W per port (802.3at Class 4)                                                                                                                                                         |
+| Per-port: PoE PD connected                | Up to 15.4 W per port (802.3af Class 3)                                                                                                                                                       |
+| Per-port: SFP+ DAC                        | ~0.5-1 W                                                                                                                                                                                      |
+| Per-port: SFP+ SR optic                   | ~1-1.5 W                                                                                                                                                                                      |
+| PoE total budget                          | 240 W shared across 8 ports (no per-port guarantee beyond class)                                                                                                                              |
+| PSU                                       | Internal, 100-240 VAC, non-redundant                                                                                                                                                          |
+|                                           |                                                                                                                                                                                               |
+| **— Latency —**                           |                                                                                                                                                                                               |
+| Forwarding mode                           | Store-and-forward only                                                                                                                                                                        |
+| 2.5G → 2.5G (64 B)                        | ~3-5 µs                                                                                                                                                                                       |
+| 2.5G → SFP+ 10G (64 B)                    | ~3-5 µs                                                                                                                                                                                       |
+| SFP+ → SFP+ (64 B)                        | ~1-3 µs                                                                                                                                                                                       |
+| With ACL / QoS                            | Negligible additional (hardware TCAM)                                                                                                                                                         |
+| L3 static routing                         | +~1-2 µs (inter-VLAN, hardware-forwarded)                                                                                                                                                     |
+|                                           |                                                                                                                                                                                               |
+| **— L2 Features —**                       |                                                                                                                                                                                               |
+| VLANs                                     | 802.1Q, up to 4094 VLAN IDs                                                                                                                                                                   |
+| Private VLAN                              | No (port isolation per-port only)                                                                                                                                                             |
+| Voice VLAN                                | Yes (OUI-based)                                                                                                                                                                               |
+| Protocol-based VLAN                       | No                                                                                                                                                                                            |
+| Q-in-Q (802.1ad)                          | No                                                                                                                                                                                            |
+| Trunking                                  | 802.1Q tagged trunks, configurable PVID                                                                                                                                                       |
+| Trunk negotiation                         | Manual only (no DTP)                                                                                                                                                                          |
+| STP                                       | STP (802.1D), RSTP (802.1w), MSTP (802.1s)                                                                                                                                                    |
+| STP convergence                           | RSTP/MSTP: ~1-3s typical                                                                                                                                                                      |
+| Storm control                             | Yes (broadcast / multicast / unknown-unicast)                                                                                                                                                 |
+| IGMP snooping                             | v1 / v2 / v3, with fast-leave                                                                                                                                                                 |
+| LLDP / LLDP-MED                           | Yes (auto-voice VLAN, PoE negotiation)                                                                                                                                                        |
+| MAC table                                 | 8 K entries                                                                                                                                                                                   |
+|                                           |                                                                                                                                                                                               |
+| **— LAG —**                               |                                                                                                                                                                                               |
+| Static LAG                                | Yes                                                                                                                                                                                           |
+| LACP (802.3ad)                            | Yes                                                                                                                                                                                           |
+| Max groups                                | 8                                                                                                                                                                                             |
+| Max ports / group                         | 8                                                                                                                                                                                             |
+| Hash modes                                | L2 (src/dst MAC), L3 (src/dst IP)                                                                                                                                                             |
+| Cross-stack LAG                           | N/A (no stacking)                                                                                                                                                                             |
+| LAG failover                              | <50 ms with LACP                                                                                                                                                                              |
+| Min-links                                 | No                                                                                                                                                                                            |
+|                                           |                                                                                                                                                                                               |
+| **— MC-LAG —**                            |                                                                                                                                                                                               |
+| MC-LAG                                    | Not supported                                                                                                                                                                                 |
+|                                           |                                                                                                                                                                                               |
+| **— L3 Routing —**                        |                                                                                                                                                                                               |
+| Static routes                             | Up to 48 IPv4 static routes                                                                                                                                                                   |
+| IP interfaces                             | Up to 64 VLAN interfaces                                                                                                                                                                      |
+| Dynamic routing                           | None                                                                                                                                                                                          |
+| Inter-VLAN routing                        | Yes (hardware-forwarded)                                                                                                                                                                      |
+| DHCP server                               | Yes (built-in, per-VLAN pools)                                                                                                                                                                |
+| DHCP relay                                | Yes                                                                                                                                                                                           |
+|                                           |                                                                                                                                                                                               |
+| **— Security —**                          |                                                                                                                                                                                               |
+| 802.1X                                    | Yes (port-based, MAC-based)                                                                                                                                                                   |
+| ACLs                                      | L2/L3/L4 ACLs (MAC, IP, TCP/UDP)                                                                                                                                                              |
+| DHCP snooping                             | Yes                                                                                                                                                                                           |
+| Dynamic ARP inspection                    | Yes                                                                                                                                                                                           |
+| IP source guard                           | Yes                                                                                                                                                                                           |
+| Port security                             | Yes (MAC limit, sticky MAC)                                                                                                                                                                   |
+| MACsec (802.1AE)                          | No                                                                                                                                                                                            |
+| CoPP / CPU protection                     | Not supported                                                                                                                                                                                 |
+| RADIUS                                    | Yes                                                                                                                                                                                           |
+| TACACS+                                   | Yes                                                                                                                                                                                           |
+|                                           |                                                                                                                                                                                               |
+| **— Monitoring —**                        |                                                                                                                                                                                               |
+| SNMP                                      | v1, v2c, v3                                                                                                                                                                                   |
+| sFlow / NetFlow                           | No                                                                                                                                                                                            |
+| Port mirroring (SPAN)                     | Yes (local SPAN)                                                                                                                                                                              |
+| RMON                                      | Yes (groups 1, 2, 3, 9)                                                                                                                                                                       |
+| Syslog                                    | Yes                                                                                                                                                                                           |
+| NTP                                       | Yes                                                                                                                                                                                           |
+| DNS                                       | DNS client supported                                                                                                                                                                          |
+| CLI                                       | Yes (SSH, Telnet)                                                                                                                                                                             |
+| Omada SDN                                 | Yes (cloud dashboard, topology view, per-switch stats)                                                                                                                                        |
 
 ---
 
 ### Dell PowerConnect 5448 (4x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 48x Gigabit RJ45 + 4x SFP combo (shared with 4 of the 48 RJ45) |
-| **Switching Capacity** | 96 Gbps |
-| **Forwarding Rate** | 71.4 Mpps |
-| **Latency** | ~5-10 µs |
-| **MTU / Jumbo** | 9,216 bytes |
-| **Form Factor** | 1RU |
-| **OS** | Dell Networking OS (proprietary web/CLI managed) |
-| **Management** | Web GUI, CLI (console/telnet/SSH), SNMP |
-| **L2 Features** | VLAN (up to 256), LACP, STP/RSTP, port mirroring, IGMP snooping |
-| **L3 Features** | None (L2 only) |
-| **MC-LAG** | No |
-| **Stacking** | Yes (proprietary stacking ports/cables, up to 12 units) |
-| **Stack Bandwidth** | Up to 48 Gbps stacking backplane (model-dependent) |
-| **Class** | Prosumer / SMB |
-| **Released** | ~2007 |
-| **EOL** | ~2012 |
-| **Notes** | Basic 48-port GbE managed switch. No 10G uplinks (SFP is 1GbE only). Stackable for management simplification — up to 12 units managed as a single logical switch. Four units means 192 GbE ports if stacked. Stacking uses dedicated rear-panel ports and proprietary cables. |
-| | |
-| **— Power —** | |
-| System idle | ~30-35 W (single unit, no stacking, minimal links) |
-| System typical | ~45-55 W (single unit, 24-36 ports active) |
-| System maximum | ~65-75 W (single unit, all 48 GbE + 4 SFP active, full traffic) |
-| Per-port: GbE RJ45 (active) | ~0.3-0.5 W |
-| Per-port: SFP GbE optic | ~0.5-1 W |
-| Per-port: SFP empty | ~0 W |
-| Stacking module | ~5-8 W additional per unit when stacking active |
-| PoE | Not supported |
-| PSU | Internal, 100-240 VAC, non-redundant, non-hot-swap |
-| | |
-| **— Latency —** | |
-| Forwarding mode | Store-and-forward only |
-| GbE → GbE (64 B, same unit) | ~5-10 µs |
-| GbE → GbE (64 B, cross-stack) | ~15-25 µs (additional hop through stacking backplane) |
-| GbE → SFP (64 B) | ~5-10 µs |
-| With ACL / QoS | Negligible additional (hardware TCAM, limited depth) |
-| | |
-| **— L2 Features —** | |
-| VLANs | 802.1Q, up to 256 VLAN IDs |
-| Private VLAN | No |
-| Voice VLAN | Yes (auto-voice via LLDP-MED / OUI) |
-| Protocol-based VLAN | No / Not supported |
-| Q-in-Q (802.1ad) | No |
-| Trunking | 802.1Q tagged trunks, configurable native VLAN |
-| Trunk negotiation | Manual only (no DTP) |
-| STP | STP (802.1D), RSTP (802.1w); no MSTP |
-| STP convergence | RSTP: ~1-3s typical |
-| Storm control | Yes (broadcast / multicast / unknown-unicast) |
-| IGMP snooping | v1 / v2 |
-| LLDP | Yes |
-| MAC table | 8 K entries per unit |
-| | |
-| **— LAG —** | |
-| Static LAG | Yes |
-| LACP (802.3ad) | Yes |
-| Max groups | 6 per unit (18 for 3-unit stack) |
-| Max ports / group | 8 |
-| Hash modes | L2 (src/dst MAC), L3 (src/dst IP) |
-| Cross-stack LAG | Yes (when stacked, LAG members can span units) |
-| LAG failover | <50 ms with LACP |
-| Min-links | Not supported |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG | Not supported (stacking is single-chassis logical; no independent-chassis MC-LAG) |
-| | |
-| **— Security —** | |
-| 802.1X | Yes (port-based) |
-| ACLs | L2/L3 ACLs (MAC, IP-based); limited L4 |
-| DHCP snooping | Yes (basic) |
-| Port security | Yes (MAC limit / lockdown) |
-| MACsec (802.1AE) | No |
-| CoPP / CPU protection | Not supported |
-| RADIUS | Yes |
-| TACACS+ | No (2007-era Dell firmware; RADIUS only) |
-| SSH | Yes (v1/v2) |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 |
-| sFlow / NetFlow | No |
-| Port mirroring (SPAN) | Yes (local SPAN, 1 session per unit) |
-| RMON | Yes (groups 1, 2, 3, 9) |
-| Syslog | Yes |
-| NTP | Yes |
-| DNS | DNS client supported |
-| CLI | Yes (console serial, Telnet, SSH) |
+| Attribute                     | Value                                                                                                                                                                                                                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                     | 48x Gigabit RJ45 + 4x SFP combo (shared with 4 of the 48 RJ45)                                                                                                                                                                                                                |
+| **Switching Capacity**        | 96 Gbps                                                                                                                                                                                                                                                                       |
+| **Forwarding Rate**           | 71.4 Mpps                                                                                                                                                                                                                                                                     |
+| **Latency**                   | ~5-10 µs                                                                                                                                                                                                                                                                      |
+| **MTU / Jumbo**               | 9,216 bytes                                                                                                                                                                                                                                                                   |
+| **Form Factor**               | 1RU                                                                                                                                                                                                                                                                           |
+| **OS**                        | Dell Networking OS (proprietary web/CLI managed)                                                                                                                                                                                                                              |
+| **Management**                | Web GUI, CLI (console/telnet/SSH), SNMP                                                                                                                                                                                                                                       |
+| **L2 Features**               | VLAN (up to 256), LACP, STP/RSTP, port mirroring, IGMP snooping                                                                                                                                                                                                               |
+| **L3 Features**               | None (L2 only)                                                                                                                                                                                                                                                                |
+| **MC-LAG**                    | No                                                                                                                                                                                                                                                                            |
+| **Stacking**                  | Yes (proprietary stacking ports/cables, up to 12 units)                                                                                                                                                                                                                       |
+| **Stack Bandwidth**           | Up to 48 Gbps stacking backplane (model-dependent)                                                                                                                                                                                                                            |
+| **Class**                     | Prosumer / SMB                                                                                                                                                                                                                                                                |
+| **Released**                  | ~2007                                                                                                                                                                                                                                                                         |
+| **EOL**                       | ~2012                                                                                                                                                                                                                                                                         |
+| **Notes**                     | Basic 48-port GbE managed switch. No 10G uplinks (SFP is 1GbE only). Stackable for management simplification — up to 12 units managed as a single logical switch. Four units means 192 GbE ports if stacked. Stacking uses dedicated rear-panel ports and proprietary cables. |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— Power —**                 |                                                                                                                                                                                                                                                                               |
+| System idle                   | ~30-35 W (single unit, no stacking, minimal links)                                                                                                                                                                                                                            |
+| System typical                | ~45-55 W (single unit, 24-36 ports active)                                                                                                                                                                                                                                    |
+| System maximum                | ~65-75 W (single unit, all 48 GbE + 4 SFP active, full traffic)                                                                                                                                                                                                               |
+| Per-port: GbE RJ45 (active)   | ~0.3-0.5 W                                                                                                                                                                                                                                                                    |
+| Per-port: SFP GbE optic       | ~0.5-1 W                                                                                                                                                                                                                                                                      |
+| Per-port: SFP empty           | ~0 W                                                                                                                                                                                                                                                                          |
+| Stacking module               | ~5-8 W additional per unit when stacking active                                                                                                                                                                                                                               |
+| PoE                           | Not supported                                                                                                                                                                                                                                                                 |
+| PSU                           | Internal, 100-240 VAC, non-redundant, non-hot-swap                                                                                                                                                                                                                            |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— Latency —**               |                                                                                                                                                                                                                                                                               |
+| Forwarding mode               | Store-and-forward only                                                                                                                                                                                                                                                        |
+| GbE → GbE (64 B, same unit)   | ~5-10 µs                                                                                                                                                                                                                                                                      |
+| GbE → GbE (64 B, cross-stack) | ~15-25 µs (additional hop through stacking backplane)                                                                                                                                                                                                                         |
+| GbE → SFP (64 B)              | ~5-10 µs                                                                                                                                                                                                                                                                      |
+| With ACL / QoS                | Negligible additional (hardware TCAM, limited depth)                                                                                                                                                                                                                          |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— L2 Features —**           |                                                                                                                                                                                                                                                                               |
+| VLANs                         | 802.1Q, up to 256 VLAN IDs                                                                                                                                                                                                                                                    |
+| Private VLAN                  | No                                                                                                                                                                                                                                                                            |
+| Voice VLAN                    | Yes (auto-voice via LLDP-MED / OUI)                                                                                                                                                                                                                                           |
+| Protocol-based VLAN           | No / Not supported                                                                                                                                                                                                                                                            |
+| Q-in-Q (802.1ad)              | No                                                                                                                                                                                                                                                                            |
+| Trunking                      | 802.1Q tagged trunks, configurable native VLAN                                                                                                                                                                                                                                |
+| Trunk negotiation             | Manual only (no DTP)                                                                                                                                                                                                                                                          |
+| STP                           | STP (802.1D), RSTP (802.1w); no MSTP                                                                                                                                                                                                                                          |
+| STP convergence               | RSTP: ~1-3s typical                                                                                                                                                                                                                                                           |
+| Storm control                 | Yes (broadcast / multicast / unknown-unicast)                                                                                                                                                                                                                                 |
+| IGMP snooping                 | v1 / v2                                                                                                                                                                                                                                                                       |
+| LLDP                          | Yes                                                                                                                                                                                                                                                                           |
+| MAC table                     | 8 K entries per unit                                                                                                                                                                                                                                                          |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— LAG —**                   |                                                                                                                                                                                                                                                                               |
+| Static LAG                    | Yes                                                                                                                                                                                                                                                                           |
+| LACP (802.3ad)                | Yes                                                                                                                                                                                                                                                                           |
+| Max groups                    | 6 per unit (18 for 3-unit stack)                                                                                                                                                                                                                                              |
+| Max ports / group             | 8                                                                                                                                                                                                                                                                             |
+| Hash modes                    | L2 (src/dst MAC), L3 (src/dst IP)                                                                                                                                                                                                                                             |
+| Cross-stack LAG               | Yes (when stacked, LAG members can span units)                                                                                                                                                                                                                                |
+| LAG failover                  | <50 ms with LACP                                                                                                                                                                                                                                                              |
+| Min-links                     | Not supported                                                                                                                                                                                                                                                                 |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— MC-LAG —**                |                                                                                                                                                                                                                                                                               |
+| MC-LAG                        | Not supported (stacking is single-chassis logical; no independent-chassis MC-LAG)                                                                                                                                                                                             |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— Security —**              |                                                                                                                                                                                                                                                                               |
+| 802.1X                        | Yes (port-based)                                                                                                                                                                                                                                                              |
+| ACLs                          | L2/L3 ACLs (MAC, IP-based); limited L4                                                                                                                                                                                                                                        |
+| DHCP snooping                 | Yes (basic)                                                                                                                                                                                                                                                                   |
+| Port security                 | Yes (MAC limit / lockdown)                                                                                                                                                                                                                                                    |
+| MACsec (802.1AE)              | No                                                                                                                                                                                                                                                                            |
+| CoPP / CPU protection         | Not supported                                                                                                                                                                                                                                                                 |
+| RADIUS                        | Yes                                                                                                                                                                                                                                                                           |
+| TACACS+                       | No (2007-era Dell firmware; RADIUS only)                                                                                                                                                                                                                                      |
+| SSH                           | Yes (v1/v2)                                                                                                                                                                                                                                                                   |
+|                               |                                                                                                                                                                                                                                                                               |
+| **— Monitoring —**            |                                                                                                                                                                                                                                                                               |
+| SNMP                          | v1, v2c, v3                                                                                                                                                                                                                                                                   |
+| sFlow / NetFlow               | No                                                                                                                                                                                                                                                                            |
+| Port mirroring (SPAN)         | Yes (local SPAN, 1 session per unit)                                                                                                                                                                                                                                          |
+| RMON                          | Yes (groups 1, 2, 3, 9)                                                                                                                                                                                                                                                       |
+| Syslog                        | Yes                                                                                                                                                                                                                                                                           |
+| NTP                           | Yes                                                                                                                                                                                                                                                                           |
+| DNS                           | DNS client supported                                                                                                                                                                                                                                                          |
+| CLI                           | Yes (console serial, Telnet, SSH)                                                                                                                                                                                                                                             |
 
 ---
 
 ### Cisco SG300-52 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 50x Gigabit RJ45 + 2x combo GbE/SFP |
-| **Switching Capacity** | 104 Gbps |
-| **Forwarding Rate** | 77.4 Mpps |
-| **Latency** | ~5-10 us |
-| **MTU / Jumbo** | 9,000 bytes |
-| **Form Factor** | 1RU |
-| **OS** | Cisco Small Business firmware |
-| **Management** | Web GUI, CLI (console/telnet/SSH), SNMP v1/v2c/v3 |
-| **L2 Features** | VLAN (4094), LACP (8 groups), STP/RSTP/MSTP, port mirroring, IGMP snooping |
-| **L3 Features** | Static routing (IPv4/IPv6), inter-VLAN routing (with L3 mode enabled) |
-| **MC-LAG** | No |
-| **Stacking** | No |
-| **Security** | 802.1X, RADIUS, TACACS+, ACLs (L2-L4), DHCP snooping, ARP inspection |
-| **Class** | SMB |
-| **Released** | ~2010 |
-| **EOL** | ~2017 |
-| **Notes** | Cisco Small Business line (not Catalyst). Decent L2/L3-lite switch. Can do inter-VLAN routing in L3 mode (limited static routes, no dynamic routing). 52 ports total is good density. No 10G. Separate product line from enterprise Catalyst. |
-| | |
-| **— Power —** | |
-| System idle | ~15-20 W (no traffic, all ports link-down) |
-| System typical | ~35-42 W (mixed GbE traffic, ~30-40 ports linked) |
-| System max | ~55-60 W (all 52 ports active, full traffic) |
-| Per-port RJ45 (GbE link) | ~0.3-0.5 W |
-| Per-port SFP (1G optic) | ~0.5-1 W |
-| Per-port SFP (empty) | ~0 W |
-| PoE | Not supported (SG300-52 is non-PoE; SG300-52P/MP for PoE) |
-| PSU | Internal 100-240 VAC, single, non-redundant |
-| PSU efficiency | ~85% typical |
-| | |
-| **— Latency —** | |
-| Forwarding mode | Store-and-forward (only mode) |
-| Baseline (GbE copper, 64 B) | ~5-8 µs |
-| SFP 1G port | ~3-5 µs |
-| L3 forwarding penalty | Negligible (hardware-routed static routes) |
-| ACL penalty | Negligible (TCAM-based in hardware) |
-| | |
-| **— L2 Features —** | |
-| VLAN range | 802.1Q, 4094 VLAN IDs |
-| Max active VLANs | 4094 |
-| Private VLAN | Yes (community, isolated) |
-| Voice VLAN | Yes (auto via LLDP-MED / CDP) |
-| Protocol-based VLAN | No |
-| Q-in-Q | No |
-| Trunking | 802.1Q tagged, native VLAN configurable, general/access/trunk modes |
-| Trunk negotiation | Manual only (no DTP — Cisco Small Business line does not support DTP) |
-| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
-| STP instances | MSTP: 8 instances |
-| STP convergence | RSTP: ~1-3s; MSTP: ~1-5s |
-| BPDU guard / root guard | Yes / Yes |
-| Storm control | Yes (broadcast/multicast/unknown-unicast, rate-based per port) |
-| IGMP snooping | v1/v2/v3 with querier |
-| MLD snooping | Yes (IPv6) |
-| LLDP / LLDP-MED | Yes / Yes |
-| MAC table | 16K entries |
-| Jumbo frames | 9,000 bytes |
-| | |
-| **— LAG / LACP —** | |
-| Static LAG | Yes |
-| LACP (802.3ad) | Yes |
-| Max LAG groups | 8 |
-| Max ports per LAG | 8 |
-| Load-balance hash | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port) |
-| Cross-stack LAG | N/A (no stacking) |
-| LAG failover | <50 ms with LACP |
-| Min-links | Not supported |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG | Not supported |
-| | |
-| **— L3 Routing —** | |
-| Mode | L3-lite: must enable "L3 mode" in firmware (dual L2/L3 firmware image) |
-| Static routes | Up to 128 (IPv4), 128 (IPv6) |
-| IP interfaces | Up to 64 (VLAN-based SVI) |
-| Inter-VLAN routing | Yes (hardware forwarded) |
-| Dynamic routing | None (no OSPF/BGP/RIP/EIGRP) |
-| DHCP relay | Yes |
-| DHCP server | Yes (basic, for small networks) |
-| ARP table | 1024 entries |
-| | |
-| **— Security —** | |
-| 802.1X | Yes (port-based, single/multi/multi-session modes) |
-| RADIUS | Yes (authentication, accounting) |
-| TACACS+ | Yes |
-| ACLs | L2 (MAC-based), L3/L4 (IP-based, TCP/UDP port) |
-| ACL capacity | ~256-512 entries (TCAM) |
-| DHCP snooping | Yes |
-| Dynamic ARP inspection | Yes |
-| IP source guard | Yes |
-| Port security | Yes (MAC limiting, sticky MAC) |
-| DoS prevention | Yes (basic SYN/ICMP/fragment protection) |
-| MACsec | No |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 (auth + privacy) |
-| RMON | Yes (groups 1, 2, 3, 9) |
-| SPAN | Yes (local port mirroring, 1 session) |
-| RSPAN | No |
-| sFlow / NetFlow | No |
-| Syslog | Yes (to remote server) |
-| NTP | Yes (client + SNTP) |
-| CLI | Yes (console serial, Telnet, SSH) |
+| Attribute                   | Value                                                                                                                                                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                   | 50x Gigabit RJ45 + 2x combo GbE/SFP                                                                                                                                                                                                           |
+| **Switching Capacity**      | 104 Gbps                                                                                                                                                                                                                                      |
+| **Forwarding Rate**         | 77.4 Mpps                                                                                                                                                                                                                                     |
+| **Latency**                 | ~5-10 us                                                                                                                                                                                                                                      |
+| **MTU / Jumbo**             | 9,000 bytes                                                                                                                                                                                                                                   |
+| **Form Factor**             | 1RU                                                                                                                                                                                                                                           |
+| **OS**                      | Cisco Small Business firmware                                                                                                                                                                                                                 |
+| **Management**              | Web GUI, CLI (console/telnet/SSH), SNMP v1/v2c/v3                                                                                                                                                                                             |
+| **L2 Features**             | VLAN (4094), LACP (8 groups), STP/RSTP/MSTP, port mirroring, IGMP snooping                                                                                                                                                                    |
+| **L3 Features**             | Static routing (IPv4/IPv6), inter-VLAN routing (with L3 mode enabled)                                                                                                                                                                         |
+| **MC-LAG**                  | No                                                                                                                                                                                                                                            |
+| **Stacking**                | No                                                                                                                                                                                                                                            |
+| **Security**                | 802.1X, RADIUS, TACACS+, ACLs (L2-L4), DHCP snooping, ARP inspection                                                                                                                                                                          |
+| **Class**                   | SMB                                                                                                                                                                                                                                           |
+| **Released**                | ~2010                                                                                                                                                                                                                                         |
+| **EOL**                     | ~2017                                                                                                                                                                                                                                         |
+| **Notes**                   | Cisco Small Business line (not Catalyst). Decent L2/L3-lite switch. Can do inter-VLAN routing in L3 mode (limited static routes, no dynamic routing). 52 ports total is good density. No 10G. Separate product line from enterprise Catalyst. |
+|                             |                                                                                                                                                                                                                                               |
+| **— Power —**               |                                                                                                                                                                                                                                               |
+| System idle                 | ~15-20 W (no traffic, all ports link-down)                                                                                                                                                                                                    |
+| System typical              | ~35-42 W (mixed GbE traffic, ~30-40 ports linked)                                                                                                                                                                                             |
+| System max                  | ~55-60 W (all 52 ports active, full traffic)                                                                                                                                                                                                  |
+| Per-port RJ45 (GbE link)    | ~0.3-0.5 W                                                                                                                                                                                                                                    |
+| Per-port SFP (1G optic)     | ~0.5-1 W                                                                                                                                                                                                                                      |
+| Per-port SFP (empty)        | ~0 W                                                                                                                                                                                                                                          |
+| PoE                         | Not supported (SG300-52 is non-PoE; SG300-52P/MP for PoE)                                                                                                                                                                                     |
+| PSU                         | Internal 100-240 VAC, single, non-redundant                                                                                                                                                                                                   |
+| PSU efficiency              | ~85% typical                                                                                                                                                                                                                                  |
+|                             |                                                                                                                                                                                                                                               |
+| **— Latency —**             |                                                                                                                                                                                                                                               |
+| Forwarding mode             | Store-and-forward (only mode)                                                                                                                                                                                                                 |
+| Baseline (GbE copper, 64 B) | ~5-8 µs                                                                                                                                                                                                                                       |
+| SFP 1G port                 | ~3-5 µs                                                                                                                                                                                                                                       |
+| L3 forwarding penalty       | Negligible (hardware-routed static routes)                                                                                                                                                                                                    |
+| ACL penalty                 | Negligible (TCAM-based in hardware)                                                                                                                                                                                                           |
+|                             |                                                                                                                                                                                                                                               |
+| **— L2 Features —**         |                                                                                                                                                                                                                                               |
+| VLAN range                  | 802.1Q, 4094 VLAN IDs                                                                                                                                                                                                                         |
+| Max active VLANs            | 4094                                                                                                                                                                                                                                          |
+| Private VLAN                | Yes (community, isolated)                                                                                                                                                                                                                     |
+| Voice VLAN                  | Yes (auto via LLDP-MED / CDP)                                                                                                                                                                                                                 |
+| Protocol-based VLAN         | No                                                                                                                                                                                                                                            |
+| Q-in-Q                      | No                                                                                                                                                                                                                                            |
+| Trunking                    | 802.1Q tagged, native VLAN configurable, general/access/trunk modes                                                                                                                                                                           |
+| Trunk negotiation           | Manual only (no DTP — Cisco Small Business line does not support DTP)                                                                                                                                                                         |
+| STP                         | STP (802.1D), RSTP (802.1w), MSTP (802.1s)                                                                                                                                                                                                    |
+| STP instances               | MSTP: 8 instances                                                                                                                                                                                                                             |
+| STP convergence             | RSTP: ~1-3s; MSTP: ~1-5s                                                                                                                                                                                                                      |
+| BPDU guard / root guard     | Yes / Yes                                                                                                                                                                                                                                     |
+| Storm control               | Yes (broadcast/multicast/unknown-unicast, rate-based per port)                                                                                                                                                                                |
+| IGMP snooping               | v1/v2/v3 with querier                                                                                                                                                                                                                         |
+| MLD snooping                | Yes (IPv6)                                                                                                                                                                                                                                    |
+| LLDP / LLDP-MED             | Yes / Yes                                                                                                                                                                                                                                     |
+| MAC table                   | 16K entries                                                                                                                                                                                                                                   |
+| Jumbo frames                | 9,000 bytes                                                                                                                                                                                                                                   |
+|                             |                                                                                                                                                                                                                                               |
+| **— LAG / LACP —**          |                                                                                                                                                                                                                                               |
+| Static LAG                  | Yes                                                                                                                                                                                                                                           |
+| LACP (802.3ad)              | Yes                                                                                                                                                                                                                                           |
+| Max LAG groups              | 8                                                                                                                                                                                                                                             |
+| Max ports per LAG           | 8                                                                                                                                                                                                                                             |
+| Load-balance hash           | L2 (src/dst MAC), L3 (src/dst IP), L4 (src/dst port)                                                                                                                                                                                          |
+| Cross-stack LAG             | N/A (no stacking)                                                                                                                                                                                                                             |
+| LAG failover                | <50 ms with LACP                                                                                                                                                                                                                              |
+| Min-links                   | Not supported                                                                                                                                                                                                                                 |
+|                             |                                                                                                                                                                                                                                               |
+| **— MC-LAG —**              |                                                                                                                                                                                                                                               |
+| MC-LAG                      | Not supported                                                                                                                                                                                                                                 |
+|                             |                                                                                                                                                                                                                                               |
+| **— L3 Routing —**          |                                                                                                                                                                                                                                               |
+| Mode                        | L3-lite: must enable "L3 mode" in firmware (dual L2/L3 firmware image)                                                                                                                                                                        |
+| Static routes               | Up to 128 (IPv4), 128 (IPv6)                                                                                                                                                                                                                  |
+| IP interfaces               | Up to 64 (VLAN-based SVI)                                                                                                                                                                                                                     |
+| Inter-VLAN routing          | Yes (hardware forwarded)                                                                                                                                                                                                                      |
+| Dynamic routing             | None (no OSPF/BGP/RIP/EIGRP)                                                                                                                                                                                                                  |
+| DHCP relay                  | Yes                                                                                                                                                                                                                                           |
+| DHCP server                 | Yes (basic, for small networks)                                                                                                                                                                                                               |
+| ARP table                   | 1024 entries                                                                                                                                                                                                                                  |
+|                             |                                                                                                                                                                                                                                               |
+| **— Security —**            |                                                                                                                                                                                                                                               |
+| 802.1X                      | Yes (port-based, single/multi/multi-session modes)                                                                                                                                                                                            |
+| RADIUS                      | Yes (authentication, accounting)                                                                                                                                                                                                              |
+| TACACS+                     | Yes                                                                                                                                                                                                                                           |
+| ACLs                        | L2 (MAC-based), L3/L4 (IP-based, TCP/UDP port)                                                                                                                                                                                                |
+| ACL capacity                | ~256-512 entries (TCAM)                                                                                                                                                                                                                       |
+| DHCP snooping               | Yes                                                                                                                                                                                                                                           |
+| Dynamic ARP inspection      | Yes                                                                                                                                                                                                                                           |
+| IP source guard             | Yes                                                                                                                                                                                                                                           |
+| Port security               | Yes (MAC limiting, sticky MAC)                                                                                                                                                                                                                |
+| DoS prevention              | Yes (basic SYN/ICMP/fragment protection)                                                                                                                                                                                                      |
+| MACsec                      | No                                                                                                                                                                                                                                            |
+|                             |                                                                                                                                                                                                                                               |
+| **— Monitoring —**          |                                                                                                                                                                                                                                               |
+| SNMP                        | v1, v2c, v3 (auth + privacy)                                                                                                                                                                                                                  |
+| RMON                        | Yes (groups 1, 2, 3, 9)                                                                                                                                                                                                                       |
+| SPAN                        | Yes (local port mirroring, 1 session)                                                                                                                                                                                                         |
+| RSPAN                       | No                                                                                                                                                                                                                                            |
+| sFlow / NetFlow             | No                                                                                                                                                                                                                                            |
+| Syslog                      | Yes (to remote server)                                                                                                                                                                                                                        |
+| NTP                         | Yes (client + SNTP)                                                                                                                                                                                                                           |
+| CLI                         | Yes (console serial, Telnet, SSH)                                                                                                                                                                                                             |
 
 ---
 
 ### NETGEAR ProSAFE GS116E (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 16x Gigabit RJ45 |
-| **Switching Capacity** | 32 Gbps |
-| **Forwarding Rate** | 23.8 Mpps |
-| **Latency** | ~3-5 us |
-| **MTU / Jumbo** | 9,216 bytes |
-| **Form Factor** | Desktop (wall-mountable, not rackmount) |
-| **OS** | Netgear Plus firmware |
-| **Management** | Web GUI (ProSafe Plus utility), limited SNMP |
-| **L2 Features** | VLAN (up to 64), basic QoS (802.1p), IGMP snooping, port mirroring |
-| **L3 Features** | None |
-| **MC-LAG** | No |
-| **LACP** | No |
-| **Stacking** | No |
-| **Class** | Consumer / Prosumer (Plus managed) |
-| **Released** | ~2013 |
-| **Status** | Discontinued (replaced by GS116Ev2/GS316E) |
-| **Notes** | Basic "Plus" managed switch - step above unmanaged but far below fully managed. No CLI, no LACP, limited VLAN support. Fanless, silent, low power (~8W). Best suited as a desk/lab switch or for extending ports in low-traffic areas. |
-| | |
-| **— Power —** | |
-| System idle | ~5 W (external 12 V DC adapter, no traffic) |
-| System typical | ~7-8 W (mixed GbE traffic) |
-| System max | ~10 W (all 16 ports active, wire-rate traffic) |
-| Per-port RJ45 (GbE link) | ~0.3-0.5 W (integrated switch SoC) |
-| PoE | Not supported |
-| PSU | External 12 V / 1 A DC adapter (not field-replaceable) |
-| | |
-| **— Latency —** | |
-| Forwarding mode | Store-and-forward (only mode) |
-| Baseline (GbE, 64 B) | ~3-5 µs |
-| | |
-| **— L2 Features —** | |
-| VLAN range | 802.1Q, up to 64 VLAN IDs |
-| Max active VLANs | 64 |
-| Private VLAN | No |
-| Voice VLAN | No |
-| Q-in-Q | No |
-| Trunking | 802.1Q tagged (limited; "Plus" web GUI config only) |
-| STP | No (basic loop detection only — not standards-based STP/RSTP) |
-| Storm control | Basic (broadcast on/off per port, no granular rate) |
-| IGMP snooping | Yes (v1/v2) |
-| LLDP | No |
-| MAC table | 4K entries |
-| Jumbo frames | 9,216 bytes |
-| | |
-| **— LAG / LACP —** | |
-| Static LAG | No |
-| LACP (802.3ad) | No |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG | Not supported |
-| | |
-| **— Security —** | |
-| 802.1X | No |
-| RADIUS / TACACS+ | No |
-| ACLs | No |
-| DHCP snooping | No |
-| Port security | No (no MAC limiting) |
-| MACsec | No |
-| | |
-| **— Monitoring —** | |
-| SNMP | Limited (v1/v2c; no v3) |
-| sFlow / NetFlow | No |
-| Port mirroring | Yes (1 session, local) |
-| Syslog | No |
-| NTP | No |
-| CLI | No (ProSafe Plus web utility only) |
+| Attribute                | Value                                                                                                                                                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                | 16x Gigabit RJ45                                                                                                                                                                                                                       |
+| **Switching Capacity**   | 32 Gbps                                                                                                                                                                                                                                |
+| **Forwarding Rate**      | 23.8 Mpps                                                                                                                                                                                                                              |
+| **Latency**              | ~3-5 us                                                                                                                                                                                                                                |
+| **MTU / Jumbo**          | 9,216 bytes                                                                                                                                                                                                                            |
+| **Form Factor**          | Desktop (wall-mountable, not rackmount)                                                                                                                                                                                                |
+| **OS**                   | Netgear Plus firmware                                                                                                                                                                                                                  |
+| **Management**           | Web GUI (ProSafe Plus utility), limited SNMP                                                                                                                                                                                           |
+| **L2 Features**          | VLAN (up to 64), basic QoS (802.1p), IGMP snooping, port mirroring                                                                                                                                                                     |
+| **L3 Features**          | None                                                                                                                                                                                                                                   |
+| **MC-LAG**               | No                                                                                                                                                                                                                                     |
+| **LACP**                 | No                                                                                                                                                                                                                                     |
+| **Stacking**             | No                                                                                                                                                                                                                                     |
+| **Class**                | Consumer / Prosumer (Plus managed)                                                                                                                                                                                                     |
+| **Released**             | ~2013                                                                                                                                                                                                                                  |
+| **Status**               | Discontinued (replaced by GS116Ev2/GS316E)                                                                                                                                                                                             |
+| **Notes**                | Basic "Plus" managed switch - step above unmanaged but far below fully managed. No CLI, no LACP, limited VLAN support. Fanless, silent, low power (~8W). Best suited as a desk/lab switch or for extending ports in low-traffic areas. |
+|                          |                                                                                                                                                                                                                                        |
+| **— Power —**            |                                                                                                                                                                                                                                        |
+| System idle              | ~5 W (external 12 V DC adapter, no traffic)                                                                                                                                                                                            |
+| System typical           | ~7-8 W (mixed GbE traffic)                                                                                                                                                                                                             |
+| System max               | ~10 W (all 16 ports active, wire-rate traffic)                                                                                                                                                                                         |
+| Per-port RJ45 (GbE link) | ~0.3-0.5 W (integrated switch SoC)                                                                                                                                                                                                     |
+| PoE                      | Not supported                                                                                                                                                                                                                          |
+| PSU                      | External 12 V / 1 A DC adapter (not field-replaceable)                                                                                                                                                                                 |
+|                          |                                                                                                                                                                                                                                        |
+| **— Latency —**          |                                                                                                                                                                                                                                        |
+| Forwarding mode          | Store-and-forward (only mode)                                                                                                                                                                                                          |
+| Baseline (GbE, 64 B)     | ~3-5 µs                                                                                                                                                                                                                                |
+|                          |                                                                                                                                                                                                                                        |
+| **— L2 Features —**      |                                                                                                                                                                                                                                        |
+| VLAN range               | 802.1Q, up to 64 VLAN IDs                                                                                                                                                                                                              |
+| Max active VLANs         | 64                                                                                                                                                                                                                                     |
+| Private VLAN             | No                                                                                                                                                                                                                                     |
+| Voice VLAN               | No                                                                                                                                                                                                                                     |
+| Q-in-Q                   | No                                                                                                                                                                                                                                     |
+| Trunking                 | 802.1Q tagged (limited; "Plus" web GUI config only)                                                                                                                                                                                    |
+| STP                      | No (basic loop detection only — not standards-based STP/RSTP)                                                                                                                                                                          |
+| Storm control            | Basic (broadcast on/off per port, no granular rate)                                                                                                                                                                                    |
+| IGMP snooping            | Yes (v1/v2)                                                                                                                                                                                                                            |
+| LLDP                     | No                                                                                                                                                                                                                                     |
+| MAC table                | 4K entries                                                                                                                                                                                                                             |
+| Jumbo frames             | 9,216 bytes                                                                                                                                                                                                                            |
+|                          |                                                                                                                                                                                                                                        |
+| **— LAG / LACP —**       |                                                                                                                                                                                                                                        |
+| Static LAG               | No                                                                                                                                                                                                                                     |
+| LACP (802.3ad)           | No                                                                                                                                                                                                                                     |
+|                          |                                                                                                                                                                                                                                        |
+| **— MC-LAG —**           |                                                                                                                                                                                                                                        |
+| MC-LAG                   | Not supported                                                                                                                                                                                                                          |
+|                          |                                                                                                                                                                                                                                        |
+| **— Security —**         |                                                                                                                                                                                                                                        |
+| 802.1X                   | No                                                                                                                                                                                                                                     |
+| RADIUS / TACACS+         | No                                                                                                                                                                                                                                     |
+| ACLs                     | No                                                                                                                                                                                                                                     |
+| DHCP snooping            | No                                                                                                                                                                                                                                     |
+| Port security            | No (no MAC limiting)                                                                                                                                                                                                                   |
+| MACsec                   | No                                                                                                                                                                                                                                     |
+|                          |                                                                                                                                                                                                                                        |
+| **— Monitoring —**       |                                                                                                                                                                                                                                        |
+| SNMP                     | Limited (v1/v2c; no v3)                                                                                                                                                                                                                |
+| sFlow / NetFlow          | No                                                                                                                                                                                                                                     |
+| Port mirroring           | Yes (1 session, local)                                                                                                                                                                                                                 |
+| Syslog                   | No                                                                                                                                                                                                                                     |
+| NTP                      | No                                                                                                                                                                                                                                     |
+| CLI                      | No (ProSafe Plus web utility only)                                                                                                                                                                                                     |
 
 ---
 
@@ -1941,201 +1942,201 @@
 
 ### Cisco Catalyst 3560 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | Model-dependent: typically 24x or 48x GbE RJ45 + 4x SFP 1GbE (3560G models) |
-| **Switching Capacity** | Up to 32/68 Gbps (model dependent) |
-| **Forwarding Rate** | Up to 38.7/65.5 Mpps |
-| **Latency** | ~3-6 us |
-| **MTU / Jumbo** | 9,198 bytes |
-| **Form Factor** | 1RU |
-| **OS** | Cisco IOS (IP Base or IP Services license) |
-| **Management** | CLI (console/telnet/SSH), SNMP, web GUI (optional) |
-| **L2 Features** | VLAN (4094), LACP, STP/RSTP/MSTP, port security, storm control |
-| **L3 Features** | Full L3 routing with IP Services: OSPF, EIGRP, BGP, static, PBR, HSRP/VRRP, inter-VLAN routing |
-| **MC-LAG** | No |
-| **PoE** | Model-dependent (3560-xxPS models have PoE) |
-| **Stacking** | No (3560 is standalone; 3750 is the stackable variant) |
-| **Class** | Enterprise |
-| **Released** | ~2004 (3560), ~2006 (3560G), ~2010 (3560X) |
-| **EOL** | 3560: ~2008, 3560G: ~2012, 3560X: ~2016 |
-| **Notes** | Classic Cisco enterprise L3 switch. The 3560 series spans multiple hardware generations. With IP Services license, it's a full L3 router-switch. Without exact model number, specs are approximate. The "G" suffix means Gigabit throughout; original 3560 had FastEthernet models. |
-| | |
-| **— Power —** | |
-| System Idle (non-PoE) | ~25–30 W |
-| Typical Load (non-PoE) | ~35–50 W |
-| Max Draw (non-PoE) | ~60–80 W |
-| Max Draw (PoE models) | Up to ~370 W (3560-48PS with full PoE load) |
-| Per-Port GbE (RJ45) | ~0.3–0.5 W |
-| Per-Port SFP | ~0.5–1.0 W |
-| PoE | Model-dependent; 3560-xxPS models support 802.3af (15.4 W/port); no 802.3at |
-| PoE Budget | 370 W (3560-48PS), 370 W (3560-24PS) |
-| PSU | Internal AC, non-redundant (most models); RPS 2300 external redundancy option |
-| | |
-| **— Latency —** | |
-| Forwarding Mode | Store-and-forward |
-| GbE RJ45 Baseline | ~3–6 µs (64-byte frames) |
-| SFP 1GbE Baseline | ~2–4 µs (64-byte frames) |
-| L3 Forwarding Penalty | Negligible (hardware CEF in ASIC) |
-| ACL Processing Penalty | Negligible (TCAM-based lookup) |
-| | |
-| **— L2 Features —** | |
-| VLAN Range | Up to 4094 |
-| Private VLAN | Yes (community, isolated, promiscuous) |
-| Voice VLAN | Yes (auto-detection via CDP/LLDP) |
-| Q-in-Q (802.1ad) | No (not supported on most 3560 models) |
-| Trunking | 802.1Q, ISL |
-| STP | STP (802.1D), RSTP (802.1w), MSTP (802.1s) |
-| STP Enhancements | BPDU Guard, BPDU Filter, Root Guard, Loop Guard, UplinkFast, BackboneFast |
-| Storm Control | Yes (broadcast, multicast, unicast; threshold-based) |
-| IGMP Snooping | Yes (v1/v2/v3), MVR |
-| LLDP | Yes (transmit, receive, MED) |
-| MAC Address Table | ~12K entries |
-| Jumbo Frames | Up to 9198 bytes |
-| | |
-| **— LAG / LACP —** | |
-| Mode | Static (on) + LACP (802.3ad) |
-| Max Port-Channel Groups | Up to 48 (IOS version dependent) |
-| Max Ports per Group | 8 active |
-| Hash Algorithm | L2 (src-dst-mac), L3 (src-dst-ip), L4 (src-dst-port); src-dst-ip default |
-| Cross-Stack LAG | No (3560 is non-stackable) |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG Support | Not supported |
-| | |
-| **— FHRP —** | |
-| HSRP | v1 and v2 |
-| VRRP | Yes (requires IP Services license) |
-| GLBP | Yes (requires IP Services license) |
-| Preemption | Configurable (all protocols) |
-| Timers | Tunable (hello/hold intervals) |
-| Object Tracking | Yes (interface, IP route, IP SLA) |
-| | |
-| **— L3 Routing —** | |
-| Static Routing | Yes |
-| OSPF | v2 (IPv4), v3 (IPv6) — requires IP Services |
-| EIGRP | Yes (requires IP Services) |
-| BGP | Yes (requires IP Services; limited scale) |
-| RIP | v1/v2 |
-| PBR | Yes (policy-based routing) |
-| VRF-Lite | Yes |
-| Inter-VLAN Routing | Yes (via SVI) |
-| DHCP Relay | Yes |
-| DHCP Server | Yes (embedded IOS DHCP server) |
-| ARP Table | ~8K entries |
-| Unicast Routes (TCAM) | Up to ~11K (SDM template dependent) |
-| ECMP | Up to 8 equal-cost paths |
-| | |
-| **— Security —** | |
-| 802.1X | Yes (single-host, multi-auth, multi-domain) |
-| RADIUS | Yes |
-| TACACS+ | Yes |
-| ACLs | L2–L4 standard/extended (TCAM-based, hardware-accelerated) |
-| DHCP Snooping | Yes |
-| Dynamic ARP Inspection | Yes (DAI) |
-| IP Source Guard | Yes |
-| Port Security | Yes (sticky MAC, max MAC limit, violation actions) |
-| MACsec (802.1AE) | No |
-| CoPP | Limited (no full CoPP; CPU rate-limiters available) |
-| Private VLAN | Yes |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 |
-| RMON | Groups 1, 2, 3, 9 |
-| SPAN / RSPAN | Yes (local SPAN and remote SPAN) |
-| NetFlow | Limited (supported on some models/IOS versions) |
-| Syslog | Yes |
-| NTP | Yes (client and server) |
-| IP SLA | Yes (responder and initiator) |
-| EEM | Yes (Embedded Event Manager, applet and Tcl) |
-| CLI | Yes (console, SSH v2, Telnet) |
+| Attribute               | Value                                                                                                                                                                                                                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**               | Model-dependent: typically 24x or 48x GbE RJ45 + 4x SFP 1GbE (3560G models)                                                                                                                                                                                                         |
+| **Switching Capacity**  | Up to 32/68 Gbps (model dependent)                                                                                                                                                                                                                                                  |
+| **Forwarding Rate**     | Up to 38.7/65.5 Mpps                                                                                                                                                                                                                                                                |
+| **Latency**             | ~3-6 us                                                                                                                                                                                                                                                                             |
+| **MTU / Jumbo**         | 9,198 bytes                                                                                                                                                                                                                                                                         |
+| **Form Factor**         | 1RU                                                                                                                                                                                                                                                                                 |
+| **OS**                  | Cisco IOS (IP Base or IP Services license)                                                                                                                                                                                                                                          |
+| **Management**          | CLI (console/telnet/SSH), SNMP, web GUI (optional)                                                                                                                                                                                                                                  |
+| **L2 Features**         | VLAN (4094), LACP, STP/RSTP/MSTP, port security, storm control                                                                                                                                                                                                                      |
+| **L3 Features**         | Full L3 routing with IP Services: OSPF, EIGRP, BGP, static, PBR, HSRP/VRRP, inter-VLAN routing                                                                                                                                                                                      |
+| **MC-LAG**              | No                                                                                                                                                                                                                                                                                  |
+| **PoE**                 | Model-dependent (3560-xxPS models have PoE)                                                                                                                                                                                                                                         |
+| **Stacking**            | No (3560 is standalone; 3750 is the stackable variant)                                                                                                                                                                                                                              |
+| **Class**               | Enterprise                                                                                                                                                                                                                                                                          |
+| **Released**            | ~2004 (3560), ~2006 (3560G), ~2010 (3560X)                                                                                                                                                                                                                                          |
+| **EOL**                 | 3560: ~2008, 3560G: ~2012, 3560X: ~2016                                                                                                                                                                                                                                             |
+| **Notes**               | Classic Cisco enterprise L3 switch. The 3560 series spans multiple hardware generations. With IP Services license, it's a full L3 router-switch. Without exact model number, specs are approximate. The "G" suffix means Gigabit throughout; original 3560 had FastEthernet models. |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— Power —**           |                                                                                                                                                                                                                                                                                     |
+| System Idle (non-PoE)   | ~25–30 W                                                                                                                                                                                                                                                                            |
+| Typical Load (non-PoE)  | ~35–50 W                                                                                                                                                                                                                                                                            |
+| Max Draw (non-PoE)      | ~60–80 W                                                                                                                                                                                                                                                                            |
+| Max Draw (PoE models)   | Up to ~370 W (3560-48PS with full PoE load)                                                                                                                                                                                                                                         |
+| Per-Port GbE (RJ45)     | ~0.3–0.5 W                                                                                                                                                                                                                                                                          |
+| Per-Port SFP            | ~0.5–1.0 W                                                                                                                                                                                                                                                                          |
+| PoE                     | Model-dependent; 3560-xxPS models support 802.3af (15.4 W/port); no 802.3at                                                                                                                                                                                                         |
+| PoE Budget              | 370 W (3560-48PS), 370 W (3560-24PS)                                                                                                                                                                                                                                                |
+| PSU                     | Internal AC, non-redundant (most models); RPS 2300 external redundancy option                                                                                                                                                                                                       |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— Latency —**         |                                                                                                                                                                                                                                                                                     |
+| Forwarding Mode         | Store-and-forward                                                                                                                                                                                                                                                                   |
+| GbE RJ45 Baseline       | ~3–6 µs (64-byte frames)                                                                                                                                                                                                                                                            |
+| SFP 1GbE Baseline       | ~2–4 µs (64-byte frames)                                                                                                                                                                                                                                                            |
+| L3 Forwarding Penalty   | Negligible (hardware CEF in ASIC)                                                                                                                                                                                                                                                   |
+| ACL Processing Penalty  | Negligible (TCAM-based lookup)                                                                                                                                                                                                                                                      |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— L2 Features —**     |                                                                                                                                                                                                                                                                                     |
+| VLAN Range              | Up to 4094                                                                                                                                                                                                                                                                          |
+| Private VLAN            | Yes (community, isolated, promiscuous)                                                                                                                                                                                                                                              |
+| Voice VLAN              | Yes (auto-detection via CDP/LLDP)                                                                                                                                                                                                                                                   |
+| Q-in-Q (802.1ad)        | No (not supported on most 3560 models)                                                                                                                                                                                                                                              |
+| Trunking                | 802.1Q, ISL                                                                                                                                                                                                                                                                         |
+| STP                     | STP (802.1D), RSTP (802.1w), MSTP (802.1s)                                                                                                                                                                                                                                          |
+| STP Enhancements        | BPDU Guard, BPDU Filter, Root Guard, Loop Guard, UplinkFast, BackboneFast                                                                                                                                                                                                           |
+| Storm Control           | Yes (broadcast, multicast, unicast; threshold-based)                                                                                                                                                                                                                                |
+| IGMP Snooping           | Yes (v1/v2/v3), MVR                                                                                                                                                                                                                                                                 |
+| LLDP                    | Yes (transmit, receive, MED)                                                                                                                                                                                                                                                        |
+| MAC Address Table       | ~12K entries                                                                                                                                                                                                                                                                        |
+| Jumbo Frames            | Up to 9198 bytes                                                                                                                                                                                                                                                                    |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— LAG / LACP —**      |                                                                                                                                                                                                                                                                                     |
+| Mode                    | Static (on) + LACP (802.3ad)                                                                                                                                                                                                                                                        |
+| Max Port-Channel Groups | Up to 48 (IOS version dependent)                                                                                                                                                                                                                                                    |
+| Max Ports per Group     | 8 active                                                                                                                                                                                                                                                                            |
+| Hash Algorithm          | L2 (src-dst-mac), L3 (src-dst-ip), L4 (src-dst-port); src-dst-ip default                                                                                                                                                                                                            |
+| Cross-Stack LAG         | No (3560 is non-stackable)                                                                                                                                                                                                                                                          |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— MC-LAG —**          |                                                                                                                                                                                                                                                                                     |
+| MC-LAG Support          | Not supported                                                                                                                                                                                                                                                                       |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— FHRP —**            |                                                                                                                                                                                                                                                                                     |
+| HSRP                    | v1 and v2                                                                                                                                                                                                                                                                           |
+| VRRP                    | Yes (requires IP Services license)                                                                                                                                                                                                                                                  |
+| GLBP                    | Yes (requires IP Services license)                                                                                                                                                                                                                                                  |
+| Preemption              | Configurable (all protocols)                                                                                                                                                                                                                                                        |
+| Timers                  | Tunable (hello/hold intervals)                                                                                                                                                                                                                                                      |
+| Object Tracking         | Yes (interface, IP route, IP SLA)                                                                                                                                                                                                                                                   |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— L3 Routing —**      |                                                                                                                                                                                                                                                                                     |
+| Static Routing          | Yes                                                                                                                                                                                                                                                                                 |
+| OSPF                    | v2 (IPv4), v3 (IPv6) — requires IP Services                                                                                                                                                                                                                                         |
+| EIGRP                   | Yes (requires IP Services)                                                                                                                                                                                                                                                          |
+| BGP                     | Yes (requires IP Services; limited scale)                                                                                                                                                                                                                                           |
+| RIP                     | v1/v2                                                                                                                                                                                                                                                                               |
+| PBR                     | Yes (policy-based routing)                                                                                                                                                                                                                                                          |
+| VRF-Lite                | Yes                                                                                                                                                                                                                                                                                 |
+| Inter-VLAN Routing      | Yes (via SVI)                                                                                                                                                                                                                                                                       |
+| DHCP Relay              | Yes                                                                                                                                                                                                                                                                                 |
+| DHCP Server             | Yes (embedded IOS DHCP server)                                                                                                                                                                                                                                                      |
+| ARP Table               | ~8K entries                                                                                                                                                                                                                                                                         |
+| Unicast Routes (TCAM)   | Up to ~11K (SDM template dependent)                                                                                                                                                                                                                                                 |
+| ECMP                    | Up to 8 equal-cost paths                                                                                                                                                                                                                                                            |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— Security —**        |                                                                                                                                                                                                                                                                                     |
+| 802.1X                  | Yes (single-host, multi-auth, multi-domain)                                                                                                                                                                                                                                         |
+| RADIUS                  | Yes                                                                                                                                                                                                                                                                                 |
+| TACACS+                 | Yes                                                                                                                                                                                                                                                                                 |
+| ACLs                    | L2–L4 standard/extended (TCAM-based, hardware-accelerated)                                                                                                                                                                                                                          |
+| DHCP Snooping           | Yes                                                                                                                                                                                                                                                                                 |
+| Dynamic ARP Inspection  | Yes (DAI)                                                                                                                                                                                                                                                                           |
+| IP Source Guard         | Yes                                                                                                                                                                                                                                                                                 |
+| Port Security           | Yes (sticky MAC, max MAC limit, violation actions)                                                                                                                                                                                                                                  |
+| MACsec (802.1AE)        | No                                                                                                                                                                                                                                                                                  |
+| CoPP                    | Limited (no full CoPP; CPU rate-limiters available)                                                                                                                                                                                                                                 |
+| Private VLAN            | Yes                                                                                                                                                                                                                                                                                 |
+|                         |                                                                                                                                                                                                                                                                                     |
+| **— Monitoring —**      |                                                                                                                                                                                                                                                                                     |
+| SNMP                    | v1, v2c, v3                                                                                                                                                                                                                                                                         |
+| RMON                    | Groups 1, 2, 3, 9                                                                                                                                                                                                                                                                   |
+| SPAN / RSPAN            | Yes (local SPAN and remote SPAN)                                                                                                                                                                                                                                                    |
+| NetFlow                 | Limited (supported on some models/IOS versions)                                                                                                                                                                                                                                     |
+| Syslog                  | Yes                                                                                                                                                                                                                                                                                 |
+| NTP                     | Yes (client and server)                                                                                                                                                                                                                                                             |
+| IP SLA                  | Yes (responder and initiator)                                                                                                                                                                                                                                                       |
+| EEM                     | Yes (Embedded Event Manager, applet and Tcl)                                                                                                                                                                                                                                        |
+| CLI                     | Yes (console, SSH v2, Telnet)                                                                                                                                                                                                                                                       |
 
 ---
 
 ### Cisco Catalyst 2960 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | Model-dependent: typically 24x or 48x GbE RJ45 + 2-4x SFP 1GbE |
-| **Switching Capacity** | Up to 16/32/100 Gbps (model dependent) |
-| **Latency** | ~3-6 us |
-| **MTU / Jumbo** | 9,198 bytes (2960G/S/X models) |
-| **Form Factor** | 1RU |
-| **OS** | Cisco IOS (LAN Base or LAN Lite) |
-| **Management** | CLI (console/telnet/SSH), SNMP, web GUI |
-| **L2 Features** | VLAN, LACP, STP/RSTP/MSTP, port security |
-| **L3 Features** | None (L2 only; 2960-S/X have limited static routing) |
-| **MC-LAG** | No |
-| **Stacking** | 2960-S: FlexStack (up to 4 units, 20 Gbps). 2960-X: FlexStack-Plus (up to 8 units, 80 Gbps). Original 2960: No |
-| **PoE** | Model-dependent |
-| **Class** | Enterprise Access Layer |
-| **Released** | ~2006 (original), ~2010 (2960-S), ~2013 (2960-X) |
-| **EOL** | Original: ~2013, 2960-S: ~2016, 2960-X: ~2019 |
-| **Notes** | Workhorse Cisco L2 access switch. Very common in enterprise environments. L2 only (no routing). Used for connecting end devices to the network. Without exact model number, specs are approximate. |
-| | |
-| **— Power —** | |
-| System Idle (non-PoE) | ~15–25 W (varies by model; 24-port lower, 48-port higher) |
-| System Typical (non-PoE) | ~25–40 W under moderate traffic load |
-| System Max (non-PoE) | ~45–60 W (all ports active, peak traffic) |
-| System Max (PoE models) | ~370 W (af, 24-port) to ~740 W (at, 48-port) including PoE budget |
-| Per-Port Power (GbE RJ45) | ~0.3–0.5 W per active port |
-| Per-Port Power (SFP 1GbE) | ~0.5–1.0 W per active SFP |
-| PoE Support | 802.3af (15.4 W/port) and 802.3at (30 W/port) on PoE+ models |
-| PoE Budget | Model-dependent: 370 W (24p af), 740 W (48p at) typical |
-| PSU | Internal AC; redundant power via Cisco RPS 2300 on select models |
-| FlexStack Module Power | +5–10 W additional per switch when stacking module installed |
-| | |
-| **— Latency —** | |
-| Switching Mode | Store-and-forward only (no cut-through) |
-| Baseline GbE (RJ45→RJ45) | ~3–6 µs (64-byte frames) |
-| SFP→SFP | ~2–4 µs (64-byte frames) |
-| Cross-Stack (FlexStack) | +10–20 µs additional hop latency per stack member traversal |
-| | |
-| **— L2 Features —** | |
-| VLAN Support | Up to 4094 VLANs (LAN Base); 64 VLANs (LAN Lite) |
-| Private VLAN | Limited or not supported on most 2960 models |
-| Voice VLAN | Yes; auto-detect via CDP/LLDP for Cisco IP phones |
-| Q-in-Q (802.1ad) | No |
-| Trunking | 802.1Q; ISL not supported |
-| STP | STP, RSTP (802.1w), MSTP (802.1s) |
-| STP Enhancements | BPDU Guard, BPDU Filter, Root Guard, Loop Guard, UplinkFast, BackboneFast |
-| Storm Control | Yes; broadcast, multicast, unicast with threshold-based suppression |
-| IGMP Snooping | Yes; v1/v2/v3; up to 255 multicast groups (LAN Base) |
-| LLDP | Yes; LLDP and LLDP-MED |
-| MAC Address Table | ~8K entries |
-| Jumbo Frames | Up to 9198 bytes |
-| | |
-| **— LAG / LACP —** | |
-| Mode | Static (EtherChannel) and LACP (802.3ad) |
-| Max Groups | Up to 48 EtherChannel groups |
-| Ports per Group | Up to 8 active ports per group |
-| Hash Algorithm | L2 (src-dst-mac), L3 (src-dst-ip); configurable |
-| Cross-Stack LAG | Yes, on 2960-S (FlexStack) and 2960-X (FlexStack-Plus) |
-| | |
-| **— MC-LAG —** | |
-| MC-LAG / vPC / VSS | Not supported |
-| | |
-| **— Security —** | |
-| 802.1X | Yes; single-host, multi-host, multi-domain, multi-auth modes |
-| RADIUS | Yes; authentication, authorization, accounting |
-| TACACS+ | Yes; authentication and command authorization |
-| ACLs | Standard/extended ACLs; PACL and VACL on LAN Base S/X models |
-| DHCP Snooping | Yes; trusted/untrusted port classification |
-| Dynamic ARP Inspection (DAI) | Yes; validates ARP packets against DHCP snooping binding table |
-| IP Source Guard | Yes; restricts traffic based on DHCP snooping bindings |
-| Port Security | Yes; static, sticky, and dynamic MAC limiting; violation actions |
-| MACsec (802.1AE) | No |
-| MAC Authentication Bypass (MAB) | Yes; fallback for non-802.1X devices |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 (authPriv) |
-| RMON | Yes; RMON I (4 groups: statistics, history, alarms, events) |
-| SPAN | Yes; local SPAN and RSPAN (Remote SPAN) |
-| NetFlow / sFlow | Not supported |
-| Syslog | Yes; local buffer and remote syslog server export |
-| NTP | Yes; NTP client and server |
-| EEM (Embedded Event Manager) | Limited applet support on LAN Base |
-| Management Access | CLI (console, SSH v2, Telnet), HTTPS web GUI, CNA/CMS |
+| Attribute                       | Value                                                                                                                                                                                              |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                       | Model-dependent: typically 24x or 48x GbE RJ45 + 2-4x SFP 1GbE                                                                                                                                     |
+| **Switching Capacity**          | Up to 16/32/100 Gbps (model dependent)                                                                                                                                                             |
+| **Latency**                     | ~3-6 us                                                                                                                                                                                            |
+| **MTU / Jumbo**                 | 9,198 bytes (2960G/S/X models)                                                                                                                                                                     |
+| **Form Factor**                 | 1RU                                                                                                                                                                                                |
+| **OS**                          | Cisco IOS (LAN Base or LAN Lite)                                                                                                                                                                   |
+| **Management**                  | CLI (console/telnet/SSH), SNMP, web GUI                                                                                                                                                            |
+| **L2 Features**                 | VLAN, LACP, STP/RSTP/MSTP, port security                                                                                                                                                           |
+| **L3 Features**                 | None (L2 only; 2960-S/X have limited static routing)                                                                                                                                               |
+| **MC-LAG**                      | No                                                                                                                                                                                                 |
+| **Stacking**                    | 2960-S: FlexStack (up to 4 units, 20 Gbps). 2960-X: FlexStack-Plus (up to 8 units, 80 Gbps). Original 2960: No                                                                                     |
+| **PoE**                         | Model-dependent                                                                                                                                                                                    |
+| **Class**                       | Enterprise Access Layer                                                                                                                                                                            |
+| **Released**                    | ~2006 (original), ~2010 (2960-S), ~2013 (2960-X)                                                                                                                                                   |
+| **EOL**                         | Original: ~2013, 2960-S: ~2016, 2960-X: ~2019                                                                                                                                                      |
+| **Notes**                       | Workhorse Cisco L2 access switch. Very common in enterprise environments. L2 only (no routing). Used for connecting end devices to the network. Without exact model number, specs are approximate. |
+|                                 |                                                                                                                                                                                                    |
+| **— Power —**                   |                                                                                                                                                                                                    |
+| System Idle (non-PoE)           | ~15–25 W (varies by model; 24-port lower, 48-port higher)                                                                                                                                          |
+| System Typical (non-PoE)        | ~25–40 W under moderate traffic load                                                                                                                                                               |
+| System Max (non-PoE)            | ~45–60 W (all ports active, peak traffic)                                                                                                                                                          |
+| System Max (PoE models)         | ~370 W (af, 24-port) to ~740 W (at, 48-port) including PoE budget                                                                                                                                  |
+| Per-Port Power (GbE RJ45)       | ~0.3–0.5 W per active port                                                                                                                                                                         |
+| Per-Port Power (SFP 1GbE)       | ~0.5–1.0 W per active SFP                                                                                                                                                                          |
+| PoE Support                     | 802.3af (15.4 W/port) and 802.3at (30 W/port) on PoE+ models                                                                                                                                       |
+| PoE Budget                      | Model-dependent: 370 W (24p af), 740 W (48p at) typical                                                                                                                                            |
+| PSU                             | Internal AC; redundant power via Cisco RPS 2300 on select models                                                                                                                                   |
+| FlexStack Module Power          | +5–10 W additional per switch when stacking module installed                                                                                                                                       |
+|                                 |                                                                                                                                                                                                    |
+| **— Latency —**                 |                                                                                                                                                                                                    |
+| Switching Mode                  | Store-and-forward only (no cut-through)                                                                                                                                                            |
+| Baseline GbE (RJ45→RJ45)        | ~3–6 µs (64-byte frames)                                                                                                                                                                           |
+| SFP→SFP                         | ~2–4 µs (64-byte frames)                                                                                                                                                                           |
+| Cross-Stack (FlexStack)         | +10–20 µs additional hop latency per stack member traversal                                                                                                                                        |
+|                                 |                                                                                                                                                                                                    |
+| **— L2 Features —**             |                                                                                                                                                                                                    |
+| VLAN Support                    | Up to 4094 VLANs (LAN Base); 64 VLANs (LAN Lite)                                                                                                                                                   |
+| Private VLAN                    | Limited or not supported on most 2960 models                                                                                                                                                       |
+| Voice VLAN                      | Yes; auto-detect via CDP/LLDP for Cisco IP phones                                                                                                                                                  |
+| Q-in-Q (802.1ad)                | No                                                                                                                                                                                                 |
+| Trunking                        | 802.1Q; ISL not supported                                                                                                                                                                          |
+| STP                             | STP, RSTP (802.1w), MSTP (802.1s)                                                                                                                                                                  |
+| STP Enhancements                | BPDU Guard, BPDU Filter, Root Guard, Loop Guard, UplinkFast, BackboneFast                                                                                                                          |
+| Storm Control                   | Yes; broadcast, multicast, unicast with threshold-based suppression                                                                                                                                |
+| IGMP Snooping                   | Yes; v1/v2/v3; up to 255 multicast groups (LAN Base)                                                                                                                                               |
+| LLDP                            | Yes; LLDP and LLDP-MED                                                                                                                                                                             |
+| MAC Address Table               | ~8K entries                                                                                                                                                                                        |
+| Jumbo Frames                    | Up to 9198 bytes                                                                                                                                                                                   |
+|                                 |                                                                                                                                                                                                    |
+| **— LAG / LACP —**              |                                                                                                                                                                                                    |
+| Mode                            | Static (EtherChannel) and LACP (802.3ad)                                                                                                                                                           |
+| Max Groups                      | Up to 48 EtherChannel groups                                                                                                                                                                       |
+| Ports per Group                 | Up to 8 active ports per group                                                                                                                                                                     |
+| Hash Algorithm                  | L2 (src-dst-mac), L3 (src-dst-ip); configurable                                                                                                                                                    |
+| Cross-Stack LAG                 | Yes, on 2960-S (FlexStack) and 2960-X (FlexStack-Plus)                                                                                                                                             |
+|                                 |                                                                                                                                                                                                    |
+| **— MC-LAG —**                  |                                                                                                                                                                                                    |
+| MC-LAG / vPC / VSS              | Not supported                                                                                                                                                                                      |
+|                                 |                                                                                                                                                                                                    |
+| **— Security —**                |                                                                                                                                                                                                    |
+| 802.1X                          | Yes; single-host, multi-host, multi-domain, multi-auth modes                                                                                                                                       |
+| RADIUS                          | Yes; authentication, authorization, accounting                                                                                                                                                     |
+| TACACS+                         | Yes; authentication and command authorization                                                                                                                                                      |
+| ACLs                            | Standard/extended ACLs; PACL and VACL on LAN Base S/X models                                                                                                                                       |
+| DHCP Snooping                   | Yes; trusted/untrusted port classification                                                                                                                                                         |
+| Dynamic ARP Inspection (DAI)    | Yes; validates ARP packets against DHCP snooping binding table                                                                                                                                     |
+| IP Source Guard                 | Yes; restricts traffic based on DHCP snooping bindings                                                                                                                                             |
+| Port Security                   | Yes; static, sticky, and dynamic MAC limiting; violation actions                                                                                                                                   |
+| MACsec (802.1AE)                | No                                                                                                                                                                                                 |
+| MAC Authentication Bypass (MAB) | Yes; fallback for non-802.1X devices                                                                                                                                                               |
+|                                 |                                                                                                                                                                                                    |
+| **— Monitoring —**              |                                                                                                                                                                                                    |
+| SNMP                            | v1, v2c, v3 (authPriv)                                                                                                                                                                             |
+| RMON                            | Yes; RMON I (4 groups: statistics, history, alarms, events)                                                                                                                                        |
+| SPAN                            | Yes; local SPAN and RSPAN (Remote SPAN)                                                                                                                                                            |
+| NetFlow / sFlow                 | Not supported                                                                                                                                                                                      |
+| Syslog                          | Yes; local buffer and remote syslog server export                                                                                                                                                  |
+| NTP                             | Yes; NTP client and server                                                                                                                                                                         |
+| EEM (Embedded Event Manager)    | Limited applet support on LAN Base                                                                                                                                                                 |
+| Management Access               | CLI (console, SSH v2, Telnet), HTTPS web GUI, CNA/CMS                                                                                                                                              |
 
 ---
 
@@ -2143,132 +2144,134 @@
 
 ### Cisco ASA 5505 (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 8x FastEthernet 10/100 RJ45 (integrated switch, 2x PoE) |
-| **Throughput** | 150 Mbps (firewall), 100 Mbps (VPN) |
-| **Concurrent Sessions** | 10,000 (base license), 25,000 (Security Plus) |
-| **OS** | Cisco ASA OS |
-| **Management** | CLI (console/telnet/SSH), ASDM (Java web GUI), SNMP |
-| **Features** | Stateful firewall, NAT, VPN (IPsec, SSL), VLAN (trunk capable with Security Plus license) |
-| **Class** | Enterprise SOHO / Small Branch |
-| **Released** | ~2006 |
-| **EOL** | 2013 (End of Sale), 2017 (End of Support) |
-| **Notes** | Entry-level ASA firewall. FastEthernet only. Very limited by modern standards (~150Mbps). VLAN trunk requires Security Plus license. Desktop form factor. Useful only for lab/learning or very low-bandwidth firewall scenarios. |
-| | |
-| **— Power —** | |
-| System Idle | ~12–15 W |
-| Typical Load | ~18–22 W |
-| Max Draw | ~25–30 W |
-| PoE Output | 2 ports, 802.3af, 7 W total budget |
-| PSU | External 12 V / 5 A AC adapter |
-| Cooling | Fanless (convection) |
-| | |
-| **— Latency —** | |
-| Firewall Latency | ~0.5–2 ms (stateful inspection at 150 Mbps) |
-| VPN Overhead | +1–5 ms additional (IPsec 3DES/AES) |
-| Switching Mode | Store-and-forward (integrated 8-port FE switch) |
-| | |
-| **— L2 Features —** | |
-| Integrated Switch | 8-port 10/100 FastEthernet |
-| VLANs | Up to 3 (base license) / 20 (Security Plus) |
-| Trunking | 802.1Q (Security Plus only) |
-| STP | No |
-| LACP / EtherChannel | No |
-| LLDP | No |
-| | |
-| **— Firewall / VPN —** | |
-| Stateful Inspection | Yes (up to 150 Mbps) |
-| NAT / PAT | Static NAT, dynamic NAT, PAT |
-| ACLs | Per-interface, per-direction |
-| Modular Policy Framework | Yes (L3/L4 & L7 traffic policies) |
-| Application Inspection | HTTP, FTP, SIP, DNS, SMTP, ESMTP, ICMP, and others |
-| Failover | Active/Standby (Security Plus only) |
-| IPsec Site-to-Site VPN | 10 peers (base) / 25 peers (Security Plus) |
-| SSL VPN | 2 concurrent peers (base) |
-| VPN Encryption | 3DES, AES-128, AES-192, AES-256 |
-| VPN Throughput | Up to 100 Mbps |
-| IPS | Basic (optional AIP-SSC-5 module) |
-| Routing | Static only (no OSPF, no BGP, no EIGRP) |
-| Botnet Traffic Filter | Yes (with subscription) |
-| | |
-| **— Security —** | |
-| AAA | RADIUS, TACACS+, local database |
-| 802.1X | No (firewall appliance, not a switch) |
-| Management Access Control | Management ACLs, SSH, HTTPS (ASDM) |
-| Certificate Auth | Yes (identity/CA certificates for VPN and management) |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1, v2c, v3 |
-| Syslog | Yes (to external syslog servers) |
-| ASDM Monitoring | Real-time graphs, dashboards, log viewer |
-| NetFlow | NSEL (NetFlow Security Event Logging) — limited |
-| NTP | Yes (client) |
-| SPAN / Mirror | No (not a switch function) |
+| Attribute                 | Value                                                                                                                                                                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                 | 8x FastEthernet 10/100 RJ45 (integrated switch, 2x PoE)                                                                                                                                                                          |
+| **Throughput**            | 150 Mbps (firewall), 100 Mbps (VPN)                                                                                                                                                                                              |
+| **Concurrent Sessions**   | 10,000 (base license), 25,000 (Security Plus)                                                                                                                                                                                    |
+| **OS**                    | Cisco ASA OS                                                                                                                                                                                                                     |
+| **Management**            | CLI (console/telnet/SSH), ASDM (Java web GUI), SNMP                                                                                                                                                                              |
+| **Features**              | Stateful firewall, NAT, VPN (IPsec, SSL), VLAN (trunk capable with Security Plus license)                                                                                                                                        |
+| **Class**                 | Enterprise SOHO / Small Branch                                                                                                                                                                                                   |
+| **Released**              | ~2006                                                                                                                                                                                                                            |
+| **EOL**                   | 2013 (End of Sale), 2017 (End of Support)                                                                                                                                                                                        |
+| **Notes**                 | Entry-level ASA firewall. FastEthernet only. Very limited by modern standards (~150Mbps). VLAN trunk requires Security Plus license. Desktop form factor. Useful only for lab/learning or very low-bandwidth firewall scenarios. |
+|                           |                                                                                                                                                                                                                                  |
+| **— Power —**             |                                                                                                                                                                                                                                  |
+| System Idle               | ~12–15 W                                                                                                                                                                                                                         |
+| Typical Load              | ~18–22 W                                                                                                                                                                                                                         |
+| Max Draw                  | ~25–30 W                                                                                                                                                                                                                         |
+| PoE Output                | 2 ports, 802.3af, 7 W total budget                                                                                                                                                                                               |
+| PSU                       | External 12 V / 5 A AC adapter                                                                                                                                                                                                   |
+| Cooling                   | Fanless (convection)                                                                                                                                                                                                             |
+|                           |                                                                                                                                                                                                                                  |
+| **— Latency —**           |                                                                                                                                                                                                                                  |
+| Firewall Latency          | ~0.5–2 ms (stateful inspection at 150 Mbps)                                                                                                                                                                                      |
+| VPN Overhead              | +1–5 ms additional (IPsec 3DES/AES)                                                                                                                                                                                              |
+| Switching Mode            | Store-and-forward (integrated 8-port FE switch)                                                                                                                                                                                  |
+|                           |                                                                                                                                                                                                                                  |
+| **— L2 Features —**       |                                                                                                                                                                                                                                  |
+| Integrated Switch         | 8-port 10/100 FastEthernet                                                                                                                                                                                                       |
+| VLANs                     | Up to 3 (base license) / 20 (Security Plus)                                                                                                                                                                                      |
+| Trunking                  | 802.1Q (Security Plus only)                                                                                                                                                                                                      |
+| STP                       | No                                                                                                                                                                                                                               |
+| LACP / EtherChannel       | No                                                                                                                                                                                                                               |
+| LLDP                      | No                                                                                                                                                                                                                               |
+|                           |                                                                                                                                                                                                                                  |
+| **— Firewall / VPN —**    |                                                                                                                                                                                                                                  |
+| Stateful Inspection       | Yes (up to 150 Mbps)                                                                                                                                                                                                             |
+| NAT / PAT                 | Static NAT, dynamic NAT, PAT                                                                                                                                                                                                     |
+| ACLs                      | Per-interface, per-direction                                                                                                                                                                                                     |
+| Modular Policy Framework  | Yes (L3/L4 & L7 traffic policies)                                                                                                                                                                                                |
+| Application Inspection    | HTTP, FTP, SIP, DNS, SMTP, ESMTP, ICMP, and others                                                                                                                                                                               |
+| Failover                  | Active/Standby (Security Plus only)                                                                                                                                                                                              |
+| IPsec Site-to-Site VPN    | 10 peers (base) / 25 peers (Security Plus)                                                                                                                                                                                       |
+| SSL VPN                   | 2 concurrent peers (base)                                                                                                                                                                                                        |
+| VPN Encryption            | 3DES, AES-128, AES-192, AES-256                                                                                                                                                                                                  |
+| VPN Throughput            | Up to 100 Mbps                                                                                                                                                                                                                   |
+| IPS                       | Basic (optional AIP-SSC-5 module)                                                                                                                                                                                                |
+| Routing                   | Static only (no OSPF, no BGP, no EIGRP)                                                                                                                                                                                          |
+| Botnet Traffic Filter     | Yes (with subscription)                                                                                                                                                                                                          |
+|                           |                                                                                                                                                                                                                                  |
+| **— Security —**          |                                                                                                                                                                                                                                  |
+| AAA                       | RADIUS, TACACS+, local database                                                                                                                                                                                                  |
+| 802.1X                    | No (firewall appliance, not a switch)                                                                                                                                                                                            |
+| Management Access Control | Management ACLs, SSH, HTTPS (ASDM)                                                                                                                                                                                               |
+| Certificate Auth          | Yes (identity/CA certificates for VPN and management)                                                                                                                                                                            |
+|                           |                                                                                                                                                                                                                                  |
+| **— Monitoring —**        |                                                                                                                                                                                                                                  |
+| SNMP                      | v1, v2c, v3                                                                                                                                                                                                                      |
+| Syslog                    | Yes (to external syslog servers)                                                                                                                                                                                                 |
+| ASDM Monitoring           | Real-time graphs, dashboards, log viewer                                                                                                                                                                                         |
+| NetFlow                   | NSEL (NetFlow Security Event Logging) — limited                                                                                                                                                                                  |
+| NTP                       | Yes (client)                                                                                                                                                                                                                     |
+| SPAN / Mirror             | No (not a switch function)                                                                                                                                                                                                       |
 
 ---
 
 ### Cisco 4402 Wireless LAN Controller (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 4x GbE RJ45 (2x distribution system ports + 2x service ports) |
-| **AP Support** | Up to 50 lightweight access points (license-dependent, base: 12 or 25) |
-| **OS** | Cisco AireOS |
-| **Management** | CLI, web GUI, SNMP, WCS/Prime Infrastructure |
-| **Features** | Centralized WLAN management, 802.11a/b/g, LWAPP/CAPWAP, rogue AP detection, RF management |
-| **Class** | Enterprise Wireless Infrastructure |
-| **Released** | ~2006 |
-| **EOL** | ~2012 (End of Sale), ~2017 (End of Support) |
-| **Notes** | This is a wireless LAN controller, not a switch or router. Manages lightweight Cisco APs (not autonomous). Only relevant if you have Cisco lightweight APs. 802.11a/b/g era - does NOT support 802.11n/ac/ax. Essentially useless for modern WiFi. |
-| | |
-| **— Power —** | |
-| System Power Draw | ~65–85 W typical |
-| Power Supply | Internal AC, single PSU (no redundancy) |
-| PoE Output | None — APs powered separately via PoE switches or injectors |
-| | |
-| **— Latency —** | |
-| CAPWAP Tunnel Overhead | ~1–3 ms per AP hop |
-| Control Plane Latency | ~5–10 ms for client roaming events |
-| | |
-| **— Wireless —** | |
-| Standards | 802.11a/b/g (no 802.11n/ac/ax) |
-| Max Data Rate | 54 Mbps per radio |
-| MIMO | No (pre-MIMO era) |
-| QoS | WMM (Wi-Fi Multimedia) |
-| Band Steering | No |
-| DFS | Yes |
-| RF Management | RRM auto RF (dynamic channel/power) |
-| Max APs | 50 (base license 12 or 25) |
-| Max Clients | ~500–1000 |
-| SSID Limit | 16 per WLAN |
-| H-REAP / FlexConnect | Limited support |
-| Mesh Networking | Basic |
-| | |
-| **— Security —** | |
-| WPA / WPA2 | Personal (PSK) + Enterprise (802.1X) |
-| WPA3 | No |
-| RADIUS Authentication | EAP-TLS, PEAP, EAP-FAST |
-| MAC Filtering | Yes |
-| Web Auth / Captive Portal | Yes |
-| Rogue AP Detection | Detection + containment |
-| wIPS | Yes (requires MSE) |
-| Management AAA | RADIUS, TACACS+ |
-| | |
-| **— Monitoring —** | |
-| SNMP | v1 / v2c / v3 |
-| Syslog | Yes |
-| NMS | WCS / Cisco Prime Infrastructure |
-| RMON | Yes |
-| NTP | Yes |
-| CLI Diagnostics | Yes |
-| LinkTest | Yes |
-| Client Troubleshooting | Built-in tools (debug client, test commands) |
+| Attribute                 | Value                                                                                                                                                                                                                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                 | 4x GbE RJ45 (2x distribution system ports + 2x service ports)                                                                                                                                                                                      |
+| **AP Support**            | Up to 50 lightweight access points (license-dependent, base: 12 or 25)                                                                                                                                                                             |
+| **OS**                    | Cisco AireOS                                                                                                                                                                                                                                       |
+| **Management**            | CLI, web GUI, SNMP, WCS/Prime Infrastructure                                                                                                                                                                                                       |
+| **Features**              | Centralized WLAN management, 802.11a/b/g, LWAPP/CAPWAP, rogue AP detection, RF management                                                                                                                                                          |
+| **Class**                 | Enterprise Wireless Infrastructure                                                                                                                                                                                                                 |
+| **Released**              | ~2006                                                                                                                                                                                                                                              |
+| **EOL**                   | ~2012 (End of Sale), ~2017 (End of Support)                                                                                                                                                                                                        |
+| **Notes**                 | This is a wireless LAN controller, not a switch or router. Manages lightweight Cisco APs (not autonomous). Only relevant if you have Cisco lightweight APs. 802.11a/b/g era - does NOT support 802.11n/ac/ax. Essentially useless for modern WiFi. |
+|                           |                                                                                                                                                                                                                                                    |
+| **— Power —**             |                                                                                                                                                                                                                                                    |
+| System Power Draw         | ~65–85 W typical                                                                                                                                                                                                                                   |
+| Power Supply              | Internal AC, single PSU (no redundancy)                                                                                                                                                                                                            |
+| PoE Output                | None — APs powered separately via PoE switches or injectors                                                                                                                                                                                        |
+|                           |                                                                                                                                                                                                                                                    |
+| **— Latency —**           |                                                                                                                                                                                                                                                    |
+| CAPWAP Tunnel Overhead    | ~1–3 ms per AP hop                                                                                                                                                                                                                                 |
+| Control Plane Latency     | ~5–10 ms for client roaming events                                                                                                                                                                                                                 |
+|                           |                                                                                                                                                                                                                                                    |
+| **— Wireless —**          |                                                                                                                                                                                                                                                    |
+| Standards                 | 802.11a/b/g (no 802.11n/ac/ax)                                                                                                                                                                                                                     |
+| Max Data Rate             | 54 Mbps per radio                                                                                                                                                                                                                                  |
+| MIMO                      | No (pre-MIMO era)                                                                                                                                                                                                                                  |
+| QoS                       | WMM (Wi-Fi Multimedia)                                                                                                                                                                                                                             |
+| Band Steering             | No                                                                                                                                                                                                                                                 |
+| DFS                       | Yes                                                                                                                                                                                                                                                |
+| RF Management             | RRM auto RF (dynamic channel/power)                                                                                                                                                                                                                |
+| Max APs                   | 50 (base license 12 or 25)                                                                                                                                                                                                                         |
+| Max Clients               | ~500–1000                                                                                                                                                                                                                                          |
+| SSID Limit                | 16 per WLAN                                                                                                                                                                                                                                        |
+| H-REAP / FlexConnect      | Limited support                                                                                                                                                                                                                                    |
+| Mesh Networking           | Basic                                                                                                                                                                                                                                              |
+|                           |                                                                                                                                                                                                                                                    |
+| **— Security —**          |                                                                                                                                                                                                                                                    |
+| WPA / WPA2                | Personal (PSK) + Enterprise (802.1X)                                                                                                                                                                                                               |
+| WPA3                      | No                                                                                                                                                                                                                                                 |
+| RADIUS Authentication     | EAP-TLS, PEAP, EAP-FAST                                                                                                                                                                                                                            |
+| MAC Filtering             | Yes                                                                                                                                                                                                                                                |
+| Web Auth / Captive Portal | Yes                                                                                                                                                                                                                                                |
+| Rogue AP Detection        | Detection + containment                                                                                                                                                                                                                            |
+| wIPS                      | Yes (requires MSE)                                                                                                                                                                                                                                 |
+| Management AAA            | RADIUS, TACACS+                                                                                                                                                                                                                                    |
+|                           |                                                                                                                                                                                                                                                    |
+| **— Monitoring —**        |                                                                                                                                                                                                                                                    |
+| SNMP                      | v1 / v2c / v3                                                                                                                                                                                                                                      |
+| Syslog                    | Yes                                                                                                                                                                                                                                                |
+| NMS                       | WCS / Cisco Prime Infrastructure                                                                                                                                                                                                                   |
+| RMON                      | Yes                                                                                                                                                                                                                                                |
+| NTP                       | Yes                                                                                                                                                                                                                                                |
+| CLI Diagnostics           | Yes                                                                                                                                                                                                                                                |
+| LinkTest                  | Yes                                                                                                                                                                                                                                                |
+| Client Troubleshooting    | Built-in tools (debug client, test commands)                                                                                                                                                                                                       |
 
 ---
 
 ### Cisco 2811 - see [Routers section above](#cisco-2811-2x)
+
 ### Cisco 1841 - see [Routers section above](#cisco-1841-1x)
+
 ### Cisco 881 - see [Routers section above](#cisco-881-1x)
 
 ---
@@ -2277,66 +2280,66 @@
 
 ### Calix GP1101X GigaPoint ONT (1x)
 
-| Attribute | Value |
-|---|---|
-| **Ports** | 1x 10GBASE-T RJ45 (LAN) + 1x POTS RJ11 (VoIP) |
-| **WAN** | XGS-PON SC/APC fiber (10G symmetric) |
-| **LAN Speed** | 10 Gbps (10GBASE-T) |
-| **PON Standard** | XGS-PON (ITU-T G.9807.1), 10G/10G symmetric |
-| **Form Factor** | Small indoor desktop unit, wall-mountable |
-| **OS** | Calix firmware (ISP-managed, not user-configurable) |
-| **Management** | ISP-managed via Calix Smart Activate / AXOS; limited local status LEDs |
-| **L2 Features** | 802.1Q VLAN tagging (ISP-configured), QoS |
-| **L3 Features** | None (bridge mode / L2 transparent) |
-| **Power** | 12V DC adapter, optional battery backup |
-| **Class** | ISP CPE |
-| **Manufacturer** | Calix (GigaPoint series) |
-| **Released** | ~2022 |
-| **Notes** | XGS-PON ONT with single 10GbE copper output. The GP1101X is the 10GE variant (GP1100X is 2.5GE). Operates as a transparent L2 bridge from fiber to Ethernet. Single LAN port means all downstream routing/switching must happen on the next device. ISP-locked firmware - no user configuration of the ONT itself. VoIP port for carrier-grade telephony if subscribed. |
-| | |
-| **— Power —** | |
-| System Idle | ~5–7 W |
-| Typical Load | ~8–10 W |
-| Max (10GBASE-T + VoIP active) | ~12–15 W |
-| PSU | External 12 V DC adapter, ~1–2 A |
-| Battery Backup | Optional Calix GigaCenter battery; ~4–8 hr standby (VoIP) |
-| 10GBASE-T PHY | ~3–5 W |
-| | |
-| **— Latency —** | |
-| XGS-PON Upstream Grant | ~125 µs – 1 ms (TDM-PON scheduling) |
-| Fiber + ONT Processing | ~50–200 µs typical |
-| 10GBASE-T PHY | ~2–3 µs |
-| Total ONT Pass-Through | ~100–500 µs |
-| | |
-| **— L2 Features —** | |
-| 802.1Q VLAN | ISP-configured only; not user-configurable |
-| QoS | ISP-configured traffic classes |
-| STP / LACP | Not supported |
-| User-Facing L2 Config | None (single LAN port, no switching) |
-| | |
-| **— Monitoring —** | |
-| Management Platform | Calix AXOS / SMx Cloud (ISP only) |
-| ONT Management | OMCI via OLT |
-| User SNMP | Not available |
-| Status Indicators | LED only (Power, PON, LAN, VoIP) |
-| Remote Diagnostics | ISP can read optical power levels, error counters |
+| Attribute                     | Value                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**                     | 1x 10GBASE-T RJ45 (LAN) + 1x POTS RJ11 (VoIP)                                                                                                                                                                                                                                                                                                                           |
+| **WAN**                       | XGS-PON SC/APC fiber (10G symmetric)                                                                                                                                                                                                                                                                                                                                    |
+| **LAN Speed**                 | 10 Gbps (10GBASE-T)                                                                                                                                                                                                                                                                                                                                                     |
+| **PON Standard**              | XGS-PON (ITU-T G.9807.1), 10G/10G symmetric                                                                                                                                                                                                                                                                                                                             |
+| **Form Factor**               | Small indoor desktop unit, wall-mountable                                                                                                                                                                                                                                                                                                                               |
+| **OS**                        | Calix firmware (ISP-managed, not user-configurable)                                                                                                                                                                                                                                                                                                                     |
+| **Management**                | ISP-managed via Calix Smart Activate / AXOS; limited local status LEDs                                                                                                                                                                                                                                                                                                  |
+| **L2 Features**               | 802.1Q VLAN tagging (ISP-configured), QoS                                                                                                                                                                                                                                                                                                                               |
+| **L3 Features**               | None (bridge mode / L2 transparent)                                                                                                                                                                                                                                                                                                                                     |
+| **Power**                     | 12V DC adapter, optional battery backup                                                                                                                                                                                                                                                                                                                                 |
+| **Class**                     | ISP CPE                                                                                                                                                                                                                                                                                                                                                                 |
+| **Manufacturer**              | Calix (GigaPoint series)                                                                                                                                                                                                                                                                                                                                                |
+| **Released**                  | ~2022                                                                                                                                                                                                                                                                                                                                                                   |
+| **Notes**                     | XGS-PON ONT with single 10GbE copper output. The GP1101X is the 10GE variant (GP1100X is 2.5GE). Operates as a transparent L2 bridge from fiber to Ethernet. Single LAN port means all downstream routing/switching must happen on the next device. ISP-locked firmware - no user configuration of the ONT itself. VoIP port for carrier-grade telephony if subscribed. |
+|                               |                                                                                                                                                                                                                                                                                                                                                                         |
+| **— Power —**                 |                                                                                                                                                                                                                                                                                                                                                                         |
+| System Idle                   | ~5–7 W                                                                                                                                                                                                                                                                                                                                                                  |
+| Typical Load                  | ~8–10 W                                                                                                                                                                                                                                                                                                                                                                 |
+| Max (10GBASE-T + VoIP active) | ~12–15 W                                                                                                                                                                                                                                                                                                                                                                |
+| PSU                           | External 12 V DC adapter, ~1–2 A                                                                                                                                                                                                                                                                                                                                        |
+| Battery Backup                | Optional Calix GigaCenter battery; ~4–8 hr standby (VoIP)                                                                                                                                                                                                                                                                                                               |
+| 10GBASE-T PHY                 | ~3–5 W                                                                                                                                                                                                                                                                                                                                                                  |
+|                               |                                                                                                                                                                                                                                                                                                                                                                         |
+| **— Latency —**               |                                                                                                                                                                                                                                                                                                                                                                         |
+| XGS-PON Upstream Grant        | ~125 µs – 1 ms (TDM-PON scheduling)                                                                                                                                                                                                                                                                                                                                     |
+| Fiber + ONT Processing        | ~50–200 µs typical                                                                                                                                                                                                                                                                                                                                                      |
+| 10GBASE-T PHY                 | ~2–3 µs                                                                                                                                                                                                                                                                                                                                                                 |
+| Total ONT Pass-Through        | ~100–500 µs                                                                                                                                                                                                                                                                                                                                                             |
+|                               |                                                                                                                                                                                                                                                                                                                                                                         |
+| **— L2 Features —**           |                                                                                                                                                                                                                                                                                                                                                                         |
+| 802.1Q VLAN                   | ISP-configured only; not user-configurable                                                                                                                                                                                                                                                                                                                              |
+| QoS                           | ISP-configured traffic classes                                                                                                                                                                                                                                                                                                                                          |
+| STP / LACP                    | Not supported                                                                                                                                                                                                                                                                                                                                                           |
+| User-Facing L2 Config         | None (single LAN port, no switching)                                                                                                                                                                                                                                                                                                                                    |
+|                               |                                                                                                                                                                                                                                                                                                                                                                         |
+| **— Monitoring —**            |                                                                                                                                                                                                                                                                                                                                                                         |
+| Management Platform           | Calix AXOS / SMx Cloud (ISP only)                                                                                                                                                                                                                                                                                                                                       |
+| ONT Management                | OMCI via OLT                                                                                                                                                                                                                                                                                                                                                            |
+| User SNMP                     | Not available                                                                                                                                                                                                                                                                                                                                                           |
+| Status Indicators             | LED only (Power, PON, LAN, VoIP)                                                                                                                                                                                                                                                                                                                                        |
+| Remote Diagnostics            | ISP can read optical power levels, error counters                                                                                                                                                                                                                                                                                                                       |
 
 ---
 
 ## Stacking Capability Reference
 
-| Device | Stacking | Technology | Max Stack Size | Notes |
-|---|---|---|---|---|
-| **Dell PowerConnect 5448** | Yes | Proprietary stacking ports/cables | Up to 12 units | Single management IP for the stack, shared config |
-| **Cisco 2960-S/X** | Yes | FlexStack / FlexStack-Plus | Up to 4-8 units | Original 2960 (non-S/X): No stacking. S/X variants only |
-| **Cisco 3560** | No | N/A | N/A | 3750 is the stackable variant of this generation |
-| **IBM G8264** | **Yes** | QSFP+ 40G stacking links | Up to 8 units | Single IP management, ring or daisy-chain topology; also supports vLAG (pairs of 2) independently |
-| **IBM G8264e** | **Likely yes** | QSFP+ 40G stacking links (same platform as G8264) | Up to 8 units (unconfirmed) | Same ASIC/NOS as G8264; no dedicated product guide to confirm independently. Also supports vLAG |
-| **IBM G8316** | **Unclear** | Uses vLAG instead | 2 (vLAG pair) | Spine/aggregation switch; IBM Support page lists "Stacking LEDs" in hardware specs but TIPS0842 does not list stacking as a software feature. vLAG confirmed. |
-| **Celestica DX010** | No | Uses MC-LAG instead | 2 (MC-LAG pair) | SONiC MC-LAG for multi-chassis |
-| **Arista 7050QX-32-F** | No | Uses MLAG instead | 2 (MLAG pair) | MLAG for multi-chassis, ECMP for beyond 2 |
-| **Mellanox SX6036** | No | N/A | N/A | No stacking or MC-LAG |
-| All others | No | N/A | N/A | — |
+| Device                     | Stacking       | Technology                                        | Max Stack Size              | Notes                                                                                                                                                         |
+| -------------------------- | -------------- | ------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Dell PowerConnect 5448** | Yes            | Proprietary stacking ports/cables                 | Up to 12 units              | Single management IP for the stack, shared config                                                                                                             |
+| **Cisco 2960-S/X**         | Yes            | FlexStack / FlexStack-Plus                        | Up to 4-8 units             | Original 2960 (non-S/X): No stacking. S/X variants only                                                                                                       |
+| **Cisco 3560**             | No             | N/A                                               | N/A                         | 3750 is the stackable variant of this generation                                                                                                              |
+| **IBM G8264**              | **Yes**        | QSFP+ 40G stacking links                          | Up to 8 units               | Single IP management, ring or daisy-chain topology; also supports vLAG (pairs of 2) independently                                                             |
+| **IBM G8264e**             | **Likely yes** | QSFP+ 40G stacking links (same platform as G8264) | Up to 8 units (unconfirmed) | Same ASIC/NOS as G8264; no dedicated product guide to confirm independently. Also supports vLAG                                                               |
+| **IBM G8316**              | **Unclear**    | Uses vLAG instead                                 | 2 (vLAG pair)               | Spine/aggregation switch; IBM Support page lists "Stacking LEDs" in hardware specs but TIPS0842 does not list stacking as a software feature. vLAG confirmed. |
+| **Celestica DX010**        | No             | Uses MC-LAG instead                               | 2 (MC-LAG pair)             | SONiC MC-LAG for multi-chassis                                                                                                                                |
+| **Arista 7050QX-32-F**     | No             | Uses MLAG instead                                 | 2 (MLAG pair)               | MLAG for multi-chassis, ECMP for beyond 2                                                                                                                     |
+| **Mellanox SX6036**        | No             | N/A                                               | N/A                         | No stacking or MC-LAG                                                                                                                                         |
+| All others                 | No             | N/A                                               | N/A                         | —                                                                                                                                                             |
 
 > **Stacking vs MC-LAG/MLAG/vLAG:** Stacking merges multiple physical switches into one logical switch with a single management plane and shared forwarding table. MC-LAG/MLAG/vLAG keeps switches as independent control planes but coordinates LAG membership across two chassis for link redundancy. Both achieve multi-chassis redundancy but stacking is tighter coupling (single config) while MC-LAG is looser (independent configs with coordination protocol).
 
@@ -2344,31 +2347,31 @@
 
 ## Summary Table
 
-| Device | Qty | Max Port Speed | Total High-Speed Ports | Managed | L3 | MC-LAG | Stacking | Class | Era |
-|---|---|---|---|---|---|---|---|---|---|
-| **Celestica DX010** | 4* | 100GbE | 32x QSFP28 | Yes | Yes | Yes | No | DC | 2016 |
-| **Arista 7050QX-32-F** | 1 | 40GbE | 32x QSFP+ | Yes | Yes | Yes (MLAG) | No | DC | 2013 |
-| **IBM Mellanox SX6036** | 1 | 56G IB / 40GbE | 36x QSFP | Yes | Limited | No | No | HPC/DC | 2013 |
-| **IBM G8316** | 4 | 40GbE | 16x QSFP+ | Yes | Yes | Yes (vLAG) | **Unclear** | DC Spine | 2012 |
-| **IBM G8264** | 3 | 10GbE / 40GbE | 48x SFP+ + 4x QSFP+ | Yes | Yes | Yes (vLAG) | **Yes (8)** | DC TOR | 2012 |
-| **IBM G8264e** | 1 | 10GbE / 40GbE | 48x 10GBASE-T + 4x QSFP+ | Yes | Yes | Yes (vLAG) | **Likely** | DC TOR | 2012 |
-| **Mono Gateway** | 3 | 10GbE | 2x SFP+ + 3x 1G | Yes | Yes | No | No | Router | 2022 |
-| **Calix GP1101X** | 1 | 10GbE | 1x 10GBASE-T | No | No | No | No | ISP CPE | 2022 |
-| **Netgear XS712T** | 1 | 10GbE | 12x 10GBASE-T | Smart | No | No | No | Prosumer | 2014 |
-| **TRENDnet TEG-30284** | 1 | 10GbE | 4x SFP+ | Yes | L2+ | No | No | Prosumer | 2018 |
-| **TP-Link SG3210XHP-M2** | 2 | 10GbE | 2x SFP+ | Yes | L2+ | No | No | Prosumer | 2022 |
-| **Cisco SG300-52** | 1 | 1GbE | 2x SFP combo | Yes | L3-lite | No | No | SMB | 2010 |
-| **Dell PC 5448** | 4 | 1GbE | 4x SFP combo | Yes | No | No | **Yes (12)** | Prosumer | 2007 |
-| **Cisco 3560** | 1 | 1GbE | 4x SFP | Yes | Yes | No | No | Enterprise | 2004+ |
-| **Cisco 2960** | 1 | 1GbE | 2-4x SFP | Yes | No | No | **S/X only** | Enterprise | 2006+ |
-| **Netgear GS116E** | 1 | 1GbE | None | Plus | No | No | No | Consumer | 2013 |
-| **Cisco 2811** | 2 | 1GbE | 2x RJ45 | Yes | Yes | No | No | Router | 2005 |
-| **Cisco 1841** | 1 | 100Mbps | 2x FE | Yes | Yes | No | No | Router | 2005 |
-| **Cisco 881** | 1 | 100Mbps | 5x FE | Yes | Yes | No | No | Router | 2008 |
-| **Cisco ASA 5505** | 1 | 100Mbps | 8x FE | Yes | Firewall | No | No | Firewall | 2006 |
-| **Cisco 4402 WLC** | 1 | 1GbE | 4x RJ45 | Yes | N/A | No | No | WLAN Ctrl | 2006 |
+| Device                   | Qty | Max Port Speed | Total High-Speed Ports   | Managed | L3       | MC-LAG     | Stacking     | Class      | Era   |
+| ------------------------ | --- | -------------- | ------------------------ | ------- | -------- | ---------- | ------------ | ---------- | ----- |
+| **Celestica DX010**      | 4\* | 100GbE         | 32x QSFP28               | Yes     | Yes      | Yes        | No           | DC         | 2016  |
+| **Arista 7050QX-32-F**   | 1   | 40GbE          | 32x QSFP+                | Yes     | Yes      | Yes (MLAG) | No           | DC         | 2013  |
+| **IBM Mellanox SX6036**  | 1   | 56G IB / 40GbE | 36x QSFP                 | Yes     | Limited  | No         | No           | HPC/DC     | 2013  |
+| **IBM G8316**            | 4   | 40GbE          | 16x QSFP+                | Yes     | Yes      | Yes (vLAG) | **Unclear**  | DC Spine   | 2012  |
+| **IBM G8264**            | 3   | 10GbE / 40GbE  | 48x SFP+ + 4x QSFP+      | Yes     | Yes      | Yes (vLAG) | **Yes (8)**  | DC TOR     | 2012  |
+| **IBM G8264e**           | 1   | 10GbE / 40GbE  | 48x 10GBASE-T + 4x QSFP+ | Yes     | Yes      | Yes (vLAG) | **Likely**   | DC TOR     | 2012  |
+| **Mono Gateway**         | 3   | 10GbE          | 2x SFP+ + 3x 1G          | Yes     | Yes      | No         | No           | Router     | 2022  |
+| **Calix GP1101X**        | 1   | 10GbE          | 1x 10GBASE-T             | No      | No       | No         | No           | ISP CPE    | 2022  |
+| **Netgear XS712T**       | 1   | 10GbE          | 12x 10GBASE-T            | Smart   | No       | No         | No           | Prosumer   | 2014  |
+| **TRENDnet TEG-30284**   | 1   | 10GbE          | 4x SFP+                  | Yes     | L2+      | No         | No           | Prosumer   | 2018  |
+| **TP-Link SG3210XHP-M2** | 2   | 10GbE          | 2x SFP+                  | Yes     | L2+      | No         | No           | Prosumer   | 2022  |
+| **Cisco SG300-52**       | 1   | 1GbE           | 2x SFP combo             | Yes     | L3-lite  | No         | No           | SMB        | 2010  |
+| **Dell PC 5448**         | 4   | 1GbE           | 4x SFP combo             | Yes     | No       | No         | **Yes (12)** | Prosumer   | 2007  |
+| **Cisco 3560**           | 1   | 1GbE           | 4x SFP                   | Yes     | Yes      | No         | No           | Enterprise | 2004+ |
+| **Cisco 2960**           | 1   | 1GbE           | 2-4x SFP                 | Yes     | No       | No         | **S/X only** | Enterprise | 2006+ |
+| **Netgear GS116E**       | 1   | 1GbE           | None                     | Plus    | No       | No         | No           | Consumer   | 2013  |
+| **Cisco 2811**           | 2   | 1GbE           | 2x RJ45                  | Yes     | Yes      | No         | No           | Router     | 2005  |
+| **Cisco 1841**           | 1   | 100Mbps        | 2x FE                    | Yes     | Yes      | No         | No           | Router     | 2005  |
+| **Cisco 881**            | 1   | 100Mbps        | 5x FE                    | Yes     | Yes      | No         | No           | Router     | 2008  |
+| **Cisco ASA 5505**       | 1   | 100Mbps        | 8x FE                    | Yes     | Firewall | No         | No           | Firewall   | 2006  |
+| **Cisco 4402 WLC**       | 1   | 1GbE           | 4x RJ45                  | Yes     | N/A      | No         | No           | WLAN Ctrl  | 2006  |
 
-- *: 1 DX010 is missing fans/psu
+- \*: 1 DX010 is missing fans/psu
 
 ---
 

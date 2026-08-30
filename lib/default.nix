@@ -406,6 +406,7 @@ let
               "olm-3.2.16"
               "electron"
               "qtwebkit-5.212.0-alpha4"
+              "openclaw-2026.6.33"
             ];
           };
           overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
@@ -454,41 +455,43 @@ let
       inherit (clan.config) nixosConfigurations clanInternals;
       clan = clan.config;
       devShells =
-        inputs.clan-core.inputs.nixpkgs.lib.genAttrs
-          [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
-          (
-            system:
-            let
-              pkgs = import inputs.clan-core.inputs.nixpkgs {
-                inherit system;
-                overlays = [ (import inputs.id-rust-overlay) ];
-              };
-              # Import shared configuration (same as shell.nix)
-              nixCommon = import ../nix-common.nix { inherit pkgs; };
-            in
-            {
-              default = pkgs.mkShell {
-                inherit (nixCommon)
-                  NIX_CONFIG
-                  TREEFMT_TREE_ROOT_CMD
-                  buildInputs
-                  nativeBuildInputs
-                  shellHook
-                  ;
-                # OpenSSL configuration for native builds
-                inherit (nixCommon.opensslEnv)
-                  OPENSSL_DIR
-                  OPENSSL_LIB_DIR
-                  OPENSSL_INCLUDE_DIR
-                  PKG_CONFIG_PATH
-                  ;
-                # Shared packages + clan-cli (only available via flake input)
-                packages = nixCommon.packages ++ [
-                  inputs.clan-core.packages.${system}.clan-cli
-                ];
-              };
-            }
-          );
+        # was: inputs.clan-core.inputs.nixpkgs.lib.genAttrs — switched to the repo's own
+        # nixpkgs-unstable so `nix develop` matches shell.nix and the system flake
+        # (clan-core pins its own nixpkgs rev, which drifted from ours)
+        inputs.nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ] (
+          system:
+          let
+            # pkgs = import inputs.clan-core.inputs.nixpkgs {
+            pkgs = import inputs.nixpkgs-unstable {
+              inherit system;
+              overlays = [ (import inputs.id-rust-overlay) ];
+            };
+            # Import shared configuration (same as shell.nix)
+            nixCommon = import ../nix-common.nix { inherit pkgs; };
+          in
+          {
+            default = pkgs.mkShell {
+              inherit (nixCommon)
+                NIX_CONFIG
+                TREEFMT_TREE_ROOT_CMD
+                buildInputs
+                nativeBuildInputs
+                shellHook
+                ;
+              # OpenSSL configuration for native builds
+              inherit (nixCommon.opensslEnv)
+                OPENSSL_DIR
+                OPENSSL_LIB_DIR
+                OPENSSL_INCLUDE_DIR
+                PKG_CONFIG_PATH
+                ;
+              # Shared packages + clan-cli (only available via flake input)
+              packages = nixCommon.packages ++ [
+                inputs.clan-core.packages.${system}.clan-cli
+              ];
+            };
+          }
+        );
     };
 
   make-root-apps = inputs.flake-utils.lib.eachDefaultSystem (
