@@ -191,6 +191,17 @@ if [ -d "$TARGET/.git" ] || [ -d "$TARGET" ]; then
   fi
 fi
 
+# --- links 3 & 4: convenience shortcuts in this repo ---------------------------
+# Chained through the links above, so they resolve only once hardware-doc AND the
+# archive are both present:
+#   archive     -> doc/hardware/archive -> ../../hardware-doc/archive -> ../hardware-doc-archive
+#   doc/archive -> hardware/archive     -> (same)
+# Purely ergonomic: they let you write ./archive/... from this repo's root.
+if [ -d "$ARCHIVE_DIR" ]; then
+  ensure_link "$WORKTREE_ROOT" "archive"     "doc/hardware/archive" "$ARCHIVE_DIR"
+  ensure_link "$WORKTREE_ROOT" "doc/archive" "hardware/archive"     "$ARCHIVE_DIR"
+fi
+
 # --- archive summary ----------------------------------------------------------
 if [ -d "$ARCHIVE_DIR" ]; then
   ok "archive: $ARCHIVE_DIR ($(du -sh "$ARCHIVE_DIR" 2>/dev/null | cut -f1))"

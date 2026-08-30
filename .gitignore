@@ -160,3 +160,9 @@ codedb.snapshot
 # parent) and then marks it --skip-worktree, which is what actually suppresses the
 # local modification. To undo that: git update-index --no-skip-worktree doc/hardware
 doc/hardware/*
+
+# Convenience symlinks chaining to the bulk-artifact archive (see AGENTS.md).
+# These entries stop the archive's CONTENTS being committed here if a link is ever
+# replaced by a real directory; they do not affect the tracked symlinks themselves.
+archive/*
+doc/archive/*
