@@ -1,5 +1,15 @@
 # Site Access by User-Agent / Crawler
 
+> **Mirror.** The maintained copy of this file lives in
+> **[`developing-today/hardware-doc`](https://github.com/developing-today/hardware-doc)**
+> (`doc/hardware/ai-crawler-site-access-table.md` once the sibling checkout exists), because that
+> is where the research runs and where new findings are discovered.
+>
+> This copy exists so the retrieval guidance in [`AGENTS.md`](AGENTS.md) still works when
+> `hardware-doc` has not been cloned. **Record new findings in `hardware-doc` and copy them here**,
+> not the other way round — otherwise the two drift and neither is trustworthy.
+
+
 > **Legend:** ✓ real content · ◐ partial access — `200 OK` but only the empty JavaScript shell, no actual data · ✗ blocked (HTTP code shown)
 >
 > Reconstructed from an image of the original table. Cells marked `?` were ambiguous in the source image.
