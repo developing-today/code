@@ -43,10 +43,18 @@ hand. `archive/devices/foo/bar.step` is the same file from either side.
 
 Two things still hold:
 
-- **Write records into `doc/hardware/` and commit them there**, in that repo — not here.
+- **Write records into `doc/hardware/` and commit them there.** Git will not cross a symlink
+  (`fatal: pathspec ... is beyond a symbolic link`), so commit from inside it:
+  `git -C doc/hardware add -A && git -C doc/hardware commit -m "..."`, and
+  `git -C archive add -A && git -C archive commit -m "..."` for artifacts. `archive/` and
+  `scratch/` are the same repository — `git add -A` from either stages both tiers.
 - **Inside a record, use the paths that repo sees**: `archive/…`, `scratch/…`, and
   repo-relative links. `doc/hardware/devices/…` is correct from here and broken from there,
   and that repo is also read standalone.
+
+Commit freely in `archive/` and `scratch/`, temporary material included. But **never** reset,
+stash, `checkout --`, clean or delete work you did not create — these checkouts are shared, and
+another session's uncommitted work is unrecoverable.
 
 ## Read the real skill — in full, once
 

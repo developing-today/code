@@ -52,6 +52,36 @@ git update-index --no-skip-worktree doc/hardware
 The script prints that command whenever it sets the flag. The same pattern links
 `hardware-doc/archive -> ../repo-archive` when the archive exists locally.
 
+### Committing hardware research
+
+`doc/hardware`, `archive/`, `scratch/` (and the `doc/` variants) are symlinks into **other
+repositories**. Writing through them works; `git` will not cross them:
+
+```
+$ git add doc/hardware/devices/foo/README.md
+fatal: pathspec '...' is beyond a symbolic link
+```
+
+So commit from inside the link, not from here:
+
+```bash
+git -C doc/hardware add -A && git -C doc/hardware commit -m "..."   # research records
+git -C archive      add -A && git -C archive      commit -m "..."   # artifacts + scratch
+```
+
+`archive/` and `scratch/` land in the **same** repository, and `git add -A` from either stages
+all of it, so one commit covers both. (`git add .` stages only the directory you are in.)
+
+Commit freely in `archive/` and `scratch/` — including temporary or undecided material. An
+uncommitted artifact is the one that gets lost.
+
+### Do not disturb work you did not create
+
+These checkouts are shared between sessions. **Never** `git reset`, `git stash`,
+`git checkout -- <path>`, `git clean`, or delete files you did not create — in any of the
+three repositories. Another session may be mid-task, and uncommitted work is unrecoverable.
+If something is in the way, commit it or report it; do not clear it.
+
 ## Web retrieval fallback
 
 When retrieving public web content with `curl`, `wget`, Python HTTP clients, or similar tools:

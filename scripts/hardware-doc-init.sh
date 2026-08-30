@@ -52,9 +52,18 @@ info "${c_dim}repo root : $REPO_ROOT${c_off}"
 info "${c_dim}worktree  : $WORKTREE_ROOT${c_off}"
 info "${c_dim}target    : $TARGET${c_off}"
 
-# --- clone if absent ----------------------------------------------------------
-if [ ! -e "$TARGET" ]; then
-  info "cloning $REPO_URL"
+# --- reuse an existing checkout, or clone -------------------------------------
+# Only clone when there is genuinely nothing there. If a hardware-doc already sits
+# beside this repo we adopt it as-is, whatever its remote or branch - the user may
+# have it checked out on a topic branch, or pointed at a fork.
+if [ -d "$TARGET/.git" ]; then
+  ok "using existing checkout at $TARGET"
+  ACTUAL_URL="$(git -C "$TARGET" remote get-url origin 2>/dev/null || true)"
+  if [ -n "$ACTUAL_URL" ] && [ "$ACTUAL_URL" != "$REPO_URL" ]; then
+    info "${c_dim}  origin: $ACTUAL_URL${c_off}"
+  fi
+elif [ ! -e "$TARGET" ]; then
+  info "no $DIR_NAME beside this repo - cloning $REPO_URL"
   if git clone "$REPO_URL" "$TARGET"; then
     ok "cloned to $TARGET"
   else
