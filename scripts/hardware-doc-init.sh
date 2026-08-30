@@ -181,11 +181,15 @@ ensure_link "$WORKTREE_ROOT" "$LINK_REL" "../../$DIR_NAME" "$TARGET"
 #     [ -n "$ARCHIVE_URL" ] && [ ! -e "$ARCHIVE_DIR" ] && git clone "$ARCHIVE_URL" "$ARCHIVE_DIR"
 #
 #   Keep the same safety rules: fast-forward only, never touch a dirty checkout.
-ARCHIVE_DIR="$(dirname "$TARGET")/hardware-doc-archive"
+ARCHIVE_ROOT="${REPO_ARCHIVE_ROOT:-$(dirname "$TARGET")/hardware-doc-archive}"
+# Namespaced by source repository, so a second repo's material sits beside ours.
+ARCHIVE_DIR="$ARCHIVE_ROOT/$DIR_NAME"
+SCRATCH_DIR="$ARCHIVE_ROOT/scratch/$DIR_NAME"
 
 if [ -d "$TARGET/.git" ] || [ -d "$TARGET" ]; then
   if [ -d "$ARCHIVE_DIR" ]; then
-    ensure_link "$TARGET" "archive" "../hardware-doc-archive" "$ARCHIVE_DIR"
+    ensure_link "$TARGET" "archive" "../hardware-doc-archive/$DIR_NAME" "$ARCHIVE_DIR"
+    [ -d "$SCRATCH_DIR" ] && ensure_link "$TARGET" "scratch" "../hardware-doc-archive/scratch/$DIR_NAME" "$SCRATCH_DIR"
   else
     info "${c_dim}archive absent: $ARCHIVE_DIR - skipping archive symlink${c_off}"
   fi
@@ -200,6 +204,10 @@ fi
 if [ -d "$ARCHIVE_DIR" ]; then
   ensure_link "$WORKTREE_ROOT" "archive"     "doc/hardware/archive" "$ARCHIVE_DIR"
   ensure_link "$WORKTREE_ROOT" "doc/archive" "hardware/archive"     "$ARCHIVE_DIR"
+  if [ -d "$SCRATCH_DIR" ]; then
+    ensure_link "$WORKTREE_ROOT" "scratch"     "doc/hardware/scratch" "$SCRATCH_DIR"
+    ensure_link "$WORKTREE_ROOT" "doc/scratch" "hardware/scratch"     "$SCRATCH_DIR"
+  fi
 fi
 
 # --- archive summary ----------------------------------------------------------

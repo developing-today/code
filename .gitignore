@@ -166,3 +166,5 @@ doc/hardware/*
 # replaced by a real directory; they do not affect the tracked symlinks themselves.
 archive/*
 doc/archive/*
+scratch/*
+doc/scratch/*
