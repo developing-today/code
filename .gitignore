@@ -170,3 +170,10 @@ scratch/*
 doc/scratch/*
 .opencode/opencode-notifier-state.json
 /.opencode/opencode-notifier-state.json
+
+# .opencode/plugin/shell-strategy is a third-party plugin checked out in place
+# (https://github.com/JRedeker/opencode-shell-strategy, branch trunk). It was
+# previously recorded as a bare gitlink with no .gitmodules, so clones got an
+# empty directory and no way to populate it. Untracked instead - clone it
+# yourself if you want the plugin.
+.opencode/plugin/shell-strategy/
