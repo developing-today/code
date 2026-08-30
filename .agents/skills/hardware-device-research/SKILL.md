@@ -27,6 +27,27 @@ Set it up — clones if missing, fast-forwards if clean, never clobbers local wo
 ./scripts/hardware-doc-init.sh      # also runs automatically in the devshell
 ```
 
+## You can work the structure from here
+
+The sibling checkout and its archive are reachable from **this** repo's root — the shortcuts
+resolve to exactly the same bytes the knowledge-base repo sees:
+
+| From here | Reaches | Called this in `hardware-doc` |
+|---|---|---|
+| `doc/hardware/…` | the knowledge base | `./…` |
+| `archive/…` *or* `doc/archive/…` | archived artifacts | `archive/…` |
+| `scratch/…` *or* `doc/scratch/…` | working files, raw fetches | `scratch/…` |
+
+So you can read, download into, and archive from these paths without resolving anything by
+hand. `archive/devices/foo/bar.step` is the same file from either side.
+
+Two things still hold:
+
+- **Write records into `doc/hardware/` and commit them there**, in that repo — not here.
+- **Inside a record, use the paths that repo sees**: `archive/…`, `scratch/…`, and
+  repo-relative links. `doc/hardware/devices/…` is correct from here and broken from there,
+  and that repo is also read standalone.
+
 ## Read the real skill — in full, once
 
 **Before starting any research pass, read the whole method file end to end.**
@@ -98,5 +119,10 @@ PARENT="$(dirname "$ROOT")"     # $PARENT/hardware-doc  and  $PARENT/repo-archiv
 `--git-common-dir`, not `--show-toplevel`: inside a linked worktree the toplevel is the worktree,
 whose parent is the wrong directory.
 
-Inside `hardware-doc` the archive is reachable as `archive/` and its working files as `scratch/` —
-both tracked symlinks into `repo-archive`, which is namespaced per source repository.
+You rarely need this — the shortcuts above already reach everything. Resolve explicitly only in
+a script that must work from an unknown directory, or when the sibling checkout is missing and
+you are about to run the init script.
+
+`repo-archive` is namespaced per source repository (`hardware-doc/` for artifacts,
+`scratch/hardware-doc/` for working files), so material archived out of another repo would sit
+beside it rather than collide.
