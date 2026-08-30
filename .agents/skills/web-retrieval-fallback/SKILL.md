@@ -16,6 +16,9 @@ Read both before retrying if you haven't already in this session — prior findi
 
 ## Ladder
 
+0. **On GitHub, authenticate first** — `-H "Authorization: Bearer $(gh auth token)"`, or use
+   `gh api`. The API limit is per-identity, so UA rotation cannot help. See
+   [below](#github-authenticate-before-rotating-user-agents).
 1. **Default request** with normal headers.
 2. On 403, 429, bot-challenge page, or obvious filtering: retry with a modern browser UA:
    `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`
@@ -26,11 +29,52 @@ Read both before retrying if you haven't already in this session — prior findi
 4. Check the doc's *Sites* section for the domain you are hitting — there may be a known working path, mirror, archive link, or rate-limit note.
 5. If content still won't come via direct fetch: try mirrors (`web.archive.org`, GitHub mirrors/repos), alternate endpoints (`.json` APIs, `old.reddit.com/.json` style variants), or clone-and-search locally.
 
+## GitHub: authenticate before rotating user agents
+
+For anything on `api.github.com`, UA rotation is the wrong tool — the limit is **per-identity,
+not per-agent**, so no header will help. Authenticate instead:
+
+```bash
+TOKEN="$(gh auth token)"
+curl -fsSL -H "Authorization: Bearer $TOKEN" https://api.github.com/...
+```
+
+| | Unauthenticated | With `gh auth token` |
+|---|---|---|
+| `api.github.com` core | **60 / hour** | **5 000 / hour** |
+| Search API | 10 / min | 30 / min |
+
+Measured, not quoted from docs — check yours with:
+
+```bash
+curl -s -H "Authorization: Bearer $(gh auth token)" https://api.github.com/rate_limit
+```
+
+Notes:
+
+- 60/hour is easy to exhaust: one recursive tree listing of a large repo can do it in a single
+  call, and you will then see 403s with `X-RateLimit-Remaining: 0` that look like bot-blocking
+  but are not. **Check the header before reaching for a UA.**
+- `raw.githubusercontent.com` is not the API and is far more permissive, so prefer it for
+  fetching file contents. The same `Authorization` header works there and is required for
+  private repos.
+- `gh api` handles auth and pagination itself — `gh api repos/OWNER/REPO/git/trees/BRANCH?recursive=1`
+  is usually better than hand-rolling `curl`.
+- If `gh auth token` is empty, the user is not logged in. Say so rather than silently falling
+  back to unauthenticated requests and blaming rate limits later.
+- Never print the token, echo it into a file, or paste it into a commit. Reference it as
+  `$(gh auth token)` at the point of use.
+
+The same principle generalises: where a host offers authentication the user already has, use
+it before pretending to be a different client.
+
 ## Rules
 
 - Do not use altered User-Agent headers when testing/debugging actual HTTP behaviour of an app, API, auth flow, or client — it hides genuine access-control problems.
 - A success via alternate UA is not evidence the resource works normally for ordinary clients.
 - Never use UA substitution to bypass authentication, account permissions, or explicit access controls.
+- Prefer real credentials the user already holds (`gh auth token`) over UA substitution. It is
+  not a workaround — it is the supported path, and it raises the GitHub limit 83x.
 
 ## Document findings
 

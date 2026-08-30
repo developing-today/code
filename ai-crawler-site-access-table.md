@@ -424,6 +424,32 @@ Tested 2026-08-21 while researching the Espressif ESP32-U4WDH.
 ### Developer / media (all ✓)
 
 github.com, news.ycombinator.com, substack.com, tumblr.com, bsky.app, joinmastodon.org instances, youtube.com, twitch.tv, soundcloud.com, flickr.com, imgur.com — worked with **every** UA tested. Treat these as safe defaults; if one of them starts failing, suspect rate limiting rather than UA blocking.
+
+#### `api.github.com` — authenticate, don't rotate
+
+The one case where UA rotation is definitively the wrong tool: the API limits **per identity**,
+so every agent shares the same bucket. Measured 2026-08-30:
+
+| | Core limit | Search |
+|---|---|---|
+| Unauthenticated | **60 / hour** | 10 / min |
+| `Authorization: Bearer $(gh auth token)` | **5 000 / hour** | 30 / min |
+
+```bash
+curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://api.github.com/...
+gh api repos/OWNER/REPO/git/trees/BRANCH?recursive=1     # auth + pagination handled
+curl -s -H "Authorization: Bearer $(gh auth token)" https://api.github.com/rate_limit
+```
+
+**Exhaustion looks like bot-blocking.** A single `git/trees/...?recursive=1` on a large repo can
+consume the whole unauthenticated hour, and the subsequent 403s are indistinguishable from a
+challenge page unless you read `X-RateLimit-Remaining: 0`. Check that header first.
+
+`raw.githubusercontent.com` is **not** the API and is far more permissive — prefer it for file
+contents. Useful where a vendor "wiki" is really a repo: Seeed's lives at
+`Seeed-Studio/wiki-documents` branch `docusaurus-version` (`main` 404s, `master` is a
+near-empty tree), and the markdown there carries vendor download URLs verbatim, which makes it a
+genuine second source when `files.seeedstudio.com` links rot.
 - Findings:
   - *(add findings here)*
 

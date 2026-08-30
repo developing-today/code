@@ -8,6 +8,16 @@ description: Build or audit a source-traceable hardware knowledge base. Use when
 > **This is a pointer, not the method.** Hardware research does not live in this repository.
 > The authoritative skill, and every record it produces, live in a separate repo.
 
+## Retrieval
+
+Datasheets and vendor docs are frequently behind bot filtering, and GitHub's API will
+rate-limit you at 60 requests/hour unless you authenticate. Before fighting a 403 or a 429, use
+the **`web-retrieval-fallback`** skill: it carries the user-agent escalation ladder, the
+`gh auth token` path for GitHub, and a per-domain record of what has previously worked.
+
+Record what you learn there too — a domain that needed a particular agent, or a URL that only
+resolved from an archive — so the next session does not repeat the work.
+
 ## Where the work happens
 
 **[`developing-today/hardware-doc`](https://github.com/developing-today/hardware-doc)** — checked
