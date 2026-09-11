@@ -15,7 +15,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.3",
+    "@chenglou/pretext": "^0.0.5",
     "@starfederation/datastar": "^1.0.0-beta.11",
     "msgpackr": "^1.11.0",
     "prosemirror-collab": "^1.3.1",
