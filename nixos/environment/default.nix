@@ -6,6 +6,10 @@
   ...
 }:
 let
+  # The compositor is the master flake build (see nixos/hyprland). Anything that
+  # bakes hyprctl into its PATH must use the matching one, or it will ship the
+  # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
+  hyprland-master = inputs.hyprland.packages.${system}.hyprland;
   espIdf5 = inputs.esp-dev.packages.${system}.esp-idf-full;
   espIdf6 = inputs.esp-dev-6.packages.${system}.esp-idf-full;
   mkEspIdfSystemPackage =
@@ -140,7 +144,7 @@ let
 
   # opencode-desktop: upstream rewrote the desktop app (electron/bun, no more tauri/cargo),
   # so the old outputHashes overrideAttrs is no longer needed
-  inherit (inputs.opencode.packages.${system}) opencode-desktop;
+  opencode-desktop = inputs.opencode.packages.${system}.opencode-desktop;
 in
 {
   nixpkgs.overlays = [
@@ -201,8 +205,6 @@ in
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
-      # OMP ("Oh My Pi") harness, from https://omp.sh -> github:can1357/oh-my-pi
-      oh-my-pi.packages.${system}.omp
     ])
     ++ (with inputs.roc.packages.${system}; [ nightly ])
     ++ (with inputs.affinity-nix.packages.${system}; [
@@ -215,33 +217,6 @@ in
       age
       wpa_supplicant_gui
     ])
-    ++ (with pkgs; [
-      # AI coding agents / LLM CLIs.
-      # NOTE: opencode is installed above from its own flake input, and
-      # oh-my-posh comes from programs.oh-my-posh in home/common/default.nix.
-      claude-code # Anthropic Claude Code
-      codex # OpenAI Codex CLI
-      openclaw # OpenClaw (openclaw.ai) assistant
-      gemini-cli # Google Gemini
-      qwen-code # Alibaba Qwen Code
-      crush # Charm agentic coder
-      amp-cli # Sourcegraph Amp
-      goose-cli # Block Goose
-      aider-chat # Aider pair programmer
-      cursor-cli # Cursor agent
-      aichat # multi-provider LLM CLI
-      mods # Charm LLM pipe tool
-      tgpt # no-auth LLM CLI
-    ])
-    ++ [
-      # Mojo (Modular). Prebuilt upstream wheels, unfree license.
-      # See pkgs/mojo/default.nix for why we track stable PyPI over nightly.
-      (pkgs.callPackage ../../pkgs/mojo { })
-      # Agent harnesses not packaged in nixpkgs. OMP comes from its own
-      # upstream flake input above; these two we package ourselves.
-      (pkgs.callPackage ../../pkgs/hermes-agent { }) # https://hermes-agent.nousresearch.com
-      (pkgs.callPackage ../../pkgs/pi-coding-agent { }) # https://pi.dev
-    ]
     ++ (with pkgs; [
       # Embedded development: ESP32/ESP8266, Arduino, RP2040, AVR, ARM and RISC-V
       esptool
@@ -359,6 +334,15 @@ in
       libcoap
       rtl_433
 
+      # D-Bus/GObject Python bindings.
+      # Mirrors the devshell python3.withPackages set in nix-common.nix so the
+      # same scripts run outside `nix develop`.
+      python3Packages.pydbus
+      python3Packages.dbus-python
+      python3Packages.pygobject3
+      gobject-introspection
+      glib
+
       # Wireless ecosystem tooling: Matter/Thread/Zigbee/BLE and embedded serialization
       esphome
       zigbee2mqtt
@@ -409,6 +393,18 @@ in
       horizon-eda
       # geda # removed from nixpkgs 2026-07-26: unmaintained upstream
       gerbv
+
+      # Mechanical CAD / STEP + FreeCAD inspection
+      # Used for vendor mechanical design files during hardware research, e.g.
+      # doc/hardware/devices/nicolai-electronics/tanmatsu (case .FCStd + .step).
+      # freecad ships `freecadcmd` for headless scripting.
+      # NOTE: CadQuery is NOT in nixpkgs (no `cadquery`, no `OCP` attribute).
+      # pythonocc-core gives equivalent OpenCascade bindings; for CadQuery
+      # proper use a venv:  uv venv && uv pip install cadquery
+      freecad
+      python3Packages.pythonocc-core
+      python3Packages.ezdxf
+
       appimage-run # for other proprietary AppImage tools
       squareline-studio
       imagemagick
@@ -660,7 +656,10 @@ in
       ghc
       github-copilot-cli
       # gnomeExtensions.toggle-alacritty # TODO: broke with 26
-      grimblast
+      # grimblast is a wrapped shell script; it bakes hyprctl into its PATH.
+      # Default would be pkgs.hyprland (0.56.2). Its queries (clients,
+      # activewindow) are still valid IPC commands on master.
+      (grimblast.override { hyprland = hyprland-master; })
       gtk2
       gtk3
       gtk4
@@ -692,8 +691,13 @@ in
       #inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors
       hyprlock
       hyprpicker
-      hyprshade
-      hyprshot
+      # hyprshade 5.0.0 already migrated to the Lua config (upstream #69): it
+      # sets shaders via `hyprctl eval 'hl.config({decoration={screen_shader=...}})'`
+      # and reads them via `hyprctl -j getoption`. Both are valid master IPC
+      # commands, so it needs the master hyprctl, not nixpkgs 0.56.2's.
+      (hyprshade.override { hyprland = hyprland-master; })
+      # hyprshot only queries (activewindow/monitors/clients), all still valid.
+      (hyprshot.override { hyprland = hyprland-master; })
       kanata
       kitti3
       kitty

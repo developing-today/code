@@ -16,9 +16,13 @@ in
   # ];
   programs.hyprland = {
     enable = true;
-    #package = inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland;
-    #portalPackage =
-    #  inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.xdg-desktop-portal-hyprland;
+    # Master build: hyprland dropped hyprlang/.conf support, so the Lua config
+    # in config/hypr/hyprland.lua requires this rather than the nixpkgs 0.56.2
+    # package. Keep package and portalPackage in sync, per
+    # https://wiki.hypr.land/nix/installing-hyprland-on-nixos/
+    package = inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland;
+    portalPackage =
+      inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.xdg-desktop-portal-hyprland;
     xwayland = {
       enable = true;
     };

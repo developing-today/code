@@ -31,19 +31,7 @@ fi
 # --use-substitutes
 # --no-net
 # -vvvv
-
-# pass --no-upgrade (or set SKIP_UPGRADE=1) to build the lock exactly as committed
-upgrade_args=(--upgrade)
-for arg in "$@"; do
-  if [[ $arg == "--no-upgrade" ]]; then
-    upgrade_args=()
-  fi
-done
-if [[ ${SKIP_UPGRADE:-0} == "1" ]]; then
-  upgrade_args=()
-fi
-
-nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json "${upgrade_args[@]}" --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
 git add flake.lock
 set +e
 current=$(nixos-rebuild list-generations | grep current)

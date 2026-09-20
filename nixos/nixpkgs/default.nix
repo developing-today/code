@@ -10,7 +10,6 @@
         "olm-3.2.16"
         "electron"
         "qtwebkit-5.212.0-alpha4"
-        "openclaw-2026.6.33"
       ];
     };
     overlays = [

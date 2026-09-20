@@ -10,7 +10,16 @@
   wayland.windowManager.hyprland = {
     enable = true;
     #plugins = [ inputs.hypr-dynamic-cursors.packages.${pkgs.system}.hypr-dynamic-cursors ];
-    extraConfig = builtins.readFile (lib.from-root "config/hypr/hyprland.conf");
+    # Hyprland itself is installed by the NixOS module (nixos/hyprland), which
+    # pins the master flake package. Null here so home-manager does not pull a
+    # second, differently-versioned hyprland from nixpkgs into $PATH.
+    package = null;
+    portalPackage = null;
+    # Redundant at stateVersion >= 26.05, where "lua" is the default, but kept
+    # explicit: the master hyprland package only reads hyprland.lua, so this is
+    # load-bearing if stateVersion is ever rolled back.
+    configType = "lua";
+    extraConfig = builtins.readFile (lib.from-root "config/hypr/hyprland.lua");
     # settings = {
     #   "$mod" = "SUPER";
     # }
@@ -58,9 +67,47 @@
     enable = true;
     userDirs.enable = true;
 
-    configFile."hypr" = {
-      source = lib.from-root "config/hypr";
-      recursive = true;
+    # CURRENT: home-manager owns ~/.config/hypr/hyprland.lua.
+    # The wayland.windowManager.hyprland block above reads
+    # config/hypr/hyprland.lua via `extraConfig` and wraps it with the
+    # hyprland-session.target start/shutdown hooks before writing it out.
+    # Everything else in config/hypr/ is a plain asset with no generation step,
+    # so those are linked individually. hyprpaper.conf refers to
+    # ~/.config/hypr/wallpaper.jpg, so that path must keep existing.
+    configFile."hypr/hyprpaper.conf".source = lib.from-root "config/hypr/hyprpaper.conf";
+    configFile."hypr/wallpaper.jpg".source = lib.from-root "config/hypr/wallpaper.jpg";
+
+    # PREVIOUS: recursive link of the whole directory.
+    #
+    #   configFile."hypr" = {
+    #     source = lib.from-root "config/hypr";
+    #     recursive = true;
+    #   };
+    #
+    # That linked every file in config/hypr/ verbatim -- including
+    # hyprland.lua, which SHADOWED home-manager's generated config. The
+    # generated file was still built but referenced zero times, so the
+    # hl.on("hyprland.start", ...) hook that runs
+    # `systemctl --user start hyprland-session.target` never ran. The
+    # hand-rolled dbus-update-activation-environment exec at the top of
+    # hyprland.lua was a partial substitute for that hook and is now redundant
+    # with it (harmless, but removable).
+    #
+    # TO GO BACK: re-enable the block above and delete the two individual
+    # configFile entries. ~/.config/hypr/hyprland.lua then becomes the raw repo
+    # file again. If you do, also set
+    # `wayland.windowManager.hyprland.systemd.enable = false` so the config
+    # stops claiming a systemd integration that never activates.
+
+    # lua-language-server stubs for the `hl.*` API used by hyprland.lua.
+    # home-manager's hyprland module emits this itself, but only when its
+    # `package` is non-null; we set that to null so the NixOS module owns the
+    # install, so point it at the same flake package by hand.
+    configFile."hypr/.luarc.json".text = builtins.toJSON {
+      workspace.library = [
+        "${inputs.hyprland.packages.${system}.hyprland}/share/hypr/stubs"
+      ];
+      diagnostics.globals = [ "hl" ];
     };
     mimeApps.defaultApplications = {
       "application/x-extension-htm" = "firefox.desktop";
@@ -1082,7 +1129,10 @@
         xclip
         xcp
         xdg-desktop-portal
-        xdg-desktop-portal-hyprland
+        # Provided system-wide (and version-matched to the master compositor) by
+        # programs.hyprland.portalPackage in nixos/hyprland. Installing the
+        # nixpkgs 0.56.2-built copy here only put a skewed binary on PATH.
+        # xdg-desktop-portal-hyprland
         xdg-utils
         xdg-utils # for opening default programs when clicking links
         thunar # moved to top-level from xfce.thunar
