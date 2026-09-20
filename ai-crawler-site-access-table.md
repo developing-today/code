@@ -1,15 +1,5 @@
 # Site Access by User-Agent / Crawler
 
-> **Mirror.** The maintained copy of this file lives in
-> **[`developing-today/hardware-doc`](https://github.com/developing-today/hardware-doc)**
-> (`doc/hardware/ai-crawler-site-access-table.md` once the sibling checkout exists), because that
-> is where the research runs and where new findings are discovered.
->
-> This copy exists so the retrieval guidance in [`AGENTS.md`](AGENTS.md) still works when
-> `hardware-doc` has not been cloned. **Record new findings in `hardware-doc` and copy them here**,
-> not the other way round — otherwise the two drift and neither is trustworthy.
-
-
 > **Legend:** ✓ real content · ◐ partial access — `200 OK` but only the empty JavaScript shell, no actual data · ✗ blocked (HTTP code shown)
 >
 > Reconstructed from an image of the original table. Cells marked `?` were ambiguous in the source image.
@@ -300,6 +290,29 @@ Shell-only (◐) for nearly all clients; GPTBot/Googlebot hard-blocked (403). Re
     - Be gentle: ~2 s between requests was sufficient for ~10 requests with no throttling. `ClaudeBot`'s 429 suggests the domain tracks per-agent quota.
     - Takeaway: **prefer `old.reddit.com` over `www.reddit.com` for all JSON access**, and rotate to `WhatsApp/2.23.20.0` when a browser UA is refused.
 
+#### csdn.net / gitee.com / zhihu.com (Chinese developer platforms)
+Mixed. CSDN's HTML search is a JS shell but it has a working JSON API; Gitee's public API silently returns empty results; Zhihu hard-blocks.
+- Findings:
+  - **2026-09-11 — CSDN is searchable via JSON API; the HTML search page is a decoy.** Found while sweeping Chinese platforms for M5Stack/ESP32 e-paper material.
+    - `https://so.csdn.net/so/search?q=...` returns **HTTP 200 with ~5.8 KB** — a JavaScript shell with **zero results in the HTML**. Easy to misread as "no results exist".
+    - **Working path:** `https://so.csdn.net/api/v3/search?q=<query>&t=blog&p=1` with a Chrome 131 UA → **200**, full JSON. Results are in `result_vos[]`. **Correction (2026-09-11):** `title`, `url`, `nickname` and `create_time_str` sit at the **top level** of each result, not inside `floor_info` as first recorded. Titles are HTML-tagged (`<em>`) and need stripping; `create_time` is **epoch seconds**. Total count is `total_num`. Each result also carries a `body` field with ~2,000 chars of article text, **which partially defeats the VIP paywall**.
+    - Sanity figures: `M5Paper` → 4,301; `墨水屏 ESP32` → 1,567; `SSD1677` → 69. Matching is fuzzy — alphanumeric part numbers pull in unrelated hardware, so treat totals as upper bounds.
+    - **Gitee's API returns `[]` for everything.** `https://gitee.com/api/v5/search/repositories?q=<q>` returned an empty array for `m5stack`, `esp32` **and `arduino`** — a control test with common terms proves the endpoint is gated/requires auth rather than the repos being absent. `search.gitee.com` is an 849-byte JS shell. **No unauthenticated path found.**
+    - `zhihu.com/search` → **403** for a Chrome 131 UA. Not pursued further.
+    - **General lesson:** when a search page returns 200 but zero results, **run a control query with a term that must exist** (`arduino`, `linux`) before recording an absence. A JS shell and a genuinely empty result set look identical in the HTML.
+
+  - **2026-09-11 — two hard limits on the CSDN techniques above, both discovered the expensive way.**
+    - **(a) The VIP paywall is server-side and UA-independent.** Googlebot, Bingbot and ChatGPT-User all returned **byte-for-byte identical** truncated bodies (855 chars) for the same VIP article. **Do not burn time rotating UAs on VIP content** — the earlier "Googlebot works" finding applies only to *non-VIP* articles, where it remains reliable (3/3 full retrievals, content in `<div id="content_views">`).
+    - **(b) ⚠ The search API's `body` field silently strips the ASCII letters `t`, `r`, `n`, `l`.** Example: `Gate Driving voltage Control` came back as `Gae Divig voage Coo`. CJK text is unaffected. **This makes `body` usable for Chinese prose but actively dangerous for code, register names, hex constants or identifiers** — it will quietly corrupt them rather than fail. Fetch the article page for anything technical. `body` is also **empty for VIP articles**, so it does not defeat the paywall in general.
+    - **The search API's real value turned out to be different:** finding the *free original* that a paywalled article was rewritten from. CSDN carries many AI rewrites of one source; searching a distinctive phrase from the paywalled preview located a complete, free 2024 original.
+
+  - **2026-09-11 — CSDN *article* pages invert the usual UA pattern: browser UAs are blocked, search-engine UAs work.** Separate from the search API above.
+    - `blog.csdn.net/<user>/article/details/<id>` returns **HTTP 521** with a JS challenge to: Chrome 131 desktop, `curl/8.x`, `WhatsApp/2.23.20.0`, `ClaudeBot/1.0`, and iPhone Safari.
+    - Returns **HTTP 200 with ~200 KB of real content** to: **Googlebot**, **Bingbot**, **ChatGPT-User**.
+    - This is the reverse of the normal advice — here the bot UAs are the working path and the browser UA is refused. Note the **search API** (`so.csdn.net/api/v3/search`) is the opposite again and works fine with a Chrome UA.
+    - Many CSDN articles are behind a **VIP paywall** (`hide-article-box` / `vip-mask`, "最低0.47元/天"). The `body` field in search-API results returns ~2,000 chars and often contains the technical substance the paywalled page hides.
+    - **Content-quality warning:** CSDN carries a large volume of AI-generated content-farm articles — the same text republished under several accounts with different titles, sometimes with OCR corruption ("Gae Lie" for "Gate Line"). Cross-check any technical claim against a primary source before citing.
+
 ### Q&A / reference
 
 #### wikipedia.org
@@ -358,6 +371,15 @@ Tested 2026-08-21 while researching the Espressif ESP32-U4WDH.
 
 ### Vendor documentation portals
 
+#### crystalfontz.com (datasheet mirror — **serves the wrong document under the right URL**)
+- Findings:
+  - **2026-09-11 — the part number in the URL is ignored; only the numeric ID selects the document.** Found while chasing Solomon Systech e-paper controller datasheets.
+    - `crystalfontz.com/controllers/SolomonSystech/<PART>/<N>/` — `<PART>` is decorative. `.../SSD1680/498/` returned a valid 11 MB PDF containing **zero** occurrences of "SSD1680" and 67 of **"SSD7317"** (an unrelated OLED touch driver). `.../SSD1677/500/` returned the **SSD1681** datasheet.
+    - Every probed ID in `495`–`510` returned HTTP 200 with genuine `%PDF` magic and a correct content-type. **Status code, magic bytes and content-type all pass while the document is wrong.**
+    - **Always grep the extracted text for the part number before trusting a Crystalfontz PDF.** This is a worse failure mode than a 404, because every automated integrity check succeeds.
+
+
+
 | Site | Chrome UA | Notes |
 |---|---|---|
 | `documentation.espressif.com` | ✅ 200 | Espressif's current doc platform. **Serves a soft-404: HTTP 200, `text/html`, exactly 13,745 bytes, final URL `/404`.** Always validate `%PDF` magic bytes rather than trusting the status code. Also serves **HTML builds** of datasheets at `<slug>.html` alongside `<slug>.pdf` |
@@ -382,8 +404,6 @@ Tested 2026-08-21 while researching the Espressif ESP32-U4WDH.
 | `www.xlsemi.com`, `www.chipsemicorp.com`, `www.qstcorp.com`, `www.memsensing.com`, `www.sitronix.com.tw` | ✅ 200 | All reachable, all **Chinese-first**. Guessed product/category paths 404'd on each — the URL schemes were not determined. For these vendors **LCSC's datasheet mirror is the better first attempt** |
 | `zerowriter.ink` | ❌ **403** | ⚠️ **Partial block, and the site root lies.** Tested 2026-08-24: `https://zerowriter.ink/` returns **200** to a Chrome 131 UA, but `/pages/*` and `/products/*` return **403**. The **ClaudeBot UA returns 200** on those same paths. A reachability check against the root therefore passes while every documentation page fails. Shopify-hosted, so real product URLs are `/products/<handle>` with handles not derivable from menu labels — fetch the root and extract links rather than constructing them |
 | `zerowriter.com` | — | **Not the project.** Domain-for-sale parking page (Spaceship.com, $7,500). The Crowd Supply campaign and most press link here. The live site is `zerowriter.ink` |
-| `reddit.com`, `old.reddit.com` | ❌ **403** | ⚠️ Tested 2026-08-24: Chrome 131 UA → **403**; bare `curl/8.5.0` → **403**; Googlebot UA → **403**; ClaudeBot → **429**. **`WhatsApp/2.23.20.0` → 200.** Use `old.reddit.com/r/<sub>/top.json` and `/search.json?q=…&restrict_sr=1`; append `.json` to any permalink for a full comment tree. Throttle — repeated calls draw 429s |
-| `kickstarter.com` | ❌ **403** | **Blocks every UA tried** (Chrome, ClaudeBot, WhatsApp, ChatGPT-User, facebookexternalhit). Note the 403 body is ~294 KB and contains project prose, so a size check is not a success check — the `<title>` is `You're not allowed to do that (403 Forbidden)`. **Use the Wayback Machine**; snapshots exist |
 | `soldered.com`, `github.com/SolderedElectronics` | ✅ 200 | Product-page slugs churn — `.../soldered-inkplate-5-9-7-e-paper-board-copy/` returned **404 with a 561 KB body**, so validate on status code, not size. **GitHub is the better source**: `Soldered-<Product>-hardware-design` repos carry KiCad sources, BOM CSVs, schematic PDFs, gerbers, 3D STEP *and* CE/UKCA compliance certificates |
 | `www.eink.com` (E Ink Holdings) | ⚠️ **200 for literally everything** | ⚠️ **Textbook class-(c) uniform SPA shell.** Tested 2026-08-24 with a Chrome 131 UA: `/`, `/products`, `/product/ED052TC4`, `/brand.html`, `/brand.html?type=carta`, `/tech.html?type=electronicink` **all returned HTTP 200 with byte-identical 204,139-byte bodies.** A 200 from this host is worthless as evidence a page exists. Worse, a text scrape finds **no part numbers at all** — a regex for `ED\d{3}[A-Z]{2}\d` over the products page returns **zero** matches. E Ink genuinely publishes no part catalogue |
 | `www.e-ink.com` (hyphenated) | ❌ no connection | **Times out with no HTTP status**, with and without a browser UA (2026-08-24). Not a block — the domain simply is not the company's site. The live host is `eink.com` |
@@ -396,10 +416,11 @@ Tested 2026-08-21 while researching the Espressif ESP32-U4WDH.
   - **2026-08-24 — the standard UA-substitution fallback is not universally safe.** `nxp.com` inverts it: the default `curl` UA is allowed and every browser and bot UA tried returns 404. When a *major* vendor 404s its own homepage, suspect UA filtering in **either** direction and try the bare default before escalating.
   - **2026-08-24 — some manufacturers publish no part data at all, and their website will not tell you so.** `eink.com` returns a byte-identical 204 KB SPA shell for every path including invented part URLs, which reads as "the page exists, my extractor is broken." It is neither. E Ink distributes panel specifications only under NDA — their own leaked spec documents say so on page 1 — and the corporate site contains **zero** part numbers. When a vendor's site looks like it should have a catalogue and does not, consider that the absence is the business model, and go to (a) the **board vendor's open design files** for the connector pinout, (b) the **board vendor's driver source** for the protocol, and (c) the manufacturer's own **evaluation-kit store** (`shopkits.eink.com`), which is often the one place real numbers are published.
   - **2026-08-24 — check `archive.org/wayback/available` BEFORE submitting a save.** `web.archive.org/save/<url>` timed out at 120 s and then returned **HTTP 503** on retry, which reads as "archival failed." But the one-line JSON API `https://archive.org/wayback/available?url=<url>` answered instantly and showed a snapshot **already existed** — and fetching it returned a **byte-identical** file (same SHA-256) to the live one. The availability API is fast, unauthenticated and never rate-limited in the way `save/` is. Query it first; only submit a save if it comes back empty.
+  - **2026-09-11 — ⚠ CORRECTION to the bullet above: `archive.org/wayback/available` returns FALSE NEGATIVES. Never trust an empty result.** It reported `{"archived_snapshots": {}}` for `cs.helsinki.fi/u/kutvonen/index_files/linus.pdf` (Linus Torvalds' 1997 master's thesis) in two separate sessions — while the **CDX API, queried the same minute, listed continuous captures from 2018-05-11 to 2026-08-07**. The advice to "query it first" still holds for speed, but **a negative from it means nothing**: confirm absence with `https://web.archive.org/cdx/search/cdx?url=<url>&output=json` before concluding a URL is unarchived or submitting a save. This failure mode is especially bad because it fails *toward* phantom link-rot — it will have you "rescuing" documents that were never at risk.
+  - **2026-09-11 — the CDX `length` field is the WARC record length, not the payload size.** Three captures of one unchanged file reported 422,587 / 418,490 / 438,660 bytes. **Never compare `length` to a file size.** Compare the `digest` instead — it is a base32 SHA-1 of the payload and is directly checkable against a local copy: `python3 -c "import hashlib,base64;print(base64.b32encode(hashlib.sha1(open('f.pdf','rb').read()).digest()).decode())"`. Doing this proved the archived Torvalds thesis byte-identical to the live file (`ZVCIUY5JU6PJW3CN37K277F2Z4HLXYPV`).
+  - **2026-09-11 — `web.archive.org` throttling flaps, and rotating UAs during a flap records phantom "working agents".** There is no fixed quota: one run blocked after ~3 requests, another made 16 consecutive 200s. 429 and outright TCP refusal are *alternative* modes, not an escalation — one 60-request run emitted zero 429s. Worst of all, identical requests 1 s apart alternate: `200 200 000 000 000 200 200 000 000 000`. A bulk fetch through a throttle window silently mixes retrieved and missing files with nothing distinguishing "not archived" from "refused". **CDX does not stay open either** — it is the same host and degrades with it. What survives is the **`archive.org`** host: `wayback/available`, `metadata/<id>` and `advancedsearch.php` all answered 200 during a live block of `web.archive.org`. **Route around by host, not by agent**, and retry a CDX query twice before recording "no captures".
   - **2026-08-24 — public web search is currently unusable from this environment for obscure part numbers.** DuckDuckGo's `html/` and `lite/` endpoints both return a bot-challenge page ("select all squares containing a duck") with and without a browser UA. Bing returned **entirely unrelated German CRM-software results** for a quoted `"ED052TC4"` query — not zero results, *wrong* results, which is more dangerous. **Do not treat a search-engine miss as evidence a document does not exist**; probe candidate hosts directly instead.
   - **2026-08-24 — a 200 on a site's root does not mean the site is accessible.** `zerowriter.ink` serves the root to a Chrome UA but 403s every documentation and product path; the ClaudeBot UA gets 200 on all of them. Probe an actual content page, not just the homepage, before concluding a site works.
-  - **2026-08-24 — the WhatsApp UA is the one that works on Reddit.** Chrome, bare `curl` and Googlebot all 403; ClaudeBot gets 429. `WhatsApp/2.23.20.0` returns 200 on `old.reddit.com` JSON endpoints. Reddit's JSON API needs no key: `/r/<sub>/top.json?t=all&limit=N`, `/r/<sub>/search.json?q=…&restrict_sr=1`, and `<permalink>.json` for a whole thread with nested comments.
-  - **2026-08-24 — a large 403 body can look like a successful fetch.** Kickstarter returns **294 KB** of HTML with a 403 status, including real project prose, so any check based on response size will pass. Check the status code and the `<title>`.
   - **2026-08-24 — when a vendor's website looks dead, grep their repository for the domain.** `zerowriter.com` is a parked for-sale page and is what the Crowd Supply campaign and every press article link to, which reads as an abandoned project. The live site (`zerowriter.ink`) was found only in a URL inside `firmware_releases/updates-readme.txt` in their GitHub repo. Release notes, installers, `howto.txt` files and firmware readmes routinely carry the current domain long after marketing pages go stale.
   - **2026-08-24 — GitHub's licence detector reports TAPR OHL as `NOASSERTION`.** Every Soldered Electronics hardware repo shows `NOASSERTION` or `None` via the API while carrying an unambiguous **TAPR Open Hardware License v1.0** in `LICENSE.md`. Do not treat the API field as evidence a hardware repo is unlicensed — open the licence file.
   - **2026-08-24 — GitHub org listings need pagination or you will miss most of a vendor's repos.** `SolderedElectronics` has 200+ repositories; `?per_page=100&page=1` returned **no** Inkplate 5 hardware repos at all. They surfaced only via `/search/repositories?q=inkplate+5+in:name`. Paginate, and cross-check with search.
@@ -421,35 +442,39 @@ Tested 2026-08-21 while researching the Espressif ESP32-U4WDH.
   - **Vendor *driver bundles* can be primary sources.** WCH's macOS `CH34xVCPDriver` embeds an `IOKitPersonalities` dictionary listing every VID/PID the vendor claims — better evidence than any web page. Extraction recipe (pure Python, no `hdiutil`): `bsdtar` the `.7z`; the `.dmg` is **UDZO**, so scan for `0x78 0x01/0x9c/0xda` zlib chunk starts and decompress each with `zlib.decompressobj()`, using `.unused_data` to locate the next chunk; then find `bplist00` markers in the concatenated output and brute-force `plistlib.loads()` over increasing end offsets. The sibling `.pkg` is a `xar` archive whose payload `bsdtar` rejects with "Decompressed size error" — **use the `.dmg`**. The same idea generalises: Windows `.inf` files, Linux kernel driver sources and macOS `Info.plist`s are all vendor-authored ID tables.
   - **Caveat on the +29 offset trick:** it is not as clean as recorded above. The shift is applied to letters, digits and punctuation but the extractor emits *some* characters unshifted, so shifted ranges collide with literal ones (a raw `3` is either the digit `3` or an encoded `P`). Mechanical decoding yields human-legible but machine-useless text like `bpmPO peries po` brrataK` for *"ESP32 Series SoC Errata."* Fine for reading an 8-page guide by eye; do not build a parser on it.
 
+### Scholarly / preprint / archival
+
+Probed across 2026-09-01 → 2026-09-11 while building [`doc/hardware/research/preprint-repositories/`](doc/hardware/research/preprint-repositories/README.md) (~120 hosts). Full detail and per-host evidence in that directory's [`retrieval-notes.md`](doc/hardware/research/preprint-repositories/retrieval-notes.md).
+
+**Block fingerprints — identify the product by body size, then decide whether to retry or reroute:**
+
+| Body size | Product | Hosts |
+|---|---|---|
+| **~5.2–6.1 kB**, HTTP 403 | Cloudflare managed challenge (`cf-mitigated: challenge`) | `techrxiv.org` 5,620 · `authorea.com` 5,620 · `essopenarchive.org` 5,622 · `scienceopen.com` 5,602 · `chemrxiv.org` 5,595 · `advance.sagepub.com` 5,623 · `papers.ssrn.com` 5,731 · `africarxiv.pubpub.org` 5,583 · `oatd.org` (incl. `robots.txt`) · `alldatasheet` 5,603 |
+| **~2.1–7.8 kB, HTTP 200** | ⚠ **Anubis proof-of-work — answers 200, not 403** | `rcaap.pt` 4,511 · `portal.dnb.de` 4,475 · `base-search.net` 7,846 · `scipost.org` 3,903 · `helda.helsinki.fi` 2,123 · `econstor.eu` · `theses.hal.science` · `archive.softwareheritage.org` |
+| **~651 kB**, 403 | SHERPA / OpenDOAR | `v2.sherpa.ac.uk` |
+| **1,337 B**, 403 | ETH custom block — **IP/provider-scoped, not UA-scoped** | `research-collection.ethz.ch` (lifted by 2026-09-11) |
+| **283 B**, 403 | origin UA filter | `bitsavers.org` — blocks `Wget` and default `curl`, serves Chrome |
+| **369 B**, 403 | minimal, non-Cloudflare | `preprints.org` |
+
+- Findings:
+  - **2026-09-11 — Anubis proof-of-work returns HTTP 200 with a challenge body, so a status check reads it as success.** Detect it by `<title>Making sure you're not a bot!</title>` (or `<title>Oh noes!</title>` for its error page), **not** by status code or byte size. **No user-agent defeats it** — it is a JS proof-of-work, so the UA ladder in this document is useless by construction. Anubis spread to the national-library layer during this survey (nine hosts, versions 1.23.0–1.27.0). **The escape is to change protocol, not agent:** OAI-PMH, Crossref, DataCite, Handle.net and DSpace REST were open behind the wall on eight of nine hosts. `rcaap.pt` is the sole exception — its OAI endpoint is behind the wall too.
+  - **2026-09-11 — `hdl.handle.net/api/handles/<prefix>/<suffix>` is the best existence oracle found.** Returns JSON `responseCode: 1` (exists) or `100` (does not), **served by the Handle System rather than the target repository, so it works straight through Cloudflare and Anubis.** Verified against walled TDX (prefix `10803`) and MIT DSpace (`1721.1`). Most DSpace/EPrints repositories mint handles, so this covers most institutional repositories. Strictly better than the `doi.org` trick below.
+  - **2026-09-04 — `doi.org` is a usable existence oracle behind a bot wall.** It returns **404 for an unregistered DOI**, but for a **registered** one it redirects and passes through the target's **403**. So a 403 from a `doi.org` redirect *confirms the record exists* even when the page cannot be read. This made PeerJ Preprints, ChemRxiv and TechRxiv measurable while all three were unreadable.
+  - **2026-09-01 — `osf.io` returns HTTP 200 and a byte-identical 4,207-byte SPA shell for preprint providers that do not exist.** Status code *and* body size are both uninformative, so the usual negative-control test fails here. Use `https://api.osf.io/v2/preprints/?filter[provider]=<slug>` and read `meta.total`; the API 404s correctly (61-byte body). This affects every OSF-hosted preprint server. `unpaywall.org` does the same at 1,421 bytes; `eccc.weizmann.ac.il` at 17,041; `openreview.net/forum?id=<bogus>` at 4,787.
+  - **2026-09-11 — `www.biorxiv.org` 429s Chrome, default `curl` and ClaudeBot but returns 200 to `WhatsApp/2.23.20.0`.** Corroborates the existing workspace note that the WhatsApp link-preview agent slips through where browser agents do not.
+  - **2026-09-01 — `philsci-archive.pitt.edu` runs the ladder backwards**: default `curl` succeeds where Chrome 131 is refused. Same for `archive.softwareheritage.org`, where a `curl`-style request gets JSON (1,643 B) and a browser UA gets the Anubis interstitial (4,667 B). **Try the bare default before escalating.**
+  - **2026-09-11 — `archive.ph/timemap/<url>` works and is scriptable.** A valid RFC 7089 Memento TimeMap, HTTP 200 / ~1,497 B, plain Chrome UA, no CAPTCHA (5/5 attempts). Only `/newest/` is CAPTCHA-walled (429, 63,290 B). With **Memento Aggregator dead**, this is the one remaining scriptable way to ask archive.today what it holds — correcting an earlier note in this repo that said archive.today has no API.
+  - **2026-09-11 — `bitsavers.org` serves a zero-byte `robots.txt` at HTTP 200**, so a naive crawler reads an open invitation and then gets 403/283 B on every fetch. It blocks `Wget/1.21.4` and default `curl` but serves Chrome. **The sanctioned route is `rsync://bitsavers.org/`**, or a mirror — mirrors do not apply the origin's block, which is the correct answer here rather than UA substitution (AGENTS.md rule 7). bitsavers holds the **only surviving copy of the DEC SRC/WRL/CRL research-report series** (521 reports + a 236,085,636-byte 2007 HP Labs mirror ZIP) now that `hpl.hp.com` resolves in DNS but is TCP-dead.
+  - **2026-09-11 — `search.ndltd.org` 503s, DART-Europe closed permanently (2025-02-03), and `oatd.org` 403s every client** — the global thesis discovery layer has collapsed, and NDLTD now redirects its flagship search to the one service that blocks robots. **CORE (`api.core.ac.uk`) and OpenAIRE are the only open machine routes left** for theses.
+  - **2026-09-11 — `ethos.bl.uk` is metadata-only since the 2023 British Library cyberattack, and its legacy URLs lie.** `OrderDetails.do?uin=<bogus>` returns **HTTP 200 and the home page** (62,214 B), so a link-checker reports 100% success on any legacy EThOS bibliography. The ~650,000-record dataset survives openly: DOI `10.23636/rcm4-zk44`, CC-BY, a 709,733,446-byte CSV including a `Supervisor(s)` column.
+  - **2026-09-11 — `eprint.iacr.org` needs no UA fallback but enforces a hard Cloudflare "20 per 1 minute" per-path limit with no `Retry-After`.** Its `robots.txt` is `Disallow: /` by default while whitelisting `Claude-User`/`Claude-SearchBot` for metadata and banning all PDFs; **TDM is explicitly reserved despite the PDFs being CC-BY**. OAI-PMH returns all 27,552 identifiers in one 3.34 MB response.
+  - **2026-09-11 — hosts that block every agent tried** (including Googlebot where tested): `papers.ssrn.com`, `peerj.com`, `dl.acm.org/opentoc`, `doabooks.org`, `science.org` (which also has **no Wayback snapshot** of the article wanted), `cell.com`, `cabidigitallibrary.org`, `hrbopenresearch.org`, `amrcopenresearch.org`. For these, go to Crossref/DataCite metadata or the `doi.org` 403-passthrough test above.
+  - **2026-09-11 — a site can be a working archive that presents as a dead one.** `cogprints.org` fails over HTTPS with a **TLS SAN mismatch** (its certificate is `CN=web-archive.southampton.ac.uk`) — `curl` reports a connection error and no HTTP status at all. Over **plain HTTP** it 301s to Southampton's static archive. ⚠ That fallback has since degraded: as of 2026-09-11 the redirect lands on **HTTP 401** (7,493 B, BotStopper). **Always try `http://` before declaring a host dead on a TLS error.**
+
 ### Developer / media (all ✓)
 
 github.com, news.ycombinator.com, substack.com, tumblr.com, bsky.app, joinmastodon.org instances, youtube.com, twitch.tv, soundcloud.com, flickr.com, imgur.com — worked with **every** UA tested. Treat these as safe defaults; if one of them starts failing, suspect rate limiting rather than UA blocking.
-
-#### `api.github.com` — authenticate, don't rotate
-
-The one case where UA rotation is definitively the wrong tool: the API limits **per identity**,
-so every agent shares the same bucket. Measured 2026-08-30:
-
-| | Core limit | Search |
-|---|---|---|
-| Unauthenticated | **60 / hour** | 10 / min |
-| `Authorization: Bearer $(gh auth token)` | **5 000 / hour** | 30 / min |
-
-```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://api.github.com/...
-gh api repos/OWNER/REPO/git/trees/BRANCH?recursive=1     # auth + pagination handled
-curl -s -H "Authorization: Bearer $(gh auth token)" https://api.github.com/rate_limit
-```
-
-**Exhaustion looks like bot-blocking.** A single `git/trees/...?recursive=1` on a large repo can
-consume the whole unauthenticated hour, and the subsequent 403s are indistinguishable from a
-challenge page unless you read `X-RateLimit-Remaining: 0`. Check that header first.
-
-`raw.githubusercontent.com` is **not** the API and is far more permissive — prefer it for file
-contents. Useful where a vendor "wiki" is really a repo: Seeed's lives at
-`Seeed-Studio/wiki-documents` branch `docusaurus-version` (`main` 404s, `master` is a
-near-empty tree), and the markdown there carries vendor download URLs verbatim, which makes it a
-genuine second source when `files.seeedstudio.com` links rot.
 - Findings:
   - *(add findings here)*
 
@@ -457,10 +482,17 @@ genuine second source when `files.seeedstudio.com` links rot.
 
 Tips for acquiring data are not strictly limited to user agents — whatever works when the normal path doesn't is worth documenting here.
 
+- **An empty or wildcard query means "nothing", not "everything"** — verified independently on **NASA NTRS**, **OSTI.GOV** and **CiNii Dissertations** (2026-09-11). All three return `0`/`totalResults: 0` for an empty `q=`, rather than the full corpus. Three unrelated implementations share this trap, so assume it by default and cross-check any "total" against a known-populated facet.
+- **Follow redirects when probing APIs.** `zenodo.org/api/*` and `export.arxiv.org` over HTTP both return 301; omitting `curl -L` yields an empty body that reads exactly like a block. Two false "we are being rate-limited" conclusions in one session traced to precisely this — check for a 3xx before blaming the host.
+- **An API can return two plausible totals and the obvious one can be wrong.** `api.biorxiv.org` exposes both `total` (479,561 — every *version*) and `count_new_papers` (348,506 — distinct preprints) in the same object. Picking the obvious field overstated the corpus by 38%. Read the field list before trusting a count.
+- **Repositories usually count versions, not works.** Measured inflation ran from +1.6% to +50% across OSF providers; TechRxiv reports 30,954 DOI records for 18,890 actual items; Zenodo software is 284,518 concepts across 712,318 versions. Always establish which a number is.
+- **OAI-PMH signals errors in the body with HTTP 200** — an invalid verb returned 200 with a 488-byte error document. **Never status-check an OAI-PMH endpoint**; parse the response.
+- **Search-tokenisation can inflate a count by orders of magnitude.** Zenodo's API returns 422,778 hits for unquoted `RISC-V` against **495** quoted — an ~850× difference from hyphen tokenisation. Quote any term containing punctuation, and sanity-check surprising totals.
+- **When a scholarly or library site blocks you, look for a machine interface before concluding it is unreachable.** OAI-PMH, Crossref, DataCite, Handle.net and DSpace/REST were open on eight of nine proof-of-work-walled hosts tested in 2026-09. `econstor.eu` is the clearest case: the website is behind Anubis while its OAI-PMH endpoint is wide open, so an HTTP-only probe wrongly concludes the service is down.
 - **Rate limiting:** if the first couple of downloads succeed and then requests start failing, don't switch strategies immediately — slow down, wait a bit, and retry a single download. If that works, update this doc: note that the site has a rate limiter, which UA eventually worked, and any inferred limits (requests per minute, seconds between downloads, burst size). Even a rough guess ("~10 docs/min then 429s") is useful for future sessions.
 - **Mirrors and archives:** some sites move or delete resources, so a dead URL isn't always a block. If a URL is unreachable entirely (down, moved, deleted) — not just bot-blocked — someone may already have captured it. See *Finding copies of inaccessible URLs* below before giving up. GitHub repos/mirrors also often hold copies of documentation and datasets.
 - **Finding copies of inaccessible URLs** (dead, moved, or blocked):
-  - **Wayback capture list:** `https://web.archive.org/web/*/<url>*` shows the capture timeline in the UI. Programmatically use the availability API: `https://archive.org/wayback/available?url=<url>` (returns the closest snapshot as JSON).
+  - **Wayback capture list:** `https://web.archive.org/web/*/<url>*` shows the capture timeline in the UI. Programmatically use the availability API: `https://archive.org/wayback/available?url=<url>` (returns the closest snapshot as JSON). ⚠ **But see the 2026-09-11 correction under *Vendor documentation portals* — this API returns false negatives. An empty result does not mean unarchived; confirm with CDX.**
   - **Wayback CDX API** — the power tool. Lists every capture with status codes, timestamps, and original URLs, supporting wildcards: e.g. `https://web.archive.org/cdx/search/cdx?url=example.com/docs/&matchType=prefix&filter=statuscode:200&collapse=urlkey&output=json`. Use it to find captures of moved paths (`matchType=prefix` over the old directory), to pick the best snapshot (200s only), or to discover sibling URLs you didn't know existed. Add `&limit=` and paginate.
   - **Other archives:** `archive.today` (mirrors at archive.ph etc.) often has captures Wayback lacks, especially JS-heavy pages; **Memento Aggregator** (`http://timetravel.mementoweb.org/api/json/<timestamp>/<url>`) searches many archives (Wayback, Arquivo, etc.) at once.
   - **Software Heritage** (`softwareheritage.org`) — archival store for source code; if a repo vanished, its origins/directory tree may be preserved there. Wayback rarely preserves whole repos well.
