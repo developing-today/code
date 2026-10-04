@@ -271,6 +271,17 @@ rec {
       url = "github:anomalyco/opencode";
       # inputs.nixpkgs.follows = "nixpkgs-master";
     };
+    # OpenChamber: agentic dev environment built on opencode.
+    # Not in nixpkgs (no attr, no PR ever opened) and upstream ships zero Nix
+    # (verified: 6471-path tree, no flake.nix). Of the four third-party flakes
+    # that exist, Tarow's is the only one tracking current upstream (2.1.0) and
+    # builds from source via buildNpmPackage rather than wrapping the AppImage,
+    # which avoids the electron-updater-vs-immutable-store problem.
+    openchamber = {
+      url = "github:Tarow/openchamber-nix";
+      # deliberately NOT following nixpkgs: it vendors a package-lock.json and
+      # pins its own nixpkgs for the npm deps hash.
+    };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
     id-nixpkgs.follows = "nixpkgs-master";
     id-systems.follows = "systems";
@@ -417,7 +428,19 @@ rec {
     # extraOptions = ''
     #   flake-registry = ""
     # '';
-    auto-optimise-store = true;
+    # Deliberately false. This is NOT the same knob as `nix.optimise.automatic`
+    # (the periodic timer, already commented out in nixos/nix/default.nix).
+    # `auto-optimise-store` makes the daemon hard-link EVERY store write into
+    # /nix/store/.links, and this flake's nixConfig is fed straight into
+    # nix.settings by nixos/nix/settings/default.nix, so setting it here turned
+    # it on system-wide. That drove .links to ~9M entries and exhausted the
+    # ext4 htree index, producing a flood of
+    #   cannot link "/nix/store/.links/...": No space left on device
+    # despite the filesystem having 1.9T free and 92% of inodes unused.
+    # ext4 never shrinks a directory, so after switching this off the directory
+    # must be recreated once to actually recover:
+    #   sudo rm -rf /nix/store/.links && sudo mkdir -p /nix/store/.links
+    auto-optimise-store = false;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
     restrict-eval = false; # could i even make a conclusive list of domains to allow access to?

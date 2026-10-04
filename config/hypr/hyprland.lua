@@ -31,7 +31,7 @@ hl.config({
     kb_model = "",
     kb_options = "ctrl:nocaps",
     kb_variant = "",
-    sensitivity = 0, -- -1.0 - 1.0, 0 means no modification.
+    sensitivity = 0.3, -- -1.0 - 1.0, 0 means no modification.
     touchpad = {
       natural_scroll = true,
     },

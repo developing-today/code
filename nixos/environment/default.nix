@@ -145,6 +145,13 @@ let
   # opencode-desktop: upstream rewrote the desktop app (electron/bun, no more tauri/cargo),
   # so the old outputHashes overrideAttrs is no longer needed
   opencode-desktop = inputs.opencode.packages.${system}.opencode-desktop;
+
+  # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
+  # only documented install is a `curl | sh` that self-updates; see the
+  # derivation for how the artifact URL + upstream sha256 are pinned.
+  # callPackage'd here rather than via pkgs/default.nix, which the NixOS
+  # config does not import.
+  muse-code = pkgs.callPackage (lib.from-root "pkgs/muse-code") { };
 in
 {
   nixpkgs.overlays = [
@@ -195,6 +202,7 @@ in
       my-helmfile
       my-kubernetes-helm
       opencode-desktop
+      muse-code
     ]
     ++ (with inputs; [
       #rose-pine-hyprcursor.packages.${pkgs.system}.default
@@ -205,6 +213,7 @@ in
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
+      openchamber.packages.${system}.openchamber
     ])
     ++ (with inputs.roc.packages.${system}; [ nightly ])
     ++ (with inputs.affinity-nix.packages.${system}; [
@@ -238,6 +247,14 @@ in
       pkgsCross.avr.stdenv.cc
       pkgsCross.avr.buildPackages.gdb
       pkgsCross.avr.libc # was bare avrlibc; top-level avrlibc now refuses to eval on x86_64
+
+      # PDF mining for the hardware-doc knowledge base. Datasheets and reference
+      # manuals arrive as PDF and have to be turned into cited Markdown; the
+      # archiving rule in .agents/skills/hardware-device-research requires content
+      # be mined before an artifact may be moved out of the repository.
+      poppler-utils # pdftotext -layout, pdfinfo, pdfimages — the workhorse
+      mupdf # mutool: structure, embedded files, page extraction where poppler chokes
+      qpdf # decrypt/linearise/repair before extraction; inspect object structure
       avra
       avrdude
       simavr # upstream now uses pkgsCross.avr.libc internally
@@ -428,7 +445,18 @@ in
     ])
     ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
     ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
-    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [ ])
+    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
+      # AI coding agents. Kept on the unstable channel rather than master
+      # because unstable is cached (see the chromium note below) and these
+      # are large node/electron closures.
+      claude-code # anthropic, mainProgram "claude" (unfree)
+      codex # openai, mainProgram "codex"
+      antigravity-ide # google agentic IDE (unfree). `antigravity` is an alias.
+      antigravity-cli # google, mainProgram "antigravity"
+      # gemini-cli deliberately omitted: upstream sunset it for unpaid /
+      # AI Pro+Ultra tiers in favour of antigravity-cli above, and nixpkgs
+      # carries a removal notice. Re-add only if you need the `gemini` binary.
+    ])
     ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
       ghostty
       zed-editor

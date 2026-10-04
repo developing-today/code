@@ -1630,6 +1630,22 @@
     },
     "nixpkgs_12": {
       "locked": {
+        "lastModified": 1788179007,
+        "narHash": "sha256-hn1oU2rue2SYK8dAr8+WNZWtbsz1S2W5mnHlSEuh3bo=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "34ab99075ac4f7e40cf037eef32cb1c360bb85e9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_13": {
+      "locked": {
         "lastModified": 1776683584,
         "narHash": "sha256-NuTLMrr10Tng72hurYG8jYQ4XKK8wnpJmOGcPiis96g=",
         "owner": "NixOS",
@@ -1644,7 +1660,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_13": {
+    "nixpkgs_14": {
       "locked": {
         "lastModified": 1735563628,
         "narHash": "sha256-OnSAY7XDSx7CtDoqNh8jwVwh4xNL/2HaJxGjryLWzX8=",
@@ -1660,7 +1676,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_14": {
+    "nixpkgs_15": {
       "locked": {
         "lastModified": 1782959384,
         "narHash": "sha256-xnJJk+ct+D2+wdRxj1wk36w5zV9RVESwRqcklPdt3fM=",
@@ -1676,7 +1692,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_15": {
+    "nixpkgs_16": {
       "locked": {
         "lastModified": 1719848872,
         "narHash": "sha256-H3+EC5cYuq+gQW8y0lSrrDZfH71LB4DAf+TDFyvwCNA=",
@@ -1692,7 +1708,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_16": {
+    "nixpkgs_17": {
       "locked": {
         "lastModified": 1769461804,
         "narHash": "sha256-msG8SU5WsBUfVVa/9RPLaymvi5bI8edTavbIq3vRlhI=",
@@ -1708,7 +1724,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_17": {
+    "nixpkgs_18": {
       "locked": {
         "lastModified": 1783279667,
         "narHash": "sha256-/NAkDSsve+GNM0Bt6tleJdCGfsTlK89nPjkVOzZMo0s=",
@@ -1724,7 +1740,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_18": {
+    "nixpkgs_19": {
       "locked": {
         "lastModified": 1786599213,
         "narHash": "sha256-yNJd40f11EzXBjSByCB7IPpeFFAdeoSKKM67dGkfFoU=",
@@ -1920,9 +1936,27 @@
         "type": "github"
       }
     },
-    "opencode": {
+    "openchamber": {
       "inputs": {
         "nixpkgs": "nixpkgs_12"
+      },
+      "locked": {
+        "lastModified": 1790833485,
+        "narHash": "sha256-/PXRjHVz7rolhBlBau07wZyfIhEZ1gF3TUKFdaOV5D0=",
+        "owner": "Tarow",
+        "repo": "openchamber-nix",
+        "rev": "c8895a3c41fee62a5371589d4a0e8c4c8e53bc15",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Tarow",
+        "repo": "openchamber-nix",
+        "type": "github"
+      }
+    },
+    "opencode": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_13"
       },
       "locked": {
         "lastModified": 1787293522,
@@ -2056,6 +2090,7 @@
         "nixpkgs-unstable": "nixpkgs-unstable",
         "nixvim": "nixvim",
         "omnix": "omnix",
+        "openchamber": "openchamber",
         "opencode": "opencode",
         "pre-commit-hooks": "pre-commit-hooks_2",
         "roc": "roc",
@@ -2140,7 +2175,7 @@
     "server": {
       "inputs": {
         "microvm": "microvm_2",
-        "nixpkgs": "nixpkgs_13"
+        "nixpkgs": "nixpkgs_14"
       },
       "locked": {
         "lastModified": 1731735740,
@@ -2235,7 +2270,7 @@
     },
     "ssh-to-age": {
       "inputs": {
-        "nixpkgs": "nixpkgs_14"
+        "nixpkgs": "nixpkgs_15"
       },
       "locked": {
         "lastModified": 1786856371,
@@ -2515,7 +2550,7 @@
     "unattended-installer": {
       "inputs": {
         "disko": "disko_3",
-        "nixpkgs": "nixpkgs_15"
+        "nixpkgs": "nixpkgs_16"
       },
       "locked": {
         "lastModified": 1724352083,
@@ -2534,7 +2569,7 @@
     "waybar": {
       "inputs": {
         "flake-compat": "flake-compat_5",
-        "nixpkgs": "nixpkgs_16"
+        "nixpkgs": "nixpkgs_17"
       },
       "locked": {
         "lastModified": 1787226111,
@@ -2611,7 +2646,7 @@
     "yazi": {
       "inputs": {
         "flake-utils": "flake-utils_7",
-        "nixpkgs": "nixpkgs_17",
+        "nixpkgs": "nixpkgs_18",
         "rust-overlay": "rust-overlay_2"
       },
       "locked": {
@@ -2631,7 +2666,7 @@
     "zen-browser": {
       "inputs": {
         "home-manager": "home-manager_3",
-        "nixpkgs": "nixpkgs_18"
+        "nixpkgs": "nixpkgs_19"
       },
       "locked": {
         "lastModified": 1787281392,
