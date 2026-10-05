@@ -214,6 +214,10 @@ in
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
       openchamber.packages.${system}.openchamber
+      # The Electron GUI client. Separate derivation from the `openchamber`
+      # attr above, which is only the CLI + server + browser-served web app.
+      # Ships its own .desktop entry and icons; binary is `openchamber-desktop`.
+      openchamber.packages.${system}.openchamber-desktop
     ])
     ++ (with inputs.roc.packages.${system}; [ nightly ])
     ++ (with inputs.affinity-nix.packages.${system}; [
