@@ -271,6 +271,14 @@ rec {
       url = "github:anomalyco/opencode";
       # inputs.nixpkgs.follows = "nixpkgs-master";
     };
+    # Same fork as `opencode` above, pinned to a 2.x tag purely to satisfy
+    # OpenChamber 2.1.0, which hard-requires opencode >= 2.0.20 (it pins
+    # @opencode/client 2.0.21) and refuses to start its integration otherwise.
+    # Kept as a separate input rather than bumping `opencode` so the system
+    # opencode stays on the 1.18.x line. Consumed only by openchamber-desktop.
+    opencode-2x = {
+      url = "github:anomalyco/opencode/v2.0.23";
+    };
     # OpenChamber: agentic dev environment built on opencode.
     # Not in nixpkgs (no attr, no PR ever opened) and upstream ships zero Nix
     # (verified: 6471-path tree, no flake.nix). Of the four third-party flakes
