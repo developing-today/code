@@ -4,7 +4,17 @@
       "Bash(python3 -c ' *)",
       "Read(//home/user/.claude/**)",
       "Bash(claude --version)",
-      "Bash(claude plugin *)"
+      "Bash(claude plugin *)",
+      "Bash(command -v wrangler)",
+      "Bash(grep -n \"^\\\\s*gh\\\\b\\\\|^\\\\s*gh$\\\\|\\\\\"gh\\\\\"\\\\|github-cli\\\\|^\\\\s*wrangler\\\\b\" home/common/default.nix)",
+      "Bash(timeout 90 nix eval --impure --expr ' *)",
+      "Bash(timeout 60 nix-instantiate --parse home/common/default.nix)",
+      "Bash(timeout 60 nix eval --impure --expr ' *)",
+      "Bash(just treefmt *)",
+      "Bash(timeout 30 nix-instantiate --parse nixos/services/cloudflared/default.nix)",
+      "WebSearch",
+      "Read(//tmp/cc-extract/package/dist/**)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

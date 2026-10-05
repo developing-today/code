@@ -146,6 +146,51 @@ let
   # so the old outputHashes overrideAttrs is no longer needed
   opencode-desktop = inputs.opencode.packages.${system}.opencode-desktop;
 
+  # 2x scaling for Electron apps.
+  #
+  # The GDK_SCALE / QT_SCALE_FACTOR pair set in environment.sessionVariables
+  # does nothing for Electron: with NIXOS_OZONE_WL=1 these run as native Wayland
+  # clients and take their scale from the compositor, and we are deliberately
+  # NOT setting a Hyprland monitor scale (the whole point is to leave the bar and
+  # lockscreen alone). Chromium exposes no environment variable for this -- only
+  # the --force-device-scale-factor command-line flag -- so each app is wrapped.
+  #
+  # Every executable in bin/ is wrapped rather than a named one, so this does not
+  # depend on each upstream's choice of binary name. Desktop entries are also
+  # rewritten: several of these packages hard-code their own store path in Exec=,
+  # which would launch the unwrapped binary straight from the store and silently
+  # bypass the flag when started from a launcher rather than a shell.
+  scaleElectron2x =
+    pkg:
+    pkgs.symlinkJoin {
+      name = "${pkg.pname or pkg.name or "electron-app"}-scaled2x";
+      paths = [ pkg ];
+      nativeBuildInputs = [ pkgs.makeWrapper ];
+      postBuild = ''
+        for bin in "$out"/bin/*; do
+          [ -L "$bin" ] || continue
+          target=$(readlink -f "$bin")
+          [ -x "$target" ] || continue
+          rm "$bin"
+          makeWrapper "$target" "$bin" \
+            --add-flags "--force-device-scale-factor=2"
+        done
+
+        if [ -d "$out/share/applications" ]; then
+          for f in "$out"/share/applications/*.desktop; do
+            [ -e "$f" ] || continue
+            src=$(readlink -f "$f")
+            base=$(basename "$f")
+            rm "$f"
+            sed "s|${pkg}/bin/|$out/bin/|g" "$src" > "$out/share/applications/$base"
+          done
+        fi
+      '';
+      meta = (pkg.meta or { }) // {
+        mainProgram = pkg.meta.mainProgram or null;
+      };
+    };
+
   # OpenChamber's Electron GUI. Two deviations from the upstream flake package:
   #
   # 1. buildPhase: upstream never builds @openchamber/sdk. That package's
@@ -187,6 +232,19 @@ let
   # callPackage'd here rather than via pkgs/default.nix, which the NixOS
   # config does not import.
   muse-code = pkgs.callPackage (lib.from-root "pkgs/muse-code") { };
+
+  # Vercel CLI: absent from nixpkgs (`vercel-pkg` there is the unrelated legacy
+  # bundler) and npm-only -- upstream attaches no binaries to its releases.
+  vercel-cli = pkgs.callPackage (lib.from-root "pkgs/vercel-cli") { };
+
+  # Command Code agent CLI. UNFREE and license-less upstream (npm says
+  # "UNLICENSED", repo has no SPDX file); see the derivation header before
+  # redistributing or caching this anywhere shared.
+  command-code = pkgs.callPackage (lib.from-root "pkgs/command-code") { };
+
+  # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
+  # See pkgs/latest-cli/default.nix for rationale and tradeoffs.
+  latestCli = pkgs.callPackage (lib.from-root "pkgs/latest-cli") { };
 in
 {
   nixpkgs.overlays = [
@@ -213,6 +271,26 @@ in
     sessionVariables = {
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
       NIXPKGS_ALLOW_UNFREE = "1";
+
+      # 2x UI scaling for applications only -- Hyprland's own monitor scale is
+      # deliberately left unset, so the compositor, bar and lockscreen are
+      # unaffected and only app toolkits render larger.
+      #
+      # GTK: GDK_SCALE is an integer multiplier on the whole UI, fonts included.
+      GDK_SCALE = "2";
+      # Qt: QT_SCALE_FACTOR is the Qt equivalent. QT_AUTO_SCREEN_SCALE_FACTOR is
+      # explicitly disabled so Qt does not additionally apply its own per-screen
+      # DPI guess on top of the factor below and end up at 4x.
+      QT_SCALE_FACTOR = "2";
+      QT_AUTO_SCREEN_SCALE_FACTOR = "0";
+      # Cursors are not scaled by either of the above, so size them to match
+      # (the usual default is 24).
+      XCURSOR_SIZE = "48";
+      # NOTE: XWayland/X11-only clients honour neither GDK_SCALE nor
+      # QT_SCALE_FACTOR reliably; they read the Xft.dpi X resource, which is set
+      # via xrdb rather than the environment. If any X11 app stays small, that is
+      # why. Electron is a separate case again -- see below.
+
       XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       XDG_CONFIG_HOME = "$HOME/.config";
@@ -236,9 +314,12 @@ in
       espIdf6System
       my-helmfile
       my-kubernetes-helm
-      opencode-desktop
-      openchamber-desktop
+      (scaleElectron2x opencode-desktop)
+      (scaleElectron2x openchamber-desktop)
       muse-code
+      vercel-cli
+      command-code
+      latestCli.codex
     ]
     ++ (with inputs; [
       #rose-pine-hyprcursor.packages.${pkgs.system}.default
@@ -251,6 +332,26 @@ in
       opencode.packages.${system}.opencode
       openchamber.packages.${system}.openchamber
     ])
+    ++ [
+      # Wrapped for 2x scaling; see scaleElectron2x above. These sit outside the
+      # `with inputs` block because the wrapper is defined in the let binding,
+      # not on inputs.
+      #
+      # claude-desktop: the -fhs output, not the plain one -- Claude Desktop's
+      # MCP servers are npx/uvx/docker invocations that need a conventional
+      # filesystem layout and break against a pure store path.
+      (scaleElectron2x inputs.claude-desktop.packages.${system}.claude-desktop-fhs)
+      (scaleElectron2x inputs.helium.packages.${system}.helium)
+      # chatgpt: the -remote-mobile-control variant rather than plain
+      # `codex-desktop`. OpenAI's own Codex Remote requires the host to run the
+      # macOS or Windows desktop app ("you can't set it up from the Codex CLI or
+      # IDE extension"), so stock Linux has no phone->this-machine path at all.
+      # This build adds one. Swap to `codex-desktop` to run the unpatched
+      # official payload instead.
+      (scaleElectron2x
+        inputs.chatgpt-desktop.packages.${system}.codex-desktop-remote-mobile-control
+      )
+    ]
     ++ (with inputs.roc.packages.${system}; [ nightly ])
     ++ (with inputs.affinity-nix.packages.${system}; [
       photo
@@ -261,6 +362,8 @@ in
     ++ (with pkgs; [
       age
       wpa_supplicant_gui
+      # Cloudflare Workers CLI; available as a native nixpkgs package.
+      wrangler
     ])
     ++ (with pkgs; [
       # Embedded development: ESP32/ESP8266, Arduino, RP2040, AVR, ARM and RISC-V
@@ -486,7 +589,10 @@ in
       # because unstable is cached (see the chromium note below) and these
       # are large node/electron closures.
       claude-code # anthropic, mainProgram "claude" (unfree)
-      codex # openai, mainProgram "codex"
+      # codex moved out of this list: nixpkgs-unstable carries 0.147.0 while
+      # upstream is at rust-v0.160.0 (13 minor versions). Now taken from
+      # pkgs/latest-cli as an upstream prebuilt musl-static release binary --
+      # see the `++ [ ... ]` block below.
       antigravity-ide # google agentic IDE (unfree). `antigravity` is an alias.
       antigravity-cli # google, mainProgram "antigravity"
       # gemini-cli deliberately omitted: upstream sunset it for unpaid /

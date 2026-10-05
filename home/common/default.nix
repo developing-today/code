@@ -6,6 +6,12 @@
   system,
   ...
 }:
+let
+  # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
+  # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
+  # list of things deliberately NOT bumped.
+  latestCli = pkgs.callPackage ../../pkgs/latest-cli { };
+in
 {
   wayland.windowManager.hyprland = {
     enable = true;
@@ -244,6 +250,40 @@
       package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
     };
   };
+  # T3 Code's backend, run headless over the tailnet.
+  #
+  # The nixpkgs package advertises mainProgram = "t3code-desktop", but it also
+  # ships a `t3` binary whose whole purpose is "Run the T3 Code server":
+  #   t3 serve   -- server, no browser, prints headless pairing details
+  #   t3 pair    -- mints a pairing token and renders it as a QR code
+  #   t3 auth    -- auth control plane for headless deployments
+  #
+  # --tailscale-serve is a first-class upstream flag ("Configure Tailscale Serve
+  # to expose this backend over HTTPS on the Tailnet"), so no tunnel, no
+  # reverse proxy and no public exposure: the listener stays on loopback and
+  # Tailscale terminates HTTPS on the tailnet only.
+  #
+  # Defined here rather than via `t3 service install`, which would create the
+  # same unit imperatively as untracked state outside the flake.
+  systemd.user.services.t3code = {
+    Unit = {
+      Description = "T3 Code headless server (Tailscale Serve)";
+      Documentation = "https://t3.codes";
+      # Tailscale runs as a system service; this only needs the network up.
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      # `serve` rather than `start`: start opens a browser, which is meaningless
+      # for a background unit.
+      ExecStart = "${latestCli.t3}/bin/t3 serve --tailscale-serve --no-browser";
+      Restart = "on-failure";
+      RestartSec = 5;
+      # t3 keeps runtime state under T3CODE_HOME (equivalently --base-dir).
+      Environment = [ "T3CODE_HOME=%h/.local/share/t3code" ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
   manual.manpages.enable = true;
   programs = {
     # zen-browser = {
@@ -349,7 +389,12 @@
       # mcfly owns Ctrl-R for bash; avoid double-binding
       enableBashIntegration = false;
     };
-    gh.enable = true;
+    gh = {
+      enable = true;
+      # nixpkgs trails upstream (2.97.0 vs 2.102.0); prebuilt release binary.
+      package = latestCli.gh;
+      extensions = [ pkgs.gh-dash ]; # gh dash: TUI for PRs/issues
+    };
     # git-credential-oauth.enable = true; # can't get browser to return back
     git = {
       # TODO: global config
@@ -776,6 +821,7 @@
         autojump
         autorandr
         awscli
+        latestCli.backblaze-b2
         bacon
         bat
         bat # cat
@@ -814,11 +860,19 @@
         charm
         charm-freeze
         choose
+        latestCli.cloudflared
         cmake
         cmatrix
         conform
         consul
         coreutils
+        # OCI/registry tooling -- covers ghcr.io ("github oci") workflows.
+        # skopeo for copy/inspect across registries, crane for fast scripted
+        # push/pull, cosign for keyless signing via GitHub OIDC, oras for
+        # non-image artifacts (Helm charts, SBOMs), regctl for introspection.
+        cosign
+        # provides crane/gcrane/krane
+        latestCli.go-containerregistry
         cpufetch
         curl
         #dart
@@ -828,6 +882,7 @@
         difftastic
         direnv
         discord
+        dive
         # diskonaut # https://github.com/NixOS/nixpkgs/pull/376644
         dmenu
         dnsutils
@@ -858,6 +913,7 @@
         ffsend
         flameshot
         flatpak
+        latestCli.flyctl
         fnm
         #fontconfig
         # fontfinder
@@ -866,7 +922,8 @@
         furtherance
         fw
         fzf
-        gh
+        # same derivation as programs.gh.package above; buildEnv dedups
+        latestCli.gh
         gimp
         git
         git-absorb
@@ -900,6 +957,20 @@
         htop
         htop # top for humans
         huniq
+        # Honeycomb's tail-sampling proxy. Directly relevant on the free plan:
+        # the quota is 20M events/month and every span, SpanEvent and Link counts
+        # as one event, so a chatty service burns it fast. Sampling before send
+        # is the supported lever -- sampled-away events are not counted.
+        #
+        # The nixpkgs build also ships a second binary called plain `convert`
+        # (a v1->v2 config migrator) which collides with ImageMagick's `convert`
+        # and fails the home-manager buildEnv. The prebuilt package here installs
+        # only `refinery`, so the collision is gone by construction.
+        latestCli.honeycomb-refinery
+        # Honeycomb ships no general CLI (honeyvent/honeytrigger are archived
+        # upstream and there is no `hny`). honeymarker handles deploy markers and
+        # is the only non-archived one left.
+        honeymarker
         hyperfine
         hyprdim
         hyprland-autoname-workspaces
@@ -1001,7 +1072,19 @@
         #oh-my-fish
         openconnect
         openssl
+        # Oracle Cloud Infrastructure CLI; provides the `oci` command.
+        oci-cli
+        # OpenTelemetry. OpenTracing (which it superseded) was archived in 2022;
+        # OTLP is what Honeycomb actually ingests.
+        #   otel-cli  -- emit spans from shell scripts, and the quickest way to
+        #               smoke-test an ingest key end to end.
+        #   collector -- contrib build, since the vendor-specific exporters and
+        #               processors are not in the core distribution.
+        latestCli.opentelemetry-collector-contrib
+        latestCli.oras
         ormolu
+        otel-cli
+        latestCli.ovhcloud-cli
         ouch
         packer
         pastel
@@ -1041,6 +1124,7 @@
         ranger # midnight commander / file manager
         # rargs # https://github.com/NixOS/nixpkgs/issues/141368
         rbw
+        latestCli.regctl
         restic
         ripgrep
         rmtrash # ctrl + z for rm
@@ -1060,6 +1144,7 @@
         shfmt
         silver-searcher-ng # was silver-searcher, removed (pcre1)
         skim
+        skopeo
         slack
         slurp
         slurp # screenshot functionality
@@ -1096,12 +1181,42 @@
         tokei
         tokei # this gives language stats about a repo
         topgrade
+        # t3code splits across two sources on purpose.
+        #
+        # latestCli.t3 is the server/CLI from upstream's release tarball at
+        # 0.0.45; nixpkgs is on 0.0.33, twelve releases back on a 0.0.x project
+        # whose headless/Tailscale path is exactly what systemd.user.services
+        # .t3code uses below.
+        latestCli.t3
+        # nixpkgs still provides the Electron desktop GUI (a separate .deb /
+        # AppImage asset upstream, not in that tarball). It also ships its own
+        # older `t3` binary, which would collide with the above, so only
+        # t3code-desktop and its desktop entry are taken from it.
+        (runCommand "t3code-desktop-${t3code.version}"
+          {
+            meta = t3code.meta // {
+              mainProgram = "t3code-desktop";
+            };
+          }
+          ''
+            mkdir -p "$out/bin"
+            ln -s ${t3code}/bin/t3code-desktop "$out/bin/t3code-desktop"
+            if [ -d ${t3code}/share ]; then
+              mkdir -p "$out/share"
+              cp -r ${t3code}/share/. "$out/share/"
+            fi
+          ''
+        )
         transmission_4-gtk
         trash-cli
         tree
         tree-sitter
         treefmt
         trippy
+        # turso-cli (above) is the Turso platform CLI and provides `turso`.
+        # This attr is the separate local SQL shell and provides `tursodb`.
+        latestCli.turso
+        latestCli.turso-cli
         udev
         universal-ctags # for nvim nvchad custom
         unzip
@@ -1124,6 +1239,9 @@
         wl-clipboard
         wl-clipboard # wl-copy and wl-paste for copy/paste from stdin / stdout
         wofi
+        # nixpkgs 4.94.0 vs npm 4.147.0 -- 53 minor versions behind, the
+        # largest gap in this config. See pkgs/wrangler.
+        (pkgs.callPackage ../../pkgs/wrangler { })
         wtf
         wttrbar
         xclip

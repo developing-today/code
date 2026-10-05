@@ -15,14 +15,72 @@
     "opencode-devcontainers@latest",
     // "opencode-pilot@latest",
     "@franlol/opencode-md-table-formatter@latest",
+    // Command Code provider: adds [CMD] models to the picker plus a rates/usage
+    // sidebar. MIT, unofficial. This is the licence-clean route to Command Code
+    // -- the `command-code` CLI itself is UNLICENSED (see pkgs/command-code).
+    "opencode-cmd-provider@latest",
+    // Meta-package: Shell, Statusline, Review, Updater submodules. The updater
+    // is the reason it is here -- it audits installed plugins for updates,
+    // which matters with a list this long.
+    "opencode-cockpit@latest",
+    // Claude Code inside opencode via local CLI auth + Agent SDK. Published by
+    // the same org as OpenChamber. Reuses the existing `claude` CLI login, so
+    // no extra API key.
+    "@openchamber/opencode-claude@latest",
+    // Auto-discovers models from any OpenAI-compatible endpoint; can populate
+    // Cloudflare Workers AI dynamically rather than via the hand-written
+    // whitelist in "provider" below.
+    "opencode-models-discovery@latest",
+    // Persistent memory over a local Turso/libSQL vector store (pairs with the
+    // `tursodb` binary in home/common).
+    //
+    // NOTE: this was previously disabled here on purpose, alongside two other
+    // memory plugins -- see the commented true-mem and simple-memory entries
+    // below, which are left in place. Re-enabled on request. It overlaps
+    // opencode-working-memory above; if they fight over context, disable one.
+    "opencode-mem@latest",
     // "true-mem@latest",
     // "@knikolov/opencode-plugin-simple-memory@latest",
-    // "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz",
   ],
   // "default_agent": "build",
   // "model": "",
   // "small_model": "",
+  //
+  // Cloudflare needs no plugin: both of these are first-class models.dev
+  // providers opencode already knows about. Workers AI goes through
+  // @ai-sdk/openai-compatible against Cloudflare's OpenAI-shaped endpoint
+  // (https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1); AI Gateway uses
+  // Cloudflare's own `ai-gateway-provider` package.
+  //
+  // Whitelisted because the two catalogs carry 27 and 50 models and would
+  // otherwise swamp /models. Every entry below is tool_call:true -- the omitted
+  // ones (llama-3.1-8b, qwen2.5-coder-32b, qwq-32b et al) are tool_call:false
+  // and therefore useless as coding agents however capable they otherwise look.
+  //
+  // Auth, via /connect or env:
+  //   Workers AI : CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_KEY
+  //   AI Gateway : CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID, CLOUDFLARE_API_TOKEN
+  "provider": {
+    "cloudflare-workers-ai": {
+      "whitelist": [
+        "@cf/zai-org/glm-5.3",
+        "@cf/deepseek-ai/deepseek-v4-pro-0813",
+        "@cf/moonshotai/kimi-k2.7-code",
+        "@cf/qwen/qwen3.8-27b",
+        "@cf/openai/gpt-oss-120b",
+      ],
+    },
+    // Fronts other vendors; model ids are "{provider}/{model}". Adds caching,
+    // rate limiting and observability. BYOK / Unified Billing, so no per-vendor
+    // keys needed here.
+    "cloudflare-ai-gateway": {
+      "whitelist": [
+        "anthropic/claude-sonnet-4.5",
+        "openai/gpt-5-mini",
+      ],
+    },
+  },
   "agent": {
     "build": {
       "mode": "all",
@@ -43,5 +101,10 @@
   ],
   "compaction": {
     "reserved": 8192,
+  },
+  // Not in the committed version -- added to the working file by the running
+  // opencode process, preserved here so a restore does not silently drop it.
+  "websearch": {
+    "provider": "random",
   },
 }

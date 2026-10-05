@@ -279,6 +279,36 @@ rec {
     opencode-2x = {
       url = "github:anomalyco/opencode/v2.0.23";
     };
+    # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
+    # Not in nixpkgs and unlikely to be soon -- seven `helium: init` PRs have been
+    # closed unmerged and the one still open (#498572) has been stalled since
+    # 2026-08. This flake tracks upstream AppImage releases and ships NixOS and
+    # home-manager modules plus browser policy support.
+    helium = {
+      url = "github:oxcl/nix-flake-helium-browser";
+    };
+    # ChatGPT desktop for Linux. OpenAI shipped an official Linux build (preview)
+    # distributed from their own APT/RPM repos under persistent.oaistatic.com
+    # (`Maintainer: OpenAI <support@openai.com>`). The nixpkgs `chatgpt` attr is
+    # still darwin-only and only unpacks the macOS .app, so it cannot be used.
+    # This flake verifies and repackages OpenAI's signed upstream Linux payload
+    # rather than reimplementing it, is MIT-licensed, and is namespaced as
+    # `codex-desktop` to avoid colliding with the official package name.
+    chatgpt-desktop = {
+      url = "github:ilysenko/codex-desktop-linux";
+    };
+    # Claude Desktop. Anthropic ships an official Linux build (beta, 2026-06-30)
+    # but ONLY as a .deb from their own APT repo -- no AppImage/tar/rpm, and no
+    # nixpkgs attr (verified: pkgs/by-name/cl/claude-desktop absent, zero code
+    # search hits). This flake repackages that official .deb; since its v3.0.0 it
+    # no longer extracts the Windows installer the way k3d3's older flake does,
+    # which is why it is preferred here (k3d3 last saw a commit 2025-11-25 and
+    # predates the official Linux release entirely).
+    # Use the -fhs output: MCP servers are near-universally npx/uvx invocations
+    # that break against a pure store path.
+    claude-desktop = {
+      url = "github:aaddrick/claude-desktop-debian";
+    };
     # OpenChamber: agentic dev environment built on opencode.
     # Not in nixpkgs (no attr, no PR ever opened) and upstream ships zero Nix
     # (verified: 6471-path tree, no flake.nix). Of the four third-party flakes
