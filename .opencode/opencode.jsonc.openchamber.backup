@@ -19,12 +19,6 @@
     }
   },
   "agent": {
-    "build": {
-      "mode": "all"
-    },
-    "plan": {
-      "mode": "subagent"
-    },
     "compaction": {
       "threshold": 0.5
     }
@@ -48,7 +42,15 @@
     "opencode-devcontainers@latest",
     "@franlol/opencode-md-table-formatter@latest",
     "opencode-cmd-provider@latest",
-    "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz",
-    "@openchamber/opencode-claude@1.3.5"
-  ]
+    "opencode-cockpit@latest",
+    "@openchamber/opencode-claude@1.3.5",
+    "opencode-models-discovery@latest",
+    "opencode-mem@latest",
+    "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
+  ],
+  "agents": {
+    "build": {
+      "mode": "all"
+    }
+  }
 }
