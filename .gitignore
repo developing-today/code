@@ -144,3 +144,4 @@ codedb.snapshot
 !doc/hardware/**/tags
 !doc/hardware/**/result*
 !doc/hardware/**/test.*
+.opencode/service-prod.json

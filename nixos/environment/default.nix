@@ -242,6 +242,34 @@ let
   # redistributing or caching this anywhere shared.
   command-code = pkgs.callPackage (lib.from-root "pkgs/command-code") { };
 
+  # Jules Tools, the CLI for Google's async coding agent. Not in nixpkgs; the
+  # npm package is a stub that downloads a dynamically linked Go binary, which
+  # will not exec on NixOS without autoPatchelfHook. See the derivation header.
+  jules = pkgs.callPackage (lib.from-root "pkgs/jules") { };
+
+  # Antigravity ACP server and Hub. Both vendored from nixpkgs master rather
+  # than taken from a channel: neither exists in ANY nixpkgs revision this flake
+  # pins (stable, unstable or master-as-pinned), and bumping an input to reach
+  # two leaf packages would rebuild most of the system for no other gain. Every
+  # dependency they need is already present in the pinned channel.
+  #
+  # antigravity-acp provides `agy_acp_server`, the official Agent Client
+  # Protocol server. This is the one that matters for t3code: t3 ships an
+  # AcpRegistryDriver, so ACP is the generic path for t3 to drive Antigravity.
+  antigravity-acp = pkgs.callPackage (lib.from-root "pkgs/antigravity-acp") { };
+
+  # "Antigravity Cockpit": account manager covering Antigravity, Codex, Copilot,
+  # Cursor, Gemini CLI and others. 18.6k stars, no declared licence upstream.
+  cockpit-tools = pkgs.callPackage (lib.from-root "pkgs/cockpit-tools") { };
+
+  # Google's experimental Jules orchestration pair. Fleet drives goal files ->
+  # analyzer sessions -> labelled issues -> worker sessions; Merge reconciles
+  # the overlapping PRs that result. Google's own words on Fleet: "very
+  # experimental, just for fun".
+  jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
+  jules-merge = pkgs.callPackage (lib.from-root "pkgs/jules-merge") { };
+  antigravity-hub = pkgs.callPackage (lib.from-root "pkgs/antigravity-hub") { };
+
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for rationale and tradeoffs.
   latestCli = pkgs.callPackage (lib.from-root "pkgs/latest-cli") { };
@@ -319,6 +347,12 @@ in
       muse-code
       vercel-cli
       command-code
+      jules
+      antigravity-acp
+      antigravity-hub
+      cockpit-tools
+      jules-fleet
+      jules-merge
       latestCli.codex
     ]
     ++ (with inputs; [
@@ -595,9 +629,13 @@ in
       # see the `++ [ ... ]` block below.
       antigravity-ide # google agentic IDE (unfree). `antigravity` is an alias.
       antigravity-cli # google, mainProgram "antigravity"
-      # gemini-cli deliberately omitted: upstream sunset it for unpaid /
-      # AI Pro+Ultra tiers in favour of antigravity-cli above, and nixpkgs
-      # carries a removal notice. Re-add only if you need the `gemini` binary.
+      # gemini-cli: nixpkgs carries a removal notice ("Unpaid tier and Google AI
+      # Pro/Ultra users: Gemini CLI was replaced by Antigravity CLI"), which is
+      # an eval *warning*, not a build failure -- 0.47.0 builds and runs fine.
+      # Installed deliberately: upstream google-gemini/gemini-cli is very much
+      # alive, and the `gemini` binary is required by the official
+      # gemini-cli-extensions/jules extension.
+      gemini-cli
     ])
     ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
       ghostty

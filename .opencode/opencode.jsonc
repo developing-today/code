@@ -2,23 +2,38 @@
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
   "provider": {
-    "cloudflare-workers-ai": {
-      "whitelist": [
-        "@cf/zai-org/glm-5.3",
-        "@cf/deepseek-ai/deepseek-v4-pro-0813",
-        "@cf/moonshotai/kimi-k2.7-code",
-        "@cf/qwen/qwen3.8-27b",
-        "@cf/openai/gpt-oss-120b"
-      ]
-    },
-    "cloudflare-ai-gateway": {
-      "whitelist": [
-        "anthropic/claude-sonnet-4.5",
-        "openai/gpt-5-mini"
-      ]
-    }
+    // No whitelists -- every model each provider publishes shows up in /models.
+    //
+    // Auth, via /connect or env:
+    //   Workers AI : CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_KEY
+    //   AI Gateway : CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID, CLOUDFLARE_API_TOKEN
+    //   Google     : GEMINI_API_KEY (or GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY)
+    //
+    // Cloudflare needs no plugin: both ids are first-class models.dev
+    // providers. Workers AI goes through @ai-sdk/openai-compatible against
+    // Cloudflare's OpenAI-shaped endpoint; AI Gateway uses Cloudflare's own
+    // ai-gateway-provider package and fronts other vendors with BYOK billing.
+    //
+    // "google" is the direct Gemini API -- there is no "gemini" or
+    // "google-generative-ai" id. This is NOT gemini-cli, which stays
+    // deliberately uninstalled; the API provider is unaffected by that sunset.
+    // "google-vertex" and "google-vertex-anthropic" also exist, but need
+    // GOOGLE_VERTEX_PROJECT / _LOCATION / GOOGLE_APPLICATION_CREDENTIALS from
+    // `gcloud auth application-default login`.
+    //
+    // FYI rather than something to configure around: a few Workers AI models
+    // are tool_call:false in the models.dev catalog (llama-3.1-8b,
+    // qwen2.5-coder-32b, qwq-32b among them), so they will appear in the picker
+    // but cannot drive an agent loop. `blacklist` here, or top-level
+    // `disabled_providers`, if the list ever gets noisy.
+    "cloudflare-workers-ai": {},
+    "cloudflare-ai-gateway": {},
+    "google": {}
   },
   "agent": {
+    "build": {
+      "mode": "all"
+    },
     "compaction": {
       "threshold": 0.5
     }
@@ -27,13 +42,61 @@
     ".opencode/instructions/lootbox.md",
     ".opencode/instructions/subagents.md"
   ],
+  // Jules cannot be an opencode `provider`: it is an agent service, not a
+  // chat-completions endpoint, and it is absent from models.dev. The supported
+  // way to reach it from another agent is Google's own MCP server,
+  // @google/jules-mcp (ISC), which wraps the v1alpha REST API and exposes
+  // create_session, list_sessions, get_session_state, send_reply_to_session,
+  // get_code_review_context, show_code_diff and query_cache.
+  //
+  // Disabled by default because it needs a key: mint one at
+  // https://jules.google.com/settings (max 3 per account) and export
+  // JULES_API_KEY, then flip `enabled` to true.
+  //
+  // Note this is distinct from the `jules` CLI installed via pkgs/jules --
+  // that is the interactive TUI; this is the machine-driven path, and
+  // OpenChamber inherits it through opencode.
+  "mcp": {
+    "jules": {
+      "type": "local",
+      "command": ["npx", "-y", "@google/jules-mcp"],
+      "enabled": true,
+      "environment": {
+        "JULES_API_KEY": "{env:JULES_API_KEY}"
+      }
+    },
+    // Antigravity x Jules autonomous orchestration (Scarmonit). The GitHub repo
+    // declares no licence; this npm mirror is published MIT and ships the same
+    // thing as an MCP stdio server, so it is used instead of the bare repo.
+    // Needs JULES_API_KEY, and `agy` must be authenticated.
+    "antigravity-jules-orchestration": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@iflow-mcp/scarmonit-antigravity-jules-orchestration"
+      ],
+      "enabled": true,
+      "environment": {
+        "JULES_API_KEY": "{env:JULES_API_KEY}"
+      }
+    },
+    // Exposes the Antigravity CLI (`agy`) as an MCP tool -- a subscription-backed
+    // second opinion from inside opencode, without burning Gemini API quota.
+    // Upstream labels it EXPERIMENTAL.
+    "antigravity": {
+      "type": "local",
+      "command": ["npx", "-y", "@ask-llm/antigravity-mcp"],
+      "enabled": true
+    }
+  },
   "compaction": {
     "reserved": 8192
   },
   "websearch": {
     "provider": "random"
   },
-  "plugins": [
+  "plugin": [
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
     "@openspoon/subtask2@latest",
@@ -45,13 +108,12 @@
     "opencode-cockpit@latest",
     "@openchamber/opencode-claude@1.3.5",
     "opencode-models-discovery@latest",
+    // Antigravity OAuth for opencode: reach Gemini models through an Antigravity
+    // subscription instead of a GEMINI_API_KEY. Complements the "google"
+    // provider above rather than replacing it -- that one is the direct API.
+    "@cortexkit/opencode-antigravity-auth@latest",
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
   ],
-  "agents": {
-    "build": {
-      "mode": "all"
-    }
-  },
   "warming": true
 }

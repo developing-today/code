@@ -11,6 +11,9 @@ let
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
   latestCli = pkgs.callPackage ../../pkgs/latest-cli { };
+  # Vendored from nixpkgs master; see the header in that file for why. Provides
+  # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
+  antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
 in
 {
   wayland.windowManager.hyprland = {
@@ -250,6 +253,33 @@ in
       package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
     };
   };
+  # OpenChamber rewrites opencode's config on every launch, migrating the v1
+  # `plugin` key to v2 `plugins` (and `agent` to `agents`). The system opencode
+  # is 1.x and ignores `plugins` entirely, so each OpenChamber launch silently
+  # stops all 13 plugins from loading for the CLI. Verified with
+  # `opencode debug config` against both builds.
+  #
+  # Rather than fight it by hand, watch the file and normalise it back. The
+  # script is idempotent and refuses to write anything it cannot re-parse.
+  systemd.user.services.opencode-config-normalize = {
+    Unit.Description = "Normalise opencode config to v1 plugin/agent keys";
+    Service = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.writeShellScript "opencode-config-normalize" (
+        builtins.readFile ../../pkgs/opencode-config-normalize/normalize.sh
+      )}";
+      Environment = [ "PATH=${lib.makeBinPath [ pkgs.python3 pkgs.coreutils ]}" ];
+    };
+  };
+  systemd.user.paths.opencode-config-normalize = {
+    Unit.Description = "Watch opencode config for OpenChamber's plugin-key rewrite";
+    Path = {
+      PathChanged = "%h/.config/opencode/opencode.jsonc";
+      Unit = "opencode-config-normalize.service";
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   # T3 Code's backend, run headless over the tailnet.
   #
   # The nixpkgs package advertises mainProgram = "t3code-desktop", but it also
@@ -280,12 +310,77 @@ in
       Restart = "on-failure";
       RestartSec = 5;
       # t3 keeps runtime state under T3CODE_HOME (equivalently --base-dir).
-      Environment = [ "T3CODE_HOME=%h/.local/share/t3code" ];
+      #
+      # PATH matters here. t3 is an orchestrator: it drives other coding agents
+      # through provider drivers (opencode, codex, claudeAgent, antigravity,
+      # cursor, grok) and discovers them on PATH. A systemd user unit does NOT
+      # inherit the login shell's PATH, so without this it would find none of
+      # them and every provider would show as unavailable.
+      #
+      # Both opencode generations are exposed deliberately. t3 accepts either --
+      # opencodeVersionProbe.ts classifies `major >= 2 ? "v2" : "v1"` and
+      # opencodeRuntime.ts imports "@opencode-ai/sdk/v2", with
+      # MINIMUM_OPENCODE_VERSION = "1.14.19" and no upper bound. Only one can own
+      # the plain `opencode` name on PATH (1.18.19 does, matching the system);
+      # register the 2.x build as a second provider instance in the t3 UI using
+      # the explicit binaryPath noted below.
+      Environment = [
+        "T3CODE_HOME=%h/.local/share/t3code"
+        "PATH=${
+          lib.makeBinPath [
+            # The anomalyco fork, matching the system `opencode` -- NOT
+            # pkgs.opencode, which is nixpkgs' own 1.18.18 and would silently
+            # give t3 a different v1 build (and different auth state) than the
+            # one on your shell PATH.
+            inputs.opencode.packages.${system}.opencode # 1.18.19, driver "opencode"
+            latestCli.codex # 0.160.0   -- t3 driver "codex"
+            pkgs.claude-code # 2.1.234   -- t3 driver "claudeAgent"
+            pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
+            pkgs.git
+            pkgs.openssh
+          ]
+        }"
+        # Explicit binary paths for provider instances that cannot be
+        # auto-discovered, because t3 keeps providerInstances in its server
+        # settings rather than a config file. Read these off the running unit
+        # and paste them into the t3 UI as each instance's binaryPath:
+        #
+        #   systemctl --user show t3code -p Environment | tr ' ' '\n' | grep _BIN=
+        #
+        # opencode v1 is already on PATH above and needs no binaryPath.
+        "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
+        "CODEX_BIN=${latestCli.codex}/bin/codex"
+        "CLAUDE_BIN=${pkgs.claude-code}/bin/claude"
+        "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
+        # The ACP route: t3 ships an AcpRegistryDriver, and this is Google's
+        # official Agent Client Protocol server for Antigravity. Preferred over
+        # the bare `agy` driver where ACP is supported, since it is the generic
+        # protocol path rather than a vendor-specific shim.
+        "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
+      ];
     };
     Install.WantedBy = [ "default.target" ];
   };
   manual.manpages.enable = true;
   programs = {
+    # Secrets that must NOT end up in the Nix store. home.sessionVariables and
+    # systemd Environment= both bake their values into world-readable store
+    # paths, so API keys cannot live there. Instead the key sits in a 0600 file
+    # outside the repo and is read at shell startup; only the PATH is in the
+    # store, never the value.
+    #
+    #   ~/.config/jules/api-key   -- https://jules.google.com/settings (max 3 keys)
+    #
+    # Consumed by: the `jules` CLI (as an alternative to `jules login`, which
+    # needs a DBus secret service), and the @google/jules-mcp server wired into
+    # opencode via "mcp.jules" -> environment -> {env:JULES_API_KEY}.
+    bash = {
+      initExtra = ''
+        if [ -r "$HOME/.config/jules/api-key" ]; then
+          export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
+        fi
+      '';
+    };
     # zen-browser = {
     #   enable = true;
     #   # package = inputs.zen-browser.packages.${system}.default;

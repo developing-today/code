@@ -1,0 +1,98 @@
+name: Jules
+
+# google-labs-code/jules-action -- fires Jules (Google's async coding agent) from
+# any GitHub event. All three of upstream's shipped example triggers are wired
+# up here; each is independently disable-able by deleting its job.
+#
+# Requires repository secret JULES_API_KEY. Mint at
+# https://jules.google.com/settings (max 3 keys per account), then:
+#   gh secret set JULES_API_KEY
+#
+# Jules also needs its GitHub App authorised on this repository before any
+# source is usable -- the API alone is not enough.
+#
+# NOTE: upstream's README still references `google-labs-code/jules-invoke@v1`.
+# That repo was renamed to jules-action; the old path 301-redirects, but the
+# current name is used here.
+#
+# Free tier is 15 tasks/day and 3 concurrent, so the cron schedules below are
+# deliberately infrequent. Raising them can exhaust the daily quota and starve
+# the interactive/CLI path.
+
+on:
+  schedule:
+    # Weekly cleanup, Mondays 04:00 UTC.
+    - cron: "0 4 * * 1"
+  issues:
+    types: [labeled]
+  workflow_run:
+    workflows: ["*"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt to send to Jules"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  weekly-cleanup:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-labs-code/jules-action@v1
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          include_commit_log: true
+          prompt: >-
+            Review the repository for low-risk housekeeping: dead code,
+            unused dependencies, stale TODOs and obvious documentation drift.
+            Open a single pull request with the changes, and explain each one.
+            Do not make behavioural changes.
+
+  # Triggered by applying the `jules` label to an issue. Note this is the same
+  # convention the Jules GitHub App uses natively; keep one or the other to
+  # avoid two agents racing on the same issue.
+  issue-labeled:
+    if: github.event_name == 'issues' && github.event.label.name == 'jules'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-labs-code/jules-action@v1
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          prompt: >-
+            Address GitHub issue #${{ github.event.issue.number }}:
+            "${{ github.event.issue.title }}".
+            ${{ github.event.issue.body }}
+            Open a pull request that fixes it and reference the issue.
+
+  ci-failure-fix:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch != 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-labs-code/jules-action@v1
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          starting_branch: ${{ github.event.workflow_run.head_branch }}
+          include_last_commit: true
+          prompt: >-
+            The workflow "${{ github.event.workflow_run.name }}" failed on branch
+            ${{ github.event.workflow_run.head_branch }}. Read the failing run at
+            ${{ github.event.workflow_run.html_url }}, work out the cause, and
+            push a fix to that branch.
+
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-labs-code/jules-action@v1
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          prompt: ${{ inputs.prompt }}

@@ -14,7 +14,10 @@
       "Bash(timeout 30 nix-instantiate --parse nixos/services/cloudflared/default.nix)",
       "WebSearch",
       "Read(//tmp/cc-extract/package/dist/**)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Read(//home/user/.config/openchamber/**)",
+      "Bash(python3 -c \"import sys; print\\(sys.stdin.read\\(\\)[:3000]\\)\")",
+      "Read(//home/user/**)"
     ]
   }
 }
