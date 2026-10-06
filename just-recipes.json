@@ -366,6 +366,19 @@
               "namepath": "id::root::strip-whitespace",
               "shebang": true
             },
+            "switch": {
+              "attributes": [{ "group": "nixos" }],
+              "body": [["./s"]],
+              "dependencies": [],
+              "doc": "Rebuild and switch NixOS configuration",
+              "name": "switch",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::switch",
+              "shebang": false
+            },
             "treefmt": {
               "attributes": [{ "group": "format" }],
               "body": [
@@ -3270,6 +3283,19 @@
       "quiet": false,
       "namepath": "strip-whitespace",
       "shebang": true
+    },
+    "switch": {
+      "attributes": [{ "group": "nixos" }],
+      "body": [["./s"]],
+      "dependencies": [],
+      "doc": "Rebuild and switch NixOS configuration",
+      "name": "switch",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "switch",
+      "shebang": false
     },
     "treefmt": {
       "attributes": [{ "group": "format" }],

@@ -268,7 +268,14 @@ in
       ExecStart = "${pkgs.writeShellScript "opencode-config-normalize" (
         builtins.readFile ../../pkgs/opencode-config-normalize/normalize.sh
       )}";
-      Environment = [ "PATH=${lib.makeBinPath [ pkgs.python3 pkgs.coreutils ]}" ];
+      Environment = [
+        "PATH=${
+          lib.makeBinPath [
+            pkgs.python3
+            pkgs.coreutils
+          ]
+        }"
+      ];
     };
   };
   systemd.user.paths.opencode-config-normalize = {
@@ -276,6 +283,128 @@ in
     Path = {
       PathChanged = "%h/.config/opencode/opencode.jsonc";
       Unit = "opencode-config-normalize.service";
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # Dated, on-change snapshots of agent credentials and config.
+  #
+  # Narrow by design: the irreplaceable material is kilobytes of auth.json /
+  # API keys / settings.json, while ~/.antigravity-ide and ~/.config/Antigravity
+  # IDE are ~4G of regenerable cache between them. See the script header.
+  #
+  # Triggered by a path unit on the credential files rather than a timer, so a
+  # snapshot lands when something actually changes. The script discards the new
+  # directory if it is byte-identical to the previous one, so the history only
+  # grows on real change.
+  systemd.user.services.agent-backup = {
+    Unit.Description = "Snapshot agent credentials and config to a dated directory";
+    Service = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.writeShellScript "agent-backup" (
+        builtins.readFile ../../pkgs/agent-backup/backup.sh
+      )}";
+      Environment = [
+        "PATH=${
+          lib.makeBinPath [
+            pkgs.coreutils
+            pkgs.diffutils
+            pkgs.findutils
+          ]
+        }"
+      ];
+    };
+  };
+  systemd.user.paths.agent-backup = {
+    Unit.Description = "Watch agent credentials for changes";
+    Path = {
+      # PathChanged fires on close-after-write. Directories are watched where
+      # the interesting file is rewritten rather than edited in place.
+      PathChanged = [
+        "%h/.config/jules/api-key"
+        "%h/.local/share/opencode/auth.json"
+        "%h/.config/opencode/opencode.jsonc"
+        "%h/.local/share/t3code/userdata/settings.json"
+        "%h/.claude.json"
+        "%h/.codex/auth.json"
+        "%h/.grok/auth.json"
+      ];
+      Unit = "agent-backup.service";
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # Seed t3's provider instances before the server starts. t3 writes to
+  # settings.json at runtime so it cannot be a read-only store symlink; this
+  # merges our instances in and leaves anything else (including UI-made
+  # changes) untouched.
+  systemd.user.services.t3code-seed-providers = {
+    Unit = {
+      Description = "Seed t3code provider instances";
+      Before = [ "t3code.service" ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.writeShellScript "t3code-seed-providers" (
+        builtins.readFile ../../pkgs/t3code-seed-providers/seed.sh
+      )}";
+      Environment = [
+        "PATH=${
+          lib.makeBinPath [
+            pkgs.python3
+            pkgs.coreutils
+          ]
+        }"
+        "T3CODE_HOME=%h/.local/share/t3code"
+        "OPENCODE_V1_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+        "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
+        "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # OpenChamber's server, as a unit rather than a stray `openchamber` daemon.
+  #
+  # Running it by hand leaves a long-lived process that rewrites opencode's
+  # config (plugin -> plugins) behind your back; as a unit it is at least
+  # visible and restartable. The normalize path-unit above repairs the config
+  # either way.
+  #
+  # Bound to loopback deliberately. OpenChamber warns
+  # "OPENCHAMBER_UI_PASSWORD is not set / browser UI is unsecured" -- the
+  # password is read from a 0600 file so it never enters the Nix store. Create
+  # it with:
+  #   install -m600 /dev/null ~/.config/openchamber/ui-password
+  #   printf '%s' 'your-password' > ~/.config/openchamber/ui-password
+  systemd.user.services.openchamber = {
+    Unit = {
+      Description = "OpenChamber server";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "openchamber-serve" ''
+          pw="$HOME/.config/openchamber/ui-password"
+          if [ -r "$pw" ]; then
+            export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
+          fi
+          exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber \
+            --port 3000 --host 127.0.0.1
+        ''
+      );
+      Restart = "on-failure";
+      RestartSec = 5;
+      Environment = [
+        "PATH=${
+          lib.makeBinPath [
+            inputs.opencode-2x.packages.${system}.opencode # OpenChamber needs >= 2.0.20
+            pkgs.git
+            pkgs.openssh
+          ]
+        }"
+      ];
     };
     Install.WantedBy = [ "default.target" ];
   };
@@ -321,18 +450,16 @@ in
       # opencodeVersionProbe.ts classifies `major >= 2 ? "v2" : "v1"` and
       # opencodeRuntime.ts imports "@opencode-ai/sdk/v2", with
       # MINIMUM_OPENCODE_VERSION = "1.14.19" and no upper bound. Only one can own
-      # the plain `opencode` name on PATH (1.18.19 does, matching the system);
-      # register the 2.x build as a second provider instance in the t3 UI using
+      # the plain `opencode` name on PATH (2.0.23 does, matching the system);
+      # register the 1.x build as a second provider instance in the t3 UI using
       # the explicit binaryPath noted below.
       Environment = [
         "T3CODE_HOME=%h/.local/share/t3code"
         "PATH=${
           lib.makeBinPath [
-            # The anomalyco fork, matching the system `opencode` -- NOT
-            # pkgs.opencode, which is nixpkgs' own 1.18.18 and would silently
-            # give t3 a different v1 build (and different auth state) than the
-            # one on your shell PATH.
-            inputs.opencode.packages.${system}.opencode # 1.18.19, driver "opencode"
+            # The anomalyco fork 2.x, matching the system `opencode` -- NOT
+            # pkgs.opencode, which is nixpkgs' own 1.18.18.
+            inputs.opencode-2x.packages.${system}.opencode # 2.0.23, driver "opencode"
             latestCli.codex # 0.160.0   -- t3 driver "codex"
             pkgs.claude-code # 2.1.234   -- t3 driver "claudeAgent"
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
@@ -347,7 +474,8 @@ in
         #
         #   systemctl --user show t3code -p Environment | tr ' ' '\n' | grep _BIN=
         #
-        # opencode v1 is already on PATH above and needs no binaryPath.
+        # opencode v2 is already on PATH above and needs no binaryPath.
+        "OPENCODE_V1_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
         "CODEX_BIN=${latestCli.codex}/bin/codex"
         "CLAUDE_BIN=${pkgs.claude-code}/bin/claude"

@@ -237,3 +237,13 @@ stage-docs-dry *args:
 [group('docs')]
 stage-docs-all *args:
     ./scripts/stage-docs.sh --all {{args}}
+
+# =============================================================================
+# NixOS System
+# =============================================================================
+
+# Rebuild and switch NixOS configuration
+[group('nixos')]
+switch:
+    ./s
+

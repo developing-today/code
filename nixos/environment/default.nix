@@ -146,6 +146,28 @@ let
   # so the old outputHashes overrideAttrs is no longer needed
   opencode-desktop = inputs.opencode.packages.${system}.opencode-desktop;
 
+  # OpenCode packages:
+  # opencode-2x is the default on PATH as `opencode` (and `opencode2`).
+  # opencode v1 (1.18.x) is retained under `opencode-v1`, `opencode1`, and `opencode-1x`.
+  opencode-v1 =
+    pkgs.runCommand "opencode-v1"
+      {
+        meta = (inputs.opencode.packages.${system}.opencode.meta or { }) // {
+          mainProgram = "opencode-v1";
+        };
+      }
+      ''
+        mkdir -p $out/bin
+        ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode-v1
+        ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode1
+        ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode-1x
+      '';
+
+  opencode-v2-compat = pkgs.runCommand "opencode-v2-compat" { } ''
+    mkdir -p $out/bin
+    ln -s ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode $out/bin/opencode-v2
+  '';
+
   # 2x scaling for Electron apps.
   #
   # The GDK_SCALE / QT_SCALE_FACTOR pair set in environment.sessionVariables
@@ -266,6 +288,10 @@ let
   # analyzer sessions -> labelled issues -> worker sessions; Merge reconciles
   # the overlapping PRs that result. Google's own words on Fleet: "very
   # experimental, just for fun".
+  # Grok CLI (superagent-ai/grok-cli, published to npm as `grok-dev`).
+  # Provides `grok`, which t3code's `grok` driver shells out to.
+  grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
+
   jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
   jules-merge = pkgs.callPackage (lib.from-root "pkgs/jules-merge") { };
   antigravity-hub = pkgs.callPackage (lib.from-root "pkgs/antigravity-hub") { };
@@ -351,9 +377,12 @@ in
       antigravity-acp
       antigravity-hub
       cockpit-tools
+      grok-cli
       jules-fleet
       jules-merge
       latestCli.codex
+      opencode-v1
+      opencode-v2-compat
     ]
     ++ (with inputs; [
       #rose-pine-hyprcursor.packages.${pkgs.system}.default
@@ -363,7 +392,7 @@ in
       zen-browser.packages.${system}.default
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
-      opencode.packages.${system}.opencode
+      opencode-2x.packages.${system}.opencode
       openchamber.packages.${system}.openchamber
     ])
     ++ [
@@ -382,9 +411,7 @@ in
       # IDE extension"), so stock Linux has no phone->this-machine path at all.
       # This build adds one. Swap to `codex-desktop` to run the unpatched
       # official payload instead.
-      (scaleElectron2x
-        inputs.chatgpt-desktop.packages.${system}.codex-desktop-remote-mobile-control
-      )
+      (scaleElectron2x inputs.chatgpt-desktop.packages.${system}.codex-desktop-remote-mobile-control)
     ]
     ++ (with inputs.roc.packages.${system}; [ nightly ])
     ++ (with inputs.affinity-nix.packages.${system}; [

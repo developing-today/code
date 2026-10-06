@@ -271,11 +271,9 @@ rec {
       url = "github:anomalyco/opencode";
       # inputs.nixpkgs.follows = "nixpkgs-master";
     };
-    # Same fork as `opencode` above, pinned to a 2.x tag purely to satisfy
-    # OpenChamber 2.1.0, which hard-requires opencode >= 2.0.20 (it pins
-    # @opencode/client 2.0.21) and refuses to start its integration otherwise.
-    # Kept as a separate input rather than bumping `opencode` so the system
-    # opencode stays on the 1.18.x line. Consumed only by openchamber-desktop.
+    # OpenCode 2.x pin (v2.0.23). Used as the default `opencode` on PATH for the system,
+    # as well as OpenChamber (which hard-requires opencode >= 2.0.20).
+    # The 1.18.x build from `opencode` above is exposed under `opencode-v1`.
     opencode-2x = {
       url = "github:anomalyco/opencode/v2.0.23";
     };
