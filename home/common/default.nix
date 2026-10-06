@@ -14,6 +14,9 @@ let
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
+  # 2.1.289; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
+  # claudeAgent driver and the shell CLI are the same build.
+  claude-code = pkgs.callPackage ../../pkgs/claude-code { };
 in
 {
   wayland.windowManager.hyprland = {
@@ -356,6 +359,10 @@ in
           ]
         }"
         "T3CODE_HOME=%h/.local/share/t3code"
+        # Both generations, explicitly. Since nixos/environment now makes
+        # opencode-2x the plain `opencode` on PATH, the v1 instance MUST carry
+        # an explicit binaryPath or it silently resolves to 2.x and the two
+        # instances become duplicates of each other.
         "OPENCODE_V1_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
         "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
@@ -390,13 +397,17 @@ in
           if [ -r "$pw" ]; then
             export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
           fi
-          exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber \
+          exec ${inputs.openchamber.packages.${system}.openchamber.override {
+            opencode = inputs.opencode-2x.packages.${system}.opencode;
+          }}/bin/openchamber serve \
+            --foreground \
             --port 3000 --host 127.0.0.1
         ''
       );
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
+        "OPENCODE_BINARY=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
         "PATH=${
           lib.makeBinPath [
             inputs.opencode-2x.packages.${system}.opencode # OpenChamber needs >= 2.0.20
@@ -461,7 +472,7 @@ in
             # pkgs.opencode, which is nixpkgs' own 1.18.18.
             inputs.opencode-2x.packages.${system}.opencode # 2.0.23, driver "opencode"
             latestCli.codex # 0.160.0   -- t3 driver "codex"
-            pkgs.claude-code # 2.1.234   -- t3 driver "claudeAgent"
+            claude-code # 2.1.289 -- t3 driver "claudeAgent"
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
             pkgs.git
             pkgs.openssh
@@ -478,7 +489,7 @@ in
         "OPENCODE_V1_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
         "CODEX_BIN=${latestCli.codex}/bin/codex"
-        "CLAUDE_BIN=${pkgs.claude-code}/bin/claude"
+        "CLAUDE_BIN=${claude-code}/bin/claude"
         "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
         # The ACP route: t3 ships an AcpRegistryDriver, and this is Google's
         # official Agent Client Protocol server for Antigravity. Preferred over

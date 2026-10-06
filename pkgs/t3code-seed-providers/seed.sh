@@ -60,13 +60,10 @@ OPENCODE_MODEL = "openai/gpt-6-luna"   # opencode driver uses provider/model for
 CODEX_MODEL = "gpt-6-luna"             # codex driver uses a bare slug
 
 desired = {
-    # opencode v2 is on the unit's PATH, so it needs no binaryPath.
-    "opencode": {
-        "driver": "opencode",
-        "displayName": "opencode v2",
-        "enabled": True,
-        "config": {"model": OPENCODE_MODEL},
-    },
+    # No bare "opencode" instance. nixos/environment makes opencode-2x the plain
+    # `opencode` on PATH, so a PATH-resolved instance would be byte-identical to
+    # the explicit opencode-v2 below -- two entries, one binary, one of them
+    # mislabelled. Both generations are pinned by binaryPath further down.
     "codex": {
         "driver": "codex",
         "displayName": "Codex",

@@ -248,6 +248,10 @@ let
         '';
       });
 
+  openchamber = inputs.openchamber.packages.${system}.openchamber.override {
+    opencode = inputs.opencode-2x.packages.${system}.opencode;
+  };
+
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
   # only documented install is a `curl | sh` that self-updates; see the
   # derivation for how the artifact URL + upstream sha256 are pinned.
@@ -291,6 +295,9 @@ let
   # Grok CLI (superagent-ai/grok-cli, published to npm as `grok-dev`).
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
+
+  # Claude Code 2.1.289 (nixpkgs has 2.1.234 in both channel and unstable).
+  claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
 
   jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
   jules-merge = pkgs.callPackage (lib.from-root "pkgs/jules-merge") { };
@@ -376,6 +383,7 @@ in
       jules
       antigravity-acp
       antigravity-hub
+      claude-code
       cockpit-tools
       grok-cli
       jules-fleet
@@ -383,6 +391,7 @@ in
       latestCli.codex
       opencode-v1
       opencode-v2-compat
+      openchamber
     ]
     ++ (with inputs; [
       #rose-pine-hyprcursor.packages.${pkgs.system}.default
@@ -393,7 +402,6 @@ in
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode-2x.packages.${system}.opencode
-      openchamber.packages.${system}.openchamber
     ])
     ++ [
       # Wrapped for 2x scaling; see scaleElectron2x above. These sit outside the
@@ -649,7 +657,10 @@ in
       # AI coding agents. Kept on the unstable channel rather than master
       # because unstable is cached (see the chromium note below) and these
       # are large node/electron closures.
-      claude-code # anthropic, mainProgram "claude" (unfree)
+      # claude-code moved out of this list: nixpkgs (channel and unstable both)
+      # carries 2.1.234 while npm is on 2.1.289. Now from pkgs/claude-code,
+      # which pins the platform-native binary directly -- see that file for why
+      # the npm wrapper package cannot be used.
       # codex moved out of this list: nixpkgs-unstable carries 0.147.0 while
       # upstream is at rust-v0.160.0 (13 minor versions). Now taken from
       # pkgs/latest-cli as an upstream prebuilt musl-static release binary --
