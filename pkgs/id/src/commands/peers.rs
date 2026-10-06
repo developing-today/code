@@ -55,11 +55,9 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
-use iroh::{
-    address_lookup::MdnsAddressLookup,
-    endpoint::{Endpoint, RelayMode, presets},
-};
+use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use crate::discovery::{PeerAnnouncement, resolve_config};
 use crate::protocol::{MetaRequest, MetaResponse};
@@ -399,20 +397,19 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let dtt_topic_id = TopicId::new(config.topic);
 
     let dalek_signing_key = ed25519_dalek::SigningKey::from_bytes(&client_key.to_bytes());
-    let dalek_verifying_key = dalek_signing_key.verifying_key();
 
     let record_publisher = RecordPublisher::new(
         dtt_topic_id,
-        dalek_verifying_key,
         dalek_signing_key,
         None,
         config.topic_secret,
+        distributed_topic_tracker::Config::default(),
     );
 
     let gossip_topic = gossip
         .subscribe_and_join_with_auto_discovery_no_wait(record_publisher)
         .await?;
-    let (sender, receiver) = gossip_topic.split().await?;
+    let (sender, mut receiver) = gossip_topic.split().await?;
 
     // Join bootstrap peers (defaults + CLI, already merged by resolve_config)
     let bootstrap_ids: Vec<EndpointId> = config
@@ -429,7 +426,7 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     let _ = tokio::time::timeout(collect_timeout, async {
-        while let Some(Ok(event)) = receiver.next().await {
+        while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Ok(announcement) = postcard::from_bytes::<PeerAnnouncement>(&msg.content)
             {

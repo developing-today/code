@@ -96,7 +96,7 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
             Ok(SecretKey::from(bytes))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let key = SecretKey::generate(&mut rand::rng());
+            let key = SecretKey::generate();
             afs::write(path, key.to_bytes()).await?;
             Ok(key)
         }
@@ -376,7 +376,7 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         // Create a key manually
-        let original_key = SecretKey::generate(&mut rand::rng());
+        let original_key = SecretKey::generate();
         std::fs::write(&key_path, original_key.to_bytes()).unwrap();
 
         // Load it

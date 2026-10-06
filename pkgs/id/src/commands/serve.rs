@@ -58,11 +58,11 @@ use anyhow::Result;
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
 use futures_lite::StreamExt;
 use iroh::{
-    address_lookup::MdnsAddressLookup,
     endpoint::{Endpoint, RelayMode, presets},
     protocol::Router,
 };
 use iroh_base::EndpointId;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
@@ -358,14 +358,13 @@ pub async fn cmd_serve(
 
         // Convert iroh SecretKey to ed25519-dalek types for RecordPublisher
         let dalek_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
-        let dalek_verifying_key = dalek_signing_key.verifying_key();
 
         let record_publisher = RecordPublisher::new(
             dtt_topic_id,
-            dalek_verifying_key,
             dalek_signing_key,
             None,
             config.topic_secret.clone(),
+            distributed_topic_tracker::Config::default(),
         );
 
         // Join gossip topic with auto-discovery (non-blocking)
@@ -505,7 +504,7 @@ pub async fn cmd_serve(
 async fn run_gossip_loop(
     node_id: EndpointId,
     sender: distributed_topic_tracker::GossipSender,
-    receiver: distributed_topic_tracker::GossipReceiver,
+    mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
@@ -560,7 +559,7 @@ async fn run_gossip_loop(
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
-                Some(Ok(event)) => match event {
+                Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
                         match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
@@ -585,11 +584,8 @@ async fn run_gossip_loop(
                         warn!("gossip receiver lagged, some messages were missed");
                     }
                 },
-                Some(Err(e)) => {
-                    debug!("gossip receive error: {}", e);
-                }
-                None => {
-                    debug!("gossip receiver stream ended");
+                Err(e) => {
+                    debug!("gossip receiver stream ended: {}", e);
                     break;
                 }
             }
@@ -693,7 +689,7 @@ mod tests {
     fn test_serve_info_struct() {
         use iroh_base::SecretKey;
 
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         let node_id = key.public();
 
         let info = ServeInfo {
@@ -714,7 +710,7 @@ mod tests {
     fn test_serve_info_clone() {
         use iroh_base::SecretKey;
 
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         let node_id = key.public();
         let info = ServeInfo {
             node_id: node_id.to_string(),

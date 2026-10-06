@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         // --new [NAME] creates .iroh/<name>/ under the current directory
         let name = if name.is_empty() {
             // Generate a short random name (8 hex chars)
-            use rand::Rng;
+            use rand::RngExt;
             let mut rng = rand::rng();
             let n: u32 = rng.random();
             format!("{n:08x}")

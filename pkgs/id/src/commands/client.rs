@@ -21,11 +21,9 @@
 //! ```
 
 use anyhow::Result;
-use iroh::{
-    address_lookup::MdnsAddressLookup,
-    endpoint::{Endpoint, presets},
-};
+use iroh::endpoint::{Endpoint, presets};
 use iroh_base::{EndpointAddr, TransportAddr};
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use super::serve::ServeInfo;
 use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
