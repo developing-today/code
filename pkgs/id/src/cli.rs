@@ -304,6 +304,32 @@ pub enum Command {
         /// multiple servers that need predictable port assignments.
         #[arg(long, default_value = "0")]
         iroh_port: u16,
+        /// Address the web interface binds to.
+        ///
+        /// Defaults to loopback, so the UI is reachable only from this
+        /// machine. Use `0.0.0.0` to expose it on the network, and set
+        /// `--web-token` when you do.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
+        /// Require this token to use the web interface.
+        ///
+        /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
+        /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
+        #[arg(long, env = "ID_WEB_TOKEN")]
+        web_token: Option<String>,
+        /// Allow this node to modify the store (repeatable, comma-separated).
+        ///
+        /// Reading names, hashes and tags is public. Writing (put, delete,
+        /// rename, copy, tag changes, blob pushes) requires the node's ID to be
+        /// listed here or in `.iroh-allowed` (one ID per line). This machine's
+        /// own server and client keys are always allowed.
+        #[arg(long = "allow-node", value_delimiter = ',')]
+        allow_node: Vec<String>,
+        /// Let every peer modify the store (insecure).
+        ///
+        /// For demos and trusted networks only.
+        #[arg(long)]
+        open_writes: bool,
     },
     /// Start an interactive REPL for issuing commands.
     ///
@@ -886,8 +912,17 @@ pub enum Command {
     /// ```bash
     /// id id
     /// # Output: abc123...def456
+    ///
+    /// # The identity this machine uses as a *client*. A server owner adds it
+    /// # with `id serve --allow-node <ID>` so this machine may write to it.
+    /// id id --client
     /// ```
-    Id,
+    Id {
+        /// Print the client identity (used when connecting to other nodes)
+        /// instead of the server identity.
+        #[arg(long)]
+        client: bool,
+    },
     /// Discover and list known peers.
     ///
     /// Discovers other `id` servers via gossip-based networking, RPC
@@ -1018,18 +1053,27 @@ pub enum TagCommand {
         file: String,
         /// The tag key.
         key: String,
-        /// Optional tag value.
+        /// Optional tag value (UTF-8 text).
+        #[arg(conflicts_with_all = ["value_hex", "value_file"])]
         value: Option<String>,
+        /// Tag value as hex-encoded raw bytes (binary-safe).
+        #[arg(long, value_name = "HEX", conflicts_with = "value_file")]
+        value_hex: Option<String>,
+        /// Read the raw tag value from a file (`-` for stdin).
+        #[arg(long, value_name = "PATH")]
+        value_file: Option<PathBuf>,
     },
     /// Delete a metadata tag from a file.
     ///
-    /// Removes a specific key (and optionally value) from the file's tags.
+    /// With a value, removes exactly that `(key, value)` tag. Without one,
+    /// removes **every** tag with that key (all values, and a value-less
+    /// key-only tag).
     ///
     /// # Examples
     ///
     /// ```bash
-    /// id tag del README.md priority high
-    /// id tag del README.md pinned
+    /// id tag del README.md priority high   # only priority=high
+    /// id tag del README.md priority        # priority=* and bare "priority"
     /// ```
     #[command(aliases = ["rm", "remove", "rem", "delete", "unset"])]
     Del {
@@ -1037,8 +1081,12 @@ pub enum TagCommand {
         file: String,
         /// The tag key to remove.
         key: String,
-        /// Optional specific value to remove.
+        /// Specific value to remove (UTF-8 text). Omit to remove all values.
+        #[arg(conflicts_with = "value_hex")]
         value: Option<String>,
+        /// Specific value to remove, as hex-encoded raw bytes.
+        #[arg(long, value_name = "HEX")]
+        value_hex: Option<String>,
     },
     /// List metadata tags.
     ///
@@ -1054,10 +1102,10 @@ pub enum TagCommand {
     List {
         /// File to list tags for (omit for all).
         file: Option<String>,
-        /// Show binary values as hex strings.
+        /// Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.
         #[arg(long)]
         hex: bool,
-        /// Include binary (non-UTF-8) tag values in output.
+        /// Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.
         #[arg(long)]
         binary: bool,
         /// Don't truncate long values (default: truncate at 256 bytes).
@@ -1091,10 +1139,10 @@ pub enum TagCommand {
         /// Search query terms.
         #[arg(num_args = 1.., required = true)]
         query: Vec<String>,
-        /// Show binary values as hex strings.
+        /// Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.
         #[arg(long)]
         hex: bool,
-        /// Include binary (non-UTF-8) tag values in output.
+        /// Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.
         #[arg(long)]
         binary: bool,
         /// Don't truncate long values (default: truncate at 256 bytes).
@@ -1171,6 +1219,10 @@ mod tests {
                 replace_defaults,
                 no_mdns,
                 iroh_port,
+                bind,
+                web_token,
+                allow_node,
+                open_writes,
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);
@@ -1185,6 +1237,11 @@ mod tests {
                 assert!(!replace_defaults);
                 assert!(!no_mdns);
                 assert_eq!(iroh_port, 0);
+                // Security defaults: loopback only, no token, nobody extra may write.
+                assert_eq!(bind, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+                assert!(web_token.is_none());
+                assert!(allow_node.is_empty());
+                assert!(!open_writes);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -1208,6 +1265,7 @@ mod tests {
                 replace_defaults,
                 no_mdns,
                 iroh_port,
+                ..
             }) => {
                 assert!(ephemeral);
                 assert!(no_relay);
@@ -1510,7 +1568,7 @@ mod tests {
     #[test]
     fn test_cli_parse_id() {
         let cli = Cli::parse_from(["id", "id"]);
-        assert!(matches!(cli.command, Some(Command::Id)));
+        assert!(matches!(cli.command, Some(Command::Id { client: false })));
     }
 
     #[test]
@@ -2188,7 +2246,9 @@ mod tests {
     fn test_cli_parse_tag_set() {
         let cli = Cli::parse_from(["id", "tag", "set", "README.md", "priority", "high"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "README.md");
                 assert_eq!(key, "priority");
                 assert_eq!(value, Some("high".to_owned()));
@@ -2201,7 +2261,9 @@ mod tests {
     fn test_cli_parse_tag_set_without_value() {
         let cli = Cli::parse_from(["id", "tag", "set", "README.md", "pinned"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "README.md");
                 assert_eq!(key, "pinned");
                 assert!(value.is_none());
@@ -2214,7 +2276,9 @@ mod tests {
     fn test_cli_parse_tag_set_alias_add() {
         let cli = Cli::parse_from(["id", "tag", "add", "file.txt", "label", "rust"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "label");
                 assert_eq!(value, Some("rust".to_owned()));
@@ -2227,7 +2291,9 @@ mod tests {
     fn test_cli_parse_tag_del() {
         let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "label", "rust"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Del { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Del {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "label");
                 assert_eq!(value, Some("rust".to_owned()));
@@ -2240,7 +2306,9 @@ mod tests {
     fn test_cli_parse_tag_del_without_value() {
         let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "pinned"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Del { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Del {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "pinned");
                 assert!(value.is_none());
@@ -2338,7 +2406,9 @@ mod tests {
         // "label" should work as alias for "tag"
         let cli = Cli::parse_from(["id", "label", "set", "file.txt", "key", "val"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "key");
                 assert_eq!(value, Some("val".to_owned()));
@@ -2352,7 +2422,9 @@ mod tests {
         // "link" should work as alias for "tag"
         let cli = Cli::parse_from(["id", "link", "set", "file.txt", "key", "val"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "key");
                 assert_eq!(value, Some("val".to_owned()));
@@ -2385,6 +2457,94 @@ mod tests {
         assert!(
             matches!(cli.command, Some(Command::Tag(TagCommand::Search { .. }))),
             "label search should parse as Tag Search"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_serve_security_flags() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--bind",
+            "0.0.0.0",
+            "--web-token",
+            "t0k",
+            "--allow-node",
+            "aa,bb",
+            "--allow-node",
+            "cc",
+            "--open-writes",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                bind,
+                web_token,
+                allow_node,
+                open_writes,
+                ..
+            }) => {
+                assert!(bind.is_unspecified());
+                assert_eq!(web_token.as_deref(), Some("t0k"));
+                assert_eq!(allow_node, vec!["aa", "bb", "cc"]);
+                assert!(open_writes);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_id_client() {
+        let cli = Cli::parse_from(["id", "id", "--client"]);
+        assert!(matches!(cli.command, Some(Command::Id { client: true })));
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_binary_inputs() {
+        let cli = Cli::parse_from(["id", "tag", "set", "f", "k", "--value-hex", "deadbeef"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                value,
+                value_hex,
+                value_file,
+                ..
+            })) => {
+                assert!(value.is_none());
+                assert_eq!(value_hex.as_deref(), Some("deadbeef"));
+                assert!(value_file.is_none());
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+        let cli = Cli::parse_from(["id", "tag", "set", "f", "k", "--value-file", "-"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::Set {
+                value_file: Some(_),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_tag_set_value_inputs_conflict() {
+        assert!(
+            Cli::try_parse_from(["id", "tag", "set", "f", "k", "v", "--value-hex", "00"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "tag",
+                "set",
+                "f",
+                "k",
+                "--value-hex",
+                "00",
+                "--value-file",
+                "x"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["id", "tag", "del", "f", "k", "v", "--value-hex", "00"]).is_err()
         );
     }
 }

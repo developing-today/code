@@ -17,27 +17,27 @@
   "dependencies": {
     "@chenglou/pretext": "^0.0.3",
     "@starfederation/datastar": "^1.0.0-beta.11",
-    "msgpackr": "^1.11.0",
+    "msgpackr": "^1.12.1",
     "prosemirror-collab": "^1.3.1",
-    "prosemirror-commands": "^1.5.2",
-    "prosemirror-example-setup": "^1.2.2",
-    "prosemirror-highlight": "^0.15.1",
-    "prosemirror-history": "^1.4.0",
-    "prosemirror-keymap": "^1.2.2",
-    "prosemirror-model": "^1.21.0",
-    "prosemirror-schema-basic": "^1.2.2",
-    "prosemirror-schema-list": "^1.3.0",
-    "prosemirror-search": "^1.1.0",
-    "prosemirror-state": "^1.4.3",
-    "prosemirror-view": "^1.33.6",
-    "shiki": "^4.0.2"
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-example-setup": "^1.2.3",
+    "prosemirror-highlight": "^0.15.3",
+    "prosemirror-history": "^1.5.1",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-model": "^1.25.12",
+    "prosemirror-schema-basic": "^1.2.5",
+    "prosemirror-schema-list": "^1.5.1",
+    "prosemirror-search": "^1.1.1",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.42.6",
+    "shiki": "^4.5.0"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.2.2",
-    "@types/node": "^20.11.0",
-    "daisyui": "^5.5.19",
-    "happy-dom": "^17.4.4",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/node": "^20.19.43",
+    "daisyui": "^5.7.47",
+    "happy-dom": "^17.6.3",
     "typescript": "^5.9.3",
-    "vitest": "^3.1.4"
+    "vitest": "^3.2.7"
   }
 }

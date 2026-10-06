@@ -50,6 +50,7 @@ mod content_mode;
 mod identity;
 mod markdown;
 mod routes;
+mod security;
 mod tags_ws;
 mod templates;
 
@@ -73,6 +74,7 @@ pub use assets::static_handler;
 pub use collab::CollabState;
 pub use identity::IdentityStore;
 pub use routes::create_router;
+pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
 /// Default save rate limit cooldown period.
@@ -243,6 +245,8 @@ fn load_asset_urls() -> AssetUrls {
 /// * `peers` - Optional peer discovery table for the `/peers` page
 /// * `node_id` - This node's public ID (hex-encoded)
 /// * `tag_store` - The tag metadata store (α/Ω namespace pairs)
+/// * `security` - Host allow-list, origin check and optional token (see
+///   [`WebSecurity`]); applied to every request
 ///
 /// # Returns
 ///
@@ -254,6 +258,7 @@ pub async fn web_router(
     tag_store: Arc<TagStore>,
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
+    security: WebSecurity,
 ) -> anyhow::Result<Router> {
     let state = AppState::new(
         store,
@@ -264,7 +269,12 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(create_router(state))
+    Ok(
+        create_router(state).layer(axum::middleware::from_fn_with_state(
+            Arc::new(security),
+            security::guard,
+        )),
+    )
 }
 
 #[cfg(test)]

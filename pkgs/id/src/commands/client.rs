@@ -21,9 +21,8 @@
 //! ```
 
 use anyhow::Result;
-use iroh::endpoint::{Endpoint, presets};
+use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::{EndpointAddr, TransportAddr};
-use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use super::serve::ServeInfo;
 use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
@@ -32,7 +31,8 @@ use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 ///
 /// The endpoint is configured with:
 /// - A client-specific keypair (separate from the serve keypair)
-/// - DNS and Pkarr address lookup for remote peer discovery
+/// - No relay and no address lookup: the serve address is known, so the
+///   connection is purely local
 /// - Known socket addresses from the serve lock file
 ///
 /// # Arguments
@@ -66,10 +66,14 @@ pub async fn create_local_client_endpoint(
     serve_info: &ServeInfo,
 ) -> Result<(Endpoint, EndpointAddr)> {
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    // Enable relay, DNS lookup, and mDNS so local network discovery works
-    let endpoint = Endpoint::builder(presets::N0)
+    // The server's loopback addresses come from the lock file, so no relay and
+    // no address lookup (DNS, pkarr, mDNS) are needed. Using the full N0 preset
+    // here made every CLI command probe relays and publish this client's info
+    // to n0's DNS, which added seconds of latency and an outbound dependency
+    // to what is a purely local connection.
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
         .secret_key(client_key)
-        .address_lookup(MdnsAddressLookup::builder())
         .bind()
         .await?;
 

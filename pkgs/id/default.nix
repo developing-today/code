@@ -28,10 +28,9 @@ in
 
     cargoLock = {
       lockFile = ./Cargo.lock;
-      # If you have git dependencies, add them here:
-      # outputHashes = {
-      #   "distributed-topic-tracker-0.1.0" = "sha256-...";
-      # };
+      # All dependencies come from crates.io (distributed-topic-tracker is no
+      # longer a git dependency). If a git dependency is ever added, pin its
+      # hash here via `outputHashes`.
     };
 
     nativeBuildInputs = with pkgs; [

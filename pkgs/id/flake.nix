@@ -65,9 +65,6 @@
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
           lockFile = ./Cargo.lock;
-          outputHashes = {
-            "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
-          };
         };
 
         # Pre-fetch bun dependencies for sandbox builds (no network access)
@@ -112,11 +109,6 @@
             cat >> .cargo/config.toml << EOF
 
             [source.crates-io]
-            replace-with = "vendored-sources"
-
-            [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
-            git = "https://github.com/developing-today-forks/distributed-topic-tracker"
-            branch = "main"
             replace-with = "vendored-sources"
 
             [source.vendored-sources]
@@ -194,11 +186,6 @@
               cat >> .cargo/config.toml << EOF
 
               [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
-              git = "https://github.com/developing-today-forks/distributed-topic-tracker"
-              branch = "main"
               replace-with = "vendored-sources"
 
               [source.vendored-sources]
@@ -366,11 +353,6 @@
               cat >> .cargo/config.toml << EOF
 
               [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
-              git = "https://github.com/developing-today-forks/distributed-topic-tracker"
-              branch = "main"
               replace-with = "vendored-sources"
 
               [source.vendored-sources]
@@ -582,9 +564,6 @@
 
             cargoLock = {
               lockFile = ./Cargo.lock;
-              outputHashes = {
-                "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
-              };
             };
 
             inherit buildInputs;
@@ -636,9 +615,6 @@
 
             cargoLock = {
               lockFile = ./Cargo.lock;
-              outputHashes = {
-                "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
-              };
             };
 
             # Disable default web feature for lib-only build

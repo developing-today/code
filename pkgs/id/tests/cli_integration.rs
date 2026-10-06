@@ -934,7 +934,14 @@ mod serve_tests {
         ) -> Self {
             let mut args: Vec<&str> = Vec::new();
             args.extend(global_args);
-            args.extend(["serve", "--ephemeral", "--no-relay"]);
+            // Hermetic by default: no relay, no gossip/DHT, no mDNS. Nothing here needs the public network.
+            args.extend([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ]);
             args.extend(extra_args);
 
             let mut process = StdCommand::new(get_binary_path())
@@ -1140,6 +1147,16 @@ mod serve_tests {
             // Ensure server is stopped on drop
             let _ = self.process.kill();
             let _ = self.process.wait();
+            // When a test fails, the server's side of the story is usually the
+            // interesting half: show what it logged.
+            if std::thread::panicking() {
+                std::thread::sleep(Duration::from_millis(100));
+                eprintln!(
+                    "--- server stderr ({}) ---\n{}\n--- end server stderr ---",
+                    self.work_dir.display(),
+                    self.captured_stderr()
+                );
+            }
         }
     }
 

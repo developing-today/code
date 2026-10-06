@@ -5,8 +5,10 @@
 //!
 //! # Keypair Management
 //!
-//! The keypair is stored in `.id-key` and created on first use.
-//! The same keypair is used by both `serve` and `id` commands.
+//! The server keypair is stored in `.iroh-key` and created on first use; the
+//! client keypair (used when connecting to other nodes) lives in
+//! `.iroh-key-client`. `id id --client` prints the latter, which is what a
+//! server owner passes to `id serve --allow-node` to let this machine write.
 //!
 //! # Output Format
 //!
@@ -23,22 +25,23 @@
 use anyhow::Result;
 use iroh_base::EndpointId;
 
-use crate::KEY_FILE;
 use crate::store::load_or_create_keypair;
+use crate::{CLIENT_KEY_FILE, KEY_FILE};
 
 /// Prints the node ID derived from the local keypair.
 ///
-/// Loads the keypair from [`KEY_FILE`] (creating it if necessary)
-/// and prints the public node ID to stdout.
+/// Loads the keypair from [`KEY_FILE`] (or [`CLIENT_KEY_FILE`] when `client`
+/// is set), creating it if necessary, and prints the public node ID to stdout.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// cmd_id().await?;
+/// cmd_id(false).await?;
 /// // Prints: abc123def456... (64 hex characters)
 /// ```
-pub async fn cmd_id() -> Result<()> {
-    let key = load_or_create_keypair(KEY_FILE).await?;
+pub async fn cmd_id(client: bool) -> Result<()> {
+    let path = if client { CLIENT_KEY_FILE } else { KEY_FILE };
+    let key = load_or_create_keypair(path).await?;
     let node_id: EndpointId = key.public();
     println!("{node_id}");
     Ok(())

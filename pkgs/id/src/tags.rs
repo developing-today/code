@@ -224,6 +224,9 @@ struct Registry {
     /// Custom user-defined namespaces.
     #[serde(default)]
     custom: HashMap<String, CustomEntry>,
+    /// Whether the legacy `.meta` JSON metadata blob has been imported.
+    #[serde(default)]
+    legacy_meta_imported: bool,
 }
 
 /// Stored IDs for an α/Ω pair.
@@ -257,6 +260,7 @@ impl Default for Registry {
             global: None,
             nodes: HashMap::new(),
             custom: HashMap::new(),
+            legacy_meta_imported: false,
         }
     }
 }
@@ -637,7 +641,13 @@ impl TagStore {
     /// * `docs` - The iroh-docs protocol instance (provides `DocsApi` via deref)
     /// * `node_id` - This node's public ID as hex string
     pub async fn init(docs: &Docs, node_id: &str) -> Result<Self> {
-        let meta_dir = PathBuf::from(META_DIR);
+        Self::init_in(docs, node_id, PathBuf::from(META_DIR)).await
+    }
+
+    /// Like [`TagStore::init`], keeping the namespace registry in `meta_dir`
+    /// instead of `./.iroh-meta` (used by ephemeral nodes and tests so they
+    /// neither share nor pollute the working directory).
+    pub async fn init_in(docs: &Docs, node_id: &str, meta_dir: PathBuf) -> Result<Self> {
         tokio::fs::create_dir_all(&meta_dir)
             .await
             .context("creating .iroh-meta directory")?;
@@ -1061,6 +1071,103 @@ impl TagStore {
         }
 
         Ok(())
+    }
+
+    /// Reset the `name` and `file` identity tags of `subject` to match its
+    /// current name (replacing any existing values).
+    ///
+    /// Used after a rename or copy, where [`TagStore::auto_tag`] (which never
+    /// overwrites) would leave the tags pointing at the old name.
+    pub async fn refresh_identity_tags(&self, ns: &NamespacePair, subject: &[u8]) -> Result<()> {
+        let subject_str = String::from_utf8_lossy(subject);
+        self.set_singleton(ns, subject, b"name", Some(subject), b"")
+            .await?;
+        let basename = Path::new(subject_str.as_ref()).file_name().map_or_else(
+            || subject_str.to_string(),
+            |f| f.to_string_lossy().to_string(),
+        );
+        self.set_singleton(ns, subject, b"file", Some(basename.as_bytes()), b"")
+            .await
+    }
+
+    /// Delete tags of `subject` with `key`, returning how many existed.
+    ///
+    /// - `value = Some(v)`: delete only the exact `(subject, key, v)` tag.
+    /// - `value = None`: delete **every** tag with this subject and key,
+    ///   including a value-less key-only tag.
+    ///
+    /// This is the semantics exposed by the CLI (`id tag del FILE KEY [VALUE]`)
+    /// and the meta protocol; [`TagStore::del_tag`] remains the exact-match
+    /// primitive.
+    pub async fn delete_matching(
+        &self,
+        ns: &NamespacePair,
+        subject: &[u8],
+        key: &[u8],
+        value: Option<&[u8]>,
+    ) -> Result<usize> {
+        match value {
+            None => self.del_by_key(ns, subject, key).await,
+            Some(v) => {
+                let existing = self.get_by_key(ns, subject, key).await?;
+                if existing
+                    .iter()
+                    .any(|t| t.value.as_ref().map(TagValue::as_bytes) == Some(v))
+                {
+                    self.del_tag(ns, subject, key, Some(v)).await?;
+                    Ok(1)
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+    }
+
+    /// Import the legacy `.meta` JSON metadata blob into the global namespace.
+    ///
+    /// Before iroh-docs, tags set while no server was running were stored as a
+    /// single JSON blob named `.meta`. This copies them into the α/Ω indexes,
+    /// exactly once (a flag in `registry.json` records completion). The blob
+    /// is left untouched. Identity/timestamp keys (`name`, `file`, `path`,
+    /// `created`, `modified`) never overwrite values already present; all
+    /// other keys are additive. A legacy link is preserved in the entry
+    /// payload as `link=hash:<hex>` or `link=name:<name>`.
+    ///
+    /// Returns the number of tags imported (0 if nothing to do).
+    pub async fn migrate_legacy_meta(&self, store: &Store) -> Result<usize> {
+        let mut registry = load_registry(&self.registry_path).await?;
+        if registry.legacy_meta_imported {
+            return Ok(0);
+        }
+        let doc = load_meta(store).await.unwrap_or_default();
+        let ns = &self.global;
+        let mut imported = 0usize;
+        for t in &doc.tags {
+            let data = match &t.link {
+                Some(MetaLink::Hash(h)) => format!("link=hash:{h}").into_bytes(),
+                Some(MetaLink::Name(n)) => format!("link=name:{n}").into_bytes(),
+                None => Vec::new(),
+            };
+            let value = t.value.as_deref().map(str::as_bytes);
+            if matches!(
+                t.key.as_str(),
+                "name" | "file" | "path" | "created" | "modified"
+            ) {
+                if self
+                    .set_if_absent(ns, t.subject.as_bytes(), t.key.as_bytes(), value, &data)
+                    .await?
+                {
+                    imported += 1;
+                }
+            } else {
+                self.set_tag(ns, t.subject.as_bytes(), t.key.as_bytes(), value, &data)
+                    .await?;
+                imported += 1;
+            }
+        }
+        registry.legacy_meta_imported = true;
+        save_registry(&self.registry_path, &registry).await?;
+        Ok(imported)
     }
 
     /// Migrate all existing files to have name/file/path auto-tags.
@@ -2144,6 +2251,7 @@ mod tests {
                 );
                 m
             },
+            legacy_meta_imported: false,
         };
 
         let json = serde_json::to_string_pretty(&registry).unwrap();

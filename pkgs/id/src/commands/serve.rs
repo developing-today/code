@@ -62,10 +62,10 @@ use iroh::{
     protocol::Router,
 };
 use iroh_base::EndpointId;
-use iroh_mdns_address_lookup::MdnsAddressLookup;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
@@ -78,6 +78,28 @@ use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
+
+/// Print a status line to stdout **without panicking** if stdout is gone.
+///
+/// `println!` panics on `EPIPE`. A server must not die because whoever
+/// launched it stopped reading its output (`id serve | head -1`, a supervisor
+/// that closes the pipe after the first line, or a test harness): the status
+/// lines are informational. The lock file, not stdout, is how clients find
+/// the server.
+macro_rules! status {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+/// Like [`status!`], for stderr.
+macro_rules! status_err {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
 
 /// Information about a running serve instance.
 ///
@@ -225,6 +247,75 @@ pub async fn remove_serve_lock() -> Result<()> {
     let _ = afs::remove_file(SERVE_LOCK).await;
     Ok(())
 }
+/// Options for [`cmd_serve`], mirroring the `serve` CLI flags.
+#[derive(Debug, Clone)]
+pub struct ServeOptions {
+    /// Use an in-memory store.
+    pub ephemeral: bool,
+    /// Disable relay servers.
+    pub no_relay: bool,
+    /// Disable gossip peer discovery.
+    pub no_gossip: bool,
+    /// Start the web interface.
+    pub web: bool,
+    /// Web interface port (0 = random).
+    pub port: u16,
+    /// Extra bootstrap node IDs.
+    pub bootstrap: Vec<String>,
+    /// Gossip topic override.
+    pub topic: Option<String>,
+    /// Gossip topic secret override.
+    pub topic_secret: Option<String>,
+    /// Skip default bootstrap nodes.
+    pub no_default_bootstrap: bool,
+    /// Skip default topic and secret.
+    pub no_default_topic: bool,
+    /// Use only `defaults.conf` values.
+    pub replace_defaults: bool,
+    /// Disable mDNS.
+    pub no_mdns: bool,
+    /// Iroh QUIC port (0 = random).
+    pub iroh_port: u16,
+    /// Address the web interface binds to.
+    pub bind: std::net::IpAddr,
+    /// Token required by the web interface.
+    pub web_token: Option<String>,
+    /// Nodes allowed to modify the store.
+    pub allow_node: Vec<String>,
+    /// Let every peer modify the store.
+    pub open_writes: bool,
+}
+
+/// Build the write-access policy for a server.
+///
+/// Trusted automatically: the server's own key and this data directory's
+/// client key (so the local CLI and REPL work without setup). Added to those:
+/// `--allow-node` IDs and the `.iroh-allowed` file. With `open_writes`, every
+/// peer may write.
+///
+/// # Errors
+///
+/// Fails if an `--allow-node` value is not a valid node ID.
+pub async fn build_access_policy(
+    node_id: EndpointId,
+    allow_node: &[String],
+    open_writes: bool,
+) -> Result<crate::access::AccessPolicy> {
+    use crate::access::{AccessPolicy, load_allowed_nodes};
+    if open_writes {
+        return Ok(AccessPolicy::open());
+    }
+    let client_key = load_or_create_keypair(crate::CLIENT_KEY_FILE).await?;
+    let mut writers = vec![node_id, client_key.public()];
+    for id in allow_node {
+        writers.push(
+            id.parse::<EndpointId>()
+                .map_err(|e| anyhow::anyhow!("invalid --allow-node {id:?}: {e}"))?,
+        );
+    }
+    writers.extend(load_allowed_nodes(std::path::Path::new(".")));
+    Ok(AccessPolicy::restricted(writers))
+}
 
 /// Starts the serve process.
 ///
@@ -265,25 +356,33 @@ pub async fn remove_serve_lock() -> Result<()> {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
-#[allow(clippy::too_many_arguments)]
-pub async fn cmd_serve(
-    ephemeral: bool,
-    no_relay: bool,
-    no_gossip: bool,
-    web: bool,
-    port: u16,
-    bootstrap: Vec<String>,
-    topic: Option<String>,
-    topic_secret: Option<String>,
-    no_default_bootstrap: bool,
-    no_default_topic: bool,
-    replace_defaults: bool,
-    no_mdns: bool,
-    iroh_port: u16,
-) -> Result<()> {
+pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
+    let ServeOptions {
+        ephemeral,
+        no_relay,
+        no_gossip,
+        web,
+        port,
+        bootstrap,
+        topic,
+        topic_secret,
+        no_default_bootstrap,
+        no_default_topic,
+        replace_defaults,
+        no_mdns,
+        iroh_port,
+        bind,
+        web_token,
+        allow_node,
+        open_writes,
+    } = opts;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
+
+    // Who may modify this store: this node, this machine's client key (so the
+    // local CLI/REPL work with no setup), `--allow-node`, and `.iroh-allowed`.
+    let access = build_access_policy(node_id, &allow_node, open_writes).await?;
 
     let store = open_store(ephemeral).await?;
     let store_handle = store.as_store();
@@ -326,15 +425,27 @@ pub async fn cmd_serve(
     let tag_store = TagStore::init(&docs, &node_id.to_string()).await?;
     let tag_store = Arc::new(tag_store);
     info!("tags: initialized (α/Ω global + node namespaces)");
+    match tag_store.migrate_legacy_meta(&store_handle).await {
+        Ok(0) => {}
+        Ok(n) => info!("tags: imported {n} legacy metadata tag(s) from .meta"),
+        Err(e) => warn!("tags: legacy metadata import failed: {e:#}"),
+    }
 
     // Build router — gossip ALPN is always registered (needed by iroh-docs),
     // but peer discovery gossip topic only joins when gossip is enabled
     let meta = MetaProtocol::new(
         &store_handle,
         Some(peer_discovery.clone()),
-        Some(Arc::clone(&tag_store)),
+        Arc::clone(&tag_store),
+        access.clone(),
+        node_id,
     );
-    let blobs = BlobsProtocol::new(&store_handle, None);
+    // iroh-blobs rejects pushes unless an event handler enables them; this one
+    // allows them only from nodes the access policy lets write.
+    let blobs = BlobsProtocol::new(
+        &store_handle,
+        Some(crate::access::blobs_events(access.clone())),
+    );
 
     let router = Router::builder(endpoint)
         .accept(META_ALPN, meta)
@@ -406,7 +517,7 @@ pub async fn cmd_serve(
             .await;
         });
 
-        println!("peers: gossip enabled (topic: {})", config.topic);
+        status!("peers: gossip enabled (topic: {})", config.topic);
     }
 
     let serve_node_id = router.endpoint().id();
@@ -430,7 +541,7 @@ pub async fn cmd_serve(
     let mut web_port: Option<u16> = None;
     #[cfg(feature = "web")]
     let web_listener = if web {
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let addr = SocketAddr::new(bind, port);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_port = listener.local_addr()?.port();
         web_port = Some(actual_port);
@@ -443,22 +554,30 @@ pub async fn cmd_serve(
     // detect the server via stdout output (integration tests depend on this).
     create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
 
-    println!("node: {serve_node_id}");
+    status!("node: {serve_node_id}");
     if ephemeral {
-        println!("mode: ephemeral (in-memory)");
+        status!("mode: ephemeral (in-memory)");
     } else {
-        println!("mode: persistent ({STORE_PATH})");
+        status!("mode: persistent ({STORE_PATH})");
     }
     if no_relay {
-        println!("relay: disabled");
+        status!("relay: disabled");
     }
     if no_gossip {
-        println!("peers: disabled");
+        status!("peers: disabled");
     }
     if no_mdns {
-        println!("mdns: disabled");
+        status!("mdns: disabled");
     } else {
-        println!("mdns: enabled");
+        status!("mdns: enabled");
+    }
+    if access.is_open() {
+        status!("access: OPEN WRITES (any peer may modify this store)");
+    } else {
+        status!(
+            "access: read-only for peers; {} node(s) may write",
+            access.writers().len()
+        );
     }
 
     // Start web server now that the lock file is written
@@ -472,10 +591,26 @@ pub async fn cmd_serve(
             Arc::clone(&tag_store),
             key.to_bytes(),
             identity_db_path,
+            crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
         )
         .await?;
         let actual_port = web_port.unwrap_or(port);
-        println!("web: http://localhost:{actual_port}");
+        let shown_host = if bind.is_unspecified() || bind.is_loopback() {
+            "localhost".to_owned()
+        } else {
+            bind.to_string()
+        };
+        if let Some(t) = &web_token {
+            status!("web: http://{shown_host}:{actual_port}/?token={t}");
+        } else {
+            status!("web: http://{shown_host}:{actual_port}");
+        }
+        if !bind.is_loopback() && web_token.is_none() {
+            status_err!(
+                "warning: the web UI is bound to {bind} without --web-token; \
+                 anyone who can reach port {actual_port} can read and modify files"
+            );
+        }
         Some(tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, web_router).await {
                 tracing::error!("web server error: {}", e);

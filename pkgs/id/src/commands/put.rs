@@ -30,7 +30,7 @@
 //!                                        ▼
 //!                             ┌───────────────────┐
 //!                             │ Push blob to remote│
-//!                             │ Create tag via     │
+//!                             │ then name it via   │
 //!                             │ meta protocol      │
 //!                             └───────────────────┘
 //! ```
@@ -52,22 +52,128 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use iroh::endpoint::{Endpoint, RelayMode, presets};
+use iroh::{
+    EndpointAddr,
+    endpoint::{Endpoint, RelayMode, presets},
+};
 use iroh_base::EndpointId;
 use iroh_blobs::{
-    ALPN as BLOBS_ALPN, BlobFormat,
-    api::blobs::AddBytesOptions,
+    ALPN as BLOBS_ALPN, BlobFormat, Hash,
+    api::{Store, TempTag, blobs::AddBytesOptions},
     protocol::{ChunkRanges, ChunkRangesSeq, PushRequest},
 };
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use tokio::fs as afs;
 
+use crate::local::LocalNode;
+use crate::meta_client::{expect_ok, request_over};
 use crate::{
     CLIENT_KEY_FILE, META_ALPN, MetaRequest, MetaResponse, create_local_client_endpoint,
     get_serve_info, is_node_id, load_or_create_keypair, open_store, parse_put_spec,
     parse_stdin_items, read_input,
 };
+
+/// Add `data` to `store` as a raw blob; returns its hash and a guard that keeps
+/// the blob protected until dropped (hold it until the blob has been named).
+pub async fn add_raw(store: &Store, data: Vec<u8>) -> Result<(Hash, TempTag)> {
+    // `.temp_tag()` protects the blob while the returned guard lives without
+    // creating a persistent tag. Awaiting `add_bytes*` directly would leave an
+    // `auto-<timestamp>` tag behind for every add, cluttering `id list`.
+    let guard = store
+        .add_bytes_with_opts(AddBytesOptions {
+            data: data.into(),
+            format: BlobFormat::Raw,
+        })
+        .temp_tag()
+        .await?;
+    Ok((guard.hash(), guard))
+}
+
+/// Upload `hash` to `target`, **then** register `name` for it.
+///
+/// Two ordering rules make this safe:
+///
+/// 1. **Bytes before name.** The server verifies the blob is present before it
+///    creates a name, so a failed upload can never leave a dangling name.
+/// 2. **Keep the blobs connection open until the server confirms.** A push is
+///    one-way — the server sends no acknowledgement — and closing the QUIC
+///    connection right after the last write can abort the server's import of
+///    data it has buffered but not yet processed. The `Put` request is the
+///    acknowledgement: the server answers it once the blob is complete, so we
+///    close the blobs connection only after that.
+///
+/// A `Put` for a blob that is still being finalized is retried for up to two
+/// minutes (large blobs take a moment to finish on the server).
+pub async fn push_and_name(
+    store: &Store,
+    endpoint: &Endpoint,
+    target: EndpointAddr,
+    name: &str,
+    hash: Hash,
+) -> Result<()> {
+    let blobs_conn = endpoint.connect(target.clone(), BLOBS_ALPN).await?;
+    let push_request = PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
+    store
+        .remote()
+        .execute_push(blobs_conn.clone(), push_request)
+        .await
+        .context(
+            "blob push rejected: the server only accepts writes from allowed nodes \
+             (run `id id --client` on this machine and add the printed ID to the \
+             server's `--allow-node` or `.iroh-allowed`)",
+        )?;
+
+    let meta_conn = endpoint.connect(target, META_ALPN).await?;
+    let req = MetaRequest::Put {
+        filename: name.to_owned(),
+        hash,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+    let outcome = loop {
+        match request_over(&meta_conn, &req).await {
+            Ok(MetaResponse::Error { message })
+                if crate::fileops::is_blob_missing_message(&message)
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            other => break other,
+        }
+    };
+    meta_conn.close(0u32.into(), b"done");
+    blobs_conn.close(0u32.into(), b"done");
+    match expect_ok(outcome?)? {
+        MetaResponse::Put { success: true } => Ok(()),
+        MetaResponse::Put { success: false } => bail!("server rejected"),
+        _ => bail!("unexpected response"),
+    }
+}
+
+/// Store `data` under `name`: on the local server if one is running, otherwise
+/// directly in the local stores (with the same metadata a server would record).
+async fn put_named(name: &str, data: Vec<u8>) -> Result<()> {
+    if let Some(serve_info) = get_serve_info().await {
+        let store = open_store(true).await?;
+        let store_handle = store.as_store();
+        let (hash, _guard) = add_raw(&store_handle, data).await?;
+        let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+        let result = push_and_name(&store_handle, &endpoint, endpoint_addr, name, hash).await;
+        if result.is_ok() {
+            eprintln!("stored: {name} -> {hash}");
+        }
+        endpoint.close().await;
+        store.shutdown().await?;
+        result
+    } else {
+        let node = LocalNode::open(false).await?;
+        let blobs = node.blobs();
+        let (hash, _guard) = add_raw(&blobs, data).await?;
+        node.ops().put(name, hash).await?;
+        eprintln!("stored: {name} -> {hash}");
+        node.shutdown().await
+    }
+}
 
 /// Stores content by hash only, without creating a named tag.
 ///
@@ -158,68 +264,7 @@ pub async fn cmd_put_local_file(path: &str, custom_name: Option<String>) -> Resu
             .map_or_else(|| "unnamed".to_owned(), |s| s.to_string_lossy().to_string())
     });
     let data = afs::read(&path).await?;
-
-    if let Some(serve_info) = get_serve_info().await {
-        let store = open_store(true).await?;
-        let store_handle = store.as_store();
-
-        let added = store_handle
-            .add_bytes_with_opts(AddBytesOptions {
-                data: data.into(),
-                format: BlobFormat::Raw,
-            })
-            .await?;
-        let hash = added.hash;
-
-        let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
-
-        let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
-        let (mut send, mut recv) = meta_conn.open_bi().await?;
-        let req = postcard::to_allocvec(&MetaRequest::Put {
-            filename: filename.clone(),
-            hash,
-        })?;
-        send.write_all(&req).await?;
-        send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-        meta_conn.close(0u32.into(), b"done");
-
-        let result = match resp {
-            MetaResponse::Put { success: true } => {
-                let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
-                let push_request =
-                    PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
-                store_handle
-                    .remote()
-                    .execute_push(blobs_conn.clone(), push_request)
-                    .await?;
-                blobs_conn.close(0u32.into(), b"done");
-                eprintln!("stored: {filename} -> {hash}");
-                store.shutdown().await?;
-                Ok(())
-            }
-            MetaResponse::Put { success: false } => Err(anyhow::anyhow!("server rejected")),
-            _ => Err(anyhow::anyhow!("unexpected response")),
-        };
-        endpoint.close().await;
-        return result;
-    }
-
-    let store = open_store(false).await?;
-    let store_handle = store.as_store();
-
-    let added = store_handle
-        .add_bytes_with_opts(AddBytesOptions {
-            data: data.into(),
-            format: BlobFormat::Raw,
-        })
-        .await?;
-
-    store_handle.tags().set(&filename, added.hash).await?;
-    eprintln!("stored: {} -> {}", filename, added.hash);
-    store.shutdown().await?;
-    Ok(())
+    put_named(&filename, data).await
 }
 
 /// Stores content from stdin with a given name.
@@ -233,68 +278,7 @@ pub async fn cmd_put_local_file(path: &str, custom_name: Option<String>) -> Resu
 /// Prints `stored: <name> -> <hash>` to stderr.
 pub async fn cmd_put_local_stdin(name: &str) -> Result<()> {
     let data = read_input("-").await?;
-
-    if let Some(serve_info) = get_serve_info().await {
-        let store = open_store(true).await?;
-        let store_handle = store.as_store();
-
-        let added = store_handle
-            .add_bytes_with_opts(AddBytesOptions {
-                data: data.into(),
-                format: BlobFormat::Raw,
-            })
-            .await?;
-        let hash = added.hash;
-
-        let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
-
-        let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
-        let (mut send, mut recv) = meta_conn.open_bi().await?;
-        let req = postcard::to_allocvec(&MetaRequest::Put {
-            filename: name.to_owned(),
-            hash,
-        })?;
-        send.write_all(&req).await?;
-        send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-        meta_conn.close(0u32.into(), b"done");
-
-        let result = match resp {
-            MetaResponse::Put { success: true } => {
-                let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
-                let push_request =
-                    PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
-                store_handle
-                    .remote()
-                    .execute_push(blobs_conn.clone(), push_request)
-                    .await?;
-                blobs_conn.close(0u32.into(), b"done");
-                eprintln!("stored: {name} -> {hash}");
-                store.shutdown().await?;
-                Ok(())
-            }
-            MetaResponse::Put { success: false } => Err(anyhow::anyhow!("server rejected")),
-            _ => Err(anyhow::anyhow!("unexpected response")),
-        };
-        endpoint.close().await;
-        return result;
-    }
-
-    let store = open_store(false).await?;
-    let store_handle = store.as_store();
-
-    let added = store_handle
-        .add_bytes_with_opts(AddBytesOptions {
-            data: data.into(),
-            format: BlobFormat::Raw,
-        })
-        .await?;
-
-    store_handle.tags().set(name, added.hash).await?;
-    eprintln!("stored: {} -> {}", name, added.hash);
-    store.shutdown().await?;
-    Ok(())
+    put_named(name, data).await
 }
 
 /// Stores a single file locally (used by multi-put).
@@ -346,15 +330,7 @@ pub async fn cmd_put_one_remote(
 
     let store = open_store(true).await?;
     let store_handle = store.as_store();
-
-    let data = afs::read(&path_buf).await?;
-    let added = store_handle
-        .add_bytes_with_opts(AddBytesOptions {
-            data: data.into(),
-            format: BlobFormat::Raw,
-        })
-        .await?;
-    let hash = added.hash;
+    let (hash, _guard) = add_raw(&store_handle, afs::read(&path_buf).await?).await?;
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
     let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
@@ -363,36 +339,19 @@ pub async fn cmd_put_one_remote(
     }
     let endpoint = builder.bind().await?;
 
-    let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
-    let (mut send, mut recv) = meta_conn.open_bi().await?;
-    let req = postcard::to_allocvec(&MetaRequest::Put {
-        filename: filename.clone(),
+    let result = push_and_name(
+        &store_handle,
+        &endpoint,
+        EndpointAddr::from(server_node_id),
+        &filename,
         hash,
-    })?;
-    send.write_all(&req).await?;
-    send.finish()?;
-    let resp_buf = recv.read_to_end(64 * 1024).await?;
-    let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-    meta_conn.close(0u32.into(), b"done");
-
-    let result = match resp {
-        MetaResponse::Put { success: true } => {
-            let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
-            let push_request =
-                PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
-            store_handle
-                .remote()
-                .execute_push(blobs_conn.clone(), push_request)
-                .await?;
-            blobs_conn.close(0u32.into(), b"done");
-            println!("uploaded: {filename} -> {hash}");
-            store.shutdown().await?;
-            Ok(())
-        }
-        MetaResponse::Put { success: false } => Err(anyhow::anyhow!("server rejected")),
-        _ => Err(anyhow::anyhow!("unexpected response")),
-    };
+    )
+    .await;
+    if result.is_ok() {
+        println!("uploaded: {filename} -> {hash}");
+    }
     endpoint.close().await;
+    store.shutdown().await?;
     result
 }
 
