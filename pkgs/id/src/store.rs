@@ -110,7 +110,7 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
                     restrict_key_permissions(path).await;
                     Ok(SecretKey::from(bytes))
                 }
-                Err(e) => Err(e.into()),
+                Err(e) => Err(e),
             }
         }
         Err(e) => Err(e.into()),

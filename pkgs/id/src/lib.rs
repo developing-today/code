@@ -162,6 +162,8 @@ pub mod local;
 pub mod meta_client;
 pub mod protocol;
 pub mod repl;
+#[cfg(feature = "sandbox")]
+pub mod sandbox;
 pub mod store;
 pub mod tags;
 pub mod tuple;

@@ -94,6 +94,7 @@ macro_rules! status {
 }
 
 /// Like [`status!`], for stderr.
+#[cfg(feature = "web")]
 macro_rules! status_err {
     ($($arg:tt)*) => {{
         use std::io::Write as _;

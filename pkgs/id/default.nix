@@ -26,6 +26,8 @@ in
     inherit pname version;
     src = ./.;
 
+    buildFeatures = [ "sandbox" ];
+
     cargoLock = {
       lockFile = ./Cargo.lock;
       # All dependencies come from crates.io (distributed-topic-tracker is no

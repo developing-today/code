@@ -14,7 +14,8 @@ categories = ["command-line-utilities", "network-programming"]
 # =============================================================================
 
 [features]
-default = []
+default = ["sandbox"]
+sandbox = ["dep:wasmtime"]
 web = [
   "dep:axum",
   "dep:tower",
@@ -73,8 +74,10 @@ libsql = { version = "0.9", features = ["encryption"], optional = true }
 base64 = { version = "0.22", optional = true }
 hkdf = { version = "0.13", optional = true }
 sha2 = { version = "0.11", optional = true }
+wasmtime = { version = "=43.0.2", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
 
 [dev-dependencies]
+wat = "=1.261.0"
 
 # =============================================================================
 # Lints Configuration

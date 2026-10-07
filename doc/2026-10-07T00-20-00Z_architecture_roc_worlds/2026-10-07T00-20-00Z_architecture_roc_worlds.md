@@ -146,3 +146,41 @@ peer-write policy remains independent of world membership.
 - [`pkgs/id/src/access.rs`](../../pkgs/id/src/access.rs)
 - [`pkgs/id/src/web/collab.rs`](../../pkgs/id/src/web/collab.rs)
 - Roc host prototype at `/tmp/proto` (local scratch; not part of this repo)
+
+---
+
+## 2026-10-07T00-35-00Z Deviation: keep Roc model state in a per-world guest instance
+
+The first runner sketch described serialized state/event bytes passed through
+stateless `init/update/view` calls. Inspection of the working Roc + Zig
+prototype showed that this does not match the actual generated platform ABI:
+`plaza_init(u64) -> usize`, `plaza_update(model_ptr, str_ptr, str_len) ->
+model_ptr`, and `plaza_view(model_ptr, viewer_ptr, viewer_len) -> output_ptr`,
+with `plaza_out_len() -> usize`. Roc's model is an opaque Roc allocation, not a
+stable serializable byte format.
+
+The intended executable seam will therefore use one Wasmtime `Store` + `Instance`
+per world, created from the reviewed module. The Rust world actor owns that
+instance and the opaque model pointer never leaves it. Each call replenishes
+fuel; the Store retains its memory limit. Inputs and outputs remain bounded
+byte slices copied through exported linear memory. Guest imports remain empty.
+The Roc/Zig adapter is responsible for Roc string representation and allocator
+correctness. The runner validates export names and signatures before creating a
+world.
+
+The first checked-in Wasmtime runner validates an import-free module and
+executes a small test ABI. The checked-in Roc/Zig counter compiles and
+initializes, but traps on its first `view` call. The prototype relies on
+guest-defined runtime symbols (`roc_alloc`, `roc_dealloc`, `roc_realloc`, and
+diagnostics); those are not host imports and their implementations currently
+live inside the module. Do not upload or expose this runner as a world service
+until the platform glue is debugged against Wasmtime and hostile-module tests
+cover the ABI. Keep import denial strict; do not work around the trap by adding
+WASI or ambient host capabilities.
+
+This means live state is volatile and cannot yet be restored from a snapshot
+or replayed after process restart. Persistent worlds require a separately
+designed guest serialization/versioning contract; do not serialize raw Roc
+pointers or Wasm linear memory and call that durable state. The later protocol
+must define versioned guest save/load exports or reconstruct state by replaying
+bounded events from a trusted seed.
