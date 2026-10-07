@@ -18,6 +18,7 @@ default = ["sandbox", "world"]
 sandbox = ["dep:wasmtime"]
 world = ["dep:sha2", "dep:subtle"]
 web = [
+  "world",
   "dep:axum",
   "dep:tower",
   "dep:tower-http",
@@ -80,6 +81,7 @@ wasmtime = { version = "=43.0.2", default-features = false, features = ["craneli
 
 [dev-dependencies]
 wat = "=1.261.0"
+tokio-tungstenite = "0.29"
 
 # =============================================================================
 # Lints Configuration

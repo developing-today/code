@@ -162,6 +162,8 @@ async fn main() -> Result<()> {
             iroh_port,
             bind,
             web_token,
+            world,
+            world_admin_token,
             allow_node,
             open_writes,
         }) => {
@@ -181,6 +183,8 @@ async fn main() -> Result<()> {
                 iroh_port,
                 bind,
                 web_token,
+                world,
+                world_admin_token,
                 allow_node,
                 open_writes,
             })

@@ -211,3 +211,45 @@ Tests must cover sequence ordering, unauthorized/expired/revoked capabilities,
 bounded input/log behavior, and reconnect snapshots. Persistence, distributed
 consensus, browser UI, TUI, and the Roc trap diagnosed above are outside this
 milestone.
+
+---
+
+## 2026-10-07T01-05-34Z Plan: WebSocket world session bridge
+
+Expose the actor through `/ws/world` as a presentation-neutral JSON protocol.
+The first client frame presents an out-of-band join capability; the server
+returns a bounded snapshot. Subsequent `chat` and opaque `input` messages are
+validated by `WorldHandle`, sequenced by its actor, and broadcast to all
+authorized sessions. Event sequence numbers are the reconnect cursor. A
+client whose cursor has fallen behind retention receives a resnapshot-required
+response instead of an incomplete replay.
+
+The existing `WebSecurity` layer continues to enforce Host/Origin and optional
+web-token checks for the WebSocket handshake. The world capability is a second,
+independent authorization layer. This milestone does not add a public
+capability-issuance endpoint or embed a shared world token in the web UI; the
+join capability must be obtained out-of-band until an explicit invite flow is
+implemented. The server must not log or echo capability secrets.
+
+## 2026-10-07T02:00:00Z Implementation: WorldWebState and bridge tests
+
+The world endpoints (`/ws/world`, `POST /api/world/invite`) now take their own
+narrow `WorldWebState { world, admin_token }` via `world_ws::world_routes()`,
+merged into the main router with `.merge(...with_state(...))`. This keeps the
+bridge independent of `AppState` so it can be served and tested standalone.
+
+Verified by in-crate tests over real loopback sockets (`tokio-tungstenite`
+dev-dependency, already in the lockfile via axum) and `tower::oneshot`:
+
+- invite: 401 for missing/wrong/unprefixed bearer, 200 with the correct admin
+  secret, 404 when the admin secret or world is not configured;
+- join -> snapshot, chat broadcast to every joined client, reconnect with
+  `after` replays only missed events without a snapshot;
+- bad first frame, forged capability, and oversized capability are rejected
+  and the connection is closed;
+- a revoked participant is disconnected.
+
+Known limit: revocation is enforced when the next world event is delivered to
+that socket (each delivery re-validates the capability), not instantly. An idle
+revoked socket stays open until the next event or until it closes. Pushing a
+close on revoke would need a revoke notification channel from the actor.

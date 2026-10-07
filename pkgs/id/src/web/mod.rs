@@ -53,6 +53,7 @@ mod routes;
 mod security;
 mod tags_ws;
 mod templates;
+pub mod world_ws;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
 pub use markdown::{
@@ -146,6 +147,11 @@ pub struct AppState {
     pub save_limiter: SaveRateLimiter,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
+    /// Optional authoritative in-memory world for the demo WebSocket bridge.
+    #[cfg(feature = "world")]
+    pub world: Option<crate::world::WorldHandle>,
+    /// Separate administrator secret for issuing world guest capabilities.
+    pub world_admin_token: Option<String>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -159,6 +165,11 @@ impl std::fmt::Debug for AppState {
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
             .field("identity", &self.identity)
+            .field("world", &self.world.is_some())
+            .field(
+                "world_admin_token",
+                &self.world_admin_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -185,6 +196,9 @@ impl AppState {
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
             identity: IdentityStore::new(secret_key, identity_db_path).await?,
+            #[cfg(feature = "world")]
+            world: None,
+            world_admin_token: None,
         })
     }
 }
@@ -259,8 +273,10 @@ pub async fn web_router(
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
     security: WebSecurity,
+    world: Option<crate::world::WorldHandle>,
+    world_admin_token: Option<String>,
 ) -> anyhow::Result<Router> {
-    let state = AppState::new(
+    let mut state = AppState::new(
         store,
         peers,
         node_id,
@@ -269,6 +285,11 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
+    #[cfg(feature = "world")]
+    {
+        state.world = world;
+    }
+    state.world_admin_token = world_admin_token;
     Ok(
         create_router(state).layer(axum::middleware::from_fn_with_state(
             Arc::new(security),

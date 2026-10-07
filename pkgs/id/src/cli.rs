@@ -317,6 +317,12 @@ pub enum Command {
         /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
         #[arg(long, env = "ID_WEB_TOKEN")]
         web_token: Option<String>,
+        /// Start the in-memory multiplayer lobby on the web server (requires `--web`).
+        #[arg(long, requires_all = ["web", "world_admin_token"])]
+        world: bool,
+        /// Admin secret required to mint world guest capabilities.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN")]
+        world_admin_token: Option<String>,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1221,6 +1227,8 @@ mod tests {
                 iroh_port,
                 bind,
                 web_token,
+                world,
+                world_admin_token,
                 allow_node,
                 open_writes,
             }) => {
@@ -1240,6 +1248,8 @@ mod tests {
                 // Security defaults: loopback only, no token, nobody extra may write.
                 assert_eq!(bind, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
                 assert!(web_token.is_none());
+                assert!(!world);
+                assert!(world_admin_token.is_none());
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }
@@ -2469,6 +2479,10 @@ mod tests {
             "0.0.0.0",
             "--web-token",
             "t0k",
+            "--web",
+            "--world",
+            "--world-admin-token",
+            "admin",
             "--allow-node",
             "aa,bb",
             "--allow-node",
@@ -2479,17 +2493,30 @@ mod tests {
             Some(Command::Serve {
                 bind,
                 web_token,
+                web,
+                world,
+                world_admin_token,
                 allow_node,
                 open_writes,
                 ..
             }) => {
                 assert!(bind.is_unspecified());
                 assert_eq!(web_token.as_deref(), Some("t0k"));
+                assert!(web);
+                assert!(world);
+                assert_eq!(world_admin_token.as_deref(), Some("admin"));
                 assert_eq!(allow_node, vec!["aa", "bb", "cc"]);
                 assert!(open_writes);
             }
             _ => panic!("Expected Serve command"),
         }
+        // `--world` is refused before serve starts when its prerequisites are
+        // missing (clap requirement plus the serve-time validation).
+        assert!(Cli::try_parse_from(["id", "serve", "--world"]).is_err());
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--web", "--world"]).is_err(),
+            "an empty admin secret must not be accepted"
+        );
     }
 
     #[test]

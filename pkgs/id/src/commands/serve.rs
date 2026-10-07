@@ -55,6 +55,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use anyhow::ensure;
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
 use futures_lite::StreamExt;
 use iroh::{
@@ -281,10 +282,23 @@ pub struct ServeOptions {
     pub bind: std::net::IpAddr,
     /// Token required by the web interface.
     pub web_token: Option<String>,
+    /// Create an in-memory world and expose it on `/ws/world`.
+    pub world: bool,
+    /// Admin secret required to mint world guest capabilities.
+    pub world_admin_token: Option<String>,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
     pub open_writes: bool,
+}
+
+fn validate_world_options(web: bool, world: bool, admin_token: Option<&str>) -> Result<()> {
+    ensure!(!world || web, "--world requires --web");
+    ensure!(
+        !world || admin_token.is_some_and(|token| !token.is_empty()),
+        "--world requires --world-admin-token (or ID_WORLD_ADMIN_TOKEN)"
+    );
+    Ok(())
 }
 
 /// Build the write-access policy for a server.
@@ -374,9 +388,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         iroh_port,
         bind,
         web_token,
+        world,
+        world_admin_token,
         allow_node,
         open_writes,
     } = opts;
+    validate_world_options(web, world, world_admin_token.as_deref())?;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -580,6 +597,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             access.writers().len()
         );
     }
+    #[cfg(feature = "web")]
+    if world {
+        status!("world: lobby enabled (/ws/world)");
+    }
 
     // Start web server now that the lock file is written
     #[cfg(feature = "web")]
@@ -593,6 +614,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             key.to_bytes(),
             identity_db_path,
             crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
+            #[cfg(feature = "web")]
+            if world {
+                let lobby =
+                    crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())?;
+                Some(crate::world::WorldHandle::spawn(lobby))
+            } else {
+                None
+            },
+            #[cfg(feature = "web")]
+            world_admin_token.clone(),
         )
         .await?;
         let actual_port = web_port.unwrap_or(port);
@@ -793,6 +824,16 @@ async fn run_gossip_loop(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn world_mode_requires_web_and_admin_token() {
+        assert!(validate_world_options(false, true, Some("admin")).is_err());
+        assert!(validate_world_options(true, true, None).is_err());
+        assert!(validate_world_options(true, true, Some("")).is_err());
+        assert!(validate_world_options(true, true, Some("admin")).is_ok());
+        assert!(validate_world_options(false, false, None).is_ok());
+    }
 
     #[test]
     fn test_is_process_alive_current_process() {

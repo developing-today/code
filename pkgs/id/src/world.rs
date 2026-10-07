@@ -9,9 +9,10 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Context, Result, ensure};
 use rand::RngExt as _;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 /// Bounded limits for one world.
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +70,13 @@ impl std::fmt::Debug for JoinCapability {
 }
 
 impl JoinCapability {
+    /// Construct from an untrusted wire token; it is authorized only by its
+    /// owning [`WorldCore`] or [`WorldHandle`].
+    #[must_use]
+    pub const fn from_wire(token: String) -> Self {
+        Self(token)
+    }
+
     /// Expose the token for a deliberate invitation/transport response.
     #[must_use]
     pub fn expose(&self) -> &str {
@@ -77,7 +85,7 @@ impl JoinCapability {
 }
 
 /// Public participant summary; it contains no capability material.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Participant {
     /// Opaque server-assigned participant identifier.
     pub id: u64,
@@ -86,7 +94,7 @@ pub struct Participant {
 }
 
 /// Versioned event committed by the world authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WorldEvent {
     /// Monotonic event sequence, starting at one.
     pub sequence: u64,
@@ -97,7 +105,8 @@ pub struct WorldEvent {
 }
 
 /// Participant-originated event data.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum WorldEventKind {
     /// Plain text message, UTF-8 and control-character sanitized.
     Chat(String),
@@ -106,7 +115,7 @@ pub enum WorldEventKind {
 }
 
 /// Snapshot returned on join or reconnect.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WorldSnapshot {
     /// Stable world identifier.
     pub world_id: String,
@@ -344,6 +353,7 @@ impl WorldCore {
 #[derive(Clone, Debug)]
 pub struct WorldHandle {
     commands: mpsc::Sender<WorldCommand>,
+    events: broadcast::Sender<WorldEvent>,
 }
 
 enum WorldCommand {
@@ -384,6 +394,8 @@ impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
     pub fn spawn(core: WorldCore) -> Self {
         let (commands, mut receiver) = mpsc::channel(256);
+        let (events, _) = broadcast::channel(256);
+        let event_sender = events.clone();
         tokio::spawn(async move {
             let mut core = core;
             while let Some(command) = receiver.recv().await {
@@ -402,14 +414,22 @@ impl WorldHandle {
                         let _ = reply.send(core.revoke(participant_id));
                     }
                     WorldCommand::Chat { token, text, reply } => {
-                        let _ = reply.send(core.chat(&token, &text));
+                        let result = core.chat(&token, &text);
+                        if let Ok(event) = &result {
+                            let _ = event_sender.send(event.clone());
+                        }
+                        let _ = reply.send(result);
                     }
                     WorldCommand::Input {
                         token,
                         input,
                         reply,
                     } => {
-                        let _ = reply.send(core.input(&token, &input));
+                        let result = core.input(&token, &input);
+                        if let Ok(event) = &result {
+                            let _ = event_sender.send(event.clone());
+                        }
+                        let _ = reply.send(result);
                     }
                     WorldCommand::Snapshot { token, reply } => {
                         let _ = reply.send(core.snapshot(&token));
@@ -428,7 +448,13 @@ impl WorldHandle {
                 }
             }
         });
-        Self { commands }
+        Self { commands, events }
+    }
+
+    /// Subscribe to newly committed world events.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
+        self.events.subscribe()
     }
 
     /// Issue a scoped participant capability.

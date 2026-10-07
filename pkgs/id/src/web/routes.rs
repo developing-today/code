@@ -252,6 +252,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
         .route("/assets/{*path}", get(assets_handler))
+        // Optional authoritative in-memory world session bridge
+        .merge(
+            super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
+                world: state.world.clone(),
+                admin_token: state.world_admin_token.clone(),
+            }),
+        )
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }
