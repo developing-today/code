@@ -306,6 +306,10 @@ pub struct ServeOptions {
     pub world_caps: Vec<String>,
     /// `deny` or `grant-on-use`.
     pub world_cap_policy: String,
+    /// Roc binary for on-the-fly compilation.
+    pub roc_bin: Option<String>,
+    /// Platform directory for on-the-fly compilation.
+    pub roc_platform: Option<PathBuf>,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -380,6 +384,38 @@ pub fn world_dir(name: &str) -> PathBuf {
     PathBuf::from(WORLDS_DIR).join(name)
 }
 
+/// Resolve the compile settings: an explicit flag, the environment, or the
+/// conventional repository layout. Absence is fine (compilation stays off).
+#[cfg(feature = "world")]
+fn resolve_compiler(
+    roc_bin: Option<String>,
+    roc_platform: Option<PathBuf>,
+) -> Result<Option<crate::world_compile::Compiler>> {
+    let Some(platform) = roc_platform
+        .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
+        .or_else(|| {
+            [
+                PathBuf::from("examples/roc-world"),
+                PathBuf::from("../examples/roc-world"),
+            ]
+            .into_iter()
+            .find(|dir| dir.is_dir())
+        })
+    else {
+        return Ok(None);
+    };
+    let roc_bin = roc_bin
+        .or_else(|| std::env::var("ID_ROC_BIN").ok())
+        .unwrap_or_else(|| "roc".to_owned());
+    let compiler = crate::world_compile::Compiler::new(platform, roc_bin)?;
+    info!(
+        platform = %compiler.platform_dir.display(),
+        roc = %compiler.roc_bin,
+        "world: on-the-fly compilation enabled"
+    );
+    Ok(Some(compiler))
+}
+
 /// Builds this server's worlds: durable under [`WORLDS_DIR`] unless
 /// `ephemeral`. The `--world-module` goes through the same journaled install
 /// as an admin upload, so it is pinned, downloadable and restored after a
@@ -395,6 +431,7 @@ struct ServeWorlds {
     default_world: String,
     default_module: Option<PathBuf>,
     grant_on_use: bool,
+    compiler: Option<crate::world_compile::Compiler>,
 }
 
 #[cfg(feature = "world")]
@@ -475,6 +512,10 @@ impl ServeWorlds {
             service.with_records_store(records)
         };
 
+        let service = match self.compiler.clone() {
+            Some(compiler) => service.with_compiler(compiler),
+            None => service,
+        };
         if name == self.default_world
             && let Some(path) = self.default_module.as_deref()
         {
@@ -587,6 +628,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_idle_secs,
         world_caps,
         world_cap_policy,
+        roc_bin,
+        roc_platform,
         allow_node,
         open_writes,
     } = opts;
@@ -682,6 +725,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             default_world: world_name.clone(),
             default_module: world_module.clone(),
             grant_on_use: world_cap_policy == "grant-on-use",
+            compiler: resolve_compiler(roc_bin, roc_platform)?,
         });
         let hub = WorldHub::new(
             opener,

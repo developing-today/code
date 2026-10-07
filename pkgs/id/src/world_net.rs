@@ -254,6 +254,46 @@ impl WorldClient {
         }
     }
 
+    /// Compile Roc sources on the host and install the result.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's refusal, including compiler diagnostics.
+    pub async fn compile(
+        &mut self,
+        admin_token: &str,
+        files: Vec<(String, String)>,
+        seed: u64,
+    ) -> Result<(String, u64, String)> {
+        self.send_json(&serde_json::json!({
+            "type": "compile",
+            "admin_token": admin_token,
+            "files": files
+                .into_iter()
+                .map(|(name, content)| serde_json::json!({"name": name, "content": content}))
+                .collect::<Vec<_>>(),
+            "seed": seed,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("compiled") => Ok((
+                reply["module_hash"].as_str().unwrap_or_default().to_owned(),
+                reply["sequence"].as_u64().unwrap_or_default(),
+                reply["diagnostics"].as_str().unwrap_or_default().to_owned(),
+            )),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to compile")
+            ),
+        }
+    }
+
     /// The world's capability report, as JSON.
     ///
     /// # Errors

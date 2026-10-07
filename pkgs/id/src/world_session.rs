@@ -21,11 +21,13 @@ use iroh_blobs::{
     BlobFormat, Hash,
     api::{Store, TempTag, blobs::AddBytesOptions},
 };
+use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::world::{JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot};
+use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec, Compiler};
 use crate::world_hub::{WorldHub, WorldInfo};
 
 /// Largest accepted or emitted frame, in bytes.
@@ -131,6 +133,12 @@ enum ClientFrame {
     CreateWorld {
         admin_token: String,
     },
+    /// Admin: compile Roc sources and install the result.
+    Compile {
+        admin_token: String,
+        files: Vec<CompileFile>,
+        seed: Option<u64>,
+    },
     /// Admin: grant or revoke capabilities for this world.
     UpdateCaps {
         admin_token: String,
@@ -219,6 +227,12 @@ enum ServerFrame<'a> {
     Caps {
         report: crate::world_caps::CapsReport,
     },
+    /// A compiled module was installed.
+    Compiled {
+        module_hash: String,
+        sequence: u64,
+        diagnostics: String,
+    },
     UploadReady {
         chunk_bytes: usize,
     },
@@ -272,6 +286,13 @@ pub enum InstallError {
     Unavailable,
 }
 
+/// One source file in a compile request.
+#[derive(Debug, Deserialize)]
+pub(crate) struct CompileFile {
+    name: String,
+    content: String,
+}
+
 /// A world plus the secret that may mint guest capabilities for it.
 #[derive(Clone)]
 pub struct WorldService {
@@ -283,6 +304,7 @@ pub struct WorldService {
     upload_slots: Arc<Semaphore>,
     module_dir: Option<crate::world_store::ModuleDir>,
     records: Option<Arc<crate::world_records::RecordsStore>>,
+    compiler: Option<Arc<Compiler>>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -309,7 +331,48 @@ impl WorldService {
             upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_MODULE_UPLOADS)),
             module_dir: None,
             records: None,
+            compiler: None,
         }
+    }
+
+    /// Let admins compile Roc sources into this world on the fly.
+    #[must_use]
+    pub fn with_compiler(mut self, compiler: Compiler) -> Self {
+        self.compiler = Some(Arc::new(compiler));
+        self
+    }
+
+    /// Compile `spec` on the server and install the result exactly like an
+    /// admin upload (validated, pinned, journaled). Returns the module hash,
+    /// the install sequence and the compiler's diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// A human-readable refusal: unauthorized, disabled, or the compiler's
+    /// own failure text (so an admin sees why their program did not build).
+    pub async fn compile_and_install(
+        &self,
+        supplied_admin: Option<&str>,
+        spec: &CompileSpec,
+    ) -> Result<(String, u64, String), String> {
+        if self.authorize_admin(supplied_admin).is_err() {
+            return Err("compile denied".to_owned());
+        }
+        let Some(compiler) = self.compiler.as_ref() else {
+            return Err("compilation is not enabled on this server".to_owned());
+        };
+        let (wasm, diagnostics) = crate::world_compile::compile(spec, compiler, COMPILE_TIMEOUT)
+            .await
+            .map_err(|error| {
+                tracing::warn!("world compile failed: {error:#}");
+                format!("compile failed: {error:#}")
+            })?;
+        let hash = module_hash(&wasm);
+        let (_, sequence) = self
+            .install_wasm(supplied_admin, wasm, spec.seed, &hash)
+            .await
+            .map_err(|error| format!("install failed: {error:?}"))?;
+        Ok((hash, sequence, diagnostics))
     }
 
     /// Attach the world's records document and start mirroring program
@@ -749,6 +812,36 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(io, "admin denied").await;
             }
         },
+        ClientFrame::Compile {
+            admin_token,
+            files,
+            seed,
+        } => {
+            let seed = seed.unwrap_or_else(|| rand::rng().random::<u64>());
+            let spec = CompileSpec {
+                files: files
+                    .into_iter()
+                    .map(|file| (file.name, file.content))
+                    .collect(),
+                seed,
+            };
+            match service.compile_and_install(Some(&admin_token), &spec).await {
+                Ok((module_hash, sequence, diagnostics)) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::Compiled {
+                            module_hash,
+                            sequence,
+                            diagnostics,
+                        },
+                    )
+                    .await;
+                }
+                Err(message) => {
+                    let _ = send_error(io, &message).await;
+                }
+            }
+        }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
         | ClientFrame::ListWorlds { .. }
@@ -1378,6 +1471,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::Info { .. }
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
+        | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }

@@ -11,6 +11,7 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, TransportAddr,
     endpoint::{RelayMode, presets},
 };
+use rand::RngExt as _;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
@@ -179,6 +180,56 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             client.close();
             endpoint.close().await;
             result
+        }
+        WorldCommand::Compile {
+            node,
+            main_file,
+            files,
+            seed,
+            admin_token,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let mut paths = vec![("main.roc".to_owned(), main_file.clone())];
+            for path in &files {
+                let name = path
+                    .file_name()
+                    .context("a source file has no name")?
+                    .to_string_lossy()
+                    .into_owned();
+                paths.push((name, path.clone()));
+            }
+            let mut sources = Vec::new();
+            for (name, path) in paths {
+                let content = tokio::fs::read_to_string(&path)
+                    .await
+                    .with_context(|| format!("read {}", path.display()))?;
+                anyhow::ensure!(
+                    content.len() <= crate::world_compile::MAX_COMPILE_FILE_BYTES,
+                    "{} exceeds {} bytes",
+                    path.display(),
+                    crate::world_compile::MAX_COMPILE_FILE_BYTES
+                );
+                sources.push((name, content));
+            }
+            anyhow::ensure!(
+                sources.iter().map(|(_, c)| c.len()).sum::<usize>()
+                    <= crate::world_compile::MAX_COMPILE_TOTAL_BYTES,
+                "the sources exceed {} bytes",
+                crate::world_compile::MAX_COMPILE_TOTAL_BYTES
+            );
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let seed = seed.unwrap_or_else(|| rand::rng().random::<u64>());
+            let result = client.compile(&admin_token, sources, seed).await;
+            client.close();
+            endpoint.close().await;
+            let (hash, _sequence, diagnostics) = result?;
+            if !diagnostics.trim().is_empty() {
+                eprintln!("{diagnostics}");
+            }
+            println!("{hash}");
+            Ok(())
         }
         WorldCommand::Caps {
             node,

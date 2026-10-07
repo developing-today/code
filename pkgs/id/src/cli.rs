@@ -358,6 +358,14 @@ pub enum Command {
         /// program uses it.
         #[arg(long, default_value = "deny", requires = "world")]
         world_cap_policy: String,
+        /// The Roc binary used to compile sources sent to `id world compile`
+        /// (default: $ID_ROC_BIN or `roc` from PATH).
+        #[arg(long, env = "ID_ROC_BIN")]
+        roc_bin: Option<String>,
+        /// The world platform directory used for on-the-fly compilation
+        /// (default: $ID_ROC_PLATFORM or ./examples/roc-world).
+        #[arg(long, env = "ID_ROC_PLATFORM")]
+        roc_platform: Option<PathBuf>,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1218,6 +1226,34 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Compile Roc sources on the host and install the result.
+    ///
+    /// The host rewrites the app's `pf: platform "..."` path to its staged
+    /// copy of the world platform, so any relative path works.
+    Compile {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// The app's main.roc.
+        main_file: PathBuf,
+        /// Additional source files (repeatable; paths become file names).
+        #[arg(short = 'f', long = "file")]
+        files: Vec<PathBuf>,
+        /// Seed for the compiled program's initializer (default: random).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Show (and, with `--grant`/`--revoke`, change) a world's capabilities.
     ///
     /// Without `--grant`/`--revoke` this needs only a guest capability and
@@ -1482,6 +1518,8 @@ mod tests {
                 world_idle_secs,
                 world_caps,
                 world_cap_policy,
+                roc_bin,
+                roc_platform,
                 allow_node,
                 open_writes,
             }) => {
@@ -1511,6 +1549,8 @@ mod tests {
                 assert_eq!(world_idle_secs, 600);
                 assert!(world_caps.is_empty());
                 assert_eq!(world_cap_policy, "deny");
+                assert!(roc_bin.is_none());
+                assert!(roc_platform.is_none());
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

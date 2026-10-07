@@ -10,6 +10,20 @@ use std::process::Command;
 use tempfile::TempDir;
 
 /// Get the path to the built binary
+/// The roc the platform was built with; a different nightly produces a
+/// different module layout.
+fn pinned_roc() -> Option<String> {
+    if let Ok(path) = std::env::var("ID_ROC_BIN") {
+        return Some(path);
+    }
+    let tag = "nightly-2026-10-04-130536d";
+    let version = tag.trim_start_matches("nightly-");
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_owned());
+    let path =
+        format!("{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc");
+    std::path::Path::new(&path).is_file().then_some(path)
+}
+
 fn get_binary_path() -> PathBuf {
     // Runtime override: allows pre-built test binaries to find the id binary
     // in a different location (e.g., NixOS VM tests where the test binary is
@@ -1726,6 +1740,123 @@ mod serve_tests {
         assert!(view.contains("count=3"), "{view}");
         let view = play(&node, &addr, Some("arena"), &cat, &["33"]);
         assert!(view.contains("plays=2"), "{view}");
+        server.stop();
+    }
+
+    #[test]
+    fn test_worlds_compile_roc_sources_on_the_fly() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no roc binary available");
+            return;
+        };
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
+        let source =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/main.roc");
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--roc-bin",
+            &roc,
+            "--roc-platform",
+            platform.to_str().unwrap(),
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // Send the source; the server compiles (with its own limits) and
+        // installs the result like an admin upload.
+        let compiled = world(
+            &addr,
+            &[
+                "compile",
+                &node,
+                source.to_str().unwrap(),
+                "--admin-token",
+                "adm",
+                "--seed",
+                "7",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let hash = String::from_utf8(compiled.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(hash.len(), 64, "{hash}");
+
+        // The compiled program runs: the same counter, from source text.
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // A wrong admin token is refused.
+        let bad = world(
+            &addr,
+            &[
+                "compile",
+                &node,
+                source.to_str().unwrap(),
+                "--admin-token",
+                "wrong",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert!(!bad.status.success());
+        assert!(
+            String::from_utf8_lossy(&bad.stderr).contains("compile denied"),
+            "{}",
+            String::from_utf8_lossy(&bad.stderr)
+        );
         server.stop();
     }
 

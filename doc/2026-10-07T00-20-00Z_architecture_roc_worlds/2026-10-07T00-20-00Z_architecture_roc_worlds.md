@@ -859,3 +859,35 @@ sandbox (lounge: wants at rest, request on arrival, sanitized name, denial
 retired, grant path, snapshot round trip); and a process test (report shows
 granted/wanted/missing, the denial is visible in the view, a grant makes the
 greeting appear as a real chat event, and grants survive a restart).
+
+### 2026-10-07T15-00-00Z Verification: the compile service
+
+Built as designed (`src/world_compile.rs`; frame `compile`, reply
+`compiled`, CLI `id world compile MAIN.ROC [-f extra.roc] [--seed N]`,
+serve `--roc-bin`/`--roc-platform` with `$ID_ROC_BIN`/`$ID_ROC_PLATFORM`
+defaults). Notes worth keeping:
+
+- The job stages the platform (platform.roc + targets/, 1.3 MiB) into a
+  per-request temp directory and rewrites the app's `pf: platform "…"` to
+  the staged copy, so any relative platform path in the source works.
+- The compiler child runs with a cleared environment (its cache lives in
+  the job directory, so concurrent jobs never collide), CPU/address-space/
+  file-size rlimits, bounded captured output, and a wall-clock deadline
+  with kill. `RLIMIT_NPROC` is deliberately *not* set: it counts the user's
+  whole process table (threads included) and would starve the compiler's
+  worker threads for reasons unrelated to the job.
+- The result goes through the same import-free validation as an upload
+  before installation.
+- **Found while testing:** `roc` on `PATH` was nightly-2026-08-10 while the
+  platform's ABI is nightly-2026-10-04; the old nightly links a module
+  whose linear memory is declared 64 MiB (the pinned one: 8.3 MiB), which
+  the sandbox refuses. The same source and platform built with both
+  nightlies produced different modules. Operators should point
+  `--roc-bin` at the nightly the platform was built with; the test
+  discovers it the same way.
+
+Verified: spec bounds and platform-path rewriting; the counter's source
+compiles, validates and runs (count=1 after one input); and a process test
+serves with `--roc-bin`/`--roc-platform`, compiles the counter source via
+`id world compile`, plays one input over Iroh, and refuses a wrong admin
+token.
