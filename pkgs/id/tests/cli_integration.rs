@@ -933,16 +933,28 @@ mod serve_tests {
             global_args: &[&str],
             extra_args: &[&str],
         ) -> Self {
+            Self::spawn_inner(work_dir, global_args, extra_args, true)
+        }
+
+        /// Spawns a server with an on-disk store (state survives restarts).
+        fn spawn_persistent(work_dir: &std::path::Path, extra_args: &[&str]) -> Self {
+            Self::spawn_inner(work_dir, &[], extra_args, false)
+        }
+
+        fn spawn_inner(
+            work_dir: &std::path::Path,
+            global_args: &[&str],
+            extra_args: &[&str],
+            ephemeral: bool,
+        ) -> Self {
             let mut args: Vec<&str> = Vec::new();
             args.extend(global_args);
+            args.push("serve");
+            if ephemeral {
+                args.push("--ephemeral");
+            }
             // Hermetic by default: no relay, no gossip/DHT, no mDNS. Nothing here needs the public network.
-            args.extend([
-                "serve",
-                "--ephemeral",
-                "--no-relay",
-                "--no-gossip",
-                "--no-mdns",
-            ]);
+            args.extend(["--no-relay", "--no-gossip", "--no-mdns"]);
             args.extend(extra_args);
 
             let mut process = StdCommand::new(get_binary_path())
@@ -1316,6 +1328,97 @@ mod serve_tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&forged.stdout).contains("join denied"));
 
+        server.stop();
+    }
+
+    #[test]
+    fn test_world_state_survives_a_serve_restart() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/counter.wasm");
+        let module = module.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            module,
+        ];
+
+        let world = |node: &str, addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            let _ = node;
+            cmd
+        };
+        // Join, send `inputs` increments, and return every printed line.
+        let session = |node: &str, addr: &str, capability: &str, inputs: usize, expect: usize| {
+            let mut joined = world(node, addr, &["join", node, "--capability", capability])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = joined.stdin.take().unwrap();
+            let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+            let mut seen = Vec::new();
+            seen.push(lines.next().unwrap().unwrap()); // snapshot
+            seen.push(lines.next().unwrap().unwrap()); // initial view
+            for _ in 0..inputs {
+                stdin.write_all(b"/input 696e63\n").unwrap();
+                seen.push(lines.next().unwrap().unwrap()); // event
+                seen.push(lines.next().unwrap().unwrap()); // view
+            }
+            stdin.write_all(b"/quit\n").unwrap();
+            drop(stdin);
+            assert!(joined.wait().unwrap().success());
+            assert!(
+                seen.last().unwrap().contains(&format!("count={expect}")),
+                "{seen:#?}"
+            );
+            seen
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &node,
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        session(&node, &addr, &capability, 2, 2);
+        server.stop();
+
+        // Same data directory, same module flag: the module is not re-installed
+        // (that would reset the program), the capability still works and the
+        // Roc state is rebuilt by replaying the journaled inputs.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let restarted = server.wait_ready();
+        assert_eq!(restarted, node, "the node keeps its identity");
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let seen = session(&node, &addr, &capability, 1, 3);
+        assert!(seen[1].contains("count=2"), "restored view: {}", seen[1]);
+        let journal =
+            fs::read_to_string(server_dir.path().join(".id-worlds/lobby/journal.jsonl")).unwrap();
+        assert!(
+            !journal.contains(capability.split_once('.').unwrap().1),
+            "the journal stores digests, never capability secrets"
+        );
         server.stop();
     }
 

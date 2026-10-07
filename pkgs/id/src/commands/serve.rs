@@ -67,7 +67,7 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
-#[cfg(feature = "world")]
+#[cfg(all(feature = "world", feature = "sandbox"))]
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
@@ -97,7 +97,7 @@ macro_rules! status {
 }
 
 /// Like [`status!`], for stderr.
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "world"))]
 macro_rules! status_err {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
@@ -343,6 +343,78 @@ pub async fn build_access_policy(
     Ok(AccessPolicy::restricted(writers))
 }
 
+/// Directory of the durable lobby world, relative to the data directory.
+#[cfg(feature = "world")]
+pub const WORLD_DIR: &str = ".id-worlds/lobby";
+
+/// Open the lobby: durable under [`WORLD_DIR`] unless `ephemeral`. A
+/// `--world-module` goes through the same journaled install as an admin
+/// upload, so it is pinned, downloadable and restored after a restart; it is
+/// only installed when it differs from the module the world already runs.
+#[cfg(feature = "world")]
+async fn open_lobby(
+    ephemeral: bool,
+    admin_token: Option<String>,
+    blobs: iroh_blobs::api::Store,
+    module: Option<&std::path::Path>,
+) -> Result<crate::world_session::WorldService> {
+    use crate::world::{WorldCore, WorldHandle, WorldLimits};
+    use crate::world_session::WorldService;
+
+    let limits = WorldLimits::default();
+    let make = {
+        let admin_token = admin_token.clone();
+        let blobs = blobs.clone();
+        move |handle| WorldService::new(handle, admin_token).with_blob_store(blobs)
+    };
+    let service = if ephemeral {
+        make(WorldHandle::spawn(WorldCore::new("lobby", limits)?))
+    } else {
+        let (service, report) =
+            crate::world_store::open_world(std::path::Path::new(WORLD_DIR), "lobby", limits, make)
+                .await?;
+        status!(
+            "world: restored {WORLD_DIR} at sequence {} ({} input(s) replayed)",
+            report.sequence,
+            report.replayed_inputs
+        );
+        if let Some(error) = &report.program_error {
+            status_err!("warning: world program not restored ({error}); reinstall it");
+        }
+        service
+    };
+
+    if let Some(path) = module {
+        #[cfg(feature = "sandbox")]
+        {
+            let metadata = tokio::fs::metadata(path).await?;
+            ensure!(
+                usize::try_from(metadata.len())
+                    .is_ok_and(|len| len <= crate::world_session::MAX_WORLD_MODULE_BYTES),
+                "world module exceeds the configured module size limit"
+            );
+            let wasm = tokio::fs::read(path).await?;
+            let hash = crate::world_session::module_hash(&wasm);
+            if service.active_module_hash().await.as_deref() == Some(hash.as_str()) {
+                info!(module = %path.display(), "world: module already active");
+            } else {
+                let seed = rand::rng().random::<u64>();
+                service
+                    .install_wasm(admin_token.as_deref(), wasm, seed, &hash)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("install {}: {e:?}", path.display()))?;
+                info!(module = %path.display(), seed, "world: installed module");
+            }
+        }
+        #[cfg(not(feature = "sandbox"))]
+        {
+            let _ = path;
+            anyhow::bail!("--world-module requires a build with the `sandbox` feature");
+        }
+    }
+    Ok(service)
+}
+
 /// Starts the serve process.
 ///
 /// Initializes the Iroh endpoint, blob store, protocol handlers, and
@@ -482,39 +554,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let mut world_handle_to_shutdown = None;
     #[cfg(feature = "world")]
     let world_service = if world {
-        let limits = crate::world::WorldLimits::default();
-        let lobby = crate::world::WorldCore::new("lobby", limits)?;
-        let world_handle = if let Some(module_path) = world_module.as_ref() {
-            #[cfg(feature = "sandbox")]
-            {
-                let metadata = std::fs::metadata(module_path)?;
-                ensure!(
-                    metadata.len() <= crate::sandbox::SandboxLimits::default().module_bytes as u64,
-                    "world module exceeds the configured module size limit"
-                );
-                let wasm = std::fs::read(module_path)?;
-                let sandbox = crate::sandbox::Sandbox::compile(
-                    &wasm,
-                    crate::sandbox::SandboxLimits::default(),
-                )?;
-                let seed = rand::rng().random::<u64>();
-                let program = sandbox.instantiate(seed)?;
-                info!(module = %module_path.display(), seed, "world: loaded sandboxed Wasm module");
-                crate::world::WorldHandle::spawn_with_program(lobby, Box::new(program))
-            }
-            #[cfg(not(feature = "sandbox"))]
-            {
-                let _ = module_path;
-                anyhow::bail!("--world-module requires a build with the `sandbox` feature")
-            }
-        } else {
-            crate::world::WorldHandle::spawn(lobby)
-        };
-        world_handle_to_shutdown = Some(world_handle.clone());
-        Some(
-            crate::world_session::WorldService::new(world_handle, world_admin_token.clone())
-                .with_blob_store(store_handle.clone()),
+        let service = open_lobby(
+            ephemeral,
+            world_admin_token.clone(),
+            store_handle.clone(),
+            world_module.as_deref(),
         )
+        .await?;
+        world_handle_to_shutdown = Some(service.world().clone());
+        Some(service)
     } else {
         None
     };

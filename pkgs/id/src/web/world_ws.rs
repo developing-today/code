@@ -224,6 +224,7 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "sandbox")]
     use crate::world_session::encode_hex;
 
     #[tokio::test]

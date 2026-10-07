@@ -410,3 +410,39 @@ Clients: `id world invite <NODE> --admin-token T --name N` and
 - `WorldProgram` wiring into the actor, then the Roc wasm demo. The checked-in
   Roc module still traps on its first `view`; that must be diagnosed first.
 - Tier N worker process, module distribution by blob hash, persistence.
+
+---
+
+## 2026-10-07T08-00-00Z Implementation: durable worlds by event sourcing
+
+Program state is never serialized. `serve --world` (without `--ephemeral`)
+keeps the lobby in `.id-worlds/lobby/`:
+
+- `journal.jsonl`: one `JournalEntry` per line (`created`, `issued`,
+  `revoked`, `committed`), `fsync`ed before a mutation is acknowledged or
+  broadcast. Capability **digests** are journaled, never the bearer secrets.
+- `modules/<blake3>.wasm`: every installed module, written before the
+  journal may reference it (temp file + rename).
+
+On start, `WorldCore::restore` rebuilds participants, revocations and the
+sequence; the last `program_installed {module_hash, seed}` is re-instantiated
+and the inputs after it are replayed. Pure programs make this exact. Rules:
+
+- A torn final journal line (crash mid-append) is truncated: it was never
+  acknowledged. Corruption before the last line, a journal for another world,
+  or an unknown version refuses to start rather than dropping history.
+- If a journal append fails, the world turns read-only (revocation still
+  applies in memory, since denying is the safe side).
+- If the module is missing or replay fails, chat and membership keep working
+  and the program is marked unavailable until an admin installs one.
+- `--world-module` goes through the same journaled install, and is skipped
+  when that module is already active (re-installing would reset the program).
+
+Verified: unit tests for restore, torn tails, mid-file corruption, wrong-world
+journals, tampered modules, storage failure, and Roc replay; a CLI test that
+restarts `serve` and checks the old capability still joins and `count=2`
+survives, then advances to `count=3`.
+
+Known limit: the journal grows without bound. Compaction needs a guest
+snapshot/restore contract (or periodic checkpoint + truncated replay), which
+is not designed yet.

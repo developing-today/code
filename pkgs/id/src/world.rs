@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Context, Result, ensure};
 use rand::RngExt as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -55,6 +55,12 @@ impl WorldScopes {
     /// Default guest permissions.
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
 
+    /// Raw scope bits, as journaled.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
     /// Whether this scope set includes `required`.
     #[must_use]
     pub const fn contains(self, required: Self) -> bool {
@@ -88,7 +94,7 @@ impl JoinCapability {
 }
 
 /// Public participant summary; it contains no capability material.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Participant {
     /// Opaque server-assigned participant identifier.
     pub id: u64,
@@ -97,7 +103,7 @@ pub struct Participant {
 }
 
 /// Versioned event committed by the world authority.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldEvent {
     /// Monotonic event sequence, starting at one.
     pub sequence: u64,
@@ -108,7 +114,7 @@ pub struct WorldEvent {
 }
 
 /// Participant-originated event data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum WorldEventKind {
     /// Plain text message, UTF-8 and control-character sanitized.
@@ -120,7 +126,75 @@ pub enum WorldEventKind {
     ProgramInstalled {
         /// Iroh BLAKE3 hash of the newly active module artifact.
         module_hash: String,
+        /// Seed passed to the program's `init`; with the module and the
+        /// inputs after this event it reproduces the program state exactly.
+        #[serde(default)]
+        seed: u64,
     },
+}
+
+/// One durable fact about a world, in commit order.
+///
+/// Capability secrets are never journaled, only their SHA-256 digests, so a
+/// leaked journal cannot be used to join. Replaying a journal rebuilds the
+/// participants, the event sequence, and (with the module bytes) the program.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum JournalEntry {
+    /// First entry of every journal.
+    Created {
+        /// World this journal belongs to.
+        world_id: String,
+        /// Journal format version.
+        version: u32,
+    },
+    /// A capability was issued.
+    Issued {
+        /// The new participant.
+        participant: Participant,
+        /// Hex SHA-256 of the bearer capability.
+        digest: String,
+        /// Granted scopes (bit set).
+        scopes: u8,
+    },
+    /// A capability was revoked.
+    Revoked {
+        /// Participant whose capability was revoked.
+        participant_id: u64,
+    },
+    /// A sequenced event was committed.
+    Committed {
+        /// The event.
+        event: WorldEvent,
+    },
+}
+
+/// Current [`JournalEntry::Created`] version.
+pub const JOURNAL_VERSION: u32 = 1;
+
+/// Durable, append-only record of a world's history.
+///
+/// The actor calls `append` before acknowledging or broadcasting a mutation.
+/// If `append` fails, the world turns read-only: acknowledged history must
+/// never get ahead of durable history.
+pub trait WorldJournal: Send + 'static {
+    /// Durably append one entry.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure; the actor then refuses further mutations.
+    fn append(&mut self, entry: &JournalEntry) -> Result<()>;
+}
+
+/// A world rebuilt from its journal, before its program is re-instantiated.
+#[derive(Debug)]
+pub struct RestoredWorld {
+    /// Participants, sequence and retained events as of the last entry.
+    pub core: WorldCore,
+    /// `(module_hash, seed)` of the last installed program, if any.
+    pub program: Option<(String, u64)>,
+    /// Inputs committed after that install, in order, to replay through it.
+    pub replay: Vec<WorldEvent>,
 }
 
 /// Behavior supplied by the running world program.
@@ -213,6 +287,130 @@ impl WorldCore {
             capabilities: HashMap::new(),
             events: VecDeque::new(),
         })
+    }
+
+    /// Rebuild a world from its journal.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the journal belongs to another world, uses an unknown
+    /// version, or is internally inconsistent (out-of-order sequences,
+    /// unknown participants, malformed digests). A bad journal is refused,
+    /// never partially applied.
+    pub fn restore(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        let mut core = Self::new(world_id, limits)?;
+        let mut program = None;
+        let mut replay = Vec::new();
+        let mut entries = entries.into_iter();
+        match entries.next() {
+            Some(JournalEntry::Created { world_id, version }) => {
+                ensure!(
+                    world_id == core.world_id,
+                    "journal belongs to world {world_id:?}, not {:?}",
+                    core.world_id
+                );
+                ensure!(
+                    version == JOURNAL_VERSION,
+                    "unsupported world journal version {version}"
+                );
+            }
+            Some(_) => anyhow::bail!("world journal does not start with a header"),
+            None => {
+                return Ok(RestoredWorld {
+                    core,
+                    program,
+                    replay,
+                });
+            }
+        }
+        for entry in entries {
+            match entry {
+                JournalEntry::Created { .. } => anyhow::bail!("duplicate world journal header"),
+                JournalEntry::Issued {
+                    participant,
+                    digest,
+                    scopes,
+                } => {
+                    let digest = hex_decode_32(&digest).context("malformed capability digest")?;
+                    ensure!(
+                        !core.capabilities.contains_key(&participant.id),
+                        "participant {} issued twice",
+                        participant.id
+                    );
+                    core.next_participant_id = core.next_participant_id.max(
+                        participant
+                            .id
+                            .checked_add(1)
+                            .context("participant ID exhausted")?,
+                    );
+                    core.capabilities.insert(
+                        participant.id,
+                        CapabilityRecord {
+                            digest,
+                            participant,
+                            scopes: WorldScopes(scopes),
+                            revoked: false,
+                        },
+                    );
+                }
+                JournalEntry::Revoked { participant_id } => {
+                    ensure!(
+                        core.revoke(participant_id),
+                        "journal revokes unknown or revoked participant {participant_id}"
+                    );
+                }
+                JournalEntry::Committed { event } => {
+                    ensure!(
+                        event.sequence == core.sequence.saturating_add(1),
+                        "journal sequence jumps from {} to {}",
+                        core.sequence,
+                        event.sequence
+                    );
+                    match &event.kind {
+                        WorldEventKind::ProgramInstalled { module_hash, seed } => {
+                            core.active_module_hash = Some(module_hash.clone());
+                            program = Some((module_hash.clone(), *seed));
+                            replay.clear();
+                        }
+                        WorldEventKind::Input(_) => replay.push(event.clone()),
+                        WorldEventKind::Chat(_) => {}
+                    }
+                    core.commit_prepared(event)?;
+                }
+            }
+        }
+        Ok(RestoredWorld {
+            core,
+            program,
+            replay,
+        })
+    }
+
+    /// Journal entry for an already-issued capability.
+    fn issued_entry(&self, participant_id: u64) -> Option<JournalEntry> {
+        self.capabilities
+            .get(&participant_id)
+            .map(|record| JournalEntry::Issued {
+                participant: record.participant.clone(),
+                digest: hex_encode(&record.digest),
+                scopes: record.scopes.0,
+            })
+    }
+
+    /// Latest committed event sequence.
+    #[must_use]
+    pub const fn current_sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// The world's identifier.
+    #[must_use]
+    pub fn world_id(&self) -> &str {
+        &self.world_id
     }
 
     /// Issue a capability for a participant. Only `JOIN`-scoped capabilities
@@ -401,10 +599,6 @@ impl WorldCore {
         Ok(event)
     }
 
-    fn commit_host(&mut self, kind: WorldEventKind) -> Result<WorldEvent> {
-        self.commit(0, kind)
-    }
-
     fn oldest_sequence(&self) -> u64 {
         self.events
             .front()
@@ -477,6 +671,7 @@ enum WorldCommand {
     },
     InstallProgram {
         module_hash: String,
+        seed: u64,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
@@ -494,6 +689,17 @@ impl WorldHandle {
     /// Spawn a world actor with an executable program. Only the actor owns
     /// the program instance, so calls are serialized with world mutations.
     pub fn spawn_with_program(core: WorldCore, program: Box<dyn WorldProgram>) -> Self {
+        Self::spawn_durable(core, program, None)
+    }
+
+    /// Spawn a world actor that journals every mutation before acknowledging
+    /// it. `program` must already reflect the journal (see
+    /// [`WorldCore::restore`]); the actor only appends.
+    pub fn spawn_durable(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
         let (commands, mut receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
         let (revocations, _) = broadcast::channel(256);
@@ -503,6 +709,23 @@ impl WorldHandle {
             let mut core = core;
             let mut program = program;
             let mut program_healthy = true;
+            let mut journal = journal;
+            let mut storage_failed = false;
+            // Durably record `entry`, or turn the world read-only.
+            let mut persist = |entry: JournalEntry, storage_failed: &mut bool| -> Result<()> {
+                ensure!(
+                    !*storage_failed,
+                    "world storage failed; the world is read-only"
+                );
+                if let Some(journal) = journal.as_mut()
+                    && let Err(error) = journal.append(&entry)
+                {
+                    *storage_failed = true;
+                    tracing::error!("world journal append failed: {error:#}");
+                    return Err(error.context("world storage failed; the world is read-only"));
+                }
+                Ok(())
+            };
             while let Some(command) = receiver.recv().await {
                 match command {
                     WorldCommand::Issue {
@@ -510,14 +733,33 @@ impl WorldHandle {
                         scopes,
                         reply,
                     } => {
-                        let _ = reply.send(core.issue_capability(&name, scopes));
+                        let result = if storage_failed {
+                            Err(anyhow::anyhow!(
+                                "world storage failed; the world is read-only"
+                            ))
+                        } else {
+                            core.issue_capability(&name, scopes).and_then(|issued| {
+                                let entry = core
+                                    .issued_entry(issued.0.id)
+                                    .context("issued capability vanished")?;
+                                persist(entry, &mut storage_failed)?;
+                                Ok(issued)
+                            })
+                        };
+                        let _ = reply.send(result);
                     }
                     WorldCommand::Revoke {
                         participant_id,
                         reply,
                     } => {
+                        // Revocation takes effect in memory even if storage
+                        // failed: denying access is always the safe side.
                         let was_active = core.revoke(participant_id);
                         if was_active {
+                            let _ = persist(
+                                JournalEntry::Revoked { participant_id },
+                                &mut storage_failed,
+                            );
                             let _ = revocation_sender.send(participant_id);
                         }
                         let _ = reply.send(was_active);
@@ -526,7 +768,21 @@ impl WorldHandle {
                         let _ = reply.send(core.authorize(&token, WorldScopes::JOIN));
                     }
                     WorldCommand::Chat { token, text, reply } => {
-                        let result = core.chat(&token, &text);
+                        let result = if storage_failed {
+                            Err(anyhow::anyhow!(
+                                "world storage failed; the world is read-only"
+                            ))
+                        } else {
+                            core.chat(&token, &text).and_then(|event| {
+                                persist(
+                                    JournalEntry::Committed {
+                                        event: event.clone(),
+                                    },
+                                    &mut storage_failed,
+                                )?;
+                                Ok(event)
+                            })
+                        };
                         if let Ok(event) = &result {
                             let _ = event_sender.send(event.clone());
                         }
@@ -538,8 +794,17 @@ impl WorldHandle {
                         reply,
                     } => {
                         let result = match core.prepare_input(&token, &input) {
+                            Ok(_) if storage_failed => Err(anyhow::anyhow!(
+                                "world storage failed; the world is read-only"
+                            )),
                             Ok(candidate) if program_healthy => match program.update(&candidate) {
-                                Ok(()) => core.commit_prepared(candidate),
+                                Ok(()) => persist(
+                                    JournalEntry::Committed {
+                                        event: candidate.clone(),
+                                    },
+                                    &mut storage_failed,
+                                )
+                                .and_then(|()| core.commit_prepared(candidate)),
                                 Err(error) => {
                                     program_healthy = false;
                                     Err(error.context("world program rejected input"))
@@ -597,16 +862,27 @@ impl WorldHandle {
                     }
                     WorldCommand::InstallProgram {
                         module_hash,
+                        seed,
                         program: replacement,
                         reply,
                     } => {
                         // Actor serialization makes activation and its event
                         // atomic with respect to other world commands.
-                        let result = match core
-                            .commit_host(WorldEventKind::ProgramInstalled { module_hash })
-                        {
+                        let candidate = WorldEvent {
+                            sequence: core.sequence.saturating_add(1),
+                            participant_id: 0,
+                            kind: WorldEventKind::ProgramInstalled { module_hash, seed },
+                        };
+                        let result = persist(
+                            JournalEntry::Committed {
+                                event: candidate.clone(),
+                            },
+                            &mut storage_failed,
+                        )
+                        .and_then(|()| core.commit_prepared(candidate));
+                        let result = match result {
                             Ok(event) => {
-                                if let WorldEventKind::ProgramInstalled { module_hash } =
+                                if let WorldEventKind::ProgramInstalled { module_hash, .. } =
                                     &event.kind
                                 {
                                     core.active_module_hash = Some(module_hash.clone());
@@ -771,12 +1047,14 @@ impl WorldHandle {
     pub async fn install_program(
         &self,
         module_hash: String,
+        seed: u64,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
                 module_hash,
+                seed,
                 program,
                 reply,
             })
@@ -829,6 +1107,19 @@ fn hex_encode(bytes: &[u8]) -> String {
         encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
+    let bytes = encoded.as_bytes();
+    if bytes.len() != 64 {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+        let nibble = |b: u8| char::from(b).to_digit(16);
+        *slot = u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?;
+    }
+    Some(out)
 }
 
 fn sanitize_display_name(name: &str) -> String {

@@ -84,6 +84,8 @@ impl Default for SessionConfig {
     }
 }
 
+// Install frames are only produced/consumed with the `sandbox` feature.
+#[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientFrame {
@@ -123,6 +125,8 @@ enum ClientFrame {
     InstallEnd,
 }
 
+// Install frames are only produced/consumed with the `sandbox` feature.
+#[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerFrame<'a> {
@@ -216,6 +220,7 @@ pub struct WorldService {
     module_pin: Arc<Mutex<Option<TempTag>>>,
     module_hash: Arc<RwLock<Option<String>>>,
     upload_slots: Arc<Semaphore>,
+    module_dir: Option<crate::world_store::ModuleDir>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -240,7 +245,38 @@ impl WorldService {
             module_pin: Arc::new(Mutex::new(None)),
             module_hash: Arc::new(RwLock::new(None)),
             upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_MODULE_UPLOADS)),
+            module_dir: None,
         }
+    }
+
+    /// Persist installed modules here so a durable world can re-instantiate
+    /// its program after a restart.
+    #[must_use]
+    pub fn with_module_dir(mut self, modules: crate::world_store::ModuleDir) -> Self {
+        self.module_dir = Some(modules);
+        self
+    }
+
+    /// Mark `wasm` as the active module after a restore: pin it in the blob
+    /// store (when attached) so peers can download it again.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the blob store refuses the bytes.
+    pub async fn adopt_module(&self, wasm: Vec<u8>) -> anyhow::Result<()> {
+        let hash = module_hash(&wasm);
+        if let Some(blobs) = self.blobs.as_ref() {
+            let pin = blobs
+                .add_bytes_with_opts(AddBytesOptions {
+                    data: wasm.into(),
+                    format: BlobFormat::Raw,
+                })
+                .temp_tag()
+                .await?;
+            *self.module_pin.lock().await = Some(pin);
+        }
+        *self.module_hash.write().await = Some(hash);
+        Ok(())
     }
 
     /// Attach this node's blob store so uploaded modules survive as pinned
@@ -351,6 +387,19 @@ impl WorldService {
         .map_err(|_| InstallError::InvalidModule)?
         .map_err(|_| InstallError::InvalidModule)?;
 
+        // A durable world must be able to reload this module before the
+        // journal may reference it.
+        if let Some(modules) = self.module_dir.clone() {
+            let bytes = wasm.clone();
+            let saved = tokio::task::spawn_blocking(move || modules.save(&bytes))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if saved != module_hash {
+                return Err(InstallError::Unavailable);
+            }
+        }
+
         let pin = blobs
             .add_bytes_with_opts(AddBytesOptions {
                 data: wasm.into(),
@@ -364,7 +413,7 @@ impl WorldService {
         }
         let installed = self
             .world
-            .install_program(module_hash.clone(), Box::new(guest))
+            .install_program(module_hash.clone(), seed, Box::new(guest))
             .await
             .map_err(|_| InstallError::Unavailable)?;
         if !matches!(
@@ -380,7 +429,6 @@ impl WorldService {
 
     /// Read the currently pinned module artifact for peer download.
     /// The caller must already have authenticated as a world participant.
-    #[cfg(feature = "sandbox")]
     pub async fn module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
         let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
         let pin = self.module_pin.lock().await;
@@ -616,7 +664,10 @@ async fn install_module_session<I: SessionIo>(
         .try_reserve_module_upload()
         .map_err(|_| "world is busy installing another module")?;
     #[cfg(not(feature = "sandbox"))]
-    return Err("module installation requires the sandbox feature");
+    {
+        let _ = (io, seed, upload_permit);
+        return Err("module installation requires the sandbox feature");
+    }
 
     #[cfg(feature = "sandbox")]
     {
@@ -769,7 +820,7 @@ async fn joined<I: SessionIo>(
             },
             event = events.recv() => match event {
                 Ok(event) => {
-                    if let crate::world::WorldEventKind::ProgramInstalled { ref module_hash } = event.kind {
+                    if let crate::world::WorldEventKind::ProgramInstalled { ref module_hash, .. } = event.kind {
                         if event.sequence > cursor {
                             let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
                             if !send_json(io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
