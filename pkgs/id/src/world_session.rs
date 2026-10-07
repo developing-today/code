@@ -1542,7 +1542,7 @@ mod tests {
         .await;
         let ready = peer.next().await.unwrap();
         assert_eq!(ready["type"], "upload_ready");
-        let chunk_bytes = ready["chunk_bytes"].as_u64().unwrap() as usize;
+        let chunk_bytes = usize::try_from(ready["chunk_bytes"].as_u64().unwrap()).unwrap();
         for (index, chunk) in wasm.chunks(chunk_bytes).enumerate() {
             peer.say(serde_json::json!({
                 "type": "install_chunk",

@@ -1551,9 +1551,8 @@ mod tests {
         )
         .unwrap();
         let (_, token) = join(&mut core, "ann");
-        for i in 0..20u8 {
-            core.input(&token, &[b'x'; 48]).unwrap().sequence;
-            let _ = i;
+        for _ in 0..20u8 {
+            core.input(&token, &[b'x'; 48]).unwrap();
         }
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 20);

@@ -605,7 +605,7 @@ mod tests {
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let records = |world: &mut WorldInstance| {
-            String::from_utf8(world.records().unwrap().unwrap().to_vec()).unwrap()
+            String::from_utf8(world.records().unwrap().unwrap()).unwrap()
         };
         assert_eq!(
             records(&mut world),

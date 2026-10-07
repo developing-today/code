@@ -346,7 +346,7 @@ mod tests {
                     continue;
                 }
             };
-            if records.get("count").and_then(|c| c.as_u64()) == Some(expected) {
+            if records.get("count").and_then(serde_json::Value::as_u64) == Some(expected) {
                 return Ok(records);
             }
             assert!(
