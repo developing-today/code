@@ -1332,6 +1332,104 @@ mod serve_tests {
     }
 
     #[test]
+    fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/tic-tac-toe/tic-tac-toe.wasm");
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &["--world", "--world-admin-token", "adm"],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+
+        let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
+            .output()
+            .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // Install the second example app while the world is running.
+        let module = module.to_str().unwrap();
+        let installed = world(&[
+            "install",
+            &node,
+            module,
+            "--admin-token",
+            "adm",
+            "--seed",
+            "7",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+
+        // X plays 0, O 3, X 1, O 4, X 2: X wins the top row.
+        let mut joined = world(&["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"type\":\"snapshot\""), "{first}");
+        let initial = lines.next().expect("initial view line").unwrap();
+        assert!(initial.contains("next=X"), "{initial}");
+        for (hex, plays) in [("30", 1), ("33", 2), ("31", 3), ("34", 4), ("32", 5)] {
+            stdin
+                .write_all(format!("/input {hex}\n").as_bytes())
+                .unwrap();
+            let event = lines.next().expect("event line").unwrap();
+            assert!(event.contains("\"type\":\"event\""), "{event}");
+            let view = lines.next().expect("view line").unwrap();
+            assert!(view.contains(&format!("plays={plays}")), "{view}");
+            if plays == 5 {
+                assert!(view.contains("winner=X"), "{view}");
+            }
+        }
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // The final board is in the world's structured records.
+        let records = world(&["records", &node, "--capability", &capability])
+            .output()
+            .unwrap();
+        assert!(
+            records.status.success(),
+            "{}",
+            String::from_utf8_lossy(&records.stderr)
+        );
+        let records = String::from_utf8(records.stdout).unwrap();
+        assert!(records.contains("\"board\": \"XXXOO----\""), "{records}");
+        assert!(records.contains("\"plays\": 5"), "{records}");
+        assert!(records.contains("\"winner\": \"X\""), "{records}");
+        server.stop();
+    }
+
+    #[test]
     fn test_world_state_survives_a_serve_restart() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
@@ -1402,6 +1500,9 @@ mod serve_tests {
         );
         let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
         session(&node, &addr, &capability, 2, 2);
+        let namespace_path = server_dir.path().join(".id-worlds/lobby/records.namespace");
+        let namespace_before = fs::read(&namespace_path).unwrap();
+        assert!(!namespace_before.is_empty());
         server.stop();
 
         // Same data directory, same module flag: the module is not re-installed
@@ -1413,6 +1514,11 @@ mod serve_tests {
         let addr = lock_ipv4_addr(&server.lock_file_path());
         let seen = session(&node, &addr, &capability, 1, 3);
         assert!(seen[1].contains("count=2"), "restored view: {}", seen[1]);
+        assert_eq!(
+            fs::read(&namespace_path).unwrap(),
+            namespace_before,
+            "the records document namespace survives a restart"
+        );
 
         // The program's structured records are queryable after restart...
         let records = world(
@@ -1454,6 +1560,47 @@ mod serve_tests {
         );
         let mirror_stdout = String::from_utf8(mirror.stdout).unwrap();
         assert!(mirror_stdout.contains("\"count\": 3"), "{mirror_stdout}");
+
+        // A replica can also keep the document on disk between runs.
+        let replica_dir = client_dir.path().join("replica");
+        let replica_dir_str = replica_dir.to_str().unwrap().to_owned();
+        for run in 0..2 {
+            let stored = world(
+                &node,
+                &addr,
+                &[
+                    "mirror",
+                    &node,
+                    "--capability",
+                    &capability,
+                    "--no-relay",
+                    "--timeout-secs",
+                    "60",
+                    "--dir",
+                    &replica_dir_str,
+                ],
+            )
+            .output()
+            .unwrap();
+            assert!(
+                stored.status.success(),
+                "run {run}: {}",
+                String::from_utf8_lossy(&stored.stderr)
+            );
+            assert!(
+                String::from_utf8(stored.stdout)
+                    .unwrap()
+                    .contains("\"count\": 3"),
+                "run {run}"
+            );
+        }
+        assert_eq!(
+            fs::metadata(replica_dir.join("node.key")).unwrap().len(),
+            32,
+            "the replica keeps its own identity"
+        );
+        assert!(replica_dir.join("blobs").exists(), "blobs are stored");
+        assert!(replica_dir.join("docs").exists(), "docs are stored");
         let journal =
             fs::read_to_string(server_dir.path().join(".id-worlds/lobby/journal.jsonl")).unwrap();
         assert!(

@@ -115,6 +115,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             capability,
             follow,
+            dir,
             timeout_secs,
             addrs,
             no_relay,
@@ -124,7 +125,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             client.close();
             // Replication runs over iroh-docs, not the world session: the
             // replica keeps syncing with any host node for as long as it runs.
-            let replica = Replica::start(no_relay).await?;
+            let replica = Replica::start(dir.as_deref(), no_relay).await?;
             let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
             let (doc, records) =
                 crate::world_records::replicate(&replica.docs, &replica.blobs, &ticket, timeout)
@@ -203,12 +204,37 @@ struct Replica {
 }
 
 impl Replica {
-    async fn start(no_relay: bool) -> Result<Self> {
+    /// Start a replica. With `dir`, the node identity, blob store and docs
+    /// database live under it, so the replica survives between runs and only
+    /// fetches what changed; without it everything is in memory.
+    async fn start(dir: Option<&std::path::Path>, no_relay: bool) -> Result<Self> {
         use iroh::endpoint::{RelayMode, presets};
         use iroh_blobs::store::mem::MemStore;
         use iroh_gossip::net::Gossip;
 
-        let key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
+        let (key, blobs, docs) = match dir {
+            Some(dir) => {
+                tokio::fs::create_dir_all(dir.join("blobs")).await?;
+                tokio::fs::create_dir_all(dir.join("docs")).await?;
+                let key_path = dir.join("node.key");
+                let key = load_or_create_keypair(&key_path.to_string_lossy()).await?;
+                let store = iroh_blobs::store::fs::FsStore::load(dir.join("blobs")).await?;
+                let blobs: iroh_blobs::api::Store = store.into();
+                (
+                    key,
+                    blobs,
+                    iroh_docs::protocol::Docs::persistent(dir.join("docs")),
+                )
+            }
+            None => {
+                let blobs: iroh_blobs::api::Store = MemStore::new().into();
+                (
+                    load_or_create_keypair(CLIENT_KEY_FILE).await?,
+                    blobs,
+                    iroh_docs::protocol::Docs::memory(),
+                )
+            }
+        };
         let endpoint = if no_relay {
             Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -221,9 +247,8 @@ impl Replica {
                 .bind()
                 .await?
         };
-        let blobs: iroh_blobs::api::Store = MemStore::new().into();
         let gossip = Gossip::builder().spawn(endpoint.clone());
-        let docs = iroh_docs::protocol::Docs::memory()
+        let docs = docs
             .spawn(endpoint.clone(), blobs.clone(), gossip.clone())
             .await?;
         let router = iroh::protocol::Router::builder(endpoint.clone())

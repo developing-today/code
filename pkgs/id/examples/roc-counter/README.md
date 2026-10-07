@@ -43,7 +43,8 @@ The program also publishes structured records (`records : Model -> Str`):
 
 ```sh
 id world records HOST_NODE --capability TOKEN      # {"count": N}
-id world mirror HOST_NODE --capability TOKEN --follow   # live iroh-docs replica
+id world mirror HOST_NODE --capability TOKEN --follow        # live replica
+id world mirror HOST_NODE --capability TOKEN --dir ./replica # durable replica
 ```
 
 `records` reads the host's current set; `mirror` replicates it peer-to-peer

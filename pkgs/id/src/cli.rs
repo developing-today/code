@@ -1119,6 +1119,9 @@ pub enum WorldCommand {
         /// Keep printing whenever the records change.
         #[arg(short, long)]
         follow: bool,
+        /// Store the replica on disk so it survives between runs.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
         /// Give up after this many seconds without a completed sync.
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,

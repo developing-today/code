@@ -407,6 +407,9 @@ Clients: `id world invite <NODE> --admin-token T --name N` and
 
 ### Not yet done (explicit)
 
+*(Superseded: the items below were completed in later sections. See
+“Current status: not yet offered” at the end of this document.)*
+
 - `WorldProgram` wiring into the actor, then the Roc wasm demo. The checked-in
   Roc module still traps on its first `view`; that must be diagnosed first.
 - Tier N worker process, module distribution by blob hash, persistence.
@@ -517,3 +520,81 @@ Verified: the sandbox test plays a complete game (X wins on the top row,
 `records` shows `XXXOO---- / plays=5 / winner=X`), then checks that post-win
 moves, occupied cells, out-of-range cells and garbage input change nothing;
 the counter still runs unchanged under the new ABI.
+
+---
+
+## 2026-10-07T11-00-00Z Implementation: durable records on both sides
+
+Records were already a projection (never serialized into the journal), but the
+two stores that carry them needed durability checks on both ends:
+
+- **Host.** A non-ephemeral world remembers its iroh-docs namespace in
+  `.id-worlds/<world>/records.namespace`, and the serve process opens its docs
+  database and blob store on disk. After a restart the same document is
+  reattached — the test reads the namespace file before and after a restart
+  and requires it to be byte-identical — so replicas that synced earlier are
+  still on the same document and see updates, not a fresh one.
+- **Replica.** `id world mirror --dir PATH` keeps a replica on disk: its own
+  node identity (`node.key`), an fs blob store (`blobs/`) and a persistent
+  docs database (`docs/`). Running it again reuses all three and only fetches
+  what changed; without `--dir` the replica stays in memory. The process-level
+  test runs the persistent mirror twice against a live host and checks the
+  identity, the stores, and the replicated records.
+
+Together with the host's journal + deterministic replay (world state) and the
+content-addressed module directory (program bytes), a world's full public
+state now survives a restart, and participants can keep their own durable
+copy of the structured data.
+
+### Sync completion: readiness is not arrival
+
+`replicate` used to return as soon as the docs engine declared the document
+*ready* (`PendingContentReady`). Readiness only means the initial sync round is
+over — a peer can still be connecting, so a replica could read an empty
+document even though the host had entries (seen as a rare flake under full
+suite load). It now also waits for every announced entry's blob to be local,
+with a short grace period for a document that is genuinely empty; only then
+does it read the records. The same predicate is what a mirror needs before it
+may print `{}`, so a quiet world prints promptly and a busy one never prints a
+partial snapshot.
+
+A second, rarer race surfaced under full-suite load: a blob can still be
+mid-download when `has` reports it present, so the read itself fails with an
+encoding error (`LeafHashMismatch`). `replicate` now retries the final read
+until its deadline instead of surfacing that transient error, and the test
+helper treats a transient read failure as "not there yet" rather than failing
+the wait.
+
+### One more end-to-end app
+
+`test_tic_tac_toe_installed_over_iroh_and_played_by_two_players` uploads the
+second example module into a running world (not `--world-module`), joins over
+Iroh, plays a full game with `/input <hex digit>` moves, and reads the final
+board from `id world records`. It proves the dynamic install path and the
+records projection with a program that has no special support in the host.
+
+---
+
+## 2026-10-07T12-00-00Z Status: what is offered, and what is not
+
+Offered today: a host runs one Roc world in the effect-free Wasm sandbox with
+capability-gated sessions over Iroh and WebSocket; guests install/download
+modules p2p; state is durable by fsynced journal + deterministic replay; the
+program's structured records are mirrored into an iroh-docs document that any
+participant can replicate with a read-only ticket, in memory or on disk, and
+that survives host restarts on the same namespace; two example apps (counter,
+tic-tac-toe) build with the shared platform and run end to end.
+
+Not offered yet:
+
+- **Multiple worlds per host.** A `serve` process hosts one world (`lobby`) in
+  `.id-worlds/lobby/`; several worlds means several hosts today. A world name
+  in the session frames plus a registry is the next step.
+- **A native Roc tier.** Only effect-free programs compile into the sandbox;
+  nothing runs in-process.
+- **Journal compaction.** Replay re-runs every input; it needs a guest
+  snapshot/restore contract (an optional export) before logs can be trimmed.
+- **Replicating in the browser.** The `/world` page reads records through the
+  session; iroh-docs replication is the CLI's job.
+- **Versioned module upgrades.** Upgrades are admin installs by hash; there is
+  no channel or rollback beyond installing a previous hash.

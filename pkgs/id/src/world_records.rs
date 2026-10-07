@@ -212,7 +212,47 @@ pub async fn replicate(
     })
     .await
     .context("records sync timed out")??;
-    let records = read_records(&doc, blobs).await?;
+    // Readiness means the initial sync round is over, not that every announced
+    // value has been fetched (a peer may still be connecting). Wait until each
+    // announced entry's blob is local; an empty document settles quickly.
+    let deadline = std::time::Instant::now() + timeout;
+    let settle_empty = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let entries = doc.get_many(Query::all().build()).await?;
+        tokio::pin!(entries);
+        let mut announced = 0usize;
+        let mut missing = false;
+        while let Some(entry) = entries.try_next().await? {
+            announced += 1;
+            if !blobs.blobs().has(entry.content_hash()).await? {
+                missing = true;
+            }
+        }
+        if announced > 0 && !missing {
+            break;
+        }
+        if announced == 0 && std::time::Instant::now() >= settle_empty {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("records content did not arrive within the timeout");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A blob can still be mid-download even when `has` says it is present;
+    // retry the read until the deadline rather than surfacing a transient
+    // encoding error as a failed sync.
+    let records = loop {
+        match read_records(&doc, blobs).await {
+            Ok(records) => break records,
+            Err(error) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    };
     Ok((doc, records))
 }
 
@@ -293,7 +333,19 @@ mod tests {
     async fn wait_for(node: &Node, doc: &Doc, expected: u64) -> Result<Records> {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
-            let records = read_records(doc, &node.blobs).await?;
+            // Content may still be arriving; a transient read failure is not
+            // a test failure until the deadline passes.
+            let records = match read_records(doc, &node.blobs).await {
+                Ok(records) => records,
+                Err(error) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out reading records: {error:#}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
             if records.get("count").and_then(|c| c.as_u64()) == Some(expected) {
                 return Ok(records);
             }
