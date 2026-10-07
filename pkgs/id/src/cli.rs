@@ -332,6 +332,13 @@ pub enum Command {
         /// `a-z`, `0-9`, `-` and `_`.
         #[arg(long, default_value = "lobby", requires = "world")]
         world_name: String,
+        /// Trim the world's journal behind a program snapshot every N events.
+        ///
+        /// A journal otherwise grows (and restarts slow down) without bound.
+        /// Programs that export `plaza_snapshot`/`plaza_restore` are trimmed;
+        /// others keep their full history. `0` never trims.
+        #[arg(long, default_value_t = 1000, requires = "world")]
+        world_checkpoint_every: u64,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1372,6 +1379,7 @@ mod tests {
                 world_admin_token,
                 world_module,
                 world_name,
+                world_checkpoint_every,
                 allow_node,
                 open_writes,
             }) => {
@@ -1395,6 +1403,7 @@ mod tests {
                 assert!(world_admin_token.is_none());
                 assert!(world_module.is_none());
                 assert_eq!(world_name, "lobby");
+                assert_eq!(world_checkpoint_every, 1000);
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

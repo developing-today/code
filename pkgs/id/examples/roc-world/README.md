@@ -12,13 +12,15 @@ examples/tic-tac-toe/     app: a two-player game
 
 ## The module ABI
 
-A world program provides four functions:
+A world program provides these functions:
 
 ```
 init    : U64 -> model                    # seed from the host
 update  : model, U64, Str -> model        # second argument is the participant id
 view    : model, Str -> Str               # viewer id as JSON/string
 records : model -> Str                    # optional JSON object projection
+snapshot : model -> Str                   # state as text, for journal checkpoints
+restore : Str -> model                    # inverse of snapshot
 ```
 
 `update` and `view` are pure: they read the model and their arguments and
@@ -27,6 +29,17 @@ requires no `Task`, and modules are compiled to an import-free Wasm module.
 `records` is optional: when present it must return a JSON object of string
 keys to JSON values, which the host validates and mirrors into the world's
 iroh-docs document.
+
+`snapshot`/`restore` let the host trim a world's journal. Without them a
+world restarts by replaying every input it ever received; with them the host
+periodically replaces the journal's history by a checkpoint holding
+`snapshot(model)` and restarts from `restore(checkpoint)` plus the inputs that
+followed. `restore(snapshot(m))` must behave exactly like `m`: before trimming,
+the host restores the snapshot into a probe instance and refuses to trim unless
+the probe re-snapshots to identical text and publishes identical records.
+`restore` should be total (return a sensible model for text it cannot parse).
+Both exports are optional at the Wasm level, so older modules keep working and
+keep their full journals.
 
 The host passes the id of the participant who sent an event as the second
 argument of `update`, so programs can implement turn-taking or per-player

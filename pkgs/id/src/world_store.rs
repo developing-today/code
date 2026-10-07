@@ -7,11 +7,17 @@
 //! <dir>/modules/<blake3>.wasm    every module the world has installed
 //! ```
 //!
-//! Program state is never serialized. A world is restored by rebuilding the
-//! core from the journal, instantiating the last installed module with its
-//! recorded seed, and replaying the inputs committed after that install. That
-//! is exact because world programs are pure: the same module, seed and inputs
-//! always produce the same state.
+//! A world is restored by rebuilding the core from the journal,
+//! instantiating the last installed module with its recorded seed, and
+//! replaying the inputs committed after that install. That is exact because
+//! world programs are pure: the same module, seed and inputs always produce
+//! the same state.
+//!
+//! Replaying from the beginning gets slower forever, so a program that can
+//! serialize its own state (`plaza_snapshot` / `plaza_restore`) lets the world
+//! trim its journal: the whole history is replaced, atomically, by a
+//! checkpoint holding that state, and restore resumes from it. The host
+//! verifies each snapshot round-trips on a probe instance before trimming.
 //!
 //! The journal records capability digests, never the bearer secrets.
 
@@ -30,6 +36,10 @@ use crate::world_session::{WorldService, module_hash};
 #[derive(Debug)]
 pub struct FileJournal {
     file: File,
+    path: PathBuf,
+    /// Set when a compaction left durability uncertain; appends then fail so
+    /// no acknowledged event can be lost.
+    broken: bool,
 }
 
 impl FileJournal {
@@ -104,7 +114,11 @@ impl FileJournal {
         }
         file.seek(SeekFrom::End(0))?;
 
-        let mut journal = Self { file };
+        let mut journal = Self {
+            file,
+            path: path.to_owned(),
+            broken: false,
+        };
         if entries.is_empty() {
             let header = JournalEntry::Created {
                 world_id: world_id.to_owned(),
@@ -119,10 +133,66 @@ impl FileJournal {
 
 impl WorldJournal for FileJournal {
     fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+        ensure!(
+            !self.broken,
+            "world journal is unusable after a failed compaction"
+        );
         let mut line = serde_json::to_vec(entry).context("encode journal entry")?;
         line.push(b'\n');
         self.file.write_all(&line).context("write world journal")?;
         self.file.sync_data().context("sync world journal")?;
+        Ok(())
+    }
+
+    fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.broken,
+            "world journal is unusable after a failed compaction"
+        );
+        let tmp = self.path.with_extension("jsonl.tmp");
+        // Build the replacement beside the journal; the live file is untouched
+        // until the rename, so any failure before it leaves the old journal.
+        let built = (|| -> Result<File> {
+            let mut options = OpenOptions::new();
+            options.read(true).append(true).create(true).truncate(false);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut file = options
+                .open(&tmp)
+                .with_context(|| format!("create {}", tmp.display()))?;
+            file.set_len(0)?;
+            let mut encoded = Vec::new();
+            for entry in entries {
+                serde_json::to_writer(&mut encoded, entry).context("encode journal entry")?;
+                encoded.push(b'\n');
+            }
+            file.write_all(&encoded)
+                .context("write compacted journal")?;
+            file.sync_all().context("sync compacted journal")?;
+            Ok(file)
+        })();
+        let file = match built {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(error);
+            }
+        };
+        if let Err(error) = std::fs::rename(&tmp, &self.path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(anyhow::Error::from(error).context("replace world journal"));
+        }
+        // The new file is now the journal, and the open handle follows its
+        // inode. If the directory entry cannot be made durable, a crash could
+        // resurrect the old journal and lose later appends: refuse them.
+        self.file = file;
+        let synced = self.path.parent().map_or(Ok(()), |parent| {
+            File::open(parent).and_then(|dir| dir.sync_all())
+        });
+        if let Err(error) = synced {
+            self.broken = true;
+            return Err(anyhow::Error::from(error).context("sync world directory"));
+        }
         Ok(())
     }
 }
@@ -248,7 +318,7 @@ pub async fn open_world(
     let mut report = OpenReport {
         sequence: 0,
         journal_entries,
-        module_hash: restored.program.as_ref().map(|(hash, _)| hash.clone()),
+        module_hash: restored.program.as_ref().map(|p| p.module_hash.clone()),
         replayed_inputs: 0,
         program_error: None,
     };
@@ -256,21 +326,19 @@ pub async fn open_world(
     let mut restored_module = None;
     let program: Box<dyn WorldProgram> = match &restored.program {
         None => Box::new(EmptyProgram),
-        Some((hash, seed)) => {
-            match restore_program(&modules, hash, *seed, &restored.replay).await {
-                Ok((program, wasm)) => {
-                    report.replayed_inputs = restored.replay.len();
-                    restored_module = Some(wasm);
-                    program
-                }
-                Err(error) => {
-                    let message = format!("{error:#}");
-                    tracing::error!("world {world_id}: could not restore program: {message}");
-                    report.program_error = Some(message.clone());
-                    Box::new(UnavailableProgram(message))
-                }
+        Some(spec) => match restore_program(&modules, spec, &restored.replay).await {
+            Ok((program, wasm)) => {
+                report.replayed_inputs = restored.replay.len();
+                restored_module = Some(wasm);
+                program
             }
-        }
+            Err(error) => {
+                let message = format!("{error:#}");
+                tracing::error!("world {world_id}: could not restore program: {message}");
+                report.program_error = Some(message.clone());
+                Box::new(UnavailableProgram(message))
+            }
+        },
     };
     report.sequence = restored.core.current_sequence();
     let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
@@ -288,20 +356,25 @@ impl WorldProgram for EmptyProgram {}
 #[cfg(feature = "sandbox")]
 async fn restore_program(
     modules: &ModuleDir,
-    hash: &str,
-    seed: u64,
+    spec: &crate::world::RestoredProgram,
     replay: &[crate::world::WorldEvent],
 ) -> Result<(Box<dyn WorldProgram>, Vec<u8>)> {
     let modules = modules.clone();
-    let hash = hash.to_owned();
+    let spec = spec.clone();
     let replay = replay.to_vec();
     tokio::task::spawn_blocking(move || {
-        let wasm = modules.load(&hash)?;
+        let seed = spec.seed;
+        let wasm = modules.load(&spec.module_hash)?;
         let limits = crate::sandbox::SandboxLimits {
             module_bytes: crate::world_session::MAX_WORLD_MODULE_BYTES,
             ..crate::sandbox::SandboxLimits::default()
         };
         let mut program = crate::sandbox::Sandbox::compile(&wasm, limits)?.instantiate(seed)?;
+        if let Some(snapshot) = &spec.snapshot {
+            program
+                .restore(snapshot.as_bytes())
+                .context("restore program from checkpoint")?;
+        }
         for event in &replay {
             WorldProgram::update(&mut program, event)
                 .with_context(|| format!("replay input {}", event.sequence))?;
@@ -316,8 +389,7 @@ async fn restore_program(
 #[cfg(not(feature = "sandbox"))]
 async fn restore_program(
     _modules: &ModuleDir,
-    _hash: &str,
-    _seed: u64,
+    _spec: &crate::world::RestoredProgram,
     _replay: &[crate::world::WorldEvent],
 ) -> Result<(Box<dyn WorldProgram>, Vec<u8>)> {
     bail!("this build cannot run world modules (feature `sandbox`)")
@@ -493,6 +565,213 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(view(&svc, &ann).await, "count=4");
+    }
+
+    fn journal_entries(dir: &Path) -> Vec<JournalEntry> {
+        std::fs::read_to_string(dir.join("journal.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn the_journal_is_trimmed_behind_a_checkpoint_and_restart_resumes_from_it() {
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let dir = TempDir::new().unwrap();
+        let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let limits = WorldLimits {
+            checkpoint_every: 5,
+            ..WorldLimits::default()
+        };
+        let make = |blobs: iroh_blobs::api::Store| {
+            move |handle| WorldService::new(handle, Some("admin".to_owned())).with_blob_store(blobs)
+        };
+        let (svc, _) = open_world(dir.path(), "lobby", limits, make(blobs.clone()))
+            .await
+            .unwrap();
+        let hash = module_hash(&wasm);
+        svc.install_wasm(Some("admin"), wasm, 42, &hash)
+            .await
+            .unwrap();
+        let (_, ann) = svc.world().issue("ann", WorldScopes::GUEST).await.unwrap();
+        let (bob_participant, bob) = svc.world().issue("bob", WorldScopes::GUEST).await.unwrap();
+        for _ in 0..13 {
+            svc.world()
+                .input(ann.clone(), b"inc".to_vec())
+                .await
+                .unwrap();
+        }
+        svc.world().chat(ann.clone(), "hi").await.unwrap();
+        assert!(svc.world().revoke(bob_participant.id).await.unwrap());
+        assert_eq!(view(&svc, &ann).await, "count=13");
+        let sequence = svc
+            .world()
+            .snapshot(ann.clone())
+            .await
+            .unwrap()
+            .current_sequence;
+        svc.world().shutdown().await.unwrap();
+
+        // 13 inputs + install + chat, yet the journal is a handful of lines.
+        let entries = journal_entries(dir.path());
+        let checkpoints = entries
+            .iter()
+            .filter(|entry| matches!(entry, JournalEntry::Checkpoint { .. }))
+            .count();
+        let committed = entries
+            .iter()
+            .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+            .count();
+        assert_eq!(checkpoints, 1, "{entries:?}");
+        assert!(
+            committed < 5,
+            "history behind the checkpoint is gone: {entries:?}"
+        );
+        assert!(matches!(entries[0], JournalEntry::Created { .. }));
+        assert!(
+            !dir.path().join("journal.jsonl.tmp").exists(),
+            "no staging file is left behind"
+        );
+
+        let fresh: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let (svc, report) = open_world(dir.path(), "lobby", limits, make(fresh))
+            .await
+            .unwrap();
+        assert_eq!(report.program_error, None);
+        assert_eq!(report.sequence, sequence, "sequence continues");
+        assert!(
+            report.replayed_inputs < 5,
+            "replay starts at the checkpoint"
+        );
+        assert_eq!(
+            view(&svc, &ann).await,
+            "count=13",
+            "state from checkpoint + tail"
+        );
+        assert_eq!(
+            svc.active_module_hash().await.as_deref(),
+            Some(hash.as_str())
+        );
+        assert!(
+            svc.world().view(bob).await.is_err(),
+            "a revocation survives compaction"
+        );
+        svc.world()
+            .input(ann.clone(), b"inc".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(view(&svc, &ann).await, "count=14");
+        let page = svc
+            .world()
+            .events_after(ann.clone(), sequence)
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), 1, "catch-up works across the checkpoint");
+    }
+
+    #[tokio::test]
+    async fn a_program_that_cannot_snapshot_keeps_its_full_journal() {
+        struct Plain;
+        impl WorldProgram for Plain {
+            fn update(&mut self, _: &crate::world::WorldEvent) -> Result<()> {
+                Ok(())
+            }
+        }
+        let dir = TempDir::new().unwrap();
+        let limits = WorldLimits {
+            checkpoint_every: 2,
+            ..WorldLimits::default()
+        };
+        let (svc, _) = open_world(dir.path(), "lobby", limits, service(None))
+            .await
+            .unwrap();
+        svc.world()
+            .install_program("hash".to_owned(), 1, Box::new(Plain))
+            .await
+            .unwrap();
+        let (_, ann) = svc.world().issue("ann", WorldScopes::GUEST).await.unwrap();
+        for _ in 0..6 {
+            svc.world().input(ann.clone(), b"x".to_vec()).await.unwrap();
+        }
+        svc.world().shutdown().await.unwrap();
+        let entries = journal_entries(dir.path());
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::Checkpoint { .. })),
+            "nothing is trimmed without a verified snapshot"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+                .count(),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_snapshot_leaves_the_journal_and_the_world_untouched() {
+        struct Flaky;
+        impl WorldProgram for Flaky {
+            fn snapshot(&mut self) -> Result<Option<String>> {
+                bail!("snapshot does not round-trip")
+            }
+        }
+        let dir = TempDir::new().unwrap();
+        let limits = WorldLimits {
+            checkpoint_every: 2,
+            ..WorldLimits::default()
+        };
+        let (svc, _) = open_world(dir.path(), "lobby", limits, service(None))
+            .await
+            .unwrap();
+        svc.world()
+            .install_program("hash".to_owned(), 1, Box::new(Flaky))
+            .await
+            .unwrap();
+        let (_, ann) = svc.world().issue("ann", WorldScopes::GUEST).await.unwrap();
+        for _ in 0..5 {
+            svc.world()
+                .input(ann.clone(), b"x".to_vec())
+                .await
+                .expect("the world keeps accepting inputs");
+        }
+        svc.world().shutdown().await.unwrap();
+        assert!(
+            !journal_entries(dir.path())
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::Checkpoint { .. }))
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_after_events_is_refused_on_restore() {
+        let mut entries = vec![JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        }];
+        entries.push(JournalEntry::Committed {
+            event: crate::world::WorldEvent {
+                sequence: 1,
+                participant_id: 0,
+                kind: crate::world::WorldEventKind::ProgramInstalled {
+                    module_hash: "h".to_owned(),
+                    seed: 1,
+                },
+            },
+        });
+        entries.push(JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+        });
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(error.to_string().contains("checkpoint"), "{error:#}");
     }
 
     #[cfg(feature = "sandbox")]

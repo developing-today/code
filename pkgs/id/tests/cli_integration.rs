@@ -1430,6 +1430,110 @@ mod serve_tests {
     }
 
     #[test]
+    fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/tic-tac-toe/tic-tac-toe.wasm");
+        let module = module.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            module,
+            "--world-checkpoint-every",
+            "3",
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        // Join, play each hex-encoded cell, return the last view line.
+        let play = |node: &str, addr: &str, capability: &str, cells: &[&str]| {
+            let mut joined = world(addr, &["join", node, "--capability", capability])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = joined.stdin.take().unwrap();
+            let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+            let _snapshot = lines.next().unwrap().unwrap();
+            let mut view = lines.next().unwrap().unwrap();
+            for cell in cells {
+                stdin
+                    .write_all(format!("/input {cell}\n").as_bytes())
+                    .unwrap();
+                let _event = lines.next().unwrap().unwrap();
+                view = lines.next().unwrap().unwrap();
+            }
+            stdin.write_all(b"/quit\n").unwrap();
+            drop(stdin);
+            assert!(joined.wait().unwrap().success());
+            view
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        // X plays 0, O 3, X 1: three inputs after the install, so the world
+        // trims its journal behind a checkpoint along the way.
+        let view = play(&node, &addr, &capability, &["30", "33", "31"]);
+        assert!(
+            view.contains("plays=3") && view.contains("next=O"),
+            "{view}"
+        );
+        server.stop();
+
+        let journal =
+            fs::read_to_string(server_dir.path().join(".id-worlds/lobby/journal.jsonl")).unwrap();
+        assert!(journal.contains("\"entry\":\"checkpoint\""), "{journal}");
+        assert!(
+            journal.lines().count() < 6,
+            "history behind the checkpoint is gone:\n{journal}"
+        );
+        assert!(
+            !journal.contains(capability.split_once('.').unwrap().1),
+            "a checkpointed journal still holds digests, never secrets"
+        );
+
+        // After a restart the game resumes from the checkpoint and finishes.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let view = play(&node, &addr, &capability, &["34", "32"]);
+        assert!(
+            view.contains("plays=5") && view.contains("winner=X"),
+            "the restored game continues: {view}"
+        );
+        let records = world(&addr, &["records", &node, "--capability", &capability])
+            .output()
+            .unwrap();
+        let records = String::from_utf8(records.stdout).unwrap();
+        assert!(records.contains("\"board\": \"XXXOO----\""), "{records}");
+        server.stop();
+    }
+
+    #[test]
     fn test_named_worlds_use_their_own_directory() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

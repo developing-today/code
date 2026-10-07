@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,6 +32,9 @@ pub struct WorldLimits {
     /// recent events that fit; a client rebases its cursor on the snapshot,
     /// it does not need every retained event.
     pub snapshot_bytes: usize,
+    /// Trim the journal behind a program snapshot once this many events were
+    /// committed since the last one. `0` disables checkpointing.
+    pub checkpoint_every: u64,
 }
 
 impl Default for WorldLimits {
@@ -43,6 +46,7 @@ impl Default for WorldLimits {
             retained_events: 1024,
             presentation_bytes: 8192,
             snapshot_bytes: 512 * 1024,
+            checkpoint_every: 1000,
         }
     }
 }
@@ -173,6 +177,20 @@ pub enum JournalEntry {
         /// The event.
         event: WorldEvent,
     },
+    /// The world as of `sequence`, standing in for every event up to it. Only
+    /// ever written by compaction, directly after the participant entries.
+    Checkpoint {
+        /// Sequence of the last event the checkpoint covers.
+        sequence: u64,
+        /// Active program.
+        module_hash: String,
+        /// Seed the program was initialized with.
+        seed: u64,
+        /// The program's own serialization of its state.
+        snapshot: String,
+        /// Recent events kept for reconnect catch-up.
+        events: Vec<WorldEvent>,
+    },
 }
 
 /// Current [`JournalEntry::Created`] version.
@@ -190,6 +208,30 @@ pub trait WorldJournal: Send + 'static {
     ///
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
+
+    /// Atomically replace the whole journal with `entries` (a header, the
+    /// participants and a [`JournalEntry::Checkpoint`]). Either the old or
+    /// the new journal survives a crash, never a mixture.
+    ///
+    /// # Errors
+    ///
+    /// Journals that cannot compact (the default), or any I/O failure. After
+    /// an error the journal must still be a complete record of the world.
+    fn compact(&mut self, _entries: &[JournalEntry]) -> Result<()> {
+        bail!("this journal cannot be compacted")
+    }
+}
+
+/// The program a journal says was running, and where to resume it from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredProgram {
+    /// Content hash of the module.
+    pub module_hash: String,
+    /// Seed it was initialized with.
+    pub seed: u64,
+    /// State to restore before replaying, if the journal was compacted behind
+    /// a checkpoint; otherwise the program starts from `init(seed)`.
+    pub snapshot: Option<String>,
 }
 
 /// A world rebuilt from its journal, before its program is re-instantiated.
@@ -197,9 +239,10 @@ pub trait WorldJournal: Send + 'static {
 pub struct RestoredWorld {
     /// Participants, sequence and retained events as of the last entry.
     pub core: WorldCore,
-    /// `(module_hash, seed)` of the last installed program, if any.
-    pub program: Option<(String, u64)>,
-    /// Inputs committed after that install, in order, to replay through it.
+    /// The last installed program, if any.
+    pub program: Option<RestoredProgram>,
+    /// Inputs committed after the install or checkpoint, in order, to replay
+    /// through it.
     pub replay: Vec<WorldEvent>,
 }
 
@@ -281,6 +324,14 @@ pub trait WorldProgram: Send + 'static {
     fn records(&mut self) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// The program's state as text that [`crate::world_store`] can restore it
+    /// from, or `None` if it cannot snapshot (its journal then keeps growing).
+    /// An implementation must only return a snapshot it has verified restores
+    /// faithfully: the journal is trimmed behind it.
+    fn snapshot(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -323,6 +374,9 @@ pub struct WorldCore {
     next_participant_id: u64,
     sequence: u64,
     active_module_hash: Option<String>,
+    active_seed: u64,
+    /// Events committed since the journal last started from a checkpoint.
+    since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
     events: VecDeque<WorldEvent>,
 }
@@ -356,6 +410,8 @@ impl WorldCore {
             next_participant_id: 1,
             sequence: 0,
             active_module_hash: None,
+            active_seed: 0,
+            since_checkpoint: 0,
             capabilities: HashMap::new(),
             events: VecDeque::new(),
         })
@@ -445,13 +501,49 @@ impl WorldCore {
                     match &event.kind {
                         WorldEventKind::ProgramInstalled { module_hash, seed } => {
                             core.active_module_hash = Some(module_hash.clone());
-                            program = Some((module_hash.clone(), *seed));
+                            core.active_seed = *seed;
+                            program = Some(RestoredProgram {
+                                module_hash: module_hash.clone(),
+                                seed: *seed,
+                                snapshot: None,
+                            });
                             replay.clear();
                         }
                         WorldEventKind::Input(_) => replay.push(event.clone()),
                         WorldEventKind::Chat(_) => {}
                     }
                     core.commit_prepared(event)?;
+                }
+                JournalEntry::Checkpoint {
+                    sequence,
+                    module_hash,
+                    seed,
+                    snapshot,
+                    events,
+                } => {
+                    ensure!(
+                        core.sequence == 0 && program.is_none(),
+                        "journal checkpoint does not come first"
+                    );
+                    ensure!(
+                        events.last().is_none_or(|last| last.sequence == sequence)
+                            && events
+                                .windows(2)
+                                .all(|pair| pair[1].sequence == pair[0].sequence + 1),
+                        "journal checkpoint events are out of order"
+                    );
+                    core.sequence = sequence;
+                    core.events = events.into();
+                    while core.events.len() > core.limits.retained_events {
+                        core.events.pop_front();
+                    }
+                    core.active_module_hash = Some(module_hash.clone());
+                    core.active_seed = seed;
+                    program = Some(RestoredProgram {
+                        module_hash,
+                        seed,
+                        snapshot: Some(snapshot),
+                    });
                 }
             }
         }
@@ -460,6 +552,46 @@ impl WorldCore {
             program,
             replay,
         })
+    }
+
+    /// Whether enough events piled up behind the last checkpoint to trim.
+    fn checkpoint_due(&self) -> bool {
+        self.limits.checkpoint_every > 0
+            && self.active_module_hash.is_some()
+            && self.since_checkpoint >= self.limits.checkpoint_every
+    }
+
+    /// The journal that replaces the current one behind `snapshot`: a header,
+    /// every participant (and revocation), then the checkpoint itself.
+    fn checkpoint_entries(&self, snapshot: String) -> Result<Vec<JournalEntry>> {
+        let module_hash = self
+            .active_module_hash
+            .clone()
+            .context("no active program to checkpoint")?;
+        let mut ids: Vec<u64> = self.capabilities.keys().copied().collect();
+        ids.sort_unstable();
+        let mut entries = vec![JournalEntry::Created {
+            world_id: self.world_id.clone(),
+            version: JOURNAL_VERSION,
+        }];
+        for id in ids {
+            entries.extend(self.issued_entry(id));
+            if self
+                .capabilities
+                .get(&id)
+                .is_some_and(|record| record.revoked)
+            {
+                entries.push(JournalEntry::Revoked { participant_id: id });
+            }
+        }
+        entries.push(JournalEntry::Checkpoint {
+            sequence: self.sequence,
+            module_hash,
+            seed: self.active_seed,
+            snapshot,
+            events: self.events.iter().cloned().collect(),
+        });
+        Ok(entries)
     }
 
     /// Journal entry for an already-issued capability.
@@ -586,6 +718,7 @@ impl WorldCore {
             "prepared world event is stale"
         );
         self.sequence = event.sequence;
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
         self.events.push_back(event.clone());
         while self.events.len() > self.limits.retained_events {
             self.events.pop_front();
@@ -664,6 +797,7 @@ impl WorldCore {
             participant_id,
             kind,
         };
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
         self.events.push_back(event.clone());
         while self.events.len() > self.limits.retained_events {
             self.events.pop_front();
@@ -769,6 +903,49 @@ enum WorldCommand {
     },
 }
 
+/// Trim `journal` behind a verified snapshot of `program`. `Ok(false)` means
+/// the program cannot snapshot.
+fn compact_journal(
+    core: &mut WorldCore,
+    program: &mut dyn WorldProgram,
+    journal: &mut dyn WorldJournal,
+) -> Result<bool> {
+    let Some(snapshot) = program.snapshot()? else {
+        return Ok(false);
+    };
+    let entries = core.checkpoint_entries(snapshot)?;
+    journal.compact(&entries)?;
+    core.since_checkpoint = 0;
+    tracing::info!(
+        "world {}: journal trimmed at sequence {}",
+        core.world_id,
+        core.sequence
+    );
+    Ok(true)
+}
+
+/// Durably record `entry`, or turn the world read-only.
+// Call sites build the entry inline; taking it by value keeps them terse.
+#[allow(clippy::needless_pass_by_value)]
+fn persist(
+    journal: &mut Option<Box<dyn WorldJournal>>,
+    entry: JournalEntry,
+    storage_failed: &mut bool,
+) -> Result<()> {
+    ensure!(
+        !*storage_failed,
+        "world storage failed; the world is read-only"
+    );
+    if let Some(journal) = journal.as_mut()
+        && let Err(error) = journal.append(&entry)
+    {
+        *storage_failed = true;
+        tracing::error!("world journal append failed: {error:#}");
+        return Err(error.context("world storage failed; the world is read-only"));
+    }
+    Ok(())
+}
+
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
     pub fn spawn(core: WorldCore) -> Self {
@@ -811,21 +988,9 @@ impl WorldHandle {
         tokio::spawn(async move {
             let mut journal = journal;
             let mut storage_failed = false;
-            // Durably record `entry`, or turn the world read-only.
-            let mut persist = |entry: JournalEntry, storage_failed: &mut bool| -> Result<()> {
-                ensure!(
-                    !*storage_failed,
-                    "world storage failed; the world is read-only"
-                );
-                if let Some(journal) = journal.as_mut()
-                    && let Err(error) = journal.append(&entry)
-                {
-                    *storage_failed = true;
-                    tracing::error!("world journal append failed: {error:#}");
-                    return Err(error.context("world storage failed; the world is read-only"));
-                }
-                Ok(())
-            };
+            // Compaction is attempted once per run of commits, and not again
+            // while the program cannot snapshot (reset by a program install).
+            let mut compaction_off = false;
             while let Some(command) = receiver.recv().await {
                 match command {
                     WorldCommand::Issue {
@@ -842,7 +1007,7 @@ impl WorldHandle {
                                 let entry = core
                                     .issued_entry(issued.0.id)
                                     .context("issued capability vanished")?;
-                                persist(entry, &mut storage_failed)?;
+                                persist(&mut journal, entry, &mut storage_failed)?;
                                 Ok(issued)
                             })
                         };
@@ -857,6 +1022,7 @@ impl WorldHandle {
                         let was_active = core.revoke(participant_id);
                         if was_active {
                             let _ = persist(
+                                &mut journal,
                                 JournalEntry::Revoked { participant_id },
                                 &mut storage_failed,
                             );
@@ -875,6 +1041,7 @@ impl WorldHandle {
                         } else {
                             core.chat(&token, &text).and_then(|event| {
                                 persist(
+                                    &mut journal,
                                     JournalEntry::Committed {
                                         event: event.clone(),
                                     },
@@ -902,6 +1069,7 @@ impl WorldHandle {
                                 .and_then(|()| program_records(program.as_mut()))
                             {
                                 Ok(records) => persist(
+                                    &mut journal,
                                     JournalEntry::Committed {
                                         event: candidate.clone(),
                                     },
@@ -986,12 +1154,14 @@ impl WorldHandle {
                         };
                         // Actor serialization makes activation and its event
                         // atomic with respect to other world commands.
+                        let seed_for_install = seed;
                         let candidate = WorldEvent {
                             sequence: core.sequence.saturating_add(1),
                             participant_id: 0,
                             kind: WorldEventKind::ProgramInstalled { module_hash, seed },
                         };
                         let result = persist(
+                            &mut journal,
                             JournalEntry::Committed {
                                 event: candidate.clone(),
                             },
@@ -1005,8 +1175,10 @@ impl WorldHandle {
                                 {
                                     core.active_module_hash = Some(module_hash.clone());
                                 }
+                                core.active_seed = seed_for_install;
                                 program = replacement;
                                 program_healthy = true;
+                                compaction_off = false;
                                 publish_records(&records_sender, event.sequence, new_records);
                                 let _ = event_sender.send(event.clone());
                                 Ok(event)
@@ -1018,6 +1190,23 @@ impl WorldHandle {
                     WorldCommand::Shutdown { reply } => {
                         let _ = reply.send(());
                         break;
+                    }
+                }
+                if !compaction_off
+                    && !storage_failed
+                    && program_healthy
+                    && core.checkpoint_due()
+                    && let Some(journal) = journal.as_mut()
+                {
+                    match compact_journal(&mut core, program.as_mut(), journal.as_mut()) {
+                        Ok(true) => {}
+                        Ok(false) => compaction_off = true,
+                        Err(error) => {
+                            // The journal is still complete; just do not
+                            // retry until something changes.
+                            tracing::warn!("world checkpoint skipped: {error:#}");
+                            compaction_off = true;
+                        }
                     }
                 }
             }

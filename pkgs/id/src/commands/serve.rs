@@ -293,6 +293,9 @@ pub struct ServeOptions {
     /// Name of the world this server offers; its files live under
     /// `.id-worlds/<name>/`.
     pub world_name: String,
+    /// Trim the journal behind a program snapshot every this many events
+    /// (`0` never trims).
+    pub world_checkpoint_every: u64,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -313,7 +316,10 @@ fn validate_world_options(
         world_module.is_none() || world,
         "--world-module requires --world"
     );
+    #[cfg(feature = "world")]
     validate_world_name(world_name)?;
+    #[cfg(not(feature = "world"))]
+    let _ = world_name;
     Ok(())
 }
 
@@ -387,11 +393,15 @@ async fn open_lobby(
     blobs: iroh_blobs::api::Store,
     docs: Docs,
     module: Option<&std::path::Path>,
+    checkpoint_every: u64,
 ) -> Result<crate::world_session::WorldService> {
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
 
-    let limits = WorldLimits::default();
+    let limits = WorldLimits {
+        checkpoint_every,
+        ..WorldLimits::default()
+    };
     let make = {
         let admin_token = admin_token.clone();
         let blobs = blobs.clone();
@@ -513,6 +523,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_admin_token,
         world_module,
         world_name,
+        world_checkpoint_every,
         allow_node,
         open_writes,
     } = opts;
@@ -605,6 +616,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             store_handle.clone(),
             docs.clone(),
             world_module.as_deref(),
+            world_checkpoint_every,
         )
         .await?;
         world_handle_to_shutdown = Some(service.world().clone());

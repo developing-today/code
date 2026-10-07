@@ -98,6 +98,24 @@ export fn plaza_records(model: usize) usize {
     return @intFromPtr(last_out.asSlice().ptr);
 }
 
+/// A serialization of the model the host can journal. Shares the
+/// `plaza_out_len` output slot with view and records.
+export fn plaza_snapshot(model: usize) usize {
+    ensure();
+    last_out.decref(&roc_host);
+    abi.increfBox(@ptrFromInt(model), 1);
+    last_out = abi.roc_snapshot(@ptrFromInt(model));
+    return @intFromPtr(last_out.asSlice().ptr);
+}
+
+/// Rebuild a model from a snapshot string produced by `plaza_snapshot`.
+export fn plaza_restore(ptr: usize, len: usize) usize {
+    ensure();
+    const p: [*]const u8 = @ptrFromInt(ptr);
+    const s = abi.RocStr.fromSlice(p[0..len], &roc_host);
+    return @intFromPtr(abi.roc_restore(s));
+}
+
 export fn plaza_out_len() usize {
     return last_out.asSlice().len;
 }

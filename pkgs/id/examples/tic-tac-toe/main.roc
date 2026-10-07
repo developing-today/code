@@ -14,7 +14,7 @@ Model : {
     winner : Str,
 }
 
-program = { init, update, view, records }
+program = { init, update, view, records, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { board: "---------", plays: 0, winner: "" }
@@ -52,6 +52,22 @@ view = |model, _viewer| {
 
 records : Model -> Str
 records = |model| "{\"board\":\"${model.board}\",\"plays\":${model.plays.to_str()},\"winner\":\"${model.winner}\"}"
+
+## The board is the whole state: the ply count is the number of marks on it
+## and the winner follows from its lines, so nothing else is stored.
+snapshot : Model -> Str
+snapshot = |model| model.board
+
+restore : Str -> Model
+restore = |board| {
+    cells = Str.to_utf8(board)
+    if List.len(cells) != 9 {
+        { board: "---------", plays: 0, winner: "" }
+    } else {
+        marks = List.keep_if(cells, |cell| cell != empty_cell)
+        { board: board, plays: List.len(marks), winner: winner_of(cells) }
+    }
+}
 
 # --- helpers ---------------------------------------------------------------
 

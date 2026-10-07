@@ -95,6 +95,8 @@ impl Sandbox {
                         | "plaza_free"
                         | "plaza_view"
                         | "plaza_records"
+                        | "plaza_snapshot"
+                        | "plaza_restore"
                         | "plaza_out_len"
                         | "plaza_error_ptr"
                         | "plaza_error_len"
@@ -118,6 +120,11 @@ impl Sandbox {
                 "guest module is missing required export `{required}`"
             );
         }
+        // Checkpointing needs both halves of the pair.
+        ensure!(
+            exports.contains("plaza_snapshot") == exports.contains("plaza_restore"),
+            "guest must export both `plaza_snapshot` and `plaza_restore`, or neither"
+        );
         Ok(Self {
             engine,
             module,
@@ -181,6 +188,22 @@ impl Sandbox {
         } else {
             None
         };
+        // Optional pair: serialize the model, and rebuild it from that text.
+        let (snapshot, restore) = if instance.get_func(&mut store, "plaza_snapshot").is_some() {
+            let snapshot = instance
+                .get_typed_func::<i32, i32>(&mut store, "plaza_snapshot")
+                .map_err(|e| {
+                    anyhow::anyhow!("guest `plaza_snapshot` must be `(i32) -> i32`: {e}")
+                })?;
+            let restore = instance
+                .get_typed_func::<(i32, i32), i32>(&mut store, "plaza_restore")
+                .map_err(|e| {
+                    anyhow::anyhow!("guest `plaza_restore` must be `(i32, i32) -> i32`: {e}")
+                })?;
+            (Some(snapshot), Some(restore))
+        } else {
+            (None, None)
+        };
         let error_ptr = if instance.get_func(&mut store, "plaza_error_ptr").is_some() {
             Some(
                 instance
@@ -208,6 +231,8 @@ impl Sandbox {
             anyhow::anyhow!("guest `plaza_init` failed (trap or fuel exhausted): {e}")
         })?;
         Ok(WorldInstance {
+            runner: self.clone(),
+            seed,
             limits: self.limits,
             store,
             memory,
@@ -216,6 +241,8 @@ impl Sandbox {
             update,
             view,
             records,
+            snapshot,
+            restore,
             out_len,
             error_ptr,
             error_len,
@@ -227,6 +254,9 @@ impl Sandbox {
 
 /// Persistent guest state for a single authoritative world.
 pub struct WorldInstance {
+    /// The compiled module, so a snapshot can be proven on a probe instance.
+    runner: Sandbox,
+    seed: u64,
     limits: SandboxLimits,
     store: Store<StoreLimits>,
     memory: Memory,
@@ -235,6 +265,8 @@ pub struct WorldInstance {
     update: TypedFunc<(i32, i32, i32, i32), i32>,
     view: TypedFunc<(i32, i32, i32), i32>,
     records: Option<TypedFunc<i32, i32>>,
+    snapshot: Option<TypedFunc<i32, i32>>,
+    restore: Option<TypedFunc<(i32, i32), i32>>,
     out_len: TypedFunc<(), i32>,
     error_ptr: Option<TypedFunc<(), i32>>,
     error_len: Option<TypedFunc<(), i32>>,
@@ -363,6 +395,81 @@ impl WorldInstance {
         self.read_output(output_ptr)
     }
 
+    /// The guest's serialized model, or `None` if it exports no
+    /// snapshot/restore pair.
+    pub fn snapshot(&mut self) -> Result<Option<Vec<u8>>> {
+        ensure!(
+            !self.poisoned,
+            "world guest is poisoned after a previous failure"
+        );
+        let Some(snapshot) = self.snapshot.clone() else {
+            return Ok(None);
+        };
+        let result = self.snapshot_inner(&snapshot);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result.map(Some)
+    }
+
+    fn snapshot_inner(&mut self, snapshot: &TypedFunc<i32, i32>) -> Result<Vec<u8>> {
+        self.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
+        let output_ptr = snapshot.call(&mut self.store, self.model).map_err(|e| {
+            anyhow::anyhow!(
+                "guest `plaza_snapshot` failed (trap or fuel exhausted): {e}{}",
+                self.guest_error_suffix()
+            )
+        })?;
+        self.read_output(output_ptr)
+    }
+
+    /// Replace the model with one rebuilt from `snapshot`.
+    ///
+    /// Intended for a freshly instantiated guest; the model it replaces is
+    /// simply abandoned inside the guest's memory.
+    pub fn restore(&mut self, snapshot: &[u8]) -> Result<()> {
+        ensure!(
+            !self.poisoned,
+            "world guest is poisoned after a previous failure"
+        );
+        let Some(restore) = self.restore.clone() else {
+            anyhow::bail!("guest exports no `plaza_restore`");
+        };
+        self.check_message_size(snapshot)?;
+        let result = self.restore_inner(&restore, snapshot);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn restore_inner(
+        &mut self,
+        restore: &TypedFunc<(i32, i32), i32>,
+        snapshot: &[u8],
+    ) -> Result<()> {
+        self.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
+        let GuestBuffer {
+            ptr,
+            len,
+            allocation_len,
+        } = self.copy_input(snapshot)?;
+        let model = restore.call(&mut self.store, (ptr, len)).map_err(|e| {
+            anyhow::anyhow!(
+                "guest `plaza_restore` failed (trap or fuel exhausted): {e}{}",
+                self.guest_error_suffix()
+            )
+        })?;
+        self.free_input(ptr, allocation_len)
+            .map_err(|e| anyhow::anyhow!("free guest snapshot buffer: {e}"))?;
+        self.model = model;
+        Ok(())
+    }
+
     /// Copy the guest's current output buffer (`plaza_out_len` bytes at
     /// `output_ptr`) out of linear memory, bounds-checked.
     fn read_output(&mut self, output_ptr: i32) -> Result<Vec<u8>> {
@@ -472,6 +579,14 @@ impl WorldInstance {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+impl WorldInstance {
+    fn snapshot_via_trait(&mut self) -> Option<String> {
+        crate::world::WorldProgram::snapshot(self).unwrap()
+    }
+}
+
 impl crate::world::WorldProgram for WorldInstance {
     fn update(&mut self, event: &crate::world::WorldEvent) -> Result<()> {
         match &event.kind {
@@ -496,6 +611,31 @@ impl crate::world::WorldProgram for WorldInstance {
         WorldInstance::records(self)?
             .map(|bytes| String::from_utf8(bytes).context("Roc world records must be valid UTF-8"))
             .transpose()
+    }
+
+    /// Serialize the model, but only hand it out after proving it round-trips
+    /// on a probe instance: restoring it must reproduce the same snapshot and
+    /// the same records. A journal trimmed on an unfaithful snapshot would
+    /// silently change the world's state on restart.
+    fn snapshot(&mut self) -> Result<Option<String>> {
+        let Some(bytes) = WorldInstance::snapshot(self)? else {
+            return Ok(None);
+        };
+        let live_records = WorldInstance::records(self)?;
+        let mut probe = self.runner.instantiate(self.seed)?;
+        probe.restore(&bytes).context("verify snapshot: restore")?;
+        let again = probe
+            .snapshot()
+            .context("verify snapshot: re-snapshot")?
+            .context("verify snapshot: probe lost its snapshot export")?;
+        ensure!(again == bytes, "snapshot is not stable under restore");
+        ensure!(
+            probe.records().context("verify snapshot: records")? == live_records,
+            "restored guest publishes different records"
+        );
+        String::from_utf8(bytes)
+            .map(Some)
+            .context("Roc world snapshot must be valid UTF-8")
     }
 }
 
@@ -643,6 +783,77 @@ mod tests {
             records(&mut world),
             r#"{"board":"X--------","plays":1,"winner":""}"#
         );
+    }
+
+    #[test]
+    fn checked_in_apps_snapshot_and_restore_faithfully() {
+        // Counter: the model is its count.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        for _ in 0..3 {
+            live.update(1, b"inc").unwrap();
+        }
+        assert_eq!(live.snapshot().unwrap().unwrap(), b"3");
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(b"3").unwrap();
+        assert_eq!(restored.view(b"").unwrap(), b"count=3");
+        restored.update(1, b"inc").unwrap();
+        assert_eq!(restored.view(b"").unwrap(), b"count=4");
+        // The trait-level snapshot is the verified one the actor journals.
+        assert_eq!(live.snapshot_via_trait(), Some("3".to_owned()));
+        // Garbage restores to a defined state instead of trapping.
+        let mut garbage = runner.instantiate(7).unwrap();
+        garbage.restore(b"not a number").unwrap();
+        assert_eq!(garbage.view(b"").unwrap(), b"count=0");
+
+        // Tic-tac-toe: the board alone carries the ply count and the winner.
+        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
+            live.update(participant, cell.as_bytes()).unwrap();
+        }
+        assert_eq!(live.snapshot().unwrap().unwrap(), b"XXXOO----");
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(b"XXXOO----").unwrap();
+        assert_eq!(restored.records().unwrap(), live.records().unwrap());
+        restored.update(2, b"5").unwrap();
+        assert_eq!(
+            restored.records().unwrap().unwrap(),
+            br#"{"board":"XXXOO----","plays":5,"winner":"X"}"#,
+            "the restored game is still won"
+        );
+        assert_eq!(live.snapshot_via_trait(), Some("XXXOO----".to_owned()));
+        let mut bad = runner.instantiate(7).unwrap();
+        bad.restore(b"short").unwrap();
+        assert_eq!(
+            bad.records().unwrap().unwrap(),
+            br#"{"board":"---------","plays":0,"winner":""}"#
+        );
+    }
+
+    #[test]
+    fn modules_without_snapshot_exports_do_not_snapshot() {
+        let mut world = compile(ECHO, SandboxLimits::default())
+            .unwrap()
+            .instantiate(0)
+            .unwrap();
+        assert_eq!(world.snapshot().unwrap(), None);
+        assert_eq!(world.snapshot_via_trait(), None);
+        assert!(world.restore(b"x").is_err());
+    }
+
+    #[test]
+    fn a_snapshot_export_without_restore_is_refused() {
+        let half = format!(
+            "{} (func (export \"plaza_snapshot\") (param i32) (result i32) (i32.const 0)))",
+            ECHO.trim_end().strip_suffix(')').unwrap()
+        );
+        let error = compile(&half, SandboxLimits::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("plaza_restore"), "{error}");
     }
 
     #[test]

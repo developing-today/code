@@ -166,6 +166,7 @@ async fn main() -> Result<()> {
             world_admin_token,
             world_module,
             world_name,
+            world_checkpoint_every,
             allow_node,
             open_writes,
         }) => {
@@ -189,6 +190,7 @@ async fn main() -> Result<()> {
                 world_admin_token,
                 world_module,
                 world_name,
+                world_checkpoint_every,
                 allow_node,
                 open_writes,
             })

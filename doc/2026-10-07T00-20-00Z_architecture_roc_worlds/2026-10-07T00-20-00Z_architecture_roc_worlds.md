@@ -595,8 +595,6 @@ Not offered yet:
   every session frame plus a registry — is not implemented.
 - **A native Roc tier.** Only effect-free programs compile into the sandbox;
   nothing runs in-process.
-- **Journal compaction.** Replay re-runs every input; it needs a guest
-  snapshot/restore contract (an optional export) before logs can be trimmed.
 - **Replicating in the browser.** The `/world` page reads records through the
   session; iroh-docs replication is the CLI's job.
 - **Versioned module upgrades.** Upgrades are admin installs by hash; there is
@@ -620,3 +618,45 @@ path: a persistent server started with `--world-name tt` reports
 `"world_id":"tt"` to a joining client and writes only `.id-worlds/tt/`,
 leaving `.id-worlds/lobby` absent; `--world-name ../evil` is refused before
 startup.
+
+---
+
+## 2026-10-07T12-00-00Z Implementation: journal checkpoints
+
+Replay-from-genesis made restart time grow with a world's whole history. The
+guest ABI now has an optional `plaza_snapshot(model) -> Str` /
+`plaza_restore(Str) -> model` pair (the Roc platform requires `snapshot` and
+`restore`; both example apps implement them). Both exports are optional in the
+sandbox but must come as a pair.
+
+- **Trigger.** After every `checkpoint_every` committed events (default 1000,
+  `serve --world-checkpoint-every N`, `0` disables) and only for a healthy
+  program on a durable world. Chat counts, since it also fills the journal.
+- **Verified snapshots.** `WorldInstance::snapshot` does not hand the text out
+  until a probe instance restored from it re-snapshots to byte-identical text
+  and publishes identical records. An unfaithful snapshot is a silent state
+  change on restart, so on any mismatch, trap or missing export the journal is
+  simply left alone (and not retried until a new program is installed).
+- **Atomic trim.** `FileJournal::compact` writes the replacement journal
+  (header, every participant and revocation, one `checkpoint` entry carrying
+  sequence, module hash, seed, snapshot and the retained recent events) to a
+  sibling file, fsyncs it, renames over `journal.jsonl` and fsyncs the
+  directory. A crash leaves the old or the new journal, never a mixture. If the
+  directory sync fails the journal marks itself broken and refuses appends:
+  otherwise a crash could resurrect the old file and drop acknowledged events.
+- **Restore.** `WorldCore::restore` accepts a checkpoint only directly after
+  the participant entries; the program is instantiated with its seed, restored
+  from the snapshot, then the inputs after the checkpoint are replayed. The
+  event sequence and the catch-up window continue across the checkpoint,
+  capability digests (never secrets) and revocations survive it.
+- **Found while testing.** `WorldCore::commit` (chat) did not share
+  `commit_prepared`'s bookkeeping, so live chat was not counted toward the
+  checkpoint threshold while restored chat was; both paths count now.
+
+Verified: snapshot round-trips for both example apps (garbage text restores to
+a defined state); a real counter world trimmed at 5/10/15 events restarts with
+no inputs to replay, the same sequence, working capabilities, a surviving
+revocation and a working catch-up; programs that cannot snapshot or whose
+snapshot fails keep their full journal and keep accepting input; a checkpoint
+after events is refused; and a process test plays tic-tac-toe across a trimmed
+journal and a `serve` restart.
