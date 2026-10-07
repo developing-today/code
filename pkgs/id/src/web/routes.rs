@@ -255,8 +255,7 @@ pub fn create_router(state: AppState) -> Router {
         // Optional authoritative in-memory world session bridge
         .merge(
             super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
-                world: state.world.clone(),
-                admin_token: state.world_admin_token.clone(),
+                service: state.world.clone(),
             }),
         )
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))

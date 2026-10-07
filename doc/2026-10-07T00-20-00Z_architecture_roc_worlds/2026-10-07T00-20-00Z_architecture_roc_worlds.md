@@ -253,3 +253,60 @@ Known limit: revocation is enforced when the next world event is delivered to
 that socket (each delivery re-validates the capability), not instantly. An idle
 revoked socket stays open until the next event or until it closes. Pushing a
 close on revoke would need a revoke notification channel from the actor.
+
+## 2026-10-07T03:00:00Z Decision: execution tiers and the p2p world protocol
+
+### Where Wasm is used (and where it is not)
+
+Roc has no ambient authority: a Roc program can only do what its platform's
+effects allow. A platform whose entire host surface is the byte-oriented
+`init/update/view` ABI therefore cannot reach the filesystem, network, or
+processes, and native Roc is a legitimate server-side tier **if that platform
+stays minimal**. What native Roc does not give us is resource bounding. A Roc
+program can still loop forever, allocate without limit, or overflow the stack,
+and its memory safety rests on the Roc compiler and runtime being correct.
+Wasmtime gives fuel, memory caps, and a second isolation layer for free.
+
+So the rule is **provenance decides the tier, not the language**:
+
+| Tier | What runs | Who may supply it | Bounds |
+| ---- | --------- | ----------------- | ------ |
+| N: native Roc | Roc compiled with the `id` world platform (Rust host), no effects beyond the program ABI | The operator only, built from source on the host | Authority: none by construction. CPU/memory: not bounded in-process, so run in a dedicated worker with rlimits and a watchdog (not yet built) |
+| W: Wasm in Wasmtime | The same program compiled to wasm32, import-free | Anyone: uploaded, or fetched from a peer by blob hash | Fuel per call, memory cap, size limits, poisoned on trap (implemented in `sandbox.rs`) |
+| B: Wasm in the browser | The same wasm module, for view/prediction only | The host serves the module the world pins | Browser sandbox; never authoritative, server state wins |
+
+All three tiers implement one `WorldProgram` seam (`update(participant, bytes)`
+and `view(viewer) -> bytes`), so a world does not know which tier runs it.
+An operator can pin trusted module hashes for tier N; an unpinned module is
+always tier W. Peer-supplied code is never promoted to tier N.
+
+### P2P transport: `/id-world/1`
+
+Worlds are reachable over Iroh as well as the WebSocket bridge. The WebSocket
+and Iroh transports drive the **same** session logic (`world_session.rs`)
+through a small `SessionIo` trait, so protocol behavior cannot diverge.
+
+- ALPN `/id-world/1`, registered on the `serve` router when `--world` is set.
+  `--world` no longer requires `--web`; web is only needed for `/ws/world`.
+- One bidirectional QUIC stream is one session. A connection may carry a few
+  sessions (bounded). Frames are a big-endian `u32` length followed by one
+  UTF-8 JSON object, at most 16 KiB. The JSON is exactly the WebSocket
+  protocol, so presentation adapters are transport-agnostic.
+- The first frame is `join {capability, after?}` or `invite {admin_token,
+  display_name}`; anything else is an error and the stream ends. A peer that
+  sends no first frame within 10 s is dropped.
+- Iroh authenticates the **node**, not the participant. The remote node ID is
+  logged but never grants world authority; the capability does. This matches
+  the earlier rule that node identity must not silently act as authorization.
+- Within `/id-world/1`, new frame fields and variants may be added; removing
+  or changing one needs `/id-world/2`.
+
+Clients: `id world invite <NODE> --admin-token T --name N` and
+`id world join <NODE> --capability C [--after SEQ]` (stdin lines are chat;
+`/input <hex>` sends opaque input; server frames print as JSON lines).
+
+### Not yet done (explicit)
+
+- `WorldProgram` wiring into the actor, then the Roc wasm demo. The checked-in
+  Roc module still traps on its first `view`; that must be diagnosed first.
+- Tier N worker process, module distribution by blob hash, persistence.

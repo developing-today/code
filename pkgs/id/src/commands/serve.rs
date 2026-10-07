@@ -292,8 +292,7 @@ pub struct ServeOptions {
     pub open_writes: bool,
 }
 
-fn validate_world_options(web: bool, world: bool, admin_token: Option<&str>) -> Result<()> {
-    ensure!(!world || web, "--world requires --web");
+fn validate_world_options(world: bool, admin_token: Option<&str>) -> Result<()> {
     ensure!(
         !world || admin_token.is_some_and(|token| !token.is_empty()),
         "--world requires --world-admin-token (or ID_WORLD_ADMIN_TOKEN)"
@@ -393,7 +392,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
-    validate_world_options(web, world, world_admin_token.as_deref())?;
+    validate_world_options(world, world_admin_token.as_deref())?;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -465,12 +464,34 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Some(crate::access::blobs_events(access.clone())),
     );
 
-    let router = Router::builder(endpoint)
+    // One authoritative lobby, shared by the Iroh protocol and the web bridge.
+    #[cfg(feature = "world")]
+    let world_service = if world {
+        let lobby = crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())?;
+        Some(crate::world_session::WorldService::new(
+            crate::world::WorldHandle::spawn(lobby),
+            world_admin_token.clone(),
+        ))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "world"))]
+    ensure!(!world, "this build has no world support (feature `world`)");
+
+    let router_builder = Router::builder(endpoint)
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-        .accept(iroh_docs::net::ALPN, docs.clone())
-        .spawn();
+        .accept(iroh_docs::net::ALPN, docs.clone());
+    #[cfg(feature = "world")]
+    let router_builder = match &world_service {
+        Some(service) => router_builder.accept(
+            crate::world_net::WORLD_ALPN,
+            crate::world_net::WorldProtocol::new(service.clone()),
+        ),
+        None => router_builder,
+    };
+    let router = router_builder.spawn();
 
     if !no_gossip {
         // Resolve effective config from defaults + CLI flags
@@ -597,9 +618,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             access.writers().len()
         );
     }
-    #[cfg(feature = "web")]
+    #[cfg(feature = "world")]
     if world {
-        status!("world: lobby enabled (/ws/world)");
+        status!(
+            "world: lobby enabled (iroh {})",
+            String::from_utf8_lossy(crate::world_net::WORLD_ALPN)
+        );
+        #[cfg(feature = "web")]
+        if web {
+            status!("world: web bridge at /ws/world");
+        }
     }
 
     // Start web server now that the lock file is written
@@ -614,16 +642,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             key.to_bytes(),
             identity_db_path,
             crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-            #[cfg(feature = "web")]
-            if world {
-                let lobby =
-                    crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())?;
-                Some(crate::world::WorldHandle::spawn(lobby))
-            } else {
-                None
-            },
-            #[cfg(feature = "web")]
-            world_admin_token.clone(),
+            world_service.clone(),
         )
         .await?;
         let actual_port = web_port.unwrap_or(port);
@@ -825,14 +844,12 @@ async fn run_gossip_loop(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "web")]
     #[test]
-    fn world_mode_requires_web_and_admin_token() {
-        assert!(validate_world_options(false, true, Some("admin")).is_err());
-        assert!(validate_world_options(true, true, None).is_err());
-        assert!(validate_world_options(true, true, Some("")).is_err());
-        assert!(validate_world_options(true, true, Some("admin")).is_ok());
-        assert!(validate_world_options(false, false, None).is_ok());
+    fn world_mode_requires_an_admin_token_but_not_web() {
+        assert!(validate_world_options(true, None).is_err());
+        assert!(validate_world_options(true, Some("")).is_err());
+        assert!(validate_world_options(true, Some("admin")).is_ok());
+        assert!(validate_world_options(false, None).is_ok());
     }
 
     #[test]

@@ -169,6 +169,10 @@ pub mod tags;
 pub mod tuple;
 #[cfg(feature = "world")]
 pub mod world;
+#[cfg(feature = "world")]
+pub mod world_net;
+#[cfg(feature = "world")]
+pub mod world_session;
 
 #[cfg(feature = "web")]
 pub mod web;

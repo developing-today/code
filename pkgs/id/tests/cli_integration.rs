@@ -1160,6 +1160,94 @@ mod serve_tests {
         }
     }
 
+    /// First IPv4 socket address recorded in a serve lock file.
+    fn lock_ipv4_addr(lock: &std::path::Path) -> String {
+        let info: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(lock).unwrap()).unwrap();
+        info["addrs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a.as_str())
+            .find(|a| a.parse::<std::net::SocketAddr>().is_ok_and(|a| a.is_ipv4()))
+            .expect("serve lock lists an IPv4 address")
+            .to_owned()
+    }
+
+    #[test]
+    fn test_world_invite_and_join_over_iroh_without_web() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &["--world", "--world-admin-token", "adm"],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+
+        // A wrong admin secret is refused with the host's reason.
+        let denied = world(&["invite", &node, "--admin-token", "nope", "--name", "eve"])
+            .output()
+            .unwrap();
+        assert!(!denied.status.success());
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("invite denied"));
+        assert!(
+            denied.stdout.is_empty(),
+            "nothing may be printed on refusal"
+        );
+
+        // The right one prints only the capability.
+        let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
+            .output()
+            .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
+
+        // Joining with it yields a snapshot, then our chat comes back as an event.
+        let mut joined = world(&["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"type\":\"snapshot\""), "{first}");
+        std::io::Write::write_all(&mut stdin, b"hello from the cli\n").unwrap();
+        let echoed = lines.next().expect("event line").unwrap();
+        assert!(echoed.contains("\"type\":\"event\""), "{echoed}");
+        assert!(echoed.contains("hello from the cli"), "{echoed}");
+        std::io::Write::write_all(&mut stdin, b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // A forged capability is told "join denied".
+        let forged = world(&["join", &node, "--capability", &"0".repeat(64)])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&forged.stdout).contains("join denied"));
+
+        server.stop();
+    }
+
     #[test]
     fn test_serve_help() {
         let tmp = TempDir::new().unwrap();

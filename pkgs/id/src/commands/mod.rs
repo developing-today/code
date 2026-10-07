@@ -65,6 +65,8 @@ pub mod put;
 pub mod repl;
 pub mod serve;
 pub mod tag;
+#[cfg(feature = "world")]
+pub mod world;
 
 pub use client::create_local_client_endpoint;
 pub use find::{
@@ -84,3 +86,5 @@ pub use serve::{
     is_process_alive, remove_serve_lock,
 };
 pub use tag::{cmd_migrate_tags, cmd_tag};
+#[cfg(feature = "world")]
+pub use world::cmd_world;

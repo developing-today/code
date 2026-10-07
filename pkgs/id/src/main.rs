@@ -226,6 +226,10 @@ async fn main() -> Result<()> {
         }
         Some(Command::List { node, no_relay }) => cmd_list(node, no_relay).await,
         Some(Command::Tag(tag_cmd)) => cmd_tag(tag_cmd).await,
+        #[cfg(feature = "world")]
+        Some(Command::World(world_cmd)) => id::commands::cmd_world(world_cmd).await,
+        #[cfg(not(feature = "world"))]
+        Some(Command::World(_)) => anyhow::bail!("this build has no world support"),
         Some(Command::MigrateTags) => cmd_migrate_tags().await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {

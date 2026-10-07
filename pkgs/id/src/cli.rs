@@ -317,8 +317,8 @@ pub enum Command {
         /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
         #[arg(long, env = "ID_WEB_TOKEN")]
         web_token: Option<String>,
-        /// Start the in-memory multiplayer lobby on the web server (requires `--web`).
-        #[arg(long, requires_all = ["web", "world_admin_token"])]
+        /// Host an in-memory multiplayer lobby over Iroh (and `/ws/world` with `--web`).
+        #[arg(long, requires = "world_admin_token")]
         world: bool,
         /// Admin secret required to mint world guest capabilities.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN")]
@@ -894,6 +894,21 @@ pub enum Command {
     /// ```
     #[command(subcommand, aliases = ["label", "link"])]
     Tag(TagCommand),
+    /// Mint invites for, and join, multiplayer worlds hosted over Iroh.
+    ///
+    /// The host runs `id serve --world --world-admin-token <T>`. Whoever holds
+    /// the admin token mints a guest capability with `id world invite`; a guest
+    /// presents it with `id world join`. Reaching a node proves only which node
+    /// you are, never what you may do: the capability is the authority.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id world invite NODE_ID --admin-token T --name ann
+    /// ID_WORLD_CAPABILITY=... id world join NODE_ID
+    /// ```
+    #[command(subcommand)]
+    World(WorldCommand),
     /// Migrate existing files to have name/file auto-tags.
     ///
     /// Scans all blob tags in the store and adds `name` and `file`
@@ -1032,6 +1047,46 @@ pub enum Command {
         /// local serve instance.
         #[arg(required = false)]
         node: Option<String>,
+    },
+}
+
+/// Subcommands for `id world`.
+#[derive(Subcommand, Debug)]
+pub enum WorldCommand {
+    /// Mint a guest capability on a world host (needs the host's admin token).
+    Invite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Display name for the new participant.
+        #[arg(long)]
+        name: String,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Join a world and chat. Stdin lines are chat; `/input <hex>` sends
+    /// opaque input. Server frames print as JSON lines.
+    Join {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Replay events after this sequence instead of a full snapshot.
+        #[arg(long)]
+        after: Option<u64>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
     },
 }
 
@@ -2510,6 +2565,10 @@ mod tests {
             }
             _ => panic!("Expected Serve command"),
         }
+        // Over Iroh the lobby needs no web server.
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world", "--world-admin-token", "x"]).is_ok()
+        );
         // `--world` is refused before serve starts when its prerequisites are
         // missing (clap requirement plus the serve-time validation).
         assert!(Cli::try_parse_from(["id", "serve", "--world"]).is_err());
@@ -2573,5 +2632,52 @@ mod tests {
         assert!(
             Cli::try_parse_from(["id", "tag", "del", "f", "k", "v", "--value-hex", "00"]).is_err()
         );
+    }
+
+    #[test]
+    fn test_cli_parse_world_commands() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--addr",
+            "127.0.0.1:9",
+            "--no-relay",
+        ]);
+        match cli.command {
+            Some(Command::World(WorldCommand::Invite {
+                admin_token,
+                name,
+                addrs,
+                no_relay,
+                ..
+            })) => {
+                assert_eq!(admin_token, "t");
+                assert_eq!(name, "ann");
+                assert_eq!(addrs.len(), 1);
+                assert!(no_relay);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--after",
+            "7",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(WorldCommand::Join { after: Some(7), .. }))
+        ));
     }
 }

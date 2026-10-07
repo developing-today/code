@@ -1,0 +1,521 @@
+//! Iroh transport for world sessions (`/id-world/1`).
+//!
+//! One bidirectional QUIC stream carries one session. A frame is a big-endian
+//! `u32` byte length followed by one UTF-8 JSON object of at most
+//! [`MAX_FRAME_BYTES`]; the JSON is exactly the protocol in
+//! [`crate::world_session`], so this module only moves frames.
+//!
+//! Iroh proves *which node* connected. That is logged for operators but never
+//! grants anything: the join capability inside the session is the only
+//! authority over a world.
+
+use std::sync::Arc;
+
+use anyhow::{Context, Result, bail};
+use iroh::{
+    Endpoint, EndpointAddr,
+    endpoint::{Connection, ReadExactError, RecvStream, SendStream},
+    protocol::{AcceptError, ProtocolHandler},
+};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task::{JoinHandle, JoinSet},
+};
+
+use crate::world_session::{Inbound, MAX_FRAME_BYTES, SessionIo, WorldService, run_session};
+
+/// ALPN for world sessions. Within version 1 frames may gain fields and
+/// variants; removing or changing one needs `/id-world/2`.
+pub const WORLD_ALPN: &[u8] = b"/id-world/1";
+
+/// Concurrent sessions allowed on one connection.
+const MAX_SESSIONS_PER_CONNECTION: usize = 4;
+
+/// Write one frame.
+///
+/// # Errors
+///
+/// Fails if the payload exceeds [`MAX_FRAME_BYTES`] or the stream is closed.
+pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<()> {
+    if payload.len() > MAX_FRAME_BYTES {
+        bail!("frame of {} bytes exceeds {MAX_FRAME_BYTES}", payload.len());
+    }
+    let len = u32::try_from(payload.len()).context("frame length")?;
+    // One write so a frame is never split by a cancelled caller.
+    let mut framed = Vec::with_capacity(4 + payload.len());
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(payload);
+    send.write_all(&framed).await.context("write frame")?;
+    Ok(())
+}
+
+/// Read one frame. `Ok(None)` means the peer finished cleanly between frames.
+///
+/// This is **not** cancel-safe; run it in its own task, not inside `select!`.
+///
+/// # Errors
+///
+/// Fails on a truncated frame, a stream error, or a length above
+/// [`MAX_FRAME_BYTES`] (the oversized body is never read).
+pub async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>> {
+    let mut len = [0_u8; 4];
+    match recv.read_exact(&mut len).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(0)) => return Ok(None),
+        Err(e) => return Err(e).context("read frame length"),
+    }
+    let len = u32::from_be_bytes(len) as usize;
+    if len > MAX_FRAME_BYTES {
+        bail!("frame of {len} bytes exceeds {MAX_FRAME_BYTES}");
+    }
+    let mut body = vec![0_u8; len];
+    recv.read_exact(&mut body)
+        .await
+        .context("read frame body")?;
+    Ok(Some(body))
+}
+
+/// Accepts world sessions over Iroh. Register with
+/// `Router::builder(..).accept(WORLD_ALPN, WorldProtocol::new(service))`.
+#[derive(Clone, Debug)]
+pub struct WorldProtocol {
+    service: Arc<WorldService>,
+}
+
+impl WorldProtocol {
+    /// Serve `service` to Iroh peers.
+    #[must_use]
+    pub fn new(service: WorldService) -> Self {
+        Self {
+            service: Arc::new(service),
+        }
+    }
+}
+
+impl ProtocolHandler for WorldProtocol {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let remote = conn.remote_id();
+        tracing::debug!("world: connection from node {remote}");
+        let permits = Arc::new(Semaphore::new(MAX_SESSIONS_PER_CONNECTION));
+        let mut sessions = JoinSet::new();
+        while let Ok((mut send, recv)) = conn.accept_bi().await {
+            let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                // Over the per-connection bound: refuse this stream only.
+                let _ = send.reset(1_u32.into());
+                continue;
+            };
+            let service = Arc::clone(&self.service);
+            sessions.spawn(async move {
+                let _permit = permit;
+                let mut io = StreamIo::new(send, recv);
+                run_session(&service, &mut io).await;
+                io.finish();
+            });
+        }
+        // The peer closed the connection; wind down whatever is left.
+        sessions.shutdown().await;
+        Ok(())
+    }
+}
+
+/// [`SessionIo`] over one QUIC stream pair.
+///
+/// A reader task owns the receive half and forwards parsed frames over a
+/// channel, which makes [`SessionIo::recv`] cancel-safe.
+struct StreamIo {
+    frames: mpsc::Receiver<Inbound>,
+    send: SendStream,
+    reader: JoinHandle<()>,
+}
+
+impl StreamIo {
+    fn new(send: SendStream, mut recv: RecvStream) -> Self {
+        let (tx, frames) = mpsc::channel(8);
+        let reader = tokio::spawn(async move {
+            loop {
+                let inbound = match read_frame(&mut recv).await {
+                    Ok(Some(body)) => match String::from_utf8(body) {
+                        Ok(text) => Inbound::Text(text),
+                        Err(_) => Inbound::Unsupported,
+                    },
+                    Ok(None) | Err(_) => Inbound::Closed,
+                };
+                let stop = matches!(inbound, Inbound::Closed);
+                if tx.send(inbound).await.is_err() || stop {
+                    break;
+                }
+            }
+        });
+        Self {
+            frames,
+            send,
+            reader,
+        }
+    }
+
+    fn finish(&mut self) {
+        let _ = self.send.finish();
+    }
+}
+
+impl Drop for StreamIo {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
+impl SessionIo for StreamIo {
+    async fn recv(&mut self) -> Inbound {
+        self.frames.recv().await.unwrap_or(Inbound::Closed)
+    }
+
+    async fn send(&mut self, frame: String) -> bool {
+        write_frame(&mut self.send, frame.as_bytes()).await.is_ok()
+    }
+}
+
+/// A client-side world connection (one session).
+#[derive(Debug)]
+pub struct WorldClient {
+    conn: Connection,
+    send: SendStream,
+    recv: RecvStream,
+}
+
+impl WorldClient {
+    /// Dial `addr` and open a session stream.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the node is unreachable or does not speak [`WORLD_ALPN`].
+    pub async fn connect(endpoint: &Endpoint, addr: impl Into<EndpointAddr>) -> Result<Self> {
+        let conn = endpoint
+            .connect(addr, WORLD_ALPN)
+            .await
+            .context("connect to world host")?;
+        let (send, recv) = conn.open_bi().await.context("open world session")?;
+        Ok(Self { conn, send, recv })
+    }
+
+    /// Send one JSON frame.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the frame is too large or the stream is closed.
+    pub async fn send_json(&mut self, frame: &serde_json::Value) -> Result<()> {
+        write_frame(&mut self.send, frame.to_string().as_bytes()).await
+    }
+
+    /// Receive one JSON frame; `None` when the host ended the session.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a malformed frame or stream error.
+    pub async fn recv_json(&mut self) -> Result<Option<serde_json::Value>> {
+        match read_frame(&mut self.recv).await? {
+            Some(body) => Ok(Some(serde_json::from_slice(&body).context("decode frame")?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Ask the host to mint a guest capability and return it. The session ends
+    /// afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the invite is refused.
+    pub async fn invite(&mut self, admin_token: &str, display_name: &str) -> Result<String> {
+        self.send_json(&serde_json::json!({
+            "type": "invite",
+            "admin_token": admin_token,
+            "display_name": display_name,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("invite") => reply["capability"]
+                .as_str()
+                .map(str::to_owned)
+                .context("invite reply had no capability"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("unexpected reply from host")
+            ),
+        }
+    }
+
+    /// Split into the connection and both stream halves, e.g. to read frames
+    /// in a task while writing from another.
+    #[must_use]
+    pub fn into_parts(self) -> (Connection, SendStream, RecvStream) {
+        (self.conn, self.send, self.recv)
+    }
+
+    /// Close the connection.
+    pub fn close(self) {
+        self.conn.close(0_u32.into(), b"done");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use iroh::{
+        endpoint::{RelayMode, presets},
+        protocol::Router,
+    };
+
+    use super::*;
+    use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
+
+    async fn endpoint() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    struct Host {
+        router: Router,
+        addr: EndpointAddr,
+        world: WorldHandle,
+    }
+
+    async fn host(admin: Option<&str>) -> Host {
+        let ep = endpoint().await;
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world.clone(), admin.map(str::to_owned));
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .spawn();
+        // Loopback sockets only: the test endpoints use no relay or discovery.
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        Host {
+            router,
+            addr,
+            world,
+        }
+    }
+
+    async fn next(client: &mut WorldClient) -> Option<serde_json::Value> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), client.recv_json())
+            .await
+            .expect("timed out waiting for a world frame")
+            .unwrap()
+    }
+
+    fn join(capability: &str, after: Option<u64>) -> serde_json::Value {
+        serde_json::json!({"type": "join", "capability": capability, "after": after})
+    }
+
+    #[tokio::test]
+    async fn peers_invite_join_chat_and_catch_up_over_iroh() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        // Mint two capabilities through the protocol itself.
+        let mut capabilities = Vec::new();
+        for name in ["ann", "bob"] {
+            let mut c = WorldClient::connect(&client_ep, host.addr.clone())
+                .await
+                .unwrap();
+            c.send_json(&serde_json::json!(
+                {"type": "invite", "admin_token": "admin", "display_name": name}
+            ))
+            .await
+            .unwrap();
+            let invite = next(&mut c).await.unwrap();
+            assert_eq!(invite["type"], "invite");
+            capabilities.push(invite["capability"].as_str().unwrap().to_owned());
+            assert!(next(&mut c).await.is_none(), "invite ends the session");
+            c.close();
+        }
+
+        let mut ann = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        ann.send_json(&join(&capabilities[0], None)).await.unwrap();
+        assert_eq!(next(&mut ann).await.unwrap()["type"], "snapshot");
+        let mut bob = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        bob.send_json(&join(&capabilities[1], None)).await.unwrap();
+        assert_eq!(next(&mut bob).await.unwrap()["type"], "snapshot");
+
+        ann.send_json(&serde_json::json!({"type": "chat", "text": "hello over iroh"}))
+            .await
+            .unwrap();
+        for c in [&mut ann, &mut bob] {
+            let frame = next(c).await.unwrap();
+            assert_eq!(frame["type"], "event");
+            assert!(frame.to_string().contains("hello over iroh"));
+        }
+
+        // A late joiner replays from a cursor without a snapshot.
+        let mut late = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        late.send_json(&join(&capabilities[1], Some(0)))
+            .await
+            .unwrap();
+        let replay = next(&mut late).await.unwrap();
+        assert_eq!(replay["type"], "event");
+        assert!(replay.to_string().contains("hello over iroh"));
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invite_helper_returns_the_capability_or_the_hosts_reason() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut ok = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let capability = ok.invite("admin", "ann").await.unwrap();
+        assert!(!capability.is_empty());
+
+        let mut bad = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let err = bad.invite("wrong", "eve").await.unwrap_err();
+        assert!(err.to_string().contains("invite denied"), "{err:#}");
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_identity_alone_grants_nothing() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut forged = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        forged
+            .send_json(&join(&"0".repeat(64), None))
+            .await
+            .unwrap();
+        assert_eq!(next(&mut forged).await.unwrap()["message"], "join denied");
+        assert!(next(&mut forged).await.is_none());
+
+        let mut wrong_admin = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        wrong_admin
+            .send_json(&serde_json::json!(
+                {"type": "invite", "admin_token": "guess", "display_name": "eve"}
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            next(&mut wrong_admin).await.unwrap()["message"],
+            "invite denied"
+        );
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_and_invalid_frames_are_rejected_without_a_panic() {
+        let host = host(None).await;
+        let client_ep = endpoint().await;
+
+        // A declared length over the limit ends the session without the
+        // server ever allocating or reading the body.
+        let conn = client_ep
+            .connect(host.addr.clone(), WORLD_ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv))
+                .await
+                .expect("server should close the stream");
+        assert!(matches!(outcome, Ok(None) | Err(_)));
+        conn.close(0_u32.into(), b"done");
+
+        // Non-UTF-8 payload gets a protocol error, not a crash.
+        let mut c = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        write_frame(&mut c.send, &[0xff, 0xfe, 0xfd]).await.unwrap();
+        assert_eq!(next(&mut c).await.unwrap()["type"], "error");
+
+        // The host is still serving afterwards.
+        let (_, cap) = host
+            .world
+            .issue("ok".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut ok = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        ok.send_json(&join(cap.expose(), None)).await.unwrap();
+        assert_eq!(next(&mut ok).await.unwrap()["type"], "snapshot");
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sessions_per_connection_are_bounded() {
+        let host = host(None).await;
+        let client_ep = endpoint().await;
+        let conn = client_ep
+            .connect(host.addr.clone(), WORLD_ALPN)
+            .await
+            .unwrap();
+        // Join on more streams than allowed. Accepted sessions stay open, so
+        // the extras hit the bound and are reset; streams are accepted in
+        // order, so the first MAX_SESSIONS_PER_CONNECTION win.
+        let total = MAX_SESSIONS_PER_CONNECTION + 3;
+        let mut streams = Vec::new();
+        for i in 0..total {
+            let (_, cap) = host
+                .world
+                .issue(format!("p{i}"), WorldScopes::GUEST)
+                .await
+                .unwrap();
+            let (mut send, recv) = conn.open_bi().await.unwrap();
+            write_frame(&mut send, join(cap.expose(), None).to_string().as_bytes())
+                .await
+                .unwrap();
+            streams.push((send, recv));
+        }
+        let (mut accepted, mut reset) = (0, 0);
+        for (_, recv) in &mut streams {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(recv)).await {
+                Ok(Ok(Some(_))) => accepted += 1,
+                Ok(Err(_)) => reset += 1,
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+        assert_eq!(accepted, MAX_SESSIONS_PER_CONNECTION);
+        assert_eq!(reset, total - MAX_SESSIONS_PER_CONNECTION);
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+}
