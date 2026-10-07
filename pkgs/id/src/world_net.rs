@@ -22,9 +22,9 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+use crate::world_hub::WorldHub;
 use crate::world_session::{
-    Inbound, MAX_FRAME_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, WorldService, module_hash,
-    run_session,
+    Inbound, MAX_FRAME_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, module_hash, run_session,
 };
 
 /// ALPN for world sessions. Within version 1 frames may gain fields and
@@ -32,7 +32,7 @@ use crate::world_session::{
 pub const WORLD_ALPN: &[u8] = b"/id-world/1";
 
 /// Concurrent sessions allowed on one connection.
-const MAX_SESSIONS_PER_CONNECTION: usize = 4;
+const MAX_SESSIONS_PER_CONNECTION: usize = 16;
 
 use crate::world_session::encode_hex;
 
@@ -81,19 +81,18 @@ pub async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>> {
 }
 
 /// Accepts world sessions over Iroh. Register with
-/// `Router::builder(..).accept(WORLD_ALPN, WorldProtocol::new(service))`.
+/// `Router::builder(..).accept(WORLD_ALPN, WorldProtocol::new(hub))`.
 #[derive(Clone, Debug)]
 pub struct WorldProtocol {
-    service: Arc<WorldService>,
+    hub: WorldHub,
 }
 
 impl WorldProtocol {
-    /// Serve `service` to Iroh peers.
+    /// Serve a hub of worlds (or a single [`WorldService`], which converts
+    /// into a one-world hub) to Iroh peers.
     #[must_use]
-    pub fn new(service: WorldService) -> Self {
-        Self {
-            service: Arc::new(service),
-        }
+    pub fn new(hub: impl Into<WorldHub>) -> Self {
+        Self { hub: hub.into() }
     }
 }
 
@@ -109,11 +108,11 @@ impl ProtocolHandler for WorldProtocol {
                 let _ = send.reset(1_u32.into());
                 continue;
             };
-            let service = Arc::clone(&self.service);
+            let hub = self.hub.clone();
             sessions.spawn(async move {
                 let _permit = permit;
                 let mut io = StreamIo::new(send, recv);
-                run_session(&service, &mut io).await;
+                run_session(&hub, &mut io).await;
                 io.finish();
             });
         }
@@ -185,6 +184,8 @@ pub struct WorldClient {
     conn: Connection,
     send: SendStream,
     recv: RecvStream,
+    /// World named in every frame this client sends (host default if `None`).
+    world: Option<String>,
 }
 
 impl WorldClient {
@@ -199,7 +200,36 @@ impl WorldClient {
             .await
             .context("connect to world host")?;
         let (send, recv) = conn.open_bi().await.context("open world session")?;
-        Ok(Self { conn, send, recv })
+        Ok(Self {
+            conn,
+            send,
+            recv,
+            world: None,
+        })
+    }
+
+    /// Open another session on the same connection, addressed to `world`.
+    /// This is how a client moves between worlds without redialing: sessions
+    /// are streams, and each is bound to one world for its lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the host refuses another stream on this connection.
+    pub async fn open_session(&self, world: Option<&str>) -> Result<Self> {
+        let (send, recv) = self.conn.open_bi().await.context("open world session")?;
+        Ok(Self {
+            conn: self.conn.clone(),
+            send,
+            recv,
+            world: world.map(str::to_owned),
+        })
+    }
+
+    /// Address this client's frames to `world` instead of the host's default.
+    #[must_use]
+    pub fn with_world(mut self, world: Option<&str>) -> Self {
+        self.world = world.map(str::to_owned);
+        self
     }
 
     /// Send one JSON frame.
@@ -208,7 +238,83 @@ impl WorldClient {
     ///
     /// Fails if the frame is too large or the stream is closed.
     pub async fn send_json(&mut self, frame: &serde_json::Value) -> Result<()> {
-        write_frame(&mut self.send, frame.to_string().as_bytes()).await
+        // The host reads the routing field from a session's first frame only;
+        // adding it to every frame is harmless and keeps callers simple.
+        match (&self.world, frame) {
+            (Some(world), serde_json::Value::Object(object)) if !object.contains_key("world") => {
+                let mut routed = object.clone();
+                routed.insert("world".to_owned(), serde_json::Value::from(world.clone()));
+                write_frame(
+                    &mut self.send,
+                    serde_json::Value::Object(routed).to_string().as_bytes(),
+                )
+                .await
+            }
+            _ => write_frame(&mut self.send, frame.to_string().as_bytes()).await,
+        }
+    }
+
+    /// List the host's worlds as `(default, [(name, open)])`.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token is refused.
+    pub async fn list_worlds(
+        &mut self,
+        admin_token: &str,
+    ) -> Result<(String, Vec<(String, bool)>)> {
+        self.send_json(&serde_json::json!({
+            "type": "list_worlds",
+            "admin_token": admin_token,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "worlds" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to list worlds")
+            );
+        }
+        let default = reply["default"].as_str().unwrap_or_default().to_owned();
+        let worlds = reply["worlds"]
+            .as_array()
+            .context("worlds reply had no list")?
+            .iter()
+            .filter_map(|w| Some((w["name"].as_str()?.to_owned(), w["open"].as_bool()?)))
+            .collect();
+        Ok((default, worlds))
+    }
+
+    /// Create the world `name`; `true` if it did not exist before.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or name is refused.
+    pub async fn create_world(&mut self, admin_token: &str, name: &str) -> Result<bool> {
+        self.send_json(&serde_json::json!({
+            "type": "create_world",
+            "admin_token": admin_token,
+            "world": name,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "world_created" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to create the world")
+            );
+        }
+        Ok(reply["created"].as_bool().unwrap_or(false))
     }
 
     /// Receive one JSON frame; `None` when the host ended the session.
@@ -546,6 +652,7 @@ mod tests {
 
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
+    use crate::world_session::WorldService;
 
     async fn endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
@@ -849,6 +956,61 @@ mod tests {
         assert!(records.contains_key("key-000") && records.contains_key("key-095"));
         client.close();
         client_ep.close().await;
+        router.shutdown().await.unwrap();
+        ep.close().await;
+    }
+
+    #[tokio::test]
+    async fn one_connection_reaches_many_worlds_and_many_clients_share_a_host() {
+        let ep = endpoint().await;
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(hub.clone()))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+
+        // Several independent clients, each hopping across worlds on one
+        // connection, all at once.
+        let mut tasks = tokio::task::JoinSet::new();
+        for client_no in 0..6 {
+            let addr = addr.clone();
+            tasks.spawn(async move {
+                let client_ep = endpoint().await;
+                let root = WorldClient::connect(&client_ep, addr).await.unwrap();
+                for world in ["alpha", "beta", "gamma"] {
+                    let mut inviter = root.open_session(Some(world)).await.unwrap();
+                    let capability = inviter
+                        .invite("admin", &format!("player{client_no}"))
+                        .await
+                        .unwrap();
+                    let mut session = root.open_session(Some(world)).await.unwrap();
+                    let (world_id, _, _) = session.info(&capability).await.unwrap();
+                    assert_eq!(world_id, world);
+                }
+                client_ep.close().await;
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        assert_eq!(hub.open_count(), 3);
         router.shutdown().await.unwrap();
         ep.close().await;
     }

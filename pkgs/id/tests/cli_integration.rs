@@ -1534,6 +1534,202 @@ mod serve_tests {
     }
 
     #[test]
+    fn test_one_server_hosts_many_worlds_ad_hoc() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let counter = examples.join("roc-counter/counter.wasm");
+        let counter = counter.to_str().unwrap();
+        let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
+        let tictactoe = tictactoe.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            counter,
+            // Idle worlds close after a second and reopen from their journal.
+            "--world-idle-secs",
+            "1",
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
+            let output = world(addr, args).output().unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        // Join `world_name`, send each hex input, and return the last view.
+        let play =
+            |node: &str, addr: &str, world_name: Option<&str>, cap: &str, inputs: &[&str]| {
+                let mut args = vec!["join", node, "--capability", cap];
+                if let Some(name) = world_name {
+                    args.extend(["--world", name]);
+                }
+                let mut joined = world(addr, &args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let mut stdin = joined.stdin.take().unwrap();
+                let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+                let _snapshot = lines.next().unwrap().unwrap();
+                let mut view = lines.next().unwrap().unwrap();
+                for input in inputs {
+                    stdin
+                        .write_all(format!("/input {input}\n").as_bytes())
+                        .unwrap();
+                    let _event = lines.next().unwrap().unwrap();
+                    view = lines.next().unwrap().unwrap();
+                }
+                stdin.write_all(b"/quit\n").unwrap();
+                drop(stdin);
+                assert!(joined.wait().unwrap().success());
+                view
+            };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        // Worlds are created ad hoc, by admins only.
+        let (ok, out, _) = run(&addr, &["create", &node, "arena", "--admin-token", "adm"]);
+        assert!(ok && out.trim() == "created", "{out}");
+        let (_, out, _) = run(&addr, &["create", &node, "arena", "--admin-token", "adm"]);
+        assert_eq!(out.trim(), "exists");
+        let (ok, _, err) = run(&addr, &["create", &node, "arena", "--admin-token", "wrong"]);
+        assert!(!ok && err.contains("admin denied"), "{err}");
+        let (ok, _, err) = run(&addr, &["create", &node, "../evil", "--admin-token", "adm"]);
+        assert!(!ok && err.contains("invalid world name"), "{err}");
+
+        // Different programs, one process.
+        let (ok, _, err) = run(
+            &addr,
+            &[
+                "install",
+                &node,
+                tictactoe,
+                "--world",
+                "arena",
+                "--admin-token",
+                "adm",
+            ],
+        );
+        assert!(ok, "{err}");
+        // Inviting into a world that does not exist yet creates it.
+        let (ok, ann, err) = run(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        );
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+        let (ok, bob, err) = run(
+            &addr,
+            &[
+                "invite",
+                &node,
+                "--admin-token",
+                "adm",
+                "--name",
+                "bob",
+                "--world",
+                "garden",
+            ],
+        );
+        assert!(ok, "{err}");
+        let bob = bob.trim().to_owned();
+        let (ok, cat, err) = run(
+            &addr,
+            &[
+                "invite",
+                &node,
+                "--admin-token",
+                "adm",
+                "--name",
+                "cat",
+                "--world",
+                "arena",
+            ],
+        );
+        assert!(ok, "{err}");
+        let cat = cat.trim().to_owned();
+
+        let view = play(&node, &addr, None, &ann, &["696e63", "696e63"]);
+        assert!(
+            view.contains("count=2"),
+            "default world runs the counter: {view}"
+        );
+        let view = play(&node, &addr, Some("arena"), &cat, &["30"]);
+        assert!(view.contains("plays=1"), "arena runs tic-tac-toe: {view}");
+
+        // A capability is good in its own world only.
+        let (_, out, _) = run(&addr, &["records", &node, "--capability", &cat]);
+        assert!(
+            out.is_empty(),
+            "no records for a capability from another world: {out}"
+        );
+        let (ok, _, err) = run(
+            &addr,
+            &["records", &node, "--capability", &ann, "--world", "arena"],
+        );
+        assert!(!ok && err.contains("join denied"), "{err}");
+        let (ok, _, err) = run(
+            &addr,
+            &["records", &node, "--capability", &bob, "--world", "nowhere"],
+        );
+        assert!(!ok && err.contains("unknown world"), "{err}");
+
+        let (ok, out, err) = run(&addr, &["list", &node, "--admin-token", "adm"]);
+        assert!(ok, "{err}");
+        for expected in ["arena\t", "garden\t", "lobby (default)\t"] {
+            assert!(out.contains(expected), "{out}");
+        }
+
+        // Idle worlds close, and reopen from their journal when named again.
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let (_, out, _) = run(&addr, &["list", &node, "--admin-token", "adm"]);
+        assert!(out.contains("arena\tclosed"), "arena was evicted: {out}");
+        let (ok, out, err) = run(
+            &addr,
+            &["records", &node, "--capability", &cat, "--world", "arena"],
+        );
+        assert!(ok, "{err}");
+        assert!(
+            out.contains("\"plays\": 1"),
+            "state survived eviction: {out}"
+        );
+        server.stop();
+
+        // After a restart every world is still there, closed until used.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let (_, out, _) = run(&addr, &["list", &node, "--admin-token", "adm"]);
+        assert!(
+            out.contains("garden\tclosed") && out.contains("arena\tclosed"),
+            "{out}"
+        );
+        let view = play(&node, &addr, None, &ann, &["696e63"]);
+        assert!(view.contains("count=3"), "{view}");
+        let view = play(&node, &addr, Some("arena"), &cat, &["33"]);
+        assert!(view.contains("plays=2"), "{view}");
+        server.stop();
+    }
+
+    #[test]
     fn test_named_worlds_use_their_own_directory() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

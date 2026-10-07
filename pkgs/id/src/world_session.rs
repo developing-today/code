@@ -26,6 +26,7 @@ use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::world::{JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot};
+use crate::world_hub::{WorldHub, WorldInfo};
 
 /// Largest accepted or emitted frame, in bytes.
 ///
@@ -122,6 +123,14 @@ enum ClientFrame {
         admin_token: String,
         display_name: String,
     },
+    /// Admin: list the worlds this server hosts.
+    ListWorlds {
+        admin_token: String,
+    },
+    /// Admin: create the world named by the frame's `world` field.
+    CreateWorld {
+        admin_token: String,
+    },
     Chat {
         text: String,
     },
@@ -187,6 +196,15 @@ enum ServerFrame<'a> {
         module_hash: String,
     },
     Invite(&'a InviteResponse),
+    /// The worlds this server hosts.
+    Worlds {
+        default: &'a str,
+        worlds: Vec<WorldInfo>,
+    },
+    WorldCreated {
+        world: &'a str,
+        created: bool,
+    },
     UploadReady {
         chunk_bytes: usize,
     },
@@ -368,6 +386,11 @@ impl WorldService {
         }
     }
 
+    /// The configured admin secret, for a hub that shares it process-wide.
+    pub(crate) fn admin_token(&self) -> Option<&str> {
+        self.admin_token.as_deref()
+    }
+
     /// Validate the separately configured world-administrator token.
     pub fn authorize_admin(&self, supplied: Option<&str>) -> Result<(), InviteError> {
         let Some(expected) = self.admin_token.as_deref().filter(|t| !t.is_empty()) else {
@@ -515,16 +538,27 @@ pub fn secret_eq(expected: &[u8], supplied: &[u8]) -> bool {
 }
 
 /// Run one session to completion with default settings.
-pub async fn run_session<I: SessionIo>(service: &WorldService, io: &mut I) {
-    run_session_with(service, io, SessionConfig::default()).await;
+pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
+    run_session_with(hub, io, SessionConfig::default()).await;
+}
+
+/// The admin secret a first frame carries, if it is an administrative one.
+/// A valid secret lets the frame create the world it names.
+fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
+    match frame {
+        ClientFrame::Invite { admin_token, .. }
+        | ClientFrame::InstallBegin { admin_token, .. }
+        | ClientFrame::CreateWorld { admin_token }
+        | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        _ => None,
+    }
 }
 
 /// Run one session to completion.
-pub async fn run_session_with<I: SessionIo>(
-    service: &WorldService,
-    io: &mut I,
-    config: SessionConfig,
-) {
+///
+/// The first frame names the world (`"world": "<name>"`, default world if
+/// absent), and the session holds a lease on it until it ends.
+pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
     let first = match tokio::time::timeout(config.join_timeout, io.recv()).await {
         Ok(Inbound::Text(text)) => text,
         Ok(Inbound::Oversized) => {
@@ -541,10 +575,82 @@ pub async fn run_session_with<I: SessionIo>(
             return;
         }
     };
-    let Ok(frame) = serde_json::from_str::<ClientFrame>(&first) else {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&first) else {
         let _ = send_error(io, "first frame must be a valid join or invite request").await;
         return;
     };
+    // `world` is a routing field, not part of any frame.
+    let world = match value
+        .as_object_mut()
+        .and_then(|object| object.remove("world"))
+    {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(name)) => Some(name),
+        Some(_) => {
+            let _ = send_error(io, "world must be a string").await;
+            return;
+        }
+    };
+    let Ok(frame) = serde_json::from_value::<ClientFrame>(value) else {
+        let _ = send_error(io, "first frame must be a valid join or invite request").await;
+        return;
+    };
+    // Hub-level frames are about the server, not one world.
+    match &frame {
+        ClientFrame::ListWorlds { admin_token } => {
+            if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
+                let _ = send_error(io, "admin denied").await;
+                return;
+            }
+            let worlds = hub.list();
+            let _ = send_json(
+                io,
+                &ServerFrame::Worlds {
+                    default: hub.default_world(),
+                    worlds,
+                },
+            )
+            .await;
+            return;
+        }
+        ClientFrame::CreateWorld { admin_token } => {
+            if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
+                let _ = send_error(io, "admin denied").await;
+                return;
+            }
+            let name = world.as_deref().unwrap_or_else(|| hub.default_world());
+            match hub.create(name).await {
+                Ok(created) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::WorldCreated {
+                            world: name,
+                            created,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let _ = send_error(io, error.message()).await;
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+    let admin = frame_admin_token(&frame).filter(|token| token.len() <= MAX_ADMIN_TOKEN_BYTES);
+    let lease = match hub.lease(world.as_deref(), admin).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = send_error(io, error.message()).await;
+            return;
+        }
+    };
+    run_world_session(lease.service(), io, frame).await;
+}
+
+/// Serve one session against its resolved world, starting from its first frame.
+async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, frame: ClientFrame) {
     match frame {
         ClientFrame::Join { capability, after } => {
             if capability.len() > MAX_CAPABILITY_BYTES {
@@ -599,6 +705,8 @@ pub async fn run_session_with<I: SessionIo>(
         }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
+        | ClientFrame::ListWorlds { .. }
+        | ClientFrame::CreateWorld { .. }
         | ClientFrame::Chat { .. }
         | ClientFrame::Input { .. } => {
             let _ = send_error(io, "first frame must be join, invite or install_begin").await;
@@ -1156,6 +1264,8 @@ async fn handle_client_frame<I: SessionIo>(
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
         | ClientFrame::Info { .. }
+        | ClientFrame::ListWorlds { .. }
+        | ClientFrame::CreateWorld { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
@@ -1242,11 +1352,15 @@ mod tests {
 
     impl Peer {
         fn connect(service: WorldService, config: SessionConfig) -> Self {
+            Self::connect_hub(WorldHub::single(service), config)
+        }
+
+        fn connect_hub(hub: WorldHub, config: SessionConfig) -> Self {
             let (to_server, inbound) = mpsc::channel(16);
             let (outbound, from_server) = mpsc::channel(64);
             let task = tokio::spawn(async move {
                 let mut io = ChannelIo { inbound, outbound };
-                run_session_with(&service, &mut io, config).await;
+                run_session_with(&hub, &mut io, config).await;
             });
             Self {
                 to_server,
@@ -1487,6 +1601,200 @@ mod tests {
             .await;
         let reply = joined.next().await.unwrap();
         assert_eq!(reply["type"], "event");
+    }
+
+    fn memory_hub(
+        limits: crate::world_hub::HubLimits,
+    ) -> (WorldHub, Arc<crate::world_hub::testing::MemoryOpener>) {
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        (
+            WorldHub::new(dyn_opener, Some("admin".to_owned()), "lobby", limits),
+            opener,
+        )
+    }
+
+    /// Invite `name` into `world` (creating it) and return the capability.
+    async fn invite_into(hub: &WorldHub, world: &str, name: &str) -> String {
+        let mut peer = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": name,
+            "world": world,
+        }))
+        .await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "invite", "{reply}");
+        reply["capability"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn the_world_field_routes_a_session_and_capabilities_do_not_cross_worlds() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let in_arena = invite_into(&hub, "arena", "ann").await;
+        let in_bazaar = invite_into(&hub, "bazaar", "bob").await;
+
+        // Joining the world the capability belongs to works...
+        let mut arena = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        arena
+            .say(serde_json::json!({"type":"join","capability": in_arena,"world":"arena"}))
+            .await;
+        let snapshot = arena.next().await.unwrap();
+        assert_eq!(snapshot["type"], "snapshot");
+        assert_eq!(snapshot["snapshot"]["world_id"], "arena");
+
+        // ...the same capability is refused in another world...
+        let mut wrong = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        wrong
+            .say(serde_json::json!({"type":"join","capability": in_arena,"world":"bazaar"}))
+            .await;
+        assert_eq!(wrong.next().await.unwrap()["message"], "join denied");
+
+        // ...and chat in one world is invisible in the other.
+        arena
+            .say(serde_json::json!({"type":"chat","text":"hello arena"}))
+            .await;
+        assert_eq!(arena.next().await.unwrap()["type"], "event");
+        let mut bazaar = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        bazaar
+            .say(serde_json::json!({"type":"join","capability": in_bazaar,"world":"bazaar"}))
+            .await;
+        let snapshot = bazaar.next().await.unwrap();
+        assert_eq!(snapshot["snapshot"]["world_id"], "bazaar");
+        assert_eq!(snapshot["snapshot"]["events"].as_array().unwrap().len(), 0);
+
+        // No `world` field means the default world, which nobody created.
+        let mut default = Peer::connect_hub(hub, SessionConfig::default());
+        default
+            .say(serde_json::json!({"type":"join","capability": in_arena}))
+            .await;
+        assert_eq!(default.next().await.unwrap()["message"], "unknown world");
+    }
+
+    #[tokio::test]
+    async fn only_an_admin_creates_or_lists_worlds() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({"type":"create_world","admin_token":"nope","world":"arena"}))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+        let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({"type":"list_worlds","admin_token":"nope"}))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"arena"}))
+            .await;
+        let created = admin.next().await.unwrap();
+        assert_eq!(
+            (created["type"].as_str(), created["created"].as_bool()),
+            (Some("world_created"), Some(true))
+        );
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"arena"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["created"], false);
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"../x"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["message"], "invalid world name");
+
+        let mut admin = Peer::connect_hub(hub, SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"list_worlds","admin_token":"admin"}))
+            .await;
+        let listed = admin.next().await.unwrap();
+        assert_eq!(listed["type"], "worlds");
+        assert_eq!(listed["default"], "lobby");
+        assert_eq!(listed["worlds"][0]["name"], "arena");
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_frames_cannot_create_or_probe_worlds() {
+        let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
+        for frame in [
+            serde_json::json!({"type":"join","capability":"1.abc","world":"arena"}),
+            serde_json::json!({"type":"info","capability":"1.abc","world":"arena"}),
+            serde_json::json!({"type":"invite","admin_token":"wrong","display_name":"x","world":"arena"}),
+        ] {
+            let mut peer = Peer::connect_hub(hub.clone(), SessionConfig::default());
+            peer.say(frame).await;
+            assert_eq!(peer.next().await.unwrap()["message"], "unknown world");
+        }
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing was opened or created by outsiders"
+        );
+    }
+
+    #[tokio::test]
+    async fn many_sessions_across_many_worlds_stay_separate() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let mut tasks = tokio::task::JoinSet::new();
+        for world in 0..8 {
+            for player in 0..8 {
+                let hub = hub.clone();
+                tasks.spawn(async move {
+                    let name = format!("world-{world}");
+                    let capability = invite_into(&hub, &name, &format!("p{player}")).await;
+                    let mut peer = Peer::connect_hub(hub, SessionConfig::default());
+                    peer.say(serde_json::json!({
+                        "type": "join", "capability": capability, "world": name
+                    }))
+                    .await;
+                    let snapshot = peer.next().await.unwrap();
+                    assert_eq!(snapshot["snapshot"]["world_id"], name.as_str());
+                    peer.say(serde_json::json!({
+                        "type": "chat", "text": format!("{name}/{player}")
+                    }))
+                    .await;
+                    // Every event this session sees was said in its own world.
+                    let mut seen = 0;
+                    while seen < 1 {
+                        let frame = peer.next().await.unwrap();
+                        if frame["type"] == "event" {
+                            let text = frame["event"]["kind"]["data"].as_str().unwrap_or_default();
+                            assert!(text.starts_with(&name), "{name} saw {text}");
+                            seen += 1;
+                        }
+                    }
+                });
+            }
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        assert_eq!(hub.open_count(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_session_over_the_ceiling_is_refused_politely() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits {
+            max_sessions: 1,
+            ..crate::world_hub::HubLimits::default()
+        });
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let mut first = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        first
+            .say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+        let mut second = Peer::connect_hub(hub, SessionConfig::default());
+        second
+            .say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(
+            second.next().await.unwrap()["message"],
+            "server is busy; try again shortly"
+        );
     }
 
     #[tokio::test]

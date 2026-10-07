@@ -148,7 +148,7 @@ pub struct AppState {
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
-    pub world: Option<crate::world_session::WorldService>,
+    pub world: Option<crate::world_hub::WorldHub>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -264,7 +264,7 @@ pub async fn web_router(
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
     security: WebSecurity,
-    world: Option<crate::world_session::WorldService>,
+    world: Option<crate::world_hub::WorldHub>,
 ) -> anyhow::Result<Router> {
     let mut state = AppState::new(
         store,

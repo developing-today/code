@@ -170,6 +170,8 @@ pub mod tuple;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]
+pub mod world_hub;
+#[cfg(feature = "world")]
 pub mod world_net;
 #[cfg(feature = "world")]
 pub mod world_records;

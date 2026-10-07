@@ -167,6 +167,9 @@ async fn main() -> Result<()> {
             world_module,
             world_name,
             world_checkpoint_every,
+            world_max_open,
+            world_max_sessions,
+            world_idle_secs,
             allow_node,
             open_writes,
         }) => {
@@ -191,6 +194,9 @@ async fn main() -> Result<()> {
                 world_module,
                 world_name,
                 world_checkpoint_every,
+                world_max_open,
+                world_max_sessions,
+                world_idle_secs,
                 allow_node,
                 open_writes,
             })

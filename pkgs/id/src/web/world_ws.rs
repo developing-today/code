@@ -18,21 +18,22 @@ use futures::{
 };
 use serde::Deserialize;
 
-use crate::world_session::{
-    Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, WorldService, run_session,
-};
+use crate::world_hub::{ResolveError, WorldHub};
+use crate::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, run_session};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct InviteRequest {
     display_name: String,
+    /// World to invite into (default world if absent).
+    world: Option<String>,
 }
 
 /// Narrow, cloneable state for the world endpoints, separate from the rest of
 /// the web state so the bridge can be served and tested standalone.
 #[derive(Clone, Debug, Default)]
 pub struct WorldWebState {
-    /// The hosted world, when enabled.
-    pub service: Option<WorldService>,
+    /// The hosted worlds, when enabled.
+    pub hub: Option<WorldHub>,
 }
 
 /// Routes for the world session bridge; merge into any `Router<S>` with
@@ -48,13 +49,21 @@ async fn invite_handler(
     headers: HeaderMap,
     Json(request): Json<InviteRequest>,
 ) -> Response {
-    let Some(service) = state.service else {
+    let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let supplied = headers
         .get("x-world-admin-token")
         .and_then(|value| value.to_str().ok());
-    match service.invite(supplied, request.display_name).await {
+    // A valid admin token may create the world it names.
+    let lease = match hub.lease(request.world.as_deref(), supplied).await {
+        Ok(lease) => lease,
+        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match lease.service().invite(supplied, request.display_name).await {
         Ok(invite) => Json(invite).into_response(),
         Err(InviteError::Disabled) => StatusCode::NOT_FOUND.into_response(),
         Err(InviteError::Unauthorized) => StatusCode::UNAUTHORIZED.into_response(),
@@ -67,14 +76,14 @@ async fn invite_handler(
 }
 
 async fn handler(State(state): State<WorldWebState>, ws: WebSocketUpgrade) -> Response {
-    let Some(service) = state.service else {
+    let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
     ws.max_message_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             let (sender, receiver) = socket.split();
             let mut io = WsIo { sender, receiver };
-            run_session(&service, &mut io).await;
+            run_session(&hub, &mut io).await;
         })
 }
 
@@ -113,6 +122,7 @@ impl SessionIo for WsIo {
 mod tests {
     use super::*;
     use crate::world::{JoinCapability, WorldCore, WorldHandle, WorldLimits};
+    use crate::world_session::WorldService;
     use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
 
@@ -125,7 +135,9 @@ mod tests {
 
     fn app(world: Option<WorldHandle>, admin_token: Option<&str>) -> axum::Router {
         world_routes().with_state(WorldWebState {
-            service: world.map(|world| WorldService::new(world, admin_token.map(str::to_owned))),
+            hub: world.map(|world| {
+                WorldHub::single(WorldService::new(world, admin_token.map(str::to_owned)))
+            }),
         })
     }
 
@@ -228,6 +240,73 @@ mod tests {
     use crate::world_session::encode_hex;
 
     #[tokio::test]
+    async fn http_invites_and_websocket_joins_route_by_world_name() {
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        let router = world_routes().with_state(WorldWebState { hub: Some(hub) });
+
+        let invite = |world: Option<&str>, auth: &str| {
+            let body = match world {
+                Some(world) => format!(r#"{{"display_name":"ann","world":"{world}"}}"#),
+                None => r#"{"display_name":"ann"}"#.to_owned(),
+            };
+            Request::builder()
+                .method("POST")
+                .uri("/api/world/invite")
+                .header("content-type", "application/json")
+                .header("x-world-admin-token", auth)
+                .body(Body::from(body))
+                .unwrap()
+        };
+        // Outsiders cannot conjure worlds by naming them.
+        let response = router
+            .clone()
+            .oneshot(invite(Some("arena"), "wrong"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // An admin can: the world is created on first invite.
+        let response = router
+            .clone()
+            .oneshot(invite(Some("arena"), "admin"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let addr = serve(router).await;
+
+        let mut client = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability,"world":"arena"}),
+        )
+        .await;
+        let snapshot = next_frame(&mut client).await.unwrap();
+        assert_eq!(snapshot["snapshot"]["world_id"], "arena");
+        // The same capability, without naming the world, finds no such world.
+        let mut stray = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability}),
+        )
+        .await;
+        assert_eq!(
+            next_frame(&mut stray).await.unwrap()["message"],
+            "unknown world"
+        );
+    }
+
+    #[tokio::test]
     async fn websocket_join_broadcast_and_catch_up() {
         let world = lobby();
         let addr = serve(app(Some(world.clone()), Some("admin"))).await;
@@ -295,7 +374,7 @@ mod tests {
         let service = WorldService::new(world.clone(), Some("admin".to_owned()))
             .with_blob_store(blobs.clone());
         let addr = serve(world_routes().with_state(WorldWebState {
-            service: Some(service),
+            hub: Some(WorldHub::single(service)),
         }))
         .await;
         let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");

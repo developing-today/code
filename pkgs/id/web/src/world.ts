@@ -66,15 +66,21 @@ function initWorld(): void {
   const view = element<HTMLElement>(root, "[data-world-view]");
   const participants = element<HTMLElement>(root, "[data-world-participants]");
   const status = element<HTMLElement>(root, "[data-world-status]");
+  const worldInput = element<HTMLInputElement>(root, "[data-world-world]");
   const recordsView = element<HTMLElement>(root, "[data-world-records]");
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
   if (
-    !name || !admin || !capability || !inviteButton || !moduleInput || !moduleSeed || !installButton || !joinButton || !chatForm || !chatInput ||
+    !name || !admin || !capability || !worldInput || !inviteButton || !moduleInput || !moduleSeed || !installButton || !joinButton || !chatForm || !chatInput ||
     !inputForm || !gameInput || !log || !view || !recordsView || !recordsRefresh || !participants ||
     !status || !copyButton || !inviteOutput
   ) return;
+
+  // `/world?world=arena` opens the page on that world.
+  worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
+  // The world a request is addressed to; `null` means the server's default.
+  const selectedWorld = (): string | null => worldInput.value.trim() || null;
 
   const storageKey = `id-world-capability:${window.location.host}`;
   capability.value = sessionStorage.getItem(storageKey) ?? "";
@@ -199,7 +205,7 @@ function initWorld(): void {
     setStatus("Connecting…");
     socket.addEventListener("open", () => {
       reconnects = 0;
-      socket?.send(JSON.stringify({ type: "join", capability: token, after: cursor || null }));
+      socket?.send(JSON.stringify({ type: "join", capability: token, after: cursor || null, world: selectedWorld() }));
     });
     socket.addEventListener("message", (event) => receive(String(event.data)));
     socket.addEventListener("error", () => setStatus("World connection failed", "error"));
@@ -227,7 +233,7 @@ function initWorld(): void {
           "content-type": "application/json",
           "x-world-admin-token": secret,
         },
-        body: JSON.stringify({ display_name: name.value || "guest" }),
+        body: JSON.stringify({ display_name: name.value || "guest", world: selectedWorld() }),
       });
       if (!response.ok) {
         throw new Error(response.status === 401 ? "Admin token refused" : `Invite failed (${response.status})`);
@@ -277,6 +283,7 @@ function initWorld(): void {
         // The host computes the canonical Iroh BLAKE3 hash and returns it.
         module_hash: null,
         seed,
+        world: selectedWorld(),
       }));
     });
     upload.addEventListener("message", async (message) => {

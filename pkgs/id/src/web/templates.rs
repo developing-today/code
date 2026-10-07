@@ -765,6 +765,10 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
       <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
     </label>
     <label class="form-control max-w-xl">
+      <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+    </label>
+    <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
       <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
     </label>
@@ -1027,6 +1031,7 @@ mod tests {
         assert!(html.contains("data-world-app"));
         assert!(html.contains("data-world-invite"));
         assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-world"));
         assert!(html.contains("data-world-chat-form"));
         assert!(html.contains("data-world-input-form"));
         assert!(html.contains("data-world-view"));

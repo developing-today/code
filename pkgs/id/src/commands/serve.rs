@@ -296,6 +296,12 @@ pub struct ServeOptions {
     /// Trim the journal behind a program snapshot every this many events
     /// (`0` never trims).
     pub world_checkpoint_every: u64,
+    /// Most worlds open at once.
+    pub world_max_open: usize,
+    /// Most world sessions at once, across all worlds.
+    pub world_max_sessions: usize,
+    /// Close durable worlds idle for this many seconds (`0` never).
+    pub world_idle_secs: u64,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -317,25 +323,9 @@ fn validate_world_options(
         "--world-module requires --world"
     );
     #[cfg(feature = "world")]
-    validate_world_name(world_name)?;
+    crate::world_hub::validate_world_name(world_name)?;
     #[cfg(not(feature = "world"))]
     let _ = world_name;
-    Ok(())
-}
-
-/// Reject world names that could escape [`WORLDS_DIR`] or confuse operators.
-#[cfg(feature = "world")]
-fn validate_world_name(name: &str) -> Result<()> {
-    ensure!(
-        !name.is_empty() && name.len() <= 64,
-        "world name must be 1 to 64 characters"
-    );
-    ensure!(name != "." && name != "..", "world name must not be a path");
-    ensure!(
-        name.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
-        "world name may contain only a-z, 0-9, '-' and '_'"
-    );
     Ok(())
 }
 
@@ -381,86 +371,143 @@ pub fn world_dir(name: &str) -> PathBuf {
     PathBuf::from(WORLDS_DIR).join(name)
 }
 
-/// Open a world: durable under [`WORLDS_DIR`] unless `ephemeral`. A
-/// `--world-module` goes through the same journaled install as an admin
-/// upload, so it is pinned, downloadable and restored after a restart; it is
-/// only installed when it differs from the module the world already runs.
+/// Builds this server's worlds: durable under [`WORLDS_DIR`] unless
+/// `ephemeral`. The `--world-module` goes through the same journaled install
+/// as an admin upload, so it is pinned, downloadable and restored after a
+/// restart; it is only installed when it differs from the module the world
+/// already runs. It applies to the default world only.
 #[cfg(feature = "world")]
-async fn open_lobby(
+struct ServeWorlds {
     ephemeral: bool,
-    name: &str,
     admin_token: Option<String>,
     blobs: iroh_blobs::api::Store,
     docs: Docs,
-    module: Option<&std::path::Path>,
     checkpoint_every: u64,
-) -> Result<crate::world_session::WorldService> {
-    use crate::world::{WorldCore, WorldHandle, WorldLimits};
-    use crate::world_session::WorldService;
+    default_world: String,
+    default_module: Option<PathBuf>,
+}
 
-    let limits = WorldLimits {
-        checkpoint_every,
-        ..WorldLimits::default()
-    };
-    let make = {
-        let admin_token = admin_token.clone();
-        let blobs = blobs.clone();
-        move |handle| WorldService::new(handle, admin_token).with_blob_store(blobs)
-    };
-    let dir = world_dir(name);
-    let namespace_file = (!ephemeral).then(|| dir.join("records.namespace"));
-    let records =
-        crate::world_records::RecordsStore::open(&docs, namespace_file.as_deref()).await?;
-    info!(
-        world = name,
-        namespace = %records.namespace(),
-        "world: records document ready"
-    );
-    let service = if ephemeral {
-        make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
-    } else {
-        let (service, report) = crate::world_store::open_world(&dir, name, limits, make).await?;
-        status!(
-            "world {name}: restored {} at sequence {} ({} input(s) replayed)",
-            dir.display(),
-            report.sequence,
-            report.replayed_inputs
-        );
-        if let Some(error) = &report.program_error {
-            status_err!("warning: world program not restored ({error}); reinstall it");
-        }
-        service.with_records_store(records)
-    };
-
-    if let Some(path) = module {
-        #[cfg(feature = "sandbox")]
-        {
-            let metadata = tokio::fs::metadata(path).await?;
-            ensure!(
-                usize::try_from(metadata.len())
-                    .is_ok_and(|len| len <= crate::world_session::MAX_WORLD_MODULE_BYTES),
-                "world module exceeds the configured module size limit"
-            );
-            let wasm = tokio::fs::read(path).await?;
-            let hash = crate::world_session::module_hash(&wasm);
-            if service.active_module_hash().await.as_deref() == Some(hash.as_str()) {
-                info!(module = %path.display(), "world: module already active");
-            } else {
-                let seed = rand::rng().random::<u64>();
-                service
-                    .install_wasm(admin_token.as_deref(), wasm, seed, &hash)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("install {}: {e:?}", path.display()))?;
-                info!(module = %path.display(), seed, "world: installed module");
+#[cfg(feature = "world")]
+impl crate::world_hub::WorldOpener for ServeWorlds {
+    fn open<'a>(&'a self, name: &'a str, create: bool) -> crate::world_hub::OpenFuture<'a> {
+        Box::pin(async move {
+            if !create && !self.exists(name) {
+                return Ok(None);
             }
-        }
-        #[cfg(not(feature = "sandbox"))]
-        {
-            let _ = path;
-            anyhow::bail!("--world-module requires a build with the `sandbox` feature");
-        }
+            self.open_world(name).await.map(Some)
+        })
     }
-    Ok(service)
+
+    fn exists(&self, name: &str) -> bool {
+        !self.ephemeral && world_dir(name).join("journal.jsonl").is_file()
+    }
+
+    fn list(&self) -> Vec<String> {
+        if self.ephemeral {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = std::fs::read_dir(WORLDS_DIR)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().join("journal.jsonl").is_file())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| crate::world_hub::validate_world_name(name).is_ok())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn durable(&self) -> bool {
+        !self.ephemeral
+    }
+}
+
+#[cfg(feature = "world")]
+impl ServeWorlds {
+    async fn open_world(&self, name: &str) -> Result<crate::world_session::WorldService> {
+        use crate::world::{WorldCore, WorldHandle, WorldLimits};
+        use crate::world_session::WorldService;
+
+        let limits = WorldLimits {
+            checkpoint_every: self.checkpoint_every,
+            ..WorldLimits::default()
+        };
+        let make = {
+            let admin_token = self.admin_token.clone();
+            let blobs = self.blobs.clone();
+            move |handle| WorldService::new(handle, admin_token).with_blob_store(blobs)
+        };
+        let dir = world_dir(name);
+        let namespace_file = (!self.ephemeral).then(|| dir.join("records.namespace"));
+        let records =
+            crate::world_records::RecordsStore::open(&self.docs, namespace_file.as_deref()).await?;
+        info!(
+            world = name,
+            namespace = %records.namespace(),
+            "world: records document ready"
+        );
+        let service = if self.ephemeral {
+            make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
+        } else {
+            let (service, report) =
+                crate::world_store::open_world(&dir, name, limits, make).await?;
+            status!(
+                "world {name}: restored {} at sequence {} ({} input(s) replayed)",
+                dir.display(),
+                report.sequence,
+                report.replayed_inputs
+            );
+            if let Some(error) = &report.program_error {
+                status_err!("warning: world {name}: program not restored ({error}); reinstall it");
+            }
+            service.with_records_store(records)
+        };
+
+        if name == self.default_world
+            && let Some(path) = self.default_module.as_deref()
+        {
+            self.install_default_module(&service, path).await?;
+        }
+        Ok(service)
+    }
+
+    #[cfg(feature = "sandbox")]
+    async fn install_default_module(
+        &self,
+        service: &crate::world_session::WorldService,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let metadata = tokio::fs::metadata(path).await?;
+        ensure!(
+            usize::try_from(metadata.len())
+                .is_ok_and(|len| len <= crate::world_session::MAX_WORLD_MODULE_BYTES),
+            "world module exceeds the configured module size limit"
+        );
+        let wasm = tokio::fs::read(path).await?;
+        let hash = crate::world_session::module_hash(&wasm);
+        if service.active_module_hash().await.as_deref() == Some(hash.as_str()) {
+            info!(module = %path.display(), "world: module already active");
+        } else {
+            let seed = rand::rng().random::<u64>();
+            service
+                .install_wasm(self.admin_token.as_deref(), wasm, seed, &hash)
+                .await
+                .map_err(|e| anyhow::anyhow!("install {}: {e:?}", path.display()))?;
+            info!(module = %path.display(), seed, "world: installed module");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sandbox"))]
+    #[allow(clippy::unused_async)]
+    async fn install_default_module(
+        &self,
+        _service: &crate::world_session::WorldService,
+        _path: &std::path::Path,
+    ) -> Result<()> {
+        anyhow::bail!("--world-module requires a build with the `sandbox` feature");
+    }
 }
 
 /// Starts the serve process.
@@ -524,6 +571,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_module,
         world_name,
         world_checkpoint_every,
+        world_max_open,
+        world_max_sessions,
+        world_idle_secs,
         allow_node,
         open_writes,
     } = opts;
@@ -604,23 +654,41 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Some(crate::access::blobs_events(access.clone())),
     );
 
-    // One authoritative lobby, shared by the Iroh protocol and the web bridge.
+    // Every world lives in one hub, shared by the Iroh protocol and the web
+    // bridge. The default world opens now so a bad journal fails startup.
     #[cfg(feature = "world")]
-    let mut world_handle_to_shutdown = None;
-    #[cfg(feature = "world")]
-    let world_service = if world {
-        let service = open_lobby(
+    let world_hub = if world {
+        use crate::world_hub::{HubLimits, WorldHub};
+        let opener = Arc::new(ServeWorlds {
             ephemeral,
-            &world_name,
+            admin_token: world_admin_token.clone(),
+            blobs: store_handle.clone(),
+            docs: docs.clone(),
+            checkpoint_every: world_checkpoint_every,
+            default_world: world_name.clone(),
+            default_module: world_module.clone(),
+        });
+        let hub = WorldHub::new(
+            opener,
             world_admin_token.clone(),
-            store_handle.clone(),
-            docs.clone(),
-            world_module.as_deref(),
-            world_checkpoint_every,
-        )
-        .await?;
-        world_handle_to_shutdown = Some(service.world().clone());
-        Some(service)
+            world_name.clone(),
+            HubLimits {
+                max_open_worlds: world_max_open,
+                max_sessions: world_max_sessions,
+            },
+        );
+        hub.open_default().await?;
+        if world_idle_secs > 0 && !ephemeral {
+            let idle = std::time::Duration::from_secs(world_idle_secs);
+            hub.spawn_evictor(
+                (idle / 2).clamp(
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(60),
+                ),
+                idle,
+            );
+        }
+        Some(hub)
     } else {
         None
     };
@@ -633,10 +701,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .accept(iroh_docs::net::ALPN, docs.clone());
     #[cfg(feature = "world")]
-    let router_builder = match &world_service {
-        Some(service) => router_builder.accept(
+    let router_builder = match &world_hub {
+        Some(hub) => router_builder.accept(
             crate::world_net::WORLD_ALPN,
-            crate::world_net::WorldProtocol::new(service.clone()),
+            crate::world_net::WorldProtocol::new(hub.clone()),
         ),
         None => router_builder,
     };
@@ -791,7 +859,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             key.to_bytes(),
             identity_db_path,
             crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-            world_service.clone(),
+            world_hub.clone(),
         )
         .await?;
         let actual_port = web_port.unwrap_or(port);
@@ -833,8 +901,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let _ = web_task.await;
     }
     #[cfg(feature = "world")]
-    if let Some(world) = world_handle_to_shutdown {
-        world.shutdown().await?;
+    if let Some(hub) = &world_hub {
+        hub.shutdown_all().await;
     }
     store.shutdown().await?;
     Ok(())

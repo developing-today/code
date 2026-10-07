@@ -25,6 +25,7 @@ async fn connect(
     node: &str,
     addrs: &[SocketAddr],
     no_relay: bool,
+    world: Option<&str>,
 ) -> Result<(Endpoint, WorldClient)> {
     if !is_node_id(node) {
         bail!("`{node}` is not a node ID (expected 64 hex characters)");
@@ -47,7 +48,9 @@ async fn connect(
             .await?
     };
     let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
-    let client = WorldClient::connect(&endpoint, addr).await?;
+    let client = WorldClient::connect(&endpoint, addr)
+        .await?
+        .with_world(world);
     Ok((endpoint, client))
 }
 
@@ -62,10 +65,11 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             admin_token,
             name,
+            world,
             addrs,
             no_relay,
         } => {
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client.invite(&admin_token, &name).await;
             client.close();
             endpoint.close().await;
@@ -78,6 +82,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             module,
             admin_token,
             seed,
+            world,
             addrs,
             no_relay,
         } => {
@@ -90,7 +95,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             );
             let wasm = std::fs::read(&module)
                 .with_context(|| format!("read Wasm module {}", module.display()))?;
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client.install_wasm(&admin_token, &wasm, seed).await;
             client.close();
             endpoint.close().await;
@@ -101,10 +106,11 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             capability,
             prefix,
+            world,
             addrs,
             no_relay,
         } => {
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client.records(&capability, prefix.as_deref()).await;
             client.close();
             endpoint.close().await;
@@ -117,10 +123,11 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             follow,
             dir,
             timeout_secs,
+            world,
             addrs,
             no_relay,
         } => {
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let ticket = client.records_ticket(&capability).await?;
             client.close();
             // Replication runs over iroh-docs, not the world session: the
@@ -152,10 +159,11 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             capability,
             output,
+            world,
             addrs,
             no_relay,
         } => {
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = async {
                 let (_, active_module_hash, _) = client.info(&capability).await?;
                 let module_hash =
@@ -172,14 +180,49 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             result
         }
+        WorldCommand::List {
+            node,
+            admin_token,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, None).await?;
+            let result = client.list_worlds(&admin_token).await;
+            client.close();
+            endpoint.close().await;
+            let (default, worlds) = result?;
+            for (name, open) in worlds {
+                let default_marker = if name == default { " (default)" } else { "" };
+                println!(
+                    "{name}{default_marker}\t{}",
+                    if open { "open" } else { "closed" }
+                );
+            }
+            Ok(())
+        }
+        WorldCommand::Create {
+            node,
+            name,
+            admin_token,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, None).await?;
+            let result = client.create_world(&admin_token, &name).await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", if result? { "created" } else { "exists" });
+            Ok(())
+        }
         WorldCommand::Join {
             node,
             capability,
             after,
+            world,
             addrs,
             no_relay,
         } => {
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             client
                 .send_json(&serde_json::json!({
                     "type": "join",

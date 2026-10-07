@@ -339,6 +339,16 @@ pub enum Command {
         /// others keep their full history. `0` never trims.
         #[arg(long, default_value_t = 1000, requires = "world")]
         world_checkpoint_every: u64,
+        /// Most worlds open at once; idle durable worlds close to make room.
+        #[arg(long, default_value_t = 256, requires = "world")]
+        world_max_open: usize,
+        /// Most world sessions at once, across every world.
+        #[arg(long, default_value_t = 1024, requires = "world")]
+        world_max_sessions: usize,
+        /// Close durable worlds that no session used for this many seconds
+        /// (they reopen from their journal on demand). `0` keeps them open.
+        #[arg(long, default_value_t = 600, requires = "world")]
+        world_idle_secs: u64,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1079,6 +1089,9 @@ pub enum WorldCommand {
         /// Display name for the new participant.
         #[arg(long)]
         name: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<std::net::SocketAddr>,
@@ -1098,6 +1111,9 @@ pub enum WorldCommand {
         /// Deterministic seed supplied to the guest initializer.
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<std::net::SocketAddr>,
@@ -1115,6 +1131,9 @@ pub enum WorldCommand {
         /// Only keys starting with this prefix.
         #[arg(long)]
         prefix: Option<String>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<std::net::SocketAddr>,
@@ -1138,6 +1157,9 @@ pub enum WorldCommand {
         /// Give up after this many seconds without a completed sync.
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<std::net::SocketAddr>,
@@ -1156,6 +1178,9 @@ pub enum WorldCommand {
         /// Where to write the verified module bytes.
         #[arg(long)]
         output: PathBuf,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<std::net::SocketAddr>,
@@ -1174,6 +1199,39 @@ pub enum WorldCommand {
         /// Replay events after this sequence instead of a full snapshot.
         #[arg(long)]
         after: Option<u64>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// List the worlds a host serves (needs the host's admin token).
+    List {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Create a world on a host (needs the host's admin token).
+    Create {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Name of the new world: `a-z`, `0-9`, `-` and `_`.
+        name: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<std::net::SocketAddr>,
@@ -1380,6 +1438,9 @@ mod tests {
                 world_module,
                 world_name,
                 world_checkpoint_every,
+                world_max_open,
+                world_max_sessions,
+                world_idle_secs,
                 allow_node,
                 open_writes,
             }) => {
@@ -1404,6 +1465,9 @@ mod tests {
                 assert!(world_module.is_none());
                 assert_eq!(world_name, "lobby");
                 assert_eq!(world_checkpoint_every, 1000);
+                assert_eq!(world_max_open, 256);
+                assert_eq!(world_max_sessions, 1024);
+                assert_eq!(world_idle_secs, 600);
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

@@ -660,3 +660,159 @@ revocation and a working catch-up; programs that cannot snapshot or whose
 snapshot fails keep their full journal and keep accepting input; a checkpoint
 after events is refused; and a process test plays tic-tac-toe across a trimmed
 journal and a `serve` restart.
+
+---
+
+## 2026-10-07T13-00-00Z Design: worlds as a service
+
+Intent: one `serve` process hosts any number of worlds, many connections, and
+programs that can ask the server for things (time, randomness, who is here,
+speech) without giving up the properties the platform is built on. Programs
+can be compiled from source on the server, and may run natively. Four pieces,
+built in this order, each committed on its own: **hub**, **capabilities**,
+**compile service**, **native tier**.
+
+### 1. The hub: many worlds, many sessions
+
+- A `WorldHub` owns the registry `name -> WorldService`. Every session's first
+  frame may carry `"world": "<name>"`; absent means the default world
+  (`--world-name`, `lobby`), so every existing client keeps working. A session
+  is bound to one world for its lifetime; "change ad hoc" is opening another
+  session (cheap: sessions are QUIC streams on one connection, or WebSockets).
+- Capabilities are per world by construction (each world has its own table), so
+  a token for world A is meaningless in world B. The admin token stays
+  process-wide: it mints capabilities, installs programs and creates worlds.
+- Worlds open lazily from their directory on first reference and are created
+  on demand by an admin-authenticated frame (`invite`, `install_*`,
+  `create_world`). Unauthenticated frames never create a world: an unknown name
+  is "unknown world", indistinguishable from a bad capability.
+- Hub frames: `list_worlds` (admin) and `create_world` (admin). Names are
+  `[a-z0-9_-]{1,64}`, one path segment.
+- Bounds: a ceiling on open worlds (`--world-max-open`) and on concurrent
+  sessions (`--world-max-sessions`); a session holds a lease for its lifetime.
+  Durable worlds with no sessions are evicted after an idle period and reopen
+  from their journal on next use, so the number of *existing* worlds is
+  limited by disk, not memory. Ephemeral worlds are never evicted.
+- Each world keeps its own actor, journal, module directory, records document
+  and (with the native tier) its own worker process: no state is shared across
+  worlds except the blob store and docs engine, both content-addressed.
+
+### 2. Capabilities: effects as data
+
+The program is the same pure function it always was. What a program needs from
+the server is expressed as **data it returns** and **events it receives**:
+
+- `wants : model -> Str` (JSON, a pure projection like `records`) lists the
+  subscriptions and requests the model currently has:
+  `{"v":1,"subscribe":["time.tick:5000","players"],
+    "requests":[{"id":"r1","cap":"time.now"}]}`.
+- The host turns each new thing into an **event**, delivered through the
+  existing `update(model, 0, json)` (participant 0 is the host; real
+  participants start at 1). Every such event is **journaled** before it is
+  delivered, so replay feeds the program exactly what it saw the first time
+  and determinism survives.
+  Events: `{"cap":"time.tick","now":<ms>}`,
+  `{"cap":"players","event":"joined"|"left","participant":{...}}`,
+  `{"cap":"result","id":"r1","ok":true,"value":...}` (or
+  `"error":"cap_denied"|...`).
+- Why not Wasm imports or Roc `hosted` effects: an effect that runs during
+  `update` has a result the journal would have to capture anyway, and an
+  in-flight call cannot be snapshotted or replayed; both tiers would also
+  need their own effect plumbing. Data keeps one ABI for Wasm and native,
+  keeps `update` pure, and keeps checkpoints exact.
+- Catalog (the "server-side library"), each a provider behind one trait:
+  `time.now`, `time.tick:<ms>` (>= 1000 ms, delivered only while someone is
+  connected, so idle worlds stay idle), `random.u64`, `players` (join/leave
+  events) and `players.list`, `chat.say` (a system chat line), `world.info`.
+  New providers add names, never change existing ones: the interface is
+  versioned by the `"v"` field and by cap names.
+- **Authorization.** A world has a granted set. A request to an ungranted cap
+  yields `cap_denied` (journaled, so the program sees it) and is counted in
+  a **usage report** (`cap`, count, denied or not). Grants come from the
+  server (`--world-cap`, repeatable, applied to the default world; admin
+  `grant_caps` frame for any world; persisted in the journal) or, in
+  `--world-cap-policy grant-on-use`, from observation: the first use of a
+  known cap grants it. `id world caps` shows granted caps and the usage of
+  the ungranted ones, which is the "derive what the program needs by
+  looking at what it does" path. Installing a program also reports which caps
+  its initial `wants` needs that the world has not granted.
+- Bounds: <= 64 entries per `wants`, <= 8 KiB args, <= 64 KiB results, <= 64
+  requests in flight. A request is executed when its id appears in `wants`
+  after being absent from the previous `wants`; a program removes it when the
+  result arrives. After a restart in-flight requests run again (at least
+  once).
+
+### 3. Compile service
+
+- Admin frame `compile {admin_token, files, target, seed}` carries up to 8
+  `.roc` files (<= 256 KiB total). The server writes them to a private job
+  directory beside a copy of the world platform, runs the configured `roc`
+  binary (`--roc-bin`, `$ROC`, or `PATH`) with a cleared environment,
+  wall-clock and CPU/memory/file-size limits and bounded output, validates the
+  result with the same import-free policy as an upload, then installs it by
+  the normal journaled path. Diagnostics are returned to the caller.
+- Source is stored with the module (`sources/<hash>/`), so a world can say
+  what it runs. Compilation is admin-only: it executes a compiler on
+  attacker-chosen text, and the only defense is limits, not trust.
+- The platform (host adapter + prebuilt linker inputs) lives in a directory
+  (`--roc-platform`), produced by `examples/roc-world/build-host.sh`; it is not
+  embedded in the binary.
+
+### 4. The native tier
+
+- Roc builds to a static x86-64 musl executable (verified with the pinned
+  nightly: the platform's `x64musl` target links a Zig host `main`, with the
+  musl runtime pieces produced by the local Zig toolchain). The executable is a
+  **worker**: it serves the same entry points over stdin/stdout frames.
+- A world's native program runs in its own child process, launched by the
+  server with: `no_new_privs`, rlimits (address space, CPU, files, processes,
+  core), a **seccomp allowlist** (no `open*`, sockets, `clone`, `exec` after
+  start, `ptrace`, no executable `mmap`/`mprotect`), a per-call wall-clock
+  deadline, and kill on drop. Crash, timeout or protocol violation poisons the
+  program exactly like a Wasm trap.
+- Native is **admin-installed and opt-in** (`--world-native`): unlike Wasm,
+  the guarantee is the OS sandbox, not an import-free format. Native modules
+  are not offered for download to participants.
+- It implements the same `WorldProgram` trait as Wasm, so snapshots,
+  checkpoints, records and capabilities work unchanged.
+
+### Order of work
+
+1. Hub (this section's first part) with tests: isolation, concurrency, limits,
+   eviction, ad hoc creation, CLI and web selection.
+2. Capability runtime and a demo app that uses it.
+3. Compile service.
+4. Native tier.
+
+Each step appends its verification log below.
+
+### 2026-10-07T14-00-00Z Verification: the hub
+
+Built as designed (`src/world_hub.rs`; the session driver now takes a hub).
+Details worth recording:
+
+- `serve` holds one `WorldHub` shared by the Iroh protocol, the WebSocket
+  bridge and the HTTP invite endpoint. `ServeWorlds` is the storage policy
+  (directories under `.id-worlds/<name>/`, one records document per world,
+  `--world-module` for the default world only). Flags:
+  `--world-max-open` (256), `--world-max-sessions` (1024),
+  `--world-idle-secs` (600; `0` keeps worlds open).
+- `world` is a routing field stripped from a session's first frame, so no
+  frame type changed. `WorldClient::open_session(world)` opens another stream
+  on the same connection; the per-connection session bound is 16.
+- CLI: `--world NAME` (or `$ID_WORLD`) on every client subcommand, plus
+  `id world list` and `id world create NAME`. The browser page has a World
+  field (`/world?world=arena`).
+- The existing single-world API keeps working: a `WorldService` converts into
+  a one-world hub, which cannot create or evict.
+
+Verified: name validation; admin-only creation and listing; outsiders cannot
+create, probe or open worlds by naming them (nothing is opened on their
+behalf); capabilities do not cross worlds; 16 concurrent first sessions share
+one open; session and open-world ceilings refuse and recover; idle durable
+worlds make room and reopen on demand; ephemeral worlds never evict; 64
+sessions across 8 worlds see only their own world's events; one real Iroh
+connection hops across worlds with six clients at once; HTTP invite and
+WebSocket join route by world name; and a process test runs one `serve` with
+two different programs, creates worlds ad hoc, proves isolation, evicts an
+idle world, reopens it with its state, and restarts with every world intact.
