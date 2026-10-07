@@ -800,7 +800,7 @@ mod tests {
     struct Bulky;
 
     impl crate::world::WorldProgram for Bulky {
-        fn records(&mut self) -> anyhow::Result<Option<String>> {
+        fn records(&mut self) -> Result<Option<String>> {
             let payload = "y".repeat(8 * 1024 - 16);
             let records: crate::world::Records = (0..96)
                 .map(|i| {

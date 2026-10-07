@@ -317,7 +317,7 @@ pub enum Command {
         /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
         #[arg(long, env = "ID_WEB_TOKEN")]
         web_token: Option<String>,
-        /// Host an in-memory multiplayer lobby over Iroh (and `/ws/world` with `--web`).
+        /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
         #[arg(long, requires = "world_admin_token")]
         world: bool,
         /// Admin secret required to mint world guest capabilities.
@@ -326,6 +326,12 @@ pub enum Command {
         /// Start with this precompiled Wasm world module (Roc platform ABI).
         #[arg(long, requires = "world")]
         world_module: Option<PathBuf>,
+        /// Name of the world this server offers (one world per process).
+        ///
+        /// The world's files live in `.id-worlds/<NAME>/`. Names may contain
+        /// `a-z`, `0-9`, `-` and `_`.
+        #[arg(long, default_value = "lobby", requires = "world")]
+        world_name: String,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1365,6 +1371,7 @@ mod tests {
                 world,
                 world_admin_token,
                 world_module,
+                world_name,
                 allow_node,
                 open_writes,
             }) => {
@@ -1387,6 +1394,7 @@ mod tests {
                 assert!(!world);
                 assert!(world_admin_token.is_none());
                 assert!(world_module.is_none());
+                assert_eq!(world_name, "lobby");
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

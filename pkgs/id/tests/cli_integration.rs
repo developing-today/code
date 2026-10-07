@@ -1430,6 +1430,93 @@ mod serve_tests {
     }
 
     #[test]
+    fn test_named_worlds_use_their_own_directory() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_persistent(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-name",
+                "tt",
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
+            .output()
+            .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // A joining client is told which world it entered.
+        let mut joined = world(&["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"world_id\":\"tt\""), "{first}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // The named world keeps its state under its own directory.
+        assert!(
+            server_dir
+                .path()
+                .join(".id-worlds/tt/records.namespace")
+                .exists()
+        );
+        assert!(
+            !server_dir.path().join(".id-worlds/lobby").exists(),
+            "the default world is not created as a side effect"
+        );
+        server.stop();
+
+        // A name that is not one path segment is refused before startup.
+        let refused = StdCommand::new(get_binary_path())
+            .args([
+                "serve",
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-name",
+                "../evil",
+                "--ephemeral",
+            ])
+            .current_dir(client_dir.path())
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("world name"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+
+    #[test]
     fn test_world_state_survives_a_serve_restart() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

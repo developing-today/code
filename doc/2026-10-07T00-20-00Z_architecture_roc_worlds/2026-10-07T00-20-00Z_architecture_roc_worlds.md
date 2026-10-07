@@ -587,9 +587,12 @@ tic-tac-toe) build with the shared platform and run end to end.
 
 Not offered yet:
 
-- **Multiple worlds per host.** A `serve` process hosts one world (`lobby`) in
-  `.id-worlds/lobby/`; several worlds means several hosts today. A world name
-  in the session frames plus a registry is the next step.
+- **Several worlds in one process.** A `serve` process hosts one *named*
+  world (`--world-name`, default `lobby`) in `.id-worlds/<name>/`; offering
+  several worlds means running several serves, each with its own node
+  identity, port and OS process (which also isolates the worlds' programs
+  from each other). One process serving several worlds — a world name in
+  every session frame plus a registry — is not implemented.
 - **A native Roc tier.** Only effect-free programs compile into the sandbox;
   nothing runs in-process.
 - **Journal compaction.** Replay re-runs every input; it needs a guest
@@ -598,3 +601,22 @@ Not offered yet:
   session; iroh-docs replication is the CLI's job.
 - **Versioned module upgrades.** Upgrades are admin installs by hash; there is
   no channel or rollback beyond installing a previous hash.
+
+---
+
+## 2026-10-07T13-00-00Z Implementation: named worlds
+
+The hard-coded `lobby` directory became `--world-name <NAME>` (default
+`lobby`): a world's journal, module directory and records namespace live in
+`.id-worlds/<name>/`, the world's in-memory id is that name, and a joining
+client learns it from the snapshot. Names are validated as one path segment
+(`a-z0-9-_`, 1..=64 characters, not `.`/`..`), so a caller can never choose a
+directory.
+
+Running several worlds on one machine therefore means several `serve`
+processes, each with its own Iroh identity and store; the process boundary
+isolates the worlds' sandboxes and journals from each other. The verified
+path: a persistent server started with `--world-name tt` reports
+`"world_id":"tt"` to a joining client and writes only `.id-worlds/tt/`,
+leaving `.id-worlds/lobby` absent; `--world-name ../evil` is refused before
+startup.

@@ -27,6 +27,9 @@ then validates the result with `wasm-tools`.
 id serve --world --world-admin-token "$WORLD_ADMIN" --world-module counter.wasm
 ```
 
+Each server offers one named world (`--world-name`, default `lobby`), stored
+under `.id-worlds/<name>/`; run several servers to offer several worlds.
+
 Or leave out `--world-module` and install a compiled module while the world is
 running:
 

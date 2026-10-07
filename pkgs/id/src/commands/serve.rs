@@ -284,12 +284,15 @@ pub struct ServeOptions {
     pub bind: std::net::IpAddr,
     /// Token required by the web interface.
     pub web_token: Option<String>,
-    /// Create an in-memory world and expose it on `/ws/world`.
+    /// Host a multiplayer world (durable unless `ephemeral`).
     pub world: bool,
     /// Admin secret required to mint world guest capabilities.
     pub world_admin_token: Option<String>,
     /// Optional Wasm world program, compiled for the sandbox's Roc platform ABI.
     pub world_module: Option<PathBuf>,
+    /// Name of the world this server offers; its files live under
+    /// `.id-worlds/<name>/`.
+    pub world_name: String,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -300,6 +303,7 @@ fn validate_world_options(
     world: bool,
     admin_token: Option<&str>,
     world_module: Option<&PathBuf>,
+    world_name: &str,
 ) -> Result<()> {
     ensure!(
         !world || admin_token.is_some_and(|token| !token.is_empty()),
@@ -308,6 +312,23 @@ fn validate_world_options(
     ensure!(
         world_module.is_none() || world,
         "--world-module requires --world"
+    );
+    validate_world_name(world_name)?;
+    Ok(())
+}
+
+/// Reject world names that could escape [`WORLDS_DIR`] or confuse operators.
+#[cfg(feature = "world")]
+fn validate_world_name(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty() && name.len() <= 64,
+        "world name must be 1 to 64 characters"
+    );
+    ensure!(name != "." && name != "..", "world name must not be a path");
+    ensure!(
+        name.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
+        "world name may contain only a-z, 0-9, '-' and '_'"
     );
     Ok(())
 }
@@ -343,17 +364,25 @@ pub async fn build_access_policy(
     Ok(AccessPolicy::restricted(writers))
 }
 
-/// Directory of the durable lobby world, relative to the data directory.
+/// Root directory for durable worlds, relative to the data directory.
 #[cfg(feature = "world")]
-pub const WORLD_DIR: &str = ".id-worlds/lobby";
+pub const WORLDS_DIR: &str = ".id-worlds";
 
-/// Open the lobby: durable under [`WORLD_DIR`] unless `ephemeral`. A
+/// Directory of one durable world, relative to the data directory.
+#[cfg(feature = "world")]
+#[must_use]
+pub fn world_dir(name: &str) -> PathBuf {
+    PathBuf::from(WORLDS_DIR).join(name)
+}
+
+/// Open a world: durable under [`WORLDS_DIR`] unless `ephemeral`. A
 /// `--world-module` goes through the same journaled install as an admin
 /// upload, so it is pinned, downloadable and restored after a restart; it is
 /// only installed when it differs from the module the world already runs.
 #[cfg(feature = "world")]
 async fn open_lobby(
     ephemeral: bool,
+    name: &str,
     admin_token: Option<String>,
     blobs: iroh_blobs::api::Store,
     docs: Docs,
@@ -368,21 +397,22 @@ async fn open_lobby(
         let blobs = blobs.clone();
         move |handle| WorldService::new(handle, admin_token).with_blob_store(blobs)
     };
-    let namespace_file = (!ephemeral).then(|| PathBuf::from(WORLD_DIR).join("records.namespace"));
+    let dir = world_dir(name);
+    let namespace_file = (!ephemeral).then(|| dir.join("records.namespace"));
     let records =
         crate::world_records::RecordsStore::open(&docs, namespace_file.as_deref()).await?;
     info!(
+        world = name,
         namespace = %records.namespace(),
         "world: records document ready"
     );
     let service = if ephemeral {
-        make(WorldHandle::spawn(WorldCore::new("lobby", limits)?)).with_records_store(records)
+        make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
     } else {
-        let (service, report) =
-            crate::world_store::open_world(std::path::Path::new(WORLD_DIR), "lobby", limits, make)
-                .await?;
+        let (service, report) = crate::world_store::open_world(&dir, name, limits, make).await?;
         status!(
-            "world: restored {WORLD_DIR} at sequence {} ({} input(s) replayed)",
+            "world {name}: restored {} at sequence {} ({} input(s) replayed)",
+            dir.display(),
             report.sequence,
             report.replayed_inputs
         );
@@ -482,10 +512,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world,
         world_admin_token,
         world_module,
+        world_name,
         allow_node,
         open_writes,
     } = opts;
-    validate_world_options(world, world_admin_token.as_deref(), world_module.as_ref())?;
+    validate_world_options(
+        world,
+        world_admin_token.as_deref(),
+        world_module.as_ref(),
+        &world_name,
+    )?;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -564,6 +600,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let world_service = if world {
         let service = open_lobby(
             ephemeral,
+            &world_name,
             world_admin_token.clone(),
             store_handle.clone(),
             docs.clone(),
@@ -721,7 +758,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     if world {
         status!(
-            "world: lobby enabled (iroh {})",
+            "world {world_name}: enabled (iroh {})",
             String::from_utf8_lossy(crate::world_net::WORLD_ALPN)
         );
         #[cfg(feature = "web")]
@@ -959,14 +996,45 @@ mod tests {
 
     #[test]
     fn world_mode_requires_an_admin_token_but_not_web() {
-        assert!(validate_world_options(true, None, None).is_err());
-        assert!(validate_world_options(true, Some(""), None).is_err());
-        assert!(validate_world_options(true, Some("admin"), None).is_ok());
-        assert!(validate_world_options(false, None, None).is_ok());
+        assert!(validate_world_options(true, None, None, "lobby").is_err());
+        assert!(validate_world_options(true, Some(""), None, "lobby").is_err());
+        assert!(validate_world_options(true, Some("admin"), None, "lobby").is_ok());
+        assert!(validate_world_options(false, None, None, "lobby").is_ok());
         assert!(
-            validate_world_options(true, Some("admin"), Some(&PathBuf::from("world.wasm"))).is_ok()
+            validate_world_options(
+                true,
+                Some("admin"),
+                Some(&PathBuf::from("world.wasm")),
+                "lobby"
+            )
+            .is_ok()
         );
-        assert!(validate_world_options(false, None, Some(&PathBuf::from("world.wasm"))).is_err());
+        assert!(
+            validate_world_options(false, None, Some(&PathBuf::from("world.wasm")), "lobby")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn world_names_are_bounded_and_are_a_single_path_segment() {
+        for bad in [
+            "",
+            "../evil",
+            ".",
+            "..",
+            "Tic-Tac-Toe",
+            "a/b",
+            "sp ace",
+            "wörld",
+        ] {
+            assert!(
+                validate_world_options(true, Some("admin"), None, bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        assert!(validate_world_options(true, Some("admin"), None, "tt-2_x").is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(64)).is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(65)).is_err());
     }
 
     #[test]
