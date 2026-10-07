@@ -367,6 +367,81 @@ impl WorldClient {
         }
     }
 
+    /// Page through the world's structured records until complete.
+    ///
+    /// # Errors
+    ///
+    /// Host refusal, or a malformed page.
+    pub async fn records(
+        &mut self,
+        capability: &str,
+        prefix: Option<&str>,
+    ) -> Result<crate::world::Records> {
+        let mut all = crate::world::Records::new();
+        let mut after: Option<String> = None;
+        loop {
+            self.send_json(&serde_json::json!({
+                "type": "records",
+                "capability": capability,
+                "prefix": prefix,
+                "after": after,
+            }))
+            .await?;
+            let reply = self
+                .recv_json()
+                .await?
+                .context("host closed before records reply")?;
+            if reply["type"] != "records" {
+                bail!(
+                    "{}",
+                    reply["message"]
+                        .as_str()
+                        .unwrap_or("host refused the records query")
+                );
+            }
+            anyhow::ensure!(
+                reply["sequence"].as_u64().is_some(),
+                "records reply has no sequence"
+            );
+            let page: crate::world::Records =
+                serde_json::from_value(reply["records"].clone()).context("decode records page")?;
+            all.extend(page);
+            match reply["next_after"].as_str() {
+                Some(next) => after = Some(next.to_owned()),
+                None => return Ok(all),
+            }
+        }
+    }
+
+    /// Ask for a read-only ticket for the world's records document.
+    ///
+    /// # Errors
+    ///
+    /// Host refusal or a world without structured records.
+    pub async fn records_ticket(&mut self, capability: &str) -> Result<String> {
+        self.send_json(&serde_json::json!({
+            "type": "records_ticket",
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed before ticket reply")?;
+        match reply["type"].as_str() {
+            Some("records_ticket") => reply["ticket"]
+                .as_str()
+                .map(str::to_owned)
+                .context("ticket reply had no ticket"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused a records ticket")
+            ),
+        }
+    }
+
     /// Download the active module bytes after verifying the host's hash.
     ///
     /// # Errors
@@ -715,6 +790,64 @@ mod tests {
         assert!(anon.download_module(&"0".repeat(64), &hash).await.is_err());
         anon.close();
 
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        ep.close().await;
+    }
+
+    /// Publishes 96 ~8 KiB records, so a full read spans several pages that
+    /// must fit the transport frame limit.
+    struct Bulky;
+
+    impl crate::world::WorldProgram for Bulky {
+        fn records(&mut self) -> anyhow::Result<Option<String>> {
+            let payload = "y".repeat(8 * 1024 - 16);
+            let records: crate::world::Records = (0..96)
+                .map(|i| {
+                    (
+                        format!("key-{i:03}"),
+                        serde_json::Value::from(payload.clone()),
+                    )
+                })
+                .collect();
+            Ok(Some(serde_json::to_string(&records)?))
+        }
+    }
+
+    #[tokio::test]
+    async fn paged_records_survive_the_iroh_frame_limit() {
+        let ep = endpoint().await;
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(Bulky),
+        );
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+        let mut inviter = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let capability = inviter.invite("admin", "ann").await.unwrap();
+        inviter.close();
+
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        let records = client.records(&capability, None).await.unwrap();
+        assert_eq!(records.len(), 96);
+        assert!(records.contains_key("key-000") && records.contains_key("key-095"));
+        client.close();
         client_ep.close().await;
         router.shutdown().await.unwrap();
         ep.close().await;

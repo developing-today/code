@@ -5,14 +5,15 @@
 //! state. Capability tokens are returned only at issuance and retained only as
 //! SHA-256 digests for revocation and membership checks.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// Bounded limits for one world.
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +28,10 @@ pub struct WorldLimits {
     pub retained_events: usize,
     /// Maximum presentation text returned by a world program, in bytes.
     pub presentation_bytes: usize,
+    /// Largest snapshot frame, in bytes. A snapshot carries only the most
+    /// recent events that fit; a client rebases its cursor on the snapshot,
+    /// it does not need every retained event.
+    pub snapshot_bytes: usize,
 }
 
 impl Default for WorldLimits {
@@ -37,6 +42,7 @@ impl Default for WorldLimits {
             input_bytes: 16 * 1024,
             retained_events: 1024,
             presentation_bytes: 8192,
+            snapshot_bytes: 512 * 1024,
         }
     }
 }
@@ -197,6 +203,59 @@ pub struct RestoredWorld {
     pub replay: Vec<WorldEvent>,
 }
 
+/// Structured records a program publishes: key to JSON value, key-ordered.
+pub type Records = BTreeMap<String, serde_json::Value>;
+
+/// Most records one world may publish.
+pub const MAX_RECORDS: usize = 4096;
+/// Longest record key, in bytes.
+pub const MAX_RECORD_KEY_BYTES: usize = 256;
+/// Largest single record value (serialized JSON), in bytes.
+pub const MAX_RECORD_VALUE_BYTES: usize = 8 * 1024;
+
+/// Parse and bound a program's records output. Keys must be non-empty,
+/// at most [`MAX_RECORD_KEY_BYTES`], and free of control characters (the
+/// storage layer uses `\0` as a key terminator).
+///
+/// # Errors
+///
+/// Anything that is not a bounded JSON object of valid keys.
+pub fn parse_records(text: &str) -> Result<Records> {
+    let records: Records =
+        serde_json::from_str(text).context("world records must be a JSON object")?;
+    ensure!(
+        records.len() <= MAX_RECORDS,
+        "world publishes {} records; the limit is {MAX_RECORDS}",
+        records.len()
+    );
+    for (key, value) in &records {
+        ensure!(
+            !key.is_empty() && key.len() <= MAX_RECORD_KEY_BYTES,
+            "record key must be 1..={MAX_RECORD_KEY_BYTES} bytes"
+        );
+        ensure!(
+            !key.chars().any(char::is_control),
+            "record key {key:?} contains a control character"
+        );
+        let size = serde_json::to_vec(value)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
+        ensure!(
+            size <= MAX_RECORD_VALUE_BYTES,
+            "record {key:?} is {size} bytes; the limit is {MAX_RECORD_VALUE_BYTES}"
+        );
+    }
+    Ok(records)
+}
+
+/// Records of `program`, validated; `Ok(None)` when it keeps none.
+fn program_records(program: &mut dyn WorldProgram) -> Result<Option<Records>> {
+    program
+        .records()?
+        .map(|text| parse_records(&text))
+        .transpose()
+}
+
 /// Behavior supplied by the running world program.
 ///
 /// Implementations execute inside the actor's serial command loop. They must
@@ -215,6 +274,13 @@ pub trait WorldProgram: Send + 'static {
     fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// Structured records projected from the program state: a JSON object
+    /// mapping record keys to JSON values, or `None` if the program keeps no
+    /// records. Must be a pure function of state (it is recomputed on replay).
+    fn records(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -231,9 +297,11 @@ pub struct WorldSnapshot {
     pub active_module_hash: Option<String>,
     /// Latest committed sequence at snapshot time.
     pub current_sequence: u64,
-    /// Earliest retained event sequence, or current sequence + 1 when empty.
+    /// Earliest event sequence present in this snapshot, or the current
+    /// sequence + 1 when it carries no events.
     pub oldest_retained_sequence: u64,
-    /// Recent event log, bounded by [`WorldLimits::retained_events`].
+    /// Recent events, bounded by [`WorldLimits::retained_events`] and
+    /// [`WorldLimits::snapshot_bytes`] (the newest that fit).
     pub events: Vec<WorldEvent>,
     /// Public participant list.
     pub participants: Vec<Participant>,
@@ -277,6 +345,10 @@ impl WorldCore {
         ensure!(
             limits.presentation_bytes > 0,
             "world presentation limit must be nonzero"
+        );
+        ensure!(
+            limits.snapshot_bytes > 0,
+            "world snapshot limit must be nonzero"
         );
         Ok(Self {
             world_id,
@@ -612,12 +684,28 @@ impl WorldCore {
             .filter(|record| !record.revoked && record.scopes.contains(WorldScopes::JOIN))
             .map(|record| record.participant.clone())
             .collect();
+        // Take the most recent events that fit the snapshot budget, newest
+        // first. A snapshot is a baseline, not a complete replay: clients
+        // adopt its sequence as their cursor.
+        let mut budget = self.limits.snapshot_bytes;
+        let mut events: VecDeque<WorldEvent> = VecDeque::new();
+        for event in self.events.iter().rev() {
+            let size = serde_json::to_vec(event).map_or(budget, |encoded| encoded.len());
+            if size > budget {
+                break;
+            }
+            budget -= size;
+            events.push_front(event.clone());
+        }
+        let oldest_retained_sequence = events
+            .front()
+            .map_or_else(|| self.sequence.saturating_add(1), |event| event.sequence);
         WorldSnapshot {
             world_id: self.world_id.clone(),
             active_module_hash: self.active_module_hash.clone(),
             current_sequence: self.sequence,
-            oldest_retained_sequence: self.oldest_sequence(),
-            events: self.events.iter().cloned().collect(),
+            oldest_retained_sequence,
+            events: events.into_iter().collect(),
             participants,
         }
     }
@@ -630,6 +718,7 @@ pub struct WorldHandle {
     commands: mpsc::Sender<WorldCommand>,
     events: broadcast::Sender<WorldEvent>,
     revocations: broadcast::Sender<u64>,
+    records: watch::Receiver<(u64, Arc<Records>)>,
 }
 
 enum WorldCommand {
@@ -705,10 +794,21 @@ impl WorldHandle {
         let (revocations, _) = broadcast::channel(256);
         let event_sender = events.clone();
         let revocation_sender = revocations.clone();
+        let mut core = core;
+        let mut program = program;
+        let mut program_healthy = true;
+        // Records are recomputed from the (restored) program, so they are a
+        // pure function of the journal and need no storage of their own here.
+        let initial = match program_records(program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(error) => {
+                tracing::error!("world program records failed: {error:#}");
+                program_healthy = false;
+                Records::new()
+            }
+        };
+        let (records_sender, records) = watch::channel((core.sequence, Arc::new(initial)));
         tokio::spawn(async move {
-            let mut core = core;
-            let mut program = program;
-            let mut program_healthy = true;
             let mut journal = journal;
             let mut storage_failed = false;
             // Durably record `entry`, or turn the world read-only.
@@ -797,14 +897,22 @@ impl WorldHandle {
                             Ok(_) if storage_failed => Err(anyhow::anyhow!(
                                 "world storage failed; the world is read-only"
                             )),
-                            Ok(candidate) if program_healthy => match program.update(&candidate) {
-                                Ok(()) => persist(
+                            Ok(candidate) if program_healthy => match program
+                                .update(&candidate)
+                                .and_then(|()| program_records(program.as_mut()))
+                            {
+                                Ok(records) => persist(
                                     JournalEntry::Committed {
                                         event: candidate.clone(),
                                     },
                                     &mut storage_failed,
                                 )
-                                .and_then(|()| core.commit_prepared(candidate)),
+                                .and_then(|()| core.commit_prepared(candidate))
+                                .inspect(|event| {
+                                    if let Some(records) = records {
+                                        publish_records(&records_sender, event.sequence, records);
+                                    }
+                                }),
                                 Err(error) => {
                                     program_healthy = false;
                                     Err(error.context("world program rejected input"))
@@ -863,9 +971,19 @@ impl WorldHandle {
                     WorldCommand::InstallProgram {
                         module_hash,
                         seed,
-                        program: replacement,
+                        program: mut replacement,
                         reply,
                     } => {
+                        // A program whose initial records are invalid is
+                        // refused before anything is journaled.
+                        let new_records = match program_records(replacement.as_mut()) {
+                            Ok(records) => records.unwrap_or_default(),
+                            Err(error) => {
+                                let _ = reply
+                                    .send(Err(error.context("new world program records failed")));
+                                continue;
+                            }
+                        };
                         // Actor serialization makes activation and its event
                         // atomic with respect to other world commands.
                         let candidate = WorldEvent {
@@ -889,6 +1007,7 @@ impl WorldHandle {
                                 }
                                 program = replacement;
                                 program_healthy = true;
+                                publish_records(&records_sender, event.sequence, new_records);
                                 let _ = event_sender.send(event.clone());
                                 Ok(event)
                             }
@@ -907,7 +1026,22 @@ impl WorldHandle {
             commands,
             events,
             revocations,
+            records,
         }
+    }
+
+    /// The latest `(sequence, records)` published by the world program.
+    /// Callers must authorize the reader first (see [`Self::participant_id`]).
+    #[must_use]
+    pub fn records(&self) -> (u64, Arc<Records>) {
+        let current = self.records.borrow();
+        (current.0, Arc::clone(&current.1))
+    }
+
+    /// Watch record changes (coalesced: a slow reader sees the latest set).
+    #[must_use]
+    pub fn watch_records(&self) -> watch::Receiver<(u64, Arc<Records>)> {
+        self.records.clone()
     }
 
     /// Subscribe to newly committed world events.
@@ -1109,6 +1243,17 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+fn publish_records(sender: &watch::Sender<(u64, Arc<Records>)>, sequence: u64, records: Records) {
+    sender.send_if_modified(|current| {
+        if *current.1 == records {
+            false
+        } else {
+            *current = (sequence, Arc::new(records));
+            true
+        }
+    });
+}
+
 fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
     let bytes = encoded.as_bytes();
     if bytes.len() != 64 {
@@ -1288,5 +1433,149 @@ mod tests {
         sequences.sort_unstable();
         assert_eq!(sequences, [1, 2, 3]);
         assert_eq!(actor.snapshot(token).await.unwrap().current_sequence, 3);
+    }
+
+    /// Counts inputs; records are the count, or `bad` after an input "bad".
+    struct Counter {
+        count: u64,
+        bad: bool,
+    }
+
+    impl WorldProgram for Counter {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(bytes) = &event.kind {
+                self.count += 1;
+                self.bad = bytes.as_slice() == b"bad";
+            }
+            Ok(())
+        }
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(if self.bad {
+                "[1,2,3]".to_owned()
+            } else {
+                format!("{{\"count\":{}}}", self.count)
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn records_follow_committed_inputs_and_bad_output_fails_closed() {
+        let world = WorldHandle::spawn_with_program(
+            world(16),
+            Box::new(Counter {
+                count: 0,
+                bad: false,
+            }),
+        );
+        assert_eq!(world.records().1["count"], 0);
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let event = world.input(ann.clone(), b"go".to_vec()).await.unwrap();
+        let (sequence, records) = world.records();
+        assert_eq!(
+            (sequence, records["count"].as_u64()),
+            (event.sequence, Some(1))
+        );
+
+        // Records that are not a JSON object reject the input and poison the
+        // program; the previous records stay published.
+        assert!(world.input(ann.clone(), b"bad".to_vec()).await.is_err());
+        assert_eq!(world.records().1["count"], 1);
+        assert!(world.input(ann.clone(), b"go".to_vec()).await.is_err());
+        let snapshot = world.snapshot(ann.clone()).await.unwrap();
+        assert_eq!(
+            snapshot.current_sequence, event.sequence,
+            "nothing committed"
+        );
+
+        // A replacement with valid records restores service.
+        world
+            .install_program(
+                "00".repeat(32),
+                0,
+                Box::new(Counter {
+                    count: 10,
+                    bad: false,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(world.records().1["count"], 10);
+        world.input(ann, b"go".to_vec()).await.unwrap();
+        assert_eq!(world.records().1["count"], 11);
+    }
+
+    #[tokio::test]
+    async fn installs_with_invalid_records_are_refused() {
+        let world = WorldHandle::spawn(world(16));
+        let err = world
+            .install_program(
+                "00".repeat(32),
+                0,
+                Box::new(Counter {
+                    count: 0,
+                    bad: true,
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("records"), "{err:#}");
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        assert_eq!(world.snapshot(ann).await.unwrap().active_module_hash, None);
+    }
+
+    #[test]
+    fn record_keys_and_sizes_are_bounded() {
+        assert!(parse_records(r#"{"a":1,"b":{"c":[true]}}"#).is_ok());
+        assert!(parse_records("[]").is_err());
+        assert!(parse_records(r#"{"":1}"#).is_err());
+        assert!(parse_records("{\"a\\u0000b\":1}").is_err());
+        let long_key = format!(r#"{{"{}":1}}"#, "k".repeat(MAX_RECORD_KEY_BYTES + 1));
+        assert!(parse_records(&long_key).is_err());
+        let big_value = format!(r#"{{"k":"{}"}}"#, "v".repeat(MAX_RECORD_VALUE_BYTES));
+        assert!(parse_records(&big_value).is_err());
+        let many: Records = (0..=MAX_RECORDS)
+            .map(|i| (i.to_string(), 0.into()))
+            .collect();
+        assert!(parse_records(&serde_json::to_string(&many).unwrap()).is_err());
+    }
+
+    #[test]
+    fn snapshots_carry_the_newest_events_that_fit_their_budget() {
+        let mut core = WorldCore::new(
+            "budget",
+            WorldLimits {
+                snapshot_bytes: 1024,
+                input_bytes: 64,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "ann");
+        for i in 0..20u8 {
+            core.input(&token, &[b'x'; 48]).unwrap().sequence;
+            let _ = i;
+        }
+        let snapshot = core.snapshot(&token).unwrap();
+        assert_eq!(snapshot.current_sequence, 20);
+        assert!(!snapshot.events.is_empty());
+        assert!(
+            serde_json::to_vec(&snapshot.events).unwrap().len() <= 1024,
+            "events fit the budget"
+        );
+        assert!(
+            snapshot.events.len() < 20,
+            "an oversized log is truncated to the newest events"
+        );
+        let first = snapshot.events.first().unwrap().sequence;
+        assert_eq!(snapshot.oldest_retained_sequence, first);
+        assert_eq!(snapshot.events.last().unwrap().sequence, 20);
+        // The snapshot is a valid rebase point: continuing from its cursor
+        // yields only new events.
+        assert!(
+            core.events_after(&token, snapshot.current_sequence)
+                .unwrap()
+                .events
+                .is_empty()
+        );
     }
 }

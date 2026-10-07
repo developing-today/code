@@ -876,3 +876,6 @@ pub extern fn roc_update(arg0: RocBox, arg1: RocStr) callconv(.c) RocBox;
 /// Entrypoint: view_for_host
 pub extern fn roc_view(arg0: RocBox, arg1: RocStr) callconv(.c) RocStr;
 
+/// Entrypoint: records_for_host
+pub extern fn roc_records(arg0: RocBox) callconv(.c) RocStr;
+

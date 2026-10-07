@@ -93,6 +93,7 @@ impl Sandbox {
                         | "plaza_update"
                         | "plaza_free"
                         | "plaza_view"
+                        | "plaza_records"
                         | "plaza_out_len"
                         | "plaza_error_ptr"
                         | "plaza_error_len"
@@ -167,6 +168,18 @@ impl Sandbox {
         let out_len = instance
             .get_typed_func::<(), i32>(&mut store, "plaza_out_len")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_out_len() -> i32`: {e}"))?;
+        // Optional: a pure projection of the model into structured records.
+        let records = if instance.get_func(&mut store, "plaza_records").is_some() {
+            Some(
+                instance
+                    .get_typed_func::<i32, i32>(&mut store, "plaza_records")
+                    .map_err(|e| {
+                        anyhow::anyhow!("guest `plaza_records` must be `(i32) -> i32`: {e}")
+                    })?,
+            )
+        } else {
+            None
+        };
         let error_ptr = if instance.get_func(&mut store, "plaza_error_ptr").is_some() {
             Some(
                 instance
@@ -201,6 +214,7 @@ impl Sandbox {
             free,
             update,
             view,
+            records,
             out_len,
             error_ptr,
             error_len,
@@ -219,6 +233,7 @@ pub struct WorldInstance {
     free: TypedFunc<(i32, i32), ()>,
     update: TypedFunc<(i32, i32, i32), i32>,
     view: TypedFunc<(i32, i32, i32), i32>,
+    records: Option<TypedFunc<i32, i32>>,
     out_len: TypedFunc<(), i32>,
     error_ptr: Option<TypedFunc<(), i32>>,
     error_len: Option<TypedFunc<(), i32>>,
@@ -309,6 +324,41 @@ impl WorldInstance {
         };
         self.free_input(ptr, allocation_len)
             .map_err(|e| anyhow::anyhow!("free guest viewer buffer: {e}"))?;
+        self.read_output(output_ptr)
+    }
+
+    /// The guest's structured records, or `None` if it does not export them.
+    pub fn records(&mut self) -> Result<Option<Vec<u8>>> {
+        ensure!(
+            !self.poisoned,
+            "world guest is poisoned after a previous failure"
+        );
+        let Some(records) = self.records.clone() else {
+            return Ok(None);
+        };
+        let result = self.records_inner(&records);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result.map(Some)
+    }
+
+    fn records_inner(&mut self, records: &TypedFunc<i32, i32>) -> Result<Vec<u8>> {
+        self.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
+        let output_ptr = records.call(&mut self.store, self.model).map_err(|e| {
+            anyhow::anyhow!(
+                "guest `plaza_records` failed (trap or fuel exhausted): {e}{}",
+                self.guest_error_suffix()
+            )
+        })?;
+        self.read_output(output_ptr)
+    }
+
+    /// Copy the guest's current output buffer (`plaza_out_len` bytes at
+    /// `output_ptr`) out of linear memory, bounds-checked.
+    fn read_output(&mut self, output_ptr: i32) -> Result<Vec<u8>> {
         let output_len = self
             .out_len
             .call(&mut self.store, ())
@@ -434,6 +484,12 @@ impl crate::world::WorldProgram for WorldInstance {
             .map(Some)
             .context("Roc world view must return valid UTF-8")
     }
+
+    fn records(&mut self) -> Result<Option<String>> {
+        WorldInstance::records(self)?
+            .map(|bytes| String::from_utf8(bytes).context("Roc world records must be valid UTF-8"))
+            .transpose()
+    }
 }
 
 struct GuestBuffer {
@@ -520,6 +576,29 @@ mod tests {
             actor.view(capability).await.unwrap().as_deref(),
             Some("count=1")
         );
+    }
+
+    #[test]
+    fn checked_in_roc_counter_publishes_records() {
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        assert_eq!(world.records().unwrap().unwrap(), br#"{"count":0}"#);
+        world.update(b"inc").unwrap();
+        world.update(b"inc").unwrap();
+        assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
+        // A view between records calls must not disturb either output.
+        assert_eq!(world.view(b"").unwrap(), b"count=2");
+        assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
+    }
+
+    #[test]
+    fn records_export_is_optional() {
+        let mut world = compile(ECHO, SandboxLimits::default())
+            .unwrap()
+            .instantiate(0)
+            .unwrap();
+        assert_eq!(world.records().unwrap(), None);
     }
 
     #[test]

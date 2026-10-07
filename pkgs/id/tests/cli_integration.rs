@@ -1413,6 +1413,47 @@ mod serve_tests {
         let addr = lock_ipv4_addr(&server.lock_file_path());
         let seen = session(&node, &addr, &capability, 1, 3);
         assert!(seen[1].contains("count=2"), "restored view: {}", seen[1]);
+
+        // The program's structured records are queryable after restart...
+        let records = world(
+            &node,
+            &addr,
+            &["records", &node, "--capability", &capability],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            records.status.success(),
+            "{}",
+            String::from_utf8_lossy(&records.stderr)
+        );
+        let records_stdout = String::from_utf8(records.stdout).unwrap();
+        assert!(records_stdout.contains("\"count\": 3"), "{records_stdout}");
+
+        // ...and replicate peer-to-peer over iroh-docs with a read ticket,
+        // driven by a second process with its own node identity.
+        let mirror = world(
+            &node,
+            &addr,
+            &[
+                "mirror",
+                &node,
+                "--capability",
+                &capability,
+                "--no-relay",
+                "--timeout-secs",
+                "60",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            mirror.status.success(),
+            "{}",
+            String::from_utf8_lossy(&mirror.stderr)
+        );
+        let mirror_stdout = String::from_utf8(mirror.stdout).unwrap();
+        assert!(mirror_stdout.contains("\"count\": 3"), "{mirror_stdout}");
         let journal =
             fs::read_to_string(server_dir.path().join(".id-worlds/lobby/journal.jsonl")).unwrap();
         assert!(

@@ -356,6 +356,7 @@ async fn open_lobby(
     ephemeral: bool,
     admin_token: Option<String>,
     blobs: iroh_blobs::api::Store,
+    docs: Docs,
     module: Option<&std::path::Path>,
 ) -> Result<crate::world_session::WorldService> {
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
@@ -367,8 +368,15 @@ async fn open_lobby(
         let blobs = blobs.clone();
         move |handle| WorldService::new(handle, admin_token).with_blob_store(blobs)
     };
+    let namespace_file = (!ephemeral).then(|| PathBuf::from(WORLD_DIR).join("records.namespace"));
+    let records =
+        crate::world_records::RecordsStore::open(&docs, namespace_file.as_deref()).await?;
+    info!(
+        namespace = %records.namespace(),
+        "world: records document ready"
+    );
     let service = if ephemeral {
-        make(WorldHandle::spawn(WorldCore::new("lobby", limits)?))
+        make(WorldHandle::spawn(WorldCore::new("lobby", limits)?)).with_records_store(records)
     } else {
         let (service, report) =
             crate::world_store::open_world(std::path::Path::new(WORLD_DIR), "lobby", limits, make)
@@ -381,7 +389,7 @@ async fn open_lobby(
         if let Some(error) = &report.program_error {
             status_err!("warning: world program not restored ({error}); reinstall it");
         }
-        service
+        service.with_records_store(records)
     };
 
     if let Some(path) = module {
@@ -558,6 +566,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             ephemeral,
             world_admin_token.clone(),
             store_handle.clone(),
+            docs.clone(),
             world_module.as_deref(),
         )
         .await?;

@@ -795,6 +795,13 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
       <h2 class="font-bold">World view</h2>
       <pre data-world-view class="min-h-32 whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg" aria-live="polite">Waiting for a world view…</pre>
       <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Records</h2>
+        <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
+        <code>id world mirror</code>.</p>
     </div>
     <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
       <h2 class="font-bold">Participants</h2>

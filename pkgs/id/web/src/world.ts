@@ -1,7 +1,15 @@
 /** Browser presentation for the server-authoritative world session. */
 
 type WorldFrame = {
-  type: "snapshot" | "event" | "view" | "invite" | "upload_ready" | "module_installed" | "error";
+  type:
+    | "snapshot"
+    | "event"
+    | "view"
+    | "records"
+    | "invite"
+    | "upload_ready"
+    | "module_installed"
+    | "error";
   snapshot?: {
     world_id: string;
     current_sequence: number;
@@ -16,6 +24,8 @@ type WorldFrame = {
   data?: string;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
+  records?: Record<string, unknown>;
+  next_after?: string | null;
   chunk_bytes?: number;
   module_hash?: string;
   participant_id?: number;
@@ -56,17 +66,23 @@ function initWorld(): void {
   const view = element<HTMLElement>(root, "[data-world-view]");
   const participants = element<HTMLElement>(root, "[data-world-participants]");
   const status = element<HTMLElement>(root, "[data-world-status]");
+  const recordsView = element<HTMLElement>(root, "[data-world-records]");
+  const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
   if (
     !name || !admin || !capability || !inviteButton || !moduleInput || !moduleSeed || !installButton || !joinButton || !chatForm || !chatInput ||
-    !inputForm || !gameInput || !log || !view || !participants || !status || !copyButton || !inviteOutput
+    !inputForm || !gameInput || !log || !view || !recordsView || !recordsRefresh || !participants ||
+    !status || !copyButton || !inviteOutput
   ) return;
 
   const storageKey = `id-world-capability:${window.location.host}`;
   capability.value = sessionStorage.getItem(storageKey) ?? "";
   let socket: WebSocket | null = null;
   let cursor = 0;
+  let records: Record<string, unknown> = {};
+  let recordsAfter: string | null = null;
+  let recordsPending = false;
   let reconnects = 0;
   let intentionalClose = false;
 
@@ -103,6 +119,7 @@ function initWorld(): void {
         }
         appendLine(log, `Connected to ${frame.snapshot.world_id} at event ${cursor}`);
         setStatus("Connected", "good");
+        requestRecords();
         break;
       }
       case "event": {
@@ -114,12 +131,29 @@ function initWorld(): void {
           appendLine(log, `${who?.textContent ?? `player ${event.participant_id}`}: ${String(event.kind.data)}`);
         } else {
           appendLine(log, `input #${event.sequence} from player ${event.participant_id}`);
+          requestRecords();
         }
         break;
       }
       case "view":
         if (frame.data !== undefined) view.textContent = frame.data;
         break;
+      case "records": {
+        if (!recordsPending) return;
+        Object.assign(records, frame.records ?? {});
+        recordsAfter = frame.next_after ?? null;
+        if (recordsAfter === null) {
+          recordsPending = false;
+          recordsView.textContent = JSON.stringify(records, null, 2);
+        } else {
+          socket?.send(JSON.stringify({
+            type: "records",
+            capability: capability.value.trim(),
+            after: recordsAfter,
+          }));
+        }
+        break;
+      }
       case "invite": {
         const invite = frame.invite ?? frame;
         if (invite.capability) {
@@ -135,6 +169,23 @@ function initWorld(): void {
         break;
     }
   };
+
+  const requestRecords = () => {
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading records", "error");
+      return;
+    }
+    records = {};
+    recordsAfter = null;
+    recordsPending = true;
+    // This session is joined, so it can also ask for records.
+    socket.send(JSON.stringify({
+      type: "records",
+      capability: capability.value.trim(),
+    }));
+  };
+
+  recordsRefresh.addEventListener("click", requestRecords);
 
   const connect = () => {
     const token = capability.value.trim();

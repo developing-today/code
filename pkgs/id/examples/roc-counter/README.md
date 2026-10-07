@@ -2,7 +2,8 @@
 
 A tiny pure Roc world program used by `id`'s multiplayer service. The host
 owns the authoritative state; guests send `inc`, and every participant sees
-the returned `count=N` presentation over either Iroh or WebSocket.
+the returned `count=N` presentation over either Iroh or WebSocket. It also
+demonstrates the `records` export (structured data mirroring).
 
 ## Build
 
@@ -35,6 +36,19 @@ id world install HOST_NODE counter.wasm --admin-token "$WORLD_ADMIN" --addr HOST
 guest capability. Join with `id world join HOST_NODE --capability TOKEN`; type
 `/input 696e63` to increment and ordinary lines to chat. The browser view at
 `http://localhost:PORT/world` uses the same session protocol.
+
+The program also publishes structured records (`records : Model -> Str`):
+
+```sh
+id world records HOST_NODE --capability TOKEN      # {"count": N}
+id world mirror HOST_NODE --capability TOKEN --follow   # live iroh-docs replica
+```
+
+`records` reads the host's current set; `mirror` replicates it peer-to-peer
+over iroh-docs, so a replica keeps receiving changes. Records are bounded
+(<= 4096 keys, keys <= 256 bytes without control characters, values <= 8 KiB,
+1 MiB total) and are recomputed from the program, never stored as a second
+source of truth.
 
 The module has no Wasm imports. The host applies fuel, memory, module-size and
 message-size limits. A trap fails closed: that world program is marked

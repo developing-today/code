@@ -28,7 +28,13 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 use crate::world::{JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot};
 
 /// Largest accepted or emitted frame, in bytes.
-pub const MAX_FRAME_BYTES: usize = 16 * 1024;
+///
+/// Snapshots and records pages are bounded to fit inside this (see
+/// [`crate::world::WorldLimits::snapshot_bytes`] and
+/// [`MAX_RECORDS_PAGE_BYTES`]), and both transports enforce it: the Iroh
+/// frame reader refuses longer frames and the WebSocket has
+/// `max_message_size(MAX_FRAME_BYTES)`.
+pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Largest Wasm world module that may be installed (16 MiB).
 pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
@@ -96,6 +102,18 @@ enum ClientFrame {
     Info {
         capability: String,
     },
+    /// Page through the world's structured records.
+    Records {
+        capability: String,
+        /// Only keys starting with this prefix.
+        prefix: Option<String>,
+        /// Continue after this key (exclusive).
+        after: Option<String>,
+    },
+    /// Ask for a read-only doc ticket to replicate the records peer-to-peer.
+    RecordsTicket {
+        capability: String,
+    },
     DownloadModule {
         capability: String,
         module_hash: String,
@@ -145,6 +163,17 @@ enum ServerFrame<'a> {
         world_id: String,
         active_module_hash: Option<String>,
         current_sequence: u64,
+    },
+    /// One page of structured records, with the sequence they were read at.
+    Records {
+        sequence: u64,
+        records: crate::world::Records,
+        /// Present when more keys follow; pass as `after` to continue.
+        next_after: Option<String>,
+    },
+    /// A read-only iroh-docs ticket for the records document.
+    RecordsTicket {
+        ticket: String,
     },
     ModuleBegin {
         module_hash: String,
@@ -221,6 +250,7 @@ pub struct WorldService {
     module_hash: Arc<RwLock<Option<String>>>,
     upload_slots: Arc<Semaphore>,
     module_dir: Option<crate::world_store::ModuleDir>,
+    records: Option<Arc<crate::world_records::RecordsStore>>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -246,7 +276,24 @@ impl WorldService {
             module_hash: Arc::new(RwLock::new(None)),
             upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_MODULE_UPLOADS)),
             module_dir: None,
+            records: None,
         }
+    }
+
+    /// Attach the world's records document and start mirroring program
+    /// records into it.
+    #[must_use]
+    pub fn with_records_store(mut self, records: crate::world_records::RecordsStore) -> Self {
+        let records = Arc::new(records);
+        records.spawn_publisher(&self.world);
+        self.records = Some(records);
+        self
+    }
+
+    /// The world's records document, if it has one.
+    #[must_use]
+    pub fn records_store(&self) -> Option<&Arc<crate::world_records::RecordsStore>> {
+        self.records.as_ref()
     }
 
     /// Persist installed modules here so a durable world can re-instantiate
@@ -504,13 +551,7 @@ pub async fn run_session_with<I: SessionIo>(
                 let _ = send_error(io, "invalid join capability").await;
                 return;
             }
-            joined(
-                service.world(),
-                io,
-                JoinCapability::from_wire(capability),
-                after,
-            )
-            .await;
+            joined(service, io, JoinCapability::from_wire(capability), after).await;
         }
         ClientFrame::Invite {
             admin_token,
@@ -529,35 +570,13 @@ pub async fn run_session_with<I: SessionIo>(
                 let _ = send_error(io, "world cannot issue another invite").await;
             }
         },
-        ClientFrame::Info { capability } => {
-            let token = JoinCapability::from_wire(capability);
-            match service.world().snapshot(token).await {
-                Ok(snapshot) => {
-                    let _ = send_json(
-                        io,
-                        &ServerFrame::ModuleInfo {
-                            world_id: snapshot.world_id,
-                            active_module_hash: snapshot.active_module_hash,
-                            current_sequence: snapshot.current_sequence,
-                        },
-                    )
-                    .await;
-                }
-                Err(_) => {
-                    let _ = send_error(io, "join denied").await;
-                }
-            }
-        }
-        ClientFrame::DownloadModule {
-            capability,
-            module_hash,
-        } => {
-            let token = JoinCapability::from_wire(capability);
-            if service.world().snapshot(token).await.is_err() {
-                let _ = send_error(io, "join denied").await;
-            } else if let Err(message) = download_module_session(service, io, &module_hash).await {
-                let _ = send_error(io, message).await;
-            }
+        // Query frames keep the session open for further queries: a client
+        // can page through records, and may still join later on.
+        ClientFrame::Info { .. }
+        | ClientFrame::Records { .. }
+        | ClientFrame::RecordsTicket { .. }
+        | ClientFrame::DownloadModule { .. } => {
+            query_session(service, io, frame).await;
         }
         ClientFrame::InstallBegin {
             admin_token,
@@ -585,6 +604,200 @@ pub async fn run_session_with<I: SessionIo>(
             let _ = send_error(io, "first frame must be join, invite or install_begin").await;
         }
     }
+}
+
+/// Serve query frames (`info`, `records`, `records_ticket`,
+/// `download_module`) until the peer closes, denies, or sends a frame that
+/// ends the session. A `join` frame switches to the joined session.
+async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: ClientFrame) {
+    let mut next = Some(first);
+    loop {
+        let frame = match next.take() {
+            Some(frame) => frame,
+            None => match io.recv().await {
+                Inbound::Text(text) => match serde_json::from_str::<ClientFrame>(&text) {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        let _ = send_error(io, "invalid world frame").await;
+                        return;
+                    }
+                },
+                Inbound::Oversized => {
+                    let _ = send_error(io, "world frame is too large").await;
+                    return;
+                }
+                Inbound::Unsupported => {
+                    let _ = send_error(io, "frames must be UTF-8 text").await;
+                    return;
+                }
+                Inbound::Closed => return,
+            },
+        };
+        match frame {
+            ClientFrame::Join { capability, after } => {
+                if capability.len() > MAX_CAPABILITY_BYTES {
+                    let _ = send_error(io, "invalid join capability").await;
+                    return;
+                }
+                joined(service, io, JoinCapability::from_wire(capability), after).await;
+                return;
+            }
+            ClientFrame::Info { capability } => {
+                let token = JoinCapability::from_wire(capability);
+                match service.world().snapshot(token).await {
+                    Ok(snapshot) => {
+                        if !send_json(
+                            io,
+                            &ServerFrame::ModuleInfo {
+                                world_id: snapshot.world_id,
+                                active_module_hash: snapshot.active_module_hash,
+                                current_sequence: snapshot.current_sequence,
+                            },
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = send_error(io, "join denied").await;
+                        return;
+                    }
+                }
+            }
+            ClientFrame::Records {
+                capability,
+                prefix,
+                after,
+            } => {
+                let token = JoinCapability::from_wire(capability);
+                if let Err(message) = records_session(
+                    service.world(),
+                    io,
+                    token,
+                    prefix.as_deref(),
+                    after.as_deref(),
+                )
+                .await
+                {
+                    let _ = send_error(io, message).await;
+                    return;
+                }
+            }
+            ClientFrame::RecordsTicket { capability } => {
+                let token = JoinCapability::from_wire(capability);
+                if service.world().participant_id(token).await.is_err() {
+                    let _ = send_error(io, "join denied").await;
+                    return;
+                }
+                match records_ticket_session(service, io).await {
+                    Ok(()) => {}
+                    Err(message) => {
+                        let _ = send_error(io, message).await;
+                        return;
+                    }
+                }
+            }
+            ClientFrame::DownloadModule {
+                capability,
+                module_hash,
+            } => {
+                let token = JoinCapability::from_wire(capability);
+                if service.world().snapshot(token).await.is_err() {
+                    let _ = send_error(io, "join denied").await;
+                    return;
+                }
+                if let Err(message) = download_module_session(service, io, &module_hash).await {
+                    let _ = send_error(io, message).await;
+                    return;
+                }
+            }
+            _ => {
+                let _ = send_error(io, "expected a query frame").await;
+                return;
+            }
+        }
+    }
+}
+
+/// Answer a `records_ticket` query.
+async fn records_ticket_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+) -> Result<(), &'static str> {
+    match service.records_store() {
+        Some(store) => match store.read_ticket().await {
+            Ok(ticket) => {
+                if send_json(io, &ServerFrame::RecordsTicket { ticket }).await {
+                    Ok(())
+                } else {
+                    Err("connection closed")
+                }
+            }
+            Err(_) => Err("records ticket unavailable"),
+        },
+        None => Err("world keeps no structured records"),
+    }
+}
+
+/// Largest page of records returned in one frame, comfortably inside
+/// [`MAX_FRAME_BYTES`] after JSON framing overhead.
+const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+
+async fn records_session<I: SessionIo>(
+    world: &WorldHandle,
+    io: &mut I,
+    token: JoinCapability,
+    prefix: Option<&str>,
+    after: Option<&str>,
+) -> Result<(), &'static str> {
+    if world.participant_id(token).await.is_err() {
+        return Err("join denied");
+    }
+    let (sequence, records) = world.records();
+    let mut page = crate::world::Records::new();
+    let mut used = 0usize;
+    let mut last_included: Option<String> = None;
+    let mut more = false;
+    for (key, value) in records.iter() {
+        if let Some(prefix) = prefix
+            && !key.starts_with(prefix)
+        {
+            continue;
+        }
+        if let Some(after) = after
+            && key.as_str() <= after
+        {
+            continue;
+        }
+        let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
+        if used + size > MAX_RECORDS_PAGE_BYTES {
+            // `next_after` is exclusive on the client, so it must be the
+            // last key *included* here; anything else would skip a record.
+            if page.is_empty() {
+                return Err("a record is too large to serve in one page");
+            }
+            more = true;
+            break;
+        }
+        used += size;
+        last_included = Some(key.clone());
+        page.insert(key.clone(), value.clone());
+    }
+    let next_after = more.then_some(last_included).flatten();
+    if !send_json(
+        io,
+        &ServerFrame::Records {
+            sequence,
+            records: page,
+            next_after,
+        },
+    )
+    .await
+    {
+        return Err("connection closed");
+    }
+    Ok(())
 }
 
 async fn download_module_session<I: SessionIo>(
@@ -743,11 +956,12 @@ async fn install_module_session<I: SessionIo>(
 }
 
 async fn joined<I: SessionIo>(
-    world: &WorldHandle,
+    service: &WorldService,
     io: &mut I,
     token: JoinCapability,
     after: Option<u64>,
 ) {
+    let world = service.world();
     // Subscribe before taking the snapshot so no event can fall in the gap;
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
@@ -806,7 +1020,7 @@ async fn joined<I: SessionIo>(
         tokio::select! {
             inbound = io.recv() => match inbound {
                 Inbound::Text(text) => {
-                    if !handle_client_frame(world, io, &token, &text).await {
+                    if !handle_client_frame(service, io, &token, &text).await {
                         break;
                     }
                 }
@@ -903,11 +1117,12 @@ async fn send_view<I: SessionIo>(
 
 /// Handle one frame from a joined participant. Returns `false` to end the session.
 async fn handle_client_frame<I: SessionIo>(
-    world: &WorldHandle,
+    service: &WorldService,
     io: &mut I,
     token: &JoinCapability,
     text: &str,
 ) -> bool {
+    let world = service.world();
     let Ok(frame) = serde_json::from_str::<ClientFrame>(text) else {
         return send_error(io, "invalid world frame").await;
     };
@@ -917,6 +1132,27 @@ async fn handle_client_frame<I: SessionIo>(
             Some(data) => world.input(token.clone(), data).await,
             None => return send_error(io, "input data must be hexadecimal").await,
         },
+        ClientFrame::Records { prefix, after, .. } => {
+            // Authorized by the session's own capability.
+            if let Err(message) = records_session(
+                world,
+                io,
+                token.clone(),
+                prefix.as_deref(),
+                after.as_deref(),
+            )
+            .await
+            {
+                return send_error(io, message).await;
+            }
+            return true;
+        }
+        ClientFrame::RecordsTicket { .. } => {
+            if let Err(message) = records_ticket_session(service, io).await {
+                return send_error(io, message).await;
+            }
+            return true;
+        }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
         | ClientFrame::Info { .. }
@@ -934,7 +1170,7 @@ async fn handle_client_frame<I: SessionIo>(
 
 async fn send_json<I: SessionIo>(io: &mut I, frame: &impl Serialize) -> bool {
     match serde_json::to_string(frame) {
-        Ok(encoded) if encoded.len() <= MAX_FRAME_BYTES * 4 => io.send(encoded).await,
+        Ok(encoded) if encoded.len() <= MAX_FRAME_BYTES => io.send(encoded).await,
         _ => false,
     }
 }
@@ -1032,6 +1268,35 @@ mod tests {
                 .expect("timed out waiting for a server frame")?;
             Some(serde_json::from_str(&frame).unwrap())
         }
+    }
+
+    /// Publishes 1024 records of about 1 KiB, so one query needs several
+    /// pages (the page budget is 768 KiB).
+    struct Bulky;
+
+    impl crate::world::WorldProgram for Bulky {
+        fn records(&mut self) -> anyhow::Result<Option<String>> {
+            let payload = "x".repeat(1024);
+            let records: crate::world::Records = (0..1024)
+                .map(|i| {
+                    (
+                        format!("key-{i:04}"),
+                        serde_json::Value::from(payload.clone()),
+                    )
+                })
+                .collect();
+            Ok(Some(serde_json::to_string(&records)?))
+        }
+    }
+
+    fn service_with_records(admin: Option<&str>) -> WorldService {
+        WorldService::new(
+            WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(Bulky),
+            ),
+            admin.map(str::to_owned),
+        )
     }
 
     fn service(admin: Option<&str>) -> WorldService {
@@ -1140,6 +1405,100 @@ mod tests {
             .say(serde_json::json!({"type":"join","capability":capability}))
             .await;
         assert_eq!(guest.next().await.unwrap()["type"], "snapshot");
+    }
+
+    #[tokio::test]
+    async fn records_are_paged_prefixed_and_queryable_while_joined() {
+        let svc = service_with_records(None);
+        let (_, token) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+
+        // A fresh session can page through records; pages must be bounded and
+        // terminate with `next_after: null`.
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        let mut pages = 0;
+        let mut seen = crate::world::Records::new();
+        let mut after: Option<String> = None;
+        loop {
+            let mut frame = serde_json::json!({
+                "type": "records",
+                "capability": token.expose(),
+            });
+            if let Some(after) = &after {
+                frame["after"] = serde_json::Value::from(after.clone());
+            }
+            peer.say(frame).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "records");
+            assert!(reply["sequence"].as_u64().is_some());
+            let page: crate::world::Records =
+                serde_json::from_value(reply["records"].clone()).unwrap();
+            assert!(!page.is_empty());
+            assert!(
+                serde_json::to_vec(&page).unwrap().len() <= MAX_RECORDS_PAGE_BYTES,
+                "page exceeds the byte budget"
+            );
+            pages += 1;
+            seen.extend(page);
+            match reply["next_after"].as_str() {
+                Some(next) => after = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 1024, "every record arrives exactly once");
+        assert!(pages > 1, "1 MiB of records cannot fit in one page");
+        assert!(seen.contains_key("key-0000") && seen.contains_key("key-1023"));
+
+        // Prefix filtering works on the same session.
+        peer.say(serde_json::json!({
+            "type": "records",
+            "capability": token.expose(),
+            "prefix": "key-010",
+        }))
+        .await;
+        let reply = peer.next().await.unwrap();
+        let page: crate::world::Records = serde_json::from_value(reply["records"].clone()).unwrap();
+        assert_eq!(page.len(), 10, "key-0100..key-0109");
+
+        // A joined session can also request the records document ticket (the
+        // reply is an error here only because this service has no docs store).
+        let mut joined = Peer::connect(svc, SessionConfig::default());
+        joined
+            .say(serde_json::json!({"type":"join","capability": token.expose()}))
+            .await;
+        assert_eq!(joined.next().await.unwrap()["type"], "snapshot");
+        joined
+            .say(serde_json::json!({"type":"records","capability": token.expose()}))
+            .await;
+        let reply = joined.next().await.unwrap();
+        assert_eq!(reply["type"], "records");
+        let page: crate::world::Records = serde_json::from_value(reply["records"].clone()).unwrap();
+        assert!(!page.is_empty() && page.len() < 1024, "one bounded page");
+        assert!(
+            reply["next_after"].is_string(),
+            "the page advertises that more records follow"
+        );
+        // Still joined afterwards.
+        joined
+            .say(serde_json::json!({"type":"chat","text":"hi"}))
+            .await;
+        let reply = joined.next().await.unwrap();
+        assert_eq!(reply["type"], "event");
+    }
+
+    #[tokio::test]
+    async fn records_queries_need_a_valid_capability() {
+        let svc = service_with_records(None);
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "records",
+            "capability": "0.00",
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["message"], "join denied");
     }
 
     #[cfg(feature = "sandbox")]

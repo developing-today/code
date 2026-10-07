@@ -97,6 +97,56 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", result?);
             Ok(())
         }
+        WorldCommand::Records {
+            node,
+            capability,
+            prefix,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let result = client.records(&capability, prefix.as_deref()).await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
+        WorldCommand::Mirror {
+            node,
+            capability,
+            follow,
+            timeout_secs,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let ticket = client.records_ticket(&capability).await?;
+            client.close();
+            // Replication runs over iroh-docs, not the world session: the
+            // replica keeps syncing with any host node for as long as it runs.
+            let replica = Replica::start(no_relay).await?;
+            let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
+            let (doc, records) =
+                crate::world_records::replicate(&replica.docs, &replica.blobs, &ticket, timeout)
+                    .await?;
+            println!("{}", serde_json::to_string_pretty(&records)?);
+            if follow {
+                use futures_lite::StreamExt as _;
+                let mut events = doc.subscribe().await?;
+                while let Some(event) = events.next().await {
+                    if let iroh_docs::engine::LiveEvent::InsertRemote { .. } = event? {
+                        // Coalesce bursts, then re-read.
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        let records =
+                            crate::world_records::read_records(&doc, &replica.blobs).await?;
+                        println!("{}", serde_json::to_string_pretty(&records)?);
+                    }
+                }
+            }
+            endpoint.close().await;
+            replica.shutdown().await;
+            Ok(())
+        }
         WorldCommand::Download {
             node,
             capability,
@@ -140,6 +190,61 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             result
         }
+    }
+}
+
+/// An in-memory iroh-docs replica: enough to sync and verify records
+/// without writing anything to disk.
+struct Replica {
+    router: iroh::protocol::Router,
+    endpoint: Endpoint,
+    docs: iroh_docs::protocol::Docs,
+    blobs: iroh_blobs::api::Store,
+}
+
+impl Replica {
+    async fn start(no_relay: bool) -> Result<Self> {
+        use iroh::endpoint::{RelayMode, presets};
+        use iroh_blobs::store::mem::MemStore;
+        use iroh_gossip::net::Gossip;
+
+        let key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
+        let endpoint = if no_relay {
+            Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .secret_key(key)
+                .bind()
+                .await?
+        } else {
+            Endpoint::builder(presets::N0)
+                .secret_key(key)
+                .bind()
+                .await?
+        };
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = iroh_docs::protocol::Docs::memory()
+            .spawn(endpoint.clone(), blobs.clone(), gossip.clone())
+            .await?;
+        let router = iroh::protocol::Router::builder(endpoint.clone())
+            .accept(iroh_docs::net::ALPN, docs.clone())
+            .accept(
+                iroh_blobs::ALPN,
+                iroh_blobs::BlobsProtocol::new(&blobs, None),
+            )
+            .accept(iroh_gossip::net::GOSSIP_ALPN, gossip)
+            .spawn();
+        Ok(Self {
+            router,
+            endpoint,
+            docs,
+            blobs,
+        })
+    }
+
+    async fn shutdown(self) {
+        let _ = self.router.shutdown().await;
+        self.endpoint.close().await;
     }
 }
 

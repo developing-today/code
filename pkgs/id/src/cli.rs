@@ -1092,6 +1092,43 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Print the world's structured records (a JSON object).
+    Records {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Only keys starting with this prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Replicate the world's records over Iroh with an iroh-docs replica.
+    Mirror {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Keep printing whenever the records change.
+        #[arg(short, long)]
+        follow: bool,
+        /// Give up after this many seconds without a completed sync.
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Download the module backing the world's current state, verified
     /// by hash. Prints the module hash; writes the bytes to `--output`.
     Download {

@@ -446,3 +446,43 @@ survives, then advances to `count=3`.
 Known limit: the journal grows without bound. Compaction needs a guest
 snapshot/restore contract (or periodic checkpoint + truncated replay), which
 is not designed yet.
+
+---
+
+## 2026-10-07T09-00-00Z Implementation: structured records in iroh-docs
+
+A world can publish **structured records**: a JSON object mapping record keys
+to JSON values, produced by a new optional `records : model -> Str` function
+in the Roc platform (exported as `plaza_records(i32) -> i32`, sharing the
+`plaza_out_len` output slot with `view`). Records are validated by the host:
+keys 1..=256 bytes without control characters, values <= 8 KiB, at most 4096
+records; the set is capped at 1 MiB. Invalid records reject the input (or the
+install) before anything is committed, and poison the program like any other
+failure.
+
+Storage and replication use **iroh-docs**, one document per world
+(`records.namespace` in the world directory remembers its ID so tickets stay
+valid across restarts):
+
+- The host mirrors the current records into the doc (single writer), writing
+  changed values and deleting removed keys. Deletes are exact: keys are stored
+  as `key\0` and record keys cannot contain control characters. Unchanged
+  records are not rewritten (content-hash comparison), so replicas only sync
+  real changes.
+- Any participant can ask a session for a **read-only ticket**
+  (`records_ticket`), or page the records directly (`records {prefix, after}`,
+  key-ordered, ~48 KiB pages with the world sequence attached).
+- `id world mirror NODE --capability C [--follow]` starts an in-memory
+  iroh-docs replica, imports the ticket and keeps syncing (also after the
+  initial sync) — replication is peer-to-peer over iroh-docs, not through the
+  world session.
+- The doc is a projection of authoritative state, never a second source of
+  truth: records are recomputed from the program, and the world journal +
+  module replay remain what defines state. A replica can forge nothing: the
+  ticket carries the namespace public key and only the host's author writes.
+
+Verified: unit tests for reconcile (write/delete/no-op), schema bounds, actor
+publish/reject semantics, real-guest export; an end-to-end replication test
+where a second node syncs a ticket and receives live updates; session paging
+tests; and a process test that restarts `serve`, queries records over the
+world protocol, and mirrors them from a separate process over iroh-docs.
