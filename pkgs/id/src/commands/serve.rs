@@ -67,6 +67,8 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
+#[cfg(feature = "world")]
+use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
@@ -286,16 +288,26 @@ pub struct ServeOptions {
     pub world: bool,
     /// Admin secret required to mint world guest capabilities.
     pub world_admin_token: Option<String>,
+    /// Optional Wasm world program, compiled for the sandbox's Roc platform ABI.
+    pub world_module: Option<PathBuf>,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
     pub open_writes: bool,
 }
 
-fn validate_world_options(world: bool, admin_token: Option<&str>) -> Result<()> {
+fn validate_world_options(
+    world: bool,
+    admin_token: Option<&str>,
+    world_module: Option<&PathBuf>,
+) -> Result<()> {
     ensure!(
         !world || admin_token.is_some_and(|token| !token.is_empty()),
         "--world requires --world-admin-token (or ID_WORLD_ADMIN_TOKEN)"
+    );
+    ensure!(
+        world_module.is_none() || world,
+        "--world-module requires --world"
     );
     Ok(())
 }
@@ -389,10 +401,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         web_token,
         world,
         world_admin_token,
+        world_module,
         allow_node,
         open_writes,
     } = opts;
-    validate_world_options(world, world_admin_token.as_deref())?;
+    validate_world_options(world, world_admin_token.as_deref(), world_module.as_ref())?;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -466,12 +479,42 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // One authoritative lobby, shared by the Iroh protocol and the web bridge.
     #[cfg(feature = "world")]
+    let mut world_handle_to_shutdown = None;
+    #[cfg(feature = "world")]
     let world_service = if world {
-        let lobby = crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())?;
-        Some(crate::world_session::WorldService::new(
-            crate::world::WorldHandle::spawn(lobby),
-            world_admin_token.clone(),
-        ))
+        let limits = crate::world::WorldLimits::default();
+        let lobby = crate::world::WorldCore::new("lobby", limits)?;
+        let world_handle = if let Some(module_path) = world_module.as_ref() {
+            #[cfg(feature = "sandbox")]
+            {
+                let metadata = std::fs::metadata(module_path)?;
+                ensure!(
+                    metadata.len() <= crate::sandbox::SandboxLimits::default().module_bytes as u64,
+                    "world module exceeds the configured module size limit"
+                );
+                let wasm = std::fs::read(module_path)?;
+                let sandbox = crate::sandbox::Sandbox::compile(
+                    &wasm,
+                    crate::sandbox::SandboxLimits::default(),
+                )?;
+                let seed = rand::rng().random::<u64>();
+                let program = sandbox.instantiate(seed)?;
+                info!(module = %module_path.display(), seed, "world: loaded sandboxed Wasm module");
+                crate::world::WorldHandle::spawn_with_program(lobby, Box::new(program))
+            }
+            #[cfg(not(feature = "sandbox"))]
+            {
+                let _ = module_path;
+                anyhow::bail!("--world-module requires a build with the `sandbox` feature")
+            }
+        } else {
+            crate::world::WorldHandle::spawn(lobby)
+        };
+        world_handle_to_shutdown = Some(world_handle.clone());
+        Some(
+            crate::world_session::WorldService::new(world_handle, world_admin_token.clone())
+                .with_blob_store(store_handle.clone()),
+        )
     } else {
         None
     };
@@ -656,6 +699,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         } else {
             status!("web: http://{shown_host}:{actual_port}");
         }
+        #[cfg(feature = "world")]
+        if world {
+            status!("world: browser http://{shown_host}:{actual_port}/world");
+        }
         if !bind.is_loopback() && web_token.is_none() {
             status_err!(
                 "warning: the web UI is bound to {bind} without --web-token; \
@@ -674,6 +721,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
     router.shutdown().await?;
+    #[cfg(feature = "web")]
+    if let Some(web_task) = _web_handle {
+        web_task.abort();
+        let _ = web_task.await;
+    }
+    #[cfg(feature = "world")]
+    if let Some(world) = world_handle_to_shutdown {
+        world.shutdown().await?;
+    }
     store.shutdown().await?;
     Ok(())
 }
@@ -846,10 +902,14 @@ mod tests {
 
     #[test]
     fn world_mode_requires_an_admin_token_but_not_web() {
-        assert!(validate_world_options(true, None).is_err());
-        assert!(validate_world_options(true, Some("")).is_err());
-        assert!(validate_world_options(true, Some("admin")).is_ok());
-        assert!(validate_world_options(false, None).is_ok());
+        assert!(validate_world_options(true, None, None).is_err());
+        assert!(validate_world_options(true, Some(""), None).is_err());
+        assert!(validate_world_options(true, Some("admin"), None).is_ok());
+        assert!(validate_world_options(false, None, None).is_ok());
+        assert!(
+            validate_world_options(true, Some("admin"), Some(&PathBuf::from("world.wasm"))).is_ok()
+        );
+        assert!(validate_world_options(false, None, Some(&PathBuf::from("world.wasm"))).is_err());
     }
 
     #[test]

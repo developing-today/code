@@ -94,6 +94,8 @@ impl Sandbox {
                         | "plaza_free"
                         | "plaza_view"
                         | "plaza_out_len"
+                        | "plaza_error_ptr"
+                        | "plaza_error_len"
                 ),
                 "guest export `{}` is not in the ABI allowlist",
                 export.name()
@@ -165,6 +167,28 @@ impl Sandbox {
         let out_len = instance
             .get_typed_func::<(), i32>(&mut store, "plaza_out_len")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_out_len() -> i32`: {e}"))?;
+        let error_ptr = if instance.get_func(&mut store, "plaza_error_ptr").is_some() {
+            Some(
+                instance
+                    .get_typed_func::<(), i32>(&mut store, "plaza_error_ptr")
+                    .map_err(|e| {
+                        anyhow::anyhow!("guest `plaza_error_ptr` has invalid signature: {e}")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let error_len = if instance.get_func(&mut store, "plaza_error_len").is_some() {
+            Some(
+                instance
+                    .get_typed_func::<(), i32>(&mut store, "plaza_error_len")
+                    .map_err(|e| {
+                        anyhow::anyhow!("guest `plaza_error_len` has invalid signature: {e}")
+                    })?,
+            )
+        } else {
+            None
+        };
 
         let model = init.call(&mut store, seed.cast_signed()).map_err(|e| {
             anyhow::anyhow!("guest `plaza_init` failed (trap or fuel exhausted): {e}")
@@ -178,6 +202,8 @@ impl Sandbox {
             update,
             view,
             out_len,
+            error_ptr,
+            error_len,
             model,
             poisoned: false,
         })
@@ -194,6 +220,8 @@ pub struct WorldInstance {
     update: TypedFunc<(i32, i32, i32), i32>,
     view: TypedFunc<(i32, i32, i32), i32>,
     out_len: TypedFunc<(), i32>,
+    error_ptr: Option<TypedFunc<(), i32>>,
+    error_len: Option<TypedFunc<(), i32>>,
     model: i32,
     poisoned: bool,
 }
@@ -225,17 +253,22 @@ impl WorldInstance {
         self.store
             .set_fuel(self.limits.fuel)
             .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
-        let (ptr, len) = self.copy_input(event)?;
+        let GuestBuffer {
+            ptr,
+            len,
+            allocation_len,
+        } = self.copy_input(event)?;
         let result = self.update.call(&mut self.store, (self.model, ptr, len));
         let model = match result {
             Ok(model) => model,
             Err(e) => {
                 return Err(anyhow::anyhow!(
-                    "guest `plaza_update` failed (trap or fuel exhausted): {e}"
+                    "guest `plaza_update` failed (trap or fuel exhausted): {e}{}",
+                    self.guest_error_suffix()
                 ));
             }
         };
-        self.free_input(ptr, len)
+        self.free_input(ptr, allocation_len)
             .map_err(|e| anyhow::anyhow!("free guest event buffer: {e}"))?;
         self.model = model;
         Ok(())
@@ -259,17 +292,22 @@ impl WorldInstance {
         self.store
             .set_fuel(self.limits.fuel)
             .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
-        let (ptr, len) = self.copy_input(viewer)?;
+        let GuestBuffer {
+            ptr,
+            len,
+            allocation_len,
+        } = self.copy_input(viewer)?;
         let rendered = self.view.call(&mut self.store, (self.model, ptr, len));
         let output_ptr = match rendered {
             Ok(ptr) => ptr,
             Err(e) => {
                 return Err(anyhow::anyhow!(
-                    "guest `plaza_view` failed (trap or fuel exhausted): {e}"
+                    "guest `plaza_view` failed (trap or fuel exhausted): {e}{}",
+                    self.guest_error_suffix()
                 ));
             }
         };
-        self.free_input(ptr, len)
+        self.free_input(ptr, allocation_len)
             .map_err(|e| anyhow::anyhow!("free guest viewer buffer: {e}"))?;
         let output_len = self
             .out_len
@@ -307,36 +345,101 @@ impl WorldInstance {
         Ok(())
     }
 
-    fn copy_input(&mut self, input: &[u8]) -> Result<(i32, i32)> {
-        if input.is_empty() {
-            return Ok((0, 0));
-        }
+    fn copy_input(&mut self, input: &[u8]) -> Result<GuestBuffer> {
         let len = i32::try_from(input.len()).context("guest input does not fit wasm32 ABI")?;
+        // Roc's Str adapter requires a valid pointer even for the empty string.
+        // Allocate one byte but pass the logical length (zero) to the guest.
+        let allocation_len = len.max(1);
         let ptr = self
             .alloc
-            .call(&mut self.store, len)
+            .call(&mut self.store, allocation_len)
             .map_err(|e| anyhow::anyhow!("guest allocation failed: {e}"))?;
-        self.memory
-            .write(&mut self.store, ptr.cast_unsigned() as usize, input)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "write guest input at {:#x} ({} bytes, memory {}): {e}",
-                    ptr.cast_unsigned(),
-                    input.len(),
-                    self.memory.data_size(&self.store)
-                )
-            })?;
-        Ok((ptr, len))
+        if !input.is_empty() {
+            self.memory
+                .write(&mut self.store, ptr.cast_unsigned() as usize, input)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "write guest input at {:#x} ({} bytes, memory {}): {e}",
+                        ptr.cast_unsigned(),
+                        input.len(),
+                        self.memory.data_size(&self.store)
+                    )
+                })?;
+        }
+        Ok(GuestBuffer {
+            ptr,
+            len,
+            allocation_len,
+        })
     }
 
     fn free_input(&mut self, ptr: i32, len: i32) -> Result<()> {
-        if len == 0 {
-            return Ok(());
-        }
         self.free
             .call(&mut self.store, (ptr, len))
             .map_err(|e| anyhow::anyhow!("free guest input buffer: {e}"))
     }
+
+    /// Read optional diagnostic exports after a guest trap. This invokes only
+    /// no-argument, guest-local getters; no host capability is introduced.
+    fn guest_error_suffix(&mut self) -> String {
+        let (Some(ptr_fn), Some(len_fn)) = (&self.error_ptr, &self.error_len) else {
+            return String::new();
+        };
+        if self.store.set_fuel(10_000).is_err() {
+            return String::new();
+        }
+        let (Ok(ptr), Ok(len)) = (
+            ptr_fn.call(&mut self.store, ()),
+            len_fn.call(&mut self.store, ()),
+        ) else {
+            return String::new();
+        };
+        let Ok(len) = usize::try_from(len) else {
+            return String::new();
+        };
+        if len == 0 || len > 4096 {
+            return String::new();
+        }
+        let ptr = ptr.cast_unsigned() as usize;
+        let Some(end) = ptr.checked_add(len) else {
+            return String::new();
+        };
+        if end > self.memory.data_size(&self.store) {
+            return String::new();
+        }
+        let mut message = vec![0; len];
+        if self.memory.read(&self.store, ptr, &mut message).is_err() {
+            return String::new();
+        }
+        format!("; guest diagnostic: {}", String::from_utf8_lossy(&message))
+    }
+}
+
+impl crate::world::WorldProgram for WorldInstance {
+    fn update(&mut self, event: &crate::world::WorldEvent) -> Result<()> {
+        match &event.kind {
+            crate::world::WorldEventKind::Input(bytes) => {
+                std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
+                WorldInstance::update(self, bytes)
+            }
+            crate::world::WorldEventKind::Chat(_)
+            | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
+        }
+    }
+
+    fn view(&mut self, viewer: &crate::world::Participant) -> Result<Option<String>> {
+        let viewer = serde_json::to_vec(viewer).context("serialize Roc viewer context")?;
+        let output = WorldInstance::view(self, &viewer)?;
+        String::from_utf8(output)
+            .map(Some)
+            .context("Roc world view must return valid UTF-8")
+    }
+}
+
+struct GuestBuffer {
+    ptr: i32,
+    len: i32,
+    allocation_len: i32,
 }
 
 #[cfg(test)]
@@ -375,16 +478,48 @@ mod tests {
     #[test]
     fn checked_in_roc_counter_compiles_and_initializes_in_the_import_free_sandbox() {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
-        let runner = Sandbox::compile(
-            wasm,
-            SandboxLimits {
-                fuel: 1_000_000_000,
-                memory_bytes: 64 * 1024 * 1024,
-                ..SandboxLimits::default()
-            },
-        )
-        .unwrap();
-        let _world = runner.instantiate(7).unwrap();
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        assert_eq!(world.view(b"").unwrap(), b"count=0");
+        world.update(b"inc").unwrap();
+        assert_eq!(world.view(b"").unwrap(), b"count=1");
+        world.update(b"inc").unwrap();
+        assert_eq!(world.view(b"").unwrap(), b"count=2");
+    }
+
+    #[tokio::test]
+    async fn checked_in_roc_counter_runs_as_the_authoritative_world_program() {
+        use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let guest = runner.instantiate(7).unwrap();
+        let actor = WorldHandle::spawn_with_program(
+            WorldCore::new("counter", WorldLimits::default()).unwrap(),
+            Box::new(guest),
+        );
+        let (_, capability) = actor.issue("Ada", WorldScopes::GUEST).await.unwrap();
+
+        assert_eq!(
+            actor.view(capability.clone()).await.unwrap().as_deref(),
+            Some("count=0")
+        );
+        actor
+            .input(capability.clone(), b"inc".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            actor.view(capability.clone()).await.unwrap().as_deref(),
+            Some("count=1")
+        );
+        actor
+            .chat(capability.clone(), "chat does not mutate the game")
+            .await
+            .unwrap();
+        assert_eq!(
+            actor.view(capability).await.unwrap().as_deref(),
+            Some("count=1")
+        );
     }
 
     #[test]

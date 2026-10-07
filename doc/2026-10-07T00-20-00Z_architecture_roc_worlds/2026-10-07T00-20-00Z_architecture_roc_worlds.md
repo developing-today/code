@@ -178,6 +178,106 @@ until the platform glue is debugged against Wasmtime and hostile-module tests
 cover the ABI. Keep import denial strict; do not work around the trap by adding
 WASI or ambient host capabilities.
 
+---
+
+## 2026-10-07T06-37-59Z Implementation: Roc guest executes in the world actor
+
+The trap was caused by the host passing pointer `0` for a zero-length viewer
+string. Zig can represent an empty slice that way; Roc's `Str` bridge cannot.
+The runner now allocates a one-byte guest buffer for an empty input but passes
+logical length zero, then frees the one-byte allocation. The checked-in Roc
+counter test now verifies `count=0`, two `inc` updates, and `count=2` under the
+default 10M fuel / 16 MiB memory limits.
+
+`WorldProgram` is the execution seam. `WorldHandle::spawn_with_program` owns a
+single mutable program inside the serialized actor. An input is validated and
+assigned a candidate sequence, passed to the program, and only committed and
+broadcast on success. A trap or rejected update does not enter the event log;
+the actor marks that program unhealthy and refuses further game inputs/views
+until an admin installs a replacement. Chat remains host-owned and continues
+as an ordinary sequenced event. `WorldInstance` implements this trait: input
+bytes must be UTF-8 for Roc `Str`, and the per-participant viewer JSON is passed
+to `view`.
+
+### Roc authority safety versus Wasm resource safety
+
+Roc itself can be capability-safe server-side: the world platform exposes only
+`init/update/view` and a pure `Str`/model API. No file, socket, clock, process,
+environment, FFI, or ambient random effect is provided. A deliberately small
+platform standard library keeps that property; the language does not need Wasm
+to avoid host authority it was never given.
+
+That does **not** make arbitrary code resource-safe. A pure program can loop
+forever or allocate until the process is exhausted. Current deployment choices
+are therefore:
+
+- **Uploaded/peer-supplied programs:** Wasmtime only, no imports/WASI, with
+  module/input/output limits, a per-call fuel budget, a linear-memory cap, and
+  poison-on-trap. This is the implemented path.
+- **Operator-authored server programs:** the same restricted Roc platform is
+  capability-safe by construction, but running native Roc in the server
+  process is not yet implemented or claimed safe. A native tier needs a
+  separate worker/process with CPU, memory, and restart supervision before it
+  is enabled. Wasm can still be used as a resource guard even for trusted code.
+- **Browser:** Wasm can be used for local preview/prediction; its output is
+  never authoritative. The server's actor state is always the source of truth.
+
+### Module install and presentations
+
+- `id serve --world --world-admin-token T` creates the in-memory lobby. `--web`
+  is optional; Iroh p2p works without an HTTP listener.
+- `--world-module PATH` loads a precompiled, import-free module at startup.
+- `id world install NODE module.wasm --admin-token T` uploads a module in
+  bounded chunks over `/id-world/1`. The server validates and instantiates it,
+  pins its bytes in the local Iroh blob store, then atomically switches the
+  actor and sequences a `program_installed` event. The command prints the
+  module's BLAKE3 hash.
+- The browser page `/world` can issue invites (separate admin bearer), upload a
+  `.wasm` module, join, chat, send input, and render host-produced view text.
+  Browser, CLI, and Iroh clients all drive the same `world_session` protocol.
+- The hosted world state and module pin are currently volatile: restarting
+  `serve` resets the actor and releases its temp-tag pin. Durable module
+  selection, event-log replay/state restoration, and fetching module bytes from
+  other nodes by hash are planned separately; an already installed module is
+  not silently persisted as live state.
+
+---
+
+## 2026-10-07T06-45-00Z Verification: Roc guest, Iroh, browser and upload path
+
+The checked-in counter guest now passes both its direct sandbox test and its
+`WorldProgram` actor test under the default resource limits. The bug was in
+the Zig adapter: it passed a null pointer for an empty viewer string, which
+Roc's `Str` bridge rejects. The runner now allocates one guest byte while
+keeping the logical empty-string length zero.
+
+`examples/roc-counter/build.sh` reproduces the guest with the pinned Roc
+nightly plus Zig 0.16, and `wasm-tools validate` verifies the result. The
+Zig host source and generated Roc ABI adapter are checked in; `host.wasm` is
+generated under `targets/` (the duplicate stale copy was removed).
+
+The actor owns the program instance. For an input, it computes the next event
+sequence, calls the program, and only commits/broadcasts the event on success.
+A trap or oversized presentation poisons that program and refuses further
+game inputs/views until replacement. The CLI integration test drives the real
+counter through Iroh (`count=0`, `inc`, `count=1`) and checks the browser page
+is served from the same `serve --world --web` node. A WebSocket test separately
+uploads chunks, verifies the host pins the BLAKE3 artifact, and observes its
+view change after game input.
+
+Browser TypeScript checking, all 343 browser unit tests, and the web bundle
+build pass. Full Rust tests pass: 655 library, 97 CLI integration, 5 remote
+write/QUIC, 19 doctests. Nix `id-lib` builds with 479 unit tests and its
+hermetic integration/doctest checks.
+
+**Boundary reminder:** pure Roc with a deliberately effect-free platform is
+capability-safe by construction; Wasm is not required to deny ambient file or
+network access that the platform never grants. Wasmtime is used for the
+untrusted upload tier because it additionally bounds CPU, memory, stack, and
+module size. The operator-authored native Roc tier is a future, separate
+worker with OS-level CPU/memory limits; native in-process Roc execution is not
+enabled or claimed resource-safe.
+
 This means live state is volatile and cannot yet be restored from a snapshot
 or replayed after process restart. Persistent worlds require a separately
 designed guest serialization/versioning contract; do not serialize raw Roc

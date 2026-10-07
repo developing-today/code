@@ -4,6 +4,8 @@
  */
 
 import "@starfederation/datastar";
+import "./world";
+import "./world";
 import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";

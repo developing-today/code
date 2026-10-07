@@ -28,6 +28,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use subtle::ConstantTimeEq as _;
 
 /// Name of the cookie that carries the web token.
 pub const TOKEN_COOKIE: &str = "id_token";
@@ -81,10 +82,7 @@ fn origin_authority(origin: &str) -> Option<&str> {
 
 /// Constant-time byte comparison (length leaks, content does not).
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len() && bool::from(a.ct_eq(b))
 }
 
 fn cookie_value<'a>(cookies: &'a str, name: &str) -> Option<&'a str> {

@@ -25,6 +25,8 @@ pub struct WorldLimits {
     pub input_bytes: usize,
     /// Number of recent events kept for reconnect catch-up.
     pub retained_events: usize,
+    /// Maximum presentation text returned by a world program, in bytes.
+    pub presentation_bytes: usize,
 }
 
 impl Default for WorldLimits {
@@ -34,6 +36,7 @@ impl Default for WorldLimits {
             chat_bytes: 2048,
             input_bytes: 16 * 1024,
             retained_events: 1024,
+            presentation_bytes: 8192,
         }
     }
 }
@@ -112,13 +115,46 @@ pub enum WorldEventKind {
     Chat(String),
     /// Opaque input for a future game/world module.
     Input(Vec<u8>),
+    /// A world admin installed a new program. `participant_id` is zero for
+    /// this host-authored event.
+    ProgramInstalled {
+        /// Iroh BLAKE3 hash of the newly active module artifact.
+        module_hash: String,
+    },
 }
+
+/// Behavior supplied by the running world program.
+///
+/// Implementations execute inside the actor's serial command loop. They must
+/// not perform network or filesystem I/O. An error from `update` rejects the
+/// candidate input before it is committed to the event log. The Wasmtime
+/// implementation poisons its guest instance on traps.
+pub trait WorldProgram: Send + 'static {
+    /// Apply an opaque participant input. Chat is managed by the host and is
+    /// not passed to the game program.
+    fn update(&mut self, _event: &WorldEvent) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return this participant's presentation, or `None` for a chat-only
+    /// world. The presentation must be UTF-8 and fit `presentation_bytes`.
+    fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Default)]
+struct EmptyWorldProgram;
+
+impl WorldProgram for EmptyWorldProgram {}
 
 /// Snapshot returned on join or reconnect.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WorldSnapshot {
     /// Stable world identifier.
     pub world_id: String,
+    /// Content hash of the active program, if this world executes one.
+    pub active_module_hash: Option<String>,
     /// Latest committed sequence at snapshot time.
     pub current_sequence: u64,
     /// Earliest retained event sequence, or current sequence + 1 when empty.
@@ -144,6 +180,7 @@ pub struct WorldCore {
     limits: WorldLimits,
     next_participant_id: u64,
     sequence: u64,
+    active_module_hash: Option<String>,
     capabilities: HashMap<u64, CapabilityRecord>,
     events: VecDeque<WorldEvent>,
 }
@@ -163,11 +200,16 @@ impl WorldCore {
             limits.retained_events > 0,
             "world event retention must be nonzero"
         );
+        ensure!(
+            limits.presentation_bytes > 0,
+            "world presentation limit must be nonzero"
+        );
         Ok(Self {
             world_id,
             limits,
             next_participant_id: 1,
             sequence: 0,
+            active_module_hash: None,
             capabilities: HashMap::new(),
             events: VecDeque::new(),
         })
@@ -245,6 +287,11 @@ impl WorldCore {
 
     /// Commit an opaque game input after validating capability and bounds.
     pub fn input(&mut self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
+        let event = self.prepare_input(token, input)?;
+        self.commit_prepared(event)
+    }
+
+    fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
@@ -252,13 +299,42 @@ impl WorldCore {
             self.limits.input_bytes
         );
         ensure!(!input.is_empty(), "world input must not be empty");
-        self.commit(participant_id, WorldEventKind::Input(input.to_vec()))
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok(WorldEvent {
+            sequence,
+            participant_id,
+            kind: WorldEventKind::Input(input.to_vec()),
+        })
+    }
+
+    fn commit_prepared(&mut self, event: WorldEvent) -> Result<WorldEvent> {
+        ensure!(
+            event.sequence == self.sequence.saturating_add(1),
+            "prepared world event is stale"
+        );
+        self.sequence = event.sequence;
+        self.events.push_back(event.clone());
+        while self.events.len() > self.limits.retained_events {
+            self.events.pop_front();
+        }
+        Ok(event)
     }
 
     /// Return the current bounded snapshot after validating join scope.
     pub fn snapshot(&self, token: &JoinCapability) -> Result<WorldSnapshot> {
         self.authorize(token, WorldScopes::JOIN)?;
         Ok(self.snapshot_unchecked())
+    }
+
+    fn viewer(&self, token: &JoinCapability) -> Result<Participant> {
+        let id = self.authorize(token, WorldScopes::JOIN)?;
+        self.capabilities
+            .get(&id)
+            .map(|record| record.participant.clone())
+            .context("world participant is unavailable")
     }
 
     /// Return retained events newer than `after_sequence`, plus the current
@@ -325,6 +401,10 @@ impl WorldCore {
         Ok(event)
     }
 
+    fn commit_host(&mut self, kind: WorldEventKind) -> Result<WorldEvent> {
+        self.commit(0, kind)
+    }
+
     fn oldest_sequence(&self) -> u64 {
         self.events
             .front()
@@ -340,6 +420,7 @@ impl WorldCore {
             .collect();
         WorldSnapshot {
             world_id: self.world_id.clone(),
+            active_module_hash: self.active_module_hash.clone(),
             current_sequence: self.sequence,
             oldest_retained_sequence: self.oldest_sequence(),
             events: self.events.iter().cloned().collect(),
@@ -354,6 +435,7 @@ impl WorldCore {
 pub struct WorldHandle {
     commands: mpsc::Sender<WorldCommand>,
     events: broadcast::Sender<WorldEvent>,
+    revocations: broadcast::Sender<u64>,
 }
 
 enum WorldCommand {
@@ -365,6 +447,10 @@ enum WorldCommand {
     Revoke {
         participant_id: u64,
         reply: oneshot::Sender<bool>,
+    },
+    ParticipantId {
+        token: JoinCapability,
+        reply: oneshot::Sender<Result<u64>>,
     },
     Chat {
         token: JoinCapability,
@@ -385,6 +471,15 @@ enum WorldCommand {
         sequence: u64,
         reply: oneshot::Sender<Result<EventPage>>,
     },
+    View {
+        token: JoinCapability,
+        reply: oneshot::Sender<Result<Option<String>>>,
+    },
+    InstallProgram {
+        module_hash: String,
+        program: Box<dyn WorldProgram>,
+        reply: oneshot::Sender<Result<WorldEvent>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -393,11 +488,21 @@ enum WorldCommand {
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
     pub fn spawn(core: WorldCore) -> Self {
+        Self::spawn_with_program(core, Box::<EmptyWorldProgram>::default())
+    }
+
+    /// Spawn a world actor with an executable program. Only the actor owns
+    /// the program instance, so calls are serialized with world mutations.
+    pub fn spawn_with_program(core: WorldCore, program: Box<dyn WorldProgram>) -> Self {
         let (commands, mut receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
+        let (revocations, _) = broadcast::channel(256);
         let event_sender = events.clone();
+        let revocation_sender = revocations.clone();
         tokio::spawn(async move {
             let mut core = core;
+            let mut program = program;
+            let mut program_healthy = true;
             while let Some(command) = receiver.recv().await {
                 match command {
                     WorldCommand::Issue {
@@ -411,7 +516,14 @@ impl WorldHandle {
                         participant_id,
                         reply,
                     } => {
-                        let _ = reply.send(core.revoke(participant_id));
+                        let was_active = core.revoke(participant_id);
+                        if was_active {
+                            let _ = revocation_sender.send(participant_id);
+                        }
+                        let _ = reply.send(was_active);
+                    }
+                    WorldCommand::ParticipantId { token, reply } => {
+                        let _ = reply.send(core.authorize(&token, WorldScopes::JOIN));
                     }
                     WorldCommand::Chat { token, text, reply } => {
                         let result = core.chat(&token, &text);
@@ -425,7 +537,19 @@ impl WorldHandle {
                         input,
                         reply,
                     } => {
-                        let result = core.input(&token, &input);
+                        let result = match core.prepare_input(&token, &input) {
+                            Ok(candidate) if program_healthy => match program.update(&candidate) {
+                                Ok(()) => core.commit_prepared(candidate),
+                                Err(error) => {
+                                    program_healthy = false;
+                                    Err(error.context("world program rejected input"))
+                                }
+                            },
+                            Ok(_) => Err(anyhow::anyhow!(
+                                "world program is unavailable after a previous failure"
+                            )),
+                            Err(error) => Err(error),
+                        };
                         if let Ok(event) = &result {
                             let _ = event_sender.send(event.clone());
                         }
@@ -441,6 +565,61 @@ impl WorldHandle {
                     } => {
                         let _ = reply.send(core.events_after(&token, sequence));
                     }
+                    WorldCommand::View { token, reply } => {
+                        let result = match core.viewer(&token) {
+                            Ok(viewer) if program_healthy => match program.view(&viewer) {
+                                Ok(view) => {
+                                    if let Some(text) = &view {
+                                        if text.len() > core.limits.presentation_bytes {
+                                            program_healthy = false;
+                                            Err(anyhow::anyhow!(
+                                                "world presentation exceeds {} bytes",
+                                                core.limits.presentation_bytes
+                                            ))
+                                        } else {
+                                            Ok(view)
+                                        }
+                                    } else {
+                                        Ok(None)
+                                    }
+                                }
+                                Err(error) => {
+                                    program_healthy = false;
+                                    Err(error.context("world program view failed"))
+                                }
+                            },
+                            Ok(_) => Err(anyhow::anyhow!(
+                                "world program is unavailable after a previous failure"
+                            )),
+                            Err(error) => Err(error),
+                        };
+                        let _ = reply.send(result);
+                    }
+                    WorldCommand::InstallProgram {
+                        module_hash,
+                        program: replacement,
+                        reply,
+                    } => {
+                        // Actor serialization makes activation and its event
+                        // atomic with respect to other world commands.
+                        let result = match core
+                            .commit_host(WorldEventKind::ProgramInstalled { module_hash })
+                        {
+                            Ok(event) => {
+                                if let WorldEventKind::ProgramInstalled { module_hash } =
+                                    &event.kind
+                                {
+                                    core.active_module_hash = Some(module_hash.clone());
+                                }
+                                program = replacement;
+                                program_healthy = true;
+                                let _ = event_sender.send(event.clone());
+                                Ok(event)
+                            }
+                            Err(error) => Err(error),
+                        };
+                        let _ = reply.send(result);
+                    }
                     WorldCommand::Shutdown { reply } => {
                         let _ = reply.send(());
                         break;
@@ -448,13 +627,35 @@ impl WorldHandle {
                 }
             }
         });
-        Self { commands, events }
+        Self {
+            commands,
+            events,
+            revocations,
+        }
     }
 
     /// Subscribe to newly committed world events.
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
         self.events.subscribe()
+    }
+
+    /// Subscribe to capability revocations.
+    #[must_use]
+    pub fn subscribe_revocations(&self) -> broadcast::Receiver<u64> {
+        self.revocations.subscribe()
+    }
+
+    /// Resolve the participant authorized by a join capability.
+    pub async fn participant_id(&self, token: JoinCapability) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ParticipantId { token, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped participant lookup response")?
     }
 
     /// Issue a scoped participant capability.
@@ -471,7 +672,7 @@ impl WorldHandle {
                 reply,
             })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped capability response")?
@@ -486,7 +687,7 @@ impl WorldHandle {
                 reply,
             })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped revocation response")
@@ -502,7 +703,7 @@ impl WorldHandle {
                 reply,
             })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped chat response")?
@@ -518,7 +719,7 @@ impl WorldHandle {
                 reply,
             })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped input response")?
@@ -530,7 +731,7 @@ impl WorldHandle {
         self.commands
             .send(WorldCommand::Snapshot { token, reply })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped snapshot response")?
@@ -546,10 +747,44 @@ impl WorldHandle {
                 reply,
             })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped event response")?
+    }
+
+    /// Render the current world for an authorized participant. A chat-only
+    /// world returns `None`.
+    pub async fn view(&self, token: JoinCapability) -> Result<Option<String>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::View { token, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped view response")?
+    }
+
+    /// Atomically replace the active program and sequence a host-authored
+    /// module-installed event. The new program is used after this command.
+    pub async fn install_program(
+        &self,
+        module_hash: String,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::InstallProgram {
+                module_hash,
+                program,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped install response")?
     }
 
     /// Stop the actor after processing all commands queued before shutdown.
@@ -558,7 +793,7 @@ impl WorldHandle {
         self.commands
             .send(WorldCommand::Shutdown { reply })
             .await
-            .context("world actor is closed")?;
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
             .await
             .context("world actor dropped shutdown response")

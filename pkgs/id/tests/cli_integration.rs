@@ -881,7 +881,8 @@ mod show_peek_subcommand_help {
 mod serve_tests {
     use super::*;
     use std::fs;
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpStream as StdTcpStream;
     use std::process::{Child, Command as StdCommand, Stdio};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -1175,15 +1176,40 @@ mod serve_tests {
     }
 
     #[test]
-    fn test_world_invite_and_join_over_iroh_without_web() {
+    fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
+        let module =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/counter.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
-            &["--world", "--world-admin-token", "adm"],
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--web",
+                "--port",
+                "0",
+            ],
         );
-        let node = server.wait_ready();
+        let node = server.wait_ready_with_web(true);
         let addr = lock_ipv4_addr(&server.lock_file_path());
+        let web_port = server.web_port.unwrap();
+
+        // The browser presentation is available from this same Iroh host.
+        let mut http = StdTcpStream::connect(("127.0.0.1", web_port)).unwrap();
+        write!(
+            http,
+            "GET /world HTTP/1.1\r\nHost: 127.0.0.1:{web_port}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut page = String::new();
+        http.read_to_string(&mut page).unwrap();
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(
+            page.contains("data-world-app"),
+            "world browser app is present"
+        );
 
         let world = |args: &[&str]| {
             let mut cmd = StdCommand::new(get_binary_path());
@@ -1219,7 +1245,37 @@ mod serve_tests {
         let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
 
-        // Joining with it yields a snapshot, then our chat comes back as an event.
+        // Upload the compiled Roc guest over Iroh. The host validates it,
+        // pins it in the blob store, and atomically switches the lobby.
+        let module = module.to_str().unwrap();
+        let rejected = world(&["install", &node, module, "--admin-token", "wrong"])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("module install denied"));
+        let installed = world(&[
+            "install",
+            &node,
+            module,
+            "--admin-token",
+            "adm",
+            "--seed",
+            "7",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let installed_hash = String::from_utf8(installed.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(installed_hash.len(), 64);
+
+        // Joining yields a snapshot and a view from the authoritative Roc guest.
         let mut joined = world(&["join", &node, "--capability", &capability])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1230,11 +1286,26 @@ mod serve_tests {
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
         let first = lines.next().expect("snapshot line").unwrap();
         assert!(first.contains("\"type\":\"snapshot\""), "{first}");
-        std::io::Write::write_all(&mut stdin, b"hello from the cli\n").unwrap();
+        let initial_view = lines.next().expect("initial view line").unwrap();
+        assert!(initial_view.contains("\"type\":\"view\""), "{initial_view}");
+        assert!(initial_view.contains("count=0"), "{initial_view}");
+
+        // The opaque game event reaches Roc `update`, then the server sends
+        // the resulting presentation to this same Iroh client.
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let update = lines.next().expect("update event line").unwrap();
+        assert!(update.contains("\"type\":\"event\""), "{update}");
+        let updated_view = lines.next().expect("updated view line").unwrap();
+        assert!(updated_view.contains("count=1"), "{updated_view}");
+
+        // Chat shares the transport/event log without mutating Roc game state.
+        stdin.write_all(b"hello from the cli\n").unwrap();
         let echoed = lines.next().expect("event line").unwrap();
         assert!(echoed.contains("\"type\":\"event\""), "{echoed}");
         assert!(echoed.contains("hello from the cli"), "{echoed}");
-        std::io::Write::write_all(&mut stdin, b"/quit\n").unwrap();
+        let chat_view = lines.next().expect("chat view line").unwrap();
+        assert!(chat_view.contains("count=1"), "{chat_view}");
+        stdin.write_all(b"/quit\n").unwrap();
         drop(stdin);
         assert!(joined.wait().unwrap().success());
 

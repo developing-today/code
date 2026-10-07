@@ -73,6 +73,54 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", result?);
             Ok(())
         }
+        WorldCommand::Install {
+            node,
+            module,
+            admin_token,
+            seed,
+            addrs,
+            no_relay,
+        } => {
+            let metadata = std::fs::metadata(&module)
+                .with_context(|| format!("read module metadata {}", module.display()))?;
+            anyhow::ensure!(
+                metadata.len() <= crate::world_session::MAX_WORLD_MODULE_BYTES as u64,
+                "module exceeds {} bytes",
+                crate::world_session::MAX_WORLD_MODULE_BYTES
+            );
+            let wasm = std::fs::read(&module)
+                .with_context(|| format!("read Wasm module {}", module.display()))?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let result = client.install_wasm(&admin_token, &wasm, seed).await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", result?);
+            Ok(())
+        }
+        WorldCommand::Download {
+            node,
+            capability,
+            output,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay).await?;
+            let result = async {
+                let (_, active_module_hash, _) = client.info(&capability).await?;
+                let module_hash =
+                    active_module_hash.context("world has no installed module to download")?;
+                let bytes = client.download_module(&capability, &module_hash).await?;
+                tokio::fs::write(&output, &bytes)
+                    .await
+                    .with_context(|| format!("write module to {}", output.display()))?;
+                println!("{module_hash}");
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+            client.close();
+            endpoint.close().await;
+            result
+        }
         WorldCommand::Join {
             node,
             capability,

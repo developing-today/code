@@ -14,22 +14,36 @@
 //! Authorization is the capability alone. A transport may know who the peer
 //! is (an Iroh node ID); that never grants world authority.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use iroh_blobs::{
+    BlobFormat, Hash,
+    api::{Store, TempTag, blobs::AddBytesOptions},
+};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::world::{JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot};
 
 /// Largest accepted or emitted frame, in bytes.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024;
 
+/// Largest Wasm world module that may be installed (16 MiB).
+pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Largest raw upload chunk; hex + JSON framing remains below [`MAX_FRAME_BYTES`].
+pub const MAX_WORLD_MODULE_CHUNK_BYTES: usize = 6 * 1024;
+
 /// Longest accepted capability string, in bytes.
 const MAX_CAPABILITY_BYTES: usize = 256;
 
 /// Longest accepted admin secret, in bytes.
 const MAX_ADMIN_TOKEN_BYTES: usize = 256;
+
+/// Simultaneous bounded module uploads accepted by a world service.
+const MAX_CONCURRENT_MODULE_UPLOADS: usize = 2;
 
 /// One inbound unit from a transport.
 #[derive(Debug)]
@@ -77,6 +91,13 @@ enum ClientFrame {
         capability: String,
         after: Option<u64>,
     },
+    Info {
+        capability: String,
+    },
+    DownloadModule {
+        capability: String,
+        module_hash: String,
+    },
     Invite {
         admin_token: String,
         display_name: String,
@@ -87,15 +108,66 @@ enum ClientFrame {
     Input {
         data_hex: String,
     },
+    InstallBegin {
+        admin_token: String,
+        total_bytes: usize,
+        /// Expected BLAKE3 hash. Optional for browser uploads, whose WebCrypto
+        /// API does not provide BLAKE3; the host still computes and returns it.
+        module_hash: Option<String>,
+        seed: u64,
+    },
+    InstallChunk {
+        offset: usize,
+        data_hex: String,
+    },
+    InstallEnd,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerFrame<'a> {
-    Snapshot { snapshot: &'a WorldSnapshot },
-    Event { event: &'a WorldEvent },
+    Snapshot {
+        snapshot: &'a WorldSnapshot,
+    },
+    Event {
+        event: &'a WorldEvent,
+    },
+    /// Host-rendered presentation for the participant's adapter.
+    View {
+        sequence: u64,
+        data: &'a str,
+    },
+    ModuleInfo {
+        world_id: String,
+        active_module_hash: Option<String>,
+        current_sequence: u64,
+    },
+    ModuleBegin {
+        module_hash: String,
+        total_bytes: usize,
+    },
+    ModuleChunk {
+        offset: usize,
+        data_hex: String,
+    },
+    ModuleEnd {
+        module_hash: String,
+    },
     Invite(&'a InviteResponse),
-    Error { message: &'a str },
+    UploadReady {
+        chunk_bytes: usize,
+    },
+    ModuleInstalled {
+        module_hash: &'a str,
+        sequence: u64,
+    },
+    ProgramChanged {
+        module_hash: &'a str,
+        sequence: u64,
+    },
+    Error {
+        message: &'a str,
+    },
 }
 
 /// A freshly minted guest capability.
@@ -120,11 +192,30 @@ pub enum InviteError {
     Unavailable,
 }
 
+/// Why an uploaded Wasm program was not installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallError {
+    /// Module installation is unavailable in this service/build.
+    Disabled,
+    /// The supplied admin secret is missing or wrong.
+    Unauthorized,
+    /// Size or content hash validation failed.
+    InvalidUpload,
+    /// Wasmtime rejected or could not instantiate the module.
+    InvalidModule,
+    /// The blob could not be pinned or the world actor refused activation.
+    Unavailable,
+}
+
 /// A world plus the secret that may mint guest capabilities for it.
 #[derive(Clone)]
 pub struct WorldService {
     world: WorldHandle,
     admin_token: Option<String>,
+    blobs: Option<Store>,
+    module_pin: Arc<Mutex<Option<TempTag>>>,
+    module_hash: Arc<RwLock<Option<String>>>,
+    upload_slots: Arc<Semaphore>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -141,8 +232,30 @@ impl std::fmt::Debug for WorldService {
 impl WorldService {
     /// Wrap a world. `admin_token: None` disables invites.
     #[must_use]
-    pub const fn new(world: WorldHandle, admin_token: Option<String>) -> Self {
-        Self { world, admin_token }
+    pub fn new(world: WorldHandle, admin_token: Option<String>) -> Self {
+        Self {
+            world,
+            admin_token,
+            blobs: None,
+            module_pin: Arc::new(Mutex::new(None)),
+            module_hash: Arc::new(RwLock::new(None)),
+            upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_MODULE_UPLOADS)),
+        }
+    }
+
+    /// Attach this node's blob store so uploaded modules survive as pinned
+    /// Iroh content for the life of the running world.
+    #[must_use]
+    pub fn with_blob_store(mut self, blobs: Store) -> Self {
+        self.blobs = Some(blobs);
+        self
+    }
+
+    /// Reserve one upload slot before accepting a potentially large body.
+    fn try_reserve_module_upload(&self) -> Result<OwnedSemaphorePermit, InstallError> {
+        Arc::clone(&self.upload_slots)
+            .try_acquire_owned()
+            .map_err(|_| InstallError::Unavailable)
     }
 
     /// The underlying world actor.
@@ -161,14 +274,7 @@ impl WorldService {
         supplied: Option<&str>,
         display_name: String,
     ) -> Result<InviteResponse, InviteError> {
-        let Some(expected) = self.admin_token.as_deref().filter(|t| !t.is_empty()) else {
-            return Err(InviteError::Disabled);
-        };
-        if !supplied.is_some_and(|s| {
-            s.len() <= MAX_ADMIN_TOKEN_BYTES && secret_eq(expected.as_bytes(), s.as_bytes())
-        }) {
-            return Err(InviteError::Unauthorized);
-        }
+        self.authorize_admin(supplied)?;
         match self.world.issue(display_name, WorldScopes::GUEST).await {
             Ok((participant, capability)) => Ok(InviteResponse {
                 capability: capability.expose().to_owned(),
@@ -178,6 +284,133 @@ impl WorldService {
             Err(_) => Err(InviteError::Unavailable),
         }
     }
+
+    /// Validate the separately configured world-administrator token.
+    pub fn authorize_admin(&self, supplied: Option<&str>) -> Result<(), InviteError> {
+        let Some(expected) = self.admin_token.as_deref().filter(|t| !t.is_empty()) else {
+            return Err(InviteError::Disabled);
+        };
+        if !supplied.is_some_and(|s| {
+            s.len() <= MAX_ADMIN_TOKEN_BYTES && secret_eq(expected.as_bytes(), s.as_bytes())
+        }) {
+            return Err(InviteError::Unauthorized);
+        }
+        Ok(())
+    }
+
+    /// Compile, instantiate and atomically install a Wasm program. The module
+    /// is first pinned in Iroh's blob store; only then does the actor activate
+    /// it. A failed compile or write leaves the running program unchanged.
+    #[cfg(feature = "sandbox")]
+    pub async fn install_wasm(
+        &self,
+        supplied_admin: Option<&str>,
+        wasm: Vec<u8>,
+        seed: u64,
+        claimed_hash: &str,
+    ) -> Result<(String, u64), InstallError> {
+        let permit = self.try_reserve_module_upload()?;
+        self.install_wasm_reserved(supplied_admin, wasm, seed, claimed_hash, permit)
+            .await
+    }
+
+    #[cfg(feature = "sandbox")]
+    async fn install_wasm_reserved(
+        &self,
+        supplied_admin: Option<&str>,
+        wasm: Vec<u8>,
+        seed: u64,
+        claimed_hash: &str,
+        _permit: OwnedSemaphorePermit,
+    ) -> Result<(String, u64), InstallError> {
+        self.authorize_admin(supplied_admin)
+            .map_err(|error| match error {
+                InviteError::Disabled => InstallError::Disabled,
+                InviteError::Unauthorized => InstallError::Unauthorized,
+                InviteError::Unavailable => InstallError::Unavailable,
+            })?;
+        if wasm.is_empty() || wasm.len() > MAX_WORLD_MODULE_BYTES {
+            return Err(InstallError::InvalidUpload);
+        }
+        let hash = Hash::new(&wasm);
+        let module_hash = hash.to_string();
+        if claimed_hash != module_hash {
+            return Err(InstallError::InvalidUpload);
+        }
+        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?.clone();
+        let limits = crate::sandbox::SandboxLimits {
+            module_bytes: MAX_WORLD_MODULE_BYTES,
+            ..crate::sandbox::SandboxLimits::default()
+        };
+        let compile_bytes = wasm.clone();
+        let guest = tokio::task::spawn_blocking(move || {
+            let sandbox = crate::sandbox::Sandbox::compile(&compile_bytes, limits)?;
+            sandbox.instantiate(seed)
+        })
+        .await
+        .map_err(|_| InstallError::InvalidModule)?
+        .map_err(|_| InstallError::InvalidModule)?;
+
+        let pin = blobs
+            .add_bytes_with_opts(AddBytesOptions {
+                data: wasm.into(),
+                format: BlobFormat::Raw,
+            })
+            .temp_tag()
+            .await
+            .map_err(|_| InstallError::Unavailable)?;
+        if pin.hash() != hash {
+            return Err(InstallError::Unavailable);
+        }
+        let installed = self
+            .world
+            .install_program(module_hash.clone(), Box::new(guest))
+            .await
+            .map_err(|_| InstallError::Unavailable)?;
+        if !matches!(
+            installed.kind,
+            crate::world::WorldEventKind::ProgramInstalled { .. }
+        ) {
+            return Err(InstallError::Unavailable);
+        }
+        *self.module_pin.lock().await = Some(pin);
+        *self.module_hash.write().await = Some(module_hash.clone());
+        Ok((module_hash, installed.sequence))
+    }
+
+    /// Read the currently pinned module artifact for peer download.
+    /// The caller must already have authenticated as a world participant.
+    #[cfg(feature = "sandbox")]
+    pub async fn module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
+        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
+        let pin = self.module_pin.lock().await;
+        let Some(pin) = pin.as_ref() else {
+            return Err(InstallError::Unavailable);
+        };
+        if pin.hash().to_string() != expected_hash {
+            return Err(InstallError::InvalidUpload);
+        }
+        let bytes = blobs
+            .blobs()
+            .get_bytes(pin.hash())
+            .await
+            .map_err(|_| InstallError::Unavailable)?;
+        if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash {
+            return Err(InstallError::Unavailable);
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// Hash of the currently active module, if the world runs one.
+    pub async fn active_module_hash(&self) -> Option<String> {
+        self.module_hash.read().await.clone()
+    }
+}
+
+/// Canonical content identifier expected in an install-begin frame.
+#[must_use]
+pub fn module_hash(wasm: &[u8]) -> String {
+    Hash::new(wasm).to_string()
 }
 
 /// Constant-time (for equal lengths) secret comparison.
@@ -248,9 +481,213 @@ pub async fn run_session_with<I: SessionIo>(
                 let _ = send_error(io, "world cannot issue another invite").await;
             }
         },
-        ClientFrame::Chat { .. } | ClientFrame::Input { .. } => {
-            let _ = send_error(io, "first frame must be a join request").await;
+        ClientFrame::Info { capability } => {
+            let token = JoinCapability::from_wire(capability);
+            match service.world().snapshot(token).await {
+                Ok(snapshot) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::ModuleInfo {
+                            world_id: snapshot.world_id,
+                            active_module_hash: snapshot.active_module_hash,
+                            current_sequence: snapshot.current_sequence,
+                        },
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    let _ = send_error(io, "join denied").await;
+                }
+            }
         }
+        ClientFrame::DownloadModule {
+            capability,
+            module_hash,
+        } => {
+            let token = JoinCapability::from_wire(capability);
+            if service.world().snapshot(token).await.is_err() {
+                let _ = send_error(io, "join denied").await;
+            } else if let Err(message) = download_module_session(service, io, &module_hash).await {
+                let _ = send_error(io, message).await;
+            }
+        }
+        ClientFrame::InstallBegin {
+            admin_token,
+            total_bytes,
+            module_hash,
+            seed,
+        } => {
+            if let Err(message) = install_module_session(
+                service,
+                io,
+                &admin_token,
+                total_bytes,
+                module_hash.as_deref(),
+                seed,
+            )
+            .await
+            {
+                let _ = send_error(io, message).await;
+            }
+        }
+        ClientFrame::InstallChunk { .. }
+        | ClientFrame::InstallEnd
+        | ClientFrame::Chat { .. }
+        | ClientFrame::Input { .. } => {
+            let _ = send_error(io, "first frame must be join, invite or install_begin").await;
+        }
+    }
+}
+
+async fn download_module_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    requested_hash: &str,
+) -> Result<(), &'static str> {
+    let Some(active_hash) = service.active_module_hash().await else {
+        return Err("world has no installed module");
+    };
+    if requested_hash != active_hash {
+        return Err("requested module is not the active world module");
+    }
+    let bytes = service
+        .module_bytes(&active_hash)
+        .await
+        .map_err(|_| "module bytes are unavailable")?;
+    if !send_json(
+        io,
+        &ServerFrame::ModuleBegin {
+            module_hash: active_hash.clone(),
+            total_bytes: bytes.len(),
+        },
+    )
+    .await
+    {
+        return Err("connection closed");
+    }
+    for (index, chunk) in bytes.chunks(MAX_WORLD_MODULE_CHUNK_BYTES).enumerate() {
+        if !send_json(
+            io,
+            &ServerFrame::ModuleChunk {
+                offset: index * MAX_WORLD_MODULE_CHUNK_BYTES,
+                data_hex: encode_hex(chunk),
+            },
+        )
+        .await
+        {
+            return Err("connection closed");
+        }
+    }
+    if !send_json(
+        io,
+        &ServerFrame::ModuleEnd {
+            module_hash: active_hash,
+        },
+    )
+    .await
+    {
+        return Err("connection closed");
+    }
+    Ok(())
+}
+
+async fn install_module_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    admin_token: &str,
+    total_bytes: usize,
+    claimed_hash: Option<&str>,
+    seed: u64,
+) -> Result<(), &'static str> {
+    if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
+        || service.authorize_admin(Some(admin_token)).is_err()
+    {
+        return Err("module install denied");
+    }
+    if total_bytes == 0
+        || total_bytes > MAX_WORLD_MODULE_BYTES
+        || claimed_hash.is_some_and(|hash| {
+            hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return Err("invalid module size or content hash");
+    }
+    let upload_permit = service
+        .try_reserve_module_upload()
+        .map_err(|_| "world is busy installing another module")?;
+    #[cfg(not(feature = "sandbox"))]
+    return Err("module installation requires the sandbox feature");
+
+    #[cfg(feature = "sandbox")]
+    {
+        if !send_json(
+            io,
+            &ServerFrame::UploadReady {
+                chunk_bytes: MAX_WORLD_MODULE_CHUNK_BYTES,
+            },
+        )
+        .await
+        {
+            return Err("connection closed");
+        }
+        let mut bytes = Vec::with_capacity(total_bytes);
+        while bytes.len() < total_bytes {
+            let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
+                .await
+                .map_err(|_| "timed out receiving module")?;
+            let Inbound::Text(text) = incoming else {
+                return Err("invalid module chunk frame");
+            };
+            let Ok(ClientFrame::InstallChunk { offset, data_hex }) =
+                serde_json::from_str::<ClientFrame>(&text)
+            else {
+                return Err("expected module chunk frame");
+            };
+            if offset != bytes.len() || data_hex.len() > MAX_WORLD_MODULE_CHUNK_BYTES * 2 {
+                return Err("invalid module chunk offset or size");
+            }
+            let Some(chunk) = decode_hex(&data_hex) else {
+                return Err("module chunk must be hexadecimal");
+            };
+            if chunk.is_empty() || chunk.len() > total_bytes.saturating_sub(bytes.len()) {
+                return Err("invalid module chunk length");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
+            .await
+            .map_err(|_| "timed out waiting for install completion")?;
+        if !matches!(incoming, Inbound::Text(ref text) if matches!(serde_json::from_str::<ClientFrame>(text), Ok(ClientFrame::InstallEnd)))
+        {
+            return Err("expected install_end frame");
+        }
+        let actual_hash = module_hash(&bytes);
+        if claimed_hash.is_some_and(|claimed| actual_hash != claimed.to_ascii_lowercase()) {
+            return Err("module content hash mismatch");
+        }
+        let (module_hash, sequence) = service
+            .install_wasm_reserved(Some(admin_token), bytes, seed, &actual_hash, upload_permit)
+            .await
+            .map_err(|error| match error {
+                InstallError::Disabled => "module installation is not enabled on this host",
+                InstallError::Unauthorized => "module install denied",
+                InstallError::InvalidUpload => "invalid module upload",
+                InstallError::InvalidModule => "Wasm module failed validation or initialization",
+                InstallError::Unavailable => "world could not activate the module",
+            })?;
+        if !send_json(
+            io,
+            &ServerFrame::ModuleInstalled {
+                module_hash: &module_hash,
+                sequence,
+            },
+        )
+        .await
+        {
+            return Err("connection closed");
+        }
+        Ok(())
     }
 }
 
@@ -263,6 +700,11 @@ async fn joined<I: SessionIo>(
     // Subscribe before taking the snapshot so no event can fall in the gap;
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
+    let mut revocations = world.subscribe_revocations();
+    let Ok(participant_id) = world.participant_id(token.clone()).await else {
+        let _ = send_error(io, "join denied").await;
+        return;
+    };
     let Ok(snapshot) = world.snapshot(token.clone()).await else {
         let _ = send_error(io, "join denied").await;
         return;
@@ -285,6 +727,9 @@ async fn joined<I: SessionIo>(
                     if !send_json(io, &ServerFrame::Event { event }).await {
                         return;
                     }
+                    if !send_view(world, io, &token, event.sequence).await {
+                        return;
+                    }
                 }
             }
             Err(_) => {
@@ -300,6 +745,9 @@ async fn joined<I: SessionIo>(
     )
     .await
     {
+        return;
+    }
+    if !send_view(world, io, &token, cursor).await {
         return;
     }
 
@@ -321,6 +769,22 @@ async fn joined<I: SessionIo>(
             },
             event = events.recv() => match event {
                 Ok(event) => {
+                    if let crate::world::WorldEventKind::ProgramInstalled { ref module_hash } = event.kind {
+                        if event.sequence > cursor {
+                            let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
+                            if !send_json(io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
+                                break;
+                            }
+                            cursor = event.sequence;
+                            if !send_json(io, &ServerFrame::ProgramChanged {
+                                module_hash,
+                                sequence: cursor,
+                            }).await || !send_view(world, io, &token, cursor).await {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     if event.sequence <= cursor {
                         continue;
                     }
@@ -333,6 +797,9 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = event.sequence;
+                    if !send_view(world, io, &token, cursor).await {
+                        break;
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
@@ -340,10 +807,46 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = snapshot.current_sequence;
+                    if !send_view(world, io, &token, cursor).await {
+                        break;
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            revoked = revocations.recv() => match revoked {
+                Ok(revoked_id) if revoked_id == participant_id => {
+                    let _ = send_error(io, "world capability revoked").await;
+                    break;
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {},
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
         }
+    }
+}
+
+async fn send_view<I: SessionIo>(
+    world: &WorldHandle,
+    io: &mut I,
+    token: &JoinCapability,
+    sequence: u64,
+) -> bool {
+    match world.view(token.clone()).await {
+        Ok(Some(data)) => {
+            if data.len() > MAX_FRAME_BYTES {
+                return send_error(io, "world presentation is too large").await;
+            }
+            send_json(
+                io,
+                &ServerFrame::View {
+                    sequence,
+                    data: &data,
+                },
+            )
+            .await
+        }
+        Ok(None) => true,
+        Err(_) => false,
     }
 }
 
@@ -363,7 +866,13 @@ async fn handle_client_frame<I: SessionIo>(
             Some(data) => world.input(token.clone(), data).await,
             None => return send_error(io, "input data must be hexadecimal").await,
         },
-        ClientFrame::Join { .. } | ClientFrame::Invite { .. } => {
+        ClientFrame::Join { .. }
+        | ClientFrame::Invite { .. }
+        | ClientFrame::Info { .. }
+        | ClientFrame::DownloadModule { .. }
+        | ClientFrame::InstallBegin { .. }
+        | ClientFrame::InstallChunk { .. }
+        | ClientFrame::InstallEnd => {
             return send_error(io, "already joined").await;
         }
     };
@@ -394,6 +903,16 @@ pub fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
         .chunks_exact(2)
         .map(|pair| Some((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
         .collect()
+}
+
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(char::from(HEX[usize::from(byte >> 4)]));
+        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    result
 }
 
 const fn hex_nibble(byte: u8) -> Option<u8> {
@@ -481,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_event_shape_is_presentation_neutral() {
+    fn wire_event_and_view_shape_are_presentation_neutral() {
         use crate::world::WorldEventKind;
         let event = WorldEvent {
             sequence: 3,
@@ -493,6 +1012,13 @@ mod tests {
         assert!(encoded.contains("\"sequence\":3"));
         assert!(encoded.contains("\"kind\":\"chat\""));
         assert!(encoded.contains("\"data\":\"hello\""));
+        let view = serde_json::to_string(&ServerFrame::View {
+            sequence: 3,
+            data: "count=1",
+        })
+        .unwrap();
+        assert!(view.contains("\"type\":\"view\""));
+        assert!(view.contains("\"data\":\"count=1\""));
     }
 
     #[test]
@@ -563,6 +1089,113 @@ mod tests {
             .say(serde_json::json!({"type":"join","capability":capability}))
             .await;
         assert_eq!(guest.next().await.unwrap()["type"], "snapshot");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn admin_upload_pins_validates_and_activates_a_roc_program() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: Store = MemStore::new().into();
+        let svc = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs.clone());
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let hash = module_hash(wasm);
+
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "wrong",
+            "total_bytes": wasm.len(),
+            "module_hash": hash,
+            "seed": 12,
+        }))
+        .await;
+        assert_eq!(
+            peer.next().await.unwrap()["message"],
+            "module install denied"
+        );
+
+        let (_, guest) = world
+            .issue("ada".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "admin",
+            "total_bytes": wasm.len(),
+            "module_hash": null,
+            "seed": 12,
+        }))
+        .await;
+        let ready = peer.next().await.unwrap();
+        assert_eq!(ready["type"], "upload_ready");
+        let chunk_bytes = ready["chunk_bytes"].as_u64().unwrap() as usize;
+        for (index, chunk) in wasm.chunks(chunk_bytes).enumerate() {
+            peer.say(serde_json::json!({
+                "type": "install_chunk",
+                "offset": index * chunk_bytes,
+                "data_hex": encode_hex(chunk),
+            }))
+            .await;
+        }
+        peer.say(serde_json::json!({"type": "install_end"})).await;
+        let ack = peer.next().await.unwrap();
+        assert_eq!(ack["type"], "module_installed");
+        assert_eq!(ack["module_hash"], hash);
+
+        let hash: Hash = hash.parse().unwrap();
+        assert!(
+            blobs.blobs().has(hash).await.unwrap(),
+            "uploaded module is pinned in the blob store"
+        );
+        assert_eq!(
+            world.view(guest.clone()).await.unwrap().as_deref(),
+            Some("count=0")
+        );
+        world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
+        assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn bad_module_replacement_preserves_the_active_program() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("counter", WorldLimits::default()).unwrap(),
+            Box::new(sandbox.instantiate(1).unwrap()),
+        );
+        let blobs: Store = MemStore::new().into();
+        let service =
+            WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
+        let (_, guest) = world.issue("guest", WorldScopes::GUEST).await.unwrap();
+        assert_eq!(
+            world.view(guest.clone()).await.unwrap().as_deref(),
+            Some("count=0")
+        );
+
+        let bad = b"not wasm".to_vec();
+        let hash = module_hash(&bad);
+        assert_eq!(
+            service
+                .install_wasm(Some("admin"), bad, 2, &hash)
+                .await
+                .unwrap_err(),
+            InstallError::InvalidModule
+        );
+        assert_eq!(
+            world.view(guest.clone()).await.unwrap().as_deref(),
+            Some("count=0")
+        );
+        world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
+        assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
     }
 
     #[tokio::test]

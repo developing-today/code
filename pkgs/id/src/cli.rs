@@ -323,6 +323,9 @@ pub enum Command {
         /// Admin secret required to mint world guest capabilities.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN")]
         world_admin_token: Option<String>,
+        /// Start with this precompiled Wasm world module (Roc platform ABI).
+        #[arg(long, requires = "world")]
+        world_module: Option<PathBuf>,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1070,6 +1073,43 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Upload and activate a compiled `.wasm` world program on a host.
+    Install {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Wasm module built for the `id` Roc world ABI.
+        module: PathBuf,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Deterministic seed supplied to the guest initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Download the module backing the world's current state, verified
+    /// by hash. Prints the module hash; writes the bytes to `--output`.
+    Download {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Where to write the verified module bytes.
+        #[arg(long)]
+        output: PathBuf,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Join a world and chat. Stdin lines are chat; `/input <hex>` sends
     /// opaque input. Server frames print as JSON lines.
     Join {
@@ -1284,6 +1324,7 @@ mod tests {
                 web_token,
                 world,
                 world_admin_token,
+                world_module,
                 allow_node,
                 open_writes,
             }) => {
@@ -1305,6 +1346,7 @@ mod tests {
                 assert!(web_token.is_none());
                 assert!(!world);
                 assert!(world_admin_token.is_none());
+                assert!(world_module.is_none());
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

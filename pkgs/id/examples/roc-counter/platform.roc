@@ -15,7 +15,7 @@ platform ""
     }
     targets: {
         inputs_dir: "targets/",
-        wasm32: { inputs: ["host.wasm", app], output: Shared, exports: ["plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_out_len"] },
+        wasm32: { inputs: ["host.wasm", app], output: Shared, exports: ["plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_out_len", "plaza_error_ptr", "plaza_error_len"] },
     }
 
 init_for_host : U64 -> Box(Model)

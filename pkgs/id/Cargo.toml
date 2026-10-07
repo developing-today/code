@@ -15,7 +15,7 @@ categories = ["command-line-utilities", "network-programming"]
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime"]
+sandbox = ["dep:wasmtime", "world"]
 world = ["dep:sha2", "dep:subtle"]
 web = [
   "world",

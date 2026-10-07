@@ -1,4 +1,4 @@
-app [program] { pf: platform "../platform/main.roc" }
+app [program] { pf: platform "./platform.roc" }
 
 Model := { count : I64 }
 

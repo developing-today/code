@@ -9,7 +9,7 @@ use axum::{
         State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use futures::{
@@ -52,9 +52,8 @@ async fn invite_handler(
         return StatusCode::NOT_FOUND.into_response();
     };
     let supplied = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
+        .get("x-world-admin-token")
+        .and_then(|value| value.to_str().ok());
     match service.invite(supplied, request.display_name).await {
         Ok(invite) => Json(invite).into_response(),
         Err(InviteError::Disabled) => StatusCode::NOT_FOUND.into_response(),
@@ -114,6 +113,7 @@ impl SessionIo for WsIo {
 mod tests {
     use super::*;
     use crate::world::{JoinCapability, WorldCore, WorldHandle, WorldLimits};
+    use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
 
     use tokio_tungstenite::tungstenite::Message as ClientMessage;
@@ -135,7 +135,7 @@ mod tests {
             .uri("/api/world/invite")
             .header("content-type", "application/json");
         if let Some(auth) = auth {
-            builder = builder.header("authorization", auth);
+            builder = builder.header("x-world-admin-token", auth);
         }
         builder
             .body(Body::from(r#"{"display_name":"guest"}"#))
@@ -143,17 +143,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invite_requires_the_admin_bearer_secret() {
+    async fn invite_requires_the_admin_secret_header() {
         let router = app(Some(lobby()), Some("s3cret"));
-        for auth in [None, Some("Bearer wrong"), Some("s3cret"), Some("Bearer ")] {
+        for auth in [None, Some("wrong"), Some("Bearer s3cret"), Some("")] {
             let response = router.clone().oneshot(invite_request(auth)).await.unwrap();
-            assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
         let response = router
-            .oneshot(invite_request(Some("Bearer s3cret")))
+            .oneshot(invite_request(Some("s3cret")))
             .await
             .unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
@@ -166,11 +166,19 @@ mod tests {
     async fn invite_is_disabled_without_admin_secret_or_world() {
         for router in [app(Some(lobby()), None), app(None, Some("s3cret"))] {
             let response = router
-                .oneshot(invite_request(Some("Bearer s3cret")))
+                .oneshot(invite_request(Some("s3cret")))
                 .await
                 .unwrap();
-            assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    #[tokio::test]
+    async fn admin_secret_is_redacted_from_world_service_debug() {
+        let service = WorldService::new(lobby(), Some("never-print-me".to_owned()));
+        let printed = format!("{service:?}");
+        assert!(printed.contains("REDACTED"));
+        assert!(!printed.contains("never-print-me"));
     }
 
     type Client = tokio_tungstenite::WebSocketStream<
@@ -215,6 +223,8 @@ mod tests {
             "after": after,
         })
     }
+
+    use crate::world_session::encode_hex;
 
     #[tokio::test]
     async fn websocket_join_broadcast_and_catch_up() {
@@ -274,8 +284,86 @@ mod tests {
         assert_eq!(next_frame(&mut long).await.unwrap()["type"], "error");
     }
 
+    #[cfg(feature = "sandbox")]
     #[tokio::test]
-    async fn revoked_participant_is_disconnected_on_next_event() {
+    async fn browser_websocket_can_upload_and_run_a_roc_module() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs.clone());
+        let addr = serve(world_routes().with_state(WorldWebState {
+            service: Some(service),
+        }))
+        .await;
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let (mut uploader, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+            .await
+            .unwrap();
+        uploader
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "type": "install_begin",
+                    "admin_token": "admin",
+                    "total_bytes": wasm.len(),
+                    "module_hash": null,
+                    "seed": 99,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let ready = next_frame(&mut uploader).await.unwrap();
+        assert_eq!(ready["type"], "upload_ready");
+        let chunk_bytes = ready["chunk_bytes"].as_u64().unwrap() as usize;
+        for (index, chunk) in wasm.chunks(chunk_bytes).enumerate() {
+            uploader
+                .send(ClientMessage::Text(
+                    serde_json::json!({
+                        "type": "install_chunk",
+                        "offset": index * chunk_bytes,
+                        "data_hex": encode_hex(chunk),
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        uploader
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "install_end"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let installed = next_frame(&mut uploader).await.unwrap();
+        assert_eq!(installed["type"], "module_installed");
+        let hash: iroh_blobs::Hash = installed["module_hash"].as_str().unwrap().parse().unwrap();
+        assert!(blobs.blobs().has(hash).await.unwrap());
+
+        let (_, capability) = world
+            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut player = connect(addr, join(&capability, None)).await;
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "snapshot");
+        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=0");
+        player
+            .send(ClientMessage::Text(
+                r#"{"type":"input","data_hex":"696e63"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
+        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=1");
+    }
+
+    #[tokio::test]
+    async fn revoked_idle_participant_is_disconnected_immediately() {
         let world = lobby();
         let addr = serve(app(Some(world.clone()), Some("admin"))).await;
         let (alice_id, alice) = world
@@ -290,7 +378,12 @@ mod tests {
         assert_eq!(next_frame(&mut a).await.unwrap()["type"], "snapshot");
 
         assert!(world.revoke(alice_id.id).await.unwrap());
-        world.chat(bob, "anyone there?").await.unwrap();
+        let closed = next_frame(&mut a).await.unwrap();
+        assert_eq!(closed["type"], "error");
+        assert_eq!(closed["message"], "world capability revoked");
         assert!(next_frame(&mut a).await.is_none());
+        // An idle peer remains connected and can publish after its neighbor is
+        // revoked, which demonstrates revocation didn't poison the world.
+        assert_eq!(world.chat(bob, "still here").await.unwrap().sequence, 1);
     }
 }

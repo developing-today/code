@@ -210,6 +210,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route("/world", get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
@@ -260,6 +261,13 @@ pub fn create_router(state: AppState) -> Router {
         )
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
+}
+
+async fn world_page_handler(State(state): State<AppState>) -> Response {
+    if state.world.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Html(super::templates::render_world_page(&state.assets)).into_response()
 }
 
 /// Check if this is a partial request (SPA navigation, returns fragment not full page).

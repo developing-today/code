@@ -22,7 +22,10 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-use crate::world_session::{Inbound, MAX_FRAME_BYTES, SessionIo, WorldService, run_session};
+use crate::world_session::{
+    Inbound, MAX_FRAME_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, WorldService, module_hash,
+    run_session,
+};
 
 /// ALPN for world sessions. Within version 1 frames may gain fields and
 /// variants; removing or changing one needs `/id-world/2`.
@@ -30,6 +33,8 @@ pub const WORLD_ALPN: &[u8] = b"/id-world/1";
 
 /// Concurrent sessions allowed on one connection.
 const MAX_SESSIONS_PER_CONNECTION: usize = 4;
+
+use crate::world_session::encode_hex;
 
 /// Write one frame.
 ///
@@ -249,6 +254,200 @@ impl WorldClient {
         }
     }
 
+    /// Upload and activate a compiled Wasm world module over this Iroh
+    /// session. The host pins the bytes in its blob store and switches the
+    /// authoritative guest only after compilation and initialization succeed.
+    ///
+    /// # Errors
+    ///
+    /// Fails on host refusal, size/hash mismatch, module validation failure,
+    /// or stream loss.
+    pub async fn install_wasm(
+        &mut self,
+        admin_token: &str,
+        wasm: &[u8],
+        seed: u64,
+    ) -> Result<String> {
+        anyhow::ensure!(
+            !wasm.is_empty() && wasm.len() <= crate::world_session::MAX_WORLD_MODULE_BYTES,
+            "module size is outside the supported range"
+        );
+        let hash = module_hash(wasm);
+        self.send_json(&serde_json::json!({
+            "type": "install_begin",
+            "admin_token": admin_token,
+            "total_bytes": wasm.len(),
+            "module_hash": hash,
+            "seed": seed,
+        }))
+        .await?;
+        let ready = self
+            .recv_json()
+            .await?
+            .context("host closed before module upload was accepted")?;
+        if ready["type"] != "upload_ready" {
+            bail!(
+                "{}",
+                ready["message"]
+                    .as_str()
+                    .unwrap_or("host refused module upload")
+            );
+        }
+        let chunk_bytes = ready["chunk_bytes"]
+            .as_u64()
+            .and_then(|size| usize::try_from(size).ok())
+            .filter(|size| (1..=MAX_WORLD_MODULE_CHUNK_BYTES).contains(size))
+            .context("host returned an invalid module chunk size")?;
+        for (index, chunk) in wasm.chunks(chunk_bytes).enumerate() {
+            self.send_json(&serde_json::json!({
+                "type": "install_chunk",
+                "offset": index * chunk_bytes,
+                "data_hex": encode_hex(chunk),
+            }))
+            .await?;
+        }
+        self.send_json(&serde_json::json!({"type": "install_end"}))
+            .await?;
+        let installed = self
+            .recv_json()
+            .await?
+            .context("host closed before module activation response")?;
+        if installed["type"] != "module_installed" {
+            bail!(
+                "{}",
+                installed["message"]
+                    .as_str()
+                    .unwrap_or("host refused module activation")
+            );
+        }
+        let installed_hash = installed["module_hash"]
+            .as_str()
+            .context("host omitted installed module hash")?;
+        anyhow::ensure!(
+            installed_hash == hash,
+            "host acknowledged a different module hash"
+        );
+        Ok(hash)
+    }
+
+    /// Query which module backs the world's current state. Returns
+    /// `(world_id, active_module_hash, current_sequence)`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the capability is refused or the stream breaks.
+    pub async fn info(&mut self, capability: &str) -> Result<(String, Option<String>, u64)> {
+        self.send_json(&serde_json::json!({
+            "type": "info",
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("module_info") => {
+                let world_id = reply["world_id"]
+                    .as_str()
+                    .context("host omitted world id")?
+                    .to_owned();
+                let active_module_hash = reply["active_module_hash"].as_str().map(str::to_owned);
+                let current_sequence = reply["current_sequence"]
+                    .as_u64()
+                    .context("host omitted sequence")?;
+                Ok((world_id, active_module_hash, current_sequence))
+            }
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("unexpected reply from host")
+            ),
+        }
+    }
+
+    /// Download the active module bytes after verifying the host's hash.
+    ///
+    /// # Errors
+    ///
+    /// Fails on host refusal, hash mismatch, oversize or truncated transfer.
+    pub async fn download_module(
+        &mut self,
+        capability: &str,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>> {
+        self.send_json(&serde_json::json!({
+            "type": "download_module",
+            "capability": capability,
+            "module_hash": expected_hash,
+        }))
+        .await?;
+        let begin = self
+            .recv_json()
+            .await?
+            .context("host closed before module transfer")?;
+        if begin["type"] != "module_begin" {
+            bail!(
+                "{}",
+                begin["message"]
+                    .as_str()
+                    .unwrap_or("host refused module download")
+            );
+        }
+        if begin["module_hash"] != expected_hash {
+            bail!("host offered a different module than requested");
+        }
+        let total_bytes = begin["total_bytes"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0 && *n <= crate::world_session::MAX_WORLD_MODULE_BYTES)
+            .context("host declared an invalid module size")?;
+        let mut bytes = Vec::with_capacity(total_bytes);
+        while bytes.len() < total_bytes {
+            let chunk = self
+                .recv_json()
+                .await?
+                .context("host closed mid-transfer")?;
+            if chunk["type"] != "module_chunk" {
+                bail!(
+                    "{}",
+                    chunk["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during module download")
+                );
+            }
+            let offset = chunk["offset"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .context("host omitted chunk offset")?;
+            anyhow::ensure!(offset == bytes.len(), "module chunks arrived out of order");
+            let data_hex = chunk["data_hex"]
+                .as_str()
+                .context("host omitted chunk bytes")?;
+            let Some(data) = crate::world_session::decode_hex(data_hex) else {
+                bail!("host sent non-hexadecimal module bytes");
+            };
+            anyhow::ensure!(
+                !data.is_empty() && data.len() <= total_bytes - bytes.len(),
+                "host sent an invalid module chunk"
+            );
+            bytes.extend_from_slice(&data);
+        }
+        let end = self
+            .recv_json()
+            .await?
+            .context("host closed before module transfer completed")?;
+        if end["type"] != "module_end" || end["module_hash"] != expected_hash {
+            bail!("module transfer did not complete cleanly");
+        }
+        anyhow::ensure!(
+            module_hash(&bytes).as_str() == expected_hash,
+            "downloaded module does not match its hash"
+        );
+        Ok(bytes)
+    }
+
     /// Split into the connection and both stream halves, e.g. to read frames
     /// in a task while writing from another.
     #[must_use]
@@ -380,6 +579,145 @@ mod tests {
 
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn roc_guest_updates_authoritative_state_over_iroh() {
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let program = sandbox.instantiate(7).unwrap();
+        let ep = endpoint().await;
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("counter", WorldLimits::default()).unwrap(),
+            Box::new(program),
+        );
+        let service = WorldService::new(world, Some("admin".to_owned()));
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(service.clone()))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+
+        let mut invite_client = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let capability = invite_client.invite("admin", "ann").await.unwrap();
+        invite_client.close();
+
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        client.send_json(&join(&capability, None)).await.unwrap();
+        assert_eq!(next(&mut client).await.unwrap()["type"], "snapshot");
+        let initial = next(&mut client).await.unwrap();
+        assert_eq!(initial["type"], "view");
+        assert_eq!(initial["data"], "count=0");
+
+        client
+            .send_json(&serde_json::json!({ "type": "input", "data_hex": "696e63" }))
+            .await
+            .unwrap();
+        let event = next(&mut client).await.unwrap();
+        assert_eq!(event["type"], "event");
+        let view = next(&mut client).await.unwrap();
+        assert_eq!(view["data"], "count=1");
+
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        ep.close().await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn peers_install_then_download_the_active_module_by_hash() {
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let ep = endpoint().await;
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let service =
+            WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs.clone());
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+
+        let mut admin = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let hash = admin.install_wasm("admin", wasm, 7).await.unwrap();
+        admin.close();
+        assert_eq!(hash, module_hash(wasm));
+        assert!(
+            blobs
+                .blobs()
+                .has(hash.parse::<iroh_blobs::Hash>().unwrap())
+                .await
+                .unwrap(),
+            "the host pins installed modules in its blob store"
+        );
+
+        let mut inviter = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let capability = inviter.invite("admin", "ann").await.unwrap();
+        inviter.close();
+
+        let mut query = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let (_, active, _) = query.info(&capability).await.unwrap();
+        query.close();
+        assert_eq!(active.as_deref(), Some(hash.as_str()));
+
+        let mut fetch = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let bytes = fetch.download_module(&capability, &hash).await.unwrap();
+        fetch.close();
+        assert_eq!(bytes, wasm.as_slice());
+
+        // A different hash is refused rather than served.
+        let mut wrong = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            wrong
+                .download_module(&capability, &"0".repeat(64))
+                .await
+                .is_err()
+        );
+        wrong.close();
+
+        // Without a capability, nothing is disclosed.
+        let mut anon = WorldClient::connect(&client_ep, addr).await.unwrap();
+        assert!(anon.download_module(&"0".repeat(64), &hash).await.is_err());
+        anon.close();
+
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        ep.close().await;
     }
 
     #[tokio::test]
