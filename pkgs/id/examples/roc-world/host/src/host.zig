@@ -71,11 +71,11 @@ export fn plaza_init(seed: u64) usize {
     return @intFromPtr(abi.roc_init(seed));
 }
 
-export fn plaza_update(model: usize, ptr: usize, len: usize) usize {
+export fn plaza_update(model: usize, participant: usize, ptr: usize, len: usize) usize {
     ensure();
     const p: [*]const u8 = @ptrFromInt(ptr);
     const s = abi.RocStr.fromSlice(p[0..len], &roc_host);
-    return @intFromPtr(abi.roc_update(@ptrFromInt(model), s));
+    return @intFromPtr(abi.roc_update(@ptrFromInt(model), @intCast(participant), s));
 }
 
 export fn plaza_view(model: usize, ptr: usize, len: usize) usize {

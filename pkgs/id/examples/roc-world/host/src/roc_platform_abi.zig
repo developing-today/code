@@ -871,7 +871,7 @@ pub fn makeRocHost(env: *RocEnv) RocHost {
 pub extern fn roc_init(arg0: u64) callconv(.c) RocBox;
 
 /// Entrypoint: update_for_host
-pub extern fn roc_update(arg0: RocBox, arg1: RocStr) callconv(.c) RocBox;
+pub extern fn roc_update(arg0: RocBox, arg1: u64, arg2: RocStr) callconv(.c) RocBox;
 
 /// Entrypoint: view_for_host
 pub extern fn roc_view(arg0: RocBox, arg1: RocStr) callconv(.c) RocStr;

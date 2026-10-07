@@ -2,7 +2,7 @@ platform ""
     requires {
         [Model : model] for program : {
             init : U64 -> model,
-            update : model, Str -> model,
+            update : model, U64, Str -> model,
             view : model, Str -> Str,
             records : model -> Str,
         }
@@ -23,8 +23,8 @@ platform ""
 init_for_host : U64 -> Box(Model)
 init_for_host = |seed| Box.box((program.init)(seed))
 
-update_for_host : Box(Model), Str -> Box(Model)
-update_for_host = |boxed, ev| Box.box((program.update)(Box.unbox(boxed), ev))
+update_for_host : Box(Model), U64, Str -> Box(Model)
+update_for_host = |boxed, pid, ev| Box.box((program.update)(Box.unbox(boxed), pid, ev))
 
 view_for_host : Box(Model), Str -> Str
 view_for_host = |boxed, viewer| (program.view)(Box.unbox(boxed), viewer)

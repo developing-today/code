@@ -7,17 +7,19 @@ demonstrates the `records` export (structured data mirroring).
 
 ## Build
 
-Requires Zig 0.16 and the Roc nightly that generated `host/src/roc_platform_abi.zig`
-(currently nightly-2026-10-04-130536d). From this directory:
+Requires Zig 0.16 and the Roc nightly that generated
+`../roc-world/host/src/roc_platform_abi.zig` (currently
+nightly-2026-10-04-130536d). From this directory:
 
 ```sh
 ROC=/path/to/roc ZIG=zig ./build.sh
 ```
 
-The checked-in `host/src/roc_platform_abi.zig` is generated Roc ABI code; keep
-the compiler build pinned when regenerating. `build.sh` builds the freestanding
-Zig host, compiles `main.roc` using the `platform.roc` wasm32 target, then
-validates the result with `wasm-tools`.
+The world platform lives once in `../roc-world` and is shared by every example
+app (see `../roc-world/README.md`). The checked-in `roc_platform_abi.zig` there
+is generated Roc ABI code; keep the compiler build pinned when regenerating.
+`build.sh` builds the freestanding Zig host, compiles `main.roc` against it,
+then validates the result with `wasm-tools`.
 
 ## Run a hosted world
 
@@ -52,5 +54,6 @@ source of truth.
 
 The module has no Wasm imports. The host applies fuel, memory, module-size and
 message-size limits. A trap fails closed: that world program is marked
-unhealthy and must be reinstalled. Module and live state currently reset when
-the host process exits.
+unhealthy and must be reinstalled. A non-ephemeral world keeps its installed
+module and journal under `.id-worlds/lobby/`, so state survives restarts by
+deterministic replay.

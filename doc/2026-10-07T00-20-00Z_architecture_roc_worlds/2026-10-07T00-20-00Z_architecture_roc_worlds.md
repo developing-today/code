@@ -486,3 +486,34 @@ publish/reject semantics, real-guest export; an end-to-end replication test
 where a second node syncs a ticket and receives live updates; session paging
 tests; and a process test that restarts `serve`, queries records over the
 world protocol, and mirrors them from a separate process over iroh-docs.
+
+---
+
+## 2026-10-07T10-00-00Z Implementation: participant identity in the guest ABI, shared platform, tic-tac-toe
+
+World programs now learn **who sent an event**: the guest `update` is
+`model, U64, Str -> model` (Zig export `plaza_update(model, participant,
+ptr, len)`), and the host passes the session's participant id. Programs that
+only care about the event body ignore the argument; games can implement
+turn-taking or per-player rules without the host having any game knowledge.
+The id is clamped to `i32` before it reaches the guest, and the world's
+participant limit keeps real ids far below that.
+
+The example platform moved to `examples/roc-world/` (platform + Zig host
+adapter + generated Roc ABI bindings) and is referenced by each app:
+`examples/roc-counter/` and the new `examples/tic-tac-toe/`. Both compile to
+import-free wasm modules with the same pinned Roc nightly; `build-host.sh`
+rebuilds the host adapter, and each app's `build.sh` compiles and validates
+its module.
+
+Tic-tac-toe keeps the authoritative state in a 9-character board string plus
+a ply count: the turn is the ply parity, so `update` remains a pure function
+of `(model, event)` and replay is exact. Occupied cells, off-board cells,
+non-digits and moves after a win are ignored inside the program; records
+publish `{"board":..., "plays":..., "winner":...}`, so the same replication
+and mirroring path works for a real game.
+
+Verified: the sandbox test plays a complete game (X wins on the top row,
+`records` shows `XXXOO---- / plays=5 / winner=X`), then checks that post-win
+moves, occupied cells, out-of-range cells and garbage input change nothing;
+the counter still runs unchanged under the new ABI.

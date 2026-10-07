@@ -1,7 +1,8 @@
 //! Minimal, capability-free Wasm runner for world state transitions.
 //!
 //! The guest ABI follows the Roc/Zig adapter: `plaza_init(i64) -> i32`,
-//! `plaza_update(i32, i32, i32) -> i32`, `plaza_view(i32, i32, i32) -> i32`,
+//! `plaza_update(i32, i32, i32, i32) -> i32` (model, participant, event),
+//! `plaza_records(i32) -> i32`, `plaza_view(i32, i32, i32) -> i32`,
 //! `plaza_out_len() -> i32`, plus `memory`, `plaza_alloc(i32) -> i32`, and
 //! `plaza_free(i32, i32)`. Each world owns one persistent Wasmtime instance;
 //! the model pointer stays inside its guest linear memory.
@@ -156,9 +157,9 @@ impl Sandbox {
             .get_typed_func::<i64, i32>(&mut store, "plaza_init")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_init(i64) -> i32`: {e}"))?;
         let update = instance
-            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "plaza_update")
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut store, "plaza_update")
             .map_err(|e| {
-                anyhow::anyhow!("guest must export `plaza_update(i32, i32, i32) -> i32`: {e}")
+                anyhow::anyhow!("guest must export `plaza_update(i32, i32, i32, i32) -> i32`: {e}")
             })?;
         let view = instance
             .get_typed_func::<(i32, i32, i32), i32>(&mut store, "plaza_view")
@@ -231,7 +232,7 @@ pub struct WorldInstance {
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
     free: TypedFunc<(i32, i32), ()>,
-    update: TypedFunc<(i32, i32, i32), i32>,
+    update: TypedFunc<(i32, i32, i32, i32), i32>,
     view: TypedFunc<(i32, i32, i32), i32>,
     records: Option<TypedFunc<i32, i32>>,
     out_len: TypedFunc<(), i32>,
@@ -250,21 +251,25 @@ impl std::fmt::Debug for WorldInstance {
 }
 
 impl WorldInstance {
-    /// Apply one event. The model pointer is committed only if guest update succeeds.
-    pub fn update(&mut self, event: &[u8]) -> Result<()> {
+    /// Apply one event from `participant`. The model pointer is committed
+    /// only if guest update succeeds.
+    pub fn update(&mut self, participant: u64, event: &[u8]) -> Result<()> {
         ensure!(
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
         self.check_message_size(event)?;
-        let result = self.update_inner(event);
+        // The world's participant limit keeps IDs far below i32::MAX; clamp
+        // defensively so a hostile caller can never wrap the guest argument.
+        let participant = i32::try_from(participant).unwrap_or(i32::MAX);
+        let result = self.update_inner(participant, event);
         if result.is_err() {
             self.poisoned = true;
         }
         result
     }
 
-    fn update_inner(&mut self, event: &[u8]) -> Result<()> {
+    fn update_inner(&mut self, participant: i32, event: &[u8]) -> Result<()> {
         self.store
             .set_fuel(self.limits.fuel)
             .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
@@ -273,7 +278,9 @@ impl WorldInstance {
             len,
             allocation_len,
         } = self.copy_input(event)?;
-        let result = self.update.call(&mut self.store, (self.model, ptr, len));
+        let result = self
+            .update
+            .call(&mut self.store, (self.model, participant, ptr, len));
         let model = match result {
             Ok(model) => model,
             Err(e) => {
@@ -470,7 +477,7 @@ impl crate::world::WorldProgram for WorldInstance {
         match &event.kind {
             crate::world::WorldEventKind::Input(bytes) => {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
-                WorldInstance::update(self, bytes)
+                WorldInstance::update(self, event.participant_id, bytes)
             }
             crate::world::WorldEventKind::Chat(_)
             | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
@@ -510,7 +517,7 @@ mod tests {
           (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
           (func (export "plaza_free") (param i32 i32))
           (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
-          (func (export "plaza_update") (param i32 i32 i32) (result i32)
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
             local.get 0)
           (func (export "plaza_view") (param i32 i32 i32) (result i32)
             (i32.const 32))
@@ -527,7 +534,7 @@ mod tests {
         let runner = compile(ECHO, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(123).unwrap();
         assert_eq!(world.view(b"viewer").unwrap(), b"hello");
-        world.update(b"event").unwrap();
+        world.update(1, b"event").unwrap();
         assert_eq!(world.view(b"viewer").unwrap(), b"hello");
     }
 
@@ -537,9 +544,9 @@ mod tests {
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         assert_eq!(world.view(b"").unwrap(), b"count=0");
-        world.update(b"inc").unwrap();
+        world.update(1, b"inc").unwrap();
         assert_eq!(world.view(b"").unwrap(), b"count=1");
-        world.update(b"inc").unwrap();
+        world.update(1, b"inc").unwrap();
         assert_eq!(world.view(b"").unwrap(), b"count=2");
     }
 
@@ -584,12 +591,58 @@ mod tests {
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":0}"#);
-        world.update(b"inc").unwrap();
-        world.update(b"inc").unwrap();
+        world.update(1, b"inc").unwrap();
+        world.update(1, b"inc").unwrap();
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
         // A view between records calls must not disturb either output.
         assert_eq!(world.view(b"").unwrap(), b"count=2");
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
+    }
+
+    #[test]
+    fn checked_in_tic_tac_toe_plays_a_full_game() {
+        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let records = |world: &mut WorldInstance| {
+            String::from_utf8(world.records().unwrap().unwrap().to_vec()).unwrap()
+        };
+        assert_eq!(
+            records(&mut world),
+            r#"{"board":"---------","plays":0,"winner":""}"#
+        );
+
+        // X plays 0, O plays 3, X 1, O 4, X 2 — top row for X.
+        for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
+            world.update(participant, cell.as_bytes()).unwrap();
+        }
+        assert_eq!(
+            records(&mut world),
+            r#"{"board":"XXXOO----","plays":5,"winner":"X"}"#
+        );
+        assert!(
+            String::from_utf8(world.view(b"").unwrap())
+                .unwrap()
+                .contains("winner=X")
+        );
+
+        // Once the game is won, further moves change nothing.
+        world.update(2, b"5").unwrap();
+        assert_eq!(
+            records(&mut world),
+            r#"{"board":"XXXOO----","plays":5,"winner":"X"}"#
+        );
+
+        // Occupied cells, off-board cells, and non-digits are all ignored.
+        let mut world = runner.instantiate(7).unwrap();
+        world.update(1, b"0").unwrap();
+        world.update(2, b"0").unwrap();
+        world.update(2, b"9").unwrap();
+        world.update(2, b"banana").unwrap();
+        assert_eq!(
+            records(&mut world),
+            r#"{"board":"X--------","plays":1,"winner":""}"#
+        );
     }
 
     #[test]
@@ -669,7 +722,7 @@ mod tests {
               (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
               (func (export "plaza_free") (param i32 i32))
               (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
-              (func (export "plaza_update") (param i32 i32 i32) (result i32) (i32.const 0))
+              (func (export "plaza_update") (param i32 i32 i32 i32) (result i32) (i32.const 0))
               (func (export "plaza_view") (param i32 i32 i32) (result i32) (i32.const 0)
                 (loop $again (br $again)))
               (func (export "plaza_out_len") (result i32) (i32.const 0)))
@@ -707,7 +760,7 @@ mod tests {
               (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
               (func (export "plaza_free") (param i32 i32))
               (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
-              (func (export "plaza_update") (param i32 i32 i32) (result i32)
+              (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
                 i32.const 1 memory.grow drop
                 local.get 0)
               (func (export "plaza_view") (param i32 i32 i32) (result i32) (i32.const 0))
@@ -723,7 +776,7 @@ mod tests {
         .unwrap()
         .instantiate(0)
         .unwrap();
-        let error = world.update(b"event").unwrap_err().to_string();
+        let error = world.update(1, b"event").unwrap_err().to_string();
         assert!(error.contains("memory.grow") || error.contains("failed"));
         assert!(
             world
