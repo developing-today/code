@@ -170,6 +170,8 @@ async fn main() -> Result<()> {
             world_max_open,
             world_max_sessions,
             world_idle_secs,
+            world_caps,
+            world_cap_policy,
             allow_node,
             open_writes,
         }) => {
@@ -197,6 +199,8 @@ async fn main() -> Result<()> {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_caps,
+                world_cap_policy,
                 allow_node,
                 open_writes,
             })

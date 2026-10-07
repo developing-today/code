@@ -131,6 +131,16 @@ enum ClientFrame {
     CreateWorld {
         admin_token: String,
     },
+    /// Admin: grant or revoke capabilities for this world.
+    UpdateCaps {
+        admin_token: String,
+        grant: Vec<String>,
+        revoke: Vec<String>,
+    },
+    /// Show this world's capability grants, wants and usage.
+    Caps {
+        capability: String,
+    },
     Chat {
         text: String,
     },
@@ -204,6 +214,10 @@ enum ServerFrame<'a> {
     WorldCreated {
         world: &'a str,
         created: bool,
+    },
+    /// The world's capability report.
+    Caps {
+        report: crate::world_caps::CapsReport,
     },
     UploadReady {
         chunk_bytes: usize,
@@ -703,6 +717,38 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(io, message).await;
             }
         }
+        ClientFrame::Caps { capability } => {
+            let token = JoinCapability::from_wire(capability);
+            if service.world().participant_id(token).await.is_err() {
+                let _ = send_error(io, "join denied").await;
+            } else {
+                match service.world().caps_report().await {
+                    Ok(report) => {
+                        let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                    }
+                    Err(_) => {
+                        let _ = send_error(io, "capability report unavailable").await;
+                    }
+                }
+            }
+        }
+        ClientFrame::UpdateCaps {
+            admin_token,
+            grant,
+            revoke,
+        } => match service.authorize_admin(Some(&admin_token)) {
+            Ok(()) => match service.world().update_caps(grant, revoke).await {
+                Ok(report) => {
+                    let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                }
+                Err(error) => {
+                    let _ = send_error(io, &format!("{error:#}")).await;
+                }
+            },
+            Err(_) => {
+                let _ = send_error(io, "admin denied").await;
+            }
+        },
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
         | ClientFrame::ListWorlds { .. }
@@ -1124,6 +1170,16 @@ async fn joined<I: SessionIo>(
         return;
     }
 
+    // Presence starts here and ends whenever this session does. Views are
+    // re-sent whenever program state changes for another reason (host events
+    // are not broadcast as events).
+    world.presence(participant_id, true).await;
+    let _guard = PresenceGuard {
+        world: world.clone(),
+        participant: participant_id,
+    };
+    let mut views = world.watch_views();
+
     loop {
         tokio::select! {
             inbound = io.recv() => match inbound {
@@ -1186,6 +1242,15 @@ async fn joined<I: SessionIo>(
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            changed = views.changed() => match changed {
+                Ok(()) => {
+                    let sequence = *views.borrow_and_update();
+                    if !send_view(world, io, &token, sequence).await {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
             revoked = revocations.recv() => match revoked {
                 Ok(revoked_id) if revoked_id == participant_id => {
                     let _ = send_error(io, "world capability revoked").await;
@@ -1195,6 +1260,22 @@ async fn joined<I: SessionIo>(
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
+    }
+}
+
+/// Returns the participant's presence when the session ends, however it ends.
+struct PresenceGuard {
+    world: WorldHandle,
+    participant: u64,
+}
+
+impl Drop for PresenceGuard {
+    fn drop(&mut self) {
+        let world = self.world.clone();
+        let participant = self.participant;
+        tokio::spawn(async move {
+            world.presence(participant, false).await;
+        });
     }
 }
 
@@ -1258,6 +1339,37 @@ async fn handle_client_frame<I: SessionIo>(
         ClientFrame::RecordsTicket { .. } => {
             if let Err(message) = records_ticket_session(service, io).await {
                 return send_error(io, message).await;
+            }
+            return true;
+        }
+        ClientFrame::Caps { .. } => {
+            match service.world().caps_report().await {
+                Ok(report) => {
+                    let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                }
+                Err(_) => {
+                    return send_error(io, "capability report unavailable").await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::UpdateCaps {
+            admin_token,
+            grant,
+            revoke,
+        } => {
+            match service.authorize_admin(Some(&admin_token)) {
+                Ok(()) => match service.world().update_caps(grant, revoke).await {
+                    Ok(report) => {
+                        let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                    }
+                    Err(error) => {
+                        return send_error(io, &format!("{error:#}")).await;
+                    }
+                },
+                Err(_) => {
+                    return send_error(io, "admin denied").await;
+                }
             }
             return true;
         }

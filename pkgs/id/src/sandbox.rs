@@ -95,6 +95,7 @@ impl Sandbox {
                         | "plaza_free"
                         | "plaza_view"
                         | "plaza_records"
+                        | "plaza_wants"
                         | "plaza_snapshot"
                         | "plaza_restore"
                         | "plaza_out_len"
@@ -188,6 +189,18 @@ impl Sandbox {
         } else {
             None
         };
+        // Optional: what the program wants from the server (see world_caps).
+        let wants = if instance.get_func(&mut store, "plaza_wants").is_some() {
+            Some(
+                instance
+                    .get_typed_func::<i32, i32>(&mut store, "plaza_wants")
+                    .map_err(|e| {
+                        anyhow::anyhow!("guest `plaza_wants` must be `(i32) -> i32`: {e}")
+                    })?,
+            )
+        } else {
+            None
+        };
         // Optional pair: serialize the model, and rebuild it from that text.
         let (snapshot, restore) = if instance.get_func(&mut store, "plaza_snapshot").is_some() {
             let snapshot = instance
@@ -241,6 +254,7 @@ impl Sandbox {
             update,
             view,
             records,
+            wants,
             snapshot,
             restore,
             out_len,
@@ -265,6 +279,7 @@ pub struct WorldInstance {
     update: TypedFunc<(i32, i32, i32, i32), i32>,
     view: TypedFunc<(i32, i32, i32), i32>,
     records: Option<TypedFunc<i32, i32>>,
+    wants: Option<TypedFunc<i32, i32>>,
     snapshot: Option<TypedFunc<i32, i32>>,
     restore: Option<TypedFunc<(i32, i32), i32>>,
     out_len: TypedFunc<(), i32>,
@@ -389,6 +404,35 @@ impl WorldInstance {
         let output_ptr = records.call(&mut self.store, self.model).map_err(|e| {
             anyhow::anyhow!(
                 "guest `plaza_records` failed (trap or fuel exhausted): {e}{}",
+                self.guest_error_suffix()
+            )
+        })?;
+        self.read_output(output_ptr)
+    }
+
+    /// The guest's current `wants` document, or `None` if it exports none.
+    pub fn wants(&mut self) -> Result<Option<Vec<u8>>> {
+        ensure!(
+            !self.poisoned,
+            "world guest is poisoned after a previous failure"
+        );
+        let Some(wants) = self.wants.clone() else {
+            return Ok(None);
+        };
+        let result = self.wants_inner(&wants);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result.map(Some)
+    }
+
+    fn wants_inner(&mut self, wants: &TypedFunc<i32, i32>) -> Result<Vec<u8>> {
+        self.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
+        let output_ptr = wants.call(&mut self.store, self.model).map_err(|e| {
+            anyhow::anyhow!(
+                "guest `plaza_wants` failed (trap or fuel exhausted): {e}{}",
                 self.guest_error_suffix()
             )
         })?;
@@ -594,6 +638,12 @@ impl crate::world::WorldProgram for WorldInstance {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
                 WorldInstance::update(self, event.participant_id, bytes)
             }
+            // Host events (capability results, ticks, presence) are JSON
+            // text delivered as participant 0; the program updates on them
+            // like any other event.
+            crate::world::WorldEventKind::System { event } => {
+                WorldInstance::update(self, 0, event.as_bytes())
+            }
             crate::world::WorldEventKind::Chat(_)
             | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
         }
@@ -610,6 +660,12 @@ impl crate::world::WorldProgram for WorldInstance {
     fn records(&mut self) -> Result<Option<String>> {
         WorldInstance::records(self)?
             .map(|bytes| String::from_utf8(bytes).context("Roc world records must be valid UTF-8"))
+            .transpose()
+    }
+
+    fn wants(&mut self) -> Result<Option<String>> {
+        WorldInstance::wants(self)?
+            .map(|bytes| String::from_utf8(bytes).context("Roc world wants must be valid UTF-8"))
             .transpose()
     }
 
@@ -830,6 +886,131 @@ mod tests {
         assert_eq!(
             bad.records().unwrap().unwrap(),
             br#"{"board":"---------","plays":0,"winner":""}"#
+        );
+    }
+
+    #[test]
+    fn the_lounge_uses_the_capability_protocol() {
+        use crate::world::{WorldEvent, WorldEventKind};
+
+        let wasm = include_bytes!("../examples/lounge/lounge.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut lounge = runner.instantiate(7).unwrap();
+        fn wants_of(lounge: &mut WorldInstance) -> String {
+            crate::world::WorldProgram::wants(lounge)
+                .unwrap()
+                .context("the lounge exports wants")
+                .unwrap()
+        }
+        // At rest: two subscriptions, nothing pending.
+        let document = wants_of(&mut lounge);
+        assert!(document.contains("\"players\""), "{document}");
+        assert!(document.contains("time.tick:5000"), "{document}");
+        assert!(document.contains("\"requests\":[]"), "{document}");
+
+        // An arrival (host event, participant 0) becomes a greeting request.
+        let joined = serde_json::json!({
+            "cap": "players",
+            "event": "joined",
+            "participant": {"id": 1, "name": "ann <script>"},
+        });
+        crate::world::WorldProgram::update(
+            &mut lounge,
+            &WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: joined.to_string(),
+                },
+            },
+        )
+        .unwrap();
+        let document = wants_of(&mut lounge);
+        assert!(document.contains("chat.say"), "{document}");
+        assert!(
+            document.contains("Welcome, ann script!") && !document.contains("<"),
+            "the name is sanitized into the JSON: {document}"
+        );
+
+        // The world has not granted chat.say: the refusal is data the
+        // program sees, and the request is retired.
+        let denied = serde_json::json!({
+            "cap": "result",
+            "id": "r1",
+            "ok": false,
+            "error": "cap_denied",
+        });
+        crate::world::WorldProgram::update(
+            &mut lounge,
+            &WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: denied.to_string(),
+                },
+            },
+        )
+        .unwrap();
+        assert!(wants_of(&mut lounge).contains("\"requests\":[]"));
+        assert_eq!(
+            crate::world::WorldProgram::records(&mut lounge)
+                .unwrap()
+                .unwrap(),
+            r#"{"joins":1,"denied":1,"last_now":0}"#
+        );
+
+        // A granted request succeeds and retires itself.
+        crate::world::WorldProgram::update(
+            &mut lounge,
+            &WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: serde_json::json!({
+                        "cap": "players",
+                        "event": "joined",
+                        "participant": {"id": 2, "name": "bob"},
+                    })
+                    .to_string(),
+                },
+            },
+        )
+        .unwrap();
+        let granted = serde_json::json!({
+            "cap": "result",
+            "id": "r2",
+            "ok": true,
+            "value": {"sequence": 9},
+        });
+        crate::world::WorldProgram::update(
+            &mut lounge,
+            &WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: granted.to_string(),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            crate::world::WorldProgram::records(&mut lounge)
+                .unwrap()
+                .unwrap(),
+            r#"{"joins":2,"denied":1,"last_now":0}"#
+        );
+
+        // The model survives a snapshot/restore round trip.
+        let snapshot = crate::world::WorldProgram::snapshot(&mut lounge)
+            .unwrap()
+            .unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(snapshot.as_bytes()).unwrap();
+        assert_eq!(
+            crate::world::WorldProgram::records(&mut restored)
+                .unwrap()
+                .unwrap(),
+            r#"{"joins":2,"denied":1,"last_now":0}"#
         );
     }
 

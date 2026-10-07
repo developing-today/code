@@ -254,6 +254,65 @@ impl WorldClient {
         }
     }
 
+    /// The world's capability report, as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the capability is refused.
+    pub async fn caps(&mut self, capability: &str) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "caps",
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "caps" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the capability report")
+            );
+        }
+        Ok(reply["report"].clone())
+    }
+
+    /// Grant and revoke capabilities; returns the resulting report.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or names are refused.
+    pub async fn update_caps(
+        &mut self,
+        admin_token: &str,
+        grant: &[String],
+        revoke: &[String],
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "update_caps",
+            "admin_token": admin_token,
+            "grant": grant,
+            "revoke": revoke,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "caps" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the capability change")
+            );
+        }
+        Ok(reply["report"].clone())
+    }
+
     /// List the host's worlds as `(default, [(name, open)])`.
     ///
     /// # Errors
@@ -988,7 +1047,7 @@ mod tests {
 
         // Several independent clients, each hopping across worlds on one
         // connection, all at once.
-        let mut tasks = tokio::task::JoinSet::new();
+        let mut tasks = JoinSet::new();
         for client_no in 0..6 {
             let addr = addr.clone();
             tasks.spawn(async move {

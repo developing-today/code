@@ -2,7 +2,7 @@ app [program] { pf: platform "../roc-world/platform.roc" }
 
 Model := { count : I64 }
 
-program = { init, update, view, records, snapshot, restore }
+program = { init, update, view, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { count: 0 }
@@ -16,6 +16,10 @@ view = |model, _viewer| "count=${model.count.to_str()}"
 ## Structured data the host stores and replicates: a JSON object of records.
 records : Model -> Str
 records = |model| "{\"count\":${model.count.to_str()}}"
+
+## This program wants nothing from the server.
+wants : Model -> Str
+wants = |_model| "{}"
 
 ## The model as text. `restore(snapshot(m))` must behave exactly like `m`; the
 ## host checks this before it trims the world's journal.

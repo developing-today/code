@@ -879,6 +879,9 @@ pub extern fn roc_view(arg0: RocBox, arg1: RocStr) callconv(.c) RocStr;
 /// Entrypoint: records_for_host
 pub extern fn roc_records(arg0: RocBox) callconv(.c) RocStr;
 
+/// Entrypoint: wants_for_host
+pub extern fn roc_wants(arg0: RocBox) callconv(.c) RocStr;
+
 /// Entrypoint: snapshot_for_host
 pub extern fn roc_snapshot(arg0: RocBox) callconv(.c) RocStr;
 

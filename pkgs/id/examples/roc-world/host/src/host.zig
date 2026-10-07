@@ -98,6 +98,16 @@ export fn plaza_records(model: usize) usize {
     return @intFromPtr(last_out.asSlice().ptr);
 }
 
+/// What the model wants from the server (subscriptions and requests).
+/// Shares the `plaza_out_len` output slot with view and records.
+export fn plaza_wants(model: usize) usize {
+    ensure();
+    last_out.decref(&roc_host);
+    abi.increfBox(@ptrFromInt(model), 1);
+    last_out = abi.roc_wants(@ptrFromInt(model));
+    return @intFromPtr(last_out.asSlice().ptr);
+}
+
 /// A serialization of the model the host can journal. Shares the
 /// `plaza_out_len` output slot with view and records.
 export fn plaza_snapshot(model: usize) usize {

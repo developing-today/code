@@ -1699,7 +1699,7 @@ mod serve_tests {
         }
 
         // Idle worlds close, and reopen from their journal when named again.
-        std::thread::sleep(std::time::Duration::from_secs(4));
+        std::thread::sleep(Duration::from_secs(4));
         let (_, out, _) = run(&addr, &["list", &node, "--admin-token", "adm"]);
         assert!(out.contains("arena\tclosed"), "arena was evicted: {out}");
         let (ok, out, err) = run(
@@ -1726,6 +1726,140 @@ mod serve_tests {
         assert!(view.contains("count=3"), "{view}");
         let view = play(&node, &addr, Some("arena"), &cat, &["33"]);
         assert!(view.contains("plays=2"), "{view}");
+        server.stop();
+    }
+
+    #[test]
+    fn test_a_lounge_world_asks_for_capabilities() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/lounge/lounge.wasm");
+        let module = module.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            module,
+            // The program may watch who is here and read the clock; it may
+            // not speak (yet).
+            "--world-cap",
+            "players",
+            "--world-cap",
+            "time.now",
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
+            let output = world(addr, args).output().unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        // Join and collect frames for up to two seconds; returns
+        // (views, events) texts. The reader runs on its own thread so a
+        // quiet world cannot block the collection.
+        let join_and_collect = |node: &str, addr: &str, cap: &str| {
+            let mut joined = world(addr, &["join", node, "--capability", cap])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = joined.stdin.take().unwrap();
+            let stdout = joined.stdout.take().unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                let reader = std::io::BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut views = String::new();
+            let mut events = String::new();
+            while std::time::Instant::now() < deadline {
+                match receiver.recv_timeout(std::time::Duration::from_millis(200)) {
+                    Ok(line) => {
+                        if line.contains("\"type\":\"view\"") {
+                            views.push_str(&line);
+                            views.push('\n');
+                        } else if line.contains("\"type\":\"event\"") {
+                            events.push_str(&line);
+                            events.push('\n');
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+            stdin.write_all(b"/quit\n").unwrap();
+            drop(stdin);
+            assert!(joined.wait().unwrap().success());
+            (views, events)
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let (ok, ann, err) = run(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        );
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+
+        // The report says what the program wants and what is missing.
+        let (ok, out, err) = run(&addr, &["caps", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        assert!(out.contains("\"chat.say\""), "missing chat.say: {out}");
+        assert!(out.contains("\"time.tick\""), "missing time.tick: {out}");
+        assert!(out.contains("\"time.now\""), "granted time.now: {out}");
+
+        // Joining (presence!) makes the program greet — and the greeting is
+        // refused, which the program sees and counts.
+        let (views, events) = join_and_collect(&node, &addr, &ann);
+        assert!(views.contains("joins=1"), "{views}");
+        assert!(
+            views.contains("denied=1"),
+            "the refusal is visible: {views}"
+        );
+        assert!(!events.contains("Welcome"), "{events}");
+
+        // Grant speech; the next arrival gets greeted for real.
+        let (ok, out, err) = run(
+            &addr,
+            &["caps", &node, "--admin-token", "adm", "--grant", "chat.say"],
+        );
+        assert!(ok, "{err}");
+        assert!(out.contains("\"chat.say\""), "{out}");
+        let (views, events) = join_and_collect(&node, &addr, &ann);
+        assert!(views.contains("joins=2"), "{views}");
+        assert!(
+            events.contains("Welcome, ann!"),
+            "the program spoke through chat.say: {events}"
+        );
+        server.stop();
+
+        // Grants are journaled, so they survive a restart.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let (ok, out, err) = run(&addr, &["caps", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        assert!(out.contains("\"chat.say\""), "grant survived: {out}");
         server.stop();
     }
 

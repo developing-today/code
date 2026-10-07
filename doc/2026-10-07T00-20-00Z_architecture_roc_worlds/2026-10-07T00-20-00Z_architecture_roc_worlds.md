@@ -816,3 +816,46 @@ connection hops across worlds with six clients at once; HTTP invite and
 WebSocket join route by world name; and a process test runs one `serve` with
 two different programs, creates worlds ad hoc, proves isolation, evicts an
 idle world, reopens it with its state, and restarts with every world intact.
+
+### 2026-10-07T14-30-00Z Verification: capabilities
+
+Built as designed: `src/world_caps.rs` (schema, bounds, catalog, ledger) and
+the actor runtime (host events, wants diffing, tick timers, presence,
+providers). The actor closure became a `WorldActor` struct — the capability
+runtime needed shared state across commands, ticks and follow-ups.
+
+Details worth recording:
+
+- The `wants` export is optional at the Wasm level (like `records`), so
+  existing modules keep running without it.
+- **Subscriptions are capabilities too**: `players` and `time.tick` must be
+  granted; a refused subscription notifies the program once
+  (`{"cap":"subscription",...,"error":"cap_denied"}`) and never fires. This
+  was found by the process test: presence events silently never fired until
+  `players` was granted.
+- Host events (`WorldEventKind::System { event }`) carry sequence 0: they are
+  journaled and replayed, but never sequenced, never counted as world
+  events, and never broadcast to sessions. Sessions learn about the view
+  change through a views watch and re-send the view — participant events
+  still deliver event-then-view in order, so client behavior is unchanged.
+- Presence is per session, refcounted; a session's drop guard tells the world
+  on every exit path. Ticks fire only while someone is present; the timer
+  lives in the actor's `select!` loop.
+- **Found while testing (nightly bug):** with
+  nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
+  element of a string list built by `Str.split_on` returned
+  truncated-at-the-first-space elements in the lounge's module (same source
+  built in another directory was correct; both LLVM and dev backends;
+  recorded for an upstream report). The lounge now stores each pending
+  request as a complete JSON object and matches results by id, so it never
+  indexes past position 1.
+
+Verified: the ledger (deny, wildcard, grant-on-use), schema bounds and
+refusals; the actor (refused request counted, granted request answered with
+a real timestamp, `chat.say` commits a host chat line sessions can see,
+grant-on-use, ticks only while present, host events and grants journaled,
+restore of grants and system events, checkpoint keeps the granted set); the
+sandbox (lounge: wants at rest, request on arrival, sanitized name, denial
+retired, grant path, snapshot round trip); and a process test (report shows
+granted/wanted/missing, the denial is visible in the view, a grant makes the
+greeting appear as a real chat event, and grants survive a restart).

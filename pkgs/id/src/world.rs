@@ -5,9 +5,10 @@
 //! state. Capability tokens are returned only at issuance and retained only as
 //! SHA-256 digests for revocation and membership checks.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
+use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,10 @@ pub struct WorldLimits {
     /// Trim the journal behind a program snapshot once this many events were
     /// committed since the last one. `0` disables checkpointing.
     pub checkpoint_every: u64,
+    /// Slowest tick a program may subscribe to, in milliseconds.
+    pub min_tick_ms: u64,
+    /// Whether a world's policy grants a capability on its first use.
+    pub grant_on_use: bool,
 }
 
 impl Default for WorldLimits {
@@ -47,6 +52,8 @@ impl Default for WorldLimits {
             presentation_bytes: 8192,
             snapshot_bytes: 512 * 1024,
             checkpoint_every: 1000,
+            min_tick_ms: 1000,
+            grant_on_use: false,
         }
     }
 }
@@ -131,6 +138,13 @@ pub enum WorldEventKind {
     Chat(String),
     /// Opaque input for a future game/world module.
     Input(Vec<u8>),
+    /// An event the host originated for the program: capability results,
+    /// ticks, presence. Delivered with `participant_id` 0; never sequenced,
+    /// never broadcast to sessions.
+    System {
+        /// The event's JSON.
+        event: String,
+    },
     /// A world admin installed a new program. `participant_id` is zero for
     /// this host-authored event.
     ProgramInstalled {
@@ -176,6 +190,18 @@ pub enum JournalEntry {
     Committed {
         /// The event.
         event: WorldEvent,
+    },
+    /// A host event delivered to the program (capability result, tick,
+    /// presence). Delivered with sequence 0; the program saw it, so replay
+    /// must too.
+    System {
+        /// The event as it was delivered.
+        event: WorldEvent,
+    },
+    /// The world's granted capability set, written whole on every change.
+    CapsGranted {
+        /// Capability names.
+        granted: Vec<String>,
     },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
@@ -332,6 +358,14 @@ pub trait WorldProgram: Send + 'static {
     fn snapshot(&mut self) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// What the program wants from the server right now (see
+    /// [`crate::world_caps`]), or `None` if it makes no use of capabilities.
+    /// Must be a pure function of state: the host re-reads it after every
+    /// change and after a restart.
+    fn wants(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -375,6 +409,8 @@ pub struct WorldCore {
     sequence: u64,
     active_module_hash: Option<String>,
     active_seed: u64,
+    /// What this world's program may ask the server for.
+    pub(crate) ledger: crate::world_caps::CapLedger,
     /// Events committed since the journal last started from a checkpoint.
     since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
@@ -411,6 +447,7 @@ impl WorldCore {
             sequence: 0,
             active_module_hash: None,
             active_seed: 0,
+            ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
             since_checkpoint: 0,
             capabilities: HashMap::new(),
             events: VecDeque::new(),
@@ -491,6 +528,23 @@ impl WorldCore {
                         "journal revokes unknown or revoked participant {participant_id}"
                     );
                 }
+                JournalEntry::CapsGranted { granted } => {
+                    for name in &granted {
+                        ensure!(
+                            name == "*" || crate::world_caps::is_known(name),
+                            "journal grants unknown capability {name:?}"
+                        );
+                    }
+                    core.ledger.set_granted(granted.iter().cloned().collect());
+                }
+                JournalEntry::System { event } => {
+                    ensure!(
+                        event.sequence == 0 && event.participant_id == 0,
+                        "journal system event claims a sequence"
+                    );
+                    replay.push(event.clone());
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
                 JournalEntry::Committed { event } => {
                     ensure!(
                         event.sequence == core.sequence.saturating_add(1),
@@ -510,7 +564,9 @@ impl WorldCore {
                             replay.clear();
                         }
                         WorldEventKind::Input(_) => replay.push(event.clone()),
-                        WorldEventKind::Chat(_) => {}
+                        // System events belong to the journal's tail; a
+                        // checkpoint behind them already contains their effect.
+                        WorldEventKind::System { .. } | WorldEventKind::Chat(_) => {}
                     }
                     core.commit_prepared(event)?;
                 }
@@ -584,6 +640,10 @@ impl WorldCore {
                 entries.push(JournalEntry::Revoked { participant_id: id });
             }
         }
+        let granted: Vec<String> = self.ledger.granted().iter().cloned().collect();
+        if !granted.is_empty() {
+            entries.push(JournalEntry::CapsGranted { granted });
+        }
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
             module_hash,
@@ -592,6 +652,40 @@ impl WorldCore {
             events: self.events.iter().cloned().collect(),
         });
         Ok(entries)
+    }
+
+    /// The world's active (non-revoked) participants.
+    #[must_use]
+    pub(crate) fn participants(&self) -> Vec<Participant> {
+        self.capabilities
+            .values()
+            .filter(|record| !record.revoked)
+            .map(|record| record.participant.clone())
+            .collect()
+    }
+
+    /// One participant, whether revoked or not.
+    #[must_use]
+    pub(crate) fn participant(&self, id: u64) -> Option<Participant> {
+        self.capabilities
+            .get(&id)
+            .map(|record| record.participant.clone())
+    }
+
+    /// Commit a host-authored chat line as participant 0.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the text is empty, oversized, or entirely sanitized away.
+    pub(crate) fn system_chat(&mut self, text: &str) -> Result<WorldEvent> {
+        ensure!(
+            text.len() <= self.limits.chat_bytes,
+            "chat message exceeds {} bytes",
+            self.limits.chat_bytes
+        );
+        let text = sanitize_chat(text);
+        ensure!(!text.is_empty(), "chat message must not be empty");
+        self.commit(0, WorldEventKind::Chat(text))
     }
 
     /// Journal entry for an already-issued capability.
@@ -853,6 +947,7 @@ pub struct WorldHandle {
     events: broadcast::Sender<WorldEvent>,
     revocations: broadcast::Sender<u64>,
     records: watch::Receiver<(u64, Arc<Records>)>,
+    view_changed: watch::Receiver<u64>,
 }
 
 enum WorldCommand {
@@ -898,6 +993,21 @@ enum WorldCommand {
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
+    /// A session opened or closed for this participant.
+    Presence {
+        participant: u64,
+        joined: bool,
+    },
+    /// Admin: change the granted capability set.
+    UpdateCaps {
+        grant: Vec<String>,
+        revoke: Vec<String>,
+        reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin: read the capability report.
+    CapsInfo {
+        reply: oneshot::Sender<Result<CapsReport>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -924,26 +1034,654 @@ fn compact_journal(
     Ok(true)
 }
 
-/// Durably record `entry`, or turn the world read-only.
-// Call sites build the entry inline; taking it by value keeps them terse.
-#[allow(clippy::needless_pass_by_value)]
-fn persist(
-    journal: &mut Option<Box<dyn WorldJournal>>,
-    entry: JournalEntry,
-    storage_failed: &mut bool,
-) -> Result<()> {
-    ensure!(
-        !*storage_failed,
-        "world storage failed; the world is read-only"
-    );
-    if let Some(journal) = journal.as_mut()
-        && let Err(error) = journal.append(&entry)
-    {
-        *storage_failed = true;
-        tracing::error!("world journal append failed: {error:#}");
-        return Err(error.context("world storage failed; the world is read-only"));
+/// The world's single authority: owns the core, the program instance and the
+/// journal, and runs commands plus the program's capability needs serially.
+struct WorldActor {
+    core: WorldCore,
+    program: Box<dyn WorldProgram>,
+    journal: Option<Box<dyn WorldJournal>>,
+    storage_failed: bool,
+    program_healthy: bool,
+    compaction_off: bool,
+    event_sender: broadcast::Sender<WorldEvent>,
+    revocation_sender: broadcast::Sender<u64>,
+    records_sender: watch::Sender<(u64, Arc<Records>)>,
+    view_changed: watch::Sender<u64>,
+    /// Live sessions per participant: presence is refcounted.
+    presence: HashMap<u64, usize>,
+    /// Subscriptions the program asked for (granted or refused-and-remembered).
+    active_subs: BTreeSet<Subscription>,
+    /// Request ids already executed, so `wants` states intent, not polling.
+    handled_requests: BTreeSet<String>,
+    /// Subscription specs already reported as refused.
+    denied_subs: BTreeSet<String>,
+    /// Armed tick intervals to their next fire time.
+    ticks: BTreeMap<u64, std::time::Instant>,
+}
+
+impl WorldActor {
+    async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>) {
+        self.after_change().await;
+        loop {
+            // Ticks sleep until their earliest deadline; with none armed this
+            // branch never wakes.
+            let deadline = self.ticks.values().next().copied();
+            let command = tokio::select! {
+                command = receiver.recv() => match command {
+                    Some(command) => command,
+                    None => break,
+                },
+                _ = Self::sleep_until(deadline) => {
+                    self.fire_ticks().await;
+                    self.after_change().await;
+                    continue;
+                }
+            };
+            if matches!(command, WorldCommand::Shutdown { .. }) {
+                if let WorldCommand::Shutdown { reply } = command {
+                    let _ = reply.send(());
+                }
+                break;
+            }
+            self.handle(command).await;
+            self.after_change().await;
+        }
     }
-    Ok(())
+
+    async fn sleep_until(deadline: Option<std::time::Instant>) {
+        match deadline {
+            Some(deadline) => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+            }
+            None => std::future::pending().await,
+        }
+    }
+
+    /// Durably record `entry`, or turn the world read-only.
+    fn persist(&mut self, entry: JournalEntry) -> Result<()> {
+        ensure!(
+            !self.storage_failed,
+            "world storage failed; the world is read-only"
+        );
+        if let Some(journal) = self.journal.as_mut()
+            && let Err(error) = journal.append(&entry)
+        {
+            self.storage_failed = true;
+            tracing::error!("world journal append failed: {error:#}");
+            return Err(error.context("world storage failed; the world is read-only"));
+        }
+        Ok(())
+    }
+
+    /// Publish freshly recomputed records. Participant events push their own
+    /// view frame right after the event; host events signal the views watch.
+    fn republished(&mut self, records: Records, sequence: u64) {
+        publish_records(&self.records_sender, sequence, records);
+    }
+
+    /// Deliver a host-originated event to the program: journal it first is
+    /// impossible (the program must accept it for the journal to be true), so
+    /// the order is update, then journal, exactly like participant input.
+    async fn deliver(&mut self, text: String) {
+        if !self.program_healthy || self.storage_failed {
+            return;
+        }
+        if text.len() > crate::world_caps::MAX_EVENT_BYTES {
+            tracing::error!("world event exceeds the delivery bound; dropped");
+            return;
+        }
+        let event = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: text },
+        };
+        if let Err(error) = self.program.update(&event) {
+            self.program_healthy = false;
+            tracing::error!("world program rejected a host event: {error:#}");
+            return;
+        }
+        match program_records(self.program.as_mut()) {
+            Ok(records) => {
+                let records = records.unwrap_or_default();
+                publish_records(&self.records_sender, self.core.sequence, records);
+            }
+            Err(error) => {
+                self.program_healthy = false;
+                tracing::error!("world program records failed: {error:#}");
+                return;
+            }
+        }
+        if self
+            .persist(JournalEntry::System {
+                event: event.clone(),
+            })
+            .is_ok()
+        {
+            self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        }
+        let _ = self.view_changed.send(self.core.sequence);
+    }
+
+    /// Recompute the program's `wants` and serve the delta: new subscriptions
+    /// (armed or refused), new requests (executed, result delivered). Passes
+    /// repeat while the program reacts to delivered results, so a chain of
+    /// asks settles inside one change.
+    async fn after_change(&mut self) {
+        for _ in 0..64 {
+            if !self.program_healthy || self.storage_failed {
+                break;
+            }
+            let Some(text) = (match self.program.wants() {
+                Ok(wants) => wants,
+                Err(error) => {
+                    self.program_healthy = false;
+                    tracing::error!("world program wants failed: {error:#}");
+                    break;
+                }
+            }) else {
+                break;
+            };
+            let wants = match crate::world_caps::parse_wants(&text) {
+                Ok(wants) => wants,
+                Err(error) => {
+                    self.program_healthy = false;
+                    tracing::error!("world program wants invalid: {error:#}");
+                    break;
+                }
+            };
+            self.apply_subscriptions(&wants).await;
+            let mut fresh = Vec::new();
+            for request in &wants.requests {
+                if self.handled_requests.insert(request.id.clone()) {
+                    fresh.push(request.clone());
+                }
+            }
+            if fresh.is_empty() {
+                break;
+            }
+            // A program inventing endless request ids cannot grow this set
+            // without bound; old ids may then re-execute, which is the
+            // documented at-least-once behavior.
+            if self.handled_requests.len() > 4096 {
+                let current: BTreeSet<String> = wants
+                    .requests
+                    .iter()
+                    .map(|request| request.id.clone())
+                    .collect();
+                self.handled_requests.retain(|id| current.contains(id));
+            }
+            for request in fresh {
+                let outcome = self.execute(&request);
+                self.deliver(crate::world_caps::result_event(&request.id, outcome))
+                    .await;
+            }
+        }
+        self.compact_if_due().await;
+    }
+
+    /// Subscribe new subscriptions, drop removed ones, refuse ungranted ones
+    /// (once per spec), and keep ticks armed only while someone is present.
+    async fn apply_subscriptions(&mut self, wants: &crate::world_caps::Wants) {
+        for sub in &wants.subscribe {
+            if !self.active_subs.insert(sub.clone()) {
+                continue;
+            }
+            match self.core.ledger.decide(sub.cap()) {
+                Decision::Allow => self.arm(sub),
+                Decision::AllowAndGrant => {
+                    let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+                    let _ = self.persist(JournalEntry::CapsGranted { granted });
+                    self.arm(sub);
+                }
+                Decision::Deny(error) => {
+                    let spec = sub.spec();
+                    if self.denied_subs.insert(spec.clone()) {
+                        self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                            .await;
+                    }
+                }
+            }
+        }
+        let current = wants.subscribe.clone();
+        self.active_subs.retain(|sub| current.contains(sub));
+        self.denied_subs
+            .retain(|spec| current.iter().any(|sub| &sub.spec() == spec));
+        if self.presence.values().all(|count| *count == 0) {
+            self.ticks.clear();
+        }
+    }
+
+    /// Arm a granted subscription's timer, if any and if anyone is present.
+    fn arm(&mut self, sub: &Subscription) {
+        if let Subscription::Tick(ms) = sub
+            && !self.presence.is_empty()
+            && !self.ticks.contains_key(ms)
+        {
+            self.ticks.insert(
+                *ms,
+                std::time::Instant::now() + std::time::Duration::from_millis(*ms),
+            );
+        }
+    }
+
+    /// Deliver one tick event per due interval and re-arm.
+    async fn fire_ticks(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<u64> = self
+            .ticks
+            .iter()
+            .filter(|(_, next)| **next <= now)
+            .map(|(ms, _)| *ms)
+            .collect();
+        for ms in due {
+            self.ticks
+                .insert(ms, now + std::time::Duration::from_millis(ms));
+            let event = serde_json::json!({
+                "cap": "time.tick",
+                "interval": ms,
+                "now": unix_ms(),
+            });
+            self.deliver(event.to_string()).await;
+        }
+    }
+
+    /// Execute one capability request. Anything the world has not granted is
+    /// an error the program sees.
+    fn execute(&mut self, request: &Request) -> Result<serde_json::Value, CapError> {
+        match self.core.ledger.decide(&request.cap) {
+            Decision::Allow => {}
+            Decision::AllowAndGrant => {
+                let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+                let _ = self.persist(JournalEntry::CapsGranted { granted });
+            }
+            Decision::Deny(error) => return Err(error),
+        }
+        match request.cap.as_str() {
+            "time.now" => Ok(serde_json::json!({"now": unix_ms()})),
+            "random.u64" => Ok(serde_json::json!({"value": rand::rng().random::<u64>()})),
+            "players.list" => Ok(serde_json::json!({"players": self.players_list()})),
+            "world.info" => Ok(serde_json::json!({
+                "world": self.core.world_id,
+                "sequence": self.core.sequence,
+            })),
+            "chat.say" => self.execute_chat(&request.args),
+            _ => Err(CapError::Unknown),
+        }
+    }
+
+    fn players_list(&self) -> Vec<serde_json::Value> {
+        self.core
+            .participants()
+            .into_iter()
+            .map(|participant| {
+                serde_json::json!({
+                    "id": participant.id,
+                    "name": participant.display_name,
+                    "present": self.presence.get(&participant.id).is_some_and(|c| *c > 0),
+                })
+            })
+            .collect()
+    }
+
+    /// `chat.say` commits a host chat line; its result is the new sequence.
+    fn execute_chat(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, CapError> {
+        let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
+            return Err(CapError::BadArgs);
+        };
+        match self.core.system_chat(text) {
+            Ok(event) => {
+                if self
+                    .persist(JournalEntry::Committed {
+                        event: event.clone(),
+                    })
+                    .is_err()
+                {
+                    return Err(CapError::Failed);
+                }
+                let _ = self.event_sender.send(event.clone());
+                Ok(serde_json::json!({"sequence": event.sequence}))
+            }
+            Err(_) => Err(CapError::BadArgs),
+        }
+    }
+
+    /// A participant opened or closed a session: presence transitions deliver
+    /// `players` events and arm or disarm ticks.
+    async fn handle_presence(&mut self, participant: u64, joined: bool) {
+        let was_present = self
+            .presence
+            .get(&participant)
+            .is_some_and(|count| *count > 0);
+        let count = self.presence.entry(participant).or_default();
+        if joined {
+            *count += 1;
+        } else if *count > 0 {
+            *count -= 1;
+        }
+        let now_present = *count > 0;
+        if *count == 0 {
+            self.presence.remove(&participant);
+        }
+        if now_present && !was_present && !self.ticks.is_empty() == false {
+            let intervals: Vec<u64> = self
+                .active_subs
+                .iter()
+                .filter_map(|sub| match sub {
+                    Subscription::Tick(ms) if self.core.ledger.is_granted(sub.cap()) => Some(*ms),
+                    _ => None,
+                })
+                .collect();
+            for ms in intervals {
+                self.ticks.entry(ms).or_insert_with(|| {
+                    std::time::Instant::now() + std::time::Duration::from_millis(ms)
+                });
+            }
+        }
+        if self.presence.is_empty() {
+            self.ticks.clear();
+        }
+        if now_present != was_present
+            && self.active_subs.contains(&Subscription::Players)
+            && self.core.ledger.is_granted("players")
+        {
+            let name = self
+                .core
+                .participant(participant)
+                .map_or_else(|| participant.to_string(), |p| p.display_name);
+            let event = serde_json::json!({
+                "cap": "players",
+                "event": if now_present { "joined" } else { "left" },
+                "participant": {"id": participant, "name": name},
+            });
+            self.deliver(event.to_string()).await;
+        }
+    }
+
+    /// The capability report an admin sees.
+    fn caps_report(&mut self) -> Result<CapsReport> {
+        let requested = match self.program.wants() {
+            Ok(Some(text)) => crate::world_caps::parse_wants(&text)
+                .map(|wants| wants.caps().into_iter().collect::<Vec<_>>())
+                .unwrap_or_default(),
+            Ok(None) => Vec::new(),
+            Err(_) => Vec::new(),
+        };
+        let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+        let missing: Vec<String> = requested
+            .iter()
+            .filter(|cap| !granted.contains(cap) && !granted.contains(&"*".to_owned()))
+            .cloned()
+            .collect();
+        Ok(CapsReport {
+            granted,
+            requested,
+            missing,
+            usage: self.core.ledger.usage().clone(),
+            policy: if self.core.ledger.grant_on_use() {
+                "grant-on-use"
+            } else {
+                "deny"
+            },
+            catalog: crate::world_caps::CATALOG.to_vec(),
+        })
+    }
+
+    async fn handle(&mut self, command: WorldCommand) {
+        match command {
+            WorldCommand::Issue {
+                name,
+                scopes,
+                reply,
+            } => {
+                let result = if self.storage_failed {
+                    Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    ))
+                } else {
+                    self.core
+                        .issue_capability(&name, scopes)
+                        .and_then(|issued| {
+                            let entry = self
+                                .core
+                                .issued_entry(issued.0.id)
+                                .context("issued capability vanished")?;
+                            self.persist(entry)?;
+                            Ok(issued)
+                        })
+                };
+                let _ = reply.send(result);
+            }
+            WorldCommand::Revoke {
+                participant_id,
+                reply,
+            } => {
+                // Revocation takes effect in memory even if storage failed:
+                // denying access is always the safe side.
+                let was_active = self.core.revoke(participant_id);
+                if was_active {
+                    let _ = self.persist(JournalEntry::Revoked { participant_id });
+                    let _ = self.revocation_sender.send(participant_id);
+                }
+                let _ = reply.send(was_active);
+            }
+            WorldCommand::ParticipantId { token, reply } => {
+                let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
+            }
+            WorldCommand::Presence {
+                participant,
+                joined,
+            } => {
+                self.handle_presence(participant, joined).await;
+            }
+            WorldCommand::Chat { token, text, reply } => {
+                let result = if self.storage_failed {
+                    Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    ))
+                } else {
+                    self.core.chat(&token, &text).and_then(|event| {
+                        self.persist(JournalEntry::Committed {
+                            event: event.clone(),
+                        })?;
+                        Ok(event)
+                    })
+                };
+                if let Ok(event) = &result {
+                    let _ = self.event_sender.send(event.clone());
+                }
+                let _ = reply.send(result);
+            }
+            WorldCommand::Input {
+                token,
+                input,
+                reply,
+            } => {
+                let result = match self.core.prepare_input(&token, &input) {
+                    Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    )),
+                    Ok(candidate) if self.program_healthy => {
+                        match self
+                            .program
+                            .update(&candidate)
+                            .and_then(|()| program_records(self.program.as_mut()))
+                        {
+                            Ok(records) => self
+                                .persist(JournalEntry::Committed {
+                                    event: candidate.clone(),
+                                })
+                                .and_then(|()| self.core.commit_prepared(candidate))
+                                .inspect(|event| {
+                                    let records = records.unwrap_or_default();
+                                    self.republished(records, event.sequence);
+                                }),
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program rejected input"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                if let Ok(event) = &result {
+                    let _ = self.event_sender.send(event.clone());
+                }
+                let _ = reply.send(result);
+            }
+            WorldCommand::Snapshot { token, reply } => {
+                let _ = reply.send(self.core.snapshot(&token));
+            }
+            WorldCommand::EventsAfter {
+                token,
+                sequence,
+                reply,
+            } => {
+                let _ = reply.send(self.core.events_after(&token, sequence));
+            }
+            WorldCommand::View { token, reply } => {
+                let result = match self.core.viewer(&token) {
+                    Ok(viewer) if self.program_healthy => match self.program.view(&viewer) {
+                        Ok(view) => {
+                            if let Some(text) = &view {
+                                if text.len() > self.core.limits.presentation_bytes {
+                                    self.program_healthy = false;
+                                    Err(anyhow::anyhow!(
+                                        "world presentation exceeds {} bytes",
+                                        self.core.limits.presentation_bytes
+                                    ))
+                                } else {
+                                    Ok(view)
+                                }
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(error) => {
+                            self.program_healthy = false;
+                            Err(error.context("world program view failed"))
+                        }
+                    },
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(result);
+            }
+            WorldCommand::InstallProgram {
+                module_hash,
+                seed,
+                program: mut replacement,
+                reply,
+            } => {
+                // A program whose initial records are invalid is refused
+                // before anything is journaled.
+                let new_records = match program_records(replacement.as_mut()) {
+                    Ok(records) => records.unwrap_or_default(),
+                    Err(error) => {
+                        let _ = reply.send(Err(error.context("new world program records failed")));
+                        return;
+                    }
+                };
+                // Actor serialization makes activation and its event atomic
+                // with respect to other world commands.
+                let candidate = WorldEvent {
+                    sequence: self.core.sequence.saturating_add(1),
+                    participant_id: 0,
+                    kind: WorldEventKind::ProgramInstalled { module_hash, seed },
+                };
+                let result = self
+                    .persist(JournalEntry::Committed {
+                        event: candidate.clone(),
+                    })
+                    .and_then(|()| self.core.commit_prepared(candidate));
+                let result = match result {
+                    Ok(event) => {
+                        if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {
+                            self.core.active_module_hash = Some(module_hash.clone());
+                        }
+                        self.core.active_seed = seed;
+                        self.program = replacement;
+                        self.program_healthy = true;
+                        self.compaction_off = false;
+                        // A new program starts with a clean slate.
+                        self.handled_requests.clear();
+                        self.denied_subs.clear();
+                        self.active_subs.clear();
+                        self.ticks.clear();
+                        self.republished(new_records, event.sequence);
+                        let _ = self.event_sender.send(event.clone());
+                        Ok(event)
+                    }
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(result);
+            }
+            WorldCommand::UpdateCaps {
+                grant,
+                revoke,
+                reply,
+            } => {
+                let result = (|| -> Result<CapsReport> {
+                    crate::world_caps::validate_grant_names(&grant)?;
+                    crate::world_caps::validate_grant_names(&revoke)?;
+                    let mut granted: BTreeSet<String> =
+                        self.core.ledger.granted().iter().cloned().collect();
+                    for name in revoke {
+                        granted.remove(&name);
+                    }
+                    granted.extend(grant);
+                    self.persist(JournalEntry::CapsGranted {
+                        granted: granted.iter().cloned().collect(),
+                    })?;
+                    self.core.ledger.set_granted(granted);
+                    // A grant can unblock refused subscriptions on the spot.
+                    self.denied_subs.clear();
+                    self.caps_report()
+                })();
+                let _ = reply.send(result);
+            }
+            WorldCommand::CapsInfo { reply } => {
+                let _ = reply.send(self.caps_report());
+            }
+            WorldCommand::Shutdown { .. } => unreachable!("handled by run"),
+        }
+    }
+
+    /// Trim the journal behind a verified snapshot, at most once per run of
+    /// commits and never while the program cannot snapshot.
+    async fn compact_if_due(&mut self) {
+        if self.compaction_off
+            || self.storage_failed
+            || !self.program_healthy
+            || !self.core.checkpoint_due()
+        {
+            return;
+        }
+        let Some(journal) = self.journal.as_mut() else {
+            return;
+        };
+        match compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut()) {
+            Ok(true) => {}
+            Ok(false) => self.compaction_off = true,
+            Err(error) => {
+                // The journal is still complete; just do not retry until
+                // something changes.
+                tracing::warn!("world checkpoint skipped: {error:#}");
+                self.compaction_off = true;
+            }
+        }
+    }
+}
+
+/// Milliseconds since the Unix epoch; 0 if the clock is before it.
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 impl WorldHandle {
@@ -963,19 +1701,16 @@ impl WorldHandle {
     /// [`WorldCore::restore`]); the actor only appends.
     pub fn spawn_durable(
         core: WorldCore,
-        program: Box<dyn WorldProgram>,
+        mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
     ) -> Self {
-        let (commands, mut receiver) = mpsc::channel(256);
+        let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
         let (revocations, _) = broadcast::channel(256);
-        let event_sender = events.clone();
-        let revocation_sender = revocations.clone();
-        let mut core = core;
-        let mut program = program;
-        let mut program_healthy = true;
+        let (view_changed_sender, view_changed) = watch::channel(core.sequence);
         // Records are recomputed from the (restored) program, so they are a
         // pure function of the journal and need no storage of their own here.
+        let mut program_healthy = true;
         let initial = match program_records(program.as_mut()) {
             Ok(records) => records.unwrap_or_default(),
             Err(error) => {
@@ -985,240 +1720,32 @@ impl WorldHandle {
             }
         };
         let (records_sender, records) = watch::channel((core.sequence, Arc::new(initial)));
-        tokio::spawn(async move {
-            let mut journal = journal;
-            let mut storage_failed = false;
-            // Compaction is attempted once per run of commits, and not again
-            // while the program cannot snapshot (reset by a program install).
-            let mut compaction_off = false;
-            while let Some(command) = receiver.recv().await {
-                match command {
-                    WorldCommand::Issue {
-                        name,
-                        scopes,
-                        reply,
-                    } => {
-                        let result = if storage_failed {
-                            Err(anyhow::anyhow!(
-                                "world storage failed; the world is read-only"
-                            ))
-                        } else {
-                            core.issue_capability(&name, scopes).and_then(|issued| {
-                                let entry = core
-                                    .issued_entry(issued.0.id)
-                                    .context("issued capability vanished")?;
-                                persist(&mut journal, entry, &mut storage_failed)?;
-                                Ok(issued)
-                            })
-                        };
-                        let _ = reply.send(result);
-                    }
-                    WorldCommand::Revoke {
-                        participant_id,
-                        reply,
-                    } => {
-                        // Revocation takes effect in memory even if storage
-                        // failed: denying access is always the safe side.
-                        let was_active = core.revoke(participant_id);
-                        if was_active {
-                            let _ = persist(
-                                &mut journal,
-                                JournalEntry::Revoked { participant_id },
-                                &mut storage_failed,
-                            );
-                            let _ = revocation_sender.send(participant_id);
-                        }
-                        let _ = reply.send(was_active);
-                    }
-                    WorldCommand::ParticipantId { token, reply } => {
-                        let _ = reply.send(core.authorize(&token, WorldScopes::JOIN));
-                    }
-                    WorldCommand::Chat { token, text, reply } => {
-                        let result = if storage_failed {
-                            Err(anyhow::anyhow!(
-                                "world storage failed; the world is read-only"
-                            ))
-                        } else {
-                            core.chat(&token, &text).and_then(|event| {
-                                persist(
-                                    &mut journal,
-                                    JournalEntry::Committed {
-                                        event: event.clone(),
-                                    },
-                                    &mut storage_failed,
-                                )?;
-                                Ok(event)
-                            })
-                        };
-                        if let Ok(event) = &result {
-                            let _ = event_sender.send(event.clone());
-                        }
-                        let _ = reply.send(result);
-                    }
-                    WorldCommand::Input {
-                        token,
-                        input,
-                        reply,
-                    } => {
-                        let result = match core.prepare_input(&token, &input) {
-                            Ok(_) if storage_failed => Err(anyhow::anyhow!(
-                                "world storage failed; the world is read-only"
-                            )),
-                            Ok(candidate) if program_healthy => match program
-                                .update(&candidate)
-                                .and_then(|()| program_records(program.as_mut()))
-                            {
-                                Ok(records) => persist(
-                                    &mut journal,
-                                    JournalEntry::Committed {
-                                        event: candidate.clone(),
-                                    },
-                                    &mut storage_failed,
-                                )
-                                .and_then(|()| core.commit_prepared(candidate))
-                                .inspect(|event| {
-                                    if let Some(records) = records {
-                                        publish_records(&records_sender, event.sequence, records);
-                                    }
-                                }),
-                                Err(error) => {
-                                    program_healthy = false;
-                                    Err(error.context("world program rejected input"))
-                                }
-                            },
-                            Ok(_) => Err(anyhow::anyhow!(
-                                "world program is unavailable after a previous failure"
-                            )),
-                            Err(error) => Err(error),
-                        };
-                        if let Ok(event) = &result {
-                            let _ = event_sender.send(event.clone());
-                        }
-                        let _ = reply.send(result);
-                    }
-                    WorldCommand::Snapshot { token, reply } => {
-                        let _ = reply.send(core.snapshot(&token));
-                    }
-                    WorldCommand::EventsAfter {
-                        token,
-                        sequence,
-                        reply,
-                    } => {
-                        let _ = reply.send(core.events_after(&token, sequence));
-                    }
-                    WorldCommand::View { token, reply } => {
-                        let result = match core.viewer(&token) {
-                            Ok(viewer) if program_healthy => match program.view(&viewer) {
-                                Ok(view) => {
-                                    if let Some(text) = &view {
-                                        if text.len() > core.limits.presentation_bytes {
-                                            program_healthy = false;
-                                            Err(anyhow::anyhow!(
-                                                "world presentation exceeds {} bytes",
-                                                core.limits.presentation_bytes
-                                            ))
-                                        } else {
-                                            Ok(view)
-                                        }
-                                    } else {
-                                        Ok(None)
-                                    }
-                                }
-                                Err(error) => {
-                                    program_healthy = false;
-                                    Err(error.context("world program view failed"))
-                                }
-                            },
-                            Ok(_) => Err(anyhow::anyhow!(
-                                "world program is unavailable after a previous failure"
-                            )),
-                            Err(error) => Err(error),
-                        };
-                        let _ = reply.send(result);
-                    }
-                    WorldCommand::InstallProgram {
-                        module_hash,
-                        seed,
-                        program: mut replacement,
-                        reply,
-                    } => {
-                        // A program whose initial records are invalid is
-                        // refused before anything is journaled.
-                        let new_records = match program_records(replacement.as_mut()) {
-                            Ok(records) => records.unwrap_or_default(),
-                            Err(error) => {
-                                let _ = reply
-                                    .send(Err(error.context("new world program records failed")));
-                                continue;
-                            }
-                        };
-                        // Actor serialization makes activation and its event
-                        // atomic with respect to other world commands.
-                        let seed_for_install = seed;
-                        let candidate = WorldEvent {
-                            sequence: core.sequence.saturating_add(1),
-                            participant_id: 0,
-                            kind: WorldEventKind::ProgramInstalled { module_hash, seed },
-                        };
-                        let result = persist(
-                            &mut journal,
-                            JournalEntry::Committed {
-                                event: candidate.clone(),
-                            },
-                            &mut storage_failed,
-                        )
-                        .and_then(|()| core.commit_prepared(candidate));
-                        let result = match result {
-                            Ok(event) => {
-                                if let WorldEventKind::ProgramInstalled { module_hash, .. } =
-                                    &event.kind
-                                {
-                                    core.active_module_hash = Some(module_hash.clone());
-                                }
-                                core.active_seed = seed_for_install;
-                                program = replacement;
-                                program_healthy = true;
-                                compaction_off = false;
-                                publish_records(&records_sender, event.sequence, new_records);
-                                let _ = event_sender.send(event.clone());
-                                Ok(event)
-                            }
-                            Err(error) => Err(error),
-                        };
-                        let _ = reply.send(result);
-                    }
-                    WorldCommand::Shutdown { reply } => {
-                        let _ = reply.send(());
-                        break;
-                    }
-                }
-                if !compaction_off
-                    && !storage_failed
-                    && program_healthy
-                    && core.checkpoint_due()
-                    && let Some(journal) = journal.as_mut()
-                {
-                    match compact_journal(&mut core, program.as_mut(), journal.as_mut()) {
-                        Ok(true) => {}
-                        Ok(false) => compaction_off = true,
-                        Err(error) => {
-                            // The journal is still complete; just do not
-                            // retry until something changes.
-                            tracing::warn!("world checkpoint skipped: {error:#}");
-                            compaction_off = true;
-                        }
-                    }
-                }
-            }
-        });
+        let actor = WorldActor {
+            core,
+            program,
+            journal,
+            storage_failed: false,
+            program_healthy,
+            compaction_off: false,
+            event_sender: events.clone(),
+            revocation_sender: revocations.clone(),
+            records_sender,
+            view_changed: view_changed_sender,
+            presence: HashMap::new(),
+            active_subs: BTreeSet::new(),
+            handled_requests: BTreeSet::new(),
+            denied_subs: BTreeSet::new(),
+            ticks: BTreeMap::new(),
+        };
+        tokio::spawn(actor.run(receiver));
         Self {
             commands,
             events,
             revocations,
             records,
+            view_changed,
         }
     }
-
     /// The latest `(sequence, records)` published by the world program.
     /// Callers must authorize the reader first (see [`Self::participant_id`]).
     #[must_use]
@@ -1243,6 +1770,62 @@ impl WorldHandle {
     #[must_use]
     pub fn subscribe_revocations(&self) -> broadcast::Receiver<u64> {
         self.revocations.subscribe()
+    }
+
+    /// Watch for state changes a rendered view may want to reflect. The value
+    /// is the world sequence at the change (unchanged for host events).
+    #[must_use]
+    pub fn watch_views(&self) -> watch::Receiver<u64> {
+        self.view_changed.clone()
+    }
+
+    /// Tell the world a participant opened (`true`) or closed (`false`) a
+    /// session. Drives presence and, while anyone is present, subscribed
+    /// ticks.
+    pub async fn presence(&self, participant: u64, joined: bool) {
+        let _ = self
+            .commands
+            .send(WorldCommand::Presence {
+                participant,
+                joined,
+            })
+            .await;
+    }
+
+    /// Grant and revoke capabilities for this world, and return the report.
+    ///
+    /// # Errors
+    ///
+    /// Fails on unknown capability names or world storage failure.
+    pub async fn update_caps(&self, grant: Vec<String>, revoke: Vec<String>) -> Result<CapsReport> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::UpdateCaps {
+                grant,
+                revoke,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped caps response")?
+    }
+
+    /// The world's capability report: grants, what the program wants, and use.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn caps_report(&self) -> Result<CapsReport> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::CapsInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped caps response")?
     }
 
     /// Resolve the participant authorized by a join capability.
@@ -1491,6 +2074,302 @@ mod tests {
 
     fn join(core: &mut WorldCore, name: &str) -> (Participant, JoinCapability) {
         core.issue_capability(name, WorldScopes::GUEST).unwrap()
+    }
+
+    /// A program driven by numeric inputs: each input switches its `wants`
+    /// script, and every host event is recorded. Request ids embed the input
+    /// count, so re-sending an input asks again.
+    struct Mock {
+        script: u64,
+        received: Vec<String>,
+        asks: u64,
+    }
+
+    impl Mock {
+        fn new() -> Self {
+            Self {
+                script: 0,
+                received: Vec::new(),
+                asks: 0,
+            }
+        }
+
+        fn results(&self) -> Vec<serde_json::Value> {
+            self.received
+                .iter()
+                .filter_map(|text| serde_json::from_str(text).ok())
+                .collect()
+        }
+    }
+
+    impl WorldProgram for Mock {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            match &event.kind {
+                WorldEventKind::Input(bytes) => {
+                    let text = std::str::from_utf8(bytes)?;
+                    self.script = text.parse().unwrap_or(self.script);
+                    self.asks += 1;
+                }
+                WorldEventKind::System { event } => self.received.push(event.clone()),
+                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let id = |tag: &str| format!("{tag}-{}", self.asks);
+            let document = match self.script {
+                1 => serde_json::json!({
+                    "v": 1,
+                    "subscribe": ["players"],
+                    "requests": [{"id": id("now"), "cap": "time.now"}],
+                }),
+                2 => serde_json::json!({
+                    "requests": [{"id": id("now"), "cap": "time.now"}],
+                }),
+                3 => serde_json::json!({
+                    "requests": [{
+                        "id": id("say"),
+                        "cap": "chat.say",
+                        "args": {"text": "hello from the program"},
+                    }],
+                }),
+                4 => serde_json::json!({"subscribe": ["time.tick:20"]}),
+                _ => serde_json::json!({}),
+            };
+            Ok(Some(document.to_string()))
+        }
+    }
+
+    async fn caps_world_sync(grant_on_use: bool) -> (WorldHandle, JoinCapability) {
+        let limits = WorldLimits {
+            grant_on_use,
+            ..WorldLimits::default()
+        };
+        let core = WorldCore::new("caps", limits).unwrap();
+        let handle = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+        (handle, token)
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_request_is_refused_and_counted() {
+        let (world, token) = caps_world_sync(false).await;
+        world.input(token, b"1".to_vec()).await.unwrap();
+        // The program hears the refusal as a result event.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("time.now")
+                .is_some_and(|use_| use_.denied > 0)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let report = world.caps_report().await.unwrap();
+        assert_eq!(report.policy, "deny");
+        assert!(
+            report.missing.contains(&"time.now".to_owned()),
+            "{report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_granted_request_gets_a_real_answer() {
+        let (world, token) = caps_world_sync(false).await;
+        world
+            .update_caps(vec!["time.now".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(token, b"2".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if world.caps_report().await.unwrap().usage["time.now"].allowed > 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no answer recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_say_commits_a_system_chat_line_that_sessions_see() {
+        let (world, token) = caps_world_sync(false).await;
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let mut events = world.subscribe();
+        world.input(token, b"3".to_vec()).await.unwrap();
+        // The participant's own input event arrives first; keep waiting for
+        // the host's chat line.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+                .await
+                .expect("no chat event")
+                .unwrap();
+            if let WorldEventKind::Chat(text) = &event.kind {
+                assert_eq!(text, "hello from the program");
+                assert_eq!(event.participant_id, 0, "the host said it");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "chat never arrived");
+        }
+    }
+
+    #[tokio::test]
+    async fn grant_on_use_grants_what_the_program_actually_uses() {
+        let (world, token) = caps_world_sync(true).await;
+        world.input(token, b"1".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if world.caps_report().await.unwrap().usage["time.now"].allowed > 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "never granted");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let report = world.caps_report().await.unwrap();
+        assert_eq!(report.policy, "grant-on-use");
+        assert!(report.granted.contains(&"time.now".to_owned()));
+        assert!(report.missing.is_empty());
+    }
+
+    #[test]
+    fn system_events_and_grants_survive_a_restore() {
+        let secret = "ab".repeat(32);
+        let token = JoinCapability::from_wire(format!("1.{secret}"));
+        let digest = hex_encode(&token_digest(token.expose()));
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "caps".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::CapsGranted {
+                granted: vec!["time.now".to_owned()],
+            },
+            JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: "ann".to_owned(),
+                },
+                digest,
+                scopes: WorldScopes::GUEST.0,
+            },
+            JournalEntry::System {
+                event: WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: r#"{"cap":"result","id":"now-1","ok":true,"value":{"now":1}}"#
+                            .to_owned(),
+                    },
+                },
+            },
+        ];
+        let restored = WorldCore::restore("caps", WorldLimits::default(), entries).unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert_eq!(restored.core.sequence, 0, "system events carry no sequence");
+        assert_eq!(restored.replay.len(), 1, "the program must see it again");
+        assert!(
+            restored.core.authorize(&token, WorldScopes::JOIN).is_ok(),
+            "capabilities restore after a grant entry"
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_granted_set() {
+        let mut core = WorldCore::new("caps", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.now".to_owned()]));
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        assert!(entries
+            .iter()
+            .any(|entry| matches!(entry, JournalEntry::CapsGranted { granted } if granted == &vec!["time.now".to_owned()])));
+        // A compacted journal restores with the grant intact.
+        let restored = WorldCore::restore("caps", WorldLimits::default(), entries).unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+    }
+
+    #[tokio::test]
+    async fn the_actor_journals_host_events_and_grants() {
+        #[derive(Default, Clone)]
+        struct Capturing(Arc<std::sync::Mutex<Vec<JournalEntry>>>);
+        impl WorldJournal for Capturing {
+            fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+                self.0.lock().unwrap().push(entry.clone());
+                Ok(())
+            }
+        }
+        let captured = Capturing::default();
+        let (world, token) = {
+            let core = WorldCore::new("j", WorldLimits::default()).unwrap();
+            let handle = WorldHandle::spawn_durable(
+                core,
+                Box::new(Mock::new()),
+                Some(Box::new(captured.clone())),
+            );
+            let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+            (handle, token)
+        };
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(token, b"3".to_vec()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        world.shutdown().await.unwrap();
+        let entries = captured.0.lock().unwrap().clone();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::CapsGranted { granted } if granted.contains(&"chat.say".to_owned()))),
+            "{entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::System { event } if event.kind == WorldEventKind::System { event: r#"{"cap":"result","ok":true,"value":{"sequence":2}}"#.to_owned() }))
+                || entries
+                    .iter()
+                    .any(|entry| matches!(entry, JournalEntry::System { .. })),
+            "the chat.say result is journaled: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(
+                |entry| matches!(entry, JournalEntry::Committed { event } if matches!(&event.kind, WorldEventKind::Chat(text) if text == "hello from the program"))
+            ),
+            "the host chat line is journaled: {entries:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribed_ticks_arrive_only_while_someone_is_present() {
+        let (world, token) = caps_world_sync(false).await;
+        world
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(token, b"4".to_vec()).await.unwrap();
+        world.presence(1, true).await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        world.presence(1, false).await;
+        // Let any in-flight tick settle, then confirm the world goes quiet.
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let quiet = {
+            let mut views = world.watch_views();
+            views.borrow_and_update();
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            views.has_changed().is_ok_and(|changed| !changed)
+        };
+        assert!(quiet, "ticks kept firing with nobody present");
+        world.shutdown().await.unwrap();
     }
 
     #[test]

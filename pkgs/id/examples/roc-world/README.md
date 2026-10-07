@@ -19,6 +19,7 @@ init    : U64 -> model                    # seed from the host
 update  : model, U64, Str -> model        # second argument is the participant id
 view    : model, Str -> Str               # viewer id as JSON/string
 records : model -> Str                    # optional JSON object projection
+wants : model -> Str                      # optional: subscriptions and requests
 snapshot : model -> Str                   # state as text, for journal checkpoints
 restore : Str -> model                    # inverse of snapshot
 ```
@@ -29,6 +30,26 @@ requires no `Task`, and modules are compiled to an import-free Wasm module.
 `records` is optional: when present it must return a JSON object of string
 keys to JSON values, which the host validates and mirrors into the world's
 iroh-docs document.
+
+`wants` is the capability protocol: a JSON document of the subscriptions the
+program holds and the one-shot requests it has outstanding
+(`{"v":1,"subscribe":["players","time.tick:5000"],"requests":[{"id":"r1","cap":"time.now"}]}`).
+The host answers each new request with a host event (participant 0) carrying
+`{"cap":"result","id":"r1","ok":true,"value":...}` or `"ok":false` with an
+error code, and delivers subscription events (`time.tick`, `players`) as host
+events too. Every host event is journaled before delivery, so replay is
+exact. A request to a capability the world has not granted is answered with
+`cap_denied` — never silently. See the design doc for the catalog
+(`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
+`chat.say`, `world.info`), grant policies and bounds.
+
+One nightly caveat: with
+nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
+element of a string list produced by `Str.split_on` returned truncated
+elements in some module compositions (observed while building
+`examples/lounge`; recorded in the design doc). The examples avoid
+positional access beyond index 1; prefer `after`/`between`-style extraction
+for now and re-check with a newer nightly before relying on it.
 
 `snapshot`/`restore` let the host trim a world's journal. Without them a
 world restarts by replaying every input it ever received; with them the host

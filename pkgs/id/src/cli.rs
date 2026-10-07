@@ -349,6 +349,15 @@ pub enum Command {
         /// (they reopen from their journal on demand). `0` keeps them open.
         #[arg(long, default_value_t = 600, requires = "world")]
         world_idle_secs: u64,
+        /// Capability the default world's program may use (repeatable; `*`
+        /// grants the whole catalog).
+        #[arg(long = "world-cap", value_name = "NAME", requires = "world")]
+        world_caps: Vec<String>,
+        /// What an unlisted capability costs the program: `deny` (default) or
+        /// `grant-on-use`, which grants a known capability the first time the
+        /// program uses it.
+        #[arg(long, default_value = "deny", requires = "world")]
+        world_cap_policy: String,
         /// Allow this node to modify the store (repeatable, comma-separated).
         ///
         /// Reading names, hashes and tags is public. Writing (put, delete,
@@ -1209,6 +1218,36 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Show (and, with `--grant`/`--revoke`, change) a world's capabilities.
+    ///
+    /// Without `--grant`/`--revoke` this needs only a guest capability and
+    /// prints what the world has granted, what its program wants, and what it
+    /// has used. With them it needs the admin token.
+    Caps {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: Option<String>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: Option<String>,
+        /// Capability to grant (repeatable; `*` grants the whole catalog).
+        #[arg(long)]
+        grant: Vec<String>,
+        /// Capability to revoke (repeatable).
+        #[arg(long)]
+        revoke: Vec<String>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// List the worlds a host serves (needs the host's admin token).
     List {
         /// The host's node ID (64 hex characters).
@@ -1441,6 +1480,8 @@ mod tests {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_caps,
+                world_cap_policy,
                 allow_node,
                 open_writes,
             }) => {
@@ -1468,6 +1509,8 @@ mod tests {
                 assert_eq!(world_max_open, 256);
                 assert_eq!(world_max_sessions, 1024);
                 assert_eq!(world_idle_secs, 600);
+                assert!(world_caps.is_empty());
+                assert_eq!(world_cap_policy, "deny");
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

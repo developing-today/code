@@ -180,6 +180,31 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             result
         }
+        WorldCommand::Caps {
+            node,
+            capability,
+            admin_token,
+            grant,
+            revoke,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = if grant.is_empty() && revoke.is_empty() {
+                let capability = capability
+                    .context("a guest capability (--capability) is needed to read the report")?;
+                client.caps(&capability).await
+            } else {
+                let admin_token = admin_token
+                    .context("the admin token is needed to change what the world may use")?;
+                client.update_caps(&admin_token, &grant, &revoke).await
+            };
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
         WorldCommand::List {
             node,
             admin_token,

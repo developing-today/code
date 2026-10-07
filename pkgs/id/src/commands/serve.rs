@@ -302,6 +302,10 @@ pub struct ServeOptions {
     pub world_max_sessions: usize,
     /// Close durable worlds idle for this many seconds (`0` never).
     pub world_idle_secs: u64,
+    /// Capabilities the default world's program may use.
+    pub world_caps: Vec<String>,
+    /// `deny` or `grant-on-use`.
+    pub world_cap_policy: String,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -313,6 +317,7 @@ fn validate_world_options(
     admin_token: Option<&str>,
     world_module: Option<&PathBuf>,
     world_name: &str,
+    world_cap_policy: &str,
 ) -> Result<()> {
     ensure!(
         !world || admin_token.is_some_and(|token| !token.is_empty()),
@@ -324,6 +329,10 @@ fn validate_world_options(
     );
     #[cfg(feature = "world")]
     crate::world_hub::validate_world_name(world_name)?;
+    ensure!(
+        world_cap_policy == "deny" || world_cap_policy == "grant-on-use",
+        "--world-cap-policy must be `deny` or `grant-on-use`"
+    );
     #[cfg(not(feature = "world"))]
     let _ = world_name;
     Ok(())
@@ -385,6 +394,7 @@ struct ServeWorlds {
     checkpoint_every: u64,
     default_world: String,
     default_module: Option<PathBuf>,
+    grant_on_use: bool,
 }
 
 #[cfg(feature = "world")]
@@ -431,6 +441,7 @@ impl ServeWorlds {
 
         let limits = WorldLimits {
             checkpoint_every: self.checkpoint_every,
+            grant_on_use: self.grant_on_use,
             ..WorldLimits::default()
         };
         let make = {
@@ -574,6 +585,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_max_open,
         world_max_sessions,
         world_idle_secs,
+        world_caps,
+        world_cap_policy,
         allow_node,
         open_writes,
     } = opts;
@@ -582,6 +595,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_admin_token.as_deref(),
         world_module.as_ref(),
         &world_name,
+        &world_cap_policy,
     )?;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
@@ -667,6 +681,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             checkpoint_every: world_checkpoint_every,
             default_world: world_name.clone(),
             default_module: world_module.clone(),
+            grant_on_use: world_cap_policy == "grant-on-use",
         });
         let hub = WorldHub::new(
             opener,
@@ -677,7 +692,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 max_sessions: world_max_sessions,
             },
         );
-        hub.open_default().await?;
+        let default_service = hub.open_default().await?;
+        if !world_caps.is_empty() {
+            default_service
+                .world()
+                .update_caps(world_caps.clone(), Vec::new())
+                .await?;
+        }
         if world_idle_secs > 0 && !ephemeral {
             let idle = std::time::Duration::from_secs(world_idle_secs);
             hub.spawn_evictor(
@@ -1076,22 +1097,29 @@ mod tests {
 
     #[test]
     fn world_mode_requires_an_admin_token_but_not_web() {
-        assert!(validate_world_options(true, None, None, "lobby").is_err());
-        assert!(validate_world_options(true, Some(""), None, "lobby").is_err());
-        assert!(validate_world_options(true, Some("admin"), None, "lobby").is_ok());
-        assert!(validate_world_options(false, None, None, "lobby").is_ok());
+        assert!(validate_world_options(true, None, None, "lobby", "deny").is_err());
+        assert!(validate_world_options(true, Some(""), None, "lobby", "deny").is_err());
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny").is_ok());
+        assert!(validate_world_options(false, None, None, "lobby", "deny").is_ok());
         assert!(
             validate_world_options(
                 true,
                 Some("admin"),
                 Some(&PathBuf::from("world.wasm")),
-                "lobby"
+                "lobby",
+                "deny"
             )
             .is_ok()
         );
         assert!(
-            validate_world_options(false, None, Some(&PathBuf::from("world.wasm")), "lobby")
-                .is_err()
+            validate_world_options(
+                false,
+                None,
+                Some(&PathBuf::from("world.wasm")),
+                "lobby",
+                "deny"
+            )
+            .is_err()
         );
     }
 
@@ -1108,13 +1136,21 @@ mod tests {
             "wörld",
         ] {
             assert!(
-                validate_world_options(true, Some("admin"), None, bad).is_err(),
+                validate_world_options(true, Some("admin"), None, bad, "deny").is_err(),
                 "{bad:?} must be refused"
             );
         }
-        assert!(validate_world_options(true, Some("admin"), None, "tt-2_x").is_ok());
-        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(64)).is_ok());
-        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(65)).is_err());
+        assert!(validate_world_options(true, Some("admin"), None, "tt-2_x", "deny").is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(64), "deny").is_ok());
+        assert!(
+            validate_world_options(true, Some("admin"), None, &"a".repeat(65), "deny").is_err()
+        );
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny").is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "grant-on-use").is_ok());
+        assert!(
+            validate_world_options(true, Some("admin"), None, "lobby", "sometimes").is_err(),
+            "an unknown policy is refused"
+        );
     }
 
     #[test]
