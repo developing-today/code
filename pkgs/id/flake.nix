@@ -560,7 +560,7 @@
             src = ./.;
 
             # Enable the web feature (default features are empty in Cargo.toml)
-            buildFeatures = [ "web" "sandbox" ];
+            buildFeatures = [ "web" "sandbox" "world" ];
 
             cargoLock = {
               lockFile = ./Cargo.lock;
@@ -619,7 +619,7 @@
 
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
-            buildFeatures = [ "sandbox" ];
+            buildFeatures = [ "sandbox" "world" ];
 
             inherit buildInputs;
             nativeBuildInputs = [

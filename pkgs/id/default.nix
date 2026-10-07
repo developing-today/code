@@ -26,7 +26,7 @@ in
     inherit pname version;
     src = ./.;
 
-    buildFeatures = [ "sandbox" ];
+    buildFeatures = [ "sandbox" "world" ];
 
     cargoLock = {
       lockFile = ./Cargo.lock;

@@ -167,6 +167,8 @@ pub mod sandbox;
 pub mod store;
 pub mod tags;
 pub mod tuple;
+#[cfg(feature = "world")]
+pub mod world;
 
 #[cfg(feature = "web")]
 pub mod web;

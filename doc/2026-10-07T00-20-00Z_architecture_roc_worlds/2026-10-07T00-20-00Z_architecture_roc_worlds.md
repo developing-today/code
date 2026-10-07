@@ -184,3 +184,30 @@ designed guest serialization/versioning contract; do not serialize raw Roc
 pointers or Wasm linear memory and call that durable state. The later protocol
 must define versioned guest save/load exports or reconstruct state by replaying
 bounded events from a trusted seed.
+
+---
+
+## 2026-10-07T00-52-09Z Plan: authoritative world core and join capabilities
+
+The next vertical slice is transport-independent and server-authoritative. It
+adds an in-memory world core that serializes all mutations, issues scoped
+join capabilities, assigns monotonic event sequence numbers, and returns a
+snapshot plus events after a caller's cursor. It does not add network routes or
+pretend to provide persistence yet.
+
+Initial event kinds are bounded chat text and opaque game input. The core
+validates membership, capability scope, input size, chat length, and event-log
+retention before sequencing. The game input remains an event for a later Roc
+runner integration; no guest code executes in this milestone. A snapshot
+contains world ID, current sequence, bounded recent events, and participants
+without exposing capability secrets. Capability material is generated with
+the OS cryptographic RNG, stored only as a digest, compared in constant time,
+and can be revoked. A join capability grants only `join/chat/input` for one
+world; moderation and module replacement remain future scopes.
+
+The Rust API is the seam for later Axum WebSocket and Iroh transports. A
+single actor owns the core so concurrent inputs are ordered deterministically.
+Tests must cover sequence ordering, unauthorized/expired/revoked capabilities,
+bounded input/log behavior, and reconnect snapshots. Persistence, distributed
+consensus, browser UI, TUI, and the Roc trap diagnosed above are outside this
+milestone.
