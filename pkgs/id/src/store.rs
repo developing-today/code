@@ -93,15 +93,104 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
             let bytes: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
                 anyhow!("invalid key length: expected 32, got {}", v.len())
             })?;
+            restrict_key_permissions(path).await;
             Ok(SecretKey::from(bytes))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let key = SecretKey::generate();
-            afs::write(path, key.to_bytes()).await?;
-            Ok(key)
+            match write_private_file(path, &key.to_bytes()).await {
+                Ok(()) => Ok(key),
+                // Another process won the first-run race. Keep its identity;
+                // never replace a key that was created after our initial read.
+                Err(e)
+                    if e.downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+                {
+                    let bytes = read_key_after_creation_race(path).await?;
+                    restrict_key_permissions(path).await;
+                    Ok(SecretKey::from(bytes))
+                }
+                Err(e) => Err(e.into()),
+            }
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Wait briefly for the winning process to finish writing its newly-created
+/// key file before validating its fixed-size contents.
+async fn read_key_after_creation_race(path: &str) -> Result<[u8; 32]> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let bytes = afs::read(path).await?;
+        match <[u8; 32]>::try_from(bytes) {
+            Ok(key) => return Ok(key),
+            Err(bytes) if bytes.len() != 32 && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            Err(bytes) => {
+                anyhow::bail!("invalid key length: expected 32, got {}", bytes.len());
+            }
+        }
+    }
+}
+
+/// Write `data` to a new file readable only by the owner (`0600` on Unix).
+///
+/// The mode is set atomically at creation, so the key is never briefly
+/// world-readable. `create_new` prevents concurrent first-run processes from
+/// overwriting each other's identity.
+async fn write_private_file(path: &str, data: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let path = path.to_owned();
+        let data = data.to_vec();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            f.write_all(&data)
+        })
+        .await??;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await?;
+        file.write_all(data).await?;
+        Ok(())
+    }
+}
+
+/// Tighten an existing key file that is group- or world-accessible.
+///
+/// Keys written by older versions used the process umask (typically `0644`).
+/// Best effort: failure is logged, not fatal.
+async fn restrict_key_permissions(path: &str) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(meta) = afs::metadata(path).await
+            && meta.permissions().mode() & 0o077 != 0
+        {
+            tracing::warn!("tightening permissions on private key file {path} to 0600");
+            if let Err(e) = afs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await
+            {
+                tracing::warn!("could not tighten permissions on {path}: {e}");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Wrapper enum for persistent vs ephemeral blob stores.
@@ -410,5 +499,51 @@ mod tests {
         let ephemeral = open_store(true).await.unwrap();
         let _store = ephemeral.as_store(); // Should not panic
         ephemeral.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_new_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        load_or_create_keypair(path.to_str().unwrap())
+            .await
+            .unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "private key must not be group/world readable");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_existing_world_readable_key_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        let key = SecretKey::generate();
+        std::fs::write(&path, key.to_bytes()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let loaded = load_or_create_keypair(path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(loaded.public(), key.public(), "the key itself is unchanged");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_key_creation_preserves_one_identity() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        let path = path.to_str().unwrap().to_owned();
+
+        let (first, second) =
+            tokio::join!(load_or_create_keypair(&path), load_or_create_keypair(&path),);
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.public(), second.public());
+        let on_disk = load_or_create_keypair(&path).await.unwrap();
+        assert_eq!(first.public(), on_disk.public());
     }
 }

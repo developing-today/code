@@ -2548,4 +2548,94 @@ mod tests {
         assert_eq!(&*tv, b"hello");
         assert_eq!(tv.len(), 5);
     }
+
+    // ------------------------------------------------------------------
+    // Legacy `.meta` import (needs a real iroh-docs engine, in memory)
+    // ------------------------------------------------------------------
+
+    async fn memory_tag_store() -> (
+        TagStore,
+        Store,
+        tempfile::TempDir,
+        iroh::endpoint::Endpoint,
+        Docs,
+    ) {
+        use iroh::endpoint::{Endpoint, RelayMode, presets};
+        use iroh_blobs::store::mem::MemStore;
+        use iroh_gossip::net::Gossip;
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let blobs: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), blobs.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ts = TagStore::init_in(&docs, "test-node", dir.path().join(".iroh-meta"))
+            .await
+            .unwrap();
+        (ts, blobs, dir, endpoint, docs)
+    }
+
+    #[tokio::test]
+    async fn test_migrate_legacy_meta_imports_once_and_keeps_newer_values() {
+        let (ts, blobs, _dir, endpoint, _docs) = memory_tag_store().await;
+
+        // A legacy document as written by pre-iroh-docs versions.
+        let mut doc = MetaDoc::default();
+        add_tag(&mut doc, "notes.md", "priority", Some("high"), None);
+        add_tag(&mut doc, "notes.md", "color", None, None);
+        add_tag(
+            &mut doc,
+            "notes.md",
+            "see",
+            Some("other"),
+            Some(MetaLink::Name("other.md".to_owned())),
+        );
+        add_tag(&mut doc, "notes.md", "created", Some("100"), None);
+        save_meta(&blobs, &doc).await.unwrap();
+
+        // The server already recorded a newer `created` for the same subject.
+        ts.set_tag(&ts.global, b"notes.md", b"created", Some(b"999"), b"")
+            .await
+            .unwrap();
+
+        let imported = ts.migrate_legacy_meta(&blobs).await.unwrap();
+        assert_eq!(imported, 3, "created is kept, the other three are imported");
+
+        let tags = ts.get_tags(&ts.global, b"notes.md").await.unwrap();
+        let has = |k: &str, v: Option<&str>| {
+            tags.iter().any(|t| {
+                t.key == k && t.value.as_ref().map(TagValue::as_bytes) == v.map(str::as_bytes)
+            })
+        };
+        assert!(has("priority", Some("high")));
+        assert!(has("color", None), "key-only tag imported");
+        assert!(has("see", Some("other")));
+        assert!(
+            has("created", Some("999")),
+            "newer value is not overwritten"
+        );
+        assert!(!has("created", Some("100")));
+
+        // Idempotent: a second run does nothing, even if more legacy tags appear.
+        add_tag(&mut doc, "notes.md", "late", Some("x"), None);
+        save_meta(&blobs, &doc).await.unwrap();
+        assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 0);
+        let tags = ts.get_tags(&ts.global, b"notes.md").await.unwrap();
+        assert!(!tags.iter().any(|t| t.key == "late"));
+
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_migrate_legacy_meta_with_no_legacy_blob_is_a_noop() {
+        let (ts, blobs, _dir, endpoint, _docs) = memory_tag_store().await;
+        assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 0);
+        endpoint.close().await;
+    }
 }
