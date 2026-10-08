@@ -52,6 +52,7 @@ let
       # Build dependencies
       pkg-config
       openssl
+      cmake
 
       # Cargo plugins
       cargo-watch
