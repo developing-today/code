@@ -590,6 +590,7 @@
             inherit buildInputs;
             nativeBuildInputs = [
               pkgs.pkg-config
+              pkgs.cmake
               rustToolchain
               pkgs.bun
               bun2nixPkg.hook
@@ -647,6 +648,7 @@
             inherit buildInputs;
             nativeBuildInputs = [
               pkgs.pkg-config
+              pkgs.cmake
               rustToolchain
             ];
 
