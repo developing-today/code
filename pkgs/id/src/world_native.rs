@@ -922,7 +922,7 @@ int main() {
         )
         .unwrap();
         let outlaw = dir.path().join("outlaw");
-        let status = std::process::Command::new(&zig)
+        let status = Command::new(&zig)
             .args([
                 "cc",
                 "-target",
@@ -938,10 +938,10 @@ int main() {
 
         // The unhardened binary runs; under the sandbox it is killed for
         // touching `open` (SIGSYS, or death of any kind — never success).
-        let plain = std::process::Command::new(&outlaw).status().unwrap();
+        let plain = Command::new(&outlaw).status().unwrap();
         assert!(plain.success() || plain.code() == Some(1));
         let limits = NativeLimits::default();
-        let mut worker = Worker::spawn_for_test(&outlaw, &limits);
+        let worker = Worker::spawn_for_test(&outlaw, &limits);
         let reply = worker.call_for_test();
         assert!(reply.is_err(), "an outlaw survived the sandbox: {reply:?}");
 
@@ -956,7 +956,7 @@ int main() {
 
     #[cfg(target_os = "linux")]
     fn which_zig() -> Option<String> {
-        std::process::Command::new("zig")
+        Command::new("zig")
             .arg("version")
             .output()
             .ok()

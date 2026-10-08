@@ -312,6 +312,7 @@ pub struct WorldService {
     records: Option<Arc<crate::world_records::RecordsStore>>,
     compiler: Option<Arc<Compiler>>,
     native: bool,
+    runtime: crate::world_limits::RuntimeLimits,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -347,7 +348,15 @@ impl WorldService {
             records: None,
             compiler: None,
             native: false,
+            runtime: crate::world_limits::RuntimeLimits::default(),
         }
+    }
+
+    /// Bound the programs this world runs by the admin's limits.
+    #[must_use]
+    pub fn with_runtime_limits(mut self, runtime: crate::world_limits::RuntimeLimits) -> Self {
+        self.runtime = runtime;
+        self
     }
 
     /// Let admins compile Roc sources into this world on the fly.
@@ -568,13 +577,9 @@ impl WorldService {
                     .await
                     .map_err(|_| InstallError::Unavailable)?;
             }
+            let native_limits = self.runtime.native;
             let program = tokio::task::spawn_blocking(move || {
-                crate::world_native::NativeProgram::new(
-                    &path,
-                    seed,
-                    crate::world_native::NativeLimits::default(),
-                    None,
-                )
+                crate::world_native::NativeProgram::new(&path, seed, native_limits, None)
             })
             .await
             .map_err(|e| {
@@ -587,10 +592,7 @@ impl WorldService {
             })?;
             Box::new(program)
         } else {
-            let limits = crate::sandbox::SandboxLimits {
-                module_bytes: MAX_WORLD_MODULE_BYTES,
-                ..crate::sandbox::SandboxLimits::default()
-            };
+            let limits = self.runtime.sandbox;
             let compile_bytes = wasm.clone();
             let program = tokio::task::spawn_blocking(move || {
                 crate::sandbox::Sandbox::compile(&compile_bytes, limits)?.instantiate(seed)
@@ -2165,6 +2167,38 @@ mod tests {
         );
         world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
         assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn admin_fuel_limit_applies_to_installed_programs() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let starved = crate::world_limits::RuntimeLimits {
+            sandbox: crate::sandbox::SandboxLimits {
+                fuel: 1,
+                ..crate::sandbox::SandboxLimits::default()
+            },
+            ..crate::world_limits::RuntimeLimits::default()
+        };
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let svc = WorldService::new(world, Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_runtime_limits(starved);
+        assert!(matches!(
+            svc.install_wasm(Some("admin"), wasm.clone(), 12, &hash)
+                .await,
+            Err(InstallError::InvalidModule)
+        ));
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let svc = WorldService::new(world, Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into());
+        svc.install_wasm(Some("admin"), wasm, 12, &hash)
+            .await
+            .expect("default limits install");
     }
 
     #[cfg(feature = "sandbox")]

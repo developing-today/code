@@ -2093,13 +2093,6 @@ mod tests {
                 asks: 0,
             }
         }
-
-        fn results(&self) -> Vec<serde_json::Value> {
-            self.received
-                .iter()
-                .filter_map(|text| serde_json::from_str(text).ok())
-                .collect()
-        }
     }
 
     impl WorldProgram for Mock {

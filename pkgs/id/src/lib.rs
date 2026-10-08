@@ -176,6 +176,8 @@ pub mod world_compile;
 #[cfg(feature = "world")]
 pub mod world_hub;
 #[cfg(feature = "world")]
+pub mod world_limits;
+#[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;

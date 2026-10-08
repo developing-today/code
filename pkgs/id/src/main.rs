@@ -175,6 +175,7 @@ async fn main() -> Result<()> {
             roc_bin,
             roc_platform,
             world_native,
+            world_runtime,
             allow_node,
             open_writes,
         }) => {
@@ -207,6 +208,7 @@ async fn main() -> Result<()> {
                 roc_bin,
                 roc_platform,
                 world_native,
+                world_runtime,
                 allow_node,
                 open_writes,
             })

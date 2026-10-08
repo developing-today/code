@@ -84,7 +84,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -354,6 +354,9 @@ pub enum Command {
         /// import-free format, so this tier is opt-in.
         #[arg(long, requires = "world")]
         world_native: bool,
+        /// Execution bounds for world programs.
+        #[command(flatten)]
+        world_runtime: WorldRuntimeArgs,
         /// Capability the default world's program may use (repeatable; `*`
         /// grants the whole catalog).
         #[arg(long = "world-cap", value_name = "NAME", requires = "world")]
@@ -1098,6 +1101,35 @@ pub enum Command {
     },
 }
 
+/// Execution bounds for world programs. Each is validated when the server
+/// starts; see `world_limits::RuntimeLimits`.
+#[derive(Args, Debug, Clone)]
+pub struct WorldRuntimeArgs {
+    /// Wasm fuel (instruction budget) for one world call.
+    #[arg(
+        long,
+        default_value_t = 10_000_000,
+        requires = "world",
+        value_name = "UNITS"
+    )]
+    pub world_fuel: u64,
+    /// Linear memory for a Wasm world program, in MiB (1..=2048).
+    #[arg(long, default_value_t = 16, requires = "world", value_name = "MIB")]
+    pub world_memory_mib: u64,
+    /// Largest Wasm payload (input or output), in KiB (1..=1024).
+    #[arg(long, default_value_t = 1024, requires = "world", value_name = "KIB")]
+    pub world_message_kib: u64,
+    /// Address-space cap for a native worker, in MiB (16..=65536).
+    #[arg(long, default_value_t = 256, requires = "world", value_name = "MIB")]
+    pub world_native_memory_mib: u64,
+    /// CPU seconds a native worker may use in total.
+    #[arg(long, default_value_t = 10, requires = "world", value_name = "SECS")]
+    pub world_native_cpu_secs: u64,
+    /// Wall-clock budget for one native worker call, in milliseconds.
+    #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
+    pub world_native_deadline_ms: u64,
+}
+
 /// Subcommands for `id world`.
 #[derive(Subcommand, Debug)]
 pub enum WorldCommand {
@@ -1530,6 +1562,7 @@ mod tests {
                 roc_bin,
                 roc_platform,
                 world_native,
+                world_runtime: _,
                 allow_node,
                 open_writes,
             }) => {

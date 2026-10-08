@@ -311,6 +311,7 @@ pub async fn open_world(
     dir: &Path,
     world_id: &str,
     limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport)> {
     let journal_path = dir.join("journal.jsonl");
@@ -333,7 +334,7 @@ pub async fn open_world(
     let mut restored_module = None;
     let program: Box<dyn WorldProgram> = match &restored.program {
         None => Box::new(EmptyProgram),
-        Some(spec) => match restore_program(&modules, spec, &restored.replay).await {
+        Some(spec) => match restore_program(&modules, spec, &restored.replay, runtime).await {
             Ok((program, wasm)) => {
                 report.replayed_inputs = restored.replay.len();
                 restored_module = Some(wasm);
@@ -367,6 +368,7 @@ async fn restore_program(
     modules: &ModuleDir,
     spec: &crate::world::RestoredProgram,
     replay: &[crate::world::WorldEvent],
+    runtime: crate::world_limits::RuntimeLimits,
 ) -> Result<(Box<dyn WorldProgram>, Vec<u8>)> {
     let modules = modules.clone();
     let spec = spec.clone();
@@ -379,18 +381,14 @@ async fn restore_program(
             Box::new(crate::world_native::NativeProgram::new(
                 &path,
                 seed,
-                crate::world_native::NativeLimits::default(),
+                runtime.native,
                 spec.snapshot.as_deref(),
             )?)
         } else {
             #[cfg(feature = "sandbox")]
             {
-                let limits = crate::sandbox::SandboxLimits {
-                    module_bytes: crate::world_session::MAX_WORLD_MODULE_BYTES,
-                    ..crate::sandbox::SandboxLimits::default()
-                };
                 let mut guest =
-                    crate::sandbox::Sandbox::compile(&wasm, limits)?.instantiate(seed)?;
+                    crate::sandbox::Sandbox::compile(&wasm, runtime.sandbox)?.instantiate(seed)?;
                 if let Some(snapshot) = &spec.snapshot {
                     guest
                         .restore(snapshot.as_bytes())
@@ -419,6 +417,7 @@ mod tests {
 
     use super::*;
     use crate::world::WorldScopes;
+    use crate::world_limits::RuntimeLimits;
 
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
         let admin = admin.map(str::to_owned);
@@ -428,9 +427,15 @@ mod tests {
     #[tokio::test]
     async fn chat_and_capabilities_survive_a_restart() {
         let dir = TempDir::new().unwrap();
-        let (svc, report) = open_world(dir.path(), "lobby", WorldLimits::default(), service(None))
-            .await
-            .unwrap();
+        let (svc, report) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.sequence, 0);
         let (_, ann) = svc.world().issue("ann", WorldScopes::GUEST).await.unwrap();
         let (bob_p, bob) = svc.world().issue("bob", WorldScopes::GUEST).await.unwrap();
@@ -439,9 +444,15 @@ mod tests {
         assert!(svc.world().revoke(bob_p.id).await.unwrap());
         svc.world().shutdown().await.unwrap();
 
-        let (svc, report) = open_world(dir.path(), "lobby", WorldLimits::default(), service(None))
-            .await
-            .unwrap();
+        let (svc, report) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.sequence, 2);
         let snapshot = svc.world().snapshot(ann.clone()).await.unwrap();
         let text = serde_json::to_string(&snapshot.events).unwrap();
@@ -502,13 +513,25 @@ mod tests {
     async fn a_journal_for_another_world_is_refused() {
         let dir = TempDir::new().unwrap();
         drop(
-            open_world(dir.path(), "one", WorldLimits::default(), service(None))
-                .await
-                .unwrap(),
-        );
-        let err = open_world(dir.path(), "two", WorldLimits::default(), service(None))
+            open_world(
+                dir.path(),
+                "one",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                service(None),
+            )
             .await
-            .unwrap_err();
+            .unwrap(),
+        );
+        let err = open_world(
+            dir.path(),
+            "two",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("belongs to world"), "{err:#}");
     }
 
@@ -540,6 +563,7 @@ mod tests {
             dir.path(),
             "lobby",
             WorldLimits::default(),
+            RuntimeLimits::default(),
             make(blobs.clone()),
         )
         .await
@@ -564,6 +588,7 @@ mod tests {
             dir.path(),
             "lobby",
             WorldLimits::default(),
+            RuntimeLimits::default(),
             make(fresh_blobs),
         )
         .await
@@ -601,6 +626,7 @@ mod tests {
             dir.path(),
             "lobby",
             WorldLimits::default(),
+            RuntimeLimits::default(),
             make(blobs.clone()),
         )
         .await
@@ -647,9 +673,15 @@ mod tests {
         let make = |blobs: iroh_blobs::api::Store| {
             move |handle| WorldService::new(handle, Some("admin".to_owned())).with_blob_store(blobs)
         };
-        let (svc, _) = open_world(dir.path(), "lobby", limits, make(blobs.clone()))
-            .await
-            .unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            limits,
+            RuntimeLimits::default(),
+            make(blobs.clone()),
+        )
+        .await
+        .unwrap();
         let hash = module_hash(&wasm);
         svc.install_wasm(Some("admin"), wasm, 42, &hash)
             .await
@@ -695,9 +727,15 @@ mod tests {
         );
 
         let fresh: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
-        let (svc, report) = open_world(dir.path(), "lobby", limits, make(fresh))
-            .await
-            .unwrap();
+        let (svc, report) = open_world(
+            dir.path(),
+            "lobby",
+            limits,
+            RuntimeLimits::default(),
+            make(fresh),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.program_error, None);
         assert_eq!(report.sequence, sequence, "sequence continues");
         assert!(
@@ -743,9 +781,15 @@ mod tests {
             checkpoint_every: 2,
             ..WorldLimits::default()
         };
-        let (svc, _) = open_world(dir.path(), "lobby", limits, service(None))
-            .await
-            .unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            limits,
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
         svc.world()
             .install_program("hash".to_owned(), 1, Box::new(Plain))
             .await
@@ -784,9 +828,15 @@ mod tests {
             checkpoint_every: 2,
             ..WorldLimits::default()
         };
-        let (svc, _) = open_world(dir.path(), "lobby", limits, service(None))
-            .await
-            .unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            limits,
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
         svc.world()
             .install_program("hash".to_owned(), 1, Box::new(Flaky))
             .await
@@ -839,10 +889,16 @@ mod tests {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
         let dir = TempDir::new().unwrap();
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
-        let (svc, _) = open_world(dir.path(), "lobby", WorldLimits::default(), {
-            let blobs = blobs.clone();
-            move |handle| WorldService::new(handle, Some("a".to_owned())).with_blob_store(blobs)
-        })
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            {
+                let blobs = blobs.clone();
+                move |handle| WorldService::new(handle, Some("a".to_owned())).with_blob_store(blobs)
+            },
+        )
         .await
         .unwrap();
         let hash = module_hash(&wasm);
@@ -851,9 +907,15 @@ mod tests {
         svc.world().shutdown().await.unwrap();
         std::fs::remove_dir_all(dir.path().join("modules")).unwrap();
 
-        let (svc, report) = open_world(dir.path(), "lobby", WorldLimits::default(), {
-            move |handle| WorldService::new(handle, Some("a".to_owned())).with_blob_store(blobs)
-        })
+        let (svc, report) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            {
+                move |handle| WorldService::new(handle, Some("a".to_owned())).with_blob_store(blobs)
+            },
+        )
         .await
         .unwrap();
         assert!(report.program_error.is_some());

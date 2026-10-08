@@ -987,3 +987,41 @@ fly is now offered (`id world compile --native`), so it is removed from the
 not-offered list. Still not offered: replicating records in the browser, and
 versioned module upgrades (channels and rollback beyond installing an older
 hash).
+
+## 2026-10-08T12-00-00Z Implementation: admin-set execution limits
+
+Every world program now runs under limits the server's admin sets, not under
+compiled-in constants. `id serve --world` takes these flags (defaults are the
+previous built-in values, so behavior is unchanged unless an admin passes one):
+
+- `--world-fuel` (Wasm fuel per call, default 10,000,000)
+- `--world-memory-mib` (Wasm linear memory, 1..=2048, default 16)
+- `--world-message-kib` (Wasm input or output payload, 1..=1024, default 1024)
+- `--world-native-memory-mib` (native worker address space, 16..=65536, default 256)
+- `--world-native-cpu-secs` (native worker CPU, default 10)
+- `--world-native-deadline-ms` (native wall-clock budget per call, default 10000)
+
+`world_limits::RuntimeLimits` holds the values. `RuntimeLimits::from_args`
+validates them before the server starts, so a bad value stops startup rather
+than surfacing on the first install. The limits reach every path that starts a
+program: installing a Wasm or native module (`WorldService::install_wasm`) and
+restoring a durable world from its journal (`world_store::open_world`). Both
+tiers read the same `RuntimeLimits`, so a restart cannot quietly fall back to
+defaults.
+
+Direct control is an admin choice, not a mode that removes bounds. An admin
+who wants a program to do more raises the relevant limit, or enables the
+native tier with `--world-native`. The server never runs a program without
+limits: the ranges above are enforced, and fuel must be at least 1.
+
+Deliberately not configurable yet: the protocol sizes (`MAX_FRAME_BYTES`,
+`MAX_WORLD_MODULE_BYTES`, the records page and record sizes), the world's
+presentation and input bounds (`WorldLimits`), and the compile service's
+source and time bounds (`MAX_COMPILE_*`, `COMPILE_TIMEOUT`). They are wire or
+storage contracts that clients depend on; making them tunable needs a
+negotiated limit, not a flag.
+
+Verification: `world_limits` tests (flag defaults match the built-in limits,
+each flag overrides its bound, out-of-range values are rejected), and
+`admin_fuel_limit_applies_to_installed_programs` (one unit of fuel refuses the
+counter module with `InvalidModule`; the default install succeeds).

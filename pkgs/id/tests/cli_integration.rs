@@ -2123,18 +2123,18 @@ mod serve_tests {
             let stdout = joined.stdout.take().unwrap();
             let (sender, receiver) = std::sync::mpsc::channel::<String>();
             std::thread::spawn(move || {
-                let reader = std::io::BufReader::new(stdout);
+                let reader = BufReader::new(stdout);
                 for line in reader.lines().map_while(Result::ok) {
                     if sender.send(line).is_err() {
                         break;
                     }
                 }
             });
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = Instant::now() + Duration::from_secs(2);
             let mut views = String::new();
             let mut events = String::new();
-            while std::time::Instant::now() < deadline {
-                match receiver.recv_timeout(std::time::Duration::from_millis(200)) {
+            while Instant::now() < deadline {
+                match receiver.recv_timeout(Duration::from_millis(200)) {
                     Ok(line) => {
                         if line.contains("\"type\":\"view\"") {
                             views.push_str(&line);

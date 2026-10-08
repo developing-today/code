@@ -312,6 +312,8 @@ pub struct ServeOptions {
     pub roc_platform: Option<PathBuf>,
     /// Accept native (ELF) module installs.
     pub world_native: bool,
+    /// Execution bounds for world programs.
+    pub world_runtime: crate::cli::WorldRuntimeArgs,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -435,6 +437,7 @@ struct ServeWorlds {
     grant_on_use: bool,
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
+    runtime: crate::world_limits::RuntimeLimits,
 }
 
 #[cfg(feature = "world")]
@@ -484,10 +487,15 @@ impl ServeWorlds {
             grant_on_use: self.grant_on_use,
             ..WorldLimits::default()
         };
+        let runtime = self.runtime;
         let make = {
             let admin_token = self.admin_token.clone();
             let blobs = self.blobs.clone();
-            move |handle| WorldService::new(handle, admin_token).with_blob_store(blobs)
+            move |handle| {
+                WorldService::new(handle, admin_token)
+                    .with_blob_store(blobs)
+                    .with_runtime_limits(runtime)
+            }
         };
         let dir = world_dir(name);
         let namespace_file = (!self.ephemeral).then(|| dir.join("records.namespace"));
@@ -502,7 +510,7 @@ impl ServeWorlds {
             make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
         } else {
             let (service, report) =
-                crate::world_store::open_world(&dir, name, limits, make).await?;
+                crate::world_store::open_world(&dir, name, limits, runtime, make).await?;
             status!(
                 "world {name}: restored {} at sequence {} ({} input(s) replayed)",
                 dir.display(),
@@ -639,6 +647,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         roc_bin,
         roc_platform,
         world_native,
+        world_runtime,
         allow_node,
         open_writes,
     } = opts;
@@ -725,6 +734,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     let world_hub = if world {
         use crate::world_hub::{HubLimits, WorldHub};
+        let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
@@ -736,6 +746,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             grant_on_use: world_cap_policy == "grant-on-use",
             compiler: resolve_compiler(roc_bin, roc_platform)?,
             native: world_native,
+            runtime,
         });
         let hub = WorldHub::new(
             opener,
