@@ -397,9 +397,12 @@ in
           if [ -r "$pw" ]; then
             export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
           fi
-          exec ${inputs.openchamber.packages.${system}.openchamber.override {
-            opencode = inputs.opencode-2x.packages.${system}.opencode;
-          }}/bin/openchamber serve \
+          exec ${
+            pkgs.callPackage ../../pkgs/openchamber-src {
+              src = inputs.openchamber-src;
+              opencode = inputs.opencode-fork.packages.${system}.opencode;
+            }
+          }/bin/openchamber serve \
             --foreground \
             --port 3000 --host 127.0.0.1
         ''
@@ -407,10 +410,10 @@ in
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
-        "OPENCODE_BINARY=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
+        "OPENCODE_BINARY=${inputs.opencode-fork.packages.${system}.opencode}/bin/opencode"
         "PATH=${
           lib.makeBinPath [
-            inputs.opencode-2x.packages.${system}.opencode # OpenChamber needs >= 2.0.20
+            inputs.opencode-fork.packages.${system}.opencode # OpenChamber needs >= 2.0.20
             pkgs.git
             pkgs.openssh
           ]

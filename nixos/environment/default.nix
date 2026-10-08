@@ -248,8 +248,10 @@ let
         '';
       });
 
-  openchamber = inputs.openchamber.packages.${system}.openchamber.override {
-    opencode = inputs.opencode-2x.packages.${system}.opencode;
+  # OpenChamber CLI/server built from the route-pools fork; see pkgs/openchamber-src.
+  openchamber = pkgs.callPackage (lib.from-root "pkgs/openchamber-src") {
+    src = inputs.openchamber-src;
+    opencode = inputs.opencode-fork.packages.${system}.opencode;
   };
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
