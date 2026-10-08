@@ -10,7 +10,7 @@ platform ""
             restore : Str -> model,
         }
     }
-    exposes [Screen]
+    exposes [Screen, Key]
     packages {}
     provides {
         "roc_init": init_for_host,
@@ -28,6 +28,7 @@ platform ""
     }
 
 import Screen
+import Key
 
 init_for_host : U64 -> Box(Model)
 init_for_host = |seed| Box.box((program.init)(seed))

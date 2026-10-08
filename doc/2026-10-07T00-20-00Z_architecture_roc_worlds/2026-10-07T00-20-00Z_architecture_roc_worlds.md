@@ -1050,3 +1050,21 @@ rendered frame after one `inc`.
 
 Roc nightly-2026-10-04 has no `List.walk` or `List.range`; the module uses
 `List.fold` and `List.map_with_index`. Keep that in mind for further modules.
+
+## 2026-10-08T15-00-00Z Implementation: platform standard library, Key
+
+`pf.Key` decodes raw terminal input (the text an SSH session or a browser
+terminal sends) into keys: `Char`, `Ctrl`, `Enter`, `Tab`, `Backspace`,
+`Escape`, the arrows, `Home`, `End`, `Delete`, `PageUp`, `PageDown`, and
+`Unknown` for control sequences it does not recognise. Unknown sequences keep
+their bytes so an app can still see them. `Key.parse` returns the keys in
+input order.
+
+Roc's nominal tag unions need an explicit `is_eq` for `==`; `Key.is_eq` compares
+through `Str.inspect`, so apps can compare keys directly. The module file must be
+named after the type (`Key.roc`).
+
+Verification: `roc test examples/roc-world/Key.roc` (13 expects, including
+arrow and CSI sequences, multi-byte characters, and control bytes), and the
+`roc-screen` app counts `+` keys, which the compile-service test drives through
+the wasm path.

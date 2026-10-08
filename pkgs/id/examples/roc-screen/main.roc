@@ -1,6 +1,7 @@
 app [program] { pf: platform "../roc-world/platform.roc" }
 
 import pf.Screen
+import pf.Key
 
 Model := { count : I64 }
 
@@ -10,7 +11,10 @@ init : U64 -> Model
 init = |_seed| { count: 0 }
 
 update : Model, U64, Str -> Model
-update = |model, _pid, ev| if ev == "inc" { count: model.count + 1 } else model
+update = |model, _pid, ev| {
+    presses = List.fold(Key.parse(ev), 0, |n, key| if key == Char("+") { n + 1 } else { n })
+    { count: model.count + presses }
+}
 
 view : Model -> Str
 view = |model| {

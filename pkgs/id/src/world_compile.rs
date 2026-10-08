@@ -499,7 +499,7 @@ mod tests {
             &crate::world::WorldEvent {
                 sequence: 1,
                 participant_id: 1,
-                kind: crate::world::WorldEventKind::Input(b"inc".to_vec()),
+                kind: crate::world::WorldEventKind::Input(b"+".to_vec()),
             },
         )
         .unwrap();
