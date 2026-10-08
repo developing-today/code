@@ -103,11 +103,12 @@ export const CURSOR_COLORS = [
  * Uses a hash function to map client IDs to colors.
  */
 export function getColorForClient(clientID: string | number): string {
-  const hash = String(clientID)
-    .split("")
-    .reduce((a, b) => {
-      return ((a << 5) - a + b.charCodeAt(0)) | 0;
-    }, 0);
+  // Optimization: avoided split().reduce() to prevent intermediate array allocations
+  const str = String(clientID);
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
   return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
 }
 
@@ -162,9 +163,12 @@ export function groupCursorsByPosition(cursors: CursorForMerge[]): PositionGroup
 
   // Group by exact position
   cursors.forEach((cursor) => {
-    const existing = positionMap.get(cursor.head) || [];
+    let existing = positionMap.get(cursor.head);
+    if (!existing) {
+      existing = [];
+      positionMap.set(cursor.head, existing);
+    }
     existing.push(cursor);
-    positionMap.set(cursor.head, existing);
   });
 
   // Convert to PositionGroup[], sort each group by activity
