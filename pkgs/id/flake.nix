@@ -87,7 +87,7 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-            dontUseCmakeConfigure = true;
+          dontUseCmakeConfigure = true;
           nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -170,7 +170,7 @@
             name = "id-${name}";
             src = ./.;
             inherit buildInputs;
-            dontUseCmakeConfigure = true;
+          dontUseCmakeConfigure = true;
             nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -289,7 +289,7 @@
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
-            dontUseCmakeConfigure = true;
+          dontUseCmakeConfigure = true;
           inherit nativeBuildInputs;
           inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_CMD;
 
@@ -337,7 +337,7 @@
             name = "id-test-e2e";
             src = ./.;
             inherit buildInputs;
-            dontUseCmakeConfigure = true;
+          dontUseCmakeConfigure = true;
             nativeBuildInputs = nativeBuildInputs ++ [
               bun2nixPkg.hook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
@@ -592,13 +592,13 @@
             };
 
             inherit buildInputs;
-            dontUseCmakeConfigure = true;
+          dontUseCmakeConfigure = true;
             nativeBuildInputs = [
               pkgs.pkg-config
               rustToolchain
+              pkgs.cmake
               pkgs.bun
               bun2nixPkg.hook
-              pkgs.cmake
             ];
 
             # bun2nix: offline web dependency installation
@@ -651,7 +651,7 @@
             buildNoDefaultFeatures = true;
 
             inherit buildInputs;
-            dontUseCmakeConfigure = true;
+          dontUseCmakeConfigure = true;
             nativeBuildInputs = [
               pkgs.pkg-config
               rustToolchain
