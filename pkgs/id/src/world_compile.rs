@@ -260,13 +260,23 @@ pub async fn compile(
     Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)))
 }
 
-/// Copy the platform pieces a compilation needs (`platform.roc` and the
-/// prebuilt `targets/`), bounded and symlink-free.
+/// Copy the platform pieces a compilation needs (its `.roc` modules, including
+/// `platform.roc`, and the prebuilt `targets/`), bounded and symlink-free.
 fn copy_platform(from: &Path, job: &Path) -> Result<()> {
     let staged = job.join("platform");
     std::fs::create_dir_all(&staged).context("create staged platform directory")?;
-    std::fs::copy(from.join("platform.roc"), staged.join("platform.roc"))
-        .context("copy platform.roc")?;
+    for entry in std::fs::read_dir(from).context("read platform directory")? {
+        let entry = entry?;
+        let path = entry.path();
+        ensure!(
+            !entry.file_type()?.is_symlink(),
+            "no symlinks in the platform"
+        );
+        if path.extension().is_some_and(|ext| ext == "roc") && path.is_file() {
+            std::fs::copy(&path, staged.join(entry.file_name()))
+                .with_context(|| format!("copy {}", path.display()))?;
+        }
+    }
     copy_dir(&from.join("targets"), &staged.join("targets"), 0)?;
     Ok(())
 }
@@ -394,6 +404,20 @@ mod tests {
         assert!(rewrite_platform_path("pf: platform \"unterminated").is_err());
     }
 
+    #[test]
+    fn the_platform_modules_are_staged_with_the_platform() {
+        let from = tempfile::tempdir().unwrap();
+        let job = tempfile::tempdir().unwrap();
+        std::fs::write(from.path().join("platform.roc"), "x").unwrap();
+        std::fs::write(from.path().join("Screen.roc"), "y").unwrap();
+        std::fs::write(from.path().join("notes.txt"), "z").unwrap();
+        std::fs::create_dir_all(from.path().join("targets")).unwrap();
+        copy_platform(from.path(), job.path()).unwrap();
+        assert!(job.path().join("platform/platform.roc").is_file());
+        assert!(job.path().join("platform/Screen.roc").is_file());
+        assert!(!job.path().join("platform/notes.txt").exists());
+    }
+
     #[tokio::test]
     async fn the_counter_source_compiles_installs_and_runs() {
         let Ok(roc_bin) = which_roc() else {
@@ -437,6 +461,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(world.view().unwrap(), b"count=1");
+    }
+
+    #[tokio::test]
+    async fn apps_can_import_the_platform_screen_module() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-screen/main.roc"
+        ))
+        .unwrap();
+        let (wasm, _diagnostics) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app)],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        crate::world::WorldProgram::update(
+            &mut world,
+            &crate::world::WorldEvent {
+                sequence: 1,
+                participant_id: 1,
+                kind: crate::world::WorldEventKind::Input(b"inc".to_vec()),
+            },
+        )
+        .unwrap();
+        let frame = String::from_utf8(world.view().unwrap()).unwrap();
+        let rows: Vec<&str> = frame.split('\n').collect();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].starts_with("+-counter"));
+        assert!(rows[1].starts_with("| count=1"));
+        assert_eq!(rows[2], format!("+{}+", "-".repeat(18)));
     }
 
     #[cfg(target_os = "linux")]

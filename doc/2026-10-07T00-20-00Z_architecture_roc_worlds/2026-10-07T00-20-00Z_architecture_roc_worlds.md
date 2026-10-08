@@ -1025,3 +1025,28 @@ Verification: `world_limits` tests (flag defaults match the built-in limits,
 each flag overrides its bound, out-of-range values are rejected), and
 `admin_fuel_limit_applies_to_installed_programs` (one unit of fuel refuses the
 counter module with `InvalidModule`; the default install succeeds).
+
+## 2026-10-08T14-00-00Z Implementation: platform standard library, Screen
+
+The platform now exposes a standard library module, `Screen`, that apps import
+as `pf.Screen`. It is a cell grid (the shape ratatui's buffer takes) with:
+`new`, `put_text` (clipped to the screen; the text is split on code points),
+`boxed` (an ASCII border with a title), `render_plain` (text, for the web
+and tests) and `render_ansi` (SGR-styled rows for a raw terminal). The module
+is headerless and lives beside `platform.roc`, which imports it so the platform
+can expose it; `exposes [Screen]` alone is not enough for this compiler.
+
+`copy_platform` stages every top-level `.roc` file of the platform, not just
+`platform.roc`, so apps compiled on the server see the same modules as the
+checked-in examples. The compile service still accepts only `main.roc` plus
+bounded app files; platform modules are never taken from the client.
+
+Verification: `roc test examples/roc-world/Screen.roc` (six expects covering
+code-point splitting, clipping, and the box), `world_compile` test
+`the_platform_modules_are_staged_with_the_platform`, and
+`apps_can_import_the_platform_screen_module`, which compiles
+`examples/roc-screen/main.roc` through the compile service and checks the
+rendered frame after one `inc`.
+
+Roc nightly-2026-10-04 has no `List.walk` or `List.range`; the module uses
+`List.fold` and `List.map_with_index`. Keep that in mind for further modules.

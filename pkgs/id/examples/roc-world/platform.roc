@@ -10,7 +10,7 @@ platform ""
             restore : Str -> model,
         }
     }
-    exposes []
+    exposes [Screen]
     packages {}
     provides {
         "roc_init": init_for_host,
@@ -26,6 +26,8 @@ platform ""
         x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
         wasm32: { inputs: ["host.wasm", app], output: Shared, exports: ["plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_records", "plaza_wants", "plaza_snapshot", "plaza_restore", "plaza_out_len", "plaza_error_ptr", "plaza_error_len"] },
     }
+
+import Screen
 
 init_for_host : U64 -> Box(Model)
 init_for_host = |seed| Box.box((program.init)(seed))
