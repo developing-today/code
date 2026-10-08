@@ -2,7 +2,7 @@
 //!
 //! The guest ABI follows the Roc/Zig adapter: `plaza_init(i64) -> i32`,
 //! `plaza_update(i32, i32, i32, i32) -> i32` (model, participant, event),
-//! `plaza_records(i32) -> i32`, `plaza_view(i32, i32, i32) -> i32`,
+//! `plaza_records(i32) -> i32`, `plaza_view(i32) -> i32`,
 //! `plaza_out_len() -> i32`, plus `memory`, `plaza_alloc(i32) -> i32`, and
 //! `plaza_free(i32, i32)`. Each world owns one persistent Wasmtime instance;
 //! the model pointer stays inside its guest linear memory.
@@ -170,10 +170,8 @@ impl Sandbox {
                 anyhow::anyhow!("guest must export `plaza_update(i32, i32, i32, i32) -> i32`: {e}")
             })?;
         let view = instance
-            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "plaza_view")
-            .map_err(|e| {
-                anyhow::anyhow!("guest must export `plaza_view(i32, i32, i32) -> i32`: {e}")
-            })?;
+            .get_typed_func::<i32, i32>(&mut store, "plaza_view")
+            .map_err(|e| anyhow::anyhow!("guest must export `plaza_view(i32) -> i32`: {e}"))?;
         let out_len = instance
             .get_typed_func::<(), i32>(&mut store, "plaza_out_len")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_out_len() -> i32`: {e}"))?;
@@ -277,7 +275,7 @@ pub struct WorldInstance {
     alloc: TypedFunc<i32, i32>,
     free: TypedFunc<(i32, i32), ()>,
     update: TypedFunc<(i32, i32, i32, i32), i32>,
-    view: TypedFunc<(i32, i32, i32), i32>,
+    view: TypedFunc<i32, i32>,
     records: Option<TypedFunc<i32, i32>>,
     wants: Option<TypedFunc<i32, i32>>,
     snapshot: Option<TypedFunc<i32, i32>>,
@@ -343,30 +341,24 @@ impl WorldInstance {
         Ok(())
     }
 
-    /// Render this world's current state for an opaque viewer description.
-    pub fn view(&mut self, viewer: &[u8]) -> Result<Vec<u8>> {
+    /// Render this world's current state.
+    pub fn view(&mut self) -> Result<Vec<u8>> {
         ensure!(
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
-        self.check_message_size(viewer)?;
-        let result = self.view_inner(viewer);
+        let result = self.view_inner();
         if result.is_err() {
             self.poisoned = true;
         }
         result
     }
 
-    fn view_inner(&mut self, viewer: &[u8]) -> Result<Vec<u8>> {
+    fn view_inner(&mut self) -> Result<Vec<u8>> {
         self.store
             .set_fuel(self.limits.fuel)
             .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
-        let GuestBuffer {
-            ptr,
-            len,
-            allocation_len,
-        } = self.copy_input(viewer)?;
-        let rendered = self.view.call(&mut self.store, (self.model, ptr, len));
+        let rendered = self.view.call(&mut self.store, self.model);
         let output_ptr = match rendered {
             Ok(ptr) => ptr,
             Err(e) => {
@@ -376,8 +368,6 @@ impl WorldInstance {
                 ));
             }
         };
-        self.free_input(ptr, allocation_len)
-            .map_err(|e| anyhow::anyhow!("free guest viewer buffer: {e}"))?;
         self.read_output(output_ptr)
     }
 
@@ -649,9 +639,8 @@ impl crate::world::WorldProgram for WorldInstance {
         }
     }
 
-    fn view(&mut self, viewer: &crate::world::Participant) -> Result<Option<String>> {
-        let viewer = serde_json::to_vec(viewer).context("serialize Roc viewer context")?;
-        let output = WorldInstance::view(self, &viewer)?;
+    fn view(&mut self, _viewer: &crate::world::Participant) -> Result<Option<String>> {
+        let output = WorldInstance::view(self)?;
         String::from_utf8(output)
             .map(Some)
             .context("Roc world view must return valid UTF-8")
@@ -715,7 +704,7 @@ mod tests {
           (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
           (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
             local.get 0)
-          (func (export "plaza_view") (param i32 i32 i32) (result i32)
+          (func (export "plaza_view") (param i32) (result i32)
             (i32.const 32))
           (func (export "plaza_out_len") (result i32) (i32.const 5)))
     "#;
@@ -729,9 +718,9 @@ mod tests {
     fn import_free_guest_runs_and_returns_bounded_bytes() {
         let runner = compile(ECHO, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(123).unwrap();
-        assert_eq!(world.view(b"viewer").unwrap(), b"hello");
+        assert_eq!(world.view().unwrap(), b"hello");
         world.update(1, b"event").unwrap();
-        assert_eq!(world.view(b"viewer").unwrap(), b"hello");
+        assert_eq!(world.view().unwrap(), b"hello");
     }
 
     #[test]
@@ -739,11 +728,11 @@ mod tests {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
-        assert_eq!(world.view(b"").unwrap(), b"count=0");
+        assert_eq!(world.view().unwrap(), b"count=0");
         world.update(1, b"inc").unwrap();
-        assert_eq!(world.view(b"").unwrap(), b"count=1");
+        assert_eq!(world.view().unwrap(), b"count=1");
         world.update(1, b"inc").unwrap();
-        assert_eq!(world.view(b"").unwrap(), b"count=2");
+        assert_eq!(world.view().unwrap(), b"count=2");
     }
 
     #[tokio::test]
@@ -791,7 +780,7 @@ mod tests {
         world.update(1, b"inc").unwrap();
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
         // A view between records calls must not disturb either output.
-        assert_eq!(world.view(b"").unwrap(), b"count=2");
+        assert_eq!(world.view().unwrap(), b"count=2");
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
     }
 
@@ -817,7 +806,7 @@ mod tests {
             r#"{"board":"XXXOO----","plays":5,"winner":"X"}"#
         );
         assert!(
-            String::from_utf8(world.view(b"").unwrap())
+            String::from_utf8(world.view().unwrap())
                 .unwrap()
                 .contains("winner=X")
         );
@@ -853,15 +842,15 @@ mod tests {
         assert_eq!(live.snapshot().unwrap().unwrap(), b"3");
         let mut restored = runner.instantiate(7).unwrap();
         restored.restore(b"3").unwrap();
-        assert_eq!(restored.view(b"").unwrap(), b"count=3");
+        assert_eq!(restored.view().unwrap(), b"count=3");
         restored.update(1, b"inc").unwrap();
-        assert_eq!(restored.view(b"").unwrap(), b"count=4");
+        assert_eq!(restored.view().unwrap(), b"count=4");
         // The trait-level snapshot is the verified one the actor journals.
         assert_eq!(live.snapshot_via_trait(), Some("3".to_owned()));
         // Garbage restores to a defined state instead of trapping.
         let mut garbage = runner.instantiate(7).unwrap();
         garbage.restore(b"not a number").unwrap();
-        assert_eq!(garbage.view(b"").unwrap(), b"count=0");
+        assert_eq!(garbage.view().unwrap(), b"count=0");
 
         // Tic-tac-toe: the board alone carries the ply count and the winner.
         let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
@@ -886,6 +875,32 @@ mod tests {
         assert_eq!(
             bad.records().unwrap().unwrap(),
             br#"{"board":"---------","plays":0,"winner":""}"#
+        );
+    }
+
+    #[test]
+    fn wasm_actor_call_order_records_update_records_view() {
+        use crate::world::{WorldEvent, WorldEventKind};
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut program = runner.instantiate(7).unwrap();
+        let view =
+            |program: &mut WorldInstance| String::from_utf8(program.view().unwrap()).unwrap();
+        let _ = crate::world::WorldProgram::records(&mut program).unwrap();
+        crate::world::WorldProgram::update(
+            &mut program,
+            &WorldEvent {
+                sequence: 1,
+                participant_id: 1,
+                kind: WorldEventKind::Input(b"inc".to_vec()),
+            },
+        )
+        .unwrap();
+        let _ = crate::world::WorldProgram::records(&mut program).unwrap();
+        assert_eq!(
+            view(&mut program),
+            "count=1",
+            "wasm handles the actor order"
         );
     }
 
@@ -1070,7 +1085,7 @@ mod tests {
             runner
                 .instantiate(0)
                 .unwrap()
-                .view(b"12345")
+                .view()
                 .unwrap_err()
                 .to_string()
                 .contains("exceeds")
@@ -1099,7 +1114,7 @@ mod tests {
             runner
                 .instantiate(0)
                 .unwrap()
-                .view(b"")
+                .view()
                 .unwrap_err()
                 .to_string()
                 .contains("outside linear memory")
@@ -1115,7 +1130,7 @@ mod tests {
               (func (export "plaza_free") (param i32 i32))
               (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
               (func (export "plaza_update") (param i32 i32 i32 i32) (result i32) (i32.const 0))
-              (func (export "plaza_view") (param i32 i32 i32) (result i32) (i32.const 0)
+              (func (export "plaza_view") (param i32) (result i32) (i32.const 0)
                 (loop $again (br $again)))
               (func (export "plaza_out_len") (result i32) (i32.const 0)))
         "#;
@@ -1130,18 +1145,12 @@ mod tests {
         let mut world = runner.instantiate(0).unwrap();
         assert!(
             world
-                .view(b"")
+                .view()
                 .unwrap_err()
                 .to_string()
                 .contains("fuel exhausted")
         );
-        assert!(
-            world
-                .view(b"")
-                .unwrap_err()
-                .to_string()
-                .contains("poisoned")
-        );
+        assert!(world.view().unwrap_err().to_string().contains("poisoned"));
     }
 
     #[test]
@@ -1155,7 +1164,7 @@ mod tests {
               (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
                 i32.const 1 memory.grow drop
                 local.get 0)
-              (func (export "plaza_view") (param i32 i32 i32) (result i32) (i32.const 0))
+              (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
               (func (export "plaza_out_len") (result i32) (i32.const 0)))
         "#;
         let mut world = compile(
@@ -1170,12 +1179,6 @@ mod tests {
         .unwrap();
         let error = world.update(1, b"event").unwrap_err().to_string();
         assert!(error.contains("memory.grow") || error.contains("failed"));
-        assert!(
-            world
-                .view(b"")
-                .unwrap_err()
-                .to_string()
-                .contains("poisoned")
-        );
+        assert!(world.view().unwrap_err().to_string().contains("poisoned"));
     }
 }

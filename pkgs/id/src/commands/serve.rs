@@ -310,6 +310,8 @@ pub struct ServeOptions {
     pub roc_bin: Option<String>,
     /// Platform directory for on-the-fly compilation.
     pub roc_platform: Option<PathBuf>,
+    /// Accept native (ELF) module installs.
+    pub world_native: bool,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
@@ -432,6 +434,7 @@ struct ServeWorlds {
     default_module: Option<PathBuf>,
     grant_on_use: bool,
     compiler: Option<crate::world_compile::Compiler>,
+    native: bool,
 }
 
 #[cfg(feature = "world")]
@@ -512,6 +515,11 @@ impl ServeWorlds {
             service.with_records_store(records)
         };
 
+        let service = if self.native {
+            service.with_native_enabled()
+        } else {
+            service
+        };
         let service = match self.compiler.clone() {
             Some(compiler) => service.with_compiler(compiler),
             None => service,
@@ -630,6 +638,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_cap_policy,
         roc_bin,
         roc_platform,
+        world_native,
         allow_node,
         open_writes,
     } = opts;
@@ -726,6 +735,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             default_module: world_module.clone(),
             grant_on_use: world_cap_policy == "grant-on-use",
             compiler: resolve_compiler(roc_bin, roc_platform)?,
+            native: world_native,
         });
         let hub = WorldHub::new(
             opener,

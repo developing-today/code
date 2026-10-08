@@ -305,6 +305,7 @@ pub struct WorldService {
     module_dir: Option<crate::world_store::ModuleDir>,
     records: Option<Arc<crate::world_records::RecordsStore>>,
     compiler: Option<Arc<Compiler>>,
+    native: bool,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -319,6 +320,13 @@ impl std::fmt::Debug for WorldService {
 }
 
 impl WorldService {
+    /// Accept native (ELF) module installs. Wasm stays the default tier.
+    #[must_use]
+    pub fn with_native_enabled(mut self) -> Self {
+        self.native = true;
+        self
+    }
+
     /// Wrap a world. `admin_token: None` disables invites.
     #[must_use]
     pub fn new(world: WorldHandle, admin_token: Option<String>) -> Self {
@@ -332,6 +340,7 @@ impl WorldService {
             module_dir: None,
             records: None,
             compiler: None,
+            native: false,
         }
     }
 
@@ -520,23 +529,71 @@ impl WorldService {
         if claimed_hash != module_hash {
             return Err(InstallError::InvalidUpload);
         }
-        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?.clone();
-        let limits = crate::sandbox::SandboxLimits {
-            module_bytes: MAX_WORLD_MODULE_BYTES,
-            ..crate::sandbox::SandboxLimits::default()
+        let is_native = crate::world_native::is_native_module(&wasm);
+        if is_native && !self.native {
+            return Err(InstallError::InvalidModule);
+        }
+        let guest: Box<dyn crate::world::WorldProgram> = if is_native {
+            // A durable world must have the worker on disk before the journal
+            // references it; native modules spawn from their stored file.
+            let modules = self.module_dir.clone().ok_or(InstallError::Disabled)?;
+            let bytes = wasm.clone();
+            let saved = tokio::task::spawn_blocking(move || modules.save(&bytes))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if saved != module_hash {
+                return Err(InstallError::Unavailable);
+            }
+            let path = self
+                .module_dir
+                .as_ref()
+                .ok_or(InstallError::Disabled)?
+                .path_of(&module_hash)
+                .map_err(|_| InstallError::Unavailable)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                    .await
+                    .map_err(|_| InstallError::Unavailable)?;
+            }
+            let program = tokio::task::spawn_blocking(move || {
+                crate::world_native::NativeProgram::new(
+                    &path,
+                    seed,
+                    crate::world_native::NativeLimits::default(),
+                    None,
+                )
+            })
+            .await
+            .map_err(|e| {
+                tracing::error!("native install join failed: {e:#}");
+                InstallError::InvalidModule
+            })?
+            .map_err(|e| {
+                tracing::error!("native install failed: {e:#}");
+                InstallError::InvalidModule
+            })?;
+            Box::new(program)
+        } else {
+            let limits = crate::sandbox::SandboxLimits {
+                module_bytes: MAX_WORLD_MODULE_BYTES,
+                ..crate::sandbox::SandboxLimits::default()
+            };
+            let compile_bytes = wasm.clone();
+            let program = tokio::task::spawn_blocking(move || {
+                crate::sandbox::Sandbox::compile(&compile_bytes, limits)?.instantiate(seed)
+            })
+            .await
+            .map_err(|_| InstallError::InvalidModule)?
+            .map_err(|_| InstallError::InvalidModule)?;
+            Box::new(program)
         };
-        let compile_bytes = wasm.clone();
-        let guest = tokio::task::spawn_blocking(move || {
-            let sandbox = crate::sandbox::Sandbox::compile(&compile_bytes, limits)?;
-            sandbox.instantiate(seed)
-        })
-        .await
-        .map_err(|_| InstallError::InvalidModule)?
-        .map_err(|_| InstallError::InvalidModule)?;
 
         // A durable world must be able to reload this module before the
-        // journal may reference it.
-        if let Some(modules) = self.module_dir.clone() {
+        // journal may reference it (native was saved above).
+        if !is_native && let Some(modules) = self.module_dir.clone() {
             let bytes = wasm.clone();
             let saved = tokio::task::spawn_blocking(move || modules.save(&bytes))
                 .await
@@ -547,20 +604,30 @@ impl WorldService {
             }
         }
 
-        let pin = blobs
-            .add_bytes_with_opts(AddBytesOptions {
-                data: wasm.into(),
-                format: BlobFormat::Raw,
-            })
-            .temp_tag()
-            .await
-            .map_err(|_| InstallError::Unavailable)?;
-        if pin.hash() != hash {
-            return Err(InstallError::Unavailable);
-        }
+        // Native workers are never offered for peer download: only the Wasm
+        // tier gets pinned in the blob store.
+        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?.clone();
+        let pin = (!is_native).then(|| {
+            blobs
+                .add_bytes_with_opts(AddBytesOptions {
+                    data: wasm.into(),
+                    format: BlobFormat::Raw,
+                })
+                .temp_tag()
+        });
+        let pin = match pin {
+            Some(pin) => {
+                let pin = pin.await.map_err(|_| InstallError::Unavailable)?;
+                if pin.hash() != hash {
+                    return Err(InstallError::Unavailable);
+                }
+                Some(pin)
+            }
+            None => None,
+        };
         let installed = self
             .world
-            .install_program(module_hash.clone(), seed, Box::new(guest))
+            .install_program(module_hash.clone(), seed, guest)
             .await
             .map_err(|_| InstallError::Unavailable)?;
         if !matches!(
@@ -569,7 +636,7 @@ impl WorldService {
         ) {
             return Err(InstallError::Unavailable);
         }
-        *self.module_pin.lock().await = Some(pin);
+        *self.module_pin.lock().await = pin;
         *self.module_hash.write().await = Some(module_hash.clone());
         Ok((module_hash, installed.sequence))
     }

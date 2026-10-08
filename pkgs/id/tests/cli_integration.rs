@@ -1861,6 +1861,122 @@ mod serve_tests {
     }
 
     #[test]
+    fn test_native_worlds_install_play_and_survive_a_restart() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/counter-native");
+        let module = module.to_str().unwrap();
+        let serve_args = ["--world", "--world-admin-token", "adm", "--world-native"];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // Install the native worker over Iroh and play one input.
+        let installed = world(
+            &addr,
+            &[
+                "install",
+                &node,
+                module,
+                "--admin-token",
+                "adm",
+                "--seed",
+                "7",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let hash = String::from_utf8(installed.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(hash.len(), 64);
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+        server.stop();
+
+        // The worker is restored from its stored file after a restart.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "restored: {view}");
+        drop(lines);
+        drop(joined);
+
+        // Without --world-native the same install is refused.
+        server.stop();
+        let plain_args = ["--world", "--world-admin-token", "adm"];
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &plain_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let refused = world(&addr, &["install", &node, module, "--admin-token", "adm"])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("validation"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        server.stop();
+    }
+
+    #[test]
     fn test_a_lounge_world_asks_for_capabilities() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

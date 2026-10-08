@@ -39,8 +39,8 @@ update = |model, _pid, ev| {
     }
 }
 
-view : Model, Str -> Str
-view = |model, _viewer| {
+view : Model -> Str
+view = |model| {
     state = if model.winner == "" {
         turn = if model.plays % 2 == 0 "X" else "O"
         "next=${turn}"

@@ -349,6 +349,11 @@ pub enum Command {
         /// (they reopen from their journal on demand). `0` keeps them open.
         #[arg(long, default_value_t = 600, requires = "world")]
         world_idle_secs: u64,
+        /// Accept native (ELF) module installs. Unlike Wasm, the guarantee
+        /// is the OS sandbox (Landlock, seccomp, rlimits), not an
+        /// import-free format, so this tier is opt-in.
+        #[arg(long, requires = "world")]
+        world_native: bool,
         /// Capability the default world's program may use (repeatable; `*`
         /// grants the whole catalog).
         #[arg(long = "world-cap", value_name = "NAME", requires = "world")]
@@ -1520,6 +1525,7 @@ mod tests {
                 world_cap_policy,
                 roc_bin,
                 roc_platform,
+                world_native,
                 allow_node,
                 open_writes,
             }) => {
@@ -1551,6 +1557,7 @@ mod tests {
                 assert_eq!(world_cap_policy, "deny");
                 assert!(roc_bin.is_none());
                 assert!(roc_platform.is_none());
+                assert!(!world_native);
                 assert!(allow_node.is_empty());
                 assert!(!open_writes);
             }

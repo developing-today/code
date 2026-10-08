@@ -411,7 +411,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(world.view(b"").unwrap(), b"count=1");
+        assert_eq!(world.view().unwrap(), b"count=1");
     }
 
     /// The roc the platform's ABI bindings were generated with; a different

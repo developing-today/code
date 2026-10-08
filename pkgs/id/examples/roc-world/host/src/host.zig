@@ -78,13 +78,11 @@ export fn plaza_update(model: usize, participant: usize, ptr: usize, len: usize)
     return @intFromPtr(abi.roc_update(@ptrFromInt(model), @intCast(participant), s));
 }
 
-export fn plaza_view(model: usize, ptr: usize, len: usize) usize {
+export fn plaza_view(model: usize) usize {
     ensure();
     last_out.decref(&roc_host);
-    const p: [*]const u8 = @ptrFromInt(ptr);
-    const s = abi.RocStr.fromSlice(p[0..len], &roc_host);
     abi.increfBox(@ptrFromInt(model), 1);
-    last_out = abi.roc_view(@ptrFromInt(model), s);
+    last_out = abi.roc_view(@ptrFromInt(model));
     return @intFromPtr(last_out.asSlice().ptr);
 }
 

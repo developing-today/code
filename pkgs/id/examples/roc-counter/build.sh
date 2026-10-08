@@ -9,7 +9,7 @@ WASM_TOOLS="${WASM_TOOLS:-nix run nixpkgs#wasm-tools --}"
 
 # Keep debug symbols so Wasmtime trap traces can be resolved while developing
 # modules. Remove --debug for smaller production modules after validation.
-"$ROC" build main.roc --debug --output=counter.wasm
+"$ROC" build main.roc --target=wasm32 --debug --output=counter.wasm
 
 # Reject accidental imports before the module is advertised to a world host.
 $WASM_TOOLS validate counter.wasm

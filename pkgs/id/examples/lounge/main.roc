@@ -53,8 +53,8 @@ update = |model, _pid, ev| {
     }
 }
 
-view : Model, Str -> Str
-view = |model, _viewer|
+view : Model -> Str
+view = |model|
     "lounge joins=${model.joins.to_str()} denied=${model.denied.to_str()} last=${model.last_now}"
 
 records : Model -> Str

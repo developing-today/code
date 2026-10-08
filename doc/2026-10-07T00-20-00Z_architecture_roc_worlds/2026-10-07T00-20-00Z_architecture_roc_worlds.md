@@ -585,20 +585,9 @@ participant can replicate with a read-only ticket, in memory or on disk, and
 that survives host restarts on the same namespace; two example apps (counter,
 tic-tac-toe) build with the shared platform and run end to end.
 
-Not offered yet:
-
-- **Several worlds in one process.** A `serve` process hosts one *named*
-  world (`--world-name`, default `lobby`) in `.id-worlds/<name>/`; offering
-  several worlds means running several serves, each with its own node
-  identity, port and OS process (which also isolates the worlds' programs
-  from each other). One process serving several worlds — a world name in
-  every session frame plus a registry — is not implemented.
-- **A native Roc tier.** Only effect-free programs compile into the sandbox;
-  nothing runs in-process.
-- **Replicating in the browser.** The `/world` page reads records through the
-  session; iroh-docs replication is the CLI's job.
-- **Versioned module upgrades.** Upgrades are admin installs by hash; there is
-  no channel or rollback beyond installing a previous hash.
+*(Superseded — see "Current status" at the end of this document. The worlds
+hub, the capability runtime, the compile service and the native Roc tier
+below were all built after this list was written.)*
 
 ---
 
@@ -891,3 +880,81 @@ compiles, validates and runs (count=1 after one input); and a process test
 serves with `--roc-bin`/`--roc-platform`, compiles the counter source via
 `id world compile`, plays one input over Iroh, and refuses a wrong admin
 token.
+
+---
+
+## 2026-10-07T16-00-00Z Implementation: the native Roc tier
+
+A Roc app now also builds to a **static x64musl executable** (the platform's
+`x64musl` target: `crt1.o` + the Zig worker host + musl pieces, all produced
+by the local zig toolchain — nothing is downloaded). The executable is a
+**worker** (`host/src/native_worker.zig`) that serves the same entry points
+as a Wasm module over stdin/stdout frames: init, update, view, records,
+wants, snapshot, restore.
+
+- **Model lifecycle by snapshot.** On x64musl the app releases its model
+  arguments with refcount conventions this host cannot safely incref (the
+  refcount slot is not where the wasm layout keeps it), so the worker never
+  keeps a model pointer between calls: after `init` and after every `update`
+  it takes the app's own `snapshot`, and before every call it `restore`s
+  from that snapshot. Returned strings are leaked (bounded per call) instead
+  of released with a mismatched refcount.
+- **Spawn hardening** (in the post-fork hook): `no_new_privs`, dumpable off,
+  rlimits (address space, CPU, file size, processes, core), Landlock — the
+  ruleset denies *every* path except an EXECUTE+READ grant on the worker's
+  own file (opened O_PATH by the parent before the fork; pre_exec hooks must
+  not touch the filesystem) — and a seccomp allowlist that permits the
+  worker's syscalls (including the one pending `execve`, which Landlock
+  makes unable to load any other binary) and kills the process on anything
+  else, with `mmap`/`mprotect` denied the executable bit via argument
+  checks.
+- **Wiring.** `install_wasm` detects ELF magic: native requires
+  `--world-native` (admin opt-in — the guarantee is the OS sandbox, not an
+  import-free format), is stored in the module directory with `0700`
+  permissions, is never pinned for peer download, and restores after a
+  restart from its stored file (`world_store::restore_program` dispatches on
+  the magic). `NativeProgram` implements the same `WorldProgram` trait as a
+  Wasm guest, so snapshots, checkpoints, records and capabilities work
+  unchanged.
+
+**Nightly caveats recorded for upstream reports:** with
+nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
+element of a string list from `Str.split_on` returned truncated elements in
+some module compositions; on x64musl, `Str`-suffix interpolation
+(`"count=${…}"` with nothing after the interpolation) produced an empty
+suffix — the examples build views with `Str.concat` instead.
+
+Verified: the native counter plays through `NativeProgram` (init, update,
+view, records, wants, snapshot/restore round trip, a dead worker poisons);
+the allowlist kills an "outlaw" binary that opens a file and a socket while
+the real worker runs under the same filter; and a process test serves with
+`--world-native`, installs the worker over Iroh, plays an input, restarts
+(state restored from the stored worker + journal) and refuses the same
+install without `--world-native`.
+
+---
+
+## 2026-10-07T17-00-00Z Current status
+
+Offered today, per process: a `serve` hosts any number of named worlds (the
+worlds hub) with capability-gated sessions over Iroh and WebSocket;
+untrusted Roc programs run as import-free Wasm in the sandbox, or — admin
+opt-in — as native workers under Landlock+seccomp+rlimits; sources can be
+compiled on the server (`id world compile`) with the pinned nightly; the
+program's structured records mirror into an iroh-docs document and replicate
+peer-to-peer (`id world records` / `id world mirror [--dir] [--follow]`);
+world state is durable by fsynced journal + deterministic replay, trimmed
+behind verified program checkpoints; capabilities (time, ticks, randomness,
+players, `chat.say`, `world.info`) let programs ask the server for effects
+as data; three example apps (counter, tic-tac-toe, lounge) build with the
+shared platform and run end to end.
+
+Not offered yet:
+
+- **Replicating records in the browser.** The `/world` page reads records
+  through the session; iroh-docs replication is the CLI's job.
+- **Versioned module upgrades.** Upgrades are admin installs by hash; there
+  is no channel or rollback beyond installing a previous hash.
+- **Native compilation on the fly.** `id world compile` produces Wasm; a
+  native `--target=x64musl` compile path (staging the musl link pieces) is a
+  natural follow-up.

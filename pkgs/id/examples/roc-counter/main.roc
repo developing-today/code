@@ -10,8 +10,8 @@ init = |_seed| { count: 0 }
 update : Model, U64, Str -> Model
 update = |model, _pid, ev| if ev == "inc" { count: model.count + 1 } else model
 
-view : Model, Str -> Str
-view = |model, _viewer| "count=${model.count.to_str()}"
+view : Model -> Str
+view = |model| Str.concat("count=", model.count.to_str())
 
 ## Structured data the host stores and replicates: a JSON object of records.
 records : Model -> Str

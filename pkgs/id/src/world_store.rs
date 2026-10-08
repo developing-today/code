@@ -250,6 +250,11 @@ impl ModuleDir {
     /// # Errors
     ///
     /// Missing file or a hash mismatch (tampering or disk corruption).
+    /// The stored file for `hash` (a native worker needs the path).
+    pub(crate) fn path_of(&self, hash: &str) -> Result<PathBuf> {
+        self.path(hash)
+    }
+
     pub fn load(&self, hash: &str) -> Result<Vec<u8>> {
         let path = self.path(hash)?;
         let wasm = std::fs::read(&path)
@@ -353,7 +358,9 @@ pub async fn open_world(
 struct EmptyProgram;
 impl WorldProgram for EmptyProgram {}
 
-#[cfg(feature = "sandbox")]
+/// Restore a program of either tier. A native module (an ELF worker) is
+/// spawned from its stored file; a Wasm module runs in the sandbox. Both
+/// start from the checkpoint snapshot when the journal has one.
 async fn restore_program(
     modules: &ModuleDir,
     spec: &crate::world::RestoredProgram,
@@ -365,34 +372,42 @@ async fn restore_program(
     tokio::task::spawn_blocking(move || {
         let seed = spec.seed;
         let wasm = modules.load(&spec.module_hash)?;
-        let limits = crate::sandbox::SandboxLimits {
-            module_bytes: crate::world_session::MAX_WORLD_MODULE_BYTES,
-            ..crate::sandbox::SandboxLimits::default()
+        let mut program: Box<dyn WorldProgram> = if crate::world_native::is_native_module(&wasm) {
+            let path = modules.path_of(&spec.module_hash)?;
+            Box::new(crate::world_native::NativeProgram::new(
+                &path,
+                seed,
+                crate::world_native::NativeLimits::default(),
+                spec.snapshot.as_deref(),
+            )?)
+        } else {
+            #[cfg(feature = "sandbox")]
+            {
+                let limits = crate::sandbox::SandboxLimits {
+                    module_bytes: crate::world_session::MAX_WORLD_MODULE_BYTES,
+                    ..crate::sandbox::SandboxLimits::default()
+                };
+                let mut guest =
+                    crate::sandbox::Sandbox::compile(&wasm, limits)?.instantiate(seed)?;
+                if let Some(snapshot) = &spec.snapshot {
+                    guest
+                        .restore(snapshot.as_bytes())
+                        .context("restore program from checkpoint")?;
+                }
+                Box::new(guest)
+            }
+            #[cfg(not(feature = "sandbox"))]
+            anyhow::bail!("wasm modules need a build with the `sandbox` feature");
         };
-        let mut program = crate::sandbox::Sandbox::compile(&wasm, limits)?.instantiate(seed)?;
-        if let Some(snapshot) = &spec.snapshot {
-            program
-                .restore(snapshot.as_bytes())
-                .context("restore program from checkpoint")?;
-        }
         for event in &replay {
-            WorldProgram::update(&mut program, event)
+            program
+                .update(event)
                 .with_context(|| format!("replay input {}", event.sequence))?;
         }
-        let program: Box<dyn WorldProgram> = Box::new(program);
         Ok((program, wasm))
     })
     .await
     .context("program restore task")?
-}
-
-#[cfg(not(feature = "sandbox"))]
-async fn restore_program(
-    _modules: &ModuleDir,
-    _spec: &crate::world::RestoredProgram,
-    _replay: &[crate::world::WorldEvent],
-) -> Result<(Box<dyn WorldProgram>, Vec<u8>)> {
-    bail!("this build cannot run world modules (feature `sandbox`)")
 }
 
 #[cfg(test)]
@@ -565,6 +580,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(view(&svc, &ann).await, "count=4");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn a_native_world_installs_and_plays_in_process() {
+        let wasm = include_bytes!("../examples/roc-counter/counter-native").to_vec();
+        let dir = TempDir::new().unwrap();
+        let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let make = |blobs: iroh_blobs::api::Store| {
+            move |handle| {
+                WorldService::new(handle, Some("admin".to_owned()))
+                    .with_blob_store(blobs)
+                    .with_native_enabled()
+            }
+        };
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            make(blobs.clone()),
+        )
+        .await
+        .unwrap();
+        let hash = module_hash(&wasm);
+        svc.install_wasm(Some("admin"), wasm, 7, &hash)
+            .await
+            .unwrap();
+        let (_, ann) = svc.world().issue("ann", WorldScopes::GUEST).await.unwrap();
+        // The actor reads records and wants right after install, like it
+        // does in production.
+        let records = svc.world().records().1;
+        assert_eq!(
+            records.get("count").and_then(serde_json::Value::as_i64),
+            Some(0)
+        );
+        let _wants = svc.world().caps_report().await.unwrap();
+        svc.world()
+            .input(ann.clone(), b"inc".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(view(&svc, &ann).await, "count=1");
+        svc.world().shutdown().await.unwrap();
     }
 
     fn journal_entries(dir: &Path) -> Vec<JournalEntry> {

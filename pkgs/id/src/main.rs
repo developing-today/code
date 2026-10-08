@@ -174,6 +174,7 @@ async fn main() -> Result<()> {
             world_cap_policy,
             roc_bin,
             roc_platform,
+            world_native,
             allow_node,
             open_writes,
         }) => {
@@ -205,6 +206,7 @@ async fn main() -> Result<()> {
                 world_cap_policy,
                 roc_bin,
                 roc_platform,
+                world_native,
                 allow_node,
                 open_writes,
             })
