@@ -37,6 +37,8 @@ pub struct CompileSpec {
     pub files: Vec<(String, String)>,
     /// Seed for the compiled program's `init`.
     pub seed: u64,
+    /// Compile a native worker (`x64musl`) instead of Wasm.
+    pub native: bool,
 }
 
 /// How the server compiles: the platform tree and the compiler binary.
@@ -122,6 +124,18 @@ pub async fn compile(
     use crate::world_session::MAX_WORLD_MODULE_BYTES;
 
     validate_spec(spec)?;
+    let target = if spec.native {
+        ensure!(
+            compiler
+                .platform_dir
+                .join("targets/x64musl/libhost.a")
+                .is_file(),
+            "this platform has no native targets (run examples/roc-world/build-native.sh)"
+        );
+        "x64musl"
+    } else {
+        "wasm32"
+    };
     let job = tempfile::tempdir().context("create compile job directory")?;
     copy_platform(&compiler.platform_dir, job.path())?;
     for (name, content) in &spec.files {
@@ -138,7 +152,7 @@ pub async fn compile(
     let rewritten = rewrite_platform_path(&main)?;
     tokio::fs::write(&main_path, rewritten).await?;
 
-    let output_path = job.path().join("out.wasm");
+    let output_path = job.path().join("out");
     let roc_bin = compiler.roc_bin.clone();
     let job_dir = job.path().to_owned();
     let output = PathBuf::from(&output_path);
@@ -151,7 +165,7 @@ pub async fn compile(
             .args([
                 "build",
                 "main.roc",
-                "--target=wasm32",
+                &format!("--target={target}"),
                 "--debug",
                 &format!("--output={}", output.display()),
             ])
@@ -224,6 +238,15 @@ pub async fn compile(
         wasm.len() <= MAX_WORLD_MODULE_BYTES,
         "compiled module exceeds {MAX_WORLD_MODULE_BYTES} bytes"
     );
+    if spec.native {
+        // The install loads the worker under its sandbox, which is where a
+        // bad executable is refused.
+        ensure!(
+            crate::world_native::is_native_module(&wasm),
+            "the compiler did not produce a native executable"
+        );
+        return Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)));
+    }
     // Same policy as an upload: import-free and allowlisted.
     #[cfg(feature = "sandbox")]
     crate::sandbox::Sandbox::compile(
@@ -341,6 +364,7 @@ mod tests {
                 .map(|(name, content)| (name.to_owned(), content.to_owned()))
                 .collect(),
             seed: 1,
+            native: false,
         }
     }
 
@@ -391,6 +415,7 @@ mod tests {
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), counter)],
                 seed: 42,
+                native: false,
             },
             &compiler,
             COMPILE_TIMEOUT,
@@ -412,6 +437,71 @@ mod tests {
         )
         .unwrap();
         assert_eq!(world.view().unwrap(), b"count=1");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_counter_source_compiles_natively_and_runs_in_the_worker() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        if !platform_dir.join("targets/x64musl/libhost.a").is_file() {
+            eprintln!("skipping: the platform has no native targets");
+            return;
+        }
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let counter = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        let (native, _diagnostics) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), counter)],
+                seed: 42,
+                native: true,
+            },
+            &compiler,
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert!(crate::world_native::is_native_module(&native));
+        let job = tempfile::tempdir().unwrap();
+        let path = job.path().join("counter");
+        std::fs::write(&path, &native).unwrap();
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let mut world = crate::world_native::NativeProgram::new(
+            &path,
+            42,
+            crate::world_native::NativeLimits::default(),
+            None,
+        )
+        .unwrap();
+        crate::world::WorldProgram::update(
+            &mut world,
+            &crate::world::WorldEvent {
+                sequence: 1,
+                participant_id: 1,
+                kind: crate::world::WorldEventKind::Input(b"inc".to_vec()),
+            },
+        )
+        .unwrap();
+        let view = crate::world::WorldProgram::view(
+            &mut world,
+            &crate::world::Participant {
+                id: 1,
+                display_name: "ann".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(view.as_deref(), Some("count=1"));
     }
 
     /// The roc the platform's ABI bindings were generated with; a different

@@ -958,3 +958,32 @@ Not offered yet:
 - **Native compilation on the fly.** `id world compile` produces Wasm; a
   native `--target=x64musl` compile path (staging the musl link pieces) is a
   natural follow-up.
+
+## 2026-10-08T09-00-00Z Implementation: native compile on the fly
+
+`id world compile --native` (and `ClientFrame::Compile { native }`) asks the
+host to build a native worker instead of Wasm. The compile service runs roc
+with `--target=x64musl` in the job's staged copy of the platform, which
+carries the `targets/x64musl` pieces that `examples/roc-world/build-native.sh`
+produces. The output is accepted when it is an ELF executable; the install
+path then loads it as a worker under the native sandbox, exactly as an
+admin-uploaded native module is loaded. There is no separate trust path.
+
+The request is refused before any compiler runs when the host was not started
+with `--world-native`, and when the platform has no x64musl targets.
+
+Verification: `the_counter_source_compiles_natively_and_runs_in_the_worker`
+(compiles the counter, loads it in the sandboxed worker, expects `count=1`)
+and `test_worlds_compile_native_workers_on_the_fly` (the same over Iroh, with a
+joined client). Both use the pinned nightly.
+
+Compile and the compile frame exist only with the `sandbox` feature, because
+installation does; without it the frame is refused with a clear message.
+
+## 2026-10-08T09-00-00Z Status: what is offered
+
+This supersedes the status at 2026-10-07T17-00-00Z. Native compilation on the
+fly is now offered (`id world compile --native`), so it is removed from the
+not-offered list. Still not offered: replicating records in the browser, and
+versioned module upgrades (channels and rollback beyond installing an older
+hash).

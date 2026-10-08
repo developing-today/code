@@ -264,6 +264,7 @@ impl WorldClient {
         admin_token: &str,
         files: Vec<(String, String)>,
         seed: u64,
+        native: bool,
     ) -> Result<(String, u64, String)> {
         self.send_json(&serde_json::json!({
             "type": "compile",
@@ -273,6 +274,7 @@ impl WorldClient {
                 .map(|(name, content)| serde_json::json!({"name": name, "content": content}))
                 .collect::<Vec<_>>(),
             "seed": seed,
+            "native": native,
         }))
         .await?;
         let reply = self

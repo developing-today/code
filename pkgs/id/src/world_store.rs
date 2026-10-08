@@ -247,14 +247,16 @@ impl ModuleDir {
 
     /// Load a module and verify it still matches its hash.
     ///
-    /// # Errors
-    ///
-    /// Missing file or a hash mismatch (tampering or disk corruption).
     /// The stored file for `hash` (a native worker needs the path).
     pub(crate) fn path_of(&self, hash: &str) -> Result<PathBuf> {
         self.path(hash)
     }
 
+    /// Read the module stored under `hash`, verifying its hash.
+    ///
+    /// # Errors
+    ///
+    /// Missing file or a hash mismatch (tampering or disk corruption).
     pub fn load(&self, hash: &str) -> Result<Vec<u8>> {
         let path = self.path(hash)?;
         let wasm = std::fs::read(&path)

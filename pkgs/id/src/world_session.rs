@@ -21,13 +21,16 @@ use iroh_blobs::{
     BlobFormat, Hash,
     api::{Store, TempTag, blobs::AddBytesOptions},
 };
+#[cfg(feature = "sandbox")]
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::world::{JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot};
-use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec, Compiler};
+use crate::world_compile::Compiler;
+#[cfg(feature = "sandbox")]
+use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
 use crate::world_hub::{WorldHub, WorldInfo};
 
 /// Largest accepted or emitted frame, in bytes.
@@ -138,6 +141,8 @@ enum ClientFrame {
         admin_token: String,
         files: Vec<CompileFile>,
         seed: Option<u64>,
+        #[serde(default)]
+        native: bool,
     },
     /// Admin: grant or revoke capabilities for this world.
     UpdateCaps {
@@ -288,6 +293,7 @@ pub enum InstallError {
 
 /// One source file in a compile request.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
 pub(crate) struct CompileFile {
     name: String,
     content: String,
@@ -359,6 +365,7 @@ impl WorldService {
     ///
     /// A human-readable refusal: unauthorized, disabled, or the compiler's
     /// own failure text (so an admin sees why their program did not build).
+    #[cfg(feature = "sandbox")]
     pub async fn compile_and_install(
         &self,
         supplied_admin: Option<&str>,
@@ -370,6 +377,9 @@ impl WorldService {
         let Some(compiler) = self.compiler.as_ref() else {
             return Err("compilation is not enabled on this server".to_owned());
         };
+        if spec.native && !self.native {
+            return Err("native modules are not enabled on this server".to_owned());
+        }
         let (wasm, diagnostics) = crate::world_compile::compile(spec, compiler, COMPILE_TIMEOUT)
             .await
             .map_err(|error| {
@@ -879,10 +889,12 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(io, "admin denied").await;
             }
         },
+        #[cfg(feature = "sandbox")]
         ClientFrame::Compile {
             admin_token,
             files,
             seed,
+            native,
         } => {
             let seed = seed.unwrap_or_else(|| rand::rng().random::<u64>());
             let spec = CompileSpec {
@@ -891,6 +903,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                     .map(|file| (file.name, file.content))
                     .collect(),
                 seed,
+                native,
             };
             match service.compile_and_install(Some(&admin_token), &spec).await {
                 Ok((module_hash, sequence, diagnostics)) => {
@@ -908,6 +921,10 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                     let _ = send_error(io, &message).await;
                 }
             }
+        }
+        #[cfg(not(feature = "sandbox"))]
+        ClientFrame::Compile { .. } => {
+            let _ = send_error(io, "compilation is not enabled on this server").await;
         }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd

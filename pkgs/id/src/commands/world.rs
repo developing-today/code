@@ -187,6 +187,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             files,
             seed,
             admin_token,
+            native,
             world,
             addrs,
             no_relay,
@@ -221,7 +222,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             );
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let seed = seed.unwrap_or_else(|| rand::rng().random::<u64>());
-            let result = client.compile(&admin_token, sources, seed).await;
+            let result = client.compile(&admin_token, sources, seed, native).await;
             client.close();
             endpoint.close().await;
             let (hash, _sequence, diagnostics) = result?;

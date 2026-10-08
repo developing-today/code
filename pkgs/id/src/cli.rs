@@ -1249,6 +1249,10 @@ pub enum WorldCommand {
         /// Admin secret configured with `serve --world-admin-token`.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
         admin_token: String,
+        /// Build a native worker (x64musl) instead of Wasm; the host must run
+        /// with `--world-native` and a platform with native targets.
+        #[arg(long)]
+        native: bool,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
         world: Option<String>,
