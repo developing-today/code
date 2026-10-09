@@ -397,3 +397,49 @@ Choices made:
   login did not give it.
 
 Not built in this phase: nothing from the Phase 7 list remains open.
+
+### Phase 8: HTML explorer
+
+Code: `web/explore.rs` (new), `web/world_ws.rs` (`world_routes` merges the
+explorer; `refusal_status` shared), `web/templates.rs` (`html_escape` shared),
+`directory_view.rs` (`level_name` shared).
+
+- Routes. `GET /explore` shows the view and the forms for the viewer.
+  `POST /explore/login` takes a credential or the admin token and opens a
+  session. `POST /explore/act` takes the form fields that `action_from_fields`
+  reads, so the forms and the typed grammar share one set of actions. Sign-out
+  is an `act` form, so there is no separate logout route.
+- Cookie. The browser holds only a `sess.` session token in `id_explore`, with
+  `HttpOnly`, `SameSite=Strict`, `Path=/explore`, and the directory's 12-hour
+  lifetime. A credential or admin login goes through `OpenSession`, and sign-up
+  signs the browser in as the SSH explorer does. A 401 clears the cookie.
+- Admin. The admin token is posted in the login form and exchanged for an admin
+  session. It is not stored. Plain HTTP sends it in the clear, so the page
+  tells the user to use HTTPS.
+- Headers. Every explorer response carries
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`. The page has no
+  script.
+- Escaping. Every value that comes from the directory passes through
+  `html_escape`. The `Origin` check in the web guard covers CSRF for form posts,
+  and `SameSite=Strict` covers the cookie.
+- Key sign-up is not offered in the browser, because a form cannot prove a
+  key. Key-proof requests need a client that signs.
+
+Verification:
+
+- `cargo test --features "world ssh web" --lib`: 823 passed.
+- `cargo test --lib`: 626 passed.
+- `cargo build --features web` and `--no-default-features`: no new warnings.
+- Clippy reports nothing in `web/explore.rs`.
+
+Tests added: the page policy headers and no script; sign-up in the browser,
+then sign-out clears the cookie; escaping of names and refused actions; a
+credential login and a wrong admin token refused with 401; the admin session
+with the verify form; an ended session refused and its cookie cleared; every
+form builds the action it names; HTML, text and JSON show the same accounts
+and groups, with HTML escaping the markup in names.
+
+Not done: the explorer does not pick a world (it uses the default world); a
+`Secure` cookie flag for TLS deployments is not set.

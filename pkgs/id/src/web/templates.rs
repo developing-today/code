@@ -891,7 +891,7 @@ fn format_age(secs: u64) -> String {
 }
 
 /// Escape HTML special characters.
-fn html_escape(s: &str) -> String {
+pub(super) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

@@ -46,6 +46,7 @@ pub fn world_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
         .route("/ws/world", axum::routing::get(handler))
         .route("/api/world/invite", axum::routing::post(invite_handler))
+        .merge(super::explore::explore_routes())
         .route(
             "/api/world/directory",
             axum::routing::get(directory_read_handler).post(directory_write_handler),
@@ -195,7 +196,7 @@ fn signed_headers(headers: &HeaderMap) -> Option<Signed> {
     })
 }
 
-fn refusal_status(error: &anyhow::Error) -> StatusCode {
+pub(super) fn refusal_status(error: &anyhow::Error) -> StatusCode {
     match error.downcast_ref::<Refusal>() {
         Some(Refusal::Unauthenticated(_)) => StatusCode::UNAUTHORIZED,
         Some(Refusal::Forbidden(_)) => StatusCode::FORBIDDEN,

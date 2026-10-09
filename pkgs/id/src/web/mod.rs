@@ -47,6 +47,7 @@
 mod assets;
 mod collab;
 mod content_mode;
+mod explore;
 mod identity;
 mod markdown;
 mod routes;

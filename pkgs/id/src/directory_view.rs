@@ -943,7 +943,7 @@ fn scope_names(scopes: WorldScopes) -> Vec<String> {
     .collect()
 }
 
-const fn level_name(level: Level) -> &'static str {
+pub(crate) const fn level_name(level: Level) -> &'static str {
     match level {
         Level::Access => "access",
         Level::Read => "read",
