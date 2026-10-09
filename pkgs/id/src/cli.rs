@@ -82,6 +82,7 @@
 //! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
 //! - **Renaming**: Use `source:dest` syntax for any path argument
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -327,11 +328,29 @@ pub enum Command {
         #[arg(long, requires = "world")]
         world_module: Option<PathBuf>,
         /// Write confirmation mail into this directory, one private file per message.
-        #[arg(long, requires = "world", conflicts_with = "world_mail_command")]
+        #[arg(
+            long,
+            requires = "world",
+            conflicts_with_all = ["world_mail_command", "world_mail_smtp"]
+        )]
         world_mail_outbox: Option<PathBuf>,
         /// Run this program for each confirmation mail, with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` set.
-        #[arg(long, requires = "world")]
+        #[arg(
+            long,
+            requires = "world",
+            conflicts_with_all = ["world_mail_outbox", "world_mail_smtp"]
+        )]
         world_mail_command: Option<PathBuf>,
+        /// Relay confirmation mail through this SMTP server, which must be on loopback and forward with TLS.
+        #[arg(
+            long,
+            requires_all = ["world", "world_mail_from"],
+            conflicts_with_all = ["world_mail_outbox", "world_mail_command"]
+        )]
+        world_mail_smtp: Option<SocketAddr>,
+        /// Sender address for mail sent with `--world-mail-smtp`.
+        #[arg(long, requires = "world_mail_smtp")]
+        world_mail_from: Option<String>,
         /// Name of the world this server offers (one world per process).
         ///
         /// The world's files live in `.id-worlds/<NAME>/`. Names may contain
@@ -1160,7 +1179,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1182,7 +1201,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1202,7 +1221,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1228,7 +1247,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1249,7 +1268,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1270,7 +1289,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1302,7 +1321,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1332,7 +1351,7 @@ pub enum WorldCommand {
         world: Option<String>,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1346,7 +1365,7 @@ pub enum WorldCommand {
         admin_token: String,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -1362,7 +1381,7 @@ pub enum WorldCommand {
         admin_token: String,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
-        addrs: Vec<std::net::SocketAddr>,
+        addrs: Vec<SocketAddr>,
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
@@ -2826,6 +2845,95 @@ mod tests {
         assert!(
             matches!(cli.command, Some(Command::Tag(TagCommand::Search { .. }))),
             "label search should parse as Tag Search"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_mail_flags() {
+        let smtp = [
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+        ];
+        let cli = match Cli::try_parse_from(smtp) {
+            Ok(cli) => cli,
+            Err(error) => panic!("smtp mail with a sender should parse: {error}"),
+        };
+        match cli.command {
+            Some(Command::Serve {
+                world_mail_smtp,
+                world_mail_from,
+                ..
+            }) => {
+                assert_eq!(world_mail_smtp, Some("127.0.0.1:25".parse().unwrap()));
+                assert_eq!(world_mail_from.as_deref(), Some("id@example.test"));
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        let refused = |args: &[&str]| {
+            let mut full = vec!["id", "serve", "--world", "--world-admin-token", "x"];
+            full.extend_from_slice(args);
+            Cli::try_parse_from(full).is_err()
+        };
+        assert!(
+            refused(&["--world-mail-smtp", "127.0.0.1:25"]),
+            "needs a sender"
+        );
+        assert!(
+            refused(&["--world-mail-from", "id@example.test"]),
+            "needs a relay"
+        );
+        assert!(refused(&[
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+            "--world-mail-outbox",
+            "/tmp/mail",
+        ]));
+        assert!(refused(&[
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+            "--world-mail-command",
+            "/bin/true",
+        ]));
+        assert!(refused(&[
+            "--world-mail-outbox",
+            "/tmp/mail",
+            "--world-mail-command",
+            "/bin/true"
+        ]));
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world-mail-smtp",
+                "127.0.0.1:25",
+                "--world-mail-from",
+                "x@y.z"
+            ])
+            .is_err(),
+            "mail needs --world"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world",
+                "--world-mail-smtp",
+                "not-an-address",
+                "--world-mail-from",
+                "x@y.z"
+            ])
+            .is_err()
         );
     }
 

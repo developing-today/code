@@ -495,3 +495,56 @@ Verification:
 
 Not done: the `id` CLI has no `--expires-in` or `--uses` flags for `invite`,
 so the bounds are reachable over HTTP and the frame only.
+
+### Phase 10: SMTP sink, mail flags and mail sign-in over HTTP
+
+Code: `directory_mail.rs` (`SmtpSink`, dot-stuffing, reply checks),
+`cli.rs` (`--world-mail-smtp`, `--world-mail-from`, conflicts and requires),
+`commands/serve.rs` (`ServeOptions` fields; `mail_sink` takes the SMTP settings
+and returns `Result`), `main.rs` (passes the flags through),
+`web/world_ws.rs` (end-to-end test).
+
+- Transport. `SmtpSink` opens a plain TCP connection to a relay and speaks
+  `EHLO`, `MAIL FROM`, `RCPT TO`, `DATA`, `QUIT`. It does no TLS and no login.
+  The relay on loopback has to forward the mail with TLS, which a local MTA
+  such as Postfix can do. The sink does not reach a remote server.
+- Loopback only. `SmtpSink::new` refuses any relay address that is not
+  loopback, so an operator cannot point the world at a remote server with
+  unauthenticated plain SMTP by mistake. `serve` fails at start-up.
+- Injection. Recipient and sender must be plain addresses: ASCII graphic
+  characters, with an `@`, and none of `<`, `>`, `,`, `;`, `"`, `\`. The subject
+  must have no control characters. These checks run before the connection is
+  opened, so a refused message never reaches the relay.
+- Body. Line endings become CRLF and a line that starts with `.` is doubled.
+  The message ends with `.` on its own line, so a body cannot end the message
+  early.
+- Replies. Every reply is checked against the expected code, and multi-line
+  replies are read to their last line. A refused recipient is an error and no
+  `DATA` is sent. Timeouts are 10 seconds.
+- Flags. `--world-mail-smtp <IP:PORT>` requires `--world` and
+  `--world-mail-from`. `--world-mail-from` requires `--world-mail-smtp`. The
+  outbox, command and SMTP transports conflict with each other, so exactly one
+  is chosen.
+- Limits. Non-ASCII addresses are refused, so internationalised addresses do
+  not work yet. The sink does not add `Date` or `Message-ID`; the relay does.
+  The relay's reply text appears in error messages.
+
+Tests added: `the_smtp_sink_speaks_plain_smtp_and_stuffs_dots` (an in-process
+fake relay records the transcript); `a_refused_recipient_is_an_error_and_no_body_is_sent`;
+`the_smtp_sink_refuses_remote_relays_senders_and_injection_before_connecting`;
+`mail_sink_picks_one_transport_and_refuses_an_unusable_relay`;
+`test_cli_parse_world_mail_flags` (valid pair, each missing half refused, each
+conflict refused, the admin token and `--world` required, a bad address
+refused); `a_mailed_code_confirms_an_address_and_signs_in_over_http` (sign up,
+add an email, the code is mailed to the outbox and confirms it, then a sign-in
+code is mailed, traded for a session, and the session reads as the same
+account).
+
+Verification:
+
+- `cargo test --features "world ssh web" --lib`: 835 passed.
+- `cargo test --lib`: 636 passed.
+- `cargo fmt --check` clean. `cargo build --features web` and
+  `--no-default-features` produce no warnings.
+
+Not done in this phase: a Cloudflare Worker sink (see Phase 12).

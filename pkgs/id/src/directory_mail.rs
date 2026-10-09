@@ -1,15 +1,18 @@
 //! Where confirmation mail goes.
 //!
-//! There is no SMTP client here. A world is configured with an outbox
-//! directory, a program to run, or nothing. With nothing configured, email
-//! actions are refused instead of pretending a code was sent.
+//! A world is configured with an outbox directory, a program to run, a relay
+//! on loopback, or nothing. With nothing configured, email actions are refused
+//! instead of pretending a code was sent. The SMTP sink speaks plain SMTP and
+//! never does TLS or login, so the relay on loopback must forward securely.
 
 use std::fmt::Debug;
-use std::io::Write as _;
+use std::io::{BufRead, BufReader, Write as _};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use rand::RngExt as _;
 
 use crate::world::hex_encode;
@@ -108,9 +111,143 @@ impl MailSink for CommandSink {
     }
 }
 
+const RELAY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Hands mail to an SMTP relay on this machine, with plain SMTP and no login.
+#[derive(Clone, Debug)]
+pub struct SmtpSink {
+    relay: SocketAddr,
+    from: String,
+}
+
+impl SmtpSink {
+    /// A sink that sends through `relay`, which must be a loopback address.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `relay` is not on loopback or `from` is not a plain address.
+    pub fn new(relay: SocketAddr, from: String) -> Result<Self> {
+        ensure!(
+            relay.ip().is_loopback(),
+            "the mail relay must listen on loopback"
+        );
+        ensure!(
+            plain_address(&from),
+            "the mail sender is not a plain address"
+        );
+        Ok(Self { relay, from })
+    }
+}
+
+impl MailSink for SmtpSink {
+    fn send(&self, mail: &Mail) -> Result<()> {
+        ensure!(
+            plain_address(&mail.to),
+            "the recipient is not a plain address"
+        );
+        ensure!(
+            !mail.subject.chars().any(char::is_control),
+            "the subject has a line break or control character"
+        );
+        let stream = TcpStream::connect_timeout(&self.relay, RELAY_TIMEOUT)
+            .context("connect to the mail relay")?;
+        stream.set_read_timeout(Some(RELAY_TIMEOUT))?;
+        stream.set_write_timeout(Some(RELAY_TIMEOUT))?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut writer = stream;
+        expect(&mut reader, 220)?;
+        smtp_command(&mut writer, &mut reader, "EHLO id.local", 250)?;
+        smtp_command(
+            &mut writer,
+            &mut reader,
+            &format!("MAIL FROM:<{}>", self.from),
+            250,
+        )?;
+        smtp_command(
+            &mut writer,
+            &mut reader,
+            &format!("RCPT TO:<{}>", mail.to),
+            250,
+        )?;
+        smtp_command(&mut writer, &mut reader, "DATA", 354)?;
+        let message = format!(
+            "From: {}\r\nTo: {}\r\nSubject: {}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{}.\r\n",
+            self.from,
+            mail.to,
+            mail.subject,
+            dot_stuffed(&mail.body)
+        );
+        writer
+            .write_all(message.as_bytes())
+            .context("write to the mail relay")?;
+        expect(&mut reader, 250)?;
+        let _ = smtp_command(&mut writer, &mut reader, "QUIT", 221);
+        Ok(())
+    }
+}
+
+/// A bare address with no spaces, control characters or SMTP syntax in it.
+fn plain_address(text: &str) -> bool {
+    text.contains('@')
+        && text
+            .chars()
+            .all(|c| c.is_ascii_graphic() && !matches!(c, '<' | '>' | ',' | ';' | '"' | '\\'))
+}
+
+/// The body as CRLF lines, with a leading dot doubled so it cannot end the message.
+fn dot_stuffed(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + 2);
+    for line in body.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+        if line.starts_with('.') {
+            out.push('.');
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out
+}
+
+fn smtp_command(
+    writer: &mut TcpStream,
+    reader: &mut impl BufRead,
+    line: &str,
+    code: u16,
+) -> Result<()> {
+    writer
+        .write_all(format!("{line}\r\n").as_bytes())
+        .context("write to the mail relay")?;
+    expect(reader, code)
+}
+
+/// Read one reply, which may span lines, and check its code.
+fn expect(reader: &mut impl BufRead, code: u16) -> Result<()> {
+    loop {
+        let mut line = String::new();
+        ensure!(
+            reader
+                .read_line(&mut line)
+                .context("read from the mail relay")?
+                > 0,
+            "the mail relay closed the connection"
+        );
+        let line = line.trim_end();
+        ensure!(
+            line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code),
+            "the mail relay replied: {line}"
+        );
+        if line.as_bytes().get(3) != Some(&b'-') {
+            return Ok(());
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+    use std::thread::JoinHandle;
+
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
@@ -172,5 +309,105 @@ mod tests {
             vec!["-c".to_owned(), "exit 3".to_owned()],
         );
         assert!(sink.send(&sample()).is_err());
+    }
+
+    /// A relay that records every line it is sent, refusing the recipient if asked.
+    fn fake_relay(refuse_recipient: bool) -> (SocketAddr, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            writer.write_all(b"220 fake ready\r\n").unwrap();
+            let mut seen = Vec::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                let command = line.trim_end().to_owned();
+                seen.push(command.clone());
+                if command == "DATA" {
+                    writer.write_all(b"354 go ahead\r\n").unwrap();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap() == 0 {
+                            return seen;
+                        }
+                        let data = line.trim_end().to_owned();
+                        seen.push(data.clone());
+                        if data == "." {
+                            break;
+                        }
+                    }
+                    writer.write_all(b"250 queued\r\n").unwrap();
+                    continue;
+                }
+                let reply: &[u8] = match command.split(' ').next().unwrap_or_default() {
+                    "EHLO" => b"250-fake\r\n250 OK\r\n",
+                    "RCPT" if refuse_recipient => b"550 no such user\r\n",
+                    "QUIT" => {
+                        writer.write_all(b"221 bye\r\n").unwrap();
+                        break;
+                    }
+                    _ => b"250 OK\r\n",
+                };
+                writer.write_all(reply).unwrap();
+            }
+            seen
+        });
+        (addr, handle)
+    }
+
+    #[test]
+    fn the_smtp_sink_speaks_plain_smtp_and_stuffs_dots() {
+        let (relay, server) = fake_relay(false);
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        let mut mail = sample();
+        mail.body = "Code 123456\n.hidden\r\nbye".to_owned();
+        sink.send(&mail).unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(seen[0], "EHLO id.local");
+        assert_eq!(seen[1], "MAIL FROM:<id@example.test>");
+        assert_eq!(seen[2], "RCPT TO:<a@b.co>");
+        assert_eq!(seen[3], "DATA");
+        assert!(seen.contains(&"To: a@b.co".to_owned()));
+        assert!(seen.contains(&"Subject: Your code".to_owned()));
+        assert!(seen.contains(&"Code 123456".to_owned()));
+        assert!(seen.contains(&"..hidden".to_owned()));
+        assert!(seen.contains(&"bye".to_owned()));
+        assert_eq!(seen.last().map(String::as_str), Some("QUIT"));
+    }
+
+    #[test]
+    fn a_refused_recipient_is_an_error_and_no_body_is_sent() {
+        let (relay, server) = fake_relay(true);
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        let error = sink.send(&sample()).unwrap_err();
+        assert!(error.to_string().contains("550"), "{error:#}");
+        let seen = server.join().unwrap();
+        assert!(!seen.contains(&"DATA".to_owned()));
+    }
+
+    #[test]
+    fn the_smtp_sink_refuses_remote_relays_senders_and_injection_before_connecting() {
+        let remote: SocketAddr = "203.0.113.5:25".parse().unwrap();
+        let error = SmtpSink::new(remote, "id@example.test".to_owned()).unwrap_err();
+        assert!(error.to_string().contains("loopback"));
+        let local: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let error = SmtpSink::new(local, "id <x@example.test>".to_owned()).unwrap_err();
+        assert!(error.to_string().contains("sender"));
+
+        let sink = SmtpSink::new(local, "id@example.test".to_owned()).unwrap();
+        let mut injected = sample();
+        injected.subject = "Hi\r\nBcc: x@y.z".to_owned();
+        let error = sink.send(&injected).unwrap_err();
+        assert!(error.to_string().contains("subject"));
+        let mut smuggled = sample();
+        smuggled.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        let error = sink.send(&smuggled).unwrap_err();
+        assert!(error.to_string().contains("recipient"));
     }
 }

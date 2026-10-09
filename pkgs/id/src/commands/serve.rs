@@ -294,6 +294,10 @@ pub struct ServeOptions {
     pub world_mail_outbox: Option<PathBuf>,
     /// Program run once per confirmation mail.
     pub world_mail_command: Option<PathBuf>,
+    /// Loopback SMTP relay that receives confirmation mail.
+    pub world_mail_smtp: Option<SocketAddr>,
+    /// Sender address for mail sent through `world_mail_smtp`.
+    pub world_mail_from: Option<String>,
     /// Name of the world this server offers; its files live under
     /// `.id-worlds/<name>/`.
     pub world_name: String,
@@ -435,14 +439,21 @@ fn resolve_compiler(
 fn mail_sink(
     outbox: Option<PathBuf>,
     command: Option<PathBuf>,
-) -> Option<Arc<dyn crate::directory_mail::MailSink>> {
-    use crate::directory_mail::{CommandSink, MailSink, OutboxSink};
-    let sink: Arc<dyn MailSink> = match (outbox, command) {
-        (Some(dir), _) => Arc::new(OutboxSink::new(dir)),
-        (None, Some(program)) => Arc::new(CommandSink::new(program, Vec::new())),
-        (None, None) => return None,
+    smtp: Option<SocketAddr>,
+    from: Option<String>,
+) -> Result<Option<Arc<dyn crate::directory_mail::MailSink>>> {
+    use crate::directory_mail::{CommandSink, MailSink, OutboxSink, SmtpSink};
+    use anyhow::Context as _;
+    let sink: Arc<dyn MailSink> = match (outbox, command, smtp) {
+        (Some(dir), _, _) => Arc::new(OutboxSink::new(dir)),
+        (None, Some(program), _) => Arc::new(CommandSink::new(program, Vec::new())),
+        (None, None, Some(relay)) => {
+            let from = from.context("--world-mail-from is needed with --world-mail-smtp")?;
+            Arc::new(SmtpSink::new(relay, from)?)
+        }
+        (None, None, None) => return Ok(None),
     };
-    Some(sink)
+    Ok(Some(sink))
 }
 
 #[cfg(feature = "world")]
@@ -665,6 +676,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_module,
         world_mail_outbox,
         world_mail_command,
+        world_mail_smtp,
+        world_mail_from,
         world_name,
         world_checkpoint_every,
         world_max_open,
@@ -776,7 +789,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             compiler: resolve_compiler(roc_bin, roc_platform)?,
             native: world_native,
             runtime,
-            mail: mail_sink(world_mail_outbox, world_mail_command),
+            mail: mail_sink(
+                world_mail_outbox,
+                world_mail_command,
+                world_mail_smtp,
+                world_mail_from,
+            )?,
         });
         let hub = WorldHub::new(
             opener,
@@ -1252,6 +1270,22 @@ mod tests {
                 "deny"
             )
             .is_err()
+        );
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn mail_sink_picks_one_transport_and_refuses_an_unusable_relay() {
+        let loopback: SocketAddr = "127.0.0.1:25".parse().unwrap();
+        let remote: SocketAddr = "203.0.113.5:25".parse().unwrap();
+        let sender = Some("id@example.test".to_owned());
+        assert!(mail_sink(None, None, None, None).unwrap().is_none());
+        assert!(mail_sink(None, None, Some(loopback), None).is_err());
+        assert!(mail_sink(None, None, Some(remote), sender.clone()).is_err());
+        assert!(
+            mail_sink(None, None, Some(loopback), sender)
+                .unwrap()
+                .is_some()
         );
     }
 

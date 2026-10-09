@@ -555,6 +555,123 @@ mod tests {
         assert_eq!(read["view"]["viewer"], id);
     }
 
+    /// Read the one code in the outbox, then remove the file so the next mail is alone.
+    fn mailed_code(dir: &std::path::Path) -> String {
+        let mut codes = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            codes.extend(
+                text.split(|c: char| !c.is_ascii_digit())
+                    .filter(|run| run.len() == 6)
+                    .map(str::to_owned),
+            );
+        }
+        assert_eq!(codes.len(), 1, "exactly one code is mailed");
+        codes.remove(0)
+    }
+
+    #[tokio::test]
+    async fn a_mailed_code_confirms_an_address_and_signs_in_over_http() {
+        let dir = std::env::temp_dir().join(format!(
+            "id-mail-http-{}-{}",
+            std::process::id(),
+            crate::world::unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = WorldService::new(lobby(), None).with_mail(std::sync::Arc::new(
+            crate::directory_mail::OutboxSink::new(dir.clone()),
+        ));
+        let router = world_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(service)),
+        });
+
+        let signed = body_json(
+            router
+                .clone()
+                .oneshot(directory_request(
+                    "POST",
+                    None,
+                    None,
+                    r#"{"action":"sign_up","name":"Ada"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let credential = signed["credential"].as_str().unwrap().to_owned();
+        let account = signed["view"]["viewer"].clone();
+
+        let added = router
+            .clone()
+            .oneshot(directory_request(
+                "POST",
+                None,
+                Some(&credential),
+                r#"{"action":"add_email","address":"ada@example.test"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::OK);
+        assert_eq!(body_json(added).await["mailed"], true);
+        let code = mailed_code(&dir);
+        let confirmed = router
+            .clone()
+            .oneshot(directory_request(
+                "POST",
+                None,
+                Some(&credential),
+                &format!(
+                    r#"{{"action":"confirm_email","address":"ada@example.test","code":"{code}"}}"#
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(confirmed.status(), StatusCode::OK);
+
+        let requested = router
+            .clone()
+            .oneshot(directory_request(
+                "POST",
+                None,
+                None,
+                r#"{"action":"sign_in_email","address":"ada@example.test"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(body_json(requested).await["mailed"], true);
+        let code = mailed_code(&dir);
+        let signed_in = router
+            .clone()
+            .oneshot(directory_request(
+                "POST",
+                None,
+                None,
+                &format!(
+                    r#"{{"action":"confirm_sign_in","address":"ada@example.test","code":"{code}"}}"#
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(signed_in.status(), StatusCode::OK);
+        let session = body_json(signed_in).await["session"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(session.starts_with("sess."));
+
+        let as_session = body_json(
+            router
+                .oneshot(directory_request("GET", None, Some(&session), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(as_session["view"]["viewer"], account);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn invite_requires_the_admin_secret_header() {
         let router = app(Some(lobby()), Some("s3cret"));
