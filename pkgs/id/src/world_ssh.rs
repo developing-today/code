@@ -9,7 +9,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
-    keys::{Algorithm, PrivateKey, ssh_key::HashAlg, ssh_key::LineEnding},
+    keys::{Algorithm, PrivateKey, PublicKey, ssh_key::HashAlg, ssh_key::LineEnding},
     server::{Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session},
 };
 use serde_json::json;
@@ -18,7 +18,9 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
 };
 
+use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, render_text};
+use crate::world::hex_encode;
 use crate::world_hub::WorldHub;
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
 
@@ -52,7 +54,7 @@ async fn serve_limited(
 ) -> std::io::Result<()> {
     let config = Arc::new(Config {
         keys: vec![host_key],
-        methods: MethodSet::from(&[MethodKind::Password][..]),
+        methods: MethodSet::from(&[MethodKind::Password, MethodKind::PublicKey][..]),
         maximum_packet_size: MAX_PACKET_BYTES,
         inactivity_timeout: Some(INACTIVITY_TIMEOUT),
         ..Config::default()
@@ -106,6 +108,8 @@ struct Login {
     world: Option<String>,
     capability: String,
     explore: bool,
+    /// The public key the client proved, as hex. Only explorers have one.
+    key: Option<String>,
 }
 
 struct SshClient {
@@ -132,6 +136,30 @@ impl Handler for SshClient {
             world: (!world.is_empty()).then(|| world.to_owned()),
             capability: password.to_owned(),
             explore,
+            key: None,
+        });
+        Ok(Auth::Accept)
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        public_key: &PublicKey,
+    ) -> Result<Auth, russh::Error> {
+        let Some(world) = user.strip_prefix(EXPLORE_PREFIX) else {
+            return Ok(Auth::reject());
+        };
+        let Some(ed25519) = public_key.key_data().ed25519() else {
+            return Ok(Auth::reject());
+        };
+        if self.permit.is_none() {
+            return Ok(Auth::reject());
+        }
+        self.login = Some(Login {
+            world: (!world.is_empty()).then(|| world.to_owned()),
+            capability: String::new(),
+            explore: true,
+            key: Some(hex_encode(&ed25519.0)),
         });
         Ok(Auth::Accept)
     }
@@ -218,12 +246,13 @@ impl Handler for SshClient {
         };
         if login.explore {
             let world = login.world.clone();
-            let password = login.capability.clone();
+            let secret = login.capability.clone();
+            let key = login.key.clone();
             let hub = self.hub.clone();
             let handle = session.handle();
             session.channel_success(channel)?;
             tokio::spawn(async move {
-                let text = match explore(&hub, world.as_deref(), &password).await {
+                let text = match explore(&hub, world.as_deref(), &secret, key).await {
                     Ok(text) => text,
                     Err(message) => {
                         tokio::time::sleep(REFUSED_SHELL_DELAY).await;
@@ -351,15 +380,28 @@ impl SessionIo for SshIo {
 }
 
 /// The directory as text. The password is the admin token, an account credential, or empty.
-async fn explore(hub: &WorldHub, world: Option<&str>, password: &str) -> Result<String, String> {
-    let Ok(lease) = hub.lease(world, Some(password)).await else {
+async fn explore(
+    hub: &WorldHub,
+    world: Option<&str>,
+    secret: &str,
+    key: Option<String>,
+) -> Result<String, String> {
+    let token = (!secret.is_empty()).then_some(secret);
+    let Ok(lease) = hub.lease(world, token).await else {
         return Err("no such world".to_owned());
     };
-    let admin = hub.admin_ok(password);
-    let credential = (!admin && !password.is_empty()).then(|| password.to_owned());
+    let mut caller = if hub.admin_ok(secret) {
+        Caller {
+            admin: true,
+            ..Caller::default()
+        }
+    } else {
+        Caller::from_secret(secret)
+    };
+    caller.key = key;
     let outcome = lease
         .service()
-        .directory(credential, admin, DirectoryAction::View)
+        .directory(caller, DirectoryAction::View)
         .await
         .map_err(|error| format!("{error:#}"))?;
     Ok(render_text(&outcome.view).replace('\n', "\r\n"))
@@ -450,8 +492,7 @@ mod tests {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let signed = world
             .directory(
-                None,
-                false,
+                Caller::default(),
                 DirectoryAction::SignUp {
                     name: "Ada".to_owned(),
                 },

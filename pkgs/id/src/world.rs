@@ -1370,8 +1370,7 @@ enum WorldCommand {
         reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
     },
     Directory {
-        credential: Option<String>,
-        admin: bool,
+        caller: crate::directory_auth::Caller,
         action: crate::directory_view::DirectoryAction,
         reply: oneshot::Sender<Result<crate::directory_view::DirectoryOutcome>>,
     },
@@ -1457,6 +1456,8 @@ fn compact_journal(
 /// journal, and runs commands plus the program's capability needs serially.
 struct WorldActor {
     core: WorldCore,
+    /// Sessions and pending email codes. In memory only: a restart ends them.
+    auth: crate::directory_auth::DirectoryAuth,
     program: Box<dyn WorldProgram>,
     journal: Option<Box<dyn WorldJournal>>,
     storage_failed: bool,
@@ -1903,19 +1904,17 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::Directory {
-                credential,
-                admin,
+                caller,
                 action,
                 reply,
             } => {
-                let result = crate::directory_view::Viewer::resolve(
-                    self.core.directory(),
-                    admin,
-                    credential.as_deref(),
-                )
-                .and_then(|viewer| {
-                    crate::directory_view::run(self.core.directory_mut(), &viewer, action)
-                });
+                let result = crate::directory_view::run(
+                    self.core.directory_mut(),
+                    &mut self.auth,
+                    &caller,
+                    unix_ms(),
+                    action,
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::Revoke {
@@ -2149,7 +2148,7 @@ impl WorldActor {
 }
 
 /// Milliseconds since the Unix epoch; 0 if the clock is before it.
-fn unix_ms() -> u64 {
+pub(crate) fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
@@ -2208,6 +2207,7 @@ impl WorldHandle {
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             acting: None,
+            auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
         Self {
@@ -2356,19 +2356,17 @@ impl WorldHandle {
             .context("world actor dropped delegation response")?
     }
 
-    /// Read or change the directory as the caller. `admin` is set only after the
-    /// admin token has been checked; `credential` is an account credential.
+    /// Read or change the directory as the caller. The caller's proof must
+    /// already be checked by the transport.
     pub async fn directory(
         &self,
-        credential: Option<String>,
-        admin: bool,
+        caller: crate::directory_auth::Caller,
         action: crate::directory_view::DirectoryAction,
     ) -> Result<crate::directory_view::DirectoryOutcome> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Directory {
-                credential,
-                admin,
+                caller,
                 action,
                 reply,
             })

@@ -5,11 +5,12 @@
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{
         Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use futures::{
@@ -18,6 +19,8 @@ use futures::{
 };
 use serde::Deserialize;
 
+use crate::directory::Refusal;
+use crate::directory_auth::{Caller, Signed};
 use crate::directory_view::DirectoryAction;
 use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, run_session};
@@ -66,39 +69,74 @@ pub(super) struct DirectoryRequest {
 async fn directory_read_handler(
     State(state): State<WorldWebState>,
     headers: HeaderMap,
+    method: Method,
+    uri: Uri,
     Query(query): Query<DirectoryQuery>,
 ) -> Response {
-    directory_respond(state, headers, query.world, DirectoryAction::View).await
+    directory_respond(
+        state,
+        Asked {
+            headers: &headers,
+            method: &method,
+            uri: &uri,
+            body: &[],
+        },
+        query.world,
+        DirectoryAction::View,
+    )
+    .await
 }
 
 async fn directory_write_handler(
     State(state): State<WorldWebState>,
     headers: HeaderMap,
-    Json(request): Json<DirectoryRequest>,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
 ) -> Response {
-    directory_respond(state, headers, request.world, request.action).await
+    let request: DirectoryRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => return bad_request(&error.to_string()),
+    };
+    directory_respond(
+        state,
+        Asked {
+            headers: &headers,
+            method: &method,
+            uri: &uri,
+            body: &body,
+        },
+        request.world,
+        request.action,
+    )
+    .await
 }
 
-/// The admin token, in `x-world-admin-token`, and the account credential, in
-/// `authorization: Bearer ...`, are read from headers so neither lands in a URL.
+/// One HTTP request as the directory sees it: what it presented, and what
+/// a signature over it must cover.
+struct Asked<'a> {
+    headers: &'a HeaderMap,
+    method: &'a Method,
+    uri: &'a Uri,
+    body: &'a [u8],
+}
+
+/// The admin token, in `x-world-admin-token`, is read from a header, and the
+/// account credential or session, in `authorization: Bearer ...`, too, so
+/// neither lands in a URL. A signing key comes from the `x-id-*` headers.
 async fn directory_respond(
     state: WorldWebState,
-    headers: HeaderMap,
+    asked: Asked<'_>,
     world: Option<String>,
     action: DirectoryAction,
 ) -> Response {
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let token = headers
+    let token = asked
+        .headers
         .get("x-world-admin-token")
         .and_then(|value| value.to_str().ok());
-    let credential = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
     let lease = match hub.lease(world.as_deref(), token).await {
         Ok(lease) => lease,
         Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
@@ -106,15 +144,82 @@ async fn directory_respond(
         }
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    let admin = token.is_some_and(|token| hub.admin_ok(token));
-    match lease.service().directory(credential, admin, action).await {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("{error:#}") })),
-        )
-            .into_response(),
+    let caller = match caller_of(&hub, &asked, token) {
+        Ok(caller) => caller,
+        Err(error) => return refusal_response(&error),
+    };
+    match lease.service().directory(caller, action).await {
+        Ok(outcome) => ([(header::CACHE_CONTROL, "no-store")], Json(outcome)).into_response(),
+        Err(error) => refusal_response(&error),
     }
+}
+
+fn caller_of(hub: &WorldHub, asked: &Asked<'_>, token: Option<&str>) -> anyhow::Result<Caller> {
+    let mut caller = Caller {
+        admin: token.is_some_and(|token| hub.admin_ok(token)),
+        ..Caller::default()
+    };
+    if let Some(secret) = asked
+        .headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+    {
+        let presented = Caller::from_secret(secret);
+        caller.credential = presented.credential;
+        caller.session = presented.session;
+    }
+    if let Some(signed) = signed_headers(asked.headers) {
+        let target = asked
+            .uri
+            .path_and_query()
+            .map_or_else(|| asked.uri.path(), axum::http::uri::PathAndQuery::as_str);
+        caller.key = Some(hub.verify_signed(&signed, asked.method.as_str(), target, asked.body)?);
+    }
+    Ok(caller)
+}
+
+fn signed_headers(headers: &HeaderMap) -> Option<Signed> {
+    let text = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    Some(Signed {
+        key: text("x-id-key")?,
+        at: text("x-id-at")?.parse().ok()?,
+        nonce: text("x-id-nonce")?,
+        signature: text("x-id-signature")?,
+    })
+}
+
+fn refusal_status(error: &anyhow::Error) -> StatusCode {
+    match error.downcast_ref::<Refusal>() {
+        Some(Refusal::Unauthenticated(_)) => StatusCode::UNAUTHORIZED,
+        Some(Refusal::Forbidden(_)) => StatusCode::FORBIDDEN,
+        Some(Refusal::NotFound(_)) => StatusCode::NOT_FOUND,
+        Some(Refusal::Conflict(_)) => StatusCode::CONFLICT,
+        Some(Refusal::RateLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
+        None => StatusCode::BAD_REQUEST,
+    }
+}
+
+fn refusal_response(error: &anyhow::Error) -> Response {
+    (
+        refusal_status(error),
+        Json(serde_json::json!({ "error": format!("{error:#}") })),
+    )
+        .into_response()
+}
+
+fn bad_request(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
 }
 
 async fn invite_handler(
@@ -198,6 +303,9 @@ mod tests {
     use crate::world_session::WorldService;
     use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
+    use ed25519_dalek::SigningKey;
+
+    use crate::directory_auth::sign_request;
 
     use tokio_tungstenite::tungstenite::Message as ClientMessage;
     use tower::ServiceExt as _;
@@ -308,7 +416,90 @@ mod tests {
             .oneshot(directory_request("GET", None, Some("acct.nobody.00"), ""))
             .await
             .unwrap();
-        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn signed_directory_request(key: &SigningKey, nonce: &str, body: &str) -> Request<Body> {
+        let at = crate::world::unix_ms();
+        let signed = sign_request(
+            key,
+            "POST",
+            "/api/world/directory",
+            body.as_bytes(),
+            at,
+            nonce,
+        );
+        Request::builder()
+            .method("POST")
+            .uri("/api/world/directory")
+            .header("content-type", "application/json")
+            .header("x-id-key", signed.key)
+            .header("x-id-at", signed.at.to_string())
+            .header("x-id-nonce", signed.nonce)
+            .header("x-id-signature", signed.signature)
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_signed_key_signs_up_and_opens_a_session_that_reads_as_its_account() {
+        let router = app(Some(lobby()), None);
+        let key = SigningKey::from_bytes(&[8; 32]);
+        let id = crate::world::hex_encode(&key.verifying_key().to_bytes());
+
+        let signed_up = router
+            .clone()
+            .oneshot(signed_directory_request(
+                &key,
+                "n-up",
+                r#"{"action":"sign_up_key","name":"Kay"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(signed_up.status(), StatusCode::OK);
+
+        let replay = router
+            .clone()
+            .oneshot(signed_directory_request(
+                &key,
+                "n-up",
+                r#"{"action":"view"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+
+        let opened = body_json(
+            router
+                .clone()
+                .oneshot(signed_directory_request(
+                    &key,
+                    "n-open",
+                    r#"{"action":"open_session"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(opened["view"]["viewer"], id);
+        let session = opened["session"].as_str().unwrap().to_owned();
+        assert!(session.starts_with("sess."));
+
+        let read = body_json(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/world/directory")
+                        .header("authorization", format!("Bearer {session}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(read["view"]["viewer"], id);
     }
 
     #[tokio::test]

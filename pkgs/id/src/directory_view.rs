@@ -4,16 +4,18 @@
 //! [`render_text`]. Visibility is decided here alone, so an entity shown on one
 //! transport is shown on the other.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::directory::{Directory, Level, Member};
+use crate::directory::{Actor, Directory, Level, Member, Refusal, normalize_email, normalize_key};
+use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
+use crate::directory_mail::Mail;
 use crate::world::WorldScopes;
 
 /// Who is looking at the directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Viewer {
-    /// No credential: account names and public groups only.
+    /// No proof: account names and public groups only.
     Anonymous,
     /// An account, by its ID.
     Account(String),
@@ -22,22 +24,45 @@ pub enum Viewer {
 }
 
 impl Viewer {
-    /// The viewer a request presents. The admin token wins over a credential.
+    /// The viewer a caller is. The admin token wins, then an account
+    /// credential, then a session, then a signing key. A key no account holds
+    /// reads as anonymous, since it may be about to sign up.
     ///
     /// # Errors
     ///
-    /// Fails when the credential names no account.
-    pub fn resolve(directory: &Directory, admin: bool, credential: Option<&str>) -> Result<Self> {
-        if admin {
+    /// Fails when a credential or session presented names no current account.
+    pub fn resolve(
+        directory: &Directory,
+        auth: &mut DirectoryAuth,
+        caller: &Caller,
+        now: u64,
+    ) -> Result<Self> {
+        if caller.admin {
             return Ok(Self::Admin);
         }
-        match credential {
-            None => Ok(Self::Anonymous),
-            Some(credential) => directory
+        if let Some(credential) = &caller.credential {
+            return directory
                 .account_for(credential)
                 .map(Self::Account)
-                .context("unknown credential"),
+                .ok_or_else(|| anyhow!(Refusal::Unauthenticated("unknown credential".to_owned())));
         }
+        if let Some(token) = &caller.session {
+            return match auth.principal(token, now) {
+                Some(Principal::Admin) => Ok(Self::Admin),
+                Some(Principal::Account(id)) if directory.account(&id).is_some() => {
+                    Ok(Self::Account(id))
+                }
+                _ => Err(anyhow!(Refusal::Unauthenticated(
+                    "session has ended; sign in again".to_owned()
+                ))),
+            };
+        }
+        if let Some(key) = &caller.key {
+            return Ok(directory
+                .account_for_key(key)
+                .map_or(Self::Anonymous, Self::Account));
+        }
+        Ok(Self::Anonymous)
     }
 }
 
@@ -59,8 +84,12 @@ pub struct AccountView {
     pub id: String,
     /// The display name.
     pub name: String,
-    /// Whether the account is verified; shown to the account and the admin.
+    /// Whether the account is verified, by an admin or a confirmed email; shown to the account and the admin.
     pub verified: Option<bool>,
+    /// Public keys the account signs in with, besides its own ID; shown to the account and the admin.
+    pub keys: Option<Vec<String>>,
+    /// Confirmed email addresses; shown to the account and the admin.
+    pub emails: Option<Vec<String>>,
     /// The permissions the account holds; shown to the account and the admin.
     pub scopes: Option<Vec<String>>,
     /// The account's friends; shown to the account and the admin.
@@ -107,14 +136,132 @@ pub struct MemberView {
 pub enum DirectoryAction {
     /// Read what the viewer may see.
     View,
-    /// Create an account. The credential is returned once, and the view becomes the new account's.
+    /// Create an account with a credential, returned once.
     SignUp {
         /// The display name.
         name: String,
     },
+    /// Create an account identified by the key the request was signed with, with no email.
+    SignUpKey {
+        /// The display name.
+        name: String,
+    },
+    /// Turn the viewer's account or admin proof into a session token.
+    OpenSession,
+    /// End the session the request presented.
+    SignOut,
+    /// Add a key to the viewer's account. The request must be signed with that key.
+    AddKey {
+        /// The public key, as hex.
+        key: String,
+    },
+    /// Remove a key the viewer's account added. Its own ID stays.
+    RemoveKey {
+        /// The public key, as hex.
+        key: String,
+    },
+    /// Mail a confirmation code for an address to the viewer's account.
+    AddEmail {
+        /// The address.
+        address: String,
+    },
+    /// Confirm an address with the code mailed for it.
+    ConfirmEmail {
+        /// The address.
+        address: String,
+        /// The six-digit code.
+        code: String,
+    },
+    /// Remove an address from the viewer's account.
+    RemoveEmail {
+        /// The address.
+        address: String,
+    },
+    /// Mail a sign-in code if the address belongs to an account. The answer is the same either way.
+    SignInEmail {
+        /// The address.
+        address: String,
+    },
+    /// Trade a sign-in code for a session.
+    ConfirmSignIn {
+        /// The address.
+        address: String,
+        /// The six-digit code.
+        code: String,
+    },
+    /// Create a group the viewer founds.
+    CreateGroup {
+        /// The group name.
+        name: String,
+        /// The group description.
+        description: String,
+        /// Permission names the group grants.
+        scopes: Vec<String>,
+    },
+    /// Rename a group, redescribe it, or change its permissions.
+    UpdateGroup {
+        /// The group ID.
+        group: u64,
+        /// The group name.
+        name: String,
+        /// The group description.
+        description: String,
+        /// Permission names the group grants.
+        scopes: Vec<String>,
+    },
+    /// Show a group to anonymous viewers, or hide it again.
+    SetPublic {
+        /// The group ID.
+        group: u64,
+        /// Whether anonymous viewers may see the group.
+        public: bool,
+    },
+    /// Delete a group.
+    DeleteGroup {
+        /// The group ID.
+        group: u64,
+    },
+    /// Add a member to a group at a level, or remove it with no level.
+    SetMember {
+        /// The group ID.
+        group: u64,
+        /// The account or nested group.
+        member: Member,
+        /// The level to hold, or none to remove.
+        level: Option<Level>,
+    },
+    /// Ask an account to be friends.
+    RequestFriend {
+        /// The account asked.
+        to: String,
+    },
+    /// Accept a friend request.
+    AcceptFriend {
+        /// The account that asked.
+        from: String,
+    },
+    /// Remove a friend, or withdraw a request.
+    RemoveFriend {
+        /// The other account.
+        other: String,
+    },
+    /// Verify an account. Admin only.
+    Verify {
+        /// The account ID.
+        account: String,
+    },
 }
 
-/// The result of an action: the view afterwards, and a new credential on sign-up.
+impl DirectoryAction {
+    /// Whether the action sends mail, and so needs a mail sink configured.
+    #[must_use]
+    pub const fn sends_mail(&self) -> bool {
+        matches!(self, Self::AddEmail { .. } | Self::SignInEmail { .. })
+    }
+}
+
+/// The result of an action: the view afterwards, and anything the action
+/// produced that the caller must hand on.
 #[derive(Clone, Serialize)]
 pub struct DirectoryOutcome {
     /// What the viewer may see afterwards.
@@ -122,6 +269,12 @@ pub struct DirectoryOutcome {
     /// The new account's credential, set only by sign-up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// A session token, set when a session opens. Shown once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// A message to send. Never serialized: it carries a code.
+    #[serde(skip)]
+    pub mail: Option<Mail>,
 }
 
 impl std::fmt::Debug for DirectoryOutcome {
@@ -132,35 +285,225 @@ impl std::fmt::Debug for DirectoryOutcome {
                 "credential",
                 &self.credential.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("session", &self.session.as_ref().map(|_| "[REDACTED]"))
+            .field("mail", &self.mail.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
 }
 
-/// Apply an action for a viewer and return what that viewer may see afterwards.
+/// Apply an action for a caller and return what that caller may see afterwards.
 ///
 /// # Errors
 ///
-/// Fails when the action is refused, such as a sign-up with an invalid name.
+/// Fails with a [`Refusal`] when the caller may not do the action, and with a
+/// plain error for input that is malformed.
 pub fn run(
     directory: &mut Directory,
-    viewer: &Viewer,
+    auth: &mut DirectoryAuth,
+    caller: &Caller,
+    now: u64,
     action: DirectoryAction,
 ) -> Result<DirectoryOutcome> {
+    let mut viewer = Viewer::resolve(directory, auth, caller, now)?;
+    let mut credential = None;
+    let mut session = None;
+    let mut mail = None;
     match action {
-        DirectoryAction::View => Ok(DirectoryOutcome {
-            view: view(directory, viewer),
-            credential: None,
-        }),
+        DirectoryAction::View => {}
         DirectoryAction::SignUp { name } => {
-            let (credential, _) = directory.sign_up(&name)?;
-            let id = directory
-                .account_for(&credential)
-                .context("new account vanished")?;
-            Ok(DirectoryOutcome {
-                view: view(directory, &Viewer::Account(id)),
-                credential: Some(credential),
-            })
+            let (secret, _) = directory.sign_up(&name)?;
+            viewer = Viewer::Account(
+                directory
+                    .account_for(&secret)
+                    .context("new account vanished")?,
+            );
+            credential = Some(secret);
         }
+        DirectoryAction::SignUpKey { name } => {
+            let key = caller
+                .key
+                .as_deref()
+                .context("signing up with a key needs a request signed with that key")?;
+            directory.sign_up_keyed(key, &name)?;
+            viewer = Viewer::Account(normalize_key(key)?);
+        }
+        DirectoryAction::OpenSession => {
+            let principal = match &viewer {
+                Viewer::Admin => Principal::Admin,
+                Viewer::Account(id) => Principal::Account(id.clone()),
+                Viewer::Anonymous => return Err(unauthenticated("sign in first")),
+            };
+            session = Some(auth.open_session(principal, now));
+        }
+        DirectoryAction::SignOut => {
+            if let Some(token) = &caller.session {
+                auth.close_session(token);
+            }
+            viewer = Viewer::Anonymous;
+        }
+        DirectoryAction::AddKey { key } => {
+            let me = signed_in(&viewer)?;
+            let key = normalize_key(&key)?;
+            if caller.key.as_deref() != Some(key.as_str()) {
+                return Err(Refusal::Forbidden(
+                    "sign the request with the key you are adding".to_owned(),
+                )
+                .into());
+            }
+            directory.add_key(Actor::Account(me), me, &key)?;
+        }
+        DirectoryAction::RemoveKey { key } => {
+            let me = signed_in(&viewer)?;
+            directory.remove_key(Actor::Account(me), me, &key)?;
+        }
+        DirectoryAction::AddEmail { address } => {
+            let me = signed_in(&viewer)?;
+            let address = normalize_email(&address)?;
+            if directory.account_for_email(&address).is_some() {
+                return Err(Refusal::Conflict(
+                    "that address already belongs to an account".to_owned(),
+                )
+                .into());
+            }
+            let code = auth.issue_code(
+                Purpose::Confirm {
+                    account: me.to_owned(),
+                },
+                &address,
+                now,
+            )?;
+            mail = Some(code_mail(&address, &code, "confirm your address"));
+        }
+        DirectoryAction::ConfirmEmail { address, code } => {
+            let me = signed_in(&viewer)?;
+            let address = normalize_email(&address)?;
+            match auth.check_code(&address, &code, now)? {
+                Purpose::Confirm { account } if account == me => {}
+                _ => return Err(unauthenticated("no matching code")),
+            }
+            directory.confirm_email(Actor::Server, me, &address)?;
+        }
+        DirectoryAction::RemoveEmail { address } => {
+            let me = signed_in(&viewer)?;
+            directory.remove_email(Actor::Account(me), me, &address)?;
+        }
+        DirectoryAction::SignInEmail { address } => {
+            let address = normalize_email(&address)?;
+            if let Some(account) = directory.account_for_email(&address)
+                && let Ok(code) = auth.issue_code(Purpose::SignIn { account }, &address, now)
+            {
+                mail = Some(code_mail(&address, &code, "sign-in code"));
+            }
+        }
+        DirectoryAction::ConfirmSignIn { address, code } => {
+            let address = normalize_email(&address)?;
+            match auth.check_code(&address, &code, now)? {
+                Purpose::SignIn { account } => {
+                    session = Some(auth.open_session(Principal::Account(account.clone()), now));
+                    viewer = Viewer::Account(account);
+                }
+                Purpose::Confirm { .. } => return Err(unauthenticated("no matching code")),
+            }
+        }
+        DirectoryAction::CreateGroup {
+            name,
+            description,
+            scopes,
+        } => {
+            let me = signed_in(&viewer)?;
+            let scopes = scopes_of(&scopes)?;
+            within_ceiling(directory, Actor::Account(me), scopes)?;
+            directory.create_group(me, &name, &description, scopes)?;
+        }
+        DirectoryAction::UpdateGroup {
+            group,
+            name,
+            description,
+            scopes,
+        } => {
+            let actor = actor_of(&viewer)?;
+            let scopes = scopes_of(&scopes)?;
+            within_ceiling(directory, actor, scopes)?;
+            directory.update_group(actor, group, &name, &description, scopes)?;
+        }
+        DirectoryAction::SetPublic { group, public } => {
+            directory.set_public(actor_of(&viewer)?, group, public)?;
+        }
+        DirectoryAction::DeleteGroup { group } => {
+            directory.delete_group(actor_of(&viewer)?, group)?;
+        }
+        DirectoryAction::SetMember {
+            group,
+            member,
+            level,
+        } => {
+            directory.set_member(actor_of(&viewer)?, group, member, level)?;
+        }
+        DirectoryAction::RequestFriend { to } => {
+            let me = signed_in(&viewer)?;
+            directory.request_friend_as(me, &to)?;
+        }
+        DirectoryAction::AcceptFriend { from } => {
+            let me = signed_in(&viewer)?;
+            directory.accept_friend_as(me, &from)?;
+        }
+        DirectoryAction::RemoveFriend { other } => {
+            let me = signed_in(&viewer)?;
+            directory.remove_friend_as(me, &other)?;
+        }
+        DirectoryAction::Verify { account } => {
+            directory.verify_account(actor_of(&viewer)?, &account)?;
+        }
+    }
+    Ok(DirectoryOutcome {
+        view: view(directory, &viewer),
+        credential,
+        session,
+        mail,
+    })
+}
+
+fn unauthenticated(message: &str) -> anyhow::Error {
+    anyhow!(Refusal::Unauthenticated(message.to_owned()))
+}
+
+fn signed_in(viewer: &Viewer) -> Result<&str> {
+    match viewer {
+        Viewer::Account(id) => Ok(id),
+        Viewer::Anonymous | Viewer::Admin => Err(unauthenticated("sign in as an account first")),
+    }
+}
+
+fn actor_of(viewer: &Viewer) -> Result<Actor<'_>> {
+    match viewer {
+        Viewer::Admin => Ok(Actor::Server),
+        Viewer::Account(id) => Ok(Actor::Account(id)),
+        Viewer::Anonymous => Err(unauthenticated("sign in first")),
+    }
+}
+
+fn scopes_of(names: &[String]) -> Result<WorldScopes> {
+    WorldScopes::from_names(names.iter().map(String::as_str)).context("unknown permission name")
+}
+
+/// An account may only grant permissions it holds itself; the admin is not held to this.
+fn within_ceiling(directory: &Directory, actor: Actor<'_>, scopes: WorldScopes) -> Result<()> {
+    if let Actor::Account(id) = actor
+        && !directory.ceiling(id).contains(scopes)
+    {
+        return Err(Refusal::Forbidden(
+            "a group cannot grant permissions you do not hold".to_owned(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn code_mail(address: &str, code: &str, subject: &str) -> Mail {
+    Mail {
+        to: address.to_owned(),
+        subject: format!("id: {subject}"),
+        body: format!("Your code is {code}. It works for 15 minutes.\n"),
     }
 }
 
@@ -178,7 +521,9 @@ fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
             AccountView {
                 id: account.id.clone(),
                 name: account.name.clone(),
-                verified: own.then_some(account.verified),
+                verified: own.then(|| directory.is_verified(&account.id)),
+                keys: own.then(|| account.keys.iter().cloned().collect()),
+                emails: own.then(|| account.emails.iter().cloned().collect()),
                 scopes: own.then(|| scope_names(directory.ceiling(&account.id))),
                 friends: own.then(|| directory.friends_of(&account.id)),
                 incoming: pending.as_ref().map(|(incoming, _)| incoming.clone()),
@@ -282,6 +627,12 @@ pub fn render_text(view: &DirectoryView) -> String {
         if let Some(verified) = account.verified {
             details.push(format!("verified: {}", if verified { "yes" } else { "no" }));
         }
+        if let Some(keys) = &account.keys {
+            details.push(format!("keys: {}", list(keys)));
+        }
+        if let Some(emails) = &account.emails {
+            details.push(format!("emails: {}", list(emails)));
+        }
         if let Some(scopes) = &account.scopes {
             details.push(format!("scopes: {}", list(scopes)));
         }
@@ -336,7 +687,7 @@ pub fn render_text(view: &DirectoryView) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::directory::Actor;
+    use ed25519_dalek::SigningKey;
 
     fn sign(directory: &mut Directory, name: &str) -> (String, String) {
         let (credential, _) = directory.sign_up(name).unwrap();
@@ -389,14 +740,22 @@ mod tests {
         }
     }
 
-    fn view_for(directory: &mut Directory, viewer: &Viewer) -> DirectoryView {
-        run(directory, viewer, DirectoryAction::View).unwrap().view
+    fn view_for(directory: &Directory, viewer: &Viewer) -> DirectoryView {
+        view(directory, viewer)
+    }
+
+    fn act(
+        directory: &mut Directory,
+        caller: &Caller,
+        action: DirectoryAction,
+    ) -> Result<DirectoryOutcome> {
+        run(directory, &mut DirectoryAuth::default(), caller, 0, action)
     }
 
     #[test]
     fn the_admin_sees_every_detail_and_member() {
         let mut s = sample();
-        let view = view_for(&mut s.directory, &Viewer::Admin);
+        let view = view_for(&s.directory, &Viewer::Admin);
         assert_eq!(view.accounts.len(), 3);
         assert!(view.accounts.iter().all(|a| a.verified.is_some()));
         let ada = view.accounts.iter().find(|a| a.id == s.ada).unwrap();
@@ -410,7 +769,7 @@ mod tests {
     #[test]
     fn anonymous_sees_names_and_public_groups_only() {
         let mut s = sample();
-        let view = view_for(&mut s.directory, &Viewer::Anonymous);
+        let view = view_for(&s.directory, &Viewer::Anonymous);
         assert_eq!(view.accounts.len(), 3);
         assert!(view.accounts.iter().all(|a| {
             a.verified.is_none()
@@ -429,7 +788,7 @@ mod tests {
     #[test]
     fn a_member_sees_its_groups_and_members_at_read_but_not_others() {
         let mut s = sample();
-        let view = view_for(&mut s.directory, &Viewer::Account(s.bo.clone()));
+        let view = view_for(&s.directory, &Viewer::Account(s.bo.clone()));
         let club = view.groups.iter().find(|g| g.id == s.club).unwrap();
         assert_eq!(club.level, Some(Level::Read));
         assert_eq!(club.members.as_ref().unwrap().len(), 2);
@@ -452,7 +811,7 @@ mod tests {
                 Some(Level::Access),
             )
             .unwrap();
-        let view = view_for(&mut s.directory, &Viewer::Account(s.cy.clone()));
+        let view = view_for(&s.directory, &Viewer::Account(s.cy.clone()));
         let club = view.groups.iter().find(|g| g.id == s.club).unwrap();
         assert_eq!(club.level, Some(Level::Access));
         assert!(club.members.is_none());
@@ -461,10 +820,10 @@ mod tests {
     #[test]
     fn friend_requests_show_on_both_ends() {
         let mut s = sample();
-        let cy = view_for(&mut s.directory, &Viewer::Account(s.cy.clone()));
+        let cy = view_for(&s.directory, &Viewer::Account(s.cy.clone()));
         let cy_details = cy.accounts.iter().find(|a| a.id == s.cy).unwrap();
         assert_eq!(cy_details.incoming.as_deref(), Some(&[s.ada.clone()][..]));
-        let ada = view_for(&mut s.directory, &Viewer::Account(s.ada.clone()));
+        let ada = view_for(&s.directory, &Viewer::Account(s.ada.clone()));
         let ada_details = ada.accounts.iter().find(|a| a.id == s.ada).unwrap();
         assert_eq!(ada_details.outgoing.as_deref(), Some(&[s.cy.clone()][..]));
     }
@@ -472,9 +831,9 @@ mod tests {
     #[test]
     fn sign_up_returns_a_credential_and_the_new_account_view() {
         let mut s = sample();
-        let outcome = run(
+        let outcome = act(
             &mut s.directory,
-            &Viewer::Anonymous,
+            &Caller::default(),
             DirectoryAction::SignUp {
                 name: "Dee".to_owned(),
             },
@@ -491,19 +850,139 @@ mod tests {
     #[test]
     fn a_credential_naming_no_account_is_refused_unless_admin() {
         let s = sample();
-        assert!(Viewer::resolve(&s.directory, false, Some("acct.nobody.00")).is_err());
+        let mut auth = DirectoryAuth::default();
+        let unknown = Caller::from_secret("acct.nobody.00");
+        let refused = Viewer::resolve(&s.directory, &mut auth, &unknown, 0).unwrap_err();
+        assert!(matches!(
+            refused.downcast_ref::<Refusal>(),
+            Some(Refusal::Unauthenticated(_))
+        ));
+        let admin = Caller {
+            admin: true,
+            ..unknown
+        };
         assert_eq!(
-            Viewer::resolve(&s.directory, true, Some("acct.nobody.00")).unwrap(),
+            Viewer::resolve(&s.directory, &mut auth, &admin, 0).unwrap(),
             Viewer::Admin
         );
         assert_eq!(
-            Viewer::resolve(&s.directory, false, Some(&s.ada_credential)).unwrap(),
+            Viewer::resolve(
+                &s.directory,
+                &mut auth,
+                &Caller::from_secret(&s.ada_credential),
+                0
+            )
+            .unwrap(),
             Viewer::Account(s.ada.clone())
         );
         assert_eq!(
-            Viewer::resolve(&s.directory, false, None).unwrap(),
+            Viewer::resolve(&s.directory, &mut auth, &Caller::default(), 0).unwrap(),
             Viewer::Anonymous
         );
+    }
+
+    #[test]
+    fn a_keyed_account_adds_keys_and_emails_and_signs_in_by_email() {
+        let mut s = sample();
+        let key =
+            crate::world::hex_encode(&SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes());
+        let signed = Caller {
+            key: Some(key.clone()),
+            ..Caller::default()
+        };
+        let mut auth = DirectoryAuth::default();
+        let outcome = run(
+            &mut s.directory,
+            &mut auth,
+            &signed,
+            0,
+            DirectoryAction::SignUpKey {
+                name: "Kay".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(outcome.credential.is_none() && outcome.session.is_none());
+        assert_eq!(outcome.view.viewer, key);
+
+        let signed_in = Caller {
+            key: Some(key.clone()),
+            ..Caller::default()
+        };
+        let other =
+            crate::world::hex_encode(&SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
+        let refused = run(
+            &mut s.directory,
+            &mut auth,
+            &signed_in,
+            0,
+            DirectoryAction::AddKey { key: other },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            refused.downcast_ref::<Refusal>(),
+            Some(Refusal::Forbidden(_))
+        ));
+
+        let address = "kay@example.com";
+        let asked = run(
+            &mut s.directory,
+            &mut auth,
+            &signed_in,
+            0,
+            DirectoryAction::AddEmail {
+                address: address.to_owned(),
+            },
+        )
+        .unwrap();
+        let mail = asked.mail.clone().unwrap();
+        assert_eq!(mail.to, address);
+        let code = mail
+            .body
+            .split_whitespace()
+            .nth(3)
+            .unwrap()
+            .trim_end_matches('.')
+            .to_owned();
+        assert!(!format!("{asked:?}").contains(&code));
+
+        run(
+            &mut s.directory,
+            &mut auth,
+            &signed_in,
+            0,
+            DirectoryAction::ConfirmEmail {
+                address: address.to_owned(),
+                code,
+            },
+        )
+        .unwrap();
+        let shown = view(&s.directory, &Viewer::Account(key.clone()));
+        let me = shown.accounts.iter().find(|a| a.id == key).unwrap();
+        assert_eq!(me.emails.as_deref(), Some(&[address.to_owned()][..]));
+        assert_eq!(me.verified, Some(true));
+
+        let sign_in = run(
+            &mut s.directory,
+            &mut auth,
+            &Caller::default(),
+            0,
+            DirectoryAction::SignInEmail {
+                address: address.to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(sign_in.mail.unwrap().to, address);
+        let missing = run(
+            &mut s.directory,
+            &mut auth,
+            &Caller::default(),
+            0,
+            DirectoryAction::SignInEmail {
+                address: "nobody@example.com".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(missing.mail.is_none());
     }
 
     #[test]
@@ -525,28 +1004,28 @@ mod tests {
         s.directory
             .set_public(Actor::Account(&s.ada), s.club, true)
             .unwrap();
-        let view = view_for(&mut s.directory, &Viewer::Anonymous);
+        let view = view_for(&s.directory, &Viewer::Anonymous);
         let club = view.groups.iter().find(|g| g.id == s.club).unwrap();
         assert!(club.public && club.members.is_none());
     }
 
     #[test]
     fn json_and_text_name_the_same_accounts_and_groups() {
-        let mut s = sample();
+        let s = sample();
         let viewers = [
             Viewer::Admin,
             Viewer::Anonymous,
             Viewer::Account(s.bo.clone()),
         ];
         for viewer in viewers {
-            let outcome = run(&mut s.directory, &viewer, DirectoryAction::View).unwrap();
-            let json = serde_json::to_string(&outcome.view).unwrap();
-            let text = render_text(&outcome.view);
-            for account in &outcome.view.accounts {
+            let shown = view(&s.directory, &viewer);
+            let json = serde_json::to_string(&shown).unwrap();
+            let text = render_text(&shown);
+            for account in &shown.accounts {
                 assert!(json.contains(&account.id) && text.contains(&account.id));
                 assert!(json.contains(&account.name) && text.contains(&account.name));
             }
-            for group in &outcome.view.groups {
+            for group in &shown.groups {
                 assert!(json.contains(&group.name) && text.contains(&group.name));
             }
         }

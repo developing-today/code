@@ -326,6 +326,12 @@ pub enum Command {
         /// Start with this precompiled Wasm world module (Roc platform ABI).
         #[arg(long, requires = "world")]
         world_module: Option<PathBuf>,
+        /// Write confirmation mail into this directory, one private file per message.
+        #[arg(long, requires = "world", conflicts_with = "world_mail_command")]
+        world_mail_outbox: Option<PathBuf>,
+        /// Run this program for each confirmation mail, with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` set.
+        #[arg(long, requires = "world")]
+        world_mail_command: Option<PathBuf>,
         /// Name of the world this server offers (one world per process).
         ///
         /// The world's files live in `.id-worlds/<NAME>/`. Names may contain
@@ -1569,9 +1575,9 @@ mod tests {
                 roc_bin,
                 roc_platform,
                 world_native,
-                world_runtime: _,
                 allow_node,
                 open_writes,
+                ..
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);

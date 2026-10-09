@@ -158,6 +158,10 @@ pub mod commands;
 #[cfg(feature = "world")]
 pub mod directory;
 #[cfg(feature = "world")]
+pub mod directory_auth;
+#[cfg(feature = "world")]
+pub mod directory_mail;
+#[cfg(feature = "world")]
 pub mod directory_view;
 pub mod discovery;
 pub mod fileops;

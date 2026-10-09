@@ -169,6 +169,7 @@ struct HubInner {
     limits: HubLimits,
     sessions: Arc<Semaphore>,
     slots: StdMutex<HashMap<String, Arc<Slot>>>,
+    replays: StdMutex<crate::directory_auth::ReplayGuard>,
 }
 
 /// Registry of worlds. Cheap to clone.
@@ -280,6 +281,7 @@ impl WorldHub {
                 limits,
                 sessions: Arc::new(Semaphore::new(limits.max_sessions.max(1))),
                 slots: StdMutex::new(HashMap::new()),
+                replays: StdMutex::new(crate::directory_auth::ReplayGuard::default()),
             }),
         }
     }
@@ -300,6 +302,34 @@ impl WorldHub {
             .is_some_and(|expected| {
                 crate::world_session::secret_eq(expected.as_bytes(), token.as_bytes())
             })
+    }
+
+    /// The key a signed request proves, once its signature and time check and
+    /// its nonce is unused.
+    ///
+    /// # Errors
+    ///
+    /// Fails with an unauthenticated refusal for a bad, stale, or reused request.
+    pub fn verify_signed(
+        &self,
+        signed: &crate::directory_auth::Signed,
+        method: &str,
+        target: &str,
+        body: &[u8],
+    ) -> Result<String> {
+        let mut replays = self
+            .inner
+            .replays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::directory_auth::verify_signed(
+            &mut replays,
+            signed,
+            method,
+            target,
+            body,
+            crate::world::unix_ms(),
+        )
     }
 
     /// Number of worlds currently open.

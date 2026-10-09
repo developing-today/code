@@ -17,11 +17,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "sandbox")]
+use anyhow::Context as _;
 use iroh_blobs::{
     BlobFormat, Hash,
     api::{Store, TempTag, blobs::AddBytesOptions},
 };
-#[cfg(feature = "sandbox")]
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
@@ -324,6 +325,7 @@ pub struct WorldService {
     compiler: Option<Arc<Compiler>>,
     native: bool,
     runtime: crate::world_limits::RuntimeLimits,
+    mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -352,11 +354,23 @@ impl WorldService {
     /// Fails for an unknown credential or a refused change.
     pub async fn directory(
         &self,
-        credential: Option<String>,
-        admin: bool,
+        caller: crate::directory_auth::Caller,
         action: crate::directory_view::DirectoryAction,
     ) -> anyhow::Result<crate::directory_view::DirectoryOutcome> {
-        self.world.directory(credential, admin, action).await
+        if action.sends_mail() && self.mail.is_none() {
+            return Err(crate::directory::Refusal::Forbidden(
+                "this server has no mail configured".to_owned(),
+            )
+            .into());
+        }
+        let mut outcome = self.world.directory(caller, action).await?;
+        if let (Some(sink), Some(mail)) = (&self.mail, outcome.mail.take()) {
+            let sink = Arc::clone(sink);
+            tokio::task::spawn_blocking(move || sink.send(&mail))
+                .await
+                .context("mail task stopped")??;
+        }
+        Ok(outcome)
     }
 
     /// Wrap a world. `admin_token: None` disables invites.
@@ -374,6 +388,7 @@ impl WorldService {
             compiler: None,
             native: false,
             runtime: crate::world_limits::RuntimeLimits::default(),
+            mail: None,
         }
     }
 
@@ -486,6 +501,14 @@ impl WorldService {
     #[must_use]
     pub fn with_blob_store(mut self, blobs: Store) -> Self {
         self.blobs = Some(blobs);
+        self
+    }
+
+    /// Send confirmation and sign-in codes through this sink. Without one,
+    /// email actions are refused.
+    #[must_use]
+    pub fn with_mail(mut self, sink: Arc<dyn crate::directory_mail::MailSink>) -> Self {
+        self.mail = Some(sink);
         self
     }
 

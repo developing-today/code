@@ -290,6 +290,10 @@ pub struct ServeOptions {
     pub world_admin_token: Option<String>,
     /// Optional Wasm world program, compiled for the sandbox's Roc platform ABI.
     pub world_module: Option<PathBuf>,
+    /// Directory that receives confirmation mail, one file per message.
+    pub world_mail_outbox: Option<PathBuf>,
+    /// Program run once per confirmation mail.
+    pub world_mail_command: Option<PathBuf>,
     /// Name of the world this server offers; its files live under
     /// `.id-worlds/<name>/`.
     pub world_name: String,
@@ -428,6 +432,20 @@ fn resolve_compiler(
 /// restart; it is only installed when it differs from the module the world
 /// already runs. It applies to the default world only.
 #[cfg(feature = "world")]
+fn mail_sink(
+    outbox: Option<PathBuf>,
+    command: Option<PathBuf>,
+) -> Option<Arc<dyn crate::directory_mail::MailSink>> {
+    use crate::directory_mail::{CommandSink, MailSink, OutboxSink};
+    let sink: Arc<dyn MailSink> = match (outbox, command) {
+        (Some(dir), _) => Arc::new(OutboxSink::new(dir)),
+        (None, Some(program)) => Arc::new(CommandSink::new(program, Vec::new())),
+        (None, None) => return None,
+    };
+    Some(sink)
+}
+
+#[cfg(feature = "world")]
 struct ServeWorlds {
     ephemeral: bool,
     admin_token: Option<String>,
@@ -440,6 +458,7 @@ struct ServeWorlds {
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
     runtime: crate::world_limits::RuntimeLimits,
+    mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
 }
 
 #[cfg(feature = "world")]
@@ -493,10 +512,15 @@ impl ServeWorlds {
         let make = {
             let admin_token = self.admin_token.clone();
             let blobs = self.blobs.clone();
+            let mail = self.mail.clone();
             move |handle| {
-                WorldService::new(handle, admin_token)
+                let service = WorldService::new(handle, admin_token)
                     .with_blob_store(blobs)
-                    .with_runtime_limits(runtime)
+                    .with_runtime_limits(runtime);
+                match &mail {
+                    Some(sink) => service.with_mail(Arc::clone(sink)),
+                    None => service,
+                }
             }
         };
         let dir = world_dir(name);
@@ -639,6 +663,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world,
         world_admin_token,
         world_module,
+        world_mail_outbox,
+        world_mail_command,
         world_name,
         world_checkpoint_every,
         world_max_open,
@@ -750,6 +776,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             compiler: resolve_compiler(roc_bin, roc_platform)?,
             native: world_native,
             runtime,
+            mail: mail_sink(world_mail_outbox, world_mail_command),
         });
         let hub = WorldHub::new(
             opener,

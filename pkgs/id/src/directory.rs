@@ -74,8 +74,47 @@ pub struct Account {
     pub id: String,
     /// The display name.
     pub name: String,
-    /// Whether the server has confirmed the account's email or identity.
+    /// Whether an admin verified the account by hand.
     pub verified: bool,
+    /// Further public keys that sign in as this account, besides its ID.
+    pub keys: BTreeSet<String>,
+    /// Confirmed email addresses, normalized to lower case.
+    pub emails: BTreeSet<String>,
+}
+
+/// A request the directory refuses, carried in the error so transports can
+/// choose a status without parsing messages.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Refusal {
+    /// No valid credential, session or key was presented.
+    #[error("{0}")]
+    Unauthenticated(String),
+    /// The caller is known but may not do this.
+    #[error("{0}")]
+    Forbidden(String),
+    /// The named account, group or member does not exist.
+    #[error("{0}")]
+    NotFound(String),
+    /// The change clashes with what already exists.
+    #[error("{0}")]
+    Conflict(String),
+    /// Too many requests for the same thing in a short time.
+    #[error("{0}")]
+    RateLimited(String),
+}
+
+macro_rules! refuse {
+    ($kind:ident, $($arg:tt)*) => {
+        return Err(Refusal::$kind(format!($($arg)*)).into())
+    };
+}
+
+macro_rules! refuse_unless {
+    ($cond:expr, $kind:ident, $($arg:tt)*) => {
+        if !$cond {
+            refuse!($kind, $($arg)*);
+        }
+    };
 }
 
 /// A group and the permission set its members hold.
@@ -106,10 +145,45 @@ pub enum DirectoryEntry {
         /// SHA-256 of the account secret.
         digest: String,
     },
-    /// The server confirmed an account.
+    /// A new account whose ID is its own public key, so it has no secret.
+    AccountKeyed {
+        /// The account ID, a hex Ed25519 public key.
+        id: String,
+        /// The display name.
+        name: String,
+    },
+    /// An admin verified an account by hand.
     AccountVerified {
         /// The account ID.
         id: String,
+    },
+    /// A public key was added to an account.
+    AccountKeyAdded {
+        /// The account ID.
+        id: String,
+        /// The hex public key.
+        key: String,
+    },
+    /// A public key was removed from an account.
+    AccountKeyRemoved {
+        /// The account ID.
+        id: String,
+        /// The hex public key.
+        key: String,
+    },
+    /// The owner of an email address proved it, and the address joined the account.
+    AccountEmailConfirmed {
+        /// The account ID.
+        id: String,
+        /// The normalized address.
+        email: String,
+    },
+    /// An email address was removed from an account.
+    AccountEmailRemoved {
+        /// The account ID.
+        id: String,
+        /// The normalized address.
+        email: String,
     },
     /// A group was created with its founder as admin.
     GroupCreated {
@@ -397,8 +471,203 @@ impl Directory {
     ///
     /// Fails for account actors and unknown accounts.
     pub fn verify_account(&mut self, actor: Actor<'_>, id: &str) -> Result<DirectoryEntry> {
-        ensure!(actor == Actor::Server, "only the server verifies accounts");
+        refuse_unless!(
+            actor == Actor::Server,
+            Forbidden,
+            "only the server verifies accounts"
+        );
         let entry = DirectoryEntry::AccountVerified { id: id.to_owned() };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// Create an account whose ID is the caller's public key. It has no
+    /// secret: the key proves itself on each sign-in.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the key is not an Ed25519 public key, the name is invalid, or
+    /// the key already belongs to an account.
+    pub fn sign_up_keyed(&mut self, key: &str, name: &str) -> Result<DirectoryEntry> {
+        let entry = DirectoryEntry::AccountKeyed {
+            id: normalize_key(key)?,
+            name: name.to_owned(),
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// Add a public key an account signs in with. The directory cannot see
+    /// the key's private half, so the caller must have proven the key on the
+    /// request that adds it.
+    ///
+    /// # Errors
+    ///
+    /// Fails for another account's actor, a malformed key, or a key held by
+    /// any account already.
+    pub fn add_key(
+        &mut self,
+        actor: Actor<'_>,
+        account: &str,
+        key: &str,
+    ) -> Result<DirectoryEntry> {
+        refuse_unless!(
+            may_act_for(actor, account),
+            Forbidden,
+            "only the account itself adds keys"
+        );
+        let entry = DirectoryEntry::AccountKeyAdded {
+            id: account.to_owned(),
+            key: normalize_key(key)?,
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// Remove a public key an account added. Its own ID stays.
+    ///
+    /// # Errors
+    ///
+    /// Fails for another account's actor, or if the account does not hold
+    /// that key.
+    pub fn remove_key(
+        &mut self,
+        actor: Actor<'_>,
+        account: &str,
+        key: &str,
+    ) -> Result<DirectoryEntry> {
+        refuse_unless!(
+            may_act_for(actor, account),
+            Forbidden,
+            "only the account itself removes keys"
+        );
+        let entry = DirectoryEntry::AccountKeyRemoved {
+            id: account.to_owned(),
+            key: normalize_key(key)?,
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// Attach an email address to an account once its owner has proved it.
+    /// Only the server calls this, after a confirmation code matched.
+    ///
+    /// # Errors
+    ///
+    /// Fails for account actors, a malformed address, or an address another
+    /// account holds.
+    pub fn confirm_email(
+        &mut self,
+        actor: Actor<'_>,
+        account: &str,
+        address: &str,
+    ) -> Result<DirectoryEntry> {
+        refuse_unless!(
+            actor == Actor::Server,
+            Forbidden,
+            "only the server confirms addresses"
+        );
+        let entry = DirectoryEntry::AccountEmailConfirmed {
+            id: account.to_owned(),
+            email: normalize_email(address)?,
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// Remove an email address from an account.
+    ///
+    /// # Errors
+    ///
+    /// Fails for another account's actor, or if the account does not hold
+    /// that address.
+    pub fn remove_email(
+        &mut self,
+        actor: Actor<'_>,
+        account: &str,
+        address: &str,
+    ) -> Result<DirectoryEntry> {
+        refuse_unless!(
+            may_act_for(actor, account),
+            Forbidden,
+            "only the account itself removes addresses"
+        );
+        let entry = DirectoryEntry::AccountEmailRemoved {
+            id: account.to_owned(),
+            email: normalize_email(address)?,
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// The account a public key signs in as: its own ID, or a key it added.
+    #[must_use]
+    pub fn account_for_key(&self, key: &str) -> Option<String> {
+        let key = normalize_key(key).ok()?;
+        self.accounts
+            .values()
+            .find(|account| account.id == key || account.keys.contains(&key))
+            .map(|account| account.id.clone())
+    }
+
+    /// The account that confirmed an email address, if any.
+    #[must_use]
+    pub fn account_for_email(&self, address: &str) -> Option<String> {
+        let address = normalize_email(address).ok()?;
+        self.accounts
+            .values()
+            .find(|account| account.emails.contains(&address))
+            .map(|account| account.id.clone())
+    }
+
+    /// Whether an account is verified: by an admin, or by a confirmed email.
+    #[must_use]
+    pub fn is_verified(&self, account: &str) -> bool {
+        self.accounts
+            .get(account)
+            .is_some_and(|found| found.verified || !found.emails.is_empty())
+    }
+
+    /// Ask `to` to be friends on behalf of an account the caller has
+    /// authenticated some other way than a credential.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a request to oneself, an existing friendship, or a pending
+    /// request in either direction.
+    pub fn request_friend_as(&mut self, me: &str, to: &str) -> Result<DirectoryEntry> {
+        let entry = DirectoryEntry::FriendRequested {
+            from: me.to_owned(),
+            to: to.to_owned(),
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// Accept a pending request from `from` on behalf of an authenticated account.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no request from `from` is pending.
+    pub fn accept_friend_as(&mut self, me: &str, from: &str) -> Result<DirectoryEntry> {
+        let entry = DirectoryEntry::FriendAccepted {
+            from: from.to_owned(),
+            to: me.to_owned(),
+        };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
+    /// End a friendship on behalf of an authenticated account.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the two are not friends.
+    pub fn remove_friend_as(&mut self, me: &str, other: &str) -> Result<DirectoryEntry> {
+        let entry = DirectoryEntry::FriendRemoved {
+            a: me.to_owned(),
+            b: other.to_owned(),
+        };
         self.apply(&entry)?;
         Ok(entry)
     }
@@ -414,8 +683,9 @@ impl Directory {
         tier: Tier,
         scopes: WorldScopes,
     ) -> Result<DirectoryEntry> {
-        ensure!(
+        refuse_unless!(
             actor == Actor::Server,
+            Forbidden,
             "only the server sets tier permissions"
         );
         let entry = DirectoryEntry::TierSet {
@@ -473,8 +743,9 @@ impl Directory {
         } else {
             Level::Write
         };
-        ensure!(
+        refuse_unless!(
             self.allowed(actor, group, needed),
+            Forbidden,
             "not allowed to change this group"
         );
         let entry = DirectoryEntry::GroupUpdated {
@@ -498,8 +769,9 @@ impl Directory {
         group: u64,
         public: bool,
     ) -> Result<DirectoryEntry> {
-        ensure!(
+        refuse_unless!(
             self.allowed(actor, group, Level::Admin),
+            Forbidden,
             "only an admin changes who can see a group"
         );
         let entry = DirectoryEntry::GroupVisibility { id: group, public };
@@ -514,8 +786,9 @@ impl Directory {
     /// Fails unless the actor is an admin, or if deleting would leave a group
     /// without an admin.
     pub fn delete_group(&mut self, actor: Actor<'_>, group: u64) -> Result<DirectoryEntry> {
-        ensure!(
+        refuse_unless!(
             self.allowed(actor, group, Level::Admin),
+            Forbidden,
             "only an admin deletes a group"
         );
         let entry = DirectoryEntry::GroupDeleted { id: group };
@@ -540,24 +813,28 @@ impl Directory {
         member: Member,
         level: Option<Level>,
     ) -> Result<DirectoryEntry> {
-        ensure!(
+        refuse_unless!(
             self.allowed(actor, group, Level::Manage),
+            Forbidden,
             "not allowed to manage this group"
         );
         if let Actor::Account(me) = actor
             && self.level_in(me, group) != Some(Level::Admin)
         {
-            ensure!(
+            refuse_unless!(
                 member != (Member::Account { id: me.to_owned() }),
+                Forbidden,
                 "you cannot change your own level"
             );
-            ensure!(
+            refuse_unless!(
                 level.is_none_or(|level| level <= Level::Write),
+                Forbidden,
                 "managers can grant up to write"
             );
             let current = self.members.get(&(group, member.clone())).copied();
-            ensure!(
+            refuse_unless!(
                 current.is_none_or(|current| current < Level::Manage),
+                Forbidden,
                 "managers cannot change managers or admins"
             );
         }
@@ -599,7 +876,7 @@ impl Directory {
     #[must_use]
     pub fn ceiling(&self, account: &str) -> WorldScopes {
         let tier = match self.accounts.get(account) {
-            Some(found) if found.verified => Tier::Verified,
+            Some(_) if self.is_verified(account) => Tier::Verified,
             Some(_) => Tier::Registered,
             None => Tier::Anonymous,
         };
@@ -796,7 +1073,11 @@ impl Directory {
     }
 
     fn authenticate(&self, credential: &str) -> Result<(String, SigningKey)> {
-        let refused = || anyhow::anyhow!("invalid account credential");
+        let refused = || {
+            anyhow::Error::from(Refusal::Unauthenticated(
+                "invalid account credential".to_owned(),
+            ))
+        };
         let mut parts = credential.split('.');
         let (Some("acct"), Some(id), Some(secret), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -815,6 +1096,20 @@ impl Directory {
             "account key does not match its ID"
         );
         Ok((id.to_owned(), key))
+    }
+
+    fn insert_account(&mut self, id: &str, name: &str) -> Result<()> {
+        self.accounts.insert(
+            id.to_owned(),
+            Account {
+                id: id.to_owned(),
+                name: clean_name(name)?,
+                verified: false,
+                keys: BTreeSet::new(),
+                emails: BTreeSet::new(),
+            },
+        );
+        Ok(())
     }
 
     fn allowed(&self, actor: Actor<'_>, group: u64, needed: Level) -> bool {
@@ -841,23 +1136,76 @@ impl Directory {
         match entry {
             DirectoryEntry::AccountSignedUp { id, name, digest } => {
                 ensure_account_id(id)?;
-                ensure!(!self.accounts.contains_key(id), "account already exists");
-                let digest = hex_to_array::<32>(digest).context("malformed account digest")?;
-                self.accounts.insert(
-                    id.clone(),
-                    Account {
-                        id: id.clone(),
-                        name: clean_name(name)?,
-                        verified: false,
-                    },
+                refuse_unless!(
+                    !self.accounts.contains_key(id),
+                    Conflict,
+                    "account already exists"
                 );
+                let digest = hex_to_array::<32>(digest).context("malformed account digest")?;
+                self.insert_account(id, name)?;
                 self.digests.insert(id.clone(), digest);
+            }
+            DirectoryEntry::AccountKeyed { id, name } => {
+                ensure_account_id(id)?;
+                refuse_unless!(
+                    self.account_for_key(id).is_none(),
+                    Conflict,
+                    "that key already belongs to an account"
+                );
+                self.insert_account(id, name)?;
             }
             DirectoryEntry::AccountVerified { id } => {
                 self.accounts
                     .get_mut(id)
                     .context("no such account")?
                     .verified = true;
+            }
+            DirectoryEntry::AccountKeyAdded { id, key } => {
+                ensure_account_id(key)?;
+                refuse_unless!(
+                    self.account_for_key(key).is_none(),
+                    Conflict,
+                    "that key already belongs to an account"
+                );
+                self.accounts
+                    .get_mut(id)
+                    .ok_or_else(|| Refusal::NotFound("no such account".to_owned()))?
+                    .keys
+                    .insert(key.clone());
+            }
+            DirectoryEntry::AccountKeyRemoved { id, key } => {
+                let account = self
+                    .accounts
+                    .get_mut(id)
+                    .ok_or_else(|| Refusal::NotFound("no such account".to_owned()))?;
+                refuse_unless!(
+                    account.keys.remove(key),
+                    NotFound,
+                    "that key is not on the account"
+                );
+            }
+            DirectoryEntry::AccountEmailConfirmed { id, email } => {
+                refuse_unless!(
+                    self.account_for_email(email).is_none(),
+                    Conflict,
+                    "that address already belongs to an account"
+                );
+                self.accounts
+                    .get_mut(id)
+                    .ok_or_else(|| Refusal::NotFound("no such account".to_owned()))?
+                    .emails
+                    .insert(email.clone());
+            }
+            DirectoryEntry::AccountEmailRemoved { id, email } => {
+                let account = self
+                    .accounts
+                    .get_mut(id)
+                    .ok_or_else(|| Refusal::NotFound("no such account".to_owned()))?;
+                refuse_unless!(
+                    account.emails.remove(email),
+                    NotFound,
+                    "that address is not on the account"
+                );
             }
             DirectoryEntry::GroupCreated {
                 id,
@@ -946,10 +1294,11 @@ impl Directory {
                 ensure_account_id(from)?;
                 ensure_account_id(to)?;
                 ensure!(from != to, "no one befriends themselves");
-                ensure!(!self.are_friends(from, to), "already friends");
-                ensure!(
+                refuse_unless!(!self.are_friends(from, to), Conflict, "already friends");
+                refuse_unless!(
                     !self.requests.contains(&(from.clone(), to.clone()))
                         && !self.requests.contains(&(to.clone(), from.clone())),
+                    Conflict,
                     "a request is already pending"
                 );
                 self.requests.insert((from.clone(), to.clone()));
@@ -1004,6 +1353,56 @@ fn signing_key(secret: &[u8; 32]) -> SigningKey {
     hasher.update(KEY_DOMAIN);
     hasher.update(secret);
     SigningKey::from_bytes(&hasher.finalize().into())
+}
+
+fn may_act_for(actor: Actor<'_>, account: &str) -> bool {
+    match actor {
+        Actor::Server => true,
+        Actor::Account(me) => me == account,
+    }
+}
+
+/// A public key as lower-case hex, if it is an Ed25519 public key.
+///
+/// # Errors
+///
+/// Fails if the text is not 64 hex characters or not a valid key.
+pub fn normalize_key(key: &str) -> Result<String> {
+    let key = key.trim().to_ascii_lowercase();
+    let bytes = hex_to_array::<32>(&key).context("a public key is 64 hex characters")?;
+    VerifyingKey::from_bytes(&bytes).context("not an Ed25519 public key")?;
+    Ok(key)
+}
+
+/// An email address in lower case, checked for shape but not deliverability.
+///
+/// # Errors
+///
+/// Fails if the text does not look like `local@domain.tld`.
+pub fn normalize_email(address: &str) -> Result<String> {
+    let address = address.trim().to_ascii_lowercase();
+    ensure!(address.len() <= 254, "email address is too long");
+    let (local, domain) = address
+        .split_once('@')
+        .context("an email address has one @")?;
+    let local_ok = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-/=?^_`{|}~.".contains(c));
+    let domain_ok = domain.contains('.')
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
+    ensure!(local_ok && domain_ok, "not an email address");
+    Ok(address)
 }
 
 fn pair(a: &str, b: &str) -> (String, String) {
@@ -1519,5 +1918,124 @@ mod tests {
     fn malformed_hex_is_refused() {
         assert!(hex_to_array::<32>("zz").is_none());
         assert!(hex_to_array::<32>(&"0".repeat(63)).is_none());
+    }
+
+    fn public_key(seed: u8) -> String {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        hex_encode(&key.verifying_key().to_bytes())
+    }
+
+    fn refusal(error: &anyhow::Error) -> &Refusal {
+        error.downcast_ref::<Refusal>().unwrap()
+    }
+
+    #[test]
+    fn a_keyed_account_signs_up_without_an_email() {
+        let mut directory = Directory::new();
+        let key = public_key(1);
+        directory.sign_up_keyed(&key, "Kay").unwrap();
+        assert_eq!(directory.account_for_key(&key), Some(key.clone()));
+        assert!(!directory.is_verified(&key));
+        assert_eq!(directory.ceiling(&key), WorldScopes::GUEST);
+    }
+
+    #[test]
+    fn a_key_belongs_to_one_account_and_is_added_and_removed_by_its_owner() {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let laptop = public_key(2);
+        directory
+            .add_key(Actor::Account(&ann), &ann, &laptop)
+            .unwrap();
+        assert_eq!(directory.account_for_key(&laptop), Some(ann.clone()));
+
+        let error = directory
+            .add_key(Actor::Account(&bo), &ann, &public_key(3))
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Forbidden(_)));
+        let error = directory
+            .add_key(Actor::Account(&bo), &bo, &laptop)
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Conflict(_)));
+
+        let error = directory
+            .remove_key(Actor::Account(&bo), &ann, &laptop)
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Forbidden(_)));
+        directory
+            .remove_key(Actor::Account(&ann), &ann, &laptop)
+            .unwrap();
+        assert_eq!(directory.account_for_key(&laptop), None);
+        assert_eq!(directory.account_for_key(&ann), Some(ann.clone()));
+    }
+
+    #[test]
+    fn a_key_already_signed_up_with_cannot_sign_up_again() {
+        let mut directory = Directory::new();
+        let key = public_key(4);
+        directory.sign_up_keyed(&key, "Kay").unwrap();
+        let error = directory.sign_up_keyed(&key, "Other").unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Conflict(_)));
+        let error = directory.sign_up_keyed("zz", "Bad").unwrap_err();
+        assert!(error.downcast_ref::<Refusal>().is_none());
+    }
+
+    #[test]
+    fn only_the_server_confirms_an_email_and_confirming_verifies_the_account() {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let error = directory
+            .confirm_email(Actor::Account(&ann), &ann, "ann@example.com")
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Forbidden(_)));
+
+        directory
+            .confirm_email(Actor::Server, &ann, "  Ann@Example.COM ")
+            .unwrap();
+        assert_eq!(
+            directory.account_for_email("ann@example.com"),
+            Some(ann.clone())
+        );
+        assert!(directory.is_verified(&ann));
+        assert!(directory.ceiling(&ann).contains(WorldScopes::DELEGATE));
+
+        let error = directory
+            .confirm_email(Actor::Server, &bo, "ANN@example.com")
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Conflict(_)));
+        assert!(!directory.is_verified(&bo));
+    }
+
+    #[test]
+    fn an_email_is_removed_only_by_its_owner_and_a_missing_one_is_not_found() {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        directory
+            .confirm_email(Actor::Server, &ann, "ann@example.com")
+            .unwrap();
+        let error = directory
+            .remove_email(Actor::Account(&bo), &ann, "ann@example.com")
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Forbidden(_)));
+        directory
+            .remove_email(Actor::Account(&ann), &ann, "ann@example.com")
+            .unwrap();
+        assert_eq!(directory.account_for_email("ann@example.com"), None);
+        assert!(!directory.is_verified(&ann));
+        let error = directory
+            .remove_email(Actor::Account(&ann), &ann, "ann@example.com")
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::NotFound(_)));
+    }
+
+    #[test]
+    fn a_malformed_email_is_refused() {
+        assert!(normalize_email("no-at-sign").is_err());
+        assert!(normalize_email("two@@example.com").is_err());
+        assert!(normalize_email("a@nodot").is_err());
+        assert!(normalize_email("ok@example.com").is_ok());
     }
 }
