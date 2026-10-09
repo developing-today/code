@@ -287,3 +287,41 @@ and attributed ticks. Tests cover the pure attenuation rule, scope names and
 effects, the ledger refusal, cascading revocation, the participant limit,
 restore with a parent link, the actor-level refusal, and the session attenuate
 frame.
+
+---
+
+## 2026-10-09T11-28-37Z Implementation: import gate and compile memory
+
+Implemented the compile-service half of the gate in `world_compile.rs`,
+`world_caps.rs` and `world_session.rs`:
+
+- **Module list from the platform.** `Compiler::new` lists the platform's
+  modules (every `.roc` file but `platform`). The catalog gains `Key` and
+  `Screen`, matching those modules.
+- **Refused before the compiler runs.** `check_imports` reads each `import`
+  line of the submitted sources and refuses a platform module the world does
+  not grant, naming it and the grant command. It runs on the granted set
+  captured at compile time, so granting or revoking takes effect on the next
+  compile. The check is by import line, not by the compiler's output, so a
+  sibling file cannot pull in an ungranted module.
+- **Compile-time, not run-time.** Platform modules are gated when source that
+  imports them is compiled. A running program is never checked again.
+
+Tests cover refusal by name, comments and non-platform imports passing,
+sibling-file smuggling, and refusal before the compiler is spawned. The
+`roc-screen` test grants `Screen` and `Key`, because that example imports both.
+
+Found while verifying end to end: `id world compile` built wasm32 apps with
+roc's default memory (1024 pages, 64 MiB). The sandbox's 16 MiB limit traps on
+instantiate, so every server-side compile failed at install with
+`InvalidModule`. The example build scripts already pass `--wasm-memory`; the
+compile path now passes the same 129-page value (`WASM_MEMORY_BYTES`).
+Native (x64musl) builds are unaffected.
+
+Verified against a scratch `id serve --world` on the system roc: compiling
+`roc-screen` with nothing granted is refused for `Screen`; with `Screen` only
+it is refused for `Key`; with both it installs. Revoking `Screen` refuses the
+compile again, and re-granting restores it.
+
+Not done here: expiry and use limits on capabilities, attributed ticks, and
+the "who a request acts for" check for ticks.

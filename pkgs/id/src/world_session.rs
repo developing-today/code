@@ -394,12 +394,19 @@ impl WorldService {
         if spec.native && !self.native {
             return Err("native modules are not enabled on this server".to_owned());
         }
-        let (wasm, diagnostics) = crate::world_compile::compile(spec, compiler, COMPILE_TIMEOUT)
+        let granted = self
+            .world
+            .caps_report()
             .await
-            .map_err(|error| {
-                tracing::warn!("world compile failed: {error:#}");
-                format!("compile failed: {error:#}")
-            })?;
+            .map_err(|error| format!("compile failed: {error:#}"))?
+            .granted;
+        let (wasm, diagnostics) =
+            crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT)
+                .await
+                .map_err(|error| {
+                    tracing::warn!("world compile failed: {error:#}");
+                    format!("compile failed: {error:#}")
+                })?;
         let hash = module_hash(&wasm);
         let (_, sequence) = self
             .install_wasm(supplied_admin, wasm, spec.seed, &hash)

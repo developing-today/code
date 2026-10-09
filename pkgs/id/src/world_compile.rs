@@ -29,6 +29,9 @@ pub const MAX_COMPILE_TOTAL_BYTES: usize = 256 * 1024;
 pub const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Largest captured compiler output, per stream, in bytes.
 const MAX_CAPTURE_BYTES: usize = 64 * 1024;
+/// Initial linear memory for Wasm apps: 129 pages, inside the sandbox's 16 MiB.
+/// Roc's default (1024 pages) would trap when the module instantiates.
+const WASM_MEMORY_BYTES: usize = 129 * 65536;
 
 /// The files to compile, in order; the first must be `main.roc`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +51,7 @@ pub struct Compiler {
     pub platform_dir: PathBuf,
     /// The `roc` binary to run.
     pub roc_bin: String,
+    modules: Vec<String>,
 }
 
 impl Compiler {
@@ -61,11 +65,60 @@ impl Compiler {
             "{} is not a world platform directory (need platform.roc and targets/wasm32/host.wasm)",
             platform_dir.display()
         );
+        let modules = platform_modules(&platform_dir)?;
         Ok(Self {
             platform_dir,
             roc_bin,
+            modules,
         })
     }
+}
+
+/// The platform's modules, by name: every `.roc` file but `platform.roc`.
+fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
+    let mut modules = Vec::new();
+    for entry in std::fs::read_dir(platform_dir).context("read platform directory")? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "roc")
+            && let Some(stem) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|stem| *stem != "platform")
+        {
+            modules.push(stem.to_owned());
+        }
+    }
+    modules.sort();
+    Ok(modules)
+}
+
+/// Refuse source that imports a platform module the world does not grant.
+/// Imports the platform does not provide are left to the compiler.
+///
+/// # Errors
+///
+/// Names the file and the module of the first refused import.
+pub fn check_imports(spec: &CompileSpec, modules: &[String], granted: &[String]) -> Result<()> {
+    for (name, content) in &spec.files {
+        for line in content.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("import ") else {
+                continue;
+            };
+            let path = rest
+                .split(|c: char| c.is_whitespace() || matches!(c, '[' | '{' | '('))
+                .next()
+                .unwrap_or_default();
+            for segment in path.split('.') {
+                let is_platform_module = modules.iter().any(|module| module == segment);
+                let is_granted = granted.iter().any(|grant| grant == "*" || grant == segment);
+                ensure!(
+                    !is_platform_module || is_granted,
+                    "{name} imports {segment}, which this world does not grant (grant it with `id world caps --grant {segment}`)"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate names, sizes and the `main.roc` requirement.
@@ -110,20 +163,23 @@ pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
 }
 
 /// Compile `spec` and return the validated Wasm module plus compiler
-/// diagnostics.
+/// diagnostics. `granted` is the world's ceiling: the platform modules the
+/// source may import.
 ///
 /// # Errors
 ///
-/// Anything outside the bounds, a compiler failure (with its diagnostics),
-/// or output the sandbox refuses.
+/// Anything outside the bounds, an import the world does not grant, a compiler
+/// failure (with its diagnostics), or output the sandbox refuses.
 pub async fn compile(
     spec: &CompileSpec,
     compiler: &Compiler,
+    granted: &[String],
     timeout: Duration,
 ) -> Result<(Vec<u8>, String)> {
     use crate::world_session::MAX_WORLD_MODULE_BYTES;
 
     validate_spec(spec)?;
+    check_imports(spec, &compiler.modules, granted)?;
     let target = if spec.native {
         ensure!(
             compiler
@@ -160,15 +216,19 @@ pub async fn compile(
     // poll for the deadline so a hung run cannot block the runtime.
     let run = tokio::task::spawn_blocking(move || {
         let mut command = std::process::Command::new(&roc_bin);
+        let mut args = vec![
+            "build".to_owned(),
+            "main.roc".to_owned(),
+            format!("--target={target}"),
+            "--debug".to_owned(),
+            format!("--output={}", output.display()),
+        ];
+        if target == "wasm32" {
+            args.push(format!("--wasm-memory={WASM_MEMORY_BYTES}"));
+        }
         command
             .current_dir(&job_dir)
-            .args([
-                "build",
-                "main.roc",
-                &format!("--target={target}"),
-                "--debug",
-                &format!("--output={}", output.display()),
-            ])
+            .args(&args)
             .env_clear()
             .env("HOME", &job_dir)
             .env("XDG_CACHE_HOME", job_dir.join("cache"))
@@ -442,6 +502,7 @@ mod tests {
                 native: false,
             },
             &compiler,
+            &[],
             COMPILE_TIMEOUT,
         )
         .await
@@ -486,6 +547,7 @@ mod tests {
                 native: false,
             },
             &compiler,
+            &["Screen".to_owned(), "Key".to_owned()],
             COMPILE_TIMEOUT,
         )
         .await
@@ -539,6 +601,7 @@ mod tests {
                 native: true,
             },
             &compiler,
+            &[],
             COMPILE_TIMEOUT,
         )
         .await
@@ -574,6 +637,63 @@ mod tests {
         )
         .unwrap();
         assert_eq!(view.as_deref(), Some("count=1"));
+    }
+
+    #[test]
+    fn an_ungranted_platform_import_is_refused_by_name() {
+        let modules = vec!["Key".to_owned(), "Screen".to_owned()];
+        let app = spec(vec![("main.roc", "import pf.Screen\napp [x] {}")]);
+        let refused = check_imports(&app, &modules, &[]).unwrap_err().to_string();
+        assert!(refused.contains("main.roc imports Screen"), "{refused}");
+        assert!(check_imports(&app, &modules, &["Screen".to_owned()]).is_ok());
+        assert!(check_imports(&app, &modules, &["*".to_owned()]).is_ok());
+        assert!(check_imports(&app, &modules, &["Key".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn imports_outside_the_platform_and_comments_pass_the_gate() {
+        let modules = vec!["Screen".to_owned()];
+        let app = spec(vec![
+            (
+                "main.roc",
+                "# import pf.Screen\nimport pf.Other exposing [x]\nimport Helper\n",
+            ),
+            ("Helper.roc", "module []\n"),
+        ]);
+        assert!(check_imports(&app, &modules, &[]).is_ok());
+    }
+
+    #[test]
+    fn a_sibling_file_cannot_smuggle_an_ungranted_import() {
+        let modules = vec!["Key".to_owned()];
+        let app = spec(vec![
+            ("main.roc", "app [x] {}"),
+            ("Helper.roc", "import pf.Key\n"),
+        ]);
+        assert!(check_imports(&app, &modules, &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_import_is_refused_before_the_compiler_runs() {
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, "/nonexistent/roc".to_owned()).unwrap();
+        let app = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-screen/main.roc"
+        ))
+        .unwrap();
+        let error = compile(
+            &spec(vec![("main.roc", &app)]),
+            &compiler,
+            &[],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("imports Screen"), "{error:#}");
     }
 
     /// The roc the platform's ABI bindings were generated with; a different

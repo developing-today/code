@@ -45,7 +45,8 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 pub const MAX_TICK_INTERVALS: usize = 4;
 
 /// Capabilities the server knows how to provide. New providers add names;
-/// existing names never change meaning.
+/// existing names never change meaning. Platform modules are gated when source
+/// that imports them is compiled, not at run time.
 pub const CATALOG: &[&str] = &[
     "time.now",
     "time.tick",
@@ -54,6 +55,8 @@ pub const CATALOG: &[&str] = &[
     "players.list",
     "chat.say",
     "world.info",
+    "Key",
+    "Screen",
 ];
 
 /// Whether `name` is a capability the server can provide.

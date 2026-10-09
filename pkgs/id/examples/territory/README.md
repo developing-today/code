@@ -37,6 +37,9 @@ id serve --data-dir ./data --world --world-admin-token "$ADMIN" \
 joins and leaves name their seats. The server prints its node ID and its
 `local_addr=0.0.0.0:<port>`.
 
+Compiling this source on a host (`id world compile`) also needs `Key` granted:
+`id world caps NODE --admin-token "$ADMIN" --grant Key`.
+
 Mint an invite and join from another machine:
 
 ```bash
