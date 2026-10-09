@@ -169,7 +169,11 @@
             name = "id-${name}";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+            nativeBuildInputs = nativeBuildInputs ++ [
+              bun2nixPkg.hook
+              pkgs.cmake
+            ];
+            dontUseCmakeConfigure = true;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -341,7 +345,9 @@
               # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
               pkgs.nodejs
+              pkgs.cmake
             ];
+            dontUseCmakeConfigure = true;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -593,7 +599,9 @@
               rustToolchain
               pkgs.bun
               bun2nixPkg.hook
+              pkgs.cmake
             ];
+            dontUseCmakeConfigure = true;
 
             # bun2nix: offline web dependency installation
             inherit bunDeps;
@@ -648,7 +656,9 @@
             nativeBuildInputs = [
               pkgs.pkg-config
               rustToolchain
+              pkgs.cmake
             ];
+            dontUseCmakeConfigure = true;
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
