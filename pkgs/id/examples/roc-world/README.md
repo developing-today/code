@@ -17,7 +17,7 @@ A world program provides these functions:
 ```
 init    : U64 -> model                    # seed from the host
 update  : model, U64, Str -> model        # second argument is the participant id
-view    : model, Str -> Str               # viewer id as JSON/string
+view    : model -> Str                    # the presentation as text
 records : model -> Str                    # optional JSON object projection
 wants : model -> Str                      # optional: subscriptions and requests
 snapshot : model -> Str                   # state as text, for journal checkpoints

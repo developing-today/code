@@ -879,6 +879,98 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_territory_plays_persists_and_rejoins() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let joined = |id: u64, name: &str| {
+            format!(
+                r#"{{"cap":"players","event":"joined","participant":{{"id":{id},"name":"{name}"}}}}"#
+            )
+        };
+        let left = |id: u64, name: &str| {
+            format!(
+                r#"{{"cap":"players","event":"left","participant":{{"id":{id},"name":"{name}"}}}}"#
+            )
+        };
+        let records = |world: &mut WorldInstance| {
+            String::from_utf8(world.records().unwrap().unwrap()).unwrap()
+        };
+        let grid = |marks: &[(usize, char)]| {
+            let mut cells = vec!['.'; 128];
+            for &(index, mark) in marks {
+                cells[index] = mark;
+            }
+            cells.into_iter().collect::<String>()
+        };
+
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            live.wants().unwrap().unwrap(),
+            br#"{"v":1,"subscribe":["players"],"requests":[]}"#
+        );
+        let cells = grid(&[(0, 'B'), (1, 'A'), (16, 'B'), (17, 'A')]);
+        live.update(0, joined(1, "ann").as_bytes()).unwrap();
+        live.update(1, b"l ").unwrap();
+        live.update(0, joined(2, "bob").as_bytes()).unwrap();
+        live.update(2, b" ").unwrap();
+        live.update(2, b"l ").unwrap();
+        live.update(2, b"hj ").unwrap();
+        live.update(1, b"j ").unwrap();
+        assert_eq!(
+            records(&mut live),
+            format!(
+                r#"{{"width":16,"height":8,"cells":"{cells}","seats":[{{"mark":"A","name":"ann","cells":2,"online":true,"x":1,"y":1}},{{"mark":"B","name":"bob","cells":2,"online":true,"x":0,"y":1}}]}}"#
+            )
+        );
+
+        let view = String::from_utf8(live.view().unwrap()).unwrap();
+        assert!(view.contains("free=124"), "{view}");
+        assert!(
+            view.contains("A ann 2 online") && view.contains("B bob 2 online"),
+            "{view}"
+        );
+        assert!(!view.contains('\u{1b}'), "{view}");
+
+        let snapshot = String::from_utf8(live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(snapshot, format!("{cells}\nann\nbob"));
+
+        live.update(0, left(1, "ann").as_bytes()).unwrap();
+        assert!(
+            records(&mut live)
+                .contains(r#"{"mark":"A","name":"ann","cells":2,"online":false,"x":0,"y":0}"#)
+        );
+
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(snapshot.as_bytes()).unwrap();
+        assert_eq!(
+            records(&mut restored),
+            format!(
+                r#"{{"width":16,"height":8,"cells":"{cells}","seats":[{{"mark":"A","name":"ann","cells":2,"online":false,"x":0,"y":0}},{{"mark":"B","name":"bob","cells":2,"online":false,"x":0,"y":0}}]}}"#
+            )
+        );
+        restored.update(0, joined(3, "bob").as_bytes()).unwrap();
+        restored.update(3, b"jj ").unwrap();
+        let cells = grid(&[(0, 'B'), (1, 'A'), (16, 'B'), (17, 'A'), (32, 'B')]);
+        assert_eq!(
+            records(&mut restored),
+            format!(
+                r#"{{"width":16,"height":8,"cells":"{cells}","seats":[{{"mark":"A","name":"ann","cells":2,"online":false,"x":0,"y":0}},{{"mark":"B","name":"bob","cells":3,"online":true,"x":0,"y":2}}]}}"#
+            )
+        );
+        assert_eq!(
+            String::from_utf8(restored.snapshot().unwrap().unwrap()).unwrap(),
+            format!("{cells}\nann\nbob")
+        );
+
+        let mut fresh = runner.instantiate(7).unwrap();
+        fresh.update(9, b"l ").unwrap();
+        assert!(
+            records(&mut fresh)
+                .contains(r#"{"mark":"A","name":"p9","cells":1,"online":true,"x":1,"y":0}"#)
+        );
+    }
+
+    #[test]
     fn wasm_actor_call_order_records_update_records_view() {
         use crate::world::{WorldEvent, WorldEventKind};
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
