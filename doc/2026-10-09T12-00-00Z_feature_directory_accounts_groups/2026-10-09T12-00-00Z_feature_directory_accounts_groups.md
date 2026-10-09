@@ -81,10 +81,11 @@ attribution decision) are included.
 11. **Ticks use the ceiling only.** World-level ticks are not caused by a
     participant. They are checked against the world ceiling and nothing else.
     This is open question 1 of the attenuation design, now settled.
-12. **Email confirmation is delivered by a command.** `--mail-command` is run
-    with the recipient and code in environment variables, and nothing is logged
-    to stdout. Without it, email confirmation is refused and only an admin can
-    verify an account. Real mail delivery is not built into the server.
+12. **Mail goes to an outbox or a command.** `--world-mail-outbox <DIR>` writes
+    each message to a 0600 file. `--world-mail-command <PROGRAM>` runs the
+    program with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` in its
+    environment, with no shell. Without either, email actions are refused and
+    only an admin can verify an account. The server has no SMTP client.
 13. **One explorer model, two renderers.** A `DirectoryView` is built once from
     the directory and a viewer's rights. SSH renders it as text, HTTP renders it
     as HTML and JSON. Both transports parse commands into the same `DirOp`. A
@@ -101,11 +102,9 @@ attribution decision) are included.
 
 Built: the design, expiry and use limits, the account, group and contact model
 with its journal, the explorer model with SSH and HTTP renderers, personal and
-group screens as operations, and envelope signing with verification.
-
-Not built: transport of friend envelopes between servers (they are copied by
-the user), an Iroh replication of the directory, real mail delivery, and
-per-export module gating.
+group screens as operations, envelope signing with verification, public-key
+accounts, email confirmation and sign-in, signed HTTP requests, and the mail
+sinks. The list of what is not built is in Phase 6.
 
 ## Verification plan
 
@@ -255,3 +254,105 @@ per-export module gating.
   explorer; personal and group management screens; transport writes; delegation
   frames; verification by any route except the admin token; and finer HTTP
   error statuses (every directory error is a 400).
+
+### Phase 6: keys, email, sign-in, mail and signed requests
+
+Code: `directory.rs`, `directory_view.rs`, the new `directory_auth.rs` and
+`directory_mail.rs`, `world.rs`, `world_hub.rs`, `world_session.rs`,
+`web/world_ws.rs`, `world_ssh.rs`, `commands/serve.rs`, `cli.rs`, `main.rs`,
+`lib.rs`.
+
+- Keys. An account can hold several Ed25519 keys. Sign-up can take a key, and
+  then the account ID is that key and no secret is issued. A key is attached
+  by a request signed with that key (the key-proof rule), so no one can claim
+  a key they do not hold. A key belongs to one account, and a second account
+  cannot take it. Keyed accounts need no email.
+- Email. An address is normalized (trimmed, lowercased, checked for shape and
+  length) and belongs to one account. Adding one sends a 6-digit code, and
+  confirming the code records the address. Emails are only stored once
+  confirmed, so the `emails` set is the confirmed set.
+- Sign-in by email. `SignInEmail` sends a code to a known address. The
+  response is the same whether or not the address belongs to an account.
+  `ConfirmSignIn` opens a 12-hour session for the holder.
+- Verified tier. An account is verified when an admin verified it or when it
+  holds at least one confirmed email. The admin flag and email confirmation
+  are separate facts, and the tier uses either one.
+- Caller proof. Requests carry a Bearer session (`sess.<hex>`), a credential,
+  the admin token, or a signed request (`x-id-key`, `x-id-at`, `x-id-nonce`,
+  `x-id-signature`). The signed message is
+  `id-request-v1\n{METHOD}\n{path+query}\n{at}\n{nonce}\n{sha256(body) hex}`.
+  It must be within ±5 minutes, and each nonce is accepted once.
+- Sessions and codes are held in memory only. Codes expire after 15 minutes,
+  allow 5 attempts, and can be resent after 60 seconds. Only digests are kept.
+- Mail. `MailSink` is a synchronous trait called from `spawn_blocking`. A
+  request that needs mail is refused with 403 when no sink is configured. The
+  `DirectoryOutcome` mail field is skipped by serde, and its Debug output is
+  redacted.
+- Transports. HTTP: `GET` and `POST /api/world/directory`. WebSocket and SSH
+  reuse the same `directory::run`. SSH public-key login is accepted only for
+  `explore:` users, and russh checks the signature before the handler runs.
+- Status mapping over HTTP: Unauthenticated 401, Forbidden 403, NotFound 404,
+  Conflict 409, RateLimited 429, anything else 400. Success responses carry
+  `Cache-Control: no-store`. This replaces the Phase 5 note that every
+  directory error was a 400.
+
+Verification:
+
+- `cargo test --features "world ssh web" --lib`: 808 passed.
+- `cargo test --lib` (default features): 623 passed.
+- `cargo build --no-default-features`: no warnings.
+- `cargo fmt --check`: clean.
+- Clippy 1.97.0 reports nothing in the new files. The `directory_view.rs` test
+  helper no longer takes `&mut`. The remaining diagnostics are in code that
+  was already at HEAD.
+
+Tests added in this phase cover: sessions, single-use codes, attempts and
+expiry, resend limits, signed requests verified once, binding of a signature
+to method, target, body and time, keyed sign-up, key ownership and uniqueness,
+email confirmation (Server only), email removal, malformed email, sign-in
+by mail through the view, a signed HTTP sign-up that opens a session, a reused
+nonce refused with 401, outbox mode 0600, command environment passing, and a
+failing command returning an error.
+
+Choices made:
+
+- Keyed accounts. The account ID is the public key, so a keyed account has no
+  secret to lose.
+- Key-proof rule. Only a request signed by a key can attach that key.
+- Verified tier from email or admin, with enumeration-resistant sign-in.
+- No shell in the command sink. The message is passed through environment
+  variables.
+- Typed refusals with a fixed status mapping, and 400 as the default.
+
+Not built, and carried forward:
+
+- Real SMTP and Cloudflare Worker mail sinks. The sink trait is the seam for
+  them.
+- Admin invite bounds (`uses`, `expires_in_secs`).
+- The `delegate_to_friend` WebSocket frame and its `WorldHandle` method.
+- The HTML explorer (`/explore`, login, logout, `me`, groups, `act`), with CSP,
+  escaping, and a test that HTML and JSON show the same entities. Forms would
+  need `SameSite=Strict` cookies for CSRF.
+- The SSH interactive explorer with commands and `quit`. The current explorer
+  is one-shot and read-only.
+- A test of the SSH public-key login.
+- An end-to-end HTTP test of the mail sign-in path.
+- CLI tests for `--world-mail-outbox` and `--world-mail-command`.
+- Group and friend actions are in `run` but are not tested over HTTP or SSH.
+- Replication of the directory between servers, and transport of friend
+  envelopes (they are still copied by hand).
+- Per-export module gating.
+- Scratch-server run.
+
+Known limitations:
+
+- Sessions, codes and replay nonces are in memory only, so a restart signs
+  everyone out and forgets pending codes. Replay protection is the time
+  window plus an in-memory nonce set.
+- The directory is per world (`directory.jsonl` in the world folder), though
+  Decision 1 said one per server. Moving it to the server is not done.
+- `AddEmail` tells a signed-in user whether an address belongs to another
+  account. Sign-in does not reveal this.
+- A sign-in mail can be silently dropped by the resend limit. The response is
+  the same either way.
+
