@@ -271,6 +271,8 @@ pub enum CapError {
     BadArgs,
     /// The provider failed.
     Failed,
+    /// The participant whose input caused the request lacks the scope for it.
+    ActorDenied,
 }
 
 impl CapError {
@@ -282,6 +284,7 @@ impl CapError {
             Self::Unknown => "unknown_cap",
             Self::BadArgs => "bad_args",
             Self::Failed => "failed",
+            Self::ActorDenied => "actor_denied",
         }
     }
 }
@@ -334,10 +337,21 @@ impl CapLedger {
 
     /// Record one use of `cap` and decide it.
     pub fn decide(&mut self, cap: &str) -> Decision {
+        self.decide_for(cap, true)
+    }
+
+    /// Record one use of `cap` and decide it, where `actor_permits` says
+    /// whether the participant that caused the use may cause `cap`. A refused
+    /// actor is counted as a denial and never triggers a grant.
+    pub fn decide_for(&mut self, cap: &str, actor_permits: bool) -> Decision {
         let entry = self.usage.entry(cap.to_owned()).or_default();
         if !is_known(cap) {
             entry.denied += 1;
             return Decision::Deny(CapError::Unknown);
+        }
+        if !actor_permits {
+            entry.denied += 1;
+            return Decision::Deny(CapError::ActorDenied);
         }
         if self.granted.contains(cap) || self.granted.contains("*") {
             entry.allowed += 1;
@@ -535,6 +549,24 @@ mod tests {
         );
         assert!(ledger.granted().contains("random.u64"));
         assert!(!ledger.granted().contains("telepathy"));
+    }
+
+    #[test]
+    fn a_refused_actor_is_denied_and_never_grants() {
+        let mut ledger = CapLedger::new(BTreeSet::new(), true);
+        assert_eq!(
+            ledger.decide_for("chat.say", false),
+            Decision::Deny(CapError::ActorDenied)
+        );
+        assert!(!ledger.granted().contains("chat.say"));
+        assert_eq!(
+            ledger.usage()["chat.say"],
+            CapUsage {
+                allowed: 0,
+                denied: 1
+            }
+        );
+        assert_eq!(ledger.decide_for("chat.say", true), Decision::AllowAndGrant);
     }
 
     #[test]

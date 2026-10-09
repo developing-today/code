@@ -7,7 +7,7 @@
 //! behavior cannot drift between transports.
 //!
 //! Client frames (`type` tag): `join {capability, after?}`,
-//! `invite {admin_token, display_name}`, `chat {text}`, `input {data_hex}`.
+//! `invite {admin_token, display_name}`, `attenuate {name, scopes}`, `chat {text}`, `input {data_hex}`.
 //! The first frame must be `join` or `invite`. Server frames: `snapshot`,
 //! `event`, `invite`, `error`.
 //!
@@ -156,6 +156,11 @@ enum ClientFrame {
     },
     Chat {
         text: String,
+    },
+    /// Joined: mint a capability with a subset of this session's scopes.
+    Attenuate {
+        name: String,
+        scopes: Vec<String>,
     },
     Input {
         data_hex: String,
@@ -933,6 +938,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::Chat { .. }
+        | ClientFrame::Attenuate { .. }
         | ClientFrame::Input { .. } => {
             let _ = send_error(io, "first frame must be join, invite or install_begin").await;
         }
@@ -1495,6 +1501,22 @@ async fn handle_client_frame<I: SessionIo>(
         return send_error(io, "invalid world frame").await;
     };
     let result = match frame {
+        ClientFrame::Attenuate { name, scopes } => {
+            let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
+                return send_error(io, "unknown scope").await;
+            };
+            return match world.attenuate(token.clone(), scopes, name).await {
+                Ok((participant, capability)) => {
+                    let delegated = InviteResponse {
+                        capability: capability.expose().to_owned(),
+                        participant_id: participant.id,
+                        display_name: participant.display_name,
+                    };
+                    send_json(io, &ServerFrame::Invite(&delegated)).await
+                }
+                Err(_) => send_error(io, "delegation denied").await,
+            };
+        }
         ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
             Some(data) => world.input(token.clone(), data).await,
@@ -1811,6 +1833,39 @@ mod tests {
             .say(serde_json::json!({"type":"join","capability":capability}))
             .await;
         assert_eq!(guest.next().await.unwrap()["type"], "snapshot");
+    }
+
+    #[tokio::test]
+    async fn a_delegate_mints_narrower_capabilities_over_the_session() {
+        let svc = service(None);
+        let delegate = WorldScopes::from_names(["join", "chat", "input", "delegate"]).unwrap();
+        let (_, owner) = svc.world().issue("ann".to_owned(), delegate).await.unwrap();
+
+        let mut owner_peer = Peer::connect(svc.clone(), SessionConfig::default());
+        owner_peer
+            .say(serde_json::json!({"type":"join","capability":owner.expose()}))
+            .await;
+        assert_eq!(owner_peer.next().await.unwrap()["type"], "snapshot");
+        owner_peer
+            .say(serde_json::json!({"type":"attenuate","name":"bo","scopes":["join"]}))
+            .await;
+        let delegated = owner_peer.next().await.unwrap();
+        assert_eq!(delegated["type"], "invite");
+        let child = delegated["capability"].as_str().unwrap().to_owned();
+
+        let mut child_peer = Peer::connect(svc, SessionConfig::default());
+        child_peer
+            .say(serde_json::json!({"type":"join","capability":child}))
+            .await;
+        assert_eq!(child_peer.next().await.unwrap()["type"], "snapshot");
+        child_peer
+            .say(serde_json::json!({"type":"attenuate","name":"cy","scopes":["join"]}))
+            .await;
+        assert_eq!(child_peer.next().await.unwrap()["type"], "error");
+        child_peer
+            .say(serde_json::json!({"type":"attenuate","name":"cy","scopes":["telepathy"]}))
+            .await;
+        assert_eq!(child_peer.next().await.unwrap()["message"], "unknown scope");
     }
 
     #[tokio::test]

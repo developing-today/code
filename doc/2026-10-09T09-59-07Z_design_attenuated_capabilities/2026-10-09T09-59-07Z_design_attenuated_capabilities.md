@@ -249,3 +249,41 @@ not on a date.
 3. Record each step as a dated section in this document.
 
 No ratatui dependency is added; the Rust side has no widget consumer yet.
+
+---
+
+## 2026-10-09T10-32-35Z Update: v1 rules implemented (scopes, attenuation, attribution)
+
+Implemented in `world.rs` and `world_caps.rs` (first two steps of "Next steps"):
+
+- **Delegate scope.** `DELEGATE` is a scope bit (`delegate` on the wire), not a
+  separate flag. A capability with it may mint a child whose scopes are a
+  subset of its own and that keeps `JOIN`. This is the `may_delegate` of open
+  question 3, expressed as a scope. `GUEST` does not include it, so guests
+  cannot mint sub-invites by default.
+- **Attenuation over the session.** `attenuate {name, scopes}` is joined-only.
+  Success answers with an `invite` frame; a refused delegation answers
+  `delegation denied`; an unknown scope name answers `unknown scope`.
+- **Parent links are journaled.** `Issued` carries an optional `parent`,
+  defaulting to none so existing journals still replay. Revoking a capability
+  revokes its subtree (`revoke_tree`), and replaying `Revoked` runs the same
+  cascade, so restore reproduces the state.
+- **Attribution.** A program request caused by a participant's input is checked
+  against that participant's scopes: `chat.say` needs `CHAT`, other functions
+  need `JOIN`. A refused actor is recorded as denied and never triggers a grant.
+  Requests the host causes (ticks, host events) use the ceiling only, which
+  matches open question 1.
+
+Deviations from the verification plan:
+
+- The error code is `actor_denied`, not `cap_denied`. It is decided in
+  `CapLedger::decide_for`, which is also where the ceiling check lives.
+- A `JOIN`-only participant cannot submit input at all, because input requires
+  `INPUT`. The attribution case that matters is therefore an `INPUT` participant
+  without `CHAT`, not a `JOIN`-only one.
+
+Not yet done: the import gate in the compile service, expiry and use limits,
+and attributed ticks. Tests cover the pure attenuation rule, scope names and
+effects, the ledger refusal, cascading revocation, the participant limit,
+restore with a parent link, the actor-level refusal, and the session attenuate
+frame.

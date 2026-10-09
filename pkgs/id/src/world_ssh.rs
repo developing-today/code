@@ -137,7 +137,9 @@ impl Handler for SshClient {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
-        reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
+        reply
+            .reject(ChannelOpenFailure::AdministrativelyProhibited)
+            .await;
         Ok(())
     }
 
@@ -149,7 +151,9 @@ impl Handler for SshClient {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
-        reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
+        reply
+            .reject(ChannelOpenFailure::AdministrativelyProhibited)
+            .await;
         Ok(())
     }
 

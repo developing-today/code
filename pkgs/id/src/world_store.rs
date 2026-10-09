@@ -480,6 +480,7 @@ mod tests {
                 participant,
                 digest: "00".repeat(32),
                 scopes: WorldScopes::GUEST.bits(),
+                parent: None,
             })
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();

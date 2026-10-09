@@ -69,6 +69,8 @@ impl WorldScopes {
     pub const CHAT: Self = Self(0b010);
     /// Submit game input events.
     pub const INPUT: Self = Self(0b100);
+    /// Mint capabilities with a subset of this set.
+    pub const DELEGATE: Self = Self(0b1000);
     /// Default guest permissions.
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
 
@@ -82,6 +84,46 @@ impl WorldScopes {
     #[must_use]
     pub const fn contains(self, required: Self) -> bool {
         self.0 & required.0 == required.0
+    }
+
+    /// The scopes a delegate of this set may hold: a subset that keeps `JOIN`.
+    /// `None` unless this set includes `DELEGATE` and `requested` is a subset.
+    #[must_use]
+    pub const fn attenuate(self, requested: Self) -> Option<Self> {
+        if self.contains(Self::DELEGATE)
+            && requested.contains(Self::JOIN)
+            && self.contains(requested)
+        {
+            Some(requested)
+        } else {
+            None
+        }
+    }
+
+    /// Whether a participant with this set may cause the effect `cap`. Every
+    /// connected participant may read; `chat.say` also needs `CHAT`.
+    #[must_use]
+    pub fn allows_effect(self, cap: &str) -> bool {
+        match cap {
+            "chat.say" => self.contains(Self::CHAT),
+            _ => self.contains(Self::JOIN),
+        }
+    }
+
+    /// Scopes named on the wire (`join`, `chat`, `input`, `delegate`), or
+    /// `None` if a name is unknown.
+    #[must_use]
+    pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Self> {
+        names.into_iter().try_fold(Self(0), |scopes, name| {
+            let bit = match name {
+                "join" => Self::JOIN,
+                "chat" => Self::CHAT,
+                "input" => Self::INPUT,
+                "delegate" => Self::DELEGATE,
+                _ => return None,
+            };
+            Some(Self(scopes.0 | bit.0))
+        })
     }
 }
 
@@ -180,8 +222,12 @@ pub enum JournalEntry {
         digest: String,
         /// Granted scopes (bit set).
         scopes: u8,
+        /// The capability this one was delegated from, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<u64>,
     },
-    /// A capability was revoked.
+    /// A capability was revoked, with every capability delegated from it.
+    /// Replay revokes the same tree.
     Revoked {
         /// Participant whose capability was revoked.
         participant_id: u64,
@@ -397,6 +443,7 @@ struct CapabilityRecord {
     digest: [u8; 32],
     participant: Participant,
     scopes: WorldScopes,
+    parent: Option<u64>,
     revoked: bool,
 }
 
@@ -499,11 +546,17 @@ impl WorldCore {
                     participant,
                     digest,
                     scopes,
+                    parent,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
                     ensure!(
                         !core.capabilities.contains_key(&participant.id),
                         "participant {} issued twice",
+                        participant.id
+                    );
+                    ensure!(
+                        parent.is_none_or(|parent| core.capabilities.contains_key(&parent)),
+                        "participant {} delegated from an unknown capability",
                         participant.id
                     );
                     core.next_participant_id = core.next_participant_id.max(
@@ -518,13 +571,14 @@ impl WorldCore {
                             digest,
                             participant,
                             scopes: WorldScopes(scopes),
+                            parent,
                             revoked: false,
                         },
                     );
                 }
                 JournalEntry::Revoked { participant_id } => {
                     ensure!(
-                        core.revoke(participant_id),
+                        !core.revoke_tree(participant_id).is_empty(),
                         "journal revokes unknown or revoked participant {participant_id}"
                     );
                 }
@@ -696,6 +750,7 @@ impl WorldCore {
                 participant: record.participant.clone(),
                 digest: hex_encode(&record.digest),
                 scopes: record.scopes.0,
+                parent: record.parent,
             })
     }
 
@@ -717,6 +772,35 @@ impl WorldCore {
         &mut self,
         display_name: &str,
         scopes: WorldScopes,
+    ) -> Result<(Participant, JoinCapability)> {
+        self.mint(display_name, scopes, None)
+    }
+
+    /// Delegate a capability: a new participant whose scopes are a subset of
+    /// the delegating capability's, and which is revoked with it.
+    pub fn attenuate(
+        &mut self,
+        token: &JoinCapability,
+        scopes: WorldScopes,
+        display_name: &str,
+    ) -> Result<(Participant, JoinCapability)> {
+        let parent = self.authorize(token, WorldScopes::JOIN)?;
+        let parent_scopes = self
+            .capabilities
+            .get(&parent)
+            .context("world participant is unavailable")?
+            .scopes;
+        let scopes = parent_scopes
+            .attenuate(scopes)
+            .context("this capability may not delegate those scopes")?;
+        self.mint(display_name, scopes, Some(parent))
+    }
+
+    fn mint(
+        &mut self,
+        display_name: &str,
+        scopes: WorldScopes,
+        parent: Option<u64>,
     ) -> Result<(Participant, JoinCapability)> {
         let active = self
             .capabilities
@@ -752,20 +836,42 @@ impl WorldCore {
                 digest,
                 participant: participant.clone(),
                 scopes,
+                parent,
                 revoked: false,
             },
         );
         Ok((participant, JoinCapability(token)))
     }
 
-    /// Revoke a capability by its server-assigned participant ID.
-    pub fn revoke(&mut self, participant_id: u64) -> bool {
-        let Some(record) = self.capabilities.get_mut(&participant_id) else {
-            return false;
-        };
-        let was_active = !record.revoked;
-        record.revoked = true;
-        was_active
+    /// Revoke a capability and every capability delegated from it. Returns
+    /// the participants newly revoked; empty if none was active.
+    pub fn revoke_tree(&mut self, participant_id: u64) -> Vec<u64> {
+        let mut revoked = Vec::new();
+        let mut pending = vec![participant_id];
+        while let Some(id) = pending.pop() {
+            let Some(record) = self.capabilities.get_mut(&id) else {
+                continue;
+            };
+            if record.revoked {
+                continue;
+            }
+            record.revoked = true;
+            revoked.push(id);
+            pending.extend(
+                self.capabilities
+                    .values()
+                    .filter(|child| child.parent == Some(id))
+                    .map(|child| child.participant.id),
+            );
+        }
+        revoked
+    }
+
+    /// The scopes of a capability, for checking what its holder may cause.
+    fn scopes_of(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.capabilities
+            .get(&participant_id)
+            .map(|record| record.scopes)
     }
 
     /// Commit a chat message after validating capability and bounds.
@@ -956,6 +1062,12 @@ enum WorldCommand {
         scopes: WorldScopes,
         reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
     },
+    Attenuate {
+        token: JoinCapability,
+        name: String,
+        scopes: WorldScopes,
+        reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
+    },
     Revoke {
         participant_id: u64,
         reply: oneshot::Sender<bool>,
@@ -1057,6 +1169,9 @@ struct WorldActor {
     denied_subs: BTreeSet<String>,
     /// Armed tick intervals to their next fire time.
     ticks: BTreeMap<u64, std::time::Instant>,
+    /// The participant whose input is being processed. Requests the program
+    /// makes in response are checked against that participant's scopes.
+    acting: Option<u64>,
 }
 
 impl WorldActor {
@@ -1085,6 +1200,7 @@ impl WorldActor {
             }
             self.handle(command).await;
             self.after_change().await;
+            self.acting = None;
         }
     }
 
@@ -1288,7 +1404,14 @@ impl WorldActor {
     /// Execute one capability request. Anything the world has not granted is
     /// an error the program sees.
     fn execute(&mut self, request: &Request) -> Result<serde_json::Value, CapError> {
-        match self.core.ledger.decide(&request.cap) {
+        let actor_permits = match self.acting {
+            None => true,
+            Some(participant) => self
+                .core
+                .scopes_of(participant)
+                .is_some_and(|scopes| scopes.allows_effect(&request.cap)),
+        };
+        match self.core.ledger.decide_for(&request.cap, actor_permits) {
             Decision::Allow => {}
             Decision::AllowAndGrant => {
                 let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
@@ -1451,16 +1574,43 @@ impl WorldActor {
                 };
                 let _ = reply.send(result);
             }
+            WorldCommand::Attenuate {
+                token,
+                name,
+                scopes,
+                reply,
+            } => {
+                let result = if self.storage_failed {
+                    Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    ))
+                } else {
+                    self.core
+                        .attenuate(&token, scopes, &name)
+                        .and_then(|issued| {
+                            let entry = self
+                                .core
+                                .issued_entry(issued.0.id)
+                                .context("delegated capability vanished")?;
+                            self.persist(entry)?;
+                            Ok(issued)
+                        })
+                };
+                let _ = reply.send(result);
+            }
             WorldCommand::Revoke {
                 participant_id,
                 reply,
             } => {
                 // Revocation takes effect in memory even if storage failed:
                 // denying access is always the safe side.
-                let was_active = self.core.revoke(participant_id);
+                let revoked = self.core.revoke_tree(participant_id);
+                let was_active = !revoked.is_empty();
                 if was_active {
                     let _ = self.persist(JournalEntry::Revoked { participant_id });
-                    let _ = self.revocation_sender.send(participant_id);
+                    for id in revoked {
+                        let _ = self.revocation_sender.send(id);
+                    }
                 }
                 let _ = reply.send(was_active);
             }
@@ -1501,6 +1651,7 @@ impl WorldActor {
                         "world storage failed; the world is read-only"
                     )),
                     Ok(candidate) if self.program_healthy => {
+                        self.acting = Some(candidate.participant_id);
                         match self
                             .program
                             .update(&candidate)
@@ -1736,6 +1887,7 @@ impl WorldHandle {
             handled_requests: BTreeSet::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
+            acting: None,
         };
         tokio::spawn(actor.run(receiver));
         Self {
@@ -1860,7 +2012,29 @@ impl WorldHandle {
             .context("world actor dropped capability response")?
     }
 
-    /// Revoke an active capability.
+    /// Delegate a narrower capability from `token`, which must hold `JOIN`.
+    pub async fn attenuate(
+        &self,
+        token: JoinCapability,
+        scopes: WorldScopes,
+        name: impl Into<String>,
+    ) -> Result<(Participant, JoinCapability)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::Attenuate {
+                token,
+                name: name.into(),
+                scopes,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped delegation response")?
+    }
+
+    /// Revoke an active capability and everything delegated from it.
     pub async fn revoke(&self, participant_id: u64) -> Result<bool> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -2216,6 +2390,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_participant_cannot_make_the_program_do_what_its_scopes_forbid() {
+        let core = WorldCore::new("caps", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let (_, token) = world
+            .issue(
+                "ann",
+                WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits()),
+            )
+            .await
+            .unwrap();
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(token, b"3".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("chat.say")
+                .is_some_and(|use_| use_.denied > 0)
+            {
+                assert_eq!(report.usage["chat.say"].allowed, 0);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
     async fn grant_on_use_grants_what_the_program_actually_uses() {
         let (world, token) = caps_world_sync(true).await;
         world.input(token, b"1".to_vec()).await.unwrap();
@@ -2253,6 +2459,7 @@ mod tests {
                 },
                 digest,
                 scopes: WorldScopes::GUEST.0,
+                parent: None,
             },
             JournalEntry::System {
                 event: WorldEvent {
@@ -2413,10 +2620,130 @@ mod tests {
     fn revoked_capabilities_cannot_read_or_write() {
         let mut core = world(8);
         let (participant, token) = join(&mut core, "Ada");
-        assert!(core.revoke(participant.id));
-        assert!(!core.revoke(participant.id));
+        assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
+        assert!(core.revoke_tree(participant.id).is_empty());
         assert!(core.snapshot(&token).is_err());
         assert!(core.chat(&token, "hello").is_err());
+    }
+
+    #[test]
+    fn attenuation_only_narrows_and_needs_delegate() {
+        let join = WorldScopes::JOIN;
+        let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        assert_eq!(delegator.attenuate(join), Some(join));
+        assert!(delegator.attenuate(WorldScopes::GUEST).is_some());
+        assert!(
+            WorldScopes::GUEST.attenuate(join).is_none(),
+            "no delegate scope"
+        );
+        assert!(
+            delegator.attenuate(WorldScopes::CHAT).is_none(),
+            "must keep join"
+        );
+        let join_only = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::DELEGATE.bits());
+        assert!(
+            join_only.attenuate(WorldScopes::GUEST).is_none(),
+            "widening"
+        );
+    }
+
+    #[test]
+    fn scope_names_and_effects_follow_the_scopes() {
+        assert_eq!(
+            WorldScopes::from_names(["join", "delegate"]),
+            Some(WorldScopes(0b1001))
+        );
+        assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
+        assert!(WorldScopes::GUEST.allows_effect("chat.say"));
+        let spectator = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits());
+        assert!(!spectator.allows_effect("chat.say"));
+        assert!(spectator.allows_effect("time.now"));
+    }
+
+    #[test]
+    fn delegated_capabilities_are_narrow_and_die_with_their_parent() {
+        let mut core = world(8);
+        let root = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let (owner, owner_token) = core.issue_capability("Ada", root).unwrap();
+        let (child, child_token) = core
+            .attenuate(
+                &owner_token,
+                WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::DELEGATE.bits()),
+                "Bo",
+            )
+            .unwrap();
+        let (grandchild, grandchild_token) = core
+            .attenuate(&child_token, WorldScopes::JOIN, "Cy")
+            .unwrap();
+        assert!(core.chat(&grandchild_token, "hi").is_err());
+        assert!(
+            core.attenuate(&child_token, WorldScopes::GUEST, "Di")
+                .is_err()
+        );
+        assert!(
+            core.attenuate(&grandchild_token, WorldScopes::JOIN, "Ed")
+                .is_err()
+        );
+
+        let mut revoked = core.revoke_tree(owner.id);
+        revoked.sort_unstable();
+        assert_eq!(revoked, vec![owner.id, child.id, grandchild.id]);
+        assert!(core.snapshot(&child_token).is_err());
+        assert!(core.snapshot(&grandchild_token).is_err());
+    }
+
+    #[test]
+    fn delegation_counts_against_the_participant_limit() {
+        let limits = WorldLimits {
+            participants: 2,
+            ..WorldLimits::default()
+        };
+        let mut core = WorldCore::new("limit", limits).unwrap();
+        let root = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let (_, owner_token) = core.issue_capability("Ada", root).unwrap();
+        core.attenuate(&owner_token, WorldScopes::JOIN, "Bo")
+            .unwrap();
+        assert!(
+            core.attenuate(&owner_token, WorldScopes::JOIN, "Cy")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_restored_delegation_keeps_its_parent_link() {
+        let secret = "cd".repeat(32);
+        let token = JoinCapability::from_wire(format!("2.{secret}"));
+        let digest = hex_encode(&token_digest(token.expose()));
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "delegate".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: "ann".to_owned(),
+                },
+                digest: "00".repeat(32),
+                scopes: WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits(),
+                parent: None,
+            },
+            JournalEntry::Issued {
+                participant: Participant {
+                    id: 2,
+                    display_name: "bo".to_owned(),
+                },
+                digest,
+                scopes: WorldScopes::JOIN.bits(),
+                parent: Some(1),
+            },
+        ];
+        let mut restored = WorldCore::restore("delegate", WorldLimits::default(), entries)
+            .unwrap()
+            .core;
+        assert!(restored.authorize(&token, WorldScopes::JOIN).is_ok());
+        assert_eq!(restored.revoke_tree(1), vec![1, 2]);
+        assert!(restored.authorize(&token, WorldScopes::JOIN).is_err());
     }
 
     #[test]
