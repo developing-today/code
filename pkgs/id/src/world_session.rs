@@ -345,6 +345,20 @@ impl WorldService {
         self
     }
 
+    /// Read or change this world's directory as the caller.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an unknown credential or a refused change.
+    pub async fn directory(
+        &self,
+        credential: Option<String>,
+        admin: bool,
+        action: crate::directory_view::DirectoryAction,
+    ) -> anyhow::Result<crate::directory_view::DirectoryOutcome> {
+        self.world.directory(credential, admin, action).await
+    }
+
     /// Wrap a world. `admin_token: None` disables invites.
     #[must_use]
     pub fn new(world: WorldHandle, admin_token: Option<String>) -> Self {

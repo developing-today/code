@@ -321,7 +321,13 @@ pub async fn open_world(
             .await
             .context("journal open task")??;
     let journal_entries = entries.len();
-    let restored = WorldCore::restore(world_id, limits, entries)?;
+    let mut restored = WorldCore::restore(world_id, limits, entries)?;
+    let directory_path = dir.join("directory.jsonl");
+    let directory =
+        tokio::task::spawn_blocking(move || crate::directory::Directory::open(&directory_path))
+            .await
+            .context("directory open task")??;
+    *restored.core.directory_mut() = directory;
     let modules = ModuleDir::new(dir.join("modules"));
     let mut report = OpenReport {
         sequence: 0,

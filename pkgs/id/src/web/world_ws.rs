@@ -6,7 +6,7 @@
 use axum::{
     Json,
     extract::{
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode},
@@ -18,6 +18,7 @@ use futures::{
 };
 use serde::Deserialize;
 
+use crate::directory_view::DirectoryAction;
 use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, run_session};
 
@@ -42,6 +43,78 @@ pub fn world_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
         .route("/ws/world", axum::routing::get(handler))
         .route("/api/world/invite", axum::routing::post(invite_handler))
+        .route(
+            "/api/world/directory",
+            axum::routing::get(directory_read_handler).post(directory_write_handler),
+        )
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct DirectoryQuery {
+    /// World to read (default world if absent).
+    world: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct DirectoryRequest {
+    /// World to act on (default world if absent).
+    world: Option<String>,
+    #[serde(flatten)]
+    action: DirectoryAction,
+}
+
+async fn directory_read_handler(
+    State(state): State<WorldWebState>,
+    headers: HeaderMap,
+    Query(query): Query<DirectoryQuery>,
+) -> Response {
+    directory_respond(state, headers, query.world, DirectoryAction::View).await
+}
+
+async fn directory_write_handler(
+    State(state): State<WorldWebState>,
+    headers: HeaderMap,
+    Json(request): Json<DirectoryRequest>,
+) -> Response {
+    directory_respond(state, headers, request.world, request.action).await
+}
+
+/// The admin token, in `x-world-admin-token`, and the account credential, in
+/// `authorization: Bearer ...`, are read from headers so neither lands in a URL.
+async fn directory_respond(
+    state: WorldWebState,
+    headers: HeaderMap,
+    world: Option<String>,
+    action: DirectoryAction,
+) -> Response {
+    let Some(hub) = state.hub else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let token = headers
+        .get("x-world-admin-token")
+        .and_then(|value| value.to_str().ok());
+    let credential = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let lease = match hub.lease(world.as_deref(), token).await {
+        Ok(lease) => lease,
+        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let admin = token.is_some_and(|token| hub.admin_ok(token));
+    match lease.service().directory(credential, admin, action).await {
+        Ok(outcome) => Json(outcome).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{error:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 async fn invite_handler(
@@ -152,6 +225,90 @@ mod tests {
         builder
             .body(Body::from(r#"{"display_name":"guest"}"#))
             .unwrap()
+    }
+
+    fn directory_request(
+        method: &str,
+        admin: Option<&str>,
+        credential: Option<&str>,
+        body: &str,
+    ) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri("/api/world/directory")
+            .header("content-type", "application/json");
+        if let Some(admin) = admin {
+            builder = builder.header("x-world-admin-token", admin);
+        }
+        if let Some(credential) = credential {
+            builder = builder.header("authorization", format!("Bearer {credential}"));
+        }
+        builder.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    async fn body_json(response: Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_directory_is_signed_up_to_and_read_over_http() {
+        let router = app(Some(lobby()), Some("s3cret"));
+        let signed = router
+            .clone()
+            .oneshot(directory_request(
+                "POST",
+                None,
+                None,
+                r#"{"action":"sign_up","name":"Ada"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(signed.status(), StatusCode::OK);
+        let signed = body_json(signed).await;
+        let credential = signed["credential"].as_str().unwrap().to_owned();
+        let ada = signed["view"]["viewer"].as_str().unwrap().to_owned();
+
+        let anonymous = body_json(
+            router
+                .clone()
+                .oneshot(directory_request("GET", None, None, ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(anonymous["view"]["viewer"], "anonymous");
+        assert_eq!(anonymous["view"]["accounts"][0]["name"], "Ada");
+        assert!(anonymous["view"]["accounts"][0]["verified"].is_null());
+
+        let admin = body_json(
+            router
+                .clone()
+                .oneshot(directory_request("GET", Some("s3cret"), None, ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(admin["view"]["viewer"], "admin");
+        assert_eq!(admin["view"]["accounts"][0]["verified"], false);
+
+        let own = body_json(
+            router
+                .clone()
+                .oneshot(directory_request("GET", None, Some(&credential), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(own["view"]["viewer"], ada);
+
+        let refused = router
+            .oneshot(directory_request("GET", None, Some("acct.nobody.00"), ""))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

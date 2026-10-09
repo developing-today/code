@@ -89,6 +89,8 @@ pub struct Group {
     pub description: String,
     /// The permissions members gain from this group.
     pub scopes: WorldScopes,
+    /// Whether anonymous viewers may see the group.
+    pub public: bool,
 }
 
 /// One durable change to the directory.
@@ -132,6 +134,13 @@ pub enum DirectoryEntry {
         description: String,
         /// The permission bits.
         scopes: u8,
+    },
+    /// A group's visibility to anonymous viewers changed.
+    GroupVisibility {
+        /// The group ID.
+        id: u64,
+        /// Whether anonymous viewers may see the group.
+        public: bool,
     },
     /// A group and its memberships were removed.
     GroupDeleted {
@@ -478,6 +487,26 @@ impl Directory {
         Ok(entry)
     }
 
+    /// Show a group to anonymous viewers, or hide it. Admins only.
+    ///
+    /// # Errors
+    ///
+    /// Fails unless the actor is an admin of the group.
+    pub fn set_public(
+        &mut self,
+        actor: Actor<'_>,
+        group: u64,
+        public: bool,
+    ) -> Result<DirectoryEntry> {
+        ensure!(
+            self.allowed(actor, group, Level::Admin),
+            "only an admin changes who can see a group"
+        );
+        let entry = DirectoryEntry::GroupVisibility { id: group, public };
+        self.apply(&entry)?;
+        Ok(entry)
+    }
+
     /// Delete a group and every membership it holds or is held by.
     ///
     /// # Errors
@@ -613,6 +642,34 @@ impl Directory {
             )
             .map(|((_, member), level)| (member.clone(), *level))
             .collect()
+    }
+
+    /// Every account, in ID order.
+    pub fn accounts(&self) -> impl Iterator<Item = &Account> {
+        self.accounts.values()
+    }
+
+    /// Every group, in ID order.
+    pub fn groups(&self) -> impl Iterator<Item = &Group> {
+        self.groups.values()
+    }
+
+    /// Pending friend requests to and from an account, as (incoming, outgoing).
+    #[must_use]
+    pub fn pending_for(&self, id: &str) -> (Vec<String>, Vec<String>) {
+        let incoming = self
+            .requests
+            .iter()
+            .filter(|(_, to)| to == id)
+            .map(|(from, _)| from.clone())
+            .collect();
+        let outgoing = self
+            .requests
+            .iter()
+            .filter(|(from, _)| from == id)
+            .map(|(_, to)| to.clone())
+            .collect();
+        (incoming, outgoing)
     }
 
     /// Friends of an account, in order.
@@ -821,6 +878,7 @@ impl Directory {
                         name: clean_name(name)?,
                         description: clean_description(description)?,
                         scopes: permissions(*scopes)?,
+                        public: false,
                     },
                 );
                 self.members.insert(
@@ -847,6 +905,9 @@ impl Directory {
                 group.name = name;
                 group.description = description;
                 group.scopes = scopes;
+            }
+            DirectoryEntry::GroupVisibility { id, public } => {
+                self.groups.get_mut(id).context("no such group")?.public = *public;
             }
             DirectoryEntry::GroupDeleted { id } => {
                 ensure!(self.groups.remove(id).is_some(), "no such group");
@@ -1004,6 +1065,7 @@ fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -1098,12 +1160,7 @@ mod tests {
             "managers cannot grant manage"
         );
         directory
-            .set_member(
-                Actor::Account(&bo),
-                group,
-                cy_member.clone(),
-                Some(Level::Write),
-            )
+            .set_member(Actor::Account(&bo), group, cy_member, Some(Level::Write))
             .unwrap();
         assert!(
             directory
@@ -1127,7 +1184,7 @@ mod tests {
                 .is_err(),
             "managers cannot change their own level"
         );
-        let di_member = Member::Account { id: di.clone() };
+        let di_member = Member::Account { id: di };
         assert!(
             directory
                 .set_member(Actor::Account(&cy), group, di_member, Some(Level::Read))

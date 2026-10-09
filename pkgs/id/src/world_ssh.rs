@@ -18,6 +18,7 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
 };
 
+use crate::directory_view::{DirectoryAction, render_text};
 use crate::world_hub::WorldHub;
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
 
@@ -25,6 +26,8 @@ use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
 
 const INPUT_QUEUE: usize = 256;
+/// User-name prefix that opens the read-only directory explorer for a world.
+const EXPLORE_PREFIX: &str = "explore:";
 const MAX_PACKET_BYTES: u32 = 32 * 1024;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
 /// Concurrent SSH connections the server accepts; the rest are refused at auth.
@@ -102,6 +105,7 @@ impl Server for SshServer {
 struct Login {
     world: Option<String>,
     capability: String,
+    explore: bool,
 }
 
 struct SshClient {
@@ -120,9 +124,14 @@ impl Handler for SshClient {
         if self.permit.is_none() {
             return Ok(Auth::reject());
         }
+        let (world, explore) = match user.strip_prefix(EXPLORE_PREFIX) {
+            Some(world) => (world, true),
+            None => (user, false),
+        };
         self.login = Some(Login {
-            world: (!user.is_empty()).then(|| user.to_owned()),
+            world: (!world.is_empty()).then(|| world.to_owned()),
             capability: password.to_owned(),
+            explore,
         });
         Ok(Auth::Accept)
     }
@@ -207,6 +216,25 @@ impl Handler for SshClient {
         let Some(login) = self.login.as_ref().filter(|_| self.input.is_none()) else {
             return session.channel_failure(channel);
         };
+        if login.explore {
+            let world = login.world.clone();
+            let password = login.capability.clone();
+            let hub = self.hub.clone();
+            let handle = session.handle();
+            session.channel_success(channel)?;
+            tokio::spawn(async move {
+                let text = match explore(&hub, world.as_deref(), &password).await {
+                    Ok(text) => text,
+                    Err(message) => {
+                        tokio::time::sleep(REFUSED_SHELL_DELAY).await;
+                        format!("{message}\r\n")
+                    }
+                };
+                let _ = handle.data(channel, text).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
         let first = join_frame(login);
         session.channel_success(channel)?;
 
@@ -322,6 +350,21 @@ impl SessionIo for SshIo {
     }
 }
 
+/// The directory as text. The password is the admin token, an account credential, or empty.
+async fn explore(hub: &WorldHub, world: Option<&str>, password: &str) -> Result<String, String> {
+    let Ok(lease) = hub.lease(world, Some(password)).await else {
+        return Err("no such world".to_owned());
+    };
+    let admin = hub.admin_ok(password);
+    let credential = (!admin && !password.is_empty()).then(|| password.to_owned());
+    let outcome = lease
+        .service()
+        .directory(credential, admin, DirectoryAction::View)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(render_text(&outcome.view).replace('\n', "\r\n"))
+}
+
 /// Terminal text from the world: control characters are dropped, so text from
 /// one participant cannot drive another participant's terminal.
 fn terminal_text(data: &str) -> String {
@@ -370,18 +413,64 @@ mod tests {
     }
 
     async fn connect(port: u16, password: &str) -> client::Handle<TrustAll> {
+        connect_as(port, "", password).await
+    }
+
+    async fn connect_as(port: u16, user: &str, password: &str) -> client::Handle<TrustAll> {
         let config = Arc::new(client::Config::default());
         let mut session = client::connect(config, ("127.0.0.1", port), TrustAll)
             .await
             .unwrap();
         assert!(
             session
-                .authenticate_password("", password)
+                .authenticate_password(user, password)
                 .await
                 .unwrap()
                 .success()
         );
         session
+    }
+
+    async fn read_all(channel: &mut Channel<client::Msg>) -> String {
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(message) = channel.wait().await {
+                if let ChannelMsg::Data { data } = message {
+                    bytes.extend_from_slice(&data);
+                }
+            }
+        })
+        .await
+        .expect("timed out reading the explorer");
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_explorer_shows_the_directory_as_text_to_the_admin_and_anonymous() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let signed = world
+            .directory(
+                None,
+                false,
+                DirectoryAction::SignUp {
+                    name: "Ada".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        let ada = signed.view.viewer.clone();
+        let hub = WorldHub::single(WorldService::new(world, Some("admin".to_owned())));
+        let (port, server) = start(hub).await;
+
+        for (password, is_admin) in [("admin", true), ("", false)] {
+            let session = connect_as(port, "explore:", password).await;
+            let mut channel = session.channel_open_session().await.unwrap();
+            channel.request_shell(true).await.unwrap();
+            let text = read_all(&mut channel).await;
+            assert!(text.contains(&ada) && text.contains("Ada"), "{text}");
+            assert_eq!(text.contains("viewer: admin"), is_admin, "{text}");
+        }
+        server.abort();
     }
 
     async fn shell(session: &client::Handle<TrustAll>) -> Channel<client::Msg> {

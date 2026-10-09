@@ -1369,6 +1369,12 @@ enum WorldCommand {
         bounds: CapabilityBounds,
         reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
     },
+    Directory {
+        credential: Option<String>,
+        admin: bool,
+        action: crate::directory_view::DirectoryAction,
+        reply: oneshot::Sender<Result<crate::directory_view::DirectoryOutcome>>,
+    },
     Revoke {
         participant_id: u64,
         reply: oneshot::Sender<bool>,
@@ -1896,6 +1902,22 @@ impl WorldActor {
                 };
                 let _ = reply.send(result);
             }
+            WorldCommand::Directory {
+                credential,
+                admin,
+                action,
+                reply,
+            } => {
+                let result = crate::directory_view::Viewer::resolve(
+                    self.core.directory(),
+                    admin,
+                    credential.as_deref(),
+                )
+                .and_then(|viewer| {
+                    crate::directory_view::run(self.core.directory_mut(), &viewer, action)
+                });
+                let _ = reply.send(result);
+            }
             WorldCommand::Revoke {
                 participant_id,
                 reply,
@@ -2332,6 +2354,29 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped delegation response")?
+    }
+
+    /// Read or change the directory as the caller. `admin` is set only after the
+    /// admin token has been checked; `credential` is an account credential.
+    pub async fn directory(
+        &self,
+        credential: Option<String>,
+        admin: bool,
+        action: crate::directory_view::DirectoryAction,
+    ) -> Result<crate::directory_view::DirectoryOutcome> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::Directory {
+                credential,
+                admin,
+                action,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped directory response")?
     }
 
     /// Revoke an active capability and everything delegated from it.

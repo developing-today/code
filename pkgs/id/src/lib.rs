@@ -157,6 +157,8 @@ pub mod cli;
 pub mod commands;
 #[cfg(feature = "world")]
 pub mod directory;
+#[cfg(feature = "world")]
+pub mod directory_view;
 pub mod discovery;
 pub mod fileops;
 pub mod helpers;
