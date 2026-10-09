@@ -194,3 +194,64 @@ per-export module gating.
 - Tests: 4 in `world::account_tests`; 1 in `directory::tests` for journaling.
 - Not in this phase: the frames and handle commands that expose these. Those
   are Phase 4.
+
+### Phase 4: directory explorer over SSH and HTTP
+
+- Groups have a `public` flag, default private. It is changed by
+  `DirectoryEntry::GroupVisibility`, journaled like any other change, and
+  `set_public` needs `Admin` on that group.
+- `directory_view.rs` builds a `DirectoryView` from a `Directory` and a
+  `Viewer` (`Anonymous`, `Account`, or `Admin`). `Viewer::resolve` lets the
+  admin token win. A credential that names no account is refused unless the
+  request is admin.
+- Visibility is as stated above. Detail fields (scopes, friends, pending
+  requests, verification) appear only for the account itself or for admin.
+  Group members appear to a viewer holding `read` or better, and to admin.
+  Anonymous viewers see account names and public groups only.
+- `DirectoryAction` has two variants: `View`, and `SignUp { name }`. `run`
+  returns a `DirectoryOutcome` with the view and, for sign-up, the credential
+  once. After sign-up the view is the new account's view.
+- HTTP: `GET /api/world/directory?world=` reads the view. `POST` takes the same
+  action as a JSON body. The credential goes in `authorization: Bearer` and the
+  admin token in `x-world-admin-token`. The view is nested under `view`. Any
+  directory error is a 400 with `{"error": ...}`; a busy world is a 503; other
+  lease errors are 404.
+- SSH: log in as user `explore:<world>` (an empty world name is the default
+  world). The password is a capability, or the admin token. The reply is
+  `render_text` with CRLF line endings, then the channel closes. Refused logins
+  wait `REFUSED_SHELL_DELAY`, as other refused shells do.
+- Parity: both transports render the output of the same `run`. The test
+  `json_and_text_name_the_same_accounts_and_groups` checks that the JSON and
+  text renderings name the same entities. The SSH and HTTP tests each check
+  their own transport. No test compares the SSH bytes with the HTTP bytes for
+  the same viewer.
+- Deviation from decision 13: there is no `DirOp`. Both transports take
+  `DirectoryAction`. The HTML renderer is not built, so only the JSON and text
+  renderers exist.
+- Not in this phase: the HTML explorer; personal and group management screens;
+  writes over SSH or HTTP beyond sign-up. Creating groups, adding members,
+  setting levels, sending friend requests and making a group public exist in
+  the model and are tested there, but no transport exposes them. Delegation
+  frames are also not exposed. Scope above says "personal and group screens as
+  operations", and that is only true of the model, not of the transports.
+
+### Phase 5: verification and wrap-up
+
+- `cargo fmt --check`: clean.
+- `cargo test --features "world ssh web" --lib`: 791 passed.
+- `cargo test --lib` (default features): 607 passed.
+- Clippy 1.97.0, `--features "world ssh web" --all-targets`: no diagnostics in
+  the lines this work changed. The remaining errors and warnings are in test
+  modules and code that already existed at HEAD: `unwrap_used` in the tests of
+  `world.rs`, `world_net.rs`, `world_hub.rs`, `world_native.rs`,
+  `world_compile.rs` and `world_session.rs`, plus `clone_on_ref_ptr` and
+  `cast_possible_truncation` in `web/world_ws.rs`.
+- Scratch-server run: not done. The HTTP test binds `127.0.0.1:0` through axum,
+  and the SSH test connects a real russh client to a real port. Those cover
+  the transports, so a separate run was not added.
+- Not done, and carried forward: real email delivery; delivery of friend
+  envelopes between servers (they are copied by hand); Iroh replication of the
+  directory; bounds on admin invites; per-export module gating; the HTML
+  explorer; personal and group management screens; transport writes; delegation
+  frames; verification by any route except the admin token; and finer HTTP
+  error statuses (every directory error is a 400).
