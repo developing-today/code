@@ -51,6 +51,7 @@ let
     ++ (with pkgs; [
       # Build dependencies
       pkg-config
+      cmake
       openssl
 
       # Cargo plugins

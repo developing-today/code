@@ -590,10 +590,12 @@
             inherit buildInputs;
             nativeBuildInputs = [
               pkgs.pkg-config
+              pkgs.cmake
               rustToolchain
               pkgs.bun
               bun2nixPkg.hook
             ];
+            dontUseCmakeConfigure = true;
 
             # bun2nix: offline web dependency installation
             inherit bunDeps;
@@ -647,8 +649,10 @@
             inherit buildInputs;
             nativeBuildInputs = [
               pkgs.pkg-config
+              pkgs.cmake
               rustToolchain
             ];
+            dontUseCmakeConfigure = true;
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
