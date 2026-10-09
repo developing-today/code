@@ -4,7 +4,9 @@
 //! [`render_text`]. Visibility is decided here alone, so an entity shown on one
 //! transport is shown on the other.
 
-use anyhow::{Context, Result, anyhow};
+use std::collections::BTreeMap;
+
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::directory::{Actor, Directory, Level, Member, Refusal, normalize_email, normalize_key};
@@ -260,6 +262,351 @@ impl DirectoryAction {
     }
 }
 
+/// One line typed at an explorer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Line {
+    /// Nothing but spaces.
+    Blank,
+    /// `help`.
+    Help,
+    /// `quit` or `exit`.
+    Quit,
+    /// A directory action.
+    Action(DirectoryAction),
+}
+
+/// The commands the SSH explorer accepts, one per line.
+pub const HELP: &str = "\
+commands:
+  view                                show the directory
+  signup NAME                         create an account; its credential is printed once
+  keysignup NAME                      create an account for the key this login uses
+  session                             open a session as the current account
+  signout                             end the session, and drop admin rights for this login
+  addkey HEX | removekey HEX          add or remove a key on your account
+  addemail ADDR | removeemail ADDR    mail a code to add an address, or remove one
+  confirmemail ADDR CODE              confirm an address with its mailed code
+  signin ADDR                         mail a sign-in code to a known address
+  confirmsignin ADDR CODE             trade the code for a session
+  group new SCOPES NAME | DESC        create a group; SCOPES is comma-separated, or -
+  group update ID SCOPES NAME | DESC  rename, redescribe or regrant a group
+  group public ID yes|no              show a group to anonymous viewers
+  group delete ID
+  group member ID account:ID|group:N LEVEL|none
+  friend request|accept|remove ACCOUNT
+  verify ACCOUNT                      admin only
+  help, quit";
+
+/// Read one line typed at an explorer. Both SSH and the HTML explorer build
+/// their actions through [`action_from_fields`], so the two agree on every
+/// name and format.
+///
+/// # Errors
+///
+/// Fails with a usage message for an unknown command or a wrong argument count.
+pub fn parse_line(line: &str) -> Result<Line> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(Line::Blank);
+    }
+    let (word, rest) = split_first(line);
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let (action, pairs) = match word {
+        "help" | "?" => return Ok(Line::Help),
+        "quit" | "exit" => return Ok(Line::Quit),
+        "view" => ("view", Vec::new()),
+        "signup" => ("sign_up", vec![("name", text_arg(rest, "signup NAME")?)]),
+        "keysignup" => (
+            "sign_up_key",
+            vec![("name", text_arg(rest, "keysignup NAME")?)],
+        ),
+        "session" => ("open_session", Vec::new()),
+        "signout" => ("sign_out", Vec::new()),
+        "addkey" => {
+            let [key] = words_n(&words, "addkey HEX")?;
+            ("add_key", vec![("key", key)])
+        }
+        "removekey" => {
+            let [key] = words_n(&words, "removekey HEX")?;
+            ("remove_key", vec![("key", key)])
+        }
+        "addemail" => {
+            let [address] = words_n(&words, "addemail ADDRESS")?;
+            ("add_email", vec![("address", address)])
+        }
+        "removeemail" => {
+            let [address] = words_n(&words, "removeemail ADDRESS")?;
+            ("remove_email", vec![("address", address)])
+        }
+        "confirmemail" => {
+            let [address, code] = words_n(&words, "confirmemail ADDRESS CODE")?;
+            ("confirm_email", vec![("address", address), ("code", code)])
+        }
+        "signin" => {
+            let [address] = words_n(&words, "signin ADDRESS")?;
+            ("sign_in_email", vec![("address", address)])
+        }
+        "confirmsignin" => {
+            let [address, code] = words_n(&words, "confirmsignin ADDRESS CODE")?;
+            (
+                "confirm_sign_in",
+                vec![("address", address), ("code", code)],
+            )
+        }
+        "verify" => {
+            let [account] = words_n(&words, "verify ACCOUNT")?;
+            ("verify", vec![("account", account)])
+        }
+        "friend" => match split_first(rest) {
+            ("request", tail) => {
+                let [to] = words_n(&split_words(tail), "friend request ACCOUNT")?;
+                ("request_friend", vec![("to", to)])
+            }
+            ("accept", tail) => {
+                let [from] = words_n(&split_words(tail), "friend accept ACCOUNT")?;
+                ("accept_friend", vec![("from", from)])
+            }
+            ("remove", tail) => {
+                let [other] = words_n(&split_words(tail), "friend remove ACCOUNT")?;
+                ("remove_friend", vec![("other", other)])
+            }
+            _ => bail!("friend takes request, accept or remove"),
+        },
+        "group" => group_command(rest)?,
+        other => bail!("unknown command {other}; type help"),
+    };
+    let mut fields: BTreeMap<String, String> = pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    fields.insert("action".to_owned(), action.to_owned());
+    Ok(Line::Action(action_from_fields(&fields)?))
+}
+
+fn group_command(rest: &str) -> Result<(&'static str, Vec<(&'static str, String)>)> {
+    let (sub, tail) = split_first(rest);
+    Ok(match sub {
+        "new" => {
+            let (scopes, name, description) = scoped(tail)?;
+            (
+                "create_group",
+                vec![
+                    ("scopes", scopes),
+                    ("name", name),
+                    ("description", description),
+                ],
+            )
+        }
+        "update" => {
+            let (id, tail) = split_first(tail);
+            let (scopes, name, description) = scoped(tail)?;
+            (
+                "update_group",
+                vec![
+                    ("group", id.to_owned()),
+                    ("scopes", scopes),
+                    ("name", name),
+                    ("description", description),
+                ],
+            )
+        }
+        "public" => {
+            let [group, public] = words_n(&split_words(tail), "group public ID yes|no")?;
+            ("set_public", vec![("group", group), ("public", public)])
+        }
+        "delete" => {
+            let [group] = words_n(&split_words(tail), "group delete ID")?;
+            ("delete_group", vec![("group", group)])
+        }
+        "member" => {
+            let [group, member, level] = words_n(
+                &split_words(tail),
+                "group member ID account:ID|group:N LEVEL|none",
+            )?;
+            (
+                "set_member",
+                vec![("group", group), ("member", member), ("level", level)],
+            )
+        }
+        _ => bail!("group takes new, update, public, delete or member"),
+    })
+}
+
+/// `SCOPES NAME | DESCRIPTION`, the description optional.
+fn scoped(text: &str) -> Result<(String, String, String)> {
+    let (head, description) = text.split_once('|').unwrap_or((text, ""));
+    let (scopes, name) = split_first(head);
+    if scopes.is_empty() || name.is_empty() {
+        bail!("expected SCOPES NAME | DESCRIPTION");
+    }
+    Ok((
+        scopes.to_owned(),
+        name.to_owned(),
+        description.trim().to_owned(),
+    ))
+}
+
+fn text_arg(rest: &str, usage: &str) -> Result<String> {
+    let text = rest.trim();
+    if text.is_empty() {
+        bail!("usage: {usage}");
+    }
+    Ok(text.to_owned())
+}
+
+fn words_n<const N: usize>(words: &[&str], usage: &str) -> Result<[String; N]> {
+    if words.len() != N {
+        bail!("usage: {usage}");
+    }
+    Ok(std::array::from_fn(|index| words[index].to_owned()))
+}
+
+fn split_words(text: &str) -> Vec<&str> {
+    text.split_whitespace().collect()
+}
+
+fn split_first(text: &str) -> (&str, &str) {
+    let text = text.trim();
+    match text.split_once(char::is_whitespace) {
+        Some((first, rest)) => (first, rest.trim()),
+        None => (text, ""),
+    }
+}
+
+fn field<'a>(fields: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str> {
+    fields
+        .get(key)
+        .map(String::as_str)
+        .with_context(|| format!("missing {key}"))
+}
+
+fn parse_id(text: &str) -> Result<u64> {
+    text.parse()
+        .with_context(|| format!("{text:?} is not a group ID"))
+}
+
+fn parse_bool(text: &str) -> Result<bool> {
+    match text {
+        "yes" | "on" | "true" => Ok(true),
+        "no" | "off" | "false" => Ok(false),
+        other => bail!("expected yes or no, not {other:?}"),
+    }
+}
+
+fn parse_scopes(text: &str) -> Vec<String> {
+    if text == "-" {
+        return Vec::new();
+    }
+    text.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn parse_level(text: &str) -> Result<Option<Level>> {
+    Ok(Some(match text {
+        "" | "none" => return Ok(None),
+        "access" => Level::Access,
+        "read" => Level::Read,
+        "write" => Level::Write,
+        "manage" => Level::Manage,
+        "admin" => Level::Admin,
+        other => bail!("unknown level {other:?}"),
+    }))
+}
+
+fn parse_member(text: &str) -> Result<Member> {
+    if let Some(id) = text.strip_prefix("account:") {
+        return Ok(Member::Account { id: id.to_owned() });
+    }
+    if let Some(id) = text.strip_prefix("group:") {
+        return Ok(Member::Group { id: parse_id(id)? });
+    }
+    bail!("a member is account:ID or group:N, not {text:?}")
+}
+
+/// Build an action from named fields. The field `action` names it, in the
+/// `snake_case` of the variant, and the rest are the variant's fields. Lists
+/// are comma-separated, and `-` is an empty list.
+///
+/// # Errors
+///
+/// Fails for an unknown action, a missing field, or a malformed value.
+pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<DirectoryAction> {
+    let action = field(fields, "action")?;
+    Ok(match action {
+        "view" => DirectoryAction::View,
+        "sign_up" => DirectoryAction::SignUp {
+            name: field(fields, "name")?.to_owned(),
+        },
+        "sign_up_key" => DirectoryAction::SignUpKey {
+            name: field(fields, "name")?.to_owned(),
+        },
+        "open_session" => DirectoryAction::OpenSession,
+        "sign_out" => DirectoryAction::SignOut,
+        "add_key" => DirectoryAction::AddKey {
+            key: field(fields, "key")?.to_owned(),
+        },
+        "remove_key" => DirectoryAction::RemoveKey {
+            key: field(fields, "key")?.to_owned(),
+        },
+        "add_email" => DirectoryAction::AddEmail {
+            address: field(fields, "address")?.to_owned(),
+        },
+        "confirm_email" => DirectoryAction::ConfirmEmail {
+            address: field(fields, "address")?.to_owned(),
+            code: field(fields, "code")?.to_owned(),
+        },
+        "remove_email" => DirectoryAction::RemoveEmail {
+            address: field(fields, "address")?.to_owned(),
+        },
+        "sign_in_email" => DirectoryAction::SignInEmail {
+            address: field(fields, "address")?.to_owned(),
+        },
+        "confirm_sign_in" => DirectoryAction::ConfirmSignIn {
+            address: field(fields, "address")?.to_owned(),
+            code: field(fields, "code")?.to_owned(),
+        },
+        "create_group" => DirectoryAction::CreateGroup {
+            name: field(fields, "name")?.to_owned(),
+            description: fields.get("description").cloned().unwrap_or_default(),
+            scopes: parse_scopes(field(fields, "scopes")?),
+        },
+        "update_group" => DirectoryAction::UpdateGroup {
+            group: parse_id(field(fields, "group")?)?,
+            name: field(fields, "name")?.to_owned(),
+            description: fields.get("description").cloned().unwrap_or_default(),
+            scopes: parse_scopes(field(fields, "scopes")?),
+        },
+        "set_public" => DirectoryAction::SetPublic {
+            group: parse_id(field(fields, "group")?)?,
+            public: parse_bool(field(fields, "public")?)?,
+        },
+        "delete_group" => DirectoryAction::DeleteGroup {
+            group: parse_id(field(fields, "group")?)?,
+        },
+        "set_member" => DirectoryAction::SetMember {
+            group: parse_id(field(fields, "group")?)?,
+            member: parse_member(field(fields, "member")?)?,
+            level: parse_level(fields.get("level").map_or("", String::as_str))?,
+        },
+        "request_friend" => DirectoryAction::RequestFriend {
+            to: field(fields, "to")?.to_owned(),
+        },
+        "accept_friend" => DirectoryAction::AcceptFriend {
+            from: field(fields, "from")?.to_owned(),
+        },
+        "remove_friend" => DirectoryAction::RemoveFriend {
+            other: field(fields, "other")?.to_owned(),
+        },
+        "verify" => DirectoryAction::Verify {
+            account: field(fields, "account")?.to_owned(),
+        },
+        other => bail!("unknown action {other:?}"),
+    })
+}
+
 /// The result of an action: the view afterwards, and anything the action
 /// produced that the caller must hand on.
 #[derive(Clone, Serialize)]
@@ -269,6 +616,8 @@ pub struct DirectoryOutcome {
     /// The new account's credential, set only by sign-up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// Whether a message was handed to the mail sink for this action.
+    pub mailed: bool,
     /// A session token, set when a session opens. Shown once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
@@ -286,6 +635,7 @@ impl std::fmt::Debug for DirectoryOutcome {
                 &self.credential.as_ref().map(|_| "[REDACTED]"),
             )
             .field("session", &self.session.as_ref().map(|_| "[REDACTED]"))
+            .field("mailed", &self.mailed)
             .field("mail", &self.mail.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
@@ -459,6 +809,7 @@ pub fn run(
         view: view(directory, &viewer),
         credential,
         session,
+        mailed: false,
         mail,
     })
 }
@@ -754,7 +1105,7 @@ mod tests {
 
     #[test]
     fn the_admin_sees_every_detail_and_member() {
-        let mut s = sample();
+        let s = sample();
         let view = view_for(&s.directory, &Viewer::Admin);
         assert_eq!(view.accounts.len(), 3);
         assert!(view.accounts.iter().all(|a| a.verified.is_some()));
@@ -768,7 +1119,7 @@ mod tests {
 
     #[test]
     fn anonymous_sees_names_and_public_groups_only() {
-        let mut s = sample();
+        let s = sample();
         let view = view_for(&s.directory, &Viewer::Anonymous);
         assert_eq!(view.accounts.len(), 3);
         assert!(view.accounts.iter().all(|a| {
@@ -787,7 +1138,7 @@ mod tests {
 
     #[test]
     fn a_member_sees_its_groups_and_members_at_read_but_not_others() {
-        let mut s = sample();
+        let s = sample();
         let view = view_for(&s.directory, &Viewer::Account(s.bo.clone()));
         let club = view.groups.iter().find(|g| g.id == s.club).unwrap();
         assert_eq!(club.level, Some(Level::Read));
@@ -819,7 +1170,7 @@ mod tests {
 
     #[test]
     fn friend_requests_show_on_both_ends() {
-        let mut s = sample();
+        let s = sample();
         let cy = view_for(&s.directory, &Viewer::Account(s.cy.clone()));
         let cy_details = cy.accounts.iter().find(|a| a.id == s.cy).unwrap();
         assert_eq!(cy_details.incoming.as_deref(), Some(&[s.ada.clone()][..]));
@@ -1029,5 +1380,112 @@ mod tests {
                 assert!(json.contains(&group.name) && text.contains(&group.name));
             }
         }
+    }
+
+    fn fields(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_typed_line_becomes_the_action_it_names() {
+        assert_eq!(parse_line("   ").unwrap(), Line::Blank);
+        assert_eq!(parse_line("help").unwrap(), Line::Help);
+        assert_eq!(parse_line("quit").unwrap(), Line::Quit);
+        assert_eq!(parse_line("exit").unwrap(), Line::Quit);
+        assert_eq!(
+            parse_line("signup Cy").unwrap(),
+            Line::Action(DirectoryAction::SignUp {
+                name: "Cy".to_owned()
+            })
+        );
+        assert_eq!(
+            parse_line("group new - Club | Members only").unwrap(),
+            Line::Action(DirectoryAction::CreateGroup {
+                name: "Club".to_owned(),
+                description: "Members only".to_owned(),
+                scopes: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse_line("group new join,chat Club | Members only").unwrap(),
+            Line::Action(DirectoryAction::CreateGroup {
+                name: "Club".to_owned(),
+                description: "Members only".to_owned(),
+                scopes: vec!["join".to_owned(), "chat".to_owned()],
+            })
+        );
+        assert_eq!(
+            parse_line("group member 3 account:abc read").unwrap(),
+            Line::Action(DirectoryAction::SetMember {
+                group: 3,
+                member: Member::Account {
+                    id: "abc".to_owned()
+                },
+                level: Some(Level::Read),
+            })
+        );
+        assert_eq!(
+            parse_line("group member 3 group:4 none").unwrap(),
+            Line::Action(DirectoryAction::SetMember {
+                group: 3,
+                member: Member::Group { id: 4 },
+                level: None,
+            })
+        );
+        assert_eq!(
+            parse_line("friend request abc").unwrap(),
+            Line::Action(DirectoryAction::RequestFriend {
+                to: "abc".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_malformed_line_is_refused_with_its_usage() {
+        for line in [
+            "bogus",
+            "signup",
+            "group new",
+            "group member 3 account:x wizard",
+            "group member 3 pigeon read",
+            "friend request",
+        ] {
+            assert!(parse_line(line).is_err(), "{line:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn form_fields_build_the_same_action_as_the_typed_line() {
+        assert_eq!(
+            action_from_fields(&fields(&[("action", "view")])).unwrap(),
+            DirectoryAction::View
+        );
+        assert_eq!(
+            action_from_fields(&fields(&[("action", "sign_up"), ("name", "Cy")])).unwrap(),
+            DirectoryAction::SignUp {
+                name: "Cy".to_owned()
+            }
+        );
+        assert_eq!(
+            action_from_fields(&fields(&[
+                ("action", "set_member"),
+                ("group", "3"),
+                ("member", "account:abc"),
+                ("level", ""),
+            ]))
+            .unwrap(),
+            DirectoryAction::SetMember {
+                group: 3,
+                member: Member::Account {
+                    id: "abc".to_owned()
+                },
+                level: None,
+            }
+        );
+        assert!(action_from_fields(&fields(&[("action", "explode")])).is_err());
+        assert!(action_from_fields(&fields(&[("name", "Cy")])).is_err());
     }
 }

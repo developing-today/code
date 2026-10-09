@@ -356,3 +356,44 @@ Known limitations:
 - A sign-in mail can be silently dropped by the resend limit. The response is
   the same either way.
 
+
+### Phase 7: interactive SSH explorer
+
+Code: `directory_view.rs` (`Line`, `parse_line`, `action_from_fields`, `HELP`),
+`world_ssh.rs` (`Explorer`, `run_explorer`, `Typing`), `world_session.rs`
+(`DirectoryOutcome::mailed`).
+
+- One grammar. `parse_line` turns a typed line into the same `DirectoryAction`
+  that `action_from_fields` builds from HTML form fields, so the text, JSON
+  and HTML transports share one set of actions.
+- Interactive explorer. `explore:` shells open a prompt (`id> `) and stay
+  open until `quit`, `exit`, Ctrl-C, or Ctrl-D on an empty line. Input is
+  line-edited (backspace), escape sequences are dropped, and CR, LF and CRLF
+  each submit one line.
+- Caller switching. `signup`, `keysignup` and `session` replace the caller
+  with the new credential or session, and `signout` drops back to the
+  connection's key. Any change of caller drops the admin token.
+- Mail feedback. When a mail was handed to the sink, the explorer prints
+  `a code was mailed to ADDR`. The code itself is never printed.
+
+Verification:
+
+- `cargo test --features "world ssh web" --lib`: 815 passed.
+- `cargo test --lib`: 626 passed.
+- `cargo build --no-default-features`: no warnings.
+- Clippy reports nothing in `directory_view.rs` or `world_ssh.rs`.
+
+Tests added: the explorer shows the directory to the admin and to anonymous
+viewers and closes on `quit`; sign-up, help, unknown commands and usage
+errors; friend request, accept and remove, and group membership over SSH; a
+public-key login that signs up and is recognised on reconnect, and an unknown
+key that sees only the anonymous view; the line editor; the grammar tests in
+`directory_view`.
+
+Choices made:
+
+- The grammar lives in one module, shared by every transport.
+- Caller switching is per connection, so a shell cannot keep an identity its
+  login did not give it.
+
+Not built in this phase: nothing from the Phase 7 list remains open.

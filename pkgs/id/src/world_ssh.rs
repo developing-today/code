@@ -5,7 +5,7 @@
 //! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
 //! world that presents a view.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{fmt::Write as _, net::SocketAddr, sync::Arc, time::Duration};
 
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
@@ -19,16 +19,18 @@ use tokio::{
 };
 
 use crate::directory_auth::Caller;
-use crate::directory_view::{DirectoryAction, render_text};
+use crate::directory_view::{
+    DirectoryAction, DirectoryOutcome, HELP, Line, parse_line, render_text,
+};
 use crate::world::hex_encode;
-use crate::world_hub::WorldHub;
+use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
 
 const INPUT_QUEUE: usize = 256;
-/// User-name prefix that opens the read-only directory explorer for a world.
+/// User-name prefix that opens the directory explorer for a world.
 const EXPLORE_PREFIX: &str = "explore:";
 const MAX_PACKET_BYTES: u32 = 32 * 1024;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
@@ -36,6 +38,9 @@ const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_CONNECTIONS: usize = 64;
 /// Pause before a refused shell closes, so guessing costs at least this per connection.
 const REFUSED_SHELL_DELAY: Duration = Duration::from_secs(1);
+const PROMPT: &str = "id> ";
+/// Longest line the explorer keeps; the rest of a longer line is dropped.
+const MAX_LINE: usize = 1024;
 
 /// Serve SSH connections until the listener fails.
 pub async fn serve(
@@ -245,23 +250,12 @@ impl Handler for SshClient {
             return session.channel_failure(channel);
         };
         if login.explore {
-            let world = login.world.clone();
-            let secret = login.capability.clone();
-            let key = login.key.clone();
-            let hub = self.hub.clone();
+            let explorer = Explorer::new(self.hub.clone(), login, &login.capability);
+            let (input, bytes) = mpsc::channel(INPUT_QUEUE);
+            self.input = Some(input);
             let handle = session.handle();
             session.channel_success(channel)?;
-            tokio::spawn(async move {
-                let text = match explore(&hub, world.as_deref(), &secret, key).await {
-                    Ok(text) => text,
-                    Err(message) => {
-                        tokio::time::sleep(REFUSED_SHELL_DELAY).await;
-                        format!("{message}\r\n")
-                    }
-                };
-                let _ = handle.data(channel, text).await;
-                let _ = handle.close(channel).await;
-            });
+            tokio::spawn(run_explorer(explorer, handle, channel, bytes));
             return Ok(());
         }
         let first = join_frame(login);
@@ -379,32 +373,250 @@ impl SessionIo for SshIo {
     }
 }
 
-/// The directory as text. The password is the admin token, an account credential, or empty.
-async fn explore(
-    hub: &WorldHub,
-    world: Option<&str>,
-    secret: &str,
-    key: Option<String>,
-) -> Result<String, String> {
-    let token = (!secret.is_empty()).then_some(secret);
-    let Ok(lease) = hub.lease(world, token).await else {
-        return Err("no such world".to_owned());
-    };
-    let mut caller = if hub.admin_ok(secret) {
-        Caller {
-            admin: true,
-            ..Caller::default()
+/// One explorer login: the world, the caller it acts as, and the secret it
+/// leases the world with. Sign-in changes the caller for the rest of the login.
+struct Explorer {
+    hub: WorldHub,
+    world: Option<String>,
+    token: Option<String>,
+    caller: Caller,
+}
+
+impl Explorer {
+    fn new(hub: WorldHub, login: &Login, secret: &str) -> Self {
+        let mut caller = if hub.admin_ok(secret) {
+            Caller {
+                admin: true,
+                ..Caller::default()
+            }
+        } else {
+            Caller::from_secret(secret)
+        };
+        caller.key.clone_from(&login.key);
+        Self {
+            hub,
+            world: login.world.clone(),
+            token: (!secret.is_empty()).then(|| secret.to_owned()),
+            caller,
         }
-    } else {
-        Caller::from_secret(secret)
+    }
+
+    async fn act(&self, action: DirectoryAction) -> anyhow::Result<DirectoryOutcome> {
+        let lease = self
+            .hub
+            .lease(self.world.as_deref(), self.token.as_deref())
+            .await
+            .map_err(|error| match error {
+                ResolveError::Busy | ResolveError::TooManyWorlds => {
+                    anyhow::anyhow!("the server is busy; try again")
+                }
+                _ => anyhow::anyhow!("no such world"),
+            })?;
+        lease.service().directory(self.caller.clone(), action).await
+    }
+
+    /// Run one typed line. Returns the text to show, and whether to close.
+    async fn execute(&mut self, line: &str) -> (String, bool) {
+        let action = match parse_line(line) {
+            Ok(Line::Blank) => return (String::new(), false),
+            Ok(Line::Help) => return (terminal_text(&format!("{HELP}\n")), false),
+            Ok(Line::Quit) => return (terminal_text("bye\n"), true),
+            Ok(Line::Action(action)) => action,
+            Err(error) => return (terminal_text(&format!("error: {error:#}\n")), false),
+        };
+        let signs_out = matches!(action, DirectoryAction::SignOut);
+        let mailed_to = match &action {
+            DirectoryAction::AddEmail { address } | DirectoryAction::SignInEmail { address } => {
+                Some(address.clone())
+            }
+            _ => None,
+        };
+        let outcome = match self.act(action).await {
+            Ok(outcome) => outcome,
+            Err(error) => return (terminal_text(&format!("error: {error:#}\n")), false),
+        };
+        let mut text = String::new();
+        if let Some(credential) = outcome.credential {
+            let _ = writeln!(text, "credential (shown once): {credential}");
+            self.become_caller(Caller {
+                credential: Some(credential),
+                ..Caller::default()
+            });
+        }
+        if let Some(token) = outcome.session {
+            let _ = writeln!(text, "session (shown once): {token}");
+            self.become_caller(Caller {
+                session: Some(token),
+                ..Caller::default()
+            });
+        }
+        if signs_out {
+            self.become_caller(Caller::default());
+        }
+        if let (true, Some(address)) = (outcome.mailed, mailed_to) {
+            let _ = writeln!(text, "a code was mailed to {address}");
+        }
+        text.push_str(&render_text(&outcome.view));
+        (terminal_text(&text), false)
+    }
+
+    /// Switch to acting as another caller, keeping only this login's key. The
+    /// admin token does not carry over: a new identity is not the admin.
+    fn become_caller(&mut self, caller: Caller) {
+        self.caller = Caller {
+            key: self.caller.key.clone(),
+            ..caller
+        };
+    }
+}
+
+async fn run_explorer(
+    mut explorer: Explorer,
+    handle: Handle,
+    channel: ChannelId,
+    mut bytes: mpsc::Receiver<Vec<u8>>,
+) {
+    let greeting = match explorer.act(DirectoryAction::View).await {
+        Ok(outcome) => format!(
+            "{}type help for commands\n{PROMPT}",
+            render_text(&outcome.view)
+        ),
+        Err(error) => {
+            tokio::time::sleep(REFUSED_SHELL_DELAY).await;
+            let _ = handle
+                .data(channel, terminal_text(&format!("{error:#}\n")))
+                .await;
+            let _ = handle.close(channel).await;
+            return;
+        }
     };
-    caller.key = key;
-    let outcome = lease
-        .service()
-        .directory(caller, DirectoryAction::View)
+    if handle
+        .data(channel, terminal_text(&greeting))
         .await
-        .map_err(|error| format!("{error:#}"))?;
-    Ok(render_text(&outcome.view).replace('\n', "\r\n"))
+        .is_err()
+    {
+        return;
+    }
+    let mut typing = Typing::default();
+    'input: while let Some(chunk) = bytes.recv().await {
+        let mut out = Vec::new();
+        let mut done = false;
+        for byte in chunk {
+            match typing.feed(byte) {
+                Typed::Nothing => {}
+                Typed::Echo(echo) => out.extend(echo),
+                Typed::Submit(line) => {
+                    out.extend_from_slice(b"\r\n");
+                    let (text, quit) = explorer.execute(&line).await;
+                    out.extend_from_slice(text.as_bytes());
+                    if quit {
+                        done = true;
+                        break;
+                    }
+                    out.extend_from_slice(PROMPT.as_bytes());
+                }
+                Typed::Quit => {
+                    out.extend_from_slice(b"\r\nbye\r\n");
+                    done = true;
+                    break;
+                }
+            }
+        }
+        if !out.is_empty()
+            && handle
+                .data(channel, String::from_utf8_lossy(&out).into_owned())
+                .await
+                .is_err()
+        {
+            break 'input;
+        }
+        if done {
+            break;
+        }
+    }
+    let _ = handle.close(channel).await;
+}
+
+#[derive(Default)]
+enum Escape {
+    #[default]
+    None,
+    Start,
+    Sequence,
+}
+
+enum Typed {
+    Nothing,
+    Echo(Vec<u8>),
+    Submit(String),
+    Quit,
+}
+
+/// Line editing for the explorer's terminal: printable keys are echoed and
+/// kept, backspace removes one, and escape sequences such as arrow keys are
+/// dropped.
+#[derive(Default)]
+struct Typing {
+    line: Vec<u8>,
+    escape: Escape,
+    after_cr: bool,
+}
+
+impl Typing {
+    fn feed(&mut self, byte: u8) -> Typed {
+        match self.escape {
+            Escape::Start => {
+                self.escape = if matches!(byte, b'[' | b'O') {
+                    Escape::Sequence
+                } else {
+                    Escape::None
+                };
+                return Typed::Nothing;
+            }
+            Escape::Sequence => {
+                if (0x40..=0x7e).contains(&byte) {
+                    self.escape = Escape::None;
+                }
+                return Typed::Nothing;
+            }
+            Escape::None => {}
+        }
+        let after_cr = std::mem::take(&mut self.after_cr);
+        match byte {
+            0x1b => {
+                self.escape = Escape::Start;
+                Typed::Nothing
+            }
+            b'\r' => {
+                self.after_cr = true;
+                self.submit()
+            }
+            b'\n' if after_cr => Typed::Nothing,
+            b'\n' => self.submit(),
+            0x7f | 0x08 => {
+                if self.line.pop().is_some() {
+                    Typed::Echo(b"\x08 \x08".to_vec())
+                } else {
+                    Typed::Nothing
+                }
+            }
+            0x03 => Typed::Quit,
+            0x04 if self.line.is_empty() => Typed::Quit,
+            0x20..=0x7e | 0x80..=0xff => {
+                if self.line.len() < MAX_LINE {
+                    self.line.push(byte);
+                    Typed::Echo(vec![byte])
+                } else {
+                    Typed::Nothing
+                }
+            }
+            _ => Typed::Nothing,
+        }
+    }
+
+    fn submit(&mut self) -> Typed {
+        Typed::Submit(String::from_utf8_lossy(&std::mem::take(&mut self.line)).into_owned())
+    }
 }
 
 /// Terminal text from the world: control characters are dropped, so text from
@@ -422,7 +634,7 @@ mod tests {
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
-    use russh::{ChannelMsg, client};
+    use russh::{ChannelMsg, client, keys::PrivateKeyWithHashAlg};
 
     struct TrustAll;
 
@@ -473,18 +685,68 @@ mod tests {
         session
     }
 
-    async fn read_all(channel: &mut Channel<client::Msg>) -> String {
-        let mut bytes = Vec::new();
+    async fn explorer(session: &client::Handle<TrustAll>) -> Channel<client::Msg> {
+        let channel = session.channel_open_session().await.unwrap();
+        channel.request_shell(true).await.unwrap();
+        channel
+    }
+
+    async fn read_until_prompt(channel: &mut Channel<client::Msg>) -> String {
+        let mut text = String::new();
         tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(message) = channel.wait().await {
-                if let ChannelMsg::Data { data } = message {
-                    bytes.extend_from_slice(&data);
+            while !text.ends_with(PROMPT) {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => {
+                        text.push_str(&String::from_utf8_lossy(&data));
+                    }
+                    Some(_) => {}
+                    None => panic!("explorer closed; got {text:?}"),
                 }
             }
         })
         .await
-        .expect("timed out reading the explorer");
-        String::from_utf8(bytes).unwrap()
+        .expect("timed out waiting for the explorer prompt");
+        text
+    }
+
+    async fn command(channel: &mut Channel<client::Msg>, line: &str) -> String {
+        channel.data(format!("{line}\r").as_bytes()).await.unwrap();
+        read_until_prompt(channel).await
+    }
+
+    async fn quit(channel: &mut Channel<client::Msg>) -> String {
+        channel.data(&b"quit\r"[..]).await.unwrap();
+        let mut text = String::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(message) = channel.wait().await {
+                if let ChannelMsg::Data { data } = message {
+                    text.push_str(&String::from_utf8_lossy(&data));
+                }
+            }
+        })
+        .await
+        .expect("explorer did not close after quit");
+        text
+    }
+
+    fn account_id(credential: &str) -> String {
+        credential.split('.').nth(1).unwrap().to_owned()
+    }
+
+    fn credential_in(text: &str) -> String {
+        text.split("credential (shown once): ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap()
+            .to_owned()
+    }
+
+    fn group_id(text: &str, name: &str) -> String {
+        text.lines()
+            .find(|line| line.contains(name) && line.contains("you:"))
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap()
+            .to_owned()
     }
 
     #[tokio::test]
@@ -505,13 +767,137 @@ mod tests {
 
         for (password, is_admin) in [("admin", true), ("", false)] {
             let session = connect_as(port, "explore:", password).await;
-            let mut channel = session.channel_open_session().await.unwrap();
-            channel.request_shell(true).await.unwrap();
-            let text = read_all(&mut channel).await;
+            let mut channel = explorer(&session).await;
+            let text = read_until_prompt(&mut channel).await;
             assert!(text.contains(&ada) && text.contains("Ada"), "{text}");
             assert_eq!(text.contains("viewer: admin"), is_admin, "{text}");
+            assert!(quit(&mut channel).await.contains("bye"));
         }
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_explorer_signs_up_and_reads_help_and_refuses_bad_lines() {
+        let (port, server) = start(lobby_hub()).await;
+        let session = connect_as(port, "explore:", "").await;
+        let mut channel = explorer(&session).await;
+        read_until_prompt(&mut channel).await;
+
+        let text = command(&mut channel, "signup Cy").await;
+        assert!(text.contains("credential (shown once): acct."), "{text}");
+        assert!(text.contains("viewer: ") && text.contains("Cy"), "{text}");
+        let text = command(&mut channel, "bogus").await;
+        assert!(text.contains("error: unknown command bogus"), "{text}");
+        let text = command(&mut channel, "group new").await;
+        assert!(text.contains("error:"), "{text}");
+        let text = command(&mut channel, "help").await;
+        assert!(text.contains("commands:"), "{text}");
+        let text = command(&mut channel, "group new - Club | Members only").await;
+        assert!(
+            text.contains("Club") && text.contains("Members only"),
+            "{text}"
+        );
+        assert!(text.contains("you: admin"), "{text}");
+        quit(&mut channel).await;
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn explorers_manage_friends_and_group_members_over_ssh() {
+        let (port, server) = start(lobby_hub()).await;
+        let ada_session = connect_as(port, "explore:", "").await;
+        let mut ada = explorer(&ada_session).await;
+        read_until_prompt(&mut ada).await;
+        let ada_credential = credential_in(&command(&mut ada, "signup Ada").await);
+        let ada_id = account_id(&ada_credential);
+        let text = command(&mut ada, "group new - Club | Members only").await;
+        let club = group_id(&text, "Club");
+
+        let bo_session = connect_as(port, "explore:", "").await;
+        let mut bo = explorer(&bo_session).await;
+        read_until_prompt(&mut bo).await;
+        let bo_credential = credential_in(&command(&mut bo, "signup Bo").await);
+        let bo_id = account_id(&bo_credential);
+
+        let text = command(&mut ada, &format!("friend request {bo_id}")).await;
+        assert!(text.contains(&format!("requests out: {bo_id}")), "{text}");
+        let text = command(&mut bo, &format!("friend accept {ada_id}")).await;
+        assert!(text.contains(&format!("friends: {ada_id}")), "{text}");
+        let text = command(&mut ada, &format!("friend remove {bo_id}")).await;
+        assert!(!text.contains(&format!("friends: {bo_id}")), "{text}");
+
+        let text = command(
+            &mut ada,
+            &format!("group member {club} account:{bo_id} read"),
+        )
+        .await;
+        assert!(text.contains(&format!("account {bo_id}")), "{text}");
+        let text = command(&mut bo, "view").await;
+        assert!(
+            text.contains("Club") && text.contains("you: read"),
+            "{text}"
+        );
+        let text = command(&mut ada, "verify nobody").await;
+        assert!(text.contains("error:"), "{text}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_key_login_signs_up_with_its_key_and_is_recognised_again() {
+        let (port, server) = start(lobby_hub()).await;
+        let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let hex = hex_encode(&key.public_key().key_data().ed25519().unwrap().0);
+
+        let session = connect_key(port, "explore:", &key).await;
+        let mut channel = explorer(&session).await;
+        read_until_prompt(&mut channel).await;
+        let text = command(&mut channel, "keysignup Kay").await;
+        assert!(text.contains(&format!("viewer: {hex}")), "{text}");
+        quit(&mut channel).await;
+
+        let again = connect_key(port, "explore:", &key).await;
+        let mut channel = explorer(&again).await;
+        let text = read_until_prompt(&mut channel).await;
+        assert!(
+            text.contains(&format!("viewer: {hex}")) && text.contains("Kay"),
+            "{text}"
+        );
+
+        let stranger = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let session = connect_key(port, "explore:", &stranger).await;
+        let mut channel = explorer(&session).await;
+        let text = read_until_prompt(&mut channel).await;
+        assert!(text.contains("viewer: anonymous"), "{text}");
+        server.abort();
+    }
+
+    async fn connect_key(port: u16, user: &str, key: &PrivateKey) -> client::Handle<TrustAll> {
+        let config = Arc::new(client::Config::default());
+        let mut session = client::connect(config, ("127.0.0.1", port), TrustAll)
+            .await
+            .unwrap();
+        let result = session
+            .authenticate_publickey(
+                user,
+                PrivateKeyWithHashAlg::new(Arc::new(key.clone()), None),
+            )
+            .await
+            .unwrap();
+        assert!(result.success());
+        session
+    }
+
+    #[test]
+    fn typing_edits_a_line_drops_escape_sequences_and_submits_once_per_enter() {
+        let mut typing = Typing::default();
+        let mut submitted = Vec::new();
+        for byte in b"ab\x7fc\x1b[A\r\n" {
+            if let Typed::Submit(line) = typing.feed(*byte) {
+                submitted.push(line);
+            }
+        }
+        assert_eq!(submitted, vec!["ac".to_owned()]);
+        assert!(matches!(typing.feed(3), Typed::Quit));
     }
 
     async fn shell(session: &client::Handle<TrustAll>) -> Channel<client::Msg> {

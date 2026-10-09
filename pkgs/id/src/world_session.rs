@@ -369,6 +369,7 @@ impl WorldService {
             tokio::task::spawn_blocking(move || sink.send(&mail))
                 .await
                 .context("mail task stopped")??;
+            outcome.mailed = true;
         }
         Ok(outcome)
     }
