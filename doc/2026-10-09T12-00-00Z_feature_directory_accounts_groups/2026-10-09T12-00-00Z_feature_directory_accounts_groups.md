@@ -548,3 +548,50 @@ Verification:
   `--no-default-features` produce no warnings.
 
 Not done in this phase: a Cloudflare Worker sink (see Phase 12).
+
+### Phase 11: group and friend actions over HTTP, scratch-server run
+
+Code: `web/world_ws.rs` (test helpers `act`, `view_as`, `named`, `signed_up`,
+and two tests). No product code changed.
+
+Tests added:
+
+- `groups_are_managed_and_their_levels_gate_each_change_over_http`: create a
+  group, add a member at `read`, the member sees the level and the members. A
+  `read` member gets 403 on a rename and on `set_public`. An anonymous viewer
+  sees no groups until an admin makes the group public, then sees it with
+  `members` null. Delete removes it from the anonymous view.
+- `friend_requests_are_sent_accepted_and_ended_over_http`: an anonymous request
+  gets 401. A request shows as `incoming` for the target and `outgoing` for the
+  sender. Acceptance makes both `friends`. Removal ends the friendship at both
+  ends.
+
+Scratch-server run. The server ran on `127.0.0.1` with `--ephemeral
+--no-relay --no-gossip --no-mdns --web --world --world-name lobby
+--world-admin-token ... --world-mail-outbox DIR`. Checked over curl:
+
+- Sign-up returns a credential. Group creation, `set_member` at `read`, and
+  the 403s for rename and `set_public` match the tests.
+- Making the group public shows it to anonymous viewers. Deleting it removes it.
+- Friend request, acceptance and removal behave as in the test.
+- `add_email` wrote one 0600 `.eml` file, and `confirm_email` with the code from
+  that file made the account `verified: true`.
+- `/explore` returns 200 and lists the accounts. A request with a foreign
+  `Host` header gets 421.
+
+Observed, not changed: with `--no-relay --no-gossip --no-mdns`, the Iroh
+endpoint still made outbound HTTPS connections to `dns.iroh.link` for pkarr
+publishing. The flags do not turn that off. The server was stopped and the
+scratch directory removed.
+
+Verification:
+
+- `cargo test --features "world ssh web" --lib`: 837 passed.
+- `cargo test --lib`: 636 passed.
+- `cargo fmt --check` clean. `cargo build --features web` and
+  `--no-default-features`: no warnings.
+- Clippy reports nothing in the new tests. The two warnings left in
+  `world_ws.rs` (a `dyn` clone and a `usize` cast in older tests) predate this
+  work.
+
+Not done in this phase: nothing from the Phase 11 list remains open.

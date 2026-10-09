@@ -472,6 +472,176 @@ mod tests {
         assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
     }
 
+    async fn act(router: &axum::Router, credential: Option<&str>, body: &str) -> Response {
+        router
+            .clone()
+            .oneshot(directory_request("POST", None, credential, body))
+            .await
+            .unwrap()
+    }
+
+    async fn view_as(router: &axum::Router, credential: Option<&str>) -> serde_json::Value {
+        let response = router
+            .clone()
+            .oneshot(directory_request("GET", None, credential, ""))
+            .await
+            .unwrap();
+        body_json(response).await["view"].clone()
+    }
+
+    fn named<'a>(list: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == name)
+            .unwrap()
+    }
+
+    async fn signed_up(router: &axum::Router, name: &str) -> (String, String) {
+        let signed = body_json(
+            act(
+                router,
+                None,
+                &format!(r#"{{"action":"sign_up","name":"{name}"}}"#),
+            )
+            .await,
+        )
+        .await;
+        (
+            signed["credential"].as_str().unwrap().to_owned(),
+            signed["view"]["viewer"].as_str().unwrap().to_owned(),
+        )
+    }
+
+    #[tokio::test]
+    async fn groups_are_managed_and_their_levels_gate_each_change_over_http() {
+        let router = app(Some(lobby()), Some("s3cret"));
+        let (ada_key, _) = signed_up(&router, "Ada").await;
+        let (bo_key, bo_id) = signed_up(&router, "Bo").await;
+
+        let created = act(
+            &router,
+            Some(&ada_key),
+            r#"{"action":"create_group","name":"Club","description":"","scopes":[]}"#,
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let ada_view = view_as(&router, Some(&ada_key)).await;
+        let club = named(&ada_view["groups"], "Club")["id"].as_u64().unwrap();
+
+        let added = act(
+            &router,
+            Some(&ada_key),
+            &format!(
+                r#"{{"action":"set_member","group":{club},"member":{{"kind":"account","id":"{bo_id}"}},"level":"read"}}"#
+            ),
+        )
+        .await;
+        assert_eq!(added.status(), StatusCode::OK);
+
+        let bo_view = view_as(&router, Some(&bo_key)).await;
+        let seen = named(&bo_view["groups"], "Club");
+        assert_eq!(seen["level"], "read");
+        assert!(seen["members"].as_array().is_some_and(|m| !m.is_empty()));
+
+        let renamed = act(
+            &router,
+            Some(&bo_key),
+            &format!(
+                r#"{{"action":"update_group","group":{club},"name":"Renamed","description":"","scopes":[]}}"#
+            ),
+        )
+        .await;
+        assert_eq!(renamed.status(), StatusCode::FORBIDDEN);
+        let public = act(
+            &router,
+            Some(&bo_key),
+            &format!(r#"{{"action":"set_public","group":{club},"public":true}}"#),
+        )
+        .await;
+        assert_eq!(public.status(), StatusCode::FORBIDDEN);
+
+        let anonymous_before = view_as(&router, None).await;
+        assert!(anonymous_before["groups"].as_array().unwrap().is_empty());
+
+        let made_public = act(
+            &router,
+            Some(&ada_key),
+            &format!(r#"{{"action":"set_public","group":{club},"public":true}}"#),
+        )
+        .await;
+        assert_eq!(made_public.status(), StatusCode::OK);
+        let anonymous = view_as(&router, None).await;
+        let open = named(&anonymous["groups"], "Club");
+        assert_eq!(open["public"], true);
+        assert!(open["members"].is_null());
+
+        let deleted = act(
+            &router,
+            Some(&ada_key),
+            &format!(r#"{{"action":"delete_group","group":{club}}}"#),
+        )
+        .await;
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let after = view_as(&router, None).await;
+        assert!(after["groups"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn friend_requests_are_sent_accepted_and_ended_over_http() {
+        let router = app(Some(lobby()), Some("s3cret"));
+        let (ada_key, ada_id) = signed_up(&router, "Ada").await;
+        let (bo_key, bo_id) = signed_up(&router, "Bo").await;
+        let request = format!(r#"{{"action":"request_friend","to":"{bo_id}"}}"#);
+
+        let anonymous = act(&router, None, &request).await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        let asked = act(&router, Some(&ada_key), &request).await;
+        assert_eq!(asked.status(), StatusCode::OK);
+        let bo_view = view_as(&router, Some(&bo_key)).await;
+        assert_eq!(
+            named(&bo_view["accounts"], "Bo")["incoming"],
+            serde_json::json!([ada_id])
+        );
+        let ada_view = view_as(&router, Some(&ada_key)).await;
+        assert_eq!(
+            named(&ada_view["accounts"], "Ada")["outgoing"],
+            serde_json::json!([bo_id])
+        );
+
+        let accepted = act(
+            &router,
+            Some(&bo_key),
+            &format!(r#"{{"action":"accept_friend","from":"{ada_id}"}}"#),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let ada_view = view_as(&router, Some(&ada_key)).await;
+        assert_eq!(
+            named(&ada_view["accounts"], "Ada")["friends"],
+            serde_json::json!([bo_id])
+        );
+        let bo_view = view_as(&router, Some(&bo_key)).await;
+        assert_eq!(
+            named(&bo_view["accounts"], "Bo")["friends"],
+            serde_json::json!([ada_id])
+        );
+
+        let ended = act(
+            &router,
+            Some(&ada_key),
+            &format!(r#"{{"action":"remove_friend","other":"{bo_id}"}}"#),
+        )
+        .await;
+        assert_eq!(ended.status(), StatusCode::OK);
+        let bo_view = view_as(&router, Some(&bo_key)).await;
+        assert_eq!(
+            named(&bo_view["accounts"], "Bo")["friends"],
+            serde_json::json!([])
+        );
+    }
+
     fn signed_directory_request(key: &SigningKey, nonce: &str, body: &str) -> Request<Body> {
         let at = crate::world::unix_ms();
         let signed = sign_request(
