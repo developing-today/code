@@ -321,6 +321,28 @@ pub struct RestoredWorld {
 /// Structured records a program publishes: key to JSON value, key-ordered.
 pub type Records = BTreeMap<String, serde_json::Value>;
 
+fn presence_event(participant: u64, name: &str, joined: bool) -> String {
+    serde_json::json!({
+        "cap": "players",
+        "event": if joined { "joined" } else { "left" },
+        "participant": {"id": participant, "name": name},
+    })
+    .to_string()
+}
+
+fn presence_change(text: &str) -> Option<(u64, bool)> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    if value.get("cap")?.as_str()? != "players" {
+        return None;
+    }
+    let joined = match value.get("event")?.as_str()? {
+        "joined" => true,
+        "left" => false,
+        _ => return None,
+    };
+    Some((value.get("participant")?.get("id")?.as_u64()?, joined))
+}
+
 /// Most records one world may publish.
 pub const MAX_RECORDS: usize = 4096;
 /// Longest record key, in bytes.
@@ -517,6 +539,7 @@ impl WorldCore {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
         let mut replay = Vec::new();
+        let mut present: BTreeMap<u64, u64> = BTreeMap::new();
         let mut entries = entries.into_iter();
         match entries.next() {
             Some(JournalEntry::Created { world_id, version }) => {
@@ -596,6 +619,21 @@ impl WorldCore {
                         event.sequence == 0 && event.participant_id == 0,
                         "journal system event claims a sequence"
                     );
+                    let change = match &event.kind {
+                        WorldEventKind::System { event: text } => presence_change(text),
+                        _ => None,
+                    };
+                    if let Some((participant, joined)) = change {
+                        let count = present.entry(participant).or_insert(0);
+                        if joined {
+                            *count += 1;
+                        } else {
+                            *count = count.saturating_sub(1);
+                        }
+                        if *count == 0 {
+                            present.remove(&participant);
+                        }
+                    }
                     replay.push(event.clone());
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
@@ -656,6 +694,20 @@ impl WorldCore {
                     });
                 }
             }
+        }
+        // Sessions end with the process, and a crash skips their leave, so
+        // anyone the journal still shows present is gone by now.
+        for participant in present.into_keys() {
+            let name = core
+                .participant(participant)
+                .map_or_else(|| participant.to_string(), |p| p.display_name);
+            replay.push(WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: presence_event(participant, &name, false),
+                },
+            });
         }
         Ok(RestoredWorld {
             core,
@@ -1511,12 +1563,8 @@ impl WorldActor {
                 .core
                 .participant(participant)
                 .map_or_else(|| participant.to_string(), |p| p.display_name);
-            let event = serde_json::json!({
-                "cap": "players",
-                "event": if now_present { "joined" } else { "left" },
-                "participant": {"id": participant, "name": name},
-            });
-            self.deliver(event.to_string()).await;
+            self.deliver(presence_event(participant, &name, now_present))
+                .await;
         }
     }
 
@@ -2480,6 +2528,57 @@ mod tests {
             restored.core.authorize(&token, WorldScopes::JOIN).is_ok(),
             "capabilities restore after a grant entry"
         );
+    }
+
+    #[test]
+    fn a_restore_closes_presence_the_journal_left_open() {
+        let secret = "cd".repeat(32);
+        let digest = hex_encode(&token_digest(&format!("1.{secret}")));
+        let presence = |joined: bool| JournalEntry::System {
+            event: WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: presence_event(1, "ann", joined),
+                },
+            },
+        };
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "presence".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: "ann".to_owned(),
+                },
+                digest,
+                scopes: WorldScopes::GUEST.0,
+                parent: None,
+            },
+            presence(true),
+            presence(false),
+            presence(true),
+        ];
+        let restored =
+            WorldCore::restore("presence", WorldLimits::default(), entries.clone()).unwrap();
+        let last = restored.replay.last().unwrap();
+        assert_eq!(
+            restored.replay.len(),
+            4,
+            "the open join is closed after the journal's events"
+        );
+        assert_eq!(
+            last.kind,
+            WorldEventKind::System {
+                event: presence_event(1, "ann", false),
+            }
+        );
+
+        let closed =
+            WorldCore::restore("presence", WorldLimits::default(), entries[..4].to_vec()).unwrap();
+        assert_eq!(closed.replay.len(), 2, "a closed join needs no extra leave");
     }
 
     #[test]
