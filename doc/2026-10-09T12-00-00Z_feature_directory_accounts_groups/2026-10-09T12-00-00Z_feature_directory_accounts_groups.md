@@ -81,11 +81,12 @@ attribution decision) are included.
 11. **Ticks use the ceiling only.** World-level ticks are not caused by a
     participant. They are checked against the world ceiling and nothing else.
     This is open question 1 of the attenuation design, now settled.
-12. **Mail goes to an outbox or a command.** `--world-mail-outbox <DIR>` writes
+12. **Mail goes to an outbox, a command, or a loopback relay.** `--world-mail-outbox <DIR>` writes
     each message to a 0600 file. `--world-mail-command <PROGRAM>` runs the
     program with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` in its
     environment, with no shell. Without either, email actions are refused and
-    only an admin can verify an account. The server has no SMTP client.
+    only an admin can verify an account. `--world-mail-smtp` adds a loopback
+    relay (Phase 10). The three transports are mutually exclusive.
 13. **One explorer model, two renderers.** A `DirectoryView` is built once from
     the directory and a viewer's rights. SSH renders it as text, HTTP renders it
     as HTML and JSON. Both transports parse commands into the same `DirOp`. A
@@ -104,7 +105,7 @@ Built: the design, expiry and use limits, the account, group and contact model
 with its journal, the explorer model with SSH and HTTP renderers, personal and
 group screens as operations, envelope signing with verification, public-key
 accounts, email confirmation and sign-in, signed HTTP requests, and the mail
-sinks. The list of what is not built is in Phase 6.
+sinks. The list of what is not built is in Phase 12.
 
 ## Verification plan
 
@@ -595,3 +596,96 @@ Verification:
   work.
 
 Not done in this phase: nothing from the Phase 11 list remains open.
+
+### Phase 12: corrected not-done list, deferrals and limitations
+
+This replaces the not-done lists in Phases 5 and 6. Those lists are kept above
+as history.
+
+Closed since they were written:
+
+- Admin invite bounds (Phase 9).
+- The `delegate_to_friend` frame and its `WorldHandle` method (Phase 9).
+- Real SMTP: a loopback relay sink (Phase 10).
+- An end-to-end HTTP test of mail sign-in (Phase 10).
+- CLI tests for the mail flags (Phase 10).
+- Group and friend actions tested over HTTP (Phase 11) and over SSH (Phase 7).
+- The scratch-server run (Phase 11).
+- The SSH public-key login test (Phase 7).
+
+Still not done, and deferred:
+
+- **Cloudflare Worker mail sink.** The `MailSink` trait is the seam. Until it
+  exists, `--world-mail-command` can reach a Worker over HTTP. This example is
+  not run or tested:
+
+  ```sh
+  #!/bin/sh
+  # Run by id for each mail; the endpoint and token come from the environment.
+  curl -sf -X POST "$WORKER_MAIL_URL" \
+    -H "authorization: Bearer $WORKER_MAIL_TOKEN" \
+    --data-urlencode "to=$ID_MAIL_TO" \
+    --data-urlencode "subject=$ID_MAIL_SUBJECT" \
+    --data-urlencode "body=$ID_MAIL_BODY"
+  ```
+
+  Deferred because it needs a Worker, a sending domain, and a decision on
+  where the token is kept. None of these is in the repo.
+- **Per-export module gating.** Deferred. The attenuated-capabilities design
+  (open question 4) recommends gating per module first, and per export only
+  if needed. Nothing here changes that.
+- **Directory replication between servers.** Deferred. Two servers can both
+  accept friendships, change membership and delete groups, so replication
+  needs a merge and conflict rule first. That is a design question, not a
+  small addition.
+- **Cross-server friend-envelope transport.** Deferred for the same reason.
+  `receive_request` verifies an envelope signed elsewhere, but nothing
+  delivers one. Envelopes are still copied by hand.
+- **`id world invite` bounds flags.** The CLI has no `--expires-in` or
+  `--uses`. Bounds are reachable over HTTP and the WebSocket frame only.
+
+Corrections to earlier sections:
+
+- Decision 12 said the server had no SMTP client. Phase 10 added one, and
+  the text now says so.
+- The Phase 5 "scratch-server run: not done" is closed by Phase 11.
+- Decision 1 (one directory per server) is not met. The directory is per
+  world, as the limitation below says.
+
+Known limitations, carried forward:
+
+- Sessions, codes and replay nonces are in memory only. A restart signs
+  everyone out and forgets pending codes. Replay protection is the time window
+  plus an in-memory nonce set.
+- The directory is per world (`directory.jsonl`), not per server as Decision 1
+  says.
+- The HTML explorer uses only the default world and sets no `Secure` cookie
+  flag. A TLS deployment needs that flag added. The admin token typed into the
+  form is sent in the clear over plain HTTP.
+- `SmtpSink` refuses non-ASCII addresses, so internationalised addresses do not
+  work yet.
+- Invites are now bounded: they expire after 7 days by default and at most 30
+  days. This is a behaviour change for HTTP and frame invites. Invites made
+  directly through `WorldHandle::issue` are unchanged.
+- With `--no-relay --no-gossip --no-mdns`, Iroh still publishes to
+  `dns.iroh.link` (Phase 11).
+
+Choices made across the work:
+
+- One grammar for all transports. `parse_line`, `action_from_fields` and the
+  JSON form all build the same `DirectoryAction`, so the text, JSON and HTML
+  views cannot drift apart.
+- SSH caller switching is per connection. `signup`, `keysignup` and `session`
+  change the caller only for that connection, and `signout` returns it to the
+  key it logged in with. A shell cannot keep an identity its login did not
+  give it.
+- `DirectoryOutcome::mailed` tells a transport that a code was sent, without
+  carrying the code. The SSH explorer prints the address and never the code.
+- Invite default expiry is 7 days and the maximum is 30 days. This is a
+  deliberate change, listed above.
+- Loopback-only SMTP. A remote relay with plain SMTP and no login is refused at
+  start-up.
+- No new crates. Everything uses the existing dependencies.
+- The Worker sink is deferred, not stubbed.
+- The HTML explorer does not offer key sign-up, because a form cannot prove
+  possession of a key. Key sign-up needs a client that signs.
