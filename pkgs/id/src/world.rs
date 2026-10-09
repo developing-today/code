@@ -73,6 +73,8 @@ impl WorldScopes {
     pub const DELEGATE: Self = Self(0b1000);
     /// Default guest permissions.
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
+    /// Every scope.
+    pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0);
 
     /// Raw scope bits, as journaled.
     #[must_use]
@@ -83,8 +85,7 @@ impl WorldScopes {
     /// Scopes from raw bits; `None` if any bit names no scope.
     #[must_use]
     pub const fn from_bits(bits: u8) -> Option<Self> {
-        let known = Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0 | Self::DELEGATE.0;
-        if bits & !known == 0 {
+        if bits & !Self::ALL.0 == 0 {
             Some(Self(bits))
         } else {
             None
@@ -95,6 +96,12 @@ impl WorldScopes {
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    /// Only the scopes both sets include.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self(self.0 & other.0)
     }
 
     /// Whether this scope set includes `required`.
@@ -251,6 +258,9 @@ pub enum JournalEntry {
         /// Actions already taken, written at checkpoint so counts survive compaction.
         #[serde(default)]
         used: u32,
+        /// Account the capability acts for; its ceiling and friendships bound it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<String>,
     },
     /// A capability was revoked, with every capability delegated from it.
     /// Replay revokes the same tree.
@@ -504,6 +514,7 @@ struct CapabilityRecord {
     revoked: bool,
     bounds: CapabilityBounds,
     used: u32,
+    subject: Option<String>,
 }
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
@@ -521,6 +532,7 @@ pub struct WorldCore {
     since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
     events: VecDeque<WorldEvent>,
+    directory: crate::directory::Directory,
 }
 
 impl WorldCore {
@@ -557,6 +569,7 @@ impl WorldCore {
             since_checkpoint: 0,
             capabilities: HashMap::new(),
             events: VecDeque::new(),
+            directory: crate::directory::Directory::new(),
         })
     }
 
@@ -610,6 +623,7 @@ impl WorldCore {
                     expires_at,
                     uses,
                     used,
+                    subject,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
                     ensure!(
@@ -653,6 +667,7 @@ impl WorldCore {
                             revoked: false,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
+                            subject,
                         },
                     );
                 }
@@ -863,6 +878,7 @@ impl WorldCore {
                 expires_at: record.bounds.expires_at,
                 uses: record.bounds.uses,
                 used: record.used,
+                subject: record.subject.clone(),
             })
     }
 
@@ -886,7 +902,27 @@ impl WorldCore {
         scopes: WorldScopes,
         bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
-        self.mint(display_name, scopes, None, bounds)
+        self.mint(display_name, scopes, None, None, bounds)
+    }
+
+    /// Issue a capability that acts for the account `credential` belongs to.
+    /// Its scopes may not exceed that account's ceiling.
+    pub fn issue_for_account(
+        &mut self,
+        credential: &str,
+        scopes: WorldScopes,
+        bounds: CapabilityBounds,
+        display_name: &str,
+    ) -> Result<(Participant, JoinCapability)> {
+        let account = self
+            .directory
+            .account_for(credential)
+            .context("invalid account credential")?;
+        ensure!(
+            self.directory.ceiling(&account).contains(scopes),
+            "this account may not hold those scopes"
+        );
+        self.mint(display_name, scopes, None, Some(account), bounds)
     }
 
     /// Delegate a capability: a new participant whose scopes are a subset of
@@ -900,13 +936,54 @@ impl WorldCore {
         bounds: CapabilityBounds,
         display_name: &str,
     ) -> Result<(Participant, JoinCapability)> {
+        self.delegate(token, scopes, bounds, display_name, None)
+    }
+
+    /// Delegate to a friend of the account this capability acts for. The
+    /// friend's ceiling must already hold the scopes, and the friendship must
+    /// still hold each time the capability is used.
+    pub fn delegate_to_friend(
+        &mut self,
+        token: &JoinCapability,
+        friend: &str,
+        scopes: WorldScopes,
+        bounds: CapabilityBounds,
+        display_name: &str,
+    ) -> Result<(Participant, JoinCapability)> {
         let parent = self.authorize(token, WorldScopes::JOIN)?;
+        let owner = self
+            .capabilities
+            .get(&parent)
+            .and_then(|record| record.subject.clone())
+            .context("only an account's capability can delegate to a friend")?;
+        ensure!(
+            self.directory.are_friends(&owner, friend),
+            "you can only delegate to a friend"
+        );
+        ensure!(
+            self.directory.ceiling(friend).contains(scopes),
+            "that friend may not hold those scopes"
+        );
+        self.delegate(token, scopes, bounds, display_name, Some(friend.to_owned()))
+    }
+
+    fn delegate(
+        &mut self,
+        token: &JoinCapability,
+        scopes: WorldScopes,
+        bounds: CapabilityBounds,
+        display_name: &str,
+        subject: Option<String>,
+    ) -> Result<(Participant, JoinCapability)> {
+        let parent = self.authorize(token, WorldScopes::JOIN)?;
+        let parent_scopes = self
+            .effective_scopes(parent)
+            .context("world participant is unavailable")?;
         let parent_record = self
             .capabilities
             .get(&parent)
             .context("world participant is unavailable")?;
-        let scopes = parent_record
-            .scopes
+        let scopes = parent_scopes
             .attenuate(scopes)
             .context("this capability may not delegate those scopes")?;
         if let Some(expires_at) = bounds.expires_at {
@@ -929,7 +1006,32 @@ impl WorldCore {
                 "this capability does not have that many uses left to delegate"
             );
         }
-        self.mint(display_name, scopes, Some(parent), bounds)
+        self.mint(display_name, scopes, Some(parent), subject, bounds)
+    }
+
+    /// What a capability may do right now: its own scopes, held to the ceiling
+    /// of each account in its chain. A delegation to a friend stops once the
+    /// friendship ends.
+    fn effective_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.capabilities.get(&participant_id)?;
+        let mut scopes = WorldScopes::ALL;
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            scopes = scopes.intersect(record.scopes);
+            if let Some(subject) = &record.subject {
+                scopes = scopes.intersect(self.directory.ceiling(subject));
+            }
+            let parent = record.parent.and_then(|id| self.capabilities.get(&id));
+            if let Some(subject) = &record.subject
+                && let Some(parent_subject) = parent.and_then(|p| p.subject.as_ref())
+                && subject != parent_subject
+                && !self.directory.are_friends(parent_subject, subject)
+            {
+                return Some(WorldScopes(0));
+            }
+            current = record.parent;
+        }
+        Some(scopes)
     }
 
     /// Fewest actions the capability or any ancestor may still take, or `None`
@@ -982,6 +1084,7 @@ impl WorldCore {
         display_name: &str,
         scopes: WorldScopes,
         parent: Option<u64>,
+        subject: Option<String>,
         bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
         let active = self
@@ -1022,6 +1125,7 @@ impl WorldCore {
                 revoked: false,
                 bounds,
                 used: 0,
+                subject,
             },
         );
         Ok((participant, JoinCapability(token)))
@@ -1051,11 +1155,15 @@ impl WorldCore {
         revoked
     }
 
-    /// The scopes of a capability, for checking what its holder may cause.
-    fn scopes_of(&self, participant_id: u64) -> Option<WorldScopes> {
-        self.capabilities
-            .get(&participant_id)
-            .map(|record| record.scopes)
+    /// The directory of accounts, groups and friends this world is held to.
+    #[must_use]
+    pub const fn directory(&self) -> &crate::directory::Directory {
+        &self.directory
+    }
+
+    /// The directory of accounts, groups and friends this world is held to.
+    pub const fn directory_mut(&mut self) -> &mut crate::directory::Directory {
+        &mut self.directory
     }
 
     /// Commit a chat message after validating capability and bounds.
@@ -1168,7 +1276,10 @@ impl WorldCore {
             "invalid, revoked, or insufficient world capability"
         );
         ensure!(
-            !record.revoked && record.scopes.contains(required),
+            !record.revoked
+                && self
+                    .effective_scopes(participant_id)
+                    .is_some_and(|scopes| scopes.contains(required)),
             "invalid, revoked, or insufficient world capability"
         );
         self.ensure_not_expired(participant_id)?;
@@ -1598,7 +1709,7 @@ impl WorldActor {
             None => true,
             Some(participant) => self
                 .core
-                .scopes_of(participant)
+                .effective_scopes(participant)
                 .is_some_and(|scopes| scopes.allows_effect(&request.cap)),
         };
         match self.core.ledger.decide_for(&request.cap, actor_permits) {
@@ -2653,6 +2764,7 @@ mod tests {
                 expires_at: None,
                 uses: None,
                 used: 0,
+                subject: None,
             },
             JournalEntry::System {
                 event: WorldEvent {
@@ -2704,6 +2816,7 @@ mod tests {
                 expires_at: None,
                 uses: None,
                 used: 0,
+                subject: None,
             },
             presence(true),
             presence(false),
@@ -3000,6 +3113,7 @@ mod tests {
                 expires_at: None,
                 uses: Some(2),
                 used: 1,
+                subject: None,
             },
         ];
         let mut restored =
@@ -3044,6 +3158,7 @@ mod tests {
                 expires_at: Some(in_an_hour()),
                 uses: None,
                 used: 0,
+                subject: None,
             },
             JournalEntry::Issued {
                 participant: child,
@@ -3053,6 +3168,7 @@ mod tests {
                 expires_at: Some(in_an_hour() + 1),
                 uses: None,
                 used: 0,
+                subject: None,
             },
         ];
         assert!(WorldCore::restore("test-world", WorldLimits::default(), entries).is_err());
@@ -3231,6 +3347,7 @@ mod tests {
                 expires_at: None,
                 uses: None,
                 used: 0,
+                subject: None,
             },
             JournalEntry::Issued {
                 participant: Participant {
@@ -3243,6 +3360,7 @@ mod tests {
                 expires_at: None,
                 uses: None,
                 used: 0,
+                subject: None,
             },
         ];
         let mut restored = WorldCore::restore("delegate", WorldLimits::default(), entries)
@@ -3473,6 +3591,187 @@ mod tests {
                 .unwrap()
                 .events
                 .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    use crate::directory::{Actor, Tier};
+
+    fn core() -> WorldCore {
+        WorldCore::new("w", WorldLimits::default()).unwrap()
+    }
+
+    fn account(core: &mut WorldCore, name: &str) -> (String, String) {
+        let (credential, _) = core.directory_mut().sign_up(name).unwrap();
+        let id = core.directory().account_for(&credential).unwrap();
+        (id, credential)
+    }
+
+    fn befriend(core: &mut WorldCore, a: &str, a_credential: &str, b: &str, b_credential: &str) {
+        core.directory_mut()
+            .request_friend(a_credential, b, 1)
+            .unwrap();
+        core.directory_mut()
+            .accept_friend(b_credential, a, 2)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_account_capability_is_held_to_its_ceiling() {
+        let mut core = core();
+        let (_, ann_credential) = account(&mut core, "Ann");
+        assert!(
+            core.issue_for_account(
+                &ann_credential,
+                WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann"
+            )
+            .is_err(),
+            "a registered account cannot be issued delegate scope"
+        );
+        assert!(
+            core.issue_for_account(
+                "acct.forged.00",
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Ann"
+            )
+            .is_err()
+        );
+        let (_, token) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        core.chat(&token, "hello").unwrap();
+        core.directory_mut()
+            .set_tier(Actor::Server, Tier::Registered, WorldScopes::JOIN)
+            .unwrap();
+        assert!(
+            core.chat(&token, "again").is_err(),
+            "a narrowed tier narrows the capability"
+        );
+        assert!(core.snapshot(&token).is_ok());
+    }
+
+    #[test]
+    fn an_account_capability_serializes_its_subject_but_no_secret() {
+        let mut core = core();
+        let (ann, ann_credential) = account(&mut core, "Ann");
+        let (participant, _) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let entry = core.issued_entry(participant.id).unwrap();
+        let text = serde_json::to_string(&entry).unwrap();
+        assert!(text.contains(&ann));
+        let secret = ann_credential.rsplit('.').next().unwrap();
+        assert!(!text.contains(secret));
+        let back: JournalEntry = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn a_delegation_to_a_friend_is_held_to_the_friends_ceiling_and_ends_with_the_friendship() {
+        let mut core = core();
+        let (ann, ann_credential) = account(&mut core, "Ann");
+        let (bo, bo_credential) = account(&mut core, "Bo");
+        let (cy, _) = account(&mut core, "Cy");
+        core.directory_mut()
+            .verify_account(Actor::Server, &ann)
+            .unwrap();
+        befriend(&mut core, &ann, &ann_credential, &bo, &bo_credential);
+        let (_, ann_token) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+
+        assert!(
+            core.delegate_to_friend(
+                &ann_token,
+                &bo,
+                WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Bo"
+            )
+            .is_err(),
+            "bo's ceiling does not include delegate"
+        );
+        assert!(
+            core.delegate_to_friend(
+                &ann_token,
+                &cy,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Cy"
+            )
+            .is_err(),
+            "only friends may be delegated to"
+        );
+        let (_, bo_token) = core
+            .delegate_to_friend(
+                &ann_token,
+                &bo,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .unwrap();
+        core.chat(&bo_token, "hi").unwrap();
+        assert!(
+            core.attenuate(
+                &bo_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Di"
+            )
+            .is_err(),
+            "bo's delegation carries no delegate scope"
+        );
+
+        core.directory_mut()
+            .remove_friend(&ann_credential, &bo)
+            .unwrap();
+        assert!(
+            core.snapshot(&bo_token).is_err(),
+            "the delegation ends with the friendship"
+        );
+        assert!(core.snapshot(&ann_token).is_ok());
+    }
+
+    #[test]
+    fn only_an_account_capability_may_delegate_to_a_friend() {
+        let mut core = core();
+        let (bo, bo_credential) = account(&mut core, "Bo");
+        let (ann, ann_credential) = account(&mut core, "Ann");
+        befriend(&mut core, &ann, &ann_credential, &bo, &bo_credential);
+        let (_, anonymous) = core
+            .issue_capability("Guest", WorldScopes::ALL, CapabilityBounds::default())
+            .unwrap();
+        assert!(
+            core.delegate_to_friend(
+                &anonymous,
+                &bo,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Bo"
+            )
+            .is_err()
         );
     }
 }

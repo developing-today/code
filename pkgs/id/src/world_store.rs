@@ -486,6 +486,7 @@ mod tests {
                 expires_at: None,
                 uses: None,
                 used: 0,
+                subject: None,
             })
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();

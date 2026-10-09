@@ -174,3 +174,23 @@ per-export module gating.
 - Not in this phase: no frames, no HTTP or SSH surface, no wiring into
   `World`, and no directory replication over Iroh. Journal files are appended
   by the caller; the server actor that will own them is Phase 3.
+
+### Phase 3: accounts bound to capabilities, friend delegation
+
+- `WorldCore` holds the `Directory`. A directory opened with `Directory::open`
+  journals each accepted change before it is visible, so a refused change never
+  reaches the journal.
+- `issue_for_account` issues a capability whose `subject` is the account. Its
+  scopes may not exceed that account's ceiling.
+- `effective_scopes` replaces the stored scopes everywhere they are checked
+  (`authorize`, delegation, and participant effects in `execute`). Along the
+  whole delegation chain, each record's scopes are intersected with its
+  subject's ceiling. Anonymous capabilities are unchanged.
+- `delegate_to_friend` needs an account-bound capability, a current friend, and
+  a friend ceiling that already holds the requested scopes. Friendship is checked
+  again on every use, so ending a friendship stops the delegation.
+- `subject` is journaled on `Issued` (serde default, omitted when absent), so
+  an account binding survives restore and compaction. No secret is journaled.
+- Tests: 4 in `world::account_tests`; 1 in `directory::tests` for journaling.
+- Not in this phase: the frames and handle commands that expose these. Those
+  are Phase 4.

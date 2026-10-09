@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
@@ -269,6 +269,7 @@ pub struct Directory {
     friends: BTreeSet<(String, String)>,
     requests: BTreeSet<(String, String)>,
     next_group: u64,
+    journal: Option<PathBuf>,
 }
 
 impl Default for Directory {
@@ -298,7 +299,20 @@ impl Directory {
             friends: BTreeSet::new(),
             requests: BTreeSet::new(),
             next_group: 1,
+            journal: None,
         }
+    }
+
+    /// Rebuild the directory from its journal and journal every later change
+    /// to it. A change is journaled before it becomes visible.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the journal cannot be replayed.
+    pub fn open(path: &Path) -> Result<Self> {
+        let mut directory = Self::replay(path)?;
+        directory.journal = Some(path.to_path_buf());
+        Ok(directory)
     }
 
     /// Rebuild the directory from its journal, one line per entry.
@@ -759,6 +773,9 @@ impl Directory {
         let mut next = self.clone();
         next.change(entry)?;
         next.ensure_admins()?;
+        if let Some(path) = &self.journal {
+            Self::append(path, entry)?;
+        }
         *self = next;
         Ok(())
     }
@@ -890,7 +907,9 @@ impl Directory {
         Ok(())
     }
 
-    fn are_friends(&self, a: &str, b: &str) -> bool {
+    /// Whether two accounts are friends on this server.
+    #[must_use]
+    pub fn are_friends(&self, a: &str, b: &str) -> bool {
         self.friends.contains(&pair(a, b))
     }
 
@@ -1408,6 +1427,35 @@ mod tests {
         let (mut request, _) = directory.request_friend(&cy_credential, &bo, 1).unwrap();
         request.from = ann;
         assert!(request.verify().is_err());
+    }
+
+    #[test]
+    fn an_open_directory_journals_accepted_changes_and_nothing_refused() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, _) = directory.sign_up("Ann").unwrap();
+        let ann = directory.account_for(&ann).unwrap();
+        let (group, _) = directory.create_group(&ann, "Crew", "", all()).unwrap();
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 2);
+        assert!(
+            directory
+                .set_member(
+                    Actor::Server,
+                    group,
+                    Member::Account { id: ann.clone() },
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().lines().count(),
+            lines
+        );
+        let replayed = Directory::open(&path).unwrap();
+        assert_eq!(replayed.level_in(&ann, group), Some(Level::Admin));
+        assert_eq!(replayed.group(group).unwrap().name, "Crew");
     }
 
     #[test]
