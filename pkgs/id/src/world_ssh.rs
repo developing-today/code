@@ -8,12 +8,15 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use russh::{
-    Channel, ChannelId, Pty,
-    keys::{Algorithm, PrivateKey, ssh_key::LineEnding},
+    Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
+    keys::{Algorithm, PrivateKey, ssh_key::HashAlg, ssh_key::LineEnding},
     server::{Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session},
 };
 use serde_json::json;
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+};
 
 use crate::world_hub::WorldHub;
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
@@ -24,6 +27,10 @@ pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
 const INPUT_QUEUE: usize = 256;
 const MAX_PACKET_BYTES: u32 = 32 * 1024;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
+/// Concurrent SSH connections the server accepts; the rest are refused at auth.
+const MAX_CONNECTIONS: usize = 64;
+/// Pause before a refused shell closes, so guessing costs at least this per connection.
+const REFUSED_SHELL_DELAY: Duration = Duration::from_secs(1);
 
 /// Serve SSH connections until the listener fails.
 pub async fn serve(
@@ -31,14 +38,32 @@ pub async fn serve(
     hub: WorldHub,
     host_key: PrivateKey,
 ) -> std::io::Result<()> {
+    serve_limited(listener, hub, host_key, MAX_CONNECTIONS).await
+}
+
+async fn serve_limited(
+    listener: TcpListener,
+    hub: WorldHub,
+    host_key: PrivateKey,
+    max_connections: usize,
+) -> std::io::Result<()> {
     let config = Arc::new(Config {
         keys: vec![host_key],
+        methods: MethodSet::from(&[MethodKind::Password][..]),
         maximum_packet_size: MAX_PACKET_BYTES,
         inactivity_timeout: Some(INACTIVITY_TIMEOUT),
         ..Config::default()
     });
-    let mut server = SshServer { hub };
+    let mut server = SshServer {
+        hub,
+        connections: Arc::new(Semaphore::new(max_connections)),
+    };
     server.run_on_socket(config, &listener).await
+}
+
+/// The fingerprint clients see for the host key, for trust-on-first-use checks.
+pub fn host_key_fingerprint(key: &PrivateKey) -> String {
+    key.public_key().fingerprint(HashAlg::Sha256).to_string()
 }
 
 /// The SSH host key, created on first use and reused on every later start.
@@ -58,6 +83,7 @@ pub async fn load_or_create_host_key(path: &str) -> anyhow::Result<PrivateKey> {
 #[derive(Clone)]
 struct SshServer {
     hub: WorldHub,
+    connections: Arc<Semaphore>,
 }
 
 impl Server for SshServer {
@@ -66,6 +92,7 @@ impl Server for SshServer {
     fn new_client(&mut self, _peer: Option<SocketAddr>) -> SshClient {
         SshClient {
             hub: self.hub.clone(),
+            permit: Arc::clone(&self.connections).try_acquire_owned().ok(),
             login: None,
             input: None,
         }
@@ -79,6 +106,7 @@ struct Login {
 
 struct SshClient {
     hub: WorldHub,
+    permit: Option<OwnedSemaphorePermit>,
     login: Option<Login>,
     input: Option<mpsc::Sender<Vec<u8>>>,
 }
@@ -89,11 +117,58 @@ impl Handler for SshClient {
     // The join capability is checked when the shell opens, so every password
     // is accepted here and a wrong one is answered by the world itself.
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, russh::Error> {
+        if self.permit.is_none() {
+            return Ok(Auth::reject());
+        }
         self.login = Some(Login {
             world: (!user.is_empty()).then(|| user.to_owned()),
             capability: password.to_owned(),
         });
         Ok(Auth::Accept)
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        _channel: Channel<Msg>,
+        _host_to_connect: &str,
+        _port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
+        Ok(())
+    }
+
+    async fn channel_open_x11(
+        &mut self,
+        _channel: Channel<Msg>,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
+        Ok(())
+    }
+
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        _data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        session.channel_failure(channel)
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        _name: &str,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        session.channel_failure(channel)
     }
 
     async fn channel_open_session(
@@ -138,10 +213,14 @@ impl Handler for SshClient {
             channel,
             frames,
             first: Some(first),
+            errored: false,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
             run_session(&hub, &mut io).await;
+            if io.errored {
+                tokio::time::sleep(REFUSED_SHELL_DELAY).await;
+            }
             let _ = io.handle.close(channel).await;
         });
         Ok(())
@@ -203,6 +282,7 @@ struct SshIo {
     channel: ChannelId,
     frames: mpsc::Receiver<Vec<u8>>,
     first: Option<String>,
+    errored: bool,
 }
 
 impl SessionIo for SshIo {
@@ -224,18 +304,27 @@ impl SessionIo for SshIo {
         };
         let text = match value["type"].as_str() {
             Some("view") => match value["data"].as_str() {
-                Some(data) => format!("\x1b[H\x1b[2J{}", terminal_lines(data)),
+                Some(data) => format!("\x1b[H\x1b[2J{}", terminal_text(data)),
                 None => return true,
             },
-            Some("error") => format!("\r\n{}\r\n", value["message"].as_str().unwrap_or("error")),
+            Some("error") => {
+                self.errored = true;
+                let message = value["message"].as_str().unwrap_or("error");
+                format!("\r\n{}\r\n", terminal_text(message))
+            }
             _ => return true,
         };
         self.handle.data(self.channel, text).await.is_ok()
     }
 }
 
-fn terminal_lines(data: &str) -> String {
-    data.replace("\r\n", "\n").replace('\n', "\r\n")
+/// Terminal text from the world: control characters are dropped, so text from
+/// one participant cannot drive another participant's terminal.
+fn terminal_text(data: &str) -> String {
+    data.chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .collect::<String>()
+        .replace('\n', "\r\n")
 }
 
 #[cfg(test)]
@@ -260,10 +349,20 @@ mod tests {
     }
 
     async fn start(hub: WorldHub) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
+        start_limited(hub, MAX_CONNECTIONS).await
+    }
+
+    async fn start_limited(
+        hub: WorldHub,
+        max_connections: usize,
+    ) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
-        (port, tokio::spawn(serve(listener, hub, host_key)))
+        (
+            port,
+            tokio::spawn(serve_limited(listener, hub, host_key, max_connections)),
+        )
     }
 
     async fn connect(port: u16, password: &str) -> client::Handle<TrustAll> {
@@ -309,17 +408,47 @@ mod tests {
         .expect("timed out waiting for the terminal");
     }
 
+    fn lobby_hub() -> WorldHub {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        WorldHub::single(WorldService::new(world, Some("admin".to_owned())))
+    }
+
     #[tokio::test]
     async fn a_wrong_password_is_refused_inside_the_shell() {
-        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
-        let service = WorldService::new(world, Some("admin".to_owned()));
-        let (port, server) = start(WorldHub::single(service)).await;
+        let (port, server) = start(lobby_hub()).await;
 
         let session = connect(port, &"0".repeat(64)).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
         read_until(&mut channel, &mut terminal, "join denied").await;
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn connections_over_the_limit_are_refused_at_auth() {
+        let (port, server) = start_limited(lobby_hub(), 1).await;
+
+        let _first = connect(port, &"0".repeat(64)).await;
+        let config = Arc::new(client::Config::default());
+        let mut second = client::connect(config, ("127.0.0.1", port), TrustAll)
+            .await
+            .unwrap();
+        assert!(
+            !second
+                .authenticate_password("", &"0".repeat(64))
+                .await
+                .unwrap()
+                .success()
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn terminal_text_drops_control_characters_but_keeps_lines() {
+        assert_eq!(
+            terminal_text("a\x1b]52;c;AAAA\x07b\r\nc\td"),
+            "a]52;c;AAAAb\r\nc\td"
+        );
     }
 
     #[cfg(feature = "sandbox")]

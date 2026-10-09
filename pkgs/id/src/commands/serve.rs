@@ -1002,6 +1002,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "ssh")]
     let ssh_handle = ssh.map(|(listener, ssh_port, hub, host_key)| {
         status!("world ssh: port {ssh_port} (ssh -p {ssh_port} <world>@<host>)");
+        status!(
+            "world ssh host key: {}",
+            crate::world_ssh::host_key_fingerprint(&host_key)
+        );
         tokio::spawn(async move {
             if let Err(e) = crate::world_ssh::serve(listener, hub, host_key).await {
                 tracing::error!("world ssh server error: {}", e);
