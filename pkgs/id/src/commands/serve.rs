@@ -310,6 +310,8 @@ pub struct ServeOptions {
     pub roc_bin: Option<String>,
     /// Platform directory for on-the-fly compilation.
     pub roc_platform: Option<PathBuf>,
+    /// Serve the world over SSH on this port.
+    pub world_ssh_port: Option<u16>,
     /// Accept native (ELF) module installs.
     pub world_native: bool,
     /// Execution bounds for world programs.
@@ -647,6 +649,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         roc_bin,
         roc_platform,
         world_native,
+        world_ssh_port,
         world_runtime,
         allow_node,
         open_writes,
@@ -892,6 +895,24 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         None
     };
 
+    #[cfg(feature = "ssh")]
+    let ssh = match (world_ssh_port, &world_hub) {
+        (Some(port), Some(hub)) => {
+            let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, port)).await?;
+            let ssh_port = listener.local_addr()?.port();
+            let host_key =
+                crate::world_ssh::load_or_create_host_key(crate::world_ssh::SSH_HOST_KEY_FILE)
+                    .await?;
+            Some((listener, ssh_port, hub.clone(), host_key))
+        }
+        _ => None,
+    };
+    #[cfg(not(feature = "ssh"))]
+    ensure!(
+        world_ssh_port.is_none(),
+        "this build has no SSH support (feature `ssh`)"
+    );
+
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
@@ -978,6 +999,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         None
     };
 
+    #[cfg(feature = "ssh")]
+    let ssh_handle = ssh.map(|(listener, ssh_port, hub, host_key)| {
+        status!("world ssh: port {ssh_port} (ssh -p {ssh_port} <world>@<host>)");
+        tokio::spawn(async move {
+            if let Err(e) = crate::world_ssh::serve(listener, hub, host_key).await {
+                tracing::error!("world ssh server error: {}", e);
+            }
+        })
+    });
+
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
     router.shutdown().await?;
@@ -985,6 +1016,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(web_task) = _web_handle {
         web_task.abort();
         let _ = web_task.await;
+    }
+    #[cfg(feature = "ssh")]
+    if let Some(ssh_task) = ssh_handle {
+        ssh_task.abort();
+        let _ = ssh_task.await;
     }
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {

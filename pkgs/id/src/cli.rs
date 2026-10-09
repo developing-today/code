@@ -349,6 +349,12 @@ pub enum Command {
         /// (they reopen from their journal on demand). `0` keeps them open.
         #[arg(long, default_value_t = 600, requires = "world")]
         world_idle_secs: u64,
+        /// Serve the world over SSH on this port, bound to `--bind`.
+        ///
+        /// Connect with `ssh -p <PORT> <WORLD>@<host>`; the password is the
+        /// guest capability from an invite.
+        #[arg(long, requires = "world")]
+        world_ssh_port: Option<u16>,
         /// Accept native (ELF) module installs. Unlike Wasm, the guarantee
         /// is the OS sandbox (Landlock, seccomp, rlimits), not an
         /// import-free format, so this tier is opt-in.
@@ -1553,6 +1559,7 @@ mod tests {
                 world_admin_token,
                 world_module,
                 world_name,
+                world_ssh_port,
                 world_checkpoint_every,
                 world_max_open,
                 world_max_sessions,
@@ -1586,6 +1593,7 @@ mod tests {
                 assert!(world_admin_token.is_none());
                 assert!(world_module.is_none());
                 assert_eq!(world_name, "lobby");
+                assert!(world_ssh_port.is_none());
                 assert_eq!(world_checkpoint_every, 1000);
                 assert_eq!(world_max_open, 256);
                 assert_eq!(world_max_sessions, 1024);

@@ -140,7 +140,7 @@ async fn read_key_after_creation_race(path: &str) -> Result<[u8; 32]> {
 /// The mode is set atomically at creation, so the key is never briefly
 /// world-readable. `create_new` prevents concurrent first-run processes from
 /// overwriting each other's identity.
-async fn write_private_file(path: &str, data: &[u8]) -> Result<()> {
+pub(crate) async fn write_private_file(path: &str, data: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;

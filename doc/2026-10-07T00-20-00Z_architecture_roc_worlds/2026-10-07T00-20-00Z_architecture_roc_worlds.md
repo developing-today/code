@@ -1068,3 +1068,28 @@ Verification: `roc test examples/roc-world/Key.roc` (13 expects, including
 arrow and CSI sequences, multi-byte characters, and control bytes), and the
 `roc-screen` app counts `+` keys, which the compile-service test drives through
 the wasm path.
+
+## 2026-10-08T16-00-00Z Implementation: SSH presentation
+
+`--world-ssh-port <PORT>` (with `--world`, bound to `--bind`, feature `ssh`)
+serves the world to any ordinary SSH client: `ssh -p PORT <WORLD>@host`, with
+the invite capability as the password. An empty user names the default world.
+The password is checked when the shell opens, through the same join path as
+Iroh and WebSocket, so a wrong capability is answered inside the shell with
+`join denied`. The shell's keystrokes become `input` frames, and each `view`
+frame clears the terminal and repaints it; `error` frames are printed.
+
+The server host key lives in `.ssh-host-key` (created on first start). Input
+is queued with `try_send` rather than awaited: the handler runs on the same
+russh loop that flushes output, so waiting for queue space could deadlock.
+A flood of keystrokes drops input instead of stalling the session.
+
+Verification: `world_ssh` unit tests drive `serve` with a russh client. A
+wrong password is refused inside the shell. With the sandbox feature, the
+counter module is installed in-process and the client sees `count=0`, then
+`count=1` after `inc`, parsed with `vt100`. The test does not start the full
+binary, because its Iroh startup stalls in the sandbox.
+
+Access control is not decided by this transport. The SSH password is the same
+bearer capability the other transports accept, so the open question (ACL
+grants vs. object capabilities) is unchanged.

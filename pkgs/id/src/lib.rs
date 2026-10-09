@@ -185,6 +185,8 @@ pub mod world_net;
 pub mod world_records;
 #[cfg(feature = "world")]
 pub mod world_session;
+#[cfg(feature = "ssh")]
+pub mod world_ssh;
 #[cfg(feature = "world")]
 pub mod world_store;
 
