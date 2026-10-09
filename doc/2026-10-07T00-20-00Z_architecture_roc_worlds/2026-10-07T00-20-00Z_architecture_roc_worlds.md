@@ -1093,3 +1093,17 @@ binary, because its Iroh startup stalls in the sandbox.
 Access control is not decided by this transport. The SSH password is the same
 bearer capability the other transports accept, so the open question (ACL
 grants vs. object capabilities) is unchanged.
+
+---
+
+## 2026-10-09T09-59-07Z Decision: attenuated capabilities
+
+Access control moves to attenuated capabilities: a capability names the platform
+functions it may cause, can only be narrowed by its holder, and is checked against
+the world's ceiling (the existing grant ledger) on each use. Participant-caused
+effects act for the participant's capability, which fixes a confused-deputy path.
+The v1 record is shaped so that signed capabilities (Stage 1), then Keyhive or OCapN
+(Stage 2 and later, on named triggers), can be added without changing the records
+or the transports. See
+[`2026-10-09T09-59-07Z_design_attenuated_capabilities`](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md).
+No code changed in this step.
