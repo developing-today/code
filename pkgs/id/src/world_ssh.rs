@@ -991,7 +991,7 @@ mod tests {
             .await
             .unwrap()
             .service()
-            .invite(Some("admin"), "ssh".to_owned())
+            .invite(Some("admin"), "ssh".to_owned(), None, None)
             .await
             .unwrap();
         let capability = serde_json::to_value(&invite).unwrap()["capability"]

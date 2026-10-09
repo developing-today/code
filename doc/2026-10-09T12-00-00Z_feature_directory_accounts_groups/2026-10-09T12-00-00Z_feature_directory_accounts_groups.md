@@ -443,3 +443,55 @@ and groups, with HTML escaping the markup in names.
 
 Not done: the explorer does not pick a world (it uses the default world); a
 `Secure` cookie flag for TLS deployments is not set.
+
+### Phase 9: invite bounds and friend delegation frame
+
+Code: `world.rs` (`WorldCommand::Issue` carries bounds, new `DelegateToFriend`
+command, `WorldHandle::issue_bounded` and `delegate_to_friend`, shared
+`check_storage` and `record_issued` for the three mint paths),
+`world_session.rs` (`invite_bounds`, `InviteError::InvalidBounds`, the
+`invite` and `DelegateToFriend` frames, `send_delegation`),
+`web/world_ws.rs` (`InviteRequest` fields, 400 on bad bounds).
+
+- Invite lifetime. An invite now expires. The default is 7 days and the
+  maximum is 30 days (`INVITE_DEFAULT_SECS`, `INVITE_MAX_SECS`). Before this
+  change invites never expired, so this is a behaviour change. `uses` is
+  optional, and `0` is refused. Zero or over-long lifetimes are refused with
+  the message `expires_in_secs must be from 1 to 2592000 (30 days)`.
+- Order of checks. The admin secret is checked before the bounds, so a wrong
+  token gets 401 whatever the body says. Bad bounds on HTTP return 400 with an
+  `error` field. On the frame they return an `error` frame. The mail install
+  path maps them to `InstallError::InvalidUpload`, which is unreachable there
+  because the install path always passes default bounds.
+- `delegate_to_friend` frame. A joined session whose capability belongs to an
+  account may send `{"type":"delegate_to_friend","friend":…,"name":…,"scopes":[…]}`
+  with optional `expires_at` and `uses`. The core rules are unchanged: the
+  friend must be a friend, the friend's ceiling must hold the scopes, and the
+  friendship is checked on each use. Any refusal returns `delegation denied`.
+  Unknown scopes return `unknown scope`.
+- Shared reply. `attenuate` and `delegate_to_friend` use one `send_delegation`,
+  so the response shape is the same for both.
+
+Tests added: `invite_lifetimes_default_to_a_week_and_stop_at_thirty_days`;
+`invite_frame_refuses_bounds_out_of_range`;
+`delegate_to_friend_frame_needs_an_account_capability`;
+`invite_bounds_are_checked_after_the_admin_secret` (HTTP 400 for each bad
+bound, 401 for a wrong token with a bad body, 200 for valid bounds);
+`a_friend_delegation_through_the_handle_is_held_to_the_friendship`;
+`a_bounded_issue_stops_after_its_uses`.
+
+Also fixed: `account_tests` in `world.rs` lacked the test `allow` attribute, so
+`clippy --all-targets` reported its `unwrap` calls as errors. It now has the
+attribute like the other test modules.
+
+Verification:
+
+- `cargo test --features "world ssh web" --lib`: 829 passed.
+- `cargo test --lib`: 631 passed.
+- `cargo fmt --check` clean. `cargo build --features web` and
+  `--no-default-features` produce no warnings.
+- Clippy reports no errors. The remaining warnings in the touched files
+  predate this phase.
+
+Not done: the `id` CLI has no `--expires-in` or `--uses` flags for `invite`,
+so the bounds are reachable over HTTP and the frame only.

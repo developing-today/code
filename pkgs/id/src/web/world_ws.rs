@@ -30,6 +30,8 @@ pub(super) struct InviteRequest {
     display_name: String,
     /// World to invite into (default world if absent).
     world: Option<String>,
+    expires_in_secs: Option<u64>,
+    uses: Option<u32>,
 }
 
 /// Narrow, cloneable state for the world endpoints, separate from the rest of
@@ -242,8 +244,22 @@ async fn invite_handler(
         }
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    match lease.service().invite(supplied, request.display_name).await {
+    match lease
+        .service()
+        .invite(
+            supplied,
+            request.display_name,
+            request.expires_in_secs,
+            request.uses,
+        )
+        .await
+    {
         Ok(invite) => Json(invite).into_response(),
+        Err(InviteError::InvalidBounds(message)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response(),
         Err(InviteError::Disabled) => StatusCode::NOT_FOUND.into_response(),
         Err(InviteError::Unauthorized) => StatusCode::UNAUTHORIZED.into_response(),
         Err(InviteError::Unavailable) => (
@@ -324,6 +340,10 @@ mod tests {
     }
 
     fn invite_request(auth: Option<&str>) -> Request<Body> {
+        invite_body(auth, r#"{"display_name":"guest"}"#)
+    }
+
+    fn invite_body(auth: Option<&str>, body: &str) -> Request<Body> {
         let mut builder = Request::builder()
             .method("POST")
             .uri("/api/world/invite")
@@ -331,9 +351,41 @@ mod tests {
         if let Some(auth) = auth {
             builder = builder.header("x-world-admin-token", auth);
         }
-        builder
-            .body(Body::from(r#"{"display_name":"guest"}"#))
-            .unwrap()
+        builder.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn invite_bounds_are_checked_after_the_admin_secret() {
+        let router = app(Some(lobby()), Some("s3cret"));
+        for body in [
+            r#"{"display_name":"g","expires_in_secs":0}"#,
+            r#"{"display_name":"g","expires_in_secs":2592001}"#,
+            r#"{"display_name":"g","uses":0}"#,
+        ] {
+            let response = router
+                .clone()
+                .oneshot(invite_body(Some("s3cret"), body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let response = router
+            .clone()
+            .oneshot(invite_body(
+                Some("wrong"),
+                r#"{"display_name":"g","uses":0}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = router
+            .oneshot(invite_body(
+                Some("s3cret"),
+                r#"{"display_name":"g","expires_in_secs":3600,"uses":2}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     fn directory_request(

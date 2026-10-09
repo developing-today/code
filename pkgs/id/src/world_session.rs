@@ -29,7 +29,8 @@ use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::world::{
-    CapabilityBounds, JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot,
+    CapabilityBounds, JoinCapability, Participant, WorldEvent, WorldHandle, WorldScopes,
+    WorldSnapshot, unix_ms,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -130,6 +131,10 @@ enum ClientFrame {
     Invite {
         admin_token: String,
         display_name: String,
+        /// Seconds until the invite stops working (default 7 days, at most 30).
+        expires_in_secs: Option<u64>,
+        /// Committed actions the invite may take; absent means no limit.
+        uses: Option<u32>,
     },
     /// Admin: list the worlds this server hosts.
     ListWorlds {
@@ -167,6 +172,14 @@ enum ClientFrame {
         /// Unix milliseconds at which the delegated capability stops working.
         expires_at: Option<u64>,
         /// Committed chat and input actions the delegated capability may take.
+        uses: Option<u32>,
+    },
+    /// Joined as an account: delegate a subset of its scopes to one of its friends.
+    DelegateToFriend {
+        friend: String,
+        name: String,
+        scopes: Vec<String>,
+        expires_at: Option<u64>,
         uses: Option<u32>,
     },
     Input {
@@ -286,6 +299,31 @@ pub enum InviteError {
     Unauthorized,
     /// The world refused another participant (full, or shut down).
     Unavailable,
+    /// The requested lifetime or use limit is out of range.
+    InvalidBounds(&'static str),
+}
+
+/// Lifetime of an invite when the admin names none.
+pub const INVITE_DEFAULT_SECS: u64 = 7 * 24 * 60 * 60;
+/// Longest lifetime an invite may be given.
+pub const INVITE_MAX_SECS: u64 = 30 * 24 * 60 * 60;
+
+fn invite_bounds(
+    expires_in_secs: Option<u64>,
+    uses: Option<u32>,
+    now_ms: u64,
+) -> Result<CapabilityBounds, &'static str> {
+    let secs = expires_in_secs.unwrap_or(INVITE_DEFAULT_SECS);
+    if secs == 0 || secs > INVITE_MAX_SECS {
+        return Err("expires_in_secs must be from 1 to 2592000 (30 days)");
+    }
+    if uses == Some(0) {
+        return Err("uses must be at least 1");
+    }
+    Ok(CapabilityBounds {
+        expires_at: Some(now_ms.saturating_add(secs * 1000)),
+        uses,
+    })
 }
 
 /// Why an uploaded Wasm program was not installed.
@@ -535,9 +573,17 @@ impl WorldService {
         &self,
         supplied: Option<&str>,
         display_name: String,
+        expires_in_secs: Option<u64>,
+        uses: Option<u32>,
     ) -> Result<InviteResponse, InviteError> {
         self.authorize_admin(supplied)?;
-        match self.world.issue(display_name, WorldScopes::GUEST).await {
+        let bounds =
+            invite_bounds(expires_in_secs, uses, unix_ms()).map_err(InviteError::InvalidBounds)?;
+        match self
+            .world
+            .issue_bounded(display_name, WorldScopes::GUEST, bounds)
+            .await
+        {
             Ok((participant, capability)) => Ok(InviteResponse {
                 capability: capability.expose().to_owned(),
                 participant_id: participant.id,
@@ -595,6 +641,7 @@ impl WorldService {
                 InviteError::Disabled => InstallError::Disabled,
                 InviteError::Unauthorized => InstallError::Unauthorized,
                 InviteError::Unavailable => InstallError::Unavailable,
+                InviteError::InvalidBounds(_) => InstallError::InvalidUpload,
             })?;
         if wasm.is_empty() || wasm.len() > MAX_WORLD_MODULE_BYTES {
             return Err(InstallError::InvalidUpload);
@@ -874,9 +921,17 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         ClientFrame::Invite {
             admin_token,
             display_name,
-        } => match service.invite(Some(&admin_token), display_name).await {
+            expires_in_secs,
+            uses,
+        } => match service
+            .invite(Some(&admin_token), display_name, expires_in_secs, uses)
+            .await
+        {
             Ok(invite) => {
                 let _ = send_json(io, &ServerFrame::Invite(&invite)).await;
+            }
+            Err(InviteError::InvalidBounds(message)) => {
+                let _ = send_error(io, message).await;
             }
             Err(InviteError::Disabled) => {
                 let _ = send_error(io, "invites are not enabled").await;
@@ -990,6 +1045,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::Chat { .. }
         | ClientFrame::Attenuate { .. }
+        | ClientFrame::DelegateToFriend { .. }
         | ClientFrame::Input { .. } => {
             let _ = send_error(io, "first frame must be join, invite or install_begin").await;
         }
@@ -1562,17 +1618,24 @@ async fn handle_client_frame<I: SessionIo>(
                 return send_error(io, "unknown scope").await;
             };
             let bounds = CapabilityBounds { expires_at, uses };
-            return match world.attenuate(token.clone(), scopes, bounds, name).await {
-                Ok((participant, capability)) => {
-                    let delegated = InviteResponse {
-                        capability: capability.expose().to_owned(),
-                        participant_id: participant.id,
-                        display_name: participant.display_name,
-                    };
-                    send_json(io, &ServerFrame::Invite(&delegated)).await
-                }
-                Err(_) => send_error(io, "delegation denied").await,
+            let result = world.attenuate(token.clone(), scopes, bounds, name).await;
+            return send_delegation(io, result).await;
+        }
+        ClientFrame::DelegateToFriend {
+            friend,
+            name,
+            scopes,
+            expires_at,
+            uses,
+        } => {
+            let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
+                return send_error(io, "unknown scope").await;
             };
+            let bounds = CapabilityBounds { expires_at, uses };
+            let result = world
+                .delegate_to_friend(token.clone(), friend, scopes, bounds, name)
+                .await;
+            return send_delegation(io, result).await;
         }
         ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
@@ -1658,6 +1721,23 @@ async fn send_json<I: SessionIo>(io: &mut I, frame: &impl Serialize) -> bool {
 
 async fn send_error<I: SessionIo>(io: &mut I, message: &str) -> bool {
     send_json(io, &ServerFrame::Error { message }).await
+}
+
+async fn send_delegation<I: SessionIo>(
+    io: &mut I,
+    result: anyhow::Result<(Participant, JoinCapability)>,
+) -> bool {
+    match result {
+        Ok((participant, capability)) => {
+            let delegated = InviteResponse {
+                capability: capability.expose().to_owned(),
+                participant_id: participant.id,
+                display_name: participant.display_name,
+            };
+            send_json(io, &ServerFrame::Invite(&delegated)).await
+        }
+        Err(_) => send_error(io, "delegation denied").await,
+    }
 }
 
 /// Decode a bounded hex string.
@@ -1866,6 +1946,62 @@ mod tests {
         let mut bin = Peer::connect(service(None), SessionConfig::default());
         bin.to_server.send(Inbound::Unsupported).await.unwrap();
         assert_eq!(bin.next().await.unwrap()["type"], "error");
+    }
+
+    #[test]
+    fn invite_lifetimes_default_to_a_week_and_stop_at_thirty_days() {
+        let now = 1_000_000;
+        let default = invite_bounds(None, None, now).unwrap();
+        assert_eq!(default.expires_at, Some(now + INVITE_DEFAULT_SECS * 1000));
+        assert_eq!(default.uses, None);
+        let longest = invite_bounds(Some(INVITE_MAX_SECS), Some(3), now).unwrap();
+        assert_eq!(longest.expires_at, Some(now + INVITE_MAX_SECS * 1000));
+        assert_eq!(longest.uses, Some(3));
+        assert!(invite_bounds(Some(0), None, now).is_err());
+        assert!(invite_bounds(Some(INVITE_MAX_SECS + 1), None, now).is_err());
+        assert!(invite_bounds(None, Some(0), now).is_err());
+    }
+
+    #[tokio::test]
+    async fn invite_frame_refuses_bounds_out_of_range() {
+        let svc = service(Some("admin"));
+        let mut long = Peer::connect(svc.clone(), SessionConfig::default());
+        long.say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"ann","expires_in_secs":INVITE_MAX_SECS + 1}))
+            .await;
+        assert_eq!(long.next().await.unwrap()["type"], "error");
+        let mut none = Peer::connect(svc, SessionConfig::default());
+        none.say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"ann","uses":0}))
+            .await;
+        assert_eq!(
+            none.next().await.unwrap()["message"],
+            "uses must be at least 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_to_friend_frame_needs_an_account_capability() {
+        let svc = service(Some("admin"));
+        let mut host = Peer::connect(svc.clone(), SessionConfig::default());
+        host.say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"ann"}))
+            .await;
+        let capability = host.next().await.unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let mut guest = Peer::connect(svc, SessionConfig::default());
+        guest
+            .say(serde_json::json!({"type":"join","capability":capability}))
+            .await;
+        assert_eq!(guest.next().await.unwrap()["type"], "snapshot");
+        guest
+            .say(serde_json::json!({"type":"delegate_to_friend","friend":"nobody","name":"bo","scopes":["join"]}))
+            .await;
+        assert_eq!(guest.next().await.unwrap()["message"], "delegation denied");
+        guest
+            .say(serde_json::json!({"type":"delegate_to_friend","friend":"nobody","name":"bo","scopes":["root"]}))
+            .await;
+        assert_eq!(guest.next().await.unwrap()["message"], "unknown scope");
     }
 
     #[tokio::test]

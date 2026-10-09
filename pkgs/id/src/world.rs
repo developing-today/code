@@ -1360,10 +1360,19 @@ enum WorldCommand {
     Issue {
         name: String,
         scopes: WorldScopes,
+        bounds: CapabilityBounds,
         reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
     },
     Attenuate {
         token: JoinCapability,
+        name: String,
+        scopes: WorldScopes,
+        bounds: CapabilityBounds,
+        reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
+    },
+    DelegateToFriend {
+        token: JoinCapability,
+        friend: String,
         name: String,
         scopes: WorldScopes,
         bounds: CapabilityBounds,
@@ -1519,6 +1528,26 @@ impl WorldActor {
             }
             None => std::future::pending().await,
         }
+    }
+
+    fn check_storage(&self) -> Result<()> {
+        ensure!(
+            !self.storage_failed,
+            "world storage failed; the world is read-only"
+        );
+        Ok(())
+    }
+
+    fn record_issued(
+        &mut self,
+        issued: (Participant, JoinCapability),
+    ) -> Result<(Participant, JoinCapability)> {
+        let entry = self
+            .core
+            .issued_entry(issued.0.id)
+            .context("issued capability vanished")?;
+        self.persist(entry)?;
+        Ok(issued)
     }
 
     /// Durably record `entry`, or turn the world read-only.
@@ -1858,24 +1887,13 @@ impl WorldActor {
             WorldCommand::Issue {
                 name,
                 scopes,
+                bounds,
                 reply,
             } => {
-                let result = if self.storage_failed {
-                    Err(anyhow::anyhow!(
-                        "world storage failed; the world is read-only"
-                    ))
-                } else {
-                    self.core
-                        .issue_capability(&name, scopes, CapabilityBounds::default())
-                        .and_then(|issued| {
-                            let entry = self
-                                .core
-                                .issued_entry(issued.0.id)
-                                .context("issued capability vanished")?;
-                            self.persist(entry)?;
-                            Ok(issued)
-                        })
-                };
+                let result = self.check_storage().and_then(|()| {
+                    let issued = self.core.issue_capability(&name, scopes, bounds)?;
+                    self.record_issued(issued)
+                });
                 let _ = reply.send(result);
             }
             WorldCommand::Attenuate {
@@ -1885,22 +1903,26 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = if self.storage_failed {
-                    Err(anyhow::anyhow!(
-                        "world storage failed; the world is read-only"
-                    ))
-                } else {
-                    self.core
-                        .attenuate(&token, scopes, bounds, &name)
-                        .and_then(|issued| {
-                            let entry = self
-                                .core
-                                .issued_entry(issued.0.id)
-                                .context("delegated capability vanished")?;
-                            self.persist(entry)?;
-                            Ok(issued)
-                        })
-                };
+                let result = self.check_storage().and_then(|()| {
+                    let issued = self.core.attenuate(&token, scopes, bounds, &name)?;
+                    self.record_issued(issued)
+                });
+                let _ = reply.send(result);
+            }
+            WorldCommand::DelegateToFriend {
+                token,
+                friend,
+                name,
+                scopes,
+                bounds,
+                reply,
+            } => {
+                let result = self.check_storage().and_then(|()| {
+                    let issued = self
+                        .core
+                        .delegate_to_friend(&token, &friend, scopes, bounds, &name)?;
+                    self.record_issued(issued)
+                });
                 let _ = reply.send(result);
             }
             WorldCommand::Directory {
@@ -2318,11 +2340,23 @@ impl WorldHandle {
         name: impl Into<String>,
         scopes: WorldScopes,
     ) -> Result<(Participant, JoinCapability)> {
+        self.issue_bounded(name, scopes, CapabilityBounds::default())
+            .await
+    }
+
+    /// Issue a scoped participant capability that stops working at its bounds.
+    pub async fn issue_bounded(
+        &self,
+        name: impl Into<String>,
+        scopes: WorldScopes,
+        bounds: CapabilityBounds,
+    ) -> Result<(Participant, JoinCapability)> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Issue {
                 name: name.into(),
                 scopes,
+                bounds,
                 reply,
             })
             .await
@@ -2354,6 +2388,33 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped delegation response")?
+    }
+
+    /// Delegate a narrower capability to a friend of the account `token`
+    /// acts for. The friendship must still hold when the capability is used.
+    pub async fn delegate_to_friend(
+        &self,
+        token: JoinCapability,
+        friend: impl Into<String>,
+        scopes: WorldScopes,
+        bounds: CapabilityBounds,
+        name: impl Into<String>,
+    ) -> Result<(Participant, JoinCapability)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DelegateToFriend {
+                token,
+                friend: friend.into(),
+                name: name.into(),
+                scopes,
+                bounds,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped friend delegation response")?
     }
 
     /// Read or change the directory as the caller. The caller's proof must
@@ -3639,6 +3700,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod account_tests {
     use super::*;
     use crate::directory::{Actor, Tier};
@@ -3651,6 +3713,67 @@ mod account_tests {
         let (credential, _) = core.directory_mut().sign_up(name).unwrap();
         let id = core.directory().account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    #[tokio::test]
+    async fn a_friend_delegation_through_the_handle_is_held_to_the_friendship() {
+        let mut core = core();
+        let (ann, ann_credential) = account(&mut core, "Ann");
+        let (bo, bo_credential) = account(&mut core, "Bo");
+        let (cy, _) = account(&mut core, "Cy");
+        core.directory_mut()
+            .verify_account(Actor::Server, &ann)
+            .unwrap();
+        befriend(&mut core, &ann, &ann_credential, &bo, &bo_credential);
+        let (_, ann_token) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let handle = WorldHandle::spawn(core);
+
+        let (_, bo_token) = handle
+            .delegate_to_friend(
+                ann_token.clone(),
+                bo,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .await
+            .unwrap();
+        handle.chat(bo_token, "hi").await.unwrap();
+        assert!(
+            handle
+                .delegate_to_friend(
+                    ann_token,
+                    cy,
+                    WorldScopes::GUEST,
+                    CapabilityBounds::default(),
+                    "Cy"
+                )
+                .await
+                .is_err(),
+            "only friends may be delegated to"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_issue_stops_after_its_uses() {
+        let handle = WorldHandle::spawn(core());
+        let bounds = CapabilityBounds {
+            expires_at: None,
+            uses: Some(1),
+        };
+        let (_, token) = handle
+            .issue_bounded("Ann", WorldScopes::GUEST, bounds)
+            .await
+            .unwrap();
+        handle.chat(token.clone(), "once").await.unwrap();
+        assert!(handle.chat(token, "twice").await.is_err());
     }
 
     fn befriend(core: &mut WorldCore, a: &str, a_credential: &str, b: &str, b_credential: &str) {
