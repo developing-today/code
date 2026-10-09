@@ -416,7 +416,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::world::WorldScopes;
+    use crate::world::{CapabilityBounds, WorldScopes};
     use crate::world_limits::RuntimeLimits;
 
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
@@ -474,13 +474,18 @@ mod tests {
         let path = dir.path().join("journal.jsonl");
         let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
         let mut core = WorldCore::new("w", WorldLimits::default()).unwrap();
-        let (participant, token) = core.issue_capability("ann", WorldScopes::GUEST).unwrap();
+        let (participant, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
         journal
             .append(&JournalEntry::Issued {
                 participant,
                 digest: "00".repeat(32),
                 scopes: WorldScopes::GUEST.bits(),
                 parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
             })
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();

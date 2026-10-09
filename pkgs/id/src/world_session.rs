@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
-use crate::world::{JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot};
+use crate::world::{
+    CapabilityBounds, JoinCapability, WorldEvent, WorldHandle, WorldScopes, WorldSnapshot,
+};
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
@@ -161,6 +163,10 @@ enum ClientFrame {
     Attenuate {
         name: String,
         scopes: Vec<String>,
+        /// Unix milliseconds at which the delegated capability stops working.
+        expires_at: Option<u64>,
+        /// Committed chat and input actions the delegated capability may take.
+        uses: Option<u32>,
     },
     Input {
         data_hex: String,
@@ -1508,11 +1514,17 @@ async fn handle_client_frame<I: SessionIo>(
         return send_error(io, "invalid world frame").await;
     };
     let result = match frame {
-        ClientFrame::Attenuate { name, scopes } => {
+        ClientFrame::Attenuate {
+            name,
+            scopes,
+            expires_at,
+            uses,
+        } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
                 return send_error(io, "unknown scope").await;
             };
-            return match world.attenuate(token.clone(), scopes, name).await {
+            let bounds = CapabilityBounds { expires_at, uses };
+            return match world.attenuate(token.clone(), scopes, bounds, name).await {
                 Ok((participant, capability)) => {
                     let delegated = InviteResponse {
                         capability: capability.expose().to_owned(),

@@ -225,6 +225,15 @@ pub enum JournalEntry {
         /// The capability this one was delegated from, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<u64>,
+        /// Unix milliseconds at which the capability stops working.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+        /// Committed chat and input actions the capability may take.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uses: Option<u32>,
+        /// Actions already taken, written at checkpoint so counts survive compaction.
+        #[serde(default)]
+        used: u32,
     },
     /// A capability was revoked, with every capability delegated from it.
     /// Replay revokes the same tree.
@@ -460,6 +469,15 @@ pub struct WorldSnapshot {
     pub participants: Vec<Participant>,
 }
 
+/// Limits on what a capability may do before it stops working.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CapabilityBounds {
+    /// Unix milliseconds at which the capability stops working.
+    pub expires_at: Option<u64>,
+    /// Committed chat and input actions the capability may take.
+    pub uses: Option<u32>,
+}
+
 #[derive(Clone, Debug)]
 struct CapabilityRecord {
     digest: [u8; 32],
@@ -467,6 +485,8 @@ struct CapabilityRecord {
     scopes: WorldScopes,
     parent: Option<u64>,
     revoked: bool,
+    bounds: CapabilityBounds,
+    used: u32,
 }
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
@@ -570,6 +590,9 @@ impl WorldCore {
                     digest,
                     scopes,
                     parent,
+                    expires_at,
+                    uses,
+                    used,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
                     ensure!(
@@ -582,6 +605,21 @@ impl WorldCore {
                         "participant {} delegated from an unknown capability",
                         participant.id
                     );
+                    ensure!(
+                        uses.is_none_or(|uses| uses >= 1),
+                        "participant {} has an empty use limit",
+                        participant.id
+                    );
+                    if let Some(parent) = parent.and_then(|id| core.capabilities.get(&id)) {
+                        ensure!(
+                            expires_at.is_none_or(|expires| parent
+                                .bounds
+                                .expires_at
+                                .is_none_or(|limit| expires <= limit)),
+                            "participant {} outlives the capability it was delegated from",
+                            participant.id
+                        );
+                    }
                     core.next_participant_id = core.next_participant_id.max(
                         participant
                             .id
@@ -596,6 +634,8 @@ impl WorldCore {
                             scopes: WorldScopes(scopes),
                             parent,
                             revoked: false,
+                            bounds: CapabilityBounds { expires_at, uses },
+                            used,
                         },
                     );
                 }
@@ -803,6 +843,9 @@ impl WorldCore {
                 digest: hex_encode(&record.digest),
                 scopes: record.scopes.0,
                 parent: record.parent,
+                expires_at: record.bounds.expires_at,
+                uses: record.bounds.uses,
+                used: record.used,
             })
     }
 
@@ -824,28 +867,97 @@ impl WorldCore {
         &mut self,
         display_name: &str,
         scopes: WorldScopes,
+        bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
-        self.mint(display_name, scopes, None)
+        self.mint(display_name, scopes, None, bounds)
     }
 
     /// Delegate a capability: a new participant whose scopes are a subset of
-    /// the delegating capability's, and which is revoked with it.
+    /// the delegating capability's, and which is revoked with it. Its expiry
+    /// may not be later than the delegator's, and its use limit may not exceed
+    /// what the delegator and its ancestors have left.
     pub fn attenuate(
         &mut self,
         token: &JoinCapability,
         scopes: WorldScopes,
+        bounds: CapabilityBounds,
         display_name: &str,
     ) -> Result<(Participant, JoinCapability)> {
         let parent = self.authorize(token, WorldScopes::JOIN)?;
-        let parent_scopes = self
+        let parent_record = self
             .capabilities
             .get(&parent)
-            .context("world participant is unavailable")?
-            .scopes;
-        let scopes = parent_scopes
+            .context("world participant is unavailable")?;
+        let scopes = parent_record
+            .scopes
             .attenuate(scopes)
             .context("this capability may not delegate those scopes")?;
-        self.mint(display_name, scopes, Some(parent))
+        if let Some(expires_at) = bounds.expires_at {
+            ensure!(
+                expires_at > unix_ms(),
+                "delegated expiry must be in the future"
+            );
+            ensure!(
+                parent_record
+                    .bounds
+                    .expires_at
+                    .is_none_or(|limit| expires_at <= limit),
+                "this capability may not delegate a later expiry"
+            );
+        }
+        if let Some(uses) = bounds.uses {
+            ensure!(uses >= 1, "delegated use limit must be at least one");
+            ensure!(
+                self.uses_left(parent).is_none_or(|left| uses <= left),
+                "this capability does not have that many uses left to delegate"
+            );
+        }
+        self.mint(display_name, scopes, Some(parent), bounds)
+    }
+
+    /// Fewest actions the capability or any ancestor may still take, or `None`
+    /// if no capability in the chain is limited.
+    fn uses_left(&self, participant_id: u64) -> Option<u32> {
+        let mut left = None;
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            if let Some(limit) = record.bounds.uses {
+                let remaining = limit.saturating_sub(record.used);
+                left = Some(left.map_or(remaining, |so_far: u32| so_far.min(remaining)));
+            }
+            current = record.parent;
+        }
+        left
+    }
+
+    fn ensure_not_expired(&self, participant_id: u64) -> Result<()> {
+        let now = unix_ms();
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            ensure!(
+                record.bounds.expires_at.is_none_or(|expires| now < expires),
+                "world capability has expired"
+            );
+            current = record.parent;
+        }
+        Ok(())
+    }
+
+    fn ensure_uses_left(&self, participant_id: u64) -> Result<()> {
+        ensure!(
+            self.uses_left(participant_id).is_none_or(|left| left > 0),
+            "world capability has no uses left"
+        );
+        Ok(())
+    }
+
+    /// Count one committed action against the participant and each ancestor.
+    fn spend(&mut self, participant_id: u64) {
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get_mut(&id)) {
+            record.used = record.used.saturating_add(1);
+            current = record.parent;
+        }
     }
 
     fn mint(
@@ -853,6 +965,7 @@ impl WorldCore {
         display_name: &str,
         scopes: WorldScopes,
         parent: Option<u64>,
+        bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
         let active = self
             .capabilities
@@ -890,6 +1003,8 @@ impl WorldCore {
                 scopes,
                 parent,
                 revoked: false,
+                bounds,
+                used: 0,
             },
         );
         Ok((participant, JoinCapability(token)))
@@ -929,6 +1044,7 @@ impl WorldCore {
     /// Commit a chat message after validating capability and bounds.
     pub fn chat(&mut self, token: &JoinCapability, text: &str) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::CHAT)?;
+        self.ensure_uses_left(participant_id)?;
         ensure!(
             text.len() <= self.limits.chat_bytes,
             "chat message exceeds {} bytes",
@@ -947,6 +1063,7 @@ impl WorldCore {
 
     fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
             "world input exceeds {} bytes",
@@ -970,6 +1087,7 @@ impl WorldCore {
             "prepared world event is stale"
         );
         self.sequence = event.sequence;
+        self.spend(event.participant_id);
         self.since_checkpoint = self.since_checkpoint.saturating_add(1);
         self.events.push_back(event.clone());
         while self.events.len() > self.limits.retained_events {
@@ -1036,6 +1154,7 @@ impl WorldCore {
             !record.revoked && record.scopes.contains(required),
             "invalid, revoked, or insufficient world capability"
         );
+        self.ensure_not_expired(participant_id)?;
         Ok(participant_id)
     }
 
@@ -1049,6 +1168,7 @@ impl WorldCore {
             participant_id,
             kind,
         };
+        self.spend(participant_id);
         self.since_checkpoint = self.since_checkpoint.saturating_add(1);
         self.events.push_back(event.clone());
         while self.events.len() > self.limits.retained_events {
@@ -1118,6 +1238,7 @@ enum WorldCommand {
         token: JoinCapability,
         name: String,
         scopes: WorldScopes,
+        bounds: CapabilityBounds,
         reply: oneshot::Sender<Result<(Participant, JoinCapability)>>,
     },
     Revoke {
@@ -1610,7 +1731,7 @@ impl WorldActor {
                     ))
                 } else {
                     self.core
-                        .issue_capability(&name, scopes)
+                        .issue_capability(&name, scopes, CapabilityBounds::default())
                         .and_then(|issued| {
                             let entry = self
                                 .core
@@ -1626,6 +1747,7 @@ impl WorldActor {
                 token,
                 name,
                 scopes,
+                bounds,
                 reply,
             } => {
                 let result = if self.storage_failed {
@@ -1634,7 +1756,7 @@ impl WorldActor {
                     ))
                 } else {
                     self.core
-                        .attenuate(&token, scopes, &name)
+                        .attenuate(&token, scopes, bounds, &name)
                         .and_then(|issued| {
                             let entry = self
                                 .core
@@ -2065,6 +2187,7 @@ impl WorldHandle {
         &self,
         token: JoinCapability,
         scopes: WorldScopes,
+        bounds: CapabilityBounds,
         name: impl Into<String>,
     ) -> Result<(Participant, JoinCapability)> {
         let (reply, response) = oneshot::channel();
@@ -2073,6 +2196,7 @@ impl WorldHandle {
                 token,
                 name: name.into(),
                 scopes,
+                bounds,
                 reply,
             })
             .await
@@ -2295,7 +2419,8 @@ mod tests {
     }
 
     fn join(core: &mut WorldCore, name: &str) -> (Participant, JoinCapability) {
-        core.issue_capability(name, WorldScopes::GUEST).unwrap()
+        core.issue_capability(name, WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap()
     }
 
     /// A program driven by numeric inputs: each input switches its `wants`
@@ -2508,6 +2633,9 @@ mod tests {
                 digest,
                 scopes: WorldScopes::GUEST.0,
                 parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
             },
             JournalEntry::System {
                 event: WorldEvent {
@@ -2556,6 +2684,9 @@ mod tests {
                 digest,
                 scopes: WorldScopes::GUEST.0,
                 parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
             },
             presence(true),
             presence(false),
@@ -2671,6 +2802,38 @@ mod tests {
         world.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn ticks_follow_the_world_grant_not_a_participant_capability() {
+        let core = WorldCore::new("ticks", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let (_, owner) = world.issue("ann", owner_scopes).await.unwrap();
+        let short_lived = CapabilityBounds {
+            expires_at: Some(unix_ms() + 150),
+            uses: None,
+        };
+        let (_, short) = world
+            .attenuate(owner.clone(), WorldScopes::GUEST, short_lived, "bo")
+            .await
+            .unwrap();
+        world
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(owner, b"4".to_vec()).await.unwrap();
+        world.presence(1, true).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(world.chat(short, "late").await.is_err());
+        let mut views = world.watch_views();
+        views.borrow_and_update();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(
+            views.has_changed().is_ok_and(|changed| changed),
+            "ticks stopped when a participant's capability expired"
+        );
+        world.shutdown().await.unwrap();
+    }
+
     #[test]
     fn capability_scopes_isolate_actions() {
         let mut core = world(8);
@@ -2679,11 +2842,203 @@ mod tests {
         assert!(core.chat(&token, "hello").is_ok());
         assert!(core.input(&token, b"move").is_ok());
         let (_, join_only) = core
-            .issue_capability("spectator", WorldScopes::JOIN)
+            .issue_capability("spectator", WorldScopes::JOIN, CapabilityBounds::default())
             .unwrap();
         assert!(core.snapshot(&join_only).is_ok());
         assert!(core.chat(&join_only, "no").is_err());
         assert!(core.input(&join_only, b"no").is_err());
+    }
+
+    fn in_an_hour() -> u64 {
+        unix_ms() + 3_600_000
+    }
+
+    #[test]
+    fn an_expired_capability_is_refused_for_every_operation() {
+        let mut core = world(8);
+        let (_, token) = core
+            .issue_capability(
+                "Ada",
+                WorldScopes::GUEST,
+                CapabilityBounds {
+                    expires_at: Some(1),
+                    uses: None,
+                },
+            )
+            .unwrap();
+        assert!(core.snapshot(&token).is_err());
+        assert!(core.chat(&token, "late").is_err());
+        assert!(core.input(&token, b"late").is_err());
+    }
+
+    #[test]
+    fn delegation_may_not_outlive_or_expire_in_the_past() {
+        let mut core = world(8);
+        let (_, owner) = core
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds {
+                    expires_at: Some(in_an_hour()),
+                    uses: None,
+                },
+            )
+            .unwrap();
+        let later = CapabilityBounds {
+            expires_at: Some(in_an_hour() + 1),
+            uses: None,
+        };
+        assert!(
+            core.attenuate(&owner, WorldScopes::JOIN, later, "Bo")
+                .is_err()
+        );
+        let past = CapabilityBounds {
+            expires_at: Some(1),
+            uses: None,
+        };
+        assert!(
+            core.attenuate(&owner, WorldScopes::JOIN, past, "Cy")
+                .is_err()
+        );
+        let sooner = CapabilityBounds {
+            expires_at: Some(in_an_hour() - 1_000),
+            uses: None,
+        };
+        assert!(
+            core.attenuate(&owner, WorldScopes::JOIN, sooner, "Di")
+                .is_ok()
+        );
+        let inherited = core
+            .attenuate(&owner, WorldScopes::JOIN, CapabilityBounds::default(), "Ed")
+            .unwrap()
+            .1;
+        assert!(core.snapshot(&inherited).is_ok());
+    }
+
+    #[test]
+    fn use_limits_draw_down_every_ancestor() {
+        let mut core = world(8);
+        let (_, owner) = core
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds {
+                    expires_at: None,
+                    uses: Some(3),
+                },
+            )
+            .unwrap();
+        let two = CapabilityBounds {
+            expires_at: None,
+            uses: Some(2),
+        };
+        let (_, child) = core
+            .attenuate(&owner, WorldScopes::GUEST, two, "Bo")
+            .unwrap();
+        core.chat(&child, "one").unwrap();
+        core.chat(&child, "two").unwrap();
+        assert!(core.chat(&child, "three").is_err());
+        assert!(
+            core.attenuate(&owner, WorldScopes::GUEST, two, "Cy")
+                .is_err(),
+            "the owner has one use left to delegate"
+        );
+        let one = CapabilityBounds {
+            expires_at: None,
+            uses: Some(1),
+        };
+        assert!(
+            core.attenuate(&owner, WorldScopes::GUEST, one, "Di")
+                .is_ok()
+        );
+        core.chat(&owner, "last").unwrap();
+        assert!(core.chat(&owner, "over").is_err());
+        assert!(core.snapshot(&owner).is_ok(), "reading is not a use");
+    }
+
+    #[test]
+    fn use_counts_survive_restore_and_compaction() {
+        let mut source = world(8);
+        let (owner, token) = source
+            .issue_capability(
+                "Ada",
+                WorldScopes::GUEST,
+                CapabilityBounds {
+                    expires_at: None,
+                    uses: Some(2),
+                },
+            )
+            .unwrap();
+        let digest = hex_encode(&token_digest(token.expose()));
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Issued {
+                participant: owner,
+                digest,
+                scopes: WorldScopes::GUEST.bits(),
+                parent: None,
+                expires_at: None,
+                uses: Some(2),
+                used: 1,
+            },
+        ];
+        let mut restored =
+            WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        restored.core.chat(&token, "second").unwrap();
+        assert!(restored.core.chat(&token, "third").is_err());
+    }
+
+    #[test]
+    fn restore_refuses_a_delegate_outliving_its_parent() {
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds {
+                    expires_at: Some(in_an_hour()),
+                    uses: None,
+                },
+            )
+            .unwrap();
+        let (child, child_token) = source
+            .attenuate(
+                &owner_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .unwrap();
+        let digest = hex_encode(&token_digest(child_token.expose()));
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Issued {
+                participant: owner,
+                digest: hex_encode(&token_digest(owner_token.expose())),
+                scopes: WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits())
+                    .bits(),
+                parent: None,
+                expires_at: Some(in_an_hour()),
+                uses: None,
+                used: 0,
+            },
+            JournalEntry::Issued {
+                participant: child,
+                digest,
+                scopes: WorldScopes::JOIN.bits(),
+                parent: Some(1),
+                expires_at: Some(in_an_hour() + 1),
+                uses: None,
+                used: 0,
+            },
+        ];
+        assert!(WorldCore::restore("test-world", WorldLimits::default(), entries).is_err());
     }
 
     #[test]
@@ -2763,25 +3118,43 @@ mod tests {
     fn delegated_capabilities_are_narrow_and_die_with_their_parent() {
         let mut core = world(8);
         let root = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
-        let (owner, owner_token) = core.issue_capability("Ada", root).unwrap();
+        let (owner, owner_token) = core
+            .issue_capability("Ada", root, CapabilityBounds::default())
+            .unwrap();
         let (child, child_token) = core
             .attenuate(
                 &owner_token,
                 WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds::default(),
                 "Bo",
             )
             .unwrap();
         let (grandchild, grandchild_token) = core
-            .attenuate(&child_token, WorldScopes::JOIN, "Cy")
+            .attenuate(
+                &child_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Cy",
+            )
             .unwrap();
         assert!(core.chat(&grandchild_token, "hi").is_err());
         assert!(
-            core.attenuate(&child_token, WorldScopes::GUEST, "Di")
-                .is_err()
+            core.attenuate(
+                &child_token,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Di"
+            )
+            .is_err()
         );
         assert!(
-            core.attenuate(&grandchild_token, WorldScopes::JOIN, "Ed")
-                .is_err()
+            core.attenuate(
+                &grandchild_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Ed"
+            )
+            .is_err()
         );
 
         let mut revoked = core.revoke_tree(owner.id);
@@ -2799,12 +3172,24 @@ mod tests {
         };
         let mut core = WorldCore::new("limit", limits).unwrap();
         let root = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
-        let (_, owner_token) = core.issue_capability("Ada", root).unwrap();
-        core.attenuate(&owner_token, WorldScopes::JOIN, "Bo")
+        let (_, owner_token) = core
+            .issue_capability("Ada", root, CapabilityBounds::default())
             .unwrap();
+        core.attenuate(
+            &owner_token,
+            WorldScopes::JOIN,
+            CapabilityBounds::default(),
+            "Bo",
+        )
+        .unwrap();
         assert!(
-            core.attenuate(&owner_token, WorldScopes::JOIN, "Cy")
-                .is_err()
+            core.attenuate(
+                &owner_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Cy"
+            )
+            .is_err()
         );
     }
 
@@ -2826,6 +3211,9 @@ mod tests {
                 digest: "00".repeat(32),
                 scopes: WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits(),
                 parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
             },
             JournalEntry::Issued {
                 participant: Participant {
@@ -2835,6 +3223,9 @@ mod tests {
                 digest,
                 scopes: WorldScopes::JOIN.bits(),
                 parent: Some(1),
+                expires_at: None,
+                uses: None,
+                used: 0,
             },
         ];
         let mut restored = WorldCore::restore("delegate", WorldLimits::default(), entries)
@@ -2880,7 +3271,10 @@ mod tests {
         )
         .unwrap();
         join(&mut core, "Ada");
-        assert!(core.issue_capability("Grace", WorldScopes::GUEST).is_err());
+        assert!(
+            core.issue_capability("Grace", WorldScopes::GUEST, CapabilityBounds::default())
+                .is_err()
+        );
         assert!(WorldCore::new("", WorldLimits::default()).is_err());
         assert!(
             WorldCore::new(

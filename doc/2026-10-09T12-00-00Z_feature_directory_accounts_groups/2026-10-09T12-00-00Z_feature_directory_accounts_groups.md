@@ -1,0 +1,143 @@
+# Accounts, groups, contacts and delegation
+
+Related: [attenuated capabilities](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md)
+(the capability records, attenuation and the ceiling this builds on).
+
+## Intent
+
+Worlds today know participants only as capability holders. A person cannot
+sign up, be placed in groups, befriend another person, or hand a friend a
+narrower share of what they hold. The request:
+
+- open sign-up with permission sets for three tiers: anonymous, registered,
+  and email/identity-confirmed;
+- groups with membership levels (access, read, write, manage, admin), an
+  account in several groups, groups inside groups;
+- a decentralised friend/contact system;
+- delegation of granted permissions, with restrictions (narrower functions,
+  earlier expiry, use limits);
+- a personal user screen and a group screen;
+- a user and group explorer on both SSH and HTTP, showing the same data.
+
+Open items from the attenuation design (expiry and use limits, the tick
+attribution decision) are included.
+
+## Decisions
+
+1. **One directory per server.** Accounts, groups and contacts belong to the
+   server, not to one world. Worlds keep their own ceilings and capabilities.
+2. **Accounts are self-certifying.** An account's ID is the hex of an Ed25519
+   public key. Signing up draws a 256-bit secret; the signing key is derived
+   from it with domain separation (`SHA-256("id-account-v1" || secret)`), and
+   only the public key and a SHA-256 digest of the secret are stored. The
+   credential shown once is `acct.<id>.<secret-hex>`.
+3. **Credentials are bearer, as capabilities are.** A presented credential is
+   checked against its digest in constant time. Account operations that need a
+   signature (friend requests, acceptances) are signed by the server with the
+   key derived from the presented credential, and the key is not kept.
+4. **Tiers are built-in groups with permission sets.** `anonymous` covers
+   sessions with no account. `registered` covers signed-up accounts.
+   `verified` covers accounts whose email or identity was confirmed. Every
+   account is in `registered`, and in `verified` once confirmed. Admins edit
+   the sets. Defaults match what guests get today, so existing worlds do not
+   change behaviour.
+5. **Groups and tiers are a ceiling, not a grant.** An account's ceiling is
+   the union of its tier set and the sets of every group it belongs to,
+   transitively. A participant's effective functions are
+   `capability.functions ∩ world.ceiling ∩ account.ceiling`. Groups can narrow
+   what a capability allows, and they can never widen a capability. A
+   capability with no account uses the anonymous set.
+6. **Group levels.** Ordered `access < read < write < manage < admin`:
+   - `access`: sees the group and its own membership.
+   - `read`: sees members, their levels, and the permission set.
+   - `write`: edits the group's description.
+   - `manage`: adds and removes members, and sets levels up to `write`, only
+     for members below `manage`.
+   - `admin`: all of the above, sets any level, changes the permission set and
+     name, and deletes the group.
+   A group must always keep at least one admin account, directly or through a
+   nested admin group.
+7. **Nested groups.** A group may be a member of another. Cycles are refused.
+   A member group's contribution to a parent is its permission set, and its
+   members' effective level in the parent is the minimum of the level the
+   group holds and their level in the member group.
+8. **Friends are signed envelopes.** A friend request, its acceptance, and a
+   contact card are JSON bodies with an Ed25519 signature over the canonical
+   body bytes. A recipient verifies them against the public key inside the
+   envelope, so the envelope can travel through any channel and be checked
+   without contacting the sender's server. Nothing in this is an authority
+   decision (C1).
+9. **Delegation goes to friends.** `attenuate` may name a recipient account.
+   The recipient must be a friend of the delegator, and the holder's account
+   ceiling must allow `delegate`. The child may narrow functions, set an
+   earlier expiry, and set a use limit no larger than its parent's remaining
+   budget.
+10. **Expiry and use limits on capabilities.** `Issued` gains optional
+    `expires_at` (Unix ms) and `uses`. A use is a committed action by the
+    capability's holder (chat or input). The count is rebuilt from committed
+    events on replay, so no new journal event is needed. A use draws down the
+    holder's budget and each ancestor's; a child cannot outlive or outspend its
+    parent.
+11. **Ticks use the ceiling only.** World-level ticks are not caused by a
+    participant. They are checked against the world ceiling and nothing else.
+    This is open question 1 of the attenuation design, now settled.
+12. **Email confirmation is delivered by a command.** `--mail-command` is run
+    with the recipient and code in environment variables, and nothing is logged
+    to stdout. Without it, email confirmation is refused and only an admin can
+    verify an account. Real mail delivery is not built into the server.
+13. **One explorer model, two renderers.** A `DirectoryView` is built once from
+    the directory and a viewer's rights. SSH renders it as text, HTTP renders it
+    as HTML and JSON. Both transports parse commands into the same `DirOp`. A
+    test checks that every entity in the view appears in both renderings.
+
+## Visibility
+
+- Admin token: everything.
+- Account: itself, its groups, members of groups where it holds `read` or
+  better, and its friends.
+- Anonymous: account display names and public groups only.
+
+## Scope of this slice
+
+Built: the design, expiry and use limits, the account, group and contact model
+with its journal, the explorer model with SSH and HTTP renderers, personal and
+group screens as operations, and envelope signing with verification.
+
+Not built: transport of friend envelopes between servers (they are copied by
+the user), an Iroh replication of the directory, real mail delivery, and
+per-export module gating.
+
+## Verification plan
+
+- Levels: each rule is tested for allowed and refused actors, including
+  "manage cannot grant admin" and "last admin cannot be removed".
+- Nesting: cycles refused; effective level is the minimum across the path.
+- Ceiling: a group change narrows a live participant without reissuing the
+  capability.
+- Delegation: refused for non-friends, for `delegate` outside the account's
+  ceiling, and when the child widens functions, outlives the parent, or
+  exceeds the parent's uses.
+- Uses: a chain of three uses draws down the parent's budget.
+- Envelopes: a tampered body or a wrong key fails verification.
+- Journal: no credential or email secret appears in the directory journal.
+- Parity: the same entities appear in SSH text and HTTP HTML.
+
+## Progress
+
+### Phase 1: expiry and use limits on delegated capabilities
+
+- `Issued` carries optional `expires_at`, `uses` and `used` (serde default, so
+  older journals still load). `used` is written at checkpoint so counts survive
+  compaction.
+- Expiry is checked on every authorised operation, including reads, against
+  the holder and each ancestor. Use limits are checked and spent only on
+  committed chat and input, for the holder and each ancestor.
+- Delegation refuses an expiry in the past or later than the delegator's, a
+  use limit below one, and a use limit above what the delegator's chain has
+  left. Restore refuses a child that outlives its parent or has an empty use
+  limit. Restore does not re-check use budgets, because the snapshot in a
+  compacted journal can be later than the moment a child was issued.
+- Ticks are gated only by the world's grant (`CapLedger`), never by a
+  participant's capability. Test: `ticks_follow_the_world_grant_not_a_participant_capability`.
+- Not in this phase: admin invites are still unbounded, and the delegation
+  frame reports every refusal as "delegation denied".
