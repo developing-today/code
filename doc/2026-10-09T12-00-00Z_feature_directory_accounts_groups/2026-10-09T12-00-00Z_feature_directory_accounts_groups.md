@@ -141,3 +141,36 @@ per-export module gating.
   participant's capability. Test: `ticks_follow_the_world_grant_not_a_participant_capability`.
 - Not in this phase: admin invites are still unbounded, and the delegation
   frame reports every refusal as "delegation denied".
+
+### Phase 2: directory model
+
+- `pkgs/id/src/directory.rs` is a pure model. Every change is a
+  `DirectoryEntry`; live calls and journal replay both go through one `apply`,
+  which runs on a copy and commits only if the copy keeps every group with an
+  admin. A refused change leaves no trace, and a broken journal is refused on
+  replay.
+- Accounts: `acct.<id>.<secret-hex>`, where `id` is the hex Ed25519 key derived
+  from SHA-256("id-account-v1" || secret). Only the SHA-256 digest of the secret
+  is stored or journaled. Verification is `Actor::Server` only.
+- Levels: `Access < Read < Write < Manage < Admin`. A group's admin may change
+  anything. A manager may add and change members up to `write`, and may not
+  change their own level or any member at `manage` or above. Write may edit the
+  description only.
+- Nesting: a nested group passes on at most the level it is held at, and the
+  effective level is the highest across all paths. Cycles, including a group
+  containing itself, are refused at insert.
+- Ceiling: `tier ∪ scopes of every group the account holds`, where the tier is
+  Anonymous, Registered or Verified. Defaults: Anonymous and Registered get
+  GUEST; Verified gets GUEST|DELEGATE. The ceiling is not yet applied to
+  participant effects; that is Phase 3.
+- Friends: `Envelope` is Ed25519 over canonical JSON of kind, from, to and at.
+  It is verified against the sender's ID, so a copied envelope can be checked
+  on any server without asking the first one. A request is pending until the
+  addressee accepts; a duplicate or reversed request is refused.
+- Tests: 15 in `directory::tests`, covering credentials, secrets absent from
+  entries, manager limits, the admin invariant, nesting and cycles, ceilings,
+  tiers, friends on one server and across two, tampered and reattributed
+  envelopes, and replay refusal.
+- Not in this phase: no frames, no HTTP or SSH surface, no wiring into
+  `World`, and no directory replication over Iroh. Journal files are appended
+  by the caller; the server actor that will own them is Phase 3.

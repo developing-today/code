@@ -80,6 +80,23 @@ impl WorldScopes {
         self.0
     }
 
+    /// Scopes from raw bits; `None` if any bit names no scope.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        let known = Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0 | Self::DELEGATE.0;
+        if bits & !known == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Every scope either set includes.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
     /// Whether this scope set includes `required`.
     #[must_use]
     pub const fn contains(self, required: Self) -> bool {
@@ -2351,7 +2368,7 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     bool::from(left.ct_eq(right))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

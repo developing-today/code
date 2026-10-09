@@ -155,6 +155,8 @@
 pub mod access;
 pub mod cli;
 pub mod commands;
+#[cfg(feature = "world")]
+pub mod directory;
 pub mod discovery;
 pub mod fileops;
 pub mod helpers;
