@@ -2144,15 +2144,15 @@
     "openchamber-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1791448514,
-        "narHash": "sha256-Hrzt+i7gfN8nUGkOLDYeFw3Dd85IYTDoF05+6peMdy4=",
-        "owner": "dezren39",
+        "lastModified": 1791518672,
+        "narHash": "sha256-aZDSe9x5Hu3Ho678qY95U5q2exryffAFPcRBdUZILmQ=",
+        "owner": "developing-today",
         "repo": "openchamber",
-        "rev": "a75cb9d4cdbe51d075988e5c50827e3b5f1650df",
+        "rev": "fb1e7c78680712a8dbf610ac75135eb97e35d0f5",
         "type": "github"
       },
       "original": {
-        "owner": "dezren39",
+        "owner": "developing-today",
         "ref": "route-pools",
         "repo": "openchamber",
         "type": "github"
@@ -2202,13 +2202,13 @@
       "locked": {
         "lastModified": 1791448514,
         "narHash": "sha256-mnQDtTtU6OEuD/RtQ+i4/9aVj/thMUaZfarWZiMtuMg=",
-        "owner": "dezren39",
+        "owner": "developing-today",
         "repo": "opencode",
         "rev": "698fac0587380bbbe9349284815ca04c76886bac",
         "type": "github"
       },
       "original": {
-        "owner": "dezren39",
+        "owner": "developing-today",
         "ref": "model-routing",
         "repo": "opencode",
         "type": "github"

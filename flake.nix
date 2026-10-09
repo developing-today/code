@@ -289,15 +289,14 @@ rec {
     opencode-2x = {
       url = "github:anomalyco/opencode/v2.0.23";
     };
-    # Fork of OpenCode 2.0.23 carrying the model-routing work. Not pushed yet: until
-    # dezren39/opencode has the branch, lock with --override-input opencode-fork path:...
+    # Fork of OpenCode 2.0.23 carrying the model-routing work.
     opencode-fork = {
-      url = "github:dezren39/opencode/model-routing";
+      url = "github:developing-today/opencode/model-routing";
     };
     # Fork of OpenChamber carrying the route-pools work, built from source by
-    # pkgs/openchamber-src. Same push caveat as opencode-fork.
+    # pkgs/openchamber-src.
     openchamber-src = {
-      url = "github:dezren39/openchamber/route-pools";
+      url = "github:developing-today/openchamber/route-pools";
       flake = false;
     };
     # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
