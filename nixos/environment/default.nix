@@ -891,11 +891,10 @@ in
       fontforge
       fontpreview
       fortune
-      # jmtpfs # removed from nixpkgs: unmaintained (simple-mtpfs below)
+      # jmtpfs, simple-mtpfs: removed from nixpkgs as unmaintained
       go-mtpfs
       usbutils # for lsusb
       libmtp
-      simple-mtpfs # or jmtpfs, go-mtpfs, etc.
       android-file-transfer # GUI/CLI MTP client
       android-tools # adb, fastboot
       gawk
@@ -1127,7 +1126,7 @@ in
 
       # Testing and development tools
       #beekeeper-studio # electron 31 eol
-      cypress # Functional testing framework using headless chrome
+      #cypress # electron 37 eol: insecure in this nixpkgs
       inputs.nixpkgs-unstable.legacyPackages.${system}.chromium # nixos-unstable channel: cached (master chromium is not)
       inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
       playwright-driver

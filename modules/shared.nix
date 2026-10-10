@@ -32,8 +32,4 @@
   # programs.adb.enable = true;
   services.udisks2.enable = true;
   programs.gvfs.enable = true;
-  environment.systemPackages = with config.nixpkgs; [
-    mtpfs
-    jmtpfs
-  ];
 }

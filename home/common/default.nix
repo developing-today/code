@@ -748,7 +748,7 @@ in
     #texlive.enable = true; # failed on wsl
     # thunderbird.enable = true;
     tiny.enable = true;
-    tmate.enable = true;
+    #tmate.enable = true; # insecure in this nixpkgs: CVE-2018-19387, no release since 2019
     # tmux.enable = true;
     # vim-vint.enable = true;
     # vim.enable = true;

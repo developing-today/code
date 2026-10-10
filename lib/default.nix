@@ -394,6 +394,36 @@ let
     inputs.flake-utils.lib.eachDefaultSystem (
       system:
       let
+        # TODO: check upstream neovim-nightly-overlay for a fixed tree-sitter cargoHash, then drop this local rebuild
+        # neovim-nightly-overlay pins a stale cargoHash for its bundled tree-sitter; rebuild with the current one
+        nightlySrc = inputs.neovim-nightly-overlay.outPath;
+        stock = import inputs.nixpkgs { inherit system; };
+        nightlyDeps = import (nightlySrc + "/flake/packages/neovim-dependencies.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+        };
+        nightlyTreeSitter =
+          (import (nightlySrc + "/flake/packages/tree-sitter.nix") {
+            inherit (stock) lib;
+            pkgs = stock;
+            neovim-dependencies = nightlyDeps;
+          }).overrideAttrs
+            (oa: {
+              cargoHash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              cargoDeps = stock.rustPlatform.fetchCargoVendor {
+                name = "${oa.pname}-cargo-deps";
+                src = nightlyDeps.treesitter;
+                hash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              };
+            });
+        nightlyNeovim = import (nightlySrc + "/flake/packages/neovim.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+          neovim-dependencies = nightlyDeps;
+          tree-sitter = nightlyTreeSitter;
+        };
         pkgs = import inputs.nixpkgs {
           ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
           # pkgs = import inputs.nixpkgs-unstable { # breaks xrdb?? x11 move pr
@@ -408,7 +438,10 @@ let
               "qtwebkit-5.212.0-alpha4"
             ];
           };
-          overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
+          overlays = [
+            inputs.neovim-nightly-overlay.overlays.default
+            (_: _: { neovim-unwrapped = nightlyNeovim; })
+          ];
         };
         module = import (from-root "pkgs/vim/config") { inherit enableModules pkgs; };
         neovim = inputs.nixvim.legacyPackages.${system}.makeNixvimWithModule {
