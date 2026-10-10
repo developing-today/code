@@ -21,6 +21,7 @@ import (
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/mcpserver"
 	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/dezren39/mcpx/internal/sdnotify"
 	"github.com/dezren39/mcpx/internal/settings"
 	"github.com/dezren39/mcpx/internal/spec"
 )
@@ -272,6 +273,9 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 
 	if err := srv.Listen(a.Settings().Int("daemon.port")); err != nil {
 		return err
+	}
+	if err := sdnotify.Ready(); err != nil {
+		logger.Printf("systemd readiness: %v", err)
 	}
 	defer func() {
 		stop := map[string]any{logging.KeyEvent: "daemon.stop"}
