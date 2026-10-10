@@ -236,6 +236,7 @@ let
   openchamber = pkgs.callPackage (lib.from-root "pkgs/openchamber-src") {
     src = inputs.openchamber-src;
     opencode = inputs.opencode-fork.packages.${system}.opencode;
+    mcpx = pkgs.mcpx;
   };
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the

@@ -3568,7 +3568,6 @@
   },
   "warming": true,
   "plugin": [
-    ["./.opencode/plugin/mcpx-session.ts", { "tools": true, "instructions": true, "daemonTools": true }],
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
     "@openspoon/subtask2@latest",

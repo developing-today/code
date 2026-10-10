@@ -1048,16 +1048,17 @@ type InstanceStatus struct {
 
 // Status describes the pool.
 type Status struct {
-	Name      string           `json:"name"`
-	Namespace string           `json:"namespace"`
-	Sharing   string           `json:"sharing"`
-	Scope     string           `json:"scope"`
-	Max       int              `json:"max"`
-	Live      int              `json:"live"`
-	Tools     int              `json:"tools"`
-	SchemaAge string           `json:"schemaAge,omitempty"`
-	LastError string           `json:"lastError,omitempty"`
-	Instances []InstanceStatus `json:"instances,omitempty"`
+	Name            string           `json:"name"`
+	Namespace       string           `json:"namespace"`
+	Sharing         string           `json:"sharing"`
+	Scope           string           `json:"scope"`
+	Max             int              `json:"max"`
+	Live            int              `json:"live"`
+	Tools           int              `json:"tools"`
+	SchemaAge       string           `json:"schemaAge,omitempty"`
+	LastError       string           `json:"lastError,omitempty"`
+	Instances       []InstanceStatus `json:"instances,omitempty"`
+	RequiresSecrets []string         `json:"requiresSecrets,omitempty"`
 }
 
 // Status snapshots the pool for `mcpx status`.
@@ -1070,6 +1071,9 @@ func (p *Pool) Status() Status {
 		Scope:     string(p.cfg.Scope),
 		Max:       p.cfg.Max,
 		Live:      len(p.instances),
+	}
+	if p.cfg != nil && len(p.cfg.RequiresSecrets) > 0 {
+		st.RequiresSecrets = p.cfg.RequiresSecrets
 	}
 	if p.lastErr != nil {
 		st.LastError = p.lastErr.Error()
@@ -1191,15 +1195,34 @@ func (p *Pool) startFor(ctx context.Context, key string) (string, error) {
 	return id, nil
 }
 
-// Close shuts the pool down permanently.
+// Close shuts the pool down permanently, closing instances after in-flight work completes.
 func (p *Pool) Close() {
+	p.CloseGraceful(defaults.HTTPShutdownGrace)
+}
+
+// CloseGraceful marks the pool closed so no new leases are acquired,
+// waits for active holders to finish their work up to the specified timeout,
+// and then closes the instances. Ongoing requests are preserved without cancellation.
+func (p *Pool) CloseGraceful(timeout time.Duration) {
 	p.mu.Lock()
 	p.closed = true
 	stop := p.instances
 	p.instances = nil
 	p.cond.Broadcast()
 	p.mu.Unlock()
+
+	deadline := time.Now().Add(timeout)
 	for _, in := range stop {
+		// Wait for ongoing holders to complete
+		for {
+			p.mu.Lock()
+			busy := in.holders > 0
+			p.mu.Unlock()
+			if !busy || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		_ = in.Client.Close()
 	}
 }

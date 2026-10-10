@@ -31,6 +31,7 @@ rec {
           packages.openchamber-src = pkgs.callPackage (lib.from-root "pkgs/openchamber-src") {
             src = inputs.openchamber-src;
             opencode = inputs.opencode-fork.packages.${system}.opencode;
+            mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") { };
           };
         }
       ))

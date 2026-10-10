@@ -612,6 +612,7 @@ in
             pkgs.callPackage ../../pkgs/openchamber-src {
               src = inputs.openchamber-src;
               opencode = inputs.opencode-fork.packages.${system}.opencode;
+              mcpx = mcpx;
             }
           }/bin/openchamber serve \
             --foreground \

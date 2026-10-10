@@ -329,16 +329,17 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 
 // NamespaceInfo is one row of `mcpx ls`.
 type NamespaceInfo struct {
-	Namespace   string `json:"namespace"`
-	Server      string `json:"server"`
-	Tools       int    `json:"tools"`
-	Resources   int    `json:"resources"`
-	Description string `json:"description,omitempty"`
-	Live        int    `json:"live"`
-	Sharing     string `json:"sharing"`
-	Scope       string `json:"scope"`
-	Error       string `json:"error,omitempty"`
-	Cached      bool   `json:"cached"`
+	Namespace       string   `json:"namespace"`
+	Server          string   `json:"server"`
+	Tools           int      `json:"tools"`
+	Resources       int      `json:"resources"`
+	Description     string   `json:"description,omitempty"`
+	Live            int      `json:"live"`
+	Sharing         string   `json:"sharing"`
+	Scope           string   `json:"scope"`
+	Error           string   `json:"error,omitempty"`
+	Cached          bool     `json:"cached"`
+	RequiresSecrets []string `json:"requiresSecrets,omitempty"`
 }
 
 // Namespaces lists every configured namespace using only cached data,
@@ -357,16 +358,17 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 		tools := visibleTools(view, allTools)
 		st := p.Status()
 		out = append(out, NamespaceInfo{
-			Namespace:   view.Namespace,
-			Server:      name,
-			Tools:       len(tools),
-			Resources:   len(res),
-			Description: view.Description,
-			Live:        st.Live,
-			Sharing:     st.Sharing,
-			Scope:       st.Scope,
-			Error:       st.LastError,
-			Cached:      !at.IsZero(),
+			Namespace:       view.Namespace,
+			Server:          name,
+			Tools:           len(tools),
+			Resources:       len(res),
+			Description:     view.Description,
+			Live:            st.Live,
+			Sharing:         st.Sharing,
+			Scope:           st.Scope,
+			Error:           st.LastError,
+			Cached:          !at.IsZero(),
+			RequiresSecrets: view.RequiresSecrets,
 		})
 	}
 	return out

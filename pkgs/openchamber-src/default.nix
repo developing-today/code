@@ -7,6 +7,7 @@
   git,
   openssh,
   opencode,
+  mcpx ? null,
   src,
 }:
 let
@@ -79,14 +80,21 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${lib.getExe nodejs_24} $out/bin/openchamber \
       --add-flags $out/lib/openchamber/packages/web/bin/cli.js \
       --prefix PATH : ${
-        lib.makeBinPath [
-          git
-          openssh
-          opencode
-        ]
+        lib.makeBinPath (
+          [
+            git
+            openssh
+            opencode
+          ]
+          ++ lib.optional (mcpx != null) mcpx
+        )
       } \
       --set DISABLE_AUTOUPDATER 1 \
       --set npm_config_update_notifier false
+
+    ${lib.optionalString (mcpx != null) ''
+      ln -s ${mcpx}/bin/mcpx $out/bin/mcpx
+    ''}
     runHook postInstall
   '';
 
