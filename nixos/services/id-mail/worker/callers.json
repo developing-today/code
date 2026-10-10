@@ -1,0 +1,14 @@
+{
+  "amd": {
+    "tokenKey": "cloudflare.id-mail-worker-token",
+    "transports": {
+      "email": { "mode": "template", "from": ["id@security.cab"] }
+    }
+  },
+  "admin": {
+    "tokenKey": "cloudflare.id-mail-admin-token",
+    "transports": {
+      "email": { "mode": "free", "from": ["id@security.cab"] }
+    }
+  }
+}

@@ -1,14 +1,19 @@
-const SENDER = "id@security.cab";
+import email from "./transports/email.js";
+
+export { Limiter } from "./limiter.js";
+
+const TRANSPORTS = { email };
 
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") {
       return json({ error: "method not allowed" }, 405);
     }
-    if (!env.MAIL_TOKEN) {
-      return json({ error: "worker has no MAIL_TOKEN secret" }, 500);
+    if (!env.CALLERS) {
+      return json({ error: "worker has no CALLERS secret" }, 500);
     }
-    if (!sameText(request.headers.get("authorization") ?? "", `Bearer ${env.MAIL_TOKEN}`)) {
+    const caller = await authenticate(request, env.CALLERS);
+    if (!caller) {
       return json({ error: "unauthorized" }, 401);
     }
 
@@ -18,22 +23,71 @@ export default {
     } catch {
       return json({ error: "body is not JSON" }, 400);
     }
-    const { to, subject, text } = body ?? {};
-    if (typeof to !== "string" || typeof subject !== "string" || typeof text !== "string") {
-      return json({ error: "to, subject and text must be strings" }, 400);
+    if (!body || typeof body !== "object") {
+      return json({ error: "body must be a JSON object" }, 400);
     }
-    if (/[\r\n]/.test(subject) || /[\r\n]/.test(to)) {
-      return json({ error: "to and subject must be one line" }, 400);
+    const name = body.transport ?? "email";
+    if (typeof name !== "string" || !Object.hasOwn(TRANSPORTS, name)) {
+      return json({ error: "unknown transport" }, 400);
+    }
+    if (!Object.hasOwn(caller.transports, name)) {
+      return json({ error: "caller may not use this transport" }, 403);
+    }
+    const transport = TRANSPORTS[name];
+    const grant = caller.transports[name];
+
+    const refusal = transport.check(body, grant);
+    if (refusal) {
+      return json({ error: refusal.error }, refusal.status);
+    }
+
+    const windowMs = 60_000;
+    const callerAllowed = await take(env, `caller:${caller.name}`, Number(env.CALLER_LIMIT_PER_MINUTE), windowMs);
+    const targetAllowed = await take(
+      env,
+      `target:${name}:${transport.rateKey(body)}`,
+      Number(env.RECIPIENT_LIMIT_PER_MINUTE),
+      windowMs,
+    );
+    if (!callerAllowed || !targetAllowed) {
+      return json({ error: "rate limited" }, 429);
     }
 
     try {
-      const sent = await env.EMAIL.send({ from: SENDER, to, subject, text });
-      return json({ messageId: sent.messageId }, 200);
+      return json(await transport.deliver(body, grant, env), 200);
     } catch (error) {
       return json({ error: error.code ?? "send_failed", message: error.message }, 502);
     }
   },
 };
+
+async function take(env, key, limit, windowMs) {
+  const stub = env.LIMITER.get(env.LIMITER.idFromName(key));
+  const response = await stub.fetch("https://limiter.internal/", {
+    method: "POST",
+    body: JSON.stringify({ limit, windowMs }),
+  });
+  return (await response.json()).success;
+}
+
+async function authenticate(request, callersJson) {
+  const match = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "");
+  if (!match) {
+    return null;
+  }
+  const digest = await sha256Hex(match[1]);
+  for (const [name, caller] of Object.entries(JSON.parse(callersJson))) {
+    if (sameText(digest, caller.sha256)) {
+      return { name, ...caller };
+    }
+  }
+  return null;
+}
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function sameText(a, b) {
   if (a.length !== b.length) {
@@ -46,7 +100,7 @@ function sameText(a, b) {
   return diff === 0;
 }
 
-function json(value, status) {
+function json(value, status = 200) {
   return new Response(JSON.stringify(value), {
     status,
     headers: { "content-type": "application/json" },

@@ -1,8 +1,28 @@
 name = "id-mail"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
+workers_dev = true
 
-# Only the id sender address, on the security.cab domain onboarded to Email Sending.
+routes = [
+  { pattern = "id-mail.security.cab", custom_domain = true },
+  { pattern = "mail.id.security.cab", custom_domain = true },
+  { pattern = "mail.security.cab", custom_domain = true },
+  { pattern = "mail-id.security.cab", custom_domain = true },
+]
+
+[vars]
+CALLER_LIMIT_PER_MINUTE = "60"
+RECIPIENT_LIMIT_PER_MINUTE = "5"
+
+# Every From address any caller may use. callers.json must stay within this list.
 [[send_email]]
 name = "EMAIL"
 allowed_sender_addresses = ["id@security.cab"]
+
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "Limiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Limiter"]
