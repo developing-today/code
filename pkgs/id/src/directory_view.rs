@@ -2133,7 +2133,7 @@ mod tests {
             &mut auth,
             &me,
             DirectoryAction::SetPetname {
-                account: bo.clone(),
+                account: bo,
                 name: "Robert".to_owned(),
             },
         )
@@ -2155,7 +2155,7 @@ mod tests {
             &mut auth,
             &me,
             DirectoryAction::RenamePetname {
-                account: cy.clone(),
+                account: cy,
                 name: "robert".to_owned(),
             },
         )

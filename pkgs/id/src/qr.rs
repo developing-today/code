@@ -2,6 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use qrcode::{Color, QrCode};
+use std::fmt::Write;
 
 const QUIET_ZONE: usize = 4;
 
@@ -16,13 +17,15 @@ pub fn svg(text: &str) -> Result<String> {
     let code = QrCode::new(text.as_bytes())
         .map_err(|error| anyhow!("the text does not fit in a QR code: {error:?}"))?;
     let width = code.width();
-    let path: String = code
+    let path = code
         .to_colors()
         .into_iter()
         .enumerate()
         .filter(|(_, color)| *color == Color::Dark)
-        .map(|(index, _)| format!("M{} {}h1v1h-1z", index % width, index / width))
-        .collect();
+        .fold(String::new(), |mut path, (index, _)| {
+            let _ = write!(path, "M{} {}h1v1h-1z", index % width, index / width);
+            path
+        });
     let size = width + 2 * QUIET_ZONE;
     Ok(format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {size} {size}\" \
