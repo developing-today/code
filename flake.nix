@@ -312,17 +312,6 @@ rec {
     claude-desktop = {
       url = "github:aaddrick/claude-desktop-debian";
     };
-    # OpenChamber: agentic dev environment built on opencode.
-    # Not in nixpkgs (no attr, no PR ever opened) and upstream ships zero Nix
-    # (verified: 6471-path tree, no flake.nix). Of the four third-party flakes
-    # that exist, Tarow's is the only one tracking current upstream (2.1.0) and
-    # builds from source via buildNpmPackage rather than wrapping the AppImage,
-    # which avoids the electron-updater-vs-immutable-store problem.
-    openchamber = {
-      url = "github:Tarow/openchamber-nix";
-      # deliberately NOT following nixpkgs: it vendors a package-lock.json and
-      # pins its own nixpkgs for the npm deps hash.
-    };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
     id-nixpkgs.follows = "nixpkgs-master";
     id-systems.follows = "systems";
