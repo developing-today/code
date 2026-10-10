@@ -422,12 +422,39 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::world::{CapabilityBounds, WorldScopes};
+    use crate::world::{Authority, CapabilityBounds, Isolation, WorldScopes};
     use crate::world_limits::RuntimeLimits;
 
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
         let admin = admin.map(str::to_owned);
         move |handle| WorldService::new(handle, admin)
+    }
+
+    #[tokio::test]
+    async fn isolation_survives_a_restart() {
+        let dir = TempDir::new().unwrap();
+        let open = || {
+            open_world(
+                dir.path(),
+                "lobby",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                service(None),
+            )
+        };
+        let (svc, _) = open().await.unwrap();
+        assert_eq!(svc.world().isolation().await.unwrap(), Isolation::Isolated);
+        svc.world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        svc.world().shutdown().await.unwrap();
+
+        let (svc, _) = open().await.unwrap();
+        assert_eq!(
+            svc.world().isolation().await.unwrap(),
+            Isolation::Unisolated
+        );
     }
 
     #[tokio::test]

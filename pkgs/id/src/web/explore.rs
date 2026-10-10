@@ -462,7 +462,10 @@ const ACCOUNT_FORMS: &[ActionForm] = &[
         fields: &[
             ("group", "Group ID"),
             ("member", "account:ID or group:N"),
-            ("level", "Level (access, read, write, manage, admin, none)"),
+            (
+                "level",
+                "Level (access, read, write, manage, moderator, admin, none)",
+            ),
         ],
     },
 ];

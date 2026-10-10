@@ -355,6 +355,37 @@ impl WorldClient {
         Ok(reply["report"].clone())
     }
 
+    /// Set the world's isolation with the admin token and return the new
+    /// setting (`isolated` or `unisolated`).
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or the change is refused.
+    pub async fn set_isolation(&mut self, admin_token: &str, isolation: &str) -> Result<String> {
+        self.send_json(&serde_json::json!({
+            "type": "set_isolation",
+            "admin_token": admin_token,
+            "isolation": isolation,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "isolation" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the isolation change")
+            );
+        }
+        reply["isolation"]
+            .as_str()
+            .map(str::to_owned)
+            .context("host sent no isolation")
+    }
+
     /// List the host's worlds as `(default, [(name, open)])`.
     ///
     /// # Errors

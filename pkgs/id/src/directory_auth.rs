@@ -243,7 +243,7 @@ impl ReplayGuard {
 }
 
 /// The headers a signed request carries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Signed {
     /// The public key, as lower-case hex.
     pub key: String,

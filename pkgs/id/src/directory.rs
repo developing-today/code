@@ -35,6 +35,8 @@ pub enum Level {
     Write,
     /// Adds and removes members at or below write.
     Manage,
+    /// Manages members like `Manage`, and may set a world's isolation.
+    Moderator,
     /// Everything, including the permission set, name and deletion.
     Admin,
 }
@@ -845,6 +847,16 @@ impl Directory {
         };
         self.apply(&entry)?;
         Ok(entry)
+    }
+
+    /// Whether an account holds `moderator` or better in some group, which is
+    /// what lets it change a world's isolation.
+    #[must_use]
+    pub fn is_moderator(&self, account: &str) -> bool {
+        self.groups.keys().any(|group| {
+            self.level_in(account, *group)
+                .is_some_and(|level| level >= Level::Moderator)
+        })
     }
 
     /// The level an account holds in a group, directly or through nested
@@ -1825,6 +1837,31 @@ mod tests {
             stranger.receive_request(&request).is_err(),
             "a request for an account this server does not hold is refused"
         );
+    }
+
+    #[test]
+    fn levels_keep_their_order_and_wire_names() {
+        let order = [
+            (Level::Access, "access"),
+            (Level::Read, "read"),
+            (Level::Write, "write"),
+            (Level::Manage, "manage"),
+            (Level::Moderator, "moderator"),
+            (Level::Admin, "admin"),
+        ];
+        for pair in order.windows(2) {
+            assert!(pair[0].0 < pair[1].0, "{:?} < {:?}", pair[0].0, pair[1].0);
+        }
+        for (level, name) in order {
+            assert_eq!(
+                serde_json::to_string(&level).unwrap(),
+                format!("\"{name}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<Level>(&format!("\"{name}\"")).unwrap(),
+                level
+            );
+        }
     }
 
     #[test]
