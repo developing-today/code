@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::directory::{Actor, Directory, Level, Member, Refusal, normalize_email, normalize_key};
+use crate::directory::{
+    Actor, Directory, Envelope, Level, Member, Refusal, normalize_email, normalize_key,
+};
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
 use crate::world::WorldScopes;
@@ -247,6 +249,11 @@ pub enum DirectoryAction {
         /// The other account.
         other: String,
     },
+    /// Apply a friend envelope another server signed, for a local account.
+    Receive {
+        /// The envelope.
+        envelope: Envelope,
+    },
     /// Verify an account. Admin only.
     Verify {
         /// The account ID.
@@ -294,6 +301,7 @@ commands:
   group delete ID
   group member ID account:ID|group:N LEVEL|none
   friend request|accept|remove ACCOUNT
+  receive ENVELOPE_JSON               apply a friend envelope from another server
   verify ACCOUNT                      admin only
   help, quit";
 
@@ -357,6 +365,10 @@ pub fn parse_line(line: &str) -> Result<Line> {
             let [account] = words_n(&words, "verify ACCOUNT")?;
             ("verify", vec![("account", account)])
         }
+        "receive" => (
+            "receive",
+            vec![("envelope", text_arg(rest, "receive ENVELOPE_JSON")?)],
+        ),
         "friend" => match split_first(rest) {
             ("request", tail) => {
                 let [to] = words_n(&split_words(tail), "friend request ACCOUNT")?;
@@ -601,6 +613,10 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
         "remove_friend" => DirectoryAction::RemoveFriend {
             other: field(fields, "other")?.to_owned(),
         },
+        "receive" => DirectoryAction::Receive {
+            envelope: serde_json::from_str(field(fields, "envelope")?)
+                .context("envelope is not valid JSON")?,
+        },
         "verify" => DirectoryAction::Verify {
             account: field(fields, "account")?.to_owned(),
         },
@@ -652,6 +668,7 @@ pub fn run(
     directory: &mut Directory,
     auth: &mut DirectoryAuth,
     caller: &Caller,
+    world: &str,
     now: u64,
     action: DirectoryAction,
 ) -> Result<DirectoryOutcome> {
@@ -801,6 +818,9 @@ pub fn run(
         DirectoryAction::RemoveFriend { other } => {
             let me = signed_in(&viewer)?;
             directory.remove_friend_as(me, &other)?;
+        }
+        DirectoryAction::Receive { envelope } => {
+            directory.receive(&envelope, world, now)?;
         }
         DirectoryAction::Verify { account } => {
             directory.verify_account(actor_of(&viewer)?, &account)?;
@@ -1081,7 +1101,9 @@ mod tests {
                 Some(Level::Read),
             )
             .unwrap();
-        directory.request_friend(&ada_credential, &cy, 1).unwrap();
+        directory
+            .request_friend(&ada_credential, &cy, "club", 1)
+            .unwrap();
         Sample {
             directory,
             ada,
@@ -1102,7 +1124,14 @@ mod tests {
         caller: &Caller,
         action: DirectoryAction,
     ) -> Result<DirectoryOutcome> {
-        run(directory, &mut DirectoryAuth::default(), caller, 0, action)
+        run(
+            directory,
+            &mut DirectoryAuth::default(),
+            caller,
+            "test-world",
+            0,
+            action,
+        )
     }
 
     #[test]
@@ -1248,6 +1277,7 @@ mod tests {
             &mut s.directory,
             &mut auth,
             &signed,
+            "test-world",
             0,
             DirectoryAction::SignUpKey {
                 name: "Kay".to_owned(),
@@ -1267,6 +1297,7 @@ mod tests {
             &mut s.directory,
             &mut auth,
             &signed_in,
+            "test-world",
             0,
             DirectoryAction::AddKey { key: other },
         )
@@ -1281,6 +1312,7 @@ mod tests {
             &mut s.directory,
             &mut auth,
             &signed_in,
+            "test-world",
             0,
             DirectoryAction::AddEmail {
                 address: address.to_owned(),
@@ -1302,6 +1334,7 @@ mod tests {
             &mut s.directory,
             &mut auth,
             &signed_in,
+            "test-world",
             0,
             DirectoryAction::ConfirmEmail {
                 address: address.to_owned(),
@@ -1318,6 +1351,7 @@ mod tests {
             &mut s.directory,
             &mut auth,
             &Caller::default(),
+            "test-world",
             0,
             DirectoryAction::SignInEmail {
                 address: address.to_owned(),
@@ -1329,6 +1363,7 @@ mod tests {
             &mut s.directory,
             &mut auth,
             &Caller::default(),
+            "test-world",
             0,
             DirectoryAction::SignInEmail {
                 address: "nobody@example.com".to_owned(),
