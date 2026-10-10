@@ -280,16 +280,11 @@ rec {
     #   # follows?
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
-    opencode = {
-      url = "github:anomalyco/opencode";
-      # inputs.nixpkgs.follows = "nixpkgs-master";
-    };
-    # OpenCode 2.x line (upstream `v2` branch). Used as the default `opencode` on PATH for the system,
-    # as well as OpenChamber (which hard-requires opencode >= 2.0.20).
-    # The 1.18.x build from `opencode` above is exposed under `opencode-v1`.
+    # OpenCode 2.x line (upstream `v2` branch).
     opencode-2x = {
       url = "github:anomalyco/opencode/v2";
     };
+    opencode.follows = "opencode-2x";
     # Fork of the OpenCode v2 line carrying the model-routing work, rebased onto upstream `v2`.
     opencode-fork = {
       url = "github:developing-today/opencode/v2-routing";

@@ -93,8 +93,7 @@ desired["grok"] = {
 # Instances that need an explicit binary, pulled from the unit environment so
 # the store paths are never hard-coded here.
 for instance_id, display, var in (
-    ("opencode-v1", "opencode v1.18.19", "OPENCODE_V1_BIN"),
-    ("opencode-v2", "opencode v2.0.23", "OPENCODE_V2_BIN"),
+    ("opencode-v2", "opencode v2", "OPENCODE_V2_BIN"),
     ("antigravity-acp", "Antigravity (ACP)", "ANTIGRAVITY_ACP_BIN"),
 ):
     binary = env(var)

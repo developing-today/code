@@ -366,11 +366,6 @@ in
           ]
         }"
         "T3CODE_HOME=%h/.local/share/t3code"
-        # Both generations, explicitly. Since nixos/environment now makes
-        # opencode-2x the plain `opencode` on PATH, the v1 instance MUST carry
-        # an explicit binaryPath or it silently resolves to 2.x and the two
-        # instances become duplicates of each other.
-        "OPENCODE_V1_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
         "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
       ];
@@ -663,8 +658,6 @@ in
         #
         #   systemctl --user show t3code -p Environment | tr ' ' '\n' | grep _BIN=
         #
-        # opencode v2 is already on PATH above and needs no binaryPath.
-        "OPENCODE_V1_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
         "CODEX_BIN=${latestCli.codex}/bin/codex"
         "CLAUDE_BIN=${claude-code}/bin/claude"

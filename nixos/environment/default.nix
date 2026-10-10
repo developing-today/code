@@ -142,30 +142,14 @@ let
   };
   my-helmfile = pkgs.helmfile-wrapped.override { inherit (my-kubernetes-helm) pluginsDir; };
 
-  # opencode-desktop: upstream rewrote the desktop app (electron/bun, no more tauri/cargo),
-  # so the old outputHashes overrideAttrs is no longer needed
-  opencode-desktop = inputs.opencode.packages.${system}.opencode-desktop;
+  # opencode-desktop: upstream rewrote the desktop app (electron/bun, no more tauri/cargo)
+  opencode-desktop = inputs.opencode-2x.packages.${system}.opencode-desktop;
 
-  # OpenCode packages:
-  # opencode-2x is the default on PATH as `opencode` (and `opencode2`).
-  # opencode v1 (1.18.x) is retained under `opencode-v1`, `opencode1`, and `opencode-1x`.
-  opencode-v1 =
-    pkgs.runCommand "opencode-v1"
-      {
-        meta = (inputs.opencode.packages.${system}.opencode.meta or { }) // {
-          mainProgram = "opencode-v1";
-        };
-      }
-      ''
-        mkdir -p $out/bin
-        ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode-v1
-        ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode1
-        ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode-1x
-      '';
-
+  # OpenCode packages: opencode-2x is the canonical opencode
   opencode-v2-compat = pkgs.runCommand "opencode-v2-compat" { } ''
     mkdir -p $out/bin
     ln -s ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode $out/bin/opencode-v2
+    ln -s ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode $out/bin/opencode2
   '';
 
   # 2x scaling for Electron apps.
@@ -403,7 +387,6 @@ in
       jules-fleet
       jules-merge
       latestCli.codex
-      opencode-v1
       opencode-v2-compat
       openchamber
     ]
