@@ -608,12 +608,7 @@ in
             export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
             export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
           fi
-          exec ${
-            pkgs.callPackage ../../pkgs/openchamber-src {
-              src = inputs.openchamber-src;
-              opencode = inputs.opencode-fork.packages.${system}.opencode;
-            }
-          }/bin/openchamber serve \
+          exec ${inputs.openchamber-fork.packages.${system}.openchamber}/bin/openchamber serve \
             --foreground \
             --port 3000 --host 127.0.0.1
         ''
