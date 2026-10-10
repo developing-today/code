@@ -44,12 +44,17 @@ let
       export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
       export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
     fi
+    export OPENCODE_BINARY="${openchamberBinDir}/opencode"
+    export PATH="${openchamberBinDir}:$PATH"
     exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
       --foreground \
       --port 3000 --host 127.0.0.1
   '';
   # A unit is replaced at switch time only when its start command or binaries change.
   deployKey = name: parts: "${name}:${builtins.concatStringsSep " " (map toString parts)}";
+  # OpenChamber runs the OpenCode behind this link. A switch re-points it and
+  # reloads OpenChamber, so a new OpenCode takes over without a restart.
+  openchamberBinDir = "$HOME/.local/state/openchamber/bin";
 in
 {
   wayland.windowManager.hyprland = {
@@ -660,10 +665,8 @@ in
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
-        "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "PATH=${
           lib.makeBinPath [
-            inputs.opencode.packages.${system}.opencode # OpenChamber needs >= 2.0.20
             mcpx
             pkgs.git
             pkgs.openssh
@@ -674,17 +677,26 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # Restart OpenChamber when its start command or the OpenCode binary changes.
-  # OpenChamber then hands its OpenCode over to the new binary itself.
+  # A new OpenChamber start command restarts the unit. A new OpenCode only moves
+  # the link and reloads OpenChamber, which hands its OpenCode over in place.
   home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
-    key='${deployKey "openchamber" [ openchamberStart inputs.opencode.packages.${system}.opencode ]}'
+    key='${deployKey "openchamber" [ openchamberStart ]}'
+    link="$HOME/.local/state/openchamber/bin/opencode"
+    target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+    previous="$(readlink "$link" 2>/dev/null)"
+    active=0
+    systemctl --user is-active --quiet openchamber.service && active=1
+    run mkdir -p "$HOME/.local/state/openchamber/bin"
+    run ln -sfn "$target" "$link"
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
-      if systemctl --user is-active --quiet openchamber.service; then
+      if [ "$active" = 1 ]; then
         run systemctl --user restart openchamber.service
       fi
       run mkdir -p "$(dirname "$state")"
       run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
+    elif [ "$active" = 1 ] && [ "$previous" != "$target" ]; then
+      run systemctl --user reload openchamber.service
     fi
   '';
 
