@@ -342,7 +342,7 @@ impl Envelope {
 }
 
 /// The directory of accounts, groups, memberships and friends on one server.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Directory {
     accounts: BTreeMap<String, Account>,
     digests: BTreeMap<String, [u8; 32]>,
@@ -1121,7 +1121,7 @@ impl Directory {
         }
     }
 
-    fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
+    pub(crate) fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
         let mut next = self.clone();
         next.change(entry)?;
         next.ensure_admins()?;
@@ -1452,7 +1452,7 @@ fn clean_description(description: &str) -> Result<String> {
     Ok(description.to_owned())
 }
 
-fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
     if text.len() != N * 2 || !text.is_ascii() {
         return None;
     }

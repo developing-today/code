@@ -362,3 +362,27 @@ stay out of the log in every option (section 1).
 - Phase 12 limitations: [accounts, groups, contacts and delegation](../2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md)
 - Attenuated capabilities: [design](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md)
 - Code: `pkgs/id/src/directory.rs`, `pkgs/id/src/directory_auth.rs`, `pkgs/id/src/directory_view.rs`, `pkgs/id/src/world.rs`, `pkgs/id/src/world_hub.rs`, `pkgs/id/src/world_store.rs`
+
+## Implementation: replication log
+
+2026-10-10. Section 3 option 2, the pure core only. Code: `pkgs/id/src/directory_log.rs`.
+
+Built:
+
+- `LogRecord` wraps one `DirectoryEntry` with `author` (Ed25519 key, hex), `lamport`, `hash` (SHA-256 over the signed body) and `signature`. `verify` checks the hash, then the signature against `author`.
+- `Log` holds only verified records, keyed by `(lamport, author, hash)`. `insert` and `append` (lamport one past the head) are the only ways in.
+- `merge(local, remote)` is set union. Tests cover commutativity, associativity, idempotence, and split replicas reaching the full log.
+- `apply(directory, log)` runs `Directory::apply` (now `pub(crate)`) in merged order. Refusals are collected, not fatal, so every replica refuses the same records.
+- `to_jsonl` and `load(text)`. `load` skips bad lines and reports them as `Truncated` (final line, no newline), `Malformed`, or `Unverified`. It never panics.
+- `Directory` derives `PartialEq, Eq` for convergence tests.
+
+Tests: 10 in `directory_log::tests`, hand-rolled xorshift, no new dependencies. Full `cargo test --lib --features world`: 653 pass, 3 fail (`world_compile`, missing `examples/roc-world/targets/wasm32/host.wasm`; nothing else). Clippy (`--all-targets`, default features) clean for touched files. `--all-features` needs `web/dist` and does not build here.
+
+Deferred:
+
+- Network sync and the head/missing-entry exchange protocol (depends on section 2 envelopes).
+- File I/O around the log. `apply` must get a journal-less directory; wiring a `log.jsonl` and choosing where it lives (open question: outbox vs journal).
+- A persisted Lamport clock. `append` derives it from the loaded log head, so a log that loses its tail can reuse counters.
+- Stable server identity for server-signed entries (open question above).
+- Entry-derived group IDs (decision 8). `GroupCreated` still requires the sequential ID, so two servers creating groups still refuse each other's group 1.
+- Privacy decisions 2 and 5 are not enforced. `AccountSignedUp` digests and `AccountEmailConfirmed` addresses enter the log as-is, so they replicate once sync exists. Sessions and codes never enter an entry.
