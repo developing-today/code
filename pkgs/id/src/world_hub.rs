@@ -230,31 +230,53 @@ impl WorldLease {
 }
 
 impl WorldLease {
-    /// Whether this session may read `owner`'s directory. Same-world reads
-    /// always pass. Across worlds, both must be unisolated. A denial is
-    /// reported as an unknown world, like a missing one.
+    /// Whether this session may read `owner`'s directory.
+    ///
+    /// # Errors
+    ///
+    /// See [`WorldLease::authorize`].
+    pub async fn authorize_read(&self, owner: &Self) -> Result<(), ResolveError> {
+        self.authorize(owner, CrossAccess::Read).await
+    }
+
+    /// Whether this session's world may write into `owner`.
+    ///
+    /// # Errors
+    ///
+    /// See [`WorldLease::authorize`].
+    pub async fn authorize_write(&self, owner: &Self) -> Result<(), ResolveError> {
+        self.authorize(owner, CrossAccess::Write).await
+    }
+
+    /// The single cross-world gate. Same-world access always passes. A denial
+    /// is reported as an unknown world, like a missing one.
     ///
     /// # Errors
     ///
     /// [`ResolveError::UnknownWorld`] when denied; [`ResolveError::Unavailable`]
     /// when either world cannot answer.
-    pub async fn authorize_read(&self, owner: &Self) -> Result<(), ResolveError> {
+    async fn authorize(&self, owner: &Self, access: CrossAccess) -> Result<(), ResolveError> {
         if self.name == owner.name {
             return Ok(());
         }
         let reader = self
             .service
             .world()
-            .isolation()
+            .policy()
             .await
             .map_err(|_| ResolveError::Unavailable)?;
-        let owner_isolation = owner
+        let target = owner
             .service
             .world()
-            .isolation()
+            .policy()
             .await
             .map_err(|_| ResolveError::Unavailable)?;
-        if cross_world_read_allowed(reader, owner_isolation) {
+        if cross_world_allowed(
+            access,
+            reader.isolation,
+            target.isolation,
+            target.cross_world_write,
+        ) {
             Ok(())
         } else {
             Err(ResolveError::UnknownWorld)
@@ -262,13 +284,32 @@ impl WorldLease {
     }
 }
 
-/// The cross-world read rule: both worlds must be unisolated.
+/// What one world asks of another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossAccess {
+    /// Reading the other world's directory.
+    Read,
+    /// Writing into the other world.
+    Write,
+}
+
+/// The cross-world rule. A read needs both worlds unisolated. A write also
+/// needs the target's cross-world write setting on.
 #[must_use]
-pub const fn cross_world_read_allowed(reader: Isolation, owner: Isolation) -> bool {
-    matches!(
+pub const fn cross_world_allowed(
+    access: CrossAccess,
+    reader: Isolation,
+    owner: Isolation,
+    owner_write: bool,
+) -> bool {
+    let both_unisolated = matches!(
         (reader, owner),
         (Isolation::Unisolated, Isolation::Unisolated)
-    )
+    );
+    match access {
+        CrossAccess::Read => both_unisolated,
+        CrossAccess::Write => both_unisolated && owner_write,
+    }
 }
 
 impl Drop for WorldLease {
@@ -719,12 +760,48 @@ mod tests {
     }
 
     #[test]
-    fn cross_world_reads_need_both_worlds_unisolated() {
+    fn cross_world_truth_table() {
+        use CrossAccess::{Read, Write};
         use Isolation::{Isolated, Unisolated};
-        assert!(cross_world_read_allowed(Unisolated, Unisolated));
-        assert!(!cross_world_read_allowed(Unisolated, Isolated));
-        assert!(!cross_world_read_allowed(Isolated, Unisolated));
-        assert!(!cross_world_read_allowed(Isolated, Isolated));
+        for owner_write in [false, true] {
+            // Reads ignore the target's write setting.
+            assert!(cross_world_allowed(
+                Read,
+                Unisolated,
+                Unisolated,
+                owner_write
+            ));
+            assert!(!cross_world_allowed(
+                Read,
+                Unisolated,
+                Isolated,
+                owner_write
+            ));
+            assert!(!cross_world_allowed(
+                Read,
+                Isolated,
+                Unisolated,
+                owner_write
+            ));
+            assert!(!cross_world_allowed(Read, Isolated, Isolated, owner_write));
+        }
+        // A write needs the writer unisolated, the target unisolated, and its setting on.
+        for (reader, owner, owner_write, expected) in [
+            (Unisolated, Unisolated, true, true),
+            (Unisolated, Unisolated, false, false),
+            (Unisolated, Isolated, true, false),
+            (Unisolated, Isolated, false, false),
+            (Isolated, Unisolated, true, false),
+            (Isolated, Unisolated, false, false),
+            (Isolated, Isolated, true, false),
+            (Isolated, Isolated, false, false),
+        ] {
+            assert_eq!(
+                cross_world_allowed(Write, reader, owner, owner_write),
+                expected,
+                "write from {reader:?} into {owner:?} with write {owner_write}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -818,6 +895,68 @@ mod tests {
         assert_eq!(
             hub.lease(Some("../etc"), Some("admin")).await.err(),
             Some(ResolveError::InvalidName)
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_write_needs_the_target_setting() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(&opener, HubLimits::default());
+        let arena = hub.lease(Some("arena"), Some("admin")).await.unwrap();
+        let garden = hub.lease(Some("garden"), Some("admin")).await.unwrap();
+        for world in [&arena, &garden] {
+            world
+                .service()
+                .world()
+                .set_isolation(Authority::Admin, Isolation::Unisolated)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            garden.authorize_write(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "the target's cross-world write is off by default"
+        );
+        arena
+            .service()
+            .world()
+            .set_cross_world_write(Authority::Admin, true)
+            .await
+            .unwrap();
+        assert_eq!(garden.authorize_write(&arena).await, Ok(()));
+        assert_eq!(
+            arena.authorize_write(&garden).await,
+            Err(ResolveError::UnknownWorld),
+            "garden's write setting is still off"
+        );
+
+        garden
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Isolated)
+            .await
+            .unwrap();
+        assert_eq!(
+            garden.authorize_write(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "an isolated writer writes nowhere"
+        );
+        garden
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        arena
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Isolated)
+            .await
+            .unwrap();
+        assert_eq!(
+            garden.authorize_write(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "an isolated target takes no writes"
         );
     }
 

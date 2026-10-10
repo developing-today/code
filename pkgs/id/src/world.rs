@@ -247,6 +247,62 @@ impl Isolation {
     }
 }
 
+/// Which paths a world's files may name.
+///
+/// No world file capability exists yet; this is the policy one must check.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileScope {
+    /// Only the world's own sandbox root.
+    #[default]
+    Confined,
+    /// Any path.
+    Unrestricted,
+}
+
+/// Whether a file access reads or writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileMode {
+    /// Reading a file.
+    Read,
+    /// Creating, changing or deleting a file.
+    Write,
+}
+
+/// A world's sharing and file settings, read in one step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct WorldPolicy {
+    /// Whether other worlds may read this one.
+    pub isolation: Isolation,
+    /// Whether other unisolated worlds may write here.
+    pub cross_world_write: bool,
+    /// Whether an admin forced `cross_world_write` on, so a moderator cannot turn it off.
+    pub cross_world_forced: bool,
+    /// Which paths the world's files may name.
+    pub file_scope: FileScope,
+    /// Whether the admin let an isolated world write files.
+    pub file_write_override: bool,
+}
+
+impl WorldPolicy {
+    /// Whether a file access is allowed. Isolated worlds only read unless the
+    /// admin override is set; the scope then decides which paths.
+    #[must_use]
+    pub const fn file_allowed(self, mode: FileMode, inside_root: bool) -> bool {
+        let in_scope = match self.file_scope {
+            FileScope::Confined => inside_root,
+            FileScope::Unrestricted => true,
+        };
+        let writable = match mode {
+            FileMode::Read => true,
+            FileMode::Write => {
+                matches!(self.isolation, Isolation::Unisolated) || self.file_write_override
+            }
+        };
+        in_scope && writable
+    }
+}
+
 /// Who asks for a change only an admin or a moderator may make.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Authority {
@@ -323,6 +379,24 @@ pub enum JournalEntry {
     Isolation {
         /// The new isolation.
         isolation: Isolation,
+    },
+    /// Whether other unisolated worlds may write here, set by a moderator or
+    /// the admin. `enabled: false` also clears a force. Absent means off.
+    CrossWorldWrite {
+        /// The new setting.
+        enabled: bool,
+    },
+    /// The admin forced cross-world writes on. Absent means not forced.
+    CrossWorldWriteForced,
+    /// The world's file scope, written whole on every change. Absent means confined.
+    FileScope {
+        /// The new scope.
+        scope: FileScope,
+    },
+    /// Whether the admin let an isolated world write files. Absent means off.
+    FileWriteOverride {
+        /// The new setting.
+        enabled: bool,
     },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
@@ -568,6 +642,10 @@ pub struct WorldCore {
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
     isolation: Isolation,
+    cross_world_write: bool,
+    cross_world_forced: bool,
+    file_scope: FileScope,
+    file_write_override: bool,
     /// Events committed since the journal last started from a checkpoint.
     since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
@@ -607,6 +685,10 @@ impl WorldCore {
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
             isolation: Isolation::default(),
+            cross_world_write: false,
+            cross_world_forced: false,
+            file_scope: FileScope::default(),
+            file_write_override: false,
             since_checkpoint: 0,
             capabilities: HashMap::new(),
             events: VecDeque::new(),
@@ -728,6 +810,18 @@ impl WorldCore {
                     core.ledger.set_granted(granted.iter().cloned().collect());
                 }
                 JournalEntry::Isolation { isolation } => core.isolation = isolation,
+                JournalEntry::CrossWorldWrite { enabled } => {
+                    core.cross_world_write = enabled;
+                    if !enabled {
+                        core.cross_world_forced = false;
+                    }
+                }
+                JournalEntry::CrossWorldWriteForced => {
+                    core.cross_world_write = true;
+                    core.cross_world_forced = true;
+                }
+                JournalEntry::FileScope { scope } => core.file_scope = scope,
+                JournalEntry::FileWriteOverride { enabled } => core.file_write_override = enabled,
                 JournalEntry::System { event } => {
                     ensure!(
                         event.sequence == 0 && event.participant_id == 0,
@@ -868,6 +962,19 @@ impl WorldCore {
             entries.push(JournalEntry::Isolation {
                 isolation: self.isolation,
             });
+        }
+        if self.cross_world_forced {
+            entries.push(JournalEntry::CrossWorldWriteForced);
+        } else if self.cross_world_write {
+            entries.push(JournalEntry::CrossWorldWrite { enabled: true });
+        }
+        if self.file_scope != FileScope::default() {
+            entries.push(JournalEntry::FileScope {
+                scope: self.file_scope,
+            });
+        }
+        if self.file_write_override {
+            entries.push(JournalEntry::FileWriteOverride { enabled: true });
         }
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
@@ -1208,6 +1315,18 @@ impl WorldCore {
         self.isolation
     }
 
+    /// The world's sharing and file settings.
+    #[must_use]
+    pub const fn policy(&self) -> WorldPolicy {
+        WorldPolicy {
+            isolation: self.isolation,
+            cross_world_write: self.cross_world_write,
+            cross_world_forced: self.cross_world_forced,
+            file_scope: self.file_scope,
+            file_write_override: self.file_write_override,
+        }
+    }
+
     /// The directory of accounts, groups and friends this world is held to.
     #[must_use]
     pub const fn directory(&self) -> &crate::directory::Directory {
@@ -1496,6 +1615,27 @@ enum WorldCommand {
     },
     IsolationInfo {
         reply: oneshot::Sender<Isolation>,
+    },
+    /// Moderator or admin: let other unisolated worlds write here.
+    SetCrossWorldWrite {
+        authority: Authority,
+        enabled: bool,
+        reply: oneshot::Sender<Result<WorldPolicy>>,
+    },
+    /// Admin: force cross-world writes on.
+    ForceCrossWorldWrite {
+        authority: Authority,
+        reply: oneshot::Sender<Result<WorldPolicy>>,
+    },
+    /// Moderator or admin: set the file scope; the admin alone sets the override.
+    SetFileScope {
+        authority: Authority,
+        scope: FileScope,
+        write_override: Option<bool>,
+        reply: oneshot::Sender<Result<WorldPolicy>>,
+    },
+    PolicyInfo {
+        reply: oneshot::Sender<WorldPolicy>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -1915,7 +2055,7 @@ impl WorldActor {
         }
     }
 
-    fn set_isolation(&mut self, authority: &Authority, isolation: Isolation) -> Result<Isolation> {
+    fn require_moderation(&self, authority: &Authority, what: &str) -> Result<()> {
         let directory = self.core.directory();
         let allowed = match authority {
             Authority::Admin => true,
@@ -1923,15 +2063,84 @@ impl WorldActor {
                 .account_for_key(key)
                 .is_some_and(|account| directory.is_moderator(&account)),
         };
-        if !allowed {
-            return Err(crate::directory::Refusal::Forbidden(
-                "only an admin or a moderator changes isolation".to_owned(),
-            )
-            .into());
+        if allowed {
+            Ok(())
+        } else {
+            Err(crate::directory::Refusal::Forbidden(format!(
+                "only an admin or a moderator {what}"
+            ))
+            .into())
         }
+    }
+
+    fn set_isolation(&mut self, authority: &Authority, isolation: Isolation) -> Result<Isolation> {
+        self.require_moderation(authority, "changes isolation")?;
         self.persist(JournalEntry::Isolation { isolation })?;
         self.core.isolation = isolation;
         Ok(isolation)
+    }
+
+    fn set_cross_world_write(
+        &mut self,
+        authority: &Authority,
+        enabled: bool,
+    ) -> Result<WorldPolicy> {
+        self.require_moderation(authority, "changes cross-world writes")?;
+        if !enabled && self.core.cross_world_forced && *authority != Authority::Admin {
+            return Err(crate::directory::Refusal::Forbidden(
+                "the admin forced cross-world writes on; only the admin can turn them off"
+                    .to_owned(),
+            )
+            .into());
+        }
+        self.persist(JournalEntry::CrossWorldWrite { enabled })?;
+        self.core.cross_world_write = enabled;
+        if !enabled {
+            self.core.cross_world_forced = false;
+        }
+        Ok(self.core.policy())
+    }
+
+    fn force_cross_world_write(&mut self, authority: &Authority) -> Result<WorldPolicy> {
+        if *authority != Authority::Admin {
+            return Err(crate::directory::Refusal::Forbidden(
+                "only the admin forces cross-world writes".to_owned(),
+            )
+            .into());
+        }
+        if self.core.isolation == Isolation::Isolated {
+            return Err(crate::directory::Refusal::Forbidden(
+                "an isolated world cannot be forced to accept cross-world writes; unisolate it first"
+                    .to_owned(),
+            )
+            .into());
+        }
+        self.persist(JournalEntry::CrossWorldWriteForced)?;
+        self.core.cross_world_write = true;
+        self.core.cross_world_forced = true;
+        Ok(self.core.policy())
+    }
+
+    fn set_file_scope(
+        &mut self,
+        authority: &Authority,
+        scope: FileScope,
+        write_override: Option<bool>,
+    ) -> Result<WorldPolicy> {
+        self.require_moderation(authority, "changes the file scope")?;
+        if write_override.is_some() && *authority != Authority::Admin {
+            return Err(crate::directory::Refusal::Forbidden(
+                "only the admin sets the file write override".to_owned(),
+            )
+            .into());
+        }
+        self.persist(JournalEntry::FileScope { scope })?;
+        self.core.file_scope = scope;
+        if let Some(enabled) = write_override {
+            self.persist(JournalEntry::FileWriteOverride { enabled })?;
+            self.core.file_write_override = enabled;
+        }
+        Ok(self.core.policy())
     }
 
     /// The capability report an admin sees.
@@ -2230,6 +2439,30 @@ impl WorldActor {
             WorldCommand::IsolationInfo { reply } => {
                 let _ = reply.send(self.core.isolation());
             }
+            WorldCommand::SetCrossWorldWrite {
+                authority,
+                enabled,
+                reply,
+            } => {
+                let result = self.set_cross_world_write(&authority, enabled);
+                let _ = reply.send(result);
+            }
+            WorldCommand::ForceCrossWorldWrite { authority, reply } => {
+                let result = self.force_cross_world_write(&authority);
+                let _ = reply.send(result);
+            }
+            WorldCommand::SetFileScope {
+                authority,
+                scope,
+                write_override,
+                reply,
+            } => {
+                let result = self.set_file_scope(&authority, scope, write_override);
+                let _ = reply.send(result);
+            }
+            WorldCommand::PolicyInfo { reply } => {
+                let _ = reply.send(self.core.policy());
+            }
             WorldCommand::CapsInfo { reply } => {
                 let _ = reply.send(self.caps_report());
             }
@@ -2439,6 +2672,91 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped isolation response")
+    }
+
+    /// Let other unisolated worlds write here, or stop them.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a forbidden refusal unless the authority is an admin or a
+    /// moderator, or if a moderator turns off a forced setting, or on storage failure.
+    pub async fn set_cross_world_write(
+        &self,
+        authority: Authority,
+        enabled: bool,
+    ) -> Result<WorldPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetCrossWorldWrite {
+                authority,
+                enabled,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped cross-world write response")?
+    }
+
+    /// Force cross-world writes on for an unisolated world.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a forbidden refusal unless the authority is the admin, or if
+    /// the world is isolated, or on storage failure.
+    pub async fn force_cross_world_write(&self, authority: Authority) -> Result<WorldPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ForceCrossWorldWrite { authority, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped force response")?
+    }
+
+    /// Set the file scope, and with `write_override` the admin override.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a forbidden refusal unless the authority is an admin or a
+    /// moderator, or if a moderator sets the override, or on storage failure.
+    pub async fn set_file_scope(
+        &self,
+        authority: Authority,
+        scope: FileScope,
+        write_override: Option<bool>,
+    ) -> Result<WorldPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetFileScope {
+                authority,
+                scope,
+                write_override,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped file scope response")?
+    }
+
+    /// The world's sharing and file settings.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn policy(&self) -> Result<WorldPolicy> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PolicyInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped policy response")
     }
 
     /// The world's capability report: grants, what the program wants, and use.
@@ -4323,5 +4641,245 @@ mod isolation_tests {
                 isolation: Isolation::Unisolated
             }
         )));
+    }
+
+    fn forbidden(error: &anyhow::Error) -> bool {
+        matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_)))
+    }
+
+    #[tokio::test]
+    async fn only_a_moderator_or_an_admin_sets_cross_world_write() {
+        let staff = staffed();
+        let handle = WorldHandle::spawn(staff.core);
+        for who in [
+            &staff.member,
+            &staff.writer,
+            &staff.manager,
+            &staff.stranger,
+        ] {
+            let error = handle
+                .set_cross_world_write(Authority::Signed(who.clone()), true)
+                .await
+                .unwrap_err();
+            assert!(
+                forbidden(&error),
+                "{who} must not change cross-world writes"
+            );
+        }
+        assert!(!handle.policy().await.unwrap().cross_world_write);
+
+        let policy = handle
+            .set_cross_world_write(Authority::Signed(staff.moderator.clone()), true)
+            .await
+            .unwrap();
+        assert!(policy.cross_world_write && !policy.cross_world_forced);
+        let policy = handle
+            .set_cross_world_write(Authority::Signed(staff.moderator.clone()), false)
+            .await
+            .unwrap();
+        assert!(!policy.cross_world_write);
+    }
+
+    #[tokio::test]
+    async fn only_the_admin_forces_cross_world_writes() {
+        let staff = staffed();
+        let handle = WorldHandle::spawn(staff.core);
+        handle
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        for who in [&staff.moderator, &staff.admin] {
+            let error = handle
+                .force_cross_world_write(Authority::Signed(who.clone()))
+                .await
+                .unwrap_err();
+            assert!(forbidden(&error), "{who} must not force cross-world writes");
+        }
+        assert!(!handle.policy().await.unwrap().cross_world_forced);
+    }
+
+    #[tokio::test]
+    async fn an_isolated_world_cannot_be_forced() {
+        let handle = WorldHandle::spawn(WorldCore::new("w", WorldLimits::default()).unwrap());
+        let error = handle
+            .force_cross_world_write(Authority::Admin)
+            .await
+            .unwrap_err();
+        assert!(forbidden(&error));
+        assert!(error.to_string().contains("isolated"), "{error}");
+        assert!(!handle.policy().await.unwrap().cross_world_forced);
+    }
+
+    #[tokio::test]
+    async fn a_forced_write_stays_on_against_a_moderator() {
+        let staff = staffed();
+        let handle = WorldHandle::spawn(staff.core);
+        handle
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        handle
+            .force_cross_world_write(Authority::Admin)
+            .await
+            .unwrap();
+
+        let error = handle
+            .set_cross_world_write(Authority::Signed(staff.moderator.clone()), false)
+            .await
+            .unwrap_err();
+        assert!(forbidden(&error));
+        let policy = handle.policy().await.unwrap();
+        assert!(policy.cross_world_write && policy.cross_world_forced);
+
+        let policy = handle
+            .set_cross_world_write(Authority::Admin, false)
+            .await
+            .unwrap();
+        assert!(!policy.cross_world_write && !policy.cross_world_forced);
+    }
+
+    #[tokio::test]
+    async fn a_moderator_turns_off_a_write_that_was_not_forced() {
+        let staff = staffed();
+        let handle = WorldHandle::spawn(staff.core);
+        handle
+            .set_cross_world_write(Authority::Signed(staff.moderator.clone()), true)
+            .await
+            .unwrap();
+        let policy = handle
+            .set_cross_world_write(Authority::Signed(staff.moderator.clone()), false)
+            .await
+            .unwrap();
+        assert!(!policy.cross_world_write);
+    }
+
+    #[tokio::test]
+    async fn file_scope_is_moderated_and_the_override_is_admin_only() {
+        let staff = staffed();
+        let handle = WorldHandle::spawn(staff.core);
+        assert_eq!(
+            handle.policy().await.unwrap(),
+            WorldPolicy {
+                isolation: Isolation::Isolated,
+                cross_world_write: false,
+                cross_world_forced: false,
+                file_scope: FileScope::Confined,
+                file_write_override: false,
+            }
+        );
+        for who in [
+            &staff.member,
+            &staff.writer,
+            &staff.manager,
+            &staff.stranger,
+        ] {
+            let error = handle
+                .set_file_scope(
+                    Authority::Signed(who.clone()),
+                    FileScope::Unrestricted,
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert!(forbidden(&error), "{who} must not change the file scope");
+        }
+
+        let error = handle
+            .set_file_scope(
+                Authority::Signed(staff.moderator.clone()),
+                FileScope::Unrestricted,
+                Some(true),
+            )
+            .await
+            .unwrap_err();
+        assert!(forbidden(&error));
+        assert_eq!(
+            handle.policy().await.unwrap().file_scope,
+            FileScope::Confined
+        );
+
+        let policy = handle
+            .set_file_scope(
+                Authority::Signed(staff.moderator.clone()),
+                FileScope::Unrestricted,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(policy.file_scope, FileScope::Unrestricted);
+        assert!(!policy.file_write_override);
+
+        let policy = handle
+            .set_file_scope(Authority::Admin, FileScope::Unrestricted, Some(true))
+            .await
+            .unwrap();
+        assert!(policy.file_write_override);
+    }
+
+    #[test]
+    fn file_access_follows_isolation_scope_and_override() {
+        use FileMode::{Read, Write};
+        use FileScope::{Confined, Unrestricted};
+        use Isolation::{Isolated, Unisolated};
+        let policy = |isolation, file_scope, file_write_override| WorldPolicy {
+            isolation,
+            cross_world_write: false,
+            cross_world_forced: false,
+            file_scope,
+            file_write_override,
+        };
+        // (policy, mode, inside own root, allowed)
+        let cases = [
+            (policy(Unisolated, Confined, false), Read, true, true),
+            (policy(Unisolated, Confined, false), Read, false, false),
+            (policy(Unisolated, Confined, false), Write, true, true),
+            (policy(Unisolated, Confined, false), Write, false, false),
+            (policy(Unisolated, Unrestricted, false), Read, false, true),
+            (policy(Unisolated, Unrestricted, false), Write, false, true),
+            (policy(Isolated, Confined, false), Read, true, true),
+            (policy(Isolated, Confined, false), Read, false, false),
+            (policy(Isolated, Confined, false), Write, true, false),
+            (policy(Isolated, Unrestricted, false), Read, false, true),
+            (policy(Isolated, Unrestricted, false), Write, false, false),
+            (policy(Isolated, Unrestricted, true), Write, false, true),
+            (policy(Isolated, Confined, true), Write, true, true),
+            (policy(Isolated, Confined, true), Write, false, false),
+        ];
+        for (policy, mode, inside_root, expected) in cases {
+            assert_eq!(
+                policy.file_allowed(mode, inside_root),
+                expected,
+                "{policy:?} {mode:?} inside root {inside_root}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_world_reads_only_inside_its_root() {
+        let policy = WorldCore::new("w", WorldLimits::default())
+            .unwrap()
+            .policy();
+        assert_eq!(policy.file_scope, FileScope::Confined);
+        assert!(!policy.file_write_override);
+        assert!(policy.file_allowed(FileMode::Read, true));
+        assert!(!policy.file_allowed(FileMode::Read, false));
+        assert!(!policy.file_allowed(FileMode::Write, true));
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_sharing_settings() {
+        for (cross_world_write, cross_world_forced) in [(true, false), (true, true), (false, false)]
+        {
+            let mut core = WorldCore::new("share", WorldLimits::default()).unwrap();
+            core.isolation = Isolation::Unisolated;
+            core.cross_world_write = cross_world_write;
+            core.cross_world_forced = cross_world_forced;
+            core.file_scope = FileScope::Unrestricted;
+            core.file_write_override = true;
+            core.active_module_hash = Some("h".to_owned());
+            let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+            let restored = WorldCore::restore("share", WorldLimits::default(), entries).unwrap();
+            assert_eq!(restored.core.policy(), core.policy());
+        }
     }
 }

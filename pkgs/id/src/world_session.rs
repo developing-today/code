@@ -30,8 +30,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    Authority, CapabilityBounds, Isolation, JoinCapability, Participant, WorldEvent, WorldHandle,
-    WorldScopes, WorldSnapshot, unix_ms,
+    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldEvent,
+    WorldHandle, WorldPolicy, WorldScopes, WorldSnapshot, unix_ms,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -153,6 +153,27 @@ enum ClientFrame {
         admin_token: Option<String>,
         signed: Option<Signed>,
     },
+    /// Admin, or a signed request from a moderator: let other unisolated
+    /// worlds write here. A signed request covers `PUT
+    /// /world/<name>/cross-world-write` with the body `on` or `off`.
+    SetCrossWorldWrite {
+        enabled: bool,
+        admin_token: Option<String>,
+        signed: Option<Signed>,
+    },
+    /// Admin: force cross-world writes on, overriding the world's own setting.
+    ForceCrossWorldWrite {
+        admin_token: String,
+    },
+    /// Admin, or a signed request from a moderator: set the file scope. Only
+    /// the admin sets `write_override`. A signed request covers `PUT
+    /// /world/<name>/file-scope` with the scope word as its body.
+    SetFileScope {
+        scope: FileScope,
+        write_override: Option<bool>,
+        admin_token: Option<String>,
+        signed: Option<Signed>,
+    },
     /// Admin: compile Roc sources and install the result.
     Compile {
         admin_token: String,
@@ -265,6 +286,11 @@ enum ServerFrame<'a> {
     Isolation {
         world: &'a str,
         isolation: Isolation,
+    },
+    /// The world's sharing and file settings after a change.
+    Policy {
+        world: &'a str,
+        policy: WorldPolicy,
     },
     /// The world's capability report.
     Caps {
@@ -964,6 +990,24 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         }
         return;
     }
+    if let Some(result) = policy_frame(hub, &lease, &frame).await {
+        match result {
+            Ok(policy) => {
+                let _ = send_json(
+                    io,
+                    &ServerFrame::Policy {
+                        world: lease.name(),
+                        policy,
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(io, &format!("{error:#}")).await;
+            }
+        }
+        return;
+    }
     run_world_session(lease.service(), io, frame).await;
 }
 
@@ -976,23 +1020,134 @@ async fn set_isolation_frame(
     admin_token: Option<&str>,
     signed: Option<&Signed>,
 ) -> anyhow::Result<Isolation> {
-    let is_admin = admin_token
-        .filter(|token| token.len() <= MAX_ADMIN_TOKEN_BYTES)
-        .is_some_and(|token| lease.service().authorize_admin(Some(token)).is_ok());
-    let authority = if is_admin {
-        Authority::Admin
-    } else if let Some(signed) = signed {
-        let target = format!("/world/{}/isolation", lease.name());
-        let key = hub.verify_signed(signed, "PUT", &target, isolation.as_str().as_bytes())?;
-        Authority::Signed(key)
-    } else {
-        anyhow::bail!("admin denied");
-    };
+    let target = format!("/world/{}/isolation", lease.name());
+    let authority =
+        moderation_authority(hub, lease, admin_token, signed, &target, isolation.as_str())?;
     lease
         .service()
         .world()
         .set_isolation(authority, isolation)
         .await
+}
+
+/// Handle a cross-world write or file scope frame; `None` for any other frame.
+async fn policy_frame(
+    hub: &WorldHub,
+    lease: &WorldLease,
+    frame: &ClientFrame,
+) -> Option<anyhow::Result<WorldPolicy>> {
+    Some(match frame {
+        ClientFrame::SetCrossWorldWrite {
+            enabled,
+            admin_token,
+            signed,
+        } => {
+            set_cross_world_write_frame(
+                hub,
+                lease,
+                *enabled,
+                admin_token.as_deref(),
+                signed.as_ref(),
+            )
+            .await
+        }
+        ClientFrame::ForceCrossWorldWrite { admin_token } => {
+            force_cross_world_write_frame(lease, admin_token).await
+        }
+        ClientFrame::SetFileScope {
+            scope,
+            write_override,
+            admin_token,
+            signed,
+        } => {
+            set_file_scope_frame(
+                hub,
+                lease,
+                *scope,
+                *write_override,
+                admin_token.as_deref(),
+                signed.as_ref(),
+            )
+            .await
+        }
+        _ => return None,
+    })
+}
+
+async fn set_cross_world_write_frame(
+    hub: &WorldHub,
+    lease: &WorldLease,
+    enabled: bool,
+    admin_token: Option<&str>,
+    signed: Option<&Signed>,
+) -> anyhow::Result<WorldPolicy> {
+    let target = format!("/world/{}/cross-world-write", lease.name());
+    let body = if enabled { "on" } else { "off" };
+    let authority = moderation_authority(hub, lease, admin_token, signed, &target, body)?;
+    lease
+        .service()
+        .world()
+        .set_cross_world_write(authority, enabled)
+        .await
+}
+
+async fn force_cross_world_write_frame(
+    lease: &WorldLease,
+    admin_token: &str,
+) -> anyhow::Result<WorldPolicy> {
+    anyhow::ensure!(is_admin(lease, Some(admin_token)), "admin denied");
+    lease
+        .service()
+        .world()
+        .force_cross_world_write(Authority::Admin)
+        .await
+}
+
+async fn set_file_scope_frame(
+    hub: &WorldHub,
+    lease: &WorldLease,
+    scope: FileScope,
+    write_override: Option<bool>,
+    admin_token: Option<&str>,
+    signed: Option<&Signed>,
+) -> anyhow::Result<WorldPolicy> {
+    let target = format!("/world/{}/file-scope", lease.name());
+    let body = match scope {
+        FileScope::Confined => "confined",
+        FileScope::Unrestricted => "unrestricted",
+    };
+    let authority = moderation_authority(hub, lease, admin_token, signed, &target, body)?;
+    lease
+        .service()
+        .world()
+        .set_file_scope(authority, scope, write_override)
+        .await
+}
+
+fn is_admin(lease: &WorldLease, admin_token: Option<&str>) -> bool {
+    admin_token
+        .filter(|token| token.len() <= MAX_ADMIN_TOKEN_BYTES)
+        .is_some_and(|token| lease.service().authorize_admin(Some(token)).is_ok())
+}
+
+/// The admin when the token matches; otherwise a signed request's account,
+/// which the world's moderator check then judges.
+fn moderation_authority(
+    hub: &WorldHub,
+    lease: &WorldLease,
+    admin_token: Option<&str>,
+    signed: Option<&Signed>,
+    target: &str,
+    body: &str,
+) -> anyhow::Result<Authority> {
+    if is_admin(lease, admin_token) {
+        return Ok(Authority::Admin);
+    }
+    let Some(signed) = signed else {
+        anyhow::bail!("admin denied");
+    };
+    let key = hub.verify_signed(signed, "PUT", target, body.as_bytes())?;
+    Ok(Authority::Signed(key))
 }
 
 /// Serve one session against its resolved world, starting from its first frame.
@@ -1131,6 +1286,9 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }
+        | ClientFrame::SetCrossWorldWrite { .. }
+        | ClientFrame::ForceCrossWorldWrite { .. }
+        | ClientFrame::SetFileScope { .. }
         | ClientFrame::Chat { .. }
         | ClientFrame::Attenuate { .. }
         | ClientFrame::DelegateToFriend { .. }
@@ -1788,6 +1946,9 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }
+        | ClientFrame::SetCrossWorldWrite { .. }
+        | ClientFrame::ForceCrossWorldWrite { .. }
+        | ClientFrame::SetFileScope { .. }
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::InstallBegin { .. }
@@ -2016,6 +2177,57 @@ mod tests {
                 .unwrap(),
             Isolation::Unisolated
         );
+    }
+
+    #[tokio::test]
+    async fn a_bad_admin_token_is_refused_for_force_and_override() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        world
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world, Some("secret".to_owned())));
+        let lease = hub.lease(None, None).await.unwrap();
+        let force_guess = ClientFrame::ForceCrossWorldWrite {
+            admin_token: "guess".to_owned(),
+        };
+        let override_guess = ClientFrame::SetFileScope {
+            scope: FileScope::Unrestricted,
+            write_override: Some(true),
+            admin_token: Some("guess".to_owned()),
+            signed: None,
+        };
+        assert!(
+            policy_frame(&hub, &lease, &force_guess)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            policy_frame(&hub, &lease, &override_guess)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let policy = lease.service().world().policy().await.unwrap();
+        assert!(!policy.cross_world_forced && !policy.file_write_override);
+
+        let force = ClientFrame::ForceCrossWorldWrite {
+            admin_token: "secret".to_owned(),
+        };
+        let forced = policy_frame(&hub, &lease, &force).await.unwrap().unwrap();
+        assert!(forced.cross_world_forced);
+        let override_on = ClientFrame::SetFileScope {
+            scope: FileScope::Unrestricted,
+            write_override: Some(true),
+            admin_token: Some("secret".to_owned()),
+            signed: None,
+        };
+        let set = policy_frame(&hub, &lease, &override_on)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(set.file_write_override);
     }
 
     #[test]

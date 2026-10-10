@@ -1414,6 +1414,67 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Let other unisolated worlds write into a world (needs the host's admin token).
+    CrossWorldWrite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// `on` (other unisolated worlds may write here) or `off`.
+        #[arg(value_parser = ["on", "off"])]
+        mode: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Force cross-world writes on for an unisolated world, overriding its own
+    /// setting (needs the host's admin token). Moderators cannot undo a force.
+    ForceCrossWorldWrite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Set a world's file scope (needs the host's admin token).
+    FileScope {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// `confined` (the world's own sandbox root) or `unrestricted` (any path).
+        #[arg(value_parser = ["confined", "unrestricted"])]
+        scope: String,
+        /// Admin file write override for an isolated world: `on` or `off`.
+        #[arg(long = "write-override", value_parser = ["on", "off"])]
+        write_override: Option<String>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Create a world on a host (needs the host's admin token).
     Create {
         /// The host's node ID (64 hex characters).
@@ -3125,6 +3186,84 @@ mod tests {
         );
         assert!(
             Cli::try_parse_from(["id", "tag", "del", "f", "k", "v", "--value-hex", "00"]).is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_sharing_commands() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "cross-world-write",
+            &node,
+            "on",
+            "--admin-token",
+            "t",
+        ]);
+        match cli.command {
+            Some(Command::World(WorldCommand::CrossWorldWrite { mode, .. })) => {
+                assert_eq!(mode, "on");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "force-cross-world-write",
+            &node,
+            "--admin-token",
+            "t",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(WorldCommand::ForceCrossWorldWrite { .. }))
+        ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "file-scope",
+            &node,
+            "unrestricted",
+            "--write-override",
+            "on",
+            "--admin-token",
+            "t",
+        ]);
+        match cli.command {
+            Some(Command::World(WorldCommand::FileScope {
+                scope,
+                write_override,
+                ..
+            })) => {
+                assert_eq!(scope, "unrestricted");
+                assert_eq!(write_override.as_deref(), Some("on"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "cross-world-write",
+                &node,
+                "maybe",
+                "--admin-token",
+                "t",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "file-scope",
+                &node,
+                "everywhere",
+                "--admin-token",
+                "t",
+            ])
+            .is_err()
         );
     }
 

@@ -422,7 +422,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::world::{Authority, CapabilityBounds, Isolation, WorldScopes};
+    use crate::world::{Authority, CapabilityBounds, FileScope, Isolation, WorldScopes};
     use crate::world_limits::RuntimeLimits;
 
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
@@ -455,6 +455,44 @@ mod tests {
             svc.world().isolation().await.unwrap(),
             Isolation::Unisolated
         );
+    }
+
+    #[tokio::test]
+    async fn sharing_settings_survive_a_restart() {
+        let dir = TempDir::new().unwrap();
+        let open = || {
+            open_world(
+                dir.path(),
+                "lobby",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                service(None),
+            )
+        };
+        let (svc, _) = open().await.unwrap();
+        svc.world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        svc.world()
+            .set_cross_world_write(Authority::Admin, true)
+            .await
+            .unwrap();
+        svc.world()
+            .force_cross_world_write(Authority::Admin)
+            .await
+            .unwrap();
+        svc.world()
+            .set_file_scope(Authority::Admin, FileScope::Unrestricted, Some(true))
+            .await
+            .unwrap();
+        let before = svc.world().policy().await.unwrap();
+        assert!(before.cross_world_write && before.cross_world_forced);
+        assert!(before.file_write_override);
+        svc.world().shutdown().await.unwrap();
+
+        let (svc, _) = open().await.unwrap();
+        assert_eq!(svc.world().policy().await.unwrap(), before);
     }
 
     #[tokio::test]
