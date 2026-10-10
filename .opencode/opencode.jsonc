@@ -3560,41 +3560,6 @@
     ".opencode/instructions/lootbox.md",
     ".opencode/instructions/subagents.md"
   ],
-  "mcp": {
-    "jules": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@google/jules-mcp"
-      ],
-      "enabled": true,
-      "environment": {
-        "JULES_API_KEY": "{env:JULES_API_KEY}"
-      }
-    },
-    "antigravity-jules-orchestration": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@iflow-mcp/scarmonit-antigravity-jules-orchestration"
-      ],
-      "enabled": true,
-      "environment": {
-        "JULES_API_KEY": "{env:JULES_API_KEY}"
-      }
-    },
-    "antigravity": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@ask-llm/antigravity-mcp"
-      ],
-      "enabled": true
-    }
-  },
   "compaction": {
     "reserved": 8192
   },
@@ -3603,6 +3568,7 @@
   },
   "warming": true,
   "plugin": [
+    ["./.opencode/plugin/mcpx-session.ts", { "tools": true, "instructions": true, "daemonTools": true }],
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
     "@openspoon/subtask2@latest",
