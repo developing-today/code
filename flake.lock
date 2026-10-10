@@ -2170,11 +2170,11 @@
     "openchamber-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1791596844,
-        "narHash": "sha256-UJxTPzL8hX9jsIFztizR+rRpOTzWOUms74yaMBov7jE=",
+        "lastModified": 1791599077,
+        "narHash": "sha256-xC77y+tRn14LrRdEwjal0cCeuxvEqANMjpQZuwWzDfc=",
         "owner": "developing-today",
         "repo": "openchamber",
-        "rev": "52d1cee7b4608006eadd448150874242569ed155",
+        "rev": "cf30d65d01daefdd330234c4a692d5ee3157ea15",
         "type": "github"
       },
       "original": {
