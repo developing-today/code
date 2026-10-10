@@ -32,6 +32,10 @@ type PoolHandoff struct {
 	Instances []InstanceHandoff `json:"instances"`
 }
 
+// ErrBusy is returned by Detach while calls are in flight or a child is still
+// starting. Nothing has changed when it is returned, so the caller may retry.
+var ErrBusy = errors.New("calls in flight")
+
 // Detach takes the pool out of service so a successor can serve its stdio
 // children. Only those are handed on; every other instance stays parked until
 // Commit closes it or Restore puts it back.
@@ -40,6 +44,16 @@ func (p *Pool) Detach() (*PoolHandoff, error) {
 	if p.closed {
 		p.mu.Unlock()
 		return nil, errors.New("pool is closed")
+	}
+	if p.starting > 0 {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("server %q: a child is starting: %w", p.cfg.Name, ErrBusy)
+	}
+	for _, in := range p.instances {
+		if in.holders > 0 {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, ErrBusy)
+		}
 	}
 	p.closed = true
 	parked := p.instances

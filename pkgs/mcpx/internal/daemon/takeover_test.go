@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -112,7 +113,7 @@ func TestRegistryHandoffKeepsTheChildAcrossTheSuccessor(t *testing.T) {
 	pa, _ := old.Pool("a")
 	pid := childPID(t, pa)
 
-	ho, err := old.Detach()
+	ho, err := old.Detach(time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestRegistryHandoffThatIsNotCommittedRestoresTheChild(t *testing.T) {
 	pa, _ := r.Pool("a")
 	pid := childPID(t, pa)
 
-	ho, err := r.Detach()
+	ho, err := r.Detach(time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

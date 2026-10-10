@@ -283,7 +283,10 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	defer cancel()
 	if err := s.httpSrv.Shutdown(drain); err != nil {
 		s.logger.Printf("takeover: draining http: %v", err)
+		_ = s.resumeHTTP(unixDup, tcpDup)
+		return fmt.Errorf("draining http: %w", err)
 	}
+	_ = c.SetDeadline(time.Now().Add(s.set.Duration("daemon.takeoverTimeout")))
 
 	restore := func(ho *RegistryHandoff) error {
 		if ho != nil {
@@ -291,7 +294,7 @@ func (s *Server) handOver(c *net.UnixConn) error {
 		}
 		return s.resumeHTTP(unixDup, tcpDup)
 	}
-	ho, err := s.reg.Detach()
+	ho, err := s.reg.Detach(s.set.Duration("http.shutdownGrace"))
 	if err != nil {
 		_ = restore(nil)
 		return err
