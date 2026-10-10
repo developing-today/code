@@ -421,6 +421,9 @@ func (s *Server) Serve(ctx context.Context) error {
 			if err := s.reg.SaveCache(); err != nil {
 				s.logger.Printf("save cache: %v", err)
 			}
+			if err := s.reg.SaveSessions(); err != nil {
+				s.logger.Printf("save sessions: %v", err)
+			}
 		}
 	}
 }
@@ -460,6 +463,9 @@ func (s *Server) shutdown() error {
 	// including removing the state directory.
 	if err := s.reg.SaveCache(); err != nil {
 		s.logger.Printf("save cache: %v", err)
+	}
+	if err := s.reg.SaveSessions(); err != nil {
+		s.logger.Printf("save sessions: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(),

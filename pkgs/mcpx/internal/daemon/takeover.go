@@ -67,7 +67,8 @@ type takeoverState struct {
 }
 
 type takeoverPools struct {
-	Pools []pool.PoolHandoff `json:"pools"`
+	Pools  []pool.PoolHandoff     `json:"pools"`
+	Leases map[string]leaseRecord `json:"leases,omitempty"`
 }
 
 type takeoverPipe struct {
@@ -329,7 +330,7 @@ func (s *Server) handOver(c *net.UnixConn) error {
 }
 
 func (s *Server) sendChildren(c *net.UnixConn, ho *RegistryHandoff) error {
-	if err := exchange(c, kindPools, takeoverPools{Pools: ho.Pools}, nil); err != nil {
+	if err := exchange(c, kindPools, takeoverPools{Pools: ho.Pools, Leases: s.reg.snapshotLeases()}, nil); err != nil {
 		return err
 	}
 	for pi := range ho.Pools {
@@ -382,6 +383,7 @@ type takeoverIn struct {
 	listeners map[string]*os.File
 	state     *takeoverState
 	pools     []pool.PoolHandoff
+	leases    map[string]leaseRecord
 	pipes     map[takeoverPipe]*os.File
 }
 
@@ -474,6 +476,7 @@ func (s *Server) receive(in *takeoverIn, f takeoverFrame, fd *os.File) error {
 			return err
 		}
 		in.pools = p.Pools
+		in.leases = p.Leases
 	case kindPipe:
 		var p takeoverPipe
 		if err := json.Unmarshal(f.Body, &p); err != nil || fd == nil {
@@ -544,6 +547,10 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 		s.started = t
 	}
 	ad.Attach()
+	s.reg.adoptLeases(in.leases)
+	if err := s.reg.SaveSessions(); err != nil {
+		s.logger.Printf("takeover: save sessions: %v", err)
+	}
 	s.startHTTP()
 	if err := s.publish(); err != nil {
 		s.logger.Printf("takeover: writing the daemon record: %v", err)
