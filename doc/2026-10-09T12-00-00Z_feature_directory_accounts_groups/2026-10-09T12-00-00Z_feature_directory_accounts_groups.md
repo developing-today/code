@@ -689,3 +689,65 @@ Choices made across the work:
 - The Worker sink is deferred, not stubbed.
 - The HTML explorer does not offer key sign-up, because a form cannot prove
   possession of a key. Key sign-up needs a client that signs.
+
+---
+
+## 2026-10-10T02-55-00Z Implementation: SMTP internationalised addresses
+
+Question: can `SmtpSink` deliver to internationalised (RFC 6531) addresses?
+
+Finding. `SmtpSink` is not a crate. It is a hand-written client over
+`TcpStream` in `directory_mail.rs`. No SMTP client crate is in
+`pkgs/id/Cargo.lock` (no lettre, smtp or mail crate). The client sends `EHLO`,
+`MAIL FROM`, `RCPT TO`, `DATA` and `QUIT`. It never reads the EHLO keywords and
+never sends the `SMTPUTF8` parameter on `MAIL FROM`. A non-ASCII address in the
+envelope is only valid after the server advertises SMTPUTF8 and the client asks
+for it, so this client cannot send one. Supporting it means a new protocol path
+(the advertisement check, the `MAIL FROM` parameter, UTF-8 headers). That is
+new protocol code beyond this slice, and it cannot be tested against a real
+relay here. No new crate is needed, but the work is not small.
+
+Decision: keep the refusal, and make it say why and which addresses.
+
+- Affected: any sender (`--world-mail-from`) or recipient with a non-ASCII
+  character in its local part or its domain. An internationalised domain with
+  an ASCII local part is also affected. Its domain could be sent in punycode
+  (A-label) form without SMTPUTF8. That is not implemented.
+- The recipient refusal is `cannot mail <address>: it is internationalised
+  (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the
+  message was not sent`. The sender refusal names the sender and asks for an
+  ASCII one. Both run before the connection opens, so the relay sees nothing.
+- No account enumeration. A non-ASCII address cannot belong to an account,
+  because its confirmation code cannot be mailed, so no account is confirmed
+  with one. `SignInEmail` builds mail only for a known address, so it never
+  reaches the sink for a non-ASCII address and its response does not change.
+  `AddEmail` returns the error to the signed-in user about their own address.
+
+Tests added to `directory_mail::tests`:
+
+- `only_plain_ascii_addresses_pass_the_address_check` (the address check, with
+  accepted and refused cases, including an internationalised domain).
+- `an_internationalised_address_is_refused_with_the_reason_before_connecting`
+  (the recipient and sender messages name `SMTPUTF8` and the address; a bound
+  loopback listener receives no connection).
+
+Verification:
+
+- `cargo fmt --check`: clean.
+- `cargo test --features world --lib directory_mail`: 8 passed (6 existing).
+- `cargo test --features world --lib`: 635 passed, 3 failed. The failures are
+  `world_compile` tests that panic because `examples/roc-world` lacks
+  `targets/wasm32/host.wasm`. They do not touch mail.
+- Clippy (1.97.0, `--lib --tests`): nothing reported in `directory_mail.rs`.
+
+Not run: the `web` feature. The embedded web assets (a bun build) are not built
+in this worktree, so the web test target does not compile. This change does
+not touch web code, and the web mail sign-in test uses the outbox sink, not
+SMTP. The full `just check` was not run, because its `fix` step rewrites files
+and its web steps need bun installs.
+
+Still open: internationalised addresses are not delivered (Phase 12 limitation
+stands). Two follow-ups are possible. One is SMTPUTF8 in `SmtpSink`: an
+EHLO keyword check, the `MAIL FROM` parameter, and UTF-8 headers, which needs a
+relay that advertises it. The other is punycode for internationalised domains
+with an ASCII local part.

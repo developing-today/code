@@ -3,7 +3,8 @@
 //! A world is configured with an outbox directory, a program to run, a relay
 //! on loopback, or nothing. With nothing configured, email actions are refused
 //! instead of pretending a code was sent. The SMTP sink speaks plain SMTP and
-//! never does TLS or login, so the relay on loopback must forward securely.
+//! never does TLS, login or SMTPUTF8, so internationalised addresses are refused
+//! and the relay on loopback must forward securely.
 
 use std::fmt::Debug;
 use std::io::{BufRead, BufReader, Write as _};
@@ -125,11 +126,15 @@ impl SmtpSink {
     ///
     /// # Errors
     ///
-    /// Fails if `relay` is not on loopback or `from` is not a plain address.
+    /// Fails if `relay` is not on loopback or `from` is not a plain ASCII address.
     pub fn new(relay: SocketAddr, from: String) -> Result<Self> {
         ensure!(
             relay.ip().is_loopback(),
             "the mail relay must listen on loopback"
+        );
+        ensure!(
+            from.is_ascii(),
+            "the mail sender {from} is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531); use an ASCII sender"
         );
         ensure!(
             plain_address(&from),
@@ -141,6 +146,11 @@ impl SmtpSink {
 
 impl MailSink for SmtpSink {
     fn send(&self, mail: &Mail) -> Result<()> {
+        ensure!(
+            mail.to.is_ascii(),
+            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
+            mail.to
+        );
         ensure!(
             plain_address(&mail.to),
             "the recipient is not a plain address"
@@ -389,6 +399,40 @@ mod tests {
         assert!(error.to_string().contains("550"), "{error:#}");
         let seen = server.join().unwrap();
         assert!(!seen.contains(&"DATA".to_owned()));
+    }
+
+    #[test]
+    fn only_plain_ascii_addresses_pass_the_address_check() {
+        assert!(plain_address("a@b.co"));
+        assert!(plain_address("first.last+tag@example.test"));
+        assert!(!plain_address("jöhn@example.test"));
+        assert!(!plain_address("john@bücher.example"));
+        assert!(!plain_address("john@example.test "));
+        assert!(!plain_address("no-at-sign"));
+    }
+
+    #[test]
+    fn an_internationalised_address_is_refused_with_the_reason_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        for to in ["jöhn@example.test", "john@bücher.example"] {
+            let mut mail = sample();
+            mail.to = to.to_owned();
+            let error = sink.send(&mail).unwrap_err().to_string();
+            assert!(error.contains("SMTPUTF8"), "{error}");
+            assert!(error.contains(to), "{error}");
+        }
+        let error = SmtpSink::new(relay, "jöhn@example.test".to_owned())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("SMTPUTF8"), "{error}");
+        assert!(error.contains("jöhn@example.test"), "{error}");
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "a refused message opened a connection to the relay"
+        );
     }
 
     #[test]
