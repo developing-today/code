@@ -18,6 +18,24 @@
 //! - `GET  /api/tags/search?q=<query>` — search tags with structured syntax
 //! - `POST /api/tags` — set a tag
 //! - `DELETE /api/tags` — delete a tag
+//!
+//! Every endpoint accepts an optional `ns` parameter: `global` (default),
+//! `node` (this node's private namespace) or the name of a custom paired
+//! namespace.
+//!
+//! ## Binary values
+//!
+//! Tag values are arbitrary bytes. Responses carry `value` as lossy UTF-8 for
+//! display; when the stored value is not valid UTF-8 they additionally set
+//! `binary: true` and `value_b64` (standard base64, lossless). Requests may
+//! supply `value_b64` instead of `value` to set or match a binary value.
+//!
+//! ## Delete modes (`DELETE /api/tags`)
+//!
+//! - `all: true` — delete every tag of the subject
+//! - `all_values: true` — delete every tag with this subject and key
+//! - otherwise — delete the exact `(subject, key, value)` tag (a request with
+//!   no value deletes the value-less key-only tag)
 
 use axum::{
     Json,
@@ -25,10 +43,73 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
+use crate::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
+
+/// Resolve the `ns` request parameter to a namespace pair.
+///
+/// `None` and `"global"` select the global namespace, `"node"` this node's
+/// private one, anything else must name a custom *paired* namespace.
+fn resolve_ns<'a>(ts: &'a TagStore, name: Option<&str>) -> Result<&'a NamespacePair, String> {
+    match name {
+        None | Some("global") => Ok(&ts.global),
+        Some("node") => Ok(&ts.node),
+        Some(other) => match ts.custom.get(other) {
+            Some(CustomNamespace::Paired(pair)) => Ok(pair),
+            Some(CustomNamespace::Single(_)) => {
+                Err(format!("namespace {other:?} is not an α/Ω pair"))
+            }
+            None => Err(format!("unknown namespace {other:?}")),
+        },
+    }
+}
+
+const fn bad_ns(message: String) -> (StatusCode, Json<ApiResponse>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiResponse {
+            ok: false,
+            message: Some(message),
+            count: None,
+        }),
+    )
+}
+
+/// Pick the value bytes from the `value` / `value_b64` request fields.
+fn request_value(
+    value: Option<&String>,
+    value_b64: Option<&String>,
+) -> Result<Option<Vec<u8>>, String> {
+    match (value, value_b64) {
+        (Some(_), Some(_)) => Err("give either value or value_b64, not both".to_owned()),
+        (Some(v), None) => Ok(Some(v.as_bytes().to_vec())),
+        (None, Some(b)) => B64
+            .decode(b)
+            .map(Some)
+            .map_err(|e| format!("value_b64 is not valid base64: {e}")),
+        (None, None) => Ok(None),
+    }
+}
+
+fn to_response(t: Tag) -> TagResponse {
+    let binary = t.value.as_ref().is_some_and(|v| !v.is_utf8());
+    TagResponse {
+        subject: t.subject.display_lossy(),
+        key: t.key.display_lossy(),
+        value_b64: t
+            .value
+            .as_ref()
+            .filter(|v| !v.is_utf8())
+            .map(|v| B64.encode(v.as_bytes())),
+        value: t.value.map(|v| v.display_lossy()),
+        binary,
+        timestamp: t.timestamp,
+    }
+}
 
 // ============================================================================
 // REST types
@@ -44,7 +125,6 @@ pub struct TagQuery {
     /// Filter by tag value (requires `key`).
     pub value: Option<String>,
     /// Namespace to query (default: "global").
-    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -54,7 +134,6 @@ pub struct SearchQuery {
     /// Search query string (supports: `key:`, `:value`, `key:value`, `"literal"`, bare word).
     pub q: String,
     /// Namespace to search (default: "global").
-    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -64,8 +143,9 @@ pub struct SetTagRequest {
     pub subject: String,
     pub key: String,
     pub value: Option<String>,
+    /// Binary value as standard base64 (instead of `value`).
+    pub value_b64: Option<String>,
     /// Namespace to write to (default: "global").
-    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -75,11 +155,15 @@ pub struct DelTagRequest {
     pub subject: String,
     pub key: String,
     pub value: Option<String>,
+    /// Binary value as standard base64 (instead of `value`).
+    pub value_b64: Option<String>,
     /// If true, delete all tags for this subject.
     #[serde(default)]
     pub all: bool,
+    /// If true, delete every tag with this subject and key, whatever the value.
+    #[serde(default)]
+    pub all_values: bool,
     /// Namespace (default: "global").
-    #[allow(dead_code)]
     pub ns: Option<String>,
 }
 
@@ -90,6 +174,12 @@ pub struct TagResponse {
     pub key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Lossless base64 of the value, present only when it is not valid UTF-8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_b64: Option<String>,
+    /// True when the value is not valid UTF-8 (`value` is then lossy).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub binary: bool,
     pub timestamp: u64,
 }
 
@@ -148,7 +238,7 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
                         continue;
                     }
                 };
-                if sender.send(Message::Text(json)).await.is_err() {
+                if sender.send(Message::Text(json.into())).await.is_err() {
                     break; // Client disconnected.
                 }
             }
@@ -177,7 +267,10 @@ pub async fn get_tags_handler(
     Query(query): Query<TagQuery>,
 ) -> impl IntoResponse {
     let tag_store = &state.tag_store;
-    let ns = &tag_store.global; // TODO: support query.ns for node/custom
+    let ns = match resolve_ns(tag_store, query.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message).into_response(),
+    };
 
     let result = match (
         query.subject.as_deref(),
@@ -213,15 +306,7 @@ pub async fn get_tags_handler(
 
     match result {
         Ok(tags) => {
-            let response: Vec<TagResponse> = tags
-                .into_iter()
-                .map(|t| TagResponse {
-                    subject: t.subject.display_lossy(),
-                    key: t.key.display_lossy(),
-                    value: t.value.map(|v| v.display_lossy()),
-                    timestamp: t.timestamp,
-                })
-                .collect();
+            let response: Vec<TagResponse> = tags.into_iter().map(to_response).collect();
             (StatusCode::OK, Json(serde_json::json!(response))).into_response()
         }
         Err(e) => {
@@ -245,14 +330,21 @@ pub async fn set_tag_handler(
     Json(req): Json<SetTagRequest>,
 ) -> impl IntoResponse {
     let tag_store = &state.tag_store;
-    let ns = &tag_store.global; // TODO: support req.ns
+    let ns = match resolve_ns(tag_store, req.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message),
+    };
+    let value = match request_value(req.value.as_ref(), req.value_b64.as_ref()) {
+        Ok(v) => v,
+        Err(message) => return bad_ns(message),
+    };
 
     match tag_store
         .set_tag(
             ns,
             req.subject.as_bytes(),
             req.key.as_bytes(),
-            req.value.as_ref().map(String::as_bytes),
+            value.as_deref(),
             b"",
         )
         .await
@@ -285,11 +377,23 @@ pub async fn del_tag_handler(
     Json(req): Json<DelTagRequest>,
 ) -> impl IntoResponse {
     let tag_store = &state.tag_store;
-    let ns = &tag_store.global; // TODO: support req.ns
+    let ns = match resolve_ns(tag_store, req.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message),
+    };
+    let value = match request_value(req.value.as_ref(), req.value_b64.as_ref()) {
+        Ok(v) => v,
+        Err(message) => return bad_ns(message),
+    };
 
     let result = if req.all {
         tag_store
             .del_all_tags(ns, req.subject.as_bytes())
+            .await
+            .map(Some)
+    } else if req.all_values {
+        tag_store
+            .delete_matching(ns, req.subject.as_bytes(), req.key.as_bytes(), None)
             .await
             .map(Some)
     } else {
@@ -298,7 +402,7 @@ pub async fn del_tag_handler(
                 ns,
                 req.subject.as_bytes(),
                 req.key.as_bytes(),
-                req.value.as_ref().map(String::as_bytes),
+                value.as_deref(),
             )
             .await
             .map(|()| None)
@@ -336,19 +440,14 @@ pub async fn search_tags_handler(
     Query(query): Query<SearchQuery>,
 ) -> impl IntoResponse {
     let tag_store = &state.tag_store;
-    let ns = &tag_store.global; // TODO: support query.ns
+    let ns = match resolve_ns(tag_store, query.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message).into_response(),
+    };
 
     match tag_store.search_by_query(ns, &query.q).await {
         Ok(tags) => {
-            let response: Vec<TagResponse> = tags
-                .into_iter()
-                .map(|t| TagResponse {
-                    subject: t.subject.display_lossy(),
-                    key: t.key.display_lossy(),
-                    value: t.value.map(|v| v.display_lossy()),
-                    timestamp: t.timestamp,
-                })
-                .collect();
+            let response: Vec<TagResponse> = tags.into_iter().map(to_response).collect();
             (StatusCode::OK, Json(serde_json::json!(response))).into_response()
         }
         Err(e) => {

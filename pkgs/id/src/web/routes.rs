@@ -22,6 +22,7 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
+use crate::fileops::{FileOpError, FileOps};
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -93,7 +94,7 @@ pub enum FileKind {
 
 /// Rich file metadata for the file list UI.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // size field reserved for future use
+#[allow(dead_code)] // not every renderer shows every field
 pub struct FileInfo {
     /// Tag name (filename).
     pub name: String,
@@ -209,13 +210,14 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route("/world", get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
-        .route("/edit/*name", get(file_by_name_handler))
-        .route("/hash/:hash", get(hash_redirect_handler))
-        .route("/view/*name", get(view_handler))
+        .route("/edit/{*name}", get(file_by_name_handler))
+        .route("/hash/{hash}", get(hash_redirect_handler))
+        .route("/view/{*name}", get(view_handler))
         // Blob route (serves raw file content)
-        .route("/blob/:hash", get(blob_handler))
+        .route("/blob/{hash}", get(blob_handler))
         // Partial routes (return HTML fragments for SPA navigation)
         .route("/api/files", get(files_list_handler))
         .route("/api/peers", get(peers_partial_handler))
@@ -246,13 +248,26 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/identity/me", get(identity_me_handler))
         .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
-        .route("/ws/collab/:doc_id", get(super::collab::ws_collab_handler))
+        .route("/ws/collab/{doc_id}", get(super::collab::ws_collab_handler))
         // WebSocket for live tag updates
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
-        .route("/assets/*path", get(assets_handler))
+        .route("/assets/{*path}", get(assets_handler))
+        // Optional authoritative in-memory world session bridge
+        .merge(
+            super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
+                hub: state.world.clone(),
+            }),
+        )
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
+}
+
+async fn world_page_handler(State(state): State<AppState>) -> Response {
+    if state.world.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Html(super::templates::render_world_page(&state.assets)).into_response()
 }
 
 /// Check if this is a partial request (SPA navigation, returns fragment not full page).
@@ -576,6 +591,14 @@ fn is_system_tag_key(key: &[u8]) -> bool {
     }
 }
 
+/// Size in bytes of a complete blob; `0` if it is missing or only partial.
+async fn blob_size(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash) -> u64 {
+    match store.blobs().status(hash).await {
+        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) => size,
+        _ => 0,
+    }
+}
+
 /// Get list of files from the store with classification metadata.
 ///
 /// Returns a list of `FileInfo` structs with file kind, parent name, timestamp, and user tags.
@@ -657,7 +680,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         }
 
         let hash = tag_info.hash.to_string();
-        let size = 0;
+        let size = blob_size(&state.store, tag_info.hash).await;
 
         let (kind, _) = classify_tag(&name);
         if kind == FileKind::Primary {
@@ -1386,7 +1409,7 @@ async fn images_list_handler(State(state): State<AppState>) -> Response {
             hash: hash_str,
             name,
             url,
-            size: 0, // Size not readily available; browser doesn't need it
+            size: blob_size(&state.store, tag_info.hash).await,
         });
     }
 
@@ -1406,152 +1429,40 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         req.new_name,
         req.archive
     );
-
-    // Validate inputs
     let new_name = req.new_name.trim().to_owned();
-    if new_name.is_empty() {
-        return (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response();
-    }
-    if req.name == new_name {
-        return (
+    let ops = FileOps::new(&state.store, &state.tag_store);
+    match ops.rename(&req.name, &new_name, req.archive).await {
+        Ok(outcome) => {
+            tracing::info!(
+                "[routes] File renamed: {} -> {}, hash={}, archived_original={:?}, archived_replaced={:?}",
+                req.name,
+                new_name,
+                outcome.hash,
+                outcome.archived_original,
+                outcome.archived_replaced
+            );
+            Json(RenameResponse {
+                name: new_name,
+                hash: outcome.hash.to_string(),
+                archived_original: outcome.archived_original,
+                archived_replaced: outcome.archived_replaced,
+            })
+            .into_response()
+        }
+        Err(FileOpError::EmptyName) => {
+            (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
+        }
+        Err(FileOpError::SameName) => (
             StatusCode::BAD_REQUEST,
             "New name must differ from current name",
         )
-            .into_response();
-    }
-
-    // Look up the hash for the current name
-    let tag_info = match state.store.tags().get(&req.name).await {
-        Ok(Some(info)) => info,
-        Ok(None) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+            .into_response(),
+        Err(FileOpError::NotFound(_)) => (StatusCode::NOT_FOUND, "File not found").into_response(),
         Err(err) => {
-            tracing::error!("[routes] Failed to look up tag: {}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to look up file").into_response();
+            tracing::error!("[routes] rename failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename file").into_response()
         }
-    };
-    let hash = tag_info.hash;
-    let hash_str = hash.to_string();
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // If target name already exists, archive the existing file it points to
-    let archived_replaced = match state.store.tags().get(&new_name).await {
-        Ok(Some(existing)) => {
-            let archive_name = format!("{new_name}.archive.{timestamp}");
-            match state.store.tags().set(&archive_name, existing.hash).await {
-                Ok(()) => {
-                    tracing::info!(
-                        "[routes] Archived replaced file: {} -> {}",
-                        new_name,
-                        archive_name
-                    );
-                    Some(archive_name)
-                }
-                Err(err) => {
-                    tracing::error!("[routes] Failed to archive replaced file: {}", err);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to archive replaced file",
-                    )
-                        .into_response();
-                }
-            }
-        }
-        _ => None,
-    };
-
-    // Set the new name tag to point to our hash
-    if let Err(err) = state.store.tags().set(&new_name, hash).await {
-        tracing::error!("[routes] Failed to set new name tag: {}", err);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename file").into_response();
     }
-
-    // Handle the old name: archive or delete
-    let archived_original = if req.archive {
-        let archive_name = format!("{}.archive.{}", req.name, timestamp);
-        match state.store.tags().set(&archive_name, hash).await {
-            Ok(()) => {
-                tracing::info!(
-                    "[routes] Archived original: {} -> {}",
-                    req.name,
-                    archive_name
-                );
-                Some(archive_name)
-            }
-            Err(err) => {
-                tracing::error!("[routes] Failed to archive original: {}", err);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Delete the original tag (it has been renamed)
-    if let Err(err) = state.store.tags().delete(&req.name).await {
-        tracing::error!("[routes] Failed to delete original tag: {}", err);
-    }
-
-    // Update metadata tags: transfer from old name to new, record archives
-    if let Err(err) = state
-        .tag_store
-        .transfer_all_tags(
-            &state.tag_store.global,
-            req.name.as_bytes(),
-            new_name.as_bytes(),
-        )
-        .await
-    {
-        tracing::warn!("[routes] Failed to transfer tags: {}", err);
-    }
-    if let Some(ref archive) = archived_original
-        && let Err(err) = state
-            .tag_store
-            .set_tag(
-                &state.tag_store.global,
-                new_name.as_bytes(),
-                b"archive.rename",
-                Some(archive.as_bytes()),
-                b"",
-            )
-            .await
-    {
-        tracing::warn!("[routes] Failed to set archive.rename tag: {}", err);
-    }
-    if let Some(ref archive) = archived_replaced
-        && let Err(err) = state
-            .tag_store
-            .set_tag(
-                &state.tag_store.global,
-                new_name.as_bytes(),
-                b"archive.replace",
-                Some(archive.as_bytes()),
-                b"",
-            )
-            .await
-    {
-        tracing::warn!("[routes] Failed to set archive.replace tag: {}", err);
-    }
-
-    tracing::info!(
-        "[routes] File renamed: {} -> {}, hash={}, archived_original={:?}, archived_replaced={:?}",
-        req.name,
-        new_name,
-        hash_str,
-        archived_original,
-        archived_replaced
-    );
-
-    Json(RenameResponse {
-        name: new_name,
-        hash: hash_str,
-        archived_original,
-        archived_replaced,
-    })
-    .into_response()
 }
 
 /// Copy a file by creating a new tag pointing to the same content hash.
@@ -1564,88 +1475,38 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
         req.name,
         req.new_name
     );
-
     let new_name = req.new_name.trim().to_owned();
-    if new_name.is_empty() {
-        return (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response();
-    }
-    if req.name == new_name {
-        return (
+    let ops = FileOps::new(&state.store, &state.tag_store);
+    match ops.copy(&req.name, &new_name).await {
+        Ok(outcome) => {
+            tracing::info!(
+                "[routes] File copied: {} -> {}, hash={}",
+                req.name,
+                new_name,
+                outcome.hash
+            );
+            Json(CopyResponse {
+                name: new_name,
+                hash: outcome.hash.to_string(),
+            })
+            .into_response()
+        }
+        Err(FileOpError::EmptyName) => {
+            (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
+        }
+        Err(FileOpError::SameName) => (
             StatusCode::BAD_REQUEST,
             "New name must differ from current name",
         )
-            .into_response();
-    }
-
-    // Look up the hash for the source file
-    let tag_info = match state.store.tags().get(&req.name).await {
-        Ok(Some(info)) => info,
-        Ok(None) => return (StatusCode::NOT_FOUND, "Source file not found").into_response(),
+            .into_response(),
+        Err(FileOpError::NotFound(_)) => {
+            (StatusCode::NOT_FOUND, "Source file not found").into_response()
+        }
         Err(err) => {
-            tracing::error!("[routes] Failed to look up source tag: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to look up source file",
-            )
-                .into_response();
+            tracing::error!("[routes] copy failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response()
         }
-    };
-    let hash = tag_info.hash;
-    let hash_str = hash.to_string();
-
-    // If target name already exists, archive the existing file
-    if let Ok(Some(existing)) = state.store.tags().get(&new_name).await {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let archive_name = format!("{new_name}.archive.{timestamp}");
-        if let Err(err) = state.store.tags().set(&archive_name, existing.hash).await {
-            tracing::error!("[routes] Failed to archive replaced file: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to archive replaced file",
-            )
-                .into_response();
-        }
-        tracing::info!(
-            "[routes] Archived replaced file: {} -> {}",
-            new_name,
-            archive_name
-        );
     }
-
-    // Set the new tag pointing to the same hash
-    if let Err(err) = state.store.tags().set(&new_name, hash).await {
-        tracing::error!("[routes] Failed to set copy tag: {}", err);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response();
-    }
-
-    // Copy metadata tags from source to destination
-    if let Err(err) = state
-        .tag_store
-        .copy_all_tags(
-            &state.tag_store.global,
-            req.name.as_bytes(),
-            new_name.as_bytes(),
-        )
-        .await
-    {
-        tracing::warn!("[routes] Failed to copy metadata tags: {}", err);
-    }
-
-    tracing::info!(
-        "[routes] File copied: {} -> {}, hash={}",
-        req.name,
-        new_name,
-        hash_str
-    );
-
-    Json(CopyResponse {
-        name: new_name,
-        hash: hash_str,
-    })
-    .into_response()
 }
 
 /// Download the current editor content in the requested format.
@@ -1830,56 +1691,29 @@ async fn hard_delete_handler(
     Json(req): Json<DeleteRequest>,
 ) -> Response {
     tracing::info!("[routes] hard_delete_handler: name={}", req.name);
-
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
-    }
-
-    // Delete the blob tag
-    if let Err(err) = state.store.tags().delete(&req.name).await {
-        tracing::error!("[routes] Failed to delete tag: {}", err);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to delete file tag",
-        )
-            .into_response();
-    }
-
-    // Delete all metadata tags for this subject
-    if let Err(err) = state
-        .tag_store
-        .del_all_tags(&state.tag_store.global, req.name.as_bytes())
-        .await
-    {
-        tracing::warn!("[routes] Failed to delete metadata tags: {}", err);
-    }
-
-    // Delete any archive tags that reference this file
-    // (archive tags are named like "name.archive.timestamp")
-    if let Ok(mut tags) = state.store.tags().list().await {
-        use futures_lite::StreamExt;
-        let prefix = format!("{}.archive.", req.name);
-        while let Some(Ok(tag_info)) = tags.next().await {
-            let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
-            if tag_name.starts_with(&prefix)
-                && let Err(err) = state.store.tags().delete(&tag_name).await
-            {
-                tracing::warn!(
-                    "[routes] Failed to delete archive tag {}: {}",
-                    tag_name,
-                    err
-                );
-            }
+    let ops = FileOps::new(&state.store, &state.tag_store);
+    match ops.delete(&req.name).await {
+        Ok(outcome) => {
+            tracing::info!(
+                "[routes] File hard-deleted: name={} (metadata={}, archives={})",
+                req.name,
+                outcome.metadata_removed,
+                outcome.archives_removed
+            );
+            Json(DeleteResponse {
+                name: req.name,
+                hard: true,
+            })
+            .into_response()
+        }
+        Err(FileOpError::EmptyName) => {
+            (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] hard delete failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete file").into_response()
         }
     }
-
-    tracing::info!("[routes] File hard-deleted: name={}", req.name);
-
-    Json(DeleteResponse {
-        name: req.name,
-        hard: true,
-    })
-    .into_response()
 }
 
 /// Convert a `ProseMirror` document JSON to bytes in the appropriate file format.

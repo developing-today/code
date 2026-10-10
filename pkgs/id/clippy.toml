@@ -11,7 +11,7 @@
 # See: https://rust-lang.github.io/rust-clippy/master/index.html
 
 # Use the Rust edition from Cargo.toml
-msrv = "1.89.0"
+msrv = "1.91.0"
 
 # Cognitive complexity threshold for functions
 cognitive-complexity-threshold = 25

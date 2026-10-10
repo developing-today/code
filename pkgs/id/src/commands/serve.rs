@@ -55,10 +55,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use anyhow::ensure;
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
 use futures_lite::StreamExt;
 use iroh::{
-    address_lookup::MdnsAddressLookup,
     endpoint::{Endpoint, RelayMode, presets},
     protocol::Router,
 };
@@ -66,6 +66,9 @@ use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
+#[cfg(all(feature = "world", feature = "sandbox"))]
+use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
@@ -78,6 +81,29 @@ use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
+
+/// Print a status line to stdout **without panicking** if stdout is gone.
+///
+/// `println!` panics on `EPIPE`. A server must not die because whoever
+/// launched it stopped reading its output (`id serve | head -1`, a supervisor
+/// that closes the pipe after the first line, or a test harness): the status
+/// lines are informational. The lock file, not stdout, is how clients find
+/// the server.
+macro_rules! status {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+/// Like [`status!`], for stderr.
+#[cfg(any(feature = "web", feature = "world"))]
+macro_rules! status_err {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
 
 /// Information about a running serve instance.
 ///
@@ -225,6 +251,369 @@ pub async fn remove_serve_lock() -> Result<()> {
     let _ = afs::remove_file(SERVE_LOCK).await;
     Ok(())
 }
+/// Options for [`cmd_serve`], mirroring the `serve` CLI flags.
+#[derive(Debug, Clone)]
+pub struct ServeOptions {
+    /// Use an in-memory store.
+    pub ephemeral: bool,
+    /// Disable relay servers.
+    pub no_relay: bool,
+    /// Disable gossip peer discovery.
+    pub no_gossip: bool,
+    /// Start the web interface.
+    pub web: bool,
+    /// Web interface port (0 = random).
+    pub port: u16,
+    /// Extra bootstrap node IDs.
+    pub bootstrap: Vec<String>,
+    /// Gossip topic override.
+    pub topic: Option<String>,
+    /// Gossip topic secret override.
+    pub topic_secret: Option<String>,
+    /// Skip default bootstrap nodes.
+    pub no_default_bootstrap: bool,
+    /// Skip default topic and secret.
+    pub no_default_topic: bool,
+    /// Use only `defaults.conf` values.
+    pub replace_defaults: bool,
+    /// Disable mDNS.
+    pub no_mdns: bool,
+    /// Iroh QUIC port (0 = random).
+    pub iroh_port: u16,
+    /// Address the web interface binds to.
+    pub bind: std::net::IpAddr,
+    /// Token required by the web interface.
+    pub web_token: Option<String>,
+    /// Host a multiplayer world (durable unless `ephemeral`).
+    pub world: bool,
+    /// Admin secret required to mint world guest capabilities.
+    pub world_admin_token: Option<String>,
+    /// Optional Wasm world program, compiled for the sandbox's Roc platform ABI.
+    pub world_module: Option<PathBuf>,
+    /// Directory that receives confirmation mail, one file per message.
+    pub world_mail_outbox: Option<PathBuf>,
+    /// Program run once per confirmation mail.
+    pub world_mail_command: Option<PathBuf>,
+    /// Loopback SMTP relay that receives confirmation mail.
+    pub world_mail_smtp: Option<SocketAddr>,
+    /// Sender address for mail sent through `world_mail_smtp`.
+    pub world_mail_from: Option<String>,
+    /// Name of the world this server offers; its files live under
+    /// `.id-worlds/<name>/`.
+    pub world_name: String,
+    /// Trim the journal behind a program snapshot every this many events
+    /// (`0` never trims).
+    pub world_checkpoint_every: u64,
+    /// Most worlds open at once.
+    pub world_max_open: usize,
+    /// Most world sessions at once, across all worlds.
+    pub world_max_sessions: usize,
+    /// Close durable worlds idle for this many seconds (`0` never).
+    pub world_idle_secs: u64,
+    /// Capabilities the default world's program may use.
+    pub world_caps: Vec<String>,
+    /// `deny` or `grant-on-use`.
+    pub world_cap_policy: String,
+    /// Roc binary for on-the-fly compilation.
+    pub roc_bin: Option<String>,
+    /// Platform directory for on-the-fly compilation.
+    pub roc_platform: Option<PathBuf>,
+    /// Serve the world over SSH on this port.
+    pub world_ssh_port: Option<u16>,
+    /// Accept native (ELF) module installs.
+    pub world_native: bool,
+    /// Execution bounds for world programs.
+    pub world_runtime: crate::cli::WorldRuntimeArgs,
+    /// Nodes allowed to modify the store.
+    pub allow_node: Vec<String>,
+    /// Let every peer modify the store.
+    pub open_writes: bool,
+}
+
+fn validate_world_options(
+    world: bool,
+    admin_token: Option<&str>,
+    world_module: Option<&PathBuf>,
+    world_name: &str,
+    world_cap_policy: &str,
+) -> Result<()> {
+    ensure!(
+        !world || admin_token.is_some_and(|token| !token.is_empty()),
+        "--world requires --world-admin-token (or ID_WORLD_ADMIN_TOKEN)"
+    );
+    ensure!(
+        world_module.is_none() || world,
+        "--world-module requires --world"
+    );
+    #[cfg(feature = "world")]
+    crate::world_hub::validate_world_name(world_name)?;
+    ensure!(
+        world_cap_policy == "deny" || world_cap_policy == "grant-on-use",
+        "--world-cap-policy must be `deny` or `grant-on-use`"
+    );
+    #[cfg(not(feature = "world"))]
+    let _ = world_name;
+    Ok(())
+}
+
+/// Build the write-access policy for a server.
+///
+/// Trusted automatically: the server's own key and this data directory's
+/// client key (so the local CLI and REPL work without setup). Added to those:
+/// `--allow-node` IDs and the `.iroh-allowed` file. With `open_writes`, every
+/// peer may write.
+///
+/// # Errors
+///
+/// Fails if an `--allow-node` value is not a valid node ID.
+pub async fn build_access_policy(
+    node_id: EndpointId,
+    allow_node: &[String],
+    open_writes: bool,
+) -> Result<crate::access::AccessPolicy> {
+    use crate::access::{AccessPolicy, load_allowed_nodes};
+    if open_writes {
+        return Ok(AccessPolicy::open());
+    }
+    let client_key = load_or_create_keypair(crate::CLIENT_KEY_FILE).await?;
+    let mut writers = vec![node_id, client_key.public()];
+    for id in allow_node {
+        writers.push(
+            id.parse::<EndpointId>()
+                .map_err(|e| anyhow::anyhow!("invalid --allow-node {id:?}: {e}"))?,
+        );
+    }
+    writers.extend(load_allowed_nodes(std::path::Path::new(".")));
+    Ok(AccessPolicy::restricted(writers))
+}
+
+/// Root directory for durable worlds, relative to the data directory.
+#[cfg(feature = "world")]
+pub const WORLDS_DIR: &str = ".id-worlds";
+
+/// Directory of one durable world, relative to the data directory.
+#[cfg(feature = "world")]
+#[must_use]
+pub fn world_dir(name: &str) -> PathBuf {
+    PathBuf::from(WORLDS_DIR).join(name)
+}
+
+/// Resolve the compile settings: an explicit flag, the environment, or the
+/// conventional repository layout. Absence is fine (compilation stays off).
+#[cfg(feature = "world")]
+fn resolve_compiler(
+    roc_bin: Option<String>,
+    roc_platform: Option<PathBuf>,
+) -> Result<Option<crate::world_compile::Compiler>> {
+    let Some(platform) = roc_platform
+        .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
+        .or_else(|| {
+            [
+                PathBuf::from("examples/roc-world"),
+                PathBuf::from("../examples/roc-world"),
+            ]
+            .into_iter()
+            .find(|dir| dir.is_dir())
+        })
+    else {
+        return Ok(None);
+    };
+    let roc_bin = roc_bin
+        .or_else(|| std::env::var("ID_ROC_BIN").ok())
+        .unwrap_or_else(|| "roc".to_owned());
+    let compiler = crate::world_compile::Compiler::new(platform, roc_bin)?;
+    info!(
+        platform = %compiler.platform_dir.display(),
+        roc = %compiler.roc_bin,
+        "world: on-the-fly compilation enabled"
+    );
+    Ok(Some(compiler))
+}
+
+/// Builds this server's worlds: durable under [`WORLDS_DIR`] unless
+/// `ephemeral`. The `--world-module` goes through the same journaled install
+/// as an admin upload, so it is pinned, downloadable and restored after a
+/// restart; it is only installed when it differs from the module the world
+/// already runs. It applies to the default world only.
+#[cfg(feature = "world")]
+fn mail_sink(
+    outbox: Option<PathBuf>,
+    command: Option<PathBuf>,
+    smtp: Option<SocketAddr>,
+    from: Option<String>,
+) -> Result<Option<Arc<dyn crate::directory_mail::MailSink>>> {
+    use crate::directory_mail::{CommandSink, MailSink, OutboxSink, SmtpSink};
+    use anyhow::Context as _;
+    let sink: Arc<dyn MailSink> = match (outbox, command, smtp) {
+        (Some(dir), _, _) => Arc::new(OutboxSink::new(dir)),
+        (None, Some(program), _) => Arc::new(CommandSink::new(program, Vec::new())),
+        (None, None, Some(relay)) => {
+            let from = from.context("--world-mail-from is needed with --world-mail-smtp")?;
+            Arc::new(SmtpSink::new(relay, from)?)
+        }
+        (None, None, None) => return Ok(None),
+    };
+    Ok(Some(sink))
+}
+
+#[cfg(feature = "world")]
+struct ServeWorlds {
+    ephemeral: bool,
+    admin_token: Option<String>,
+    blobs: iroh_blobs::api::Store,
+    docs: Docs,
+    checkpoint_every: u64,
+    default_world: String,
+    default_module: Option<PathBuf>,
+    grant_on_use: bool,
+    compiler: Option<crate::world_compile::Compiler>,
+    native: bool,
+    runtime: crate::world_limits::RuntimeLimits,
+    mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
+}
+
+#[cfg(feature = "world")]
+impl crate::world_hub::WorldOpener for ServeWorlds {
+    fn open<'a>(&'a self, name: &'a str, create: bool) -> crate::world_hub::OpenFuture<'a> {
+        Box::pin(async move {
+            if !create && !self.exists(name) {
+                return Ok(None);
+            }
+            self.open_world(name).await.map(Some)
+        })
+    }
+
+    fn exists(&self, name: &str) -> bool {
+        !self.ephemeral && world_dir(name).join("journal.jsonl").is_file()
+    }
+
+    fn list(&self) -> Vec<String> {
+        if self.ephemeral {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = std::fs::read_dir(WORLDS_DIR)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().join("journal.jsonl").is_file())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| crate::world_hub::validate_world_name(name).is_ok())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn durable(&self) -> bool {
+        !self.ephemeral
+    }
+}
+
+#[cfg(feature = "world")]
+impl ServeWorlds {
+    async fn open_world(&self, name: &str) -> Result<crate::world_session::WorldService> {
+        use crate::world::{WorldCore, WorldHandle, WorldLimits};
+        use crate::world_session::WorldService;
+
+        let limits = WorldLimits {
+            checkpoint_every: self.checkpoint_every,
+            grant_on_use: self.grant_on_use,
+            ..WorldLimits::default()
+        };
+        let runtime = self.runtime;
+        let make = {
+            let admin_token = self.admin_token.clone();
+            let blobs = self.blobs.clone();
+            let mail = self.mail.clone();
+            move |handle| {
+                let service = WorldService::new(handle, admin_token)
+                    .with_blob_store(blobs)
+                    .with_runtime_limits(runtime);
+                match &mail {
+                    Some(sink) => service.with_mail(Arc::clone(sink)),
+                    None => service,
+                }
+            }
+        };
+        let dir = world_dir(name);
+        let namespace_file = (!self.ephemeral).then(|| dir.join("records.namespace"));
+        let records =
+            crate::world_records::RecordsStore::open(&self.docs, namespace_file.as_deref()).await?;
+        info!(
+            world = name,
+            namespace = %records.namespace(),
+            "world: records document ready"
+        );
+        let service = if self.ephemeral {
+            make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
+        } else {
+            let (service, report) =
+                crate::world_store::open_world(&dir, name, limits, runtime, make).await?;
+            status!(
+                "world {name}: restored {} at sequence {} ({} input(s) replayed)",
+                dir.display(),
+                report.sequence,
+                report.replayed_inputs
+            );
+            if let Some(error) = &report.program_error {
+                status_err!("warning: world {name}: program not restored ({error}); reinstall it");
+            }
+            service.with_records_store(records)
+        };
+
+        let service = if self.native {
+            service.with_native_enabled()
+        } else {
+            service
+        };
+        let service = match self.compiler.clone() {
+            Some(compiler) => service.with_compiler(compiler),
+            None => service,
+        };
+        if name == self.default_world
+            && let Some(path) = self.default_module.as_deref()
+        {
+            self.install_default_module(&service, path).await?;
+        }
+        Ok(service)
+    }
+
+    #[cfg(feature = "sandbox")]
+    async fn install_default_module(
+        &self,
+        service: &crate::world_session::WorldService,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let metadata = tokio::fs::metadata(path).await?;
+        ensure!(
+            usize::try_from(metadata.len())
+                .is_ok_and(|len| len <= crate::world_session::MAX_WORLD_MODULE_BYTES),
+            "world module exceeds the configured module size limit"
+        );
+        let wasm = tokio::fs::read(path).await?;
+        let hash = crate::world_session::module_hash(&wasm);
+        if service.active_module_hash().await.as_deref() == Some(hash.as_str()) {
+            info!(module = %path.display(), "world: module already active");
+        } else {
+            let seed = rand::rng().random::<u64>();
+            service
+                .install_wasm(self.admin_token.as_deref(), wasm, seed, &hash)
+                .await
+                .map_err(|e| anyhow::anyhow!("install {}: {e:?}", path.display()))?;
+            info!(module = %path.display(), seed, "world: installed module");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sandbox"))]
+    #[allow(clippy::unused_async)]
+    async fn install_default_module(
+        &self,
+        _service: &crate::world_session::WorldService,
+        _path: &std::path::Path,
+    ) -> Result<()> {
+        anyhow::bail!("--world-module requires a build with the `sandbox` feature");
+    }
+}
 
 /// Starts the serve process.
 ///
@@ -265,25 +654,59 @@ pub async fn remove_serve_lock() -> Result<()> {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
-#[allow(clippy::too_many_arguments)]
-pub async fn cmd_serve(
-    ephemeral: bool,
-    no_relay: bool,
-    no_gossip: bool,
-    web: bool,
-    port: u16,
-    bootstrap: Vec<String>,
-    topic: Option<String>,
-    topic_secret: Option<String>,
-    no_default_bootstrap: bool,
-    no_default_topic: bool,
-    replace_defaults: bool,
-    no_mdns: bool,
-    iroh_port: u16,
-) -> Result<()> {
+pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
+    let ServeOptions {
+        ephemeral,
+        no_relay,
+        no_gossip,
+        web,
+        port,
+        bootstrap,
+        topic,
+        topic_secret,
+        no_default_bootstrap,
+        no_default_topic,
+        replace_defaults,
+        no_mdns,
+        iroh_port,
+        bind,
+        web_token,
+        world,
+        world_admin_token,
+        world_module,
+        world_mail_outbox,
+        world_mail_command,
+        world_mail_smtp,
+        world_mail_from,
+        world_name,
+        world_checkpoint_every,
+        world_max_open,
+        world_max_sessions,
+        world_idle_secs,
+        world_caps,
+        world_cap_policy,
+        roc_bin,
+        roc_platform,
+        world_native,
+        world_ssh_port,
+        world_runtime,
+        allow_node,
+        open_writes,
+    } = opts;
+    validate_world_options(
+        world,
+        world_admin_token.as_deref(),
+        world_module.as_ref(),
+        &world_name,
+        &world_cap_policy,
+    )?;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
+
+    // Who may modify this store: this node, this machine's client key (so the
+    // local CLI/REPL work with no setup), `--allow-node`, and `.iroh-allowed`.
+    let access = build_access_policy(node_id, &allow_node, open_writes).await?;
 
     let store = open_store(ephemeral).await?;
     let store_handle = store.as_store();
@@ -326,22 +749,100 @@ pub async fn cmd_serve(
     let tag_store = TagStore::init(&docs, &node_id.to_string()).await?;
     let tag_store = Arc::new(tag_store);
     info!("tags: initialized (α/Ω global + node namespaces)");
+    match tag_store.migrate_legacy_meta(&store_handle).await {
+        Ok(0) => {}
+        Ok(n) => info!("tags: imported {n} legacy metadata tag(s) from .meta"),
+        Err(e) => warn!("tags: legacy metadata import failed: {e:#}"),
+    }
 
     // Build router — gossip ALPN is always registered (needed by iroh-docs),
     // but peer discovery gossip topic only joins when gossip is enabled
     let meta = MetaProtocol::new(
         &store_handle,
         Some(peer_discovery.clone()),
-        Some(Arc::clone(&tag_store)),
+        Arc::clone(&tag_store),
+        access.clone(),
+        node_id,
     );
-    let blobs = BlobsProtocol::new(&store_handle, None);
+    // iroh-blobs rejects pushes unless an event handler enables them; this one
+    // allows them only from nodes the access policy lets write.
+    let blobs = BlobsProtocol::new(
+        &store_handle,
+        Some(crate::access::blobs_events(access.clone())),
+    );
 
-    let router = Router::builder(endpoint)
+    // Every world lives in one hub, shared by the Iroh protocol and the web
+    // bridge. The default world opens now so a bad journal fails startup.
+    #[cfg(feature = "world")]
+    let world_hub = if world {
+        use crate::world_hub::{HubLimits, WorldHub};
+        let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
+        let opener = Arc::new(ServeWorlds {
+            ephemeral,
+            admin_token: world_admin_token.clone(),
+            blobs: store_handle.clone(),
+            docs: docs.clone(),
+            checkpoint_every: world_checkpoint_every,
+            default_world: world_name.clone(),
+            default_module: world_module.clone(),
+            grant_on_use: world_cap_policy == "grant-on-use",
+            compiler: resolve_compiler(roc_bin, roc_platform)?,
+            native: world_native,
+            runtime,
+            mail: mail_sink(
+                world_mail_outbox,
+                world_mail_command,
+                world_mail_smtp,
+                world_mail_from,
+            )?,
+        });
+        let hub = WorldHub::new(
+            opener,
+            world_admin_token.clone(),
+            world_name.clone(),
+            HubLimits {
+                max_open_worlds: world_max_open,
+                max_sessions: world_max_sessions,
+            },
+        );
+        let default_service = hub.open_default().await?;
+        if !world_caps.is_empty() {
+            default_service
+                .world()
+                .update_caps(world_caps.clone(), Vec::new())
+                .await?;
+        }
+        if world_idle_secs > 0 && !ephemeral {
+            let idle = std::time::Duration::from_secs(world_idle_secs);
+            hub.spawn_evictor(
+                (idle / 2).clamp(
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(60),
+                ),
+                idle,
+            );
+        }
+        Some(hub)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "world"))]
+    ensure!(!world, "this build has no world support (feature `world`)");
+
+    let router_builder = Router::builder(endpoint)
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-        .accept(iroh_docs::net::ALPN, docs.clone())
-        .spawn();
+        .accept(iroh_docs::net::ALPN, docs.clone());
+    #[cfg(feature = "world")]
+    let router_builder = match &world_hub {
+        Some(hub) => router_builder.accept(
+            crate::world_net::WORLD_ALPN,
+            crate::world_net::WorldProtocol::new(hub.clone()),
+        ),
+        None => router_builder,
+    };
+    let router = router_builder.spawn();
 
     if !no_gossip {
         // Resolve effective config from defaults + CLI flags
@@ -358,14 +859,13 @@ pub async fn cmd_serve(
 
         // Convert iroh SecretKey to ed25519-dalek types for RecordPublisher
         let dalek_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
-        let dalek_verifying_key = dalek_signing_key.verifying_key();
 
         let record_publisher = RecordPublisher::new(
             dtt_topic_id,
-            dalek_verifying_key,
             dalek_signing_key,
             None,
             config.topic_secret.clone(),
+            distributed_topic_tracker::Config::default(),
         );
 
         // Join gossip topic with auto-discovery (non-blocking)
@@ -407,7 +907,7 @@ pub async fn cmd_serve(
             .await;
         });
 
-        println!("peers: gossip enabled (topic: {})", config.topic);
+        status!("peers: gossip enabled (topic: {})", config.topic);
     }
 
     let serve_node_id = router.endpoint().id();
@@ -431,7 +931,7 @@ pub async fn cmd_serve(
     let mut web_port: Option<u16> = None;
     #[cfg(feature = "web")]
     let web_listener = if web {
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let addr = SocketAddr::new(bind, port);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_port = listener.local_addr()?.port();
         web_port = Some(actual_port);
@@ -440,26 +940,63 @@ pub async fn cmd_serve(
         None
     };
 
+    #[cfg(feature = "ssh")]
+    let ssh = match (world_ssh_port, &world_hub) {
+        (Some(port), Some(hub)) => {
+            let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, port)).await?;
+            let ssh_port = listener.local_addr()?.port();
+            let host_key =
+                crate::world_ssh::load_or_create_host_key(crate::world_ssh::SSH_HOST_KEY_FILE)
+                    .await?;
+            Some((listener, ssh_port, hub.clone(), host_key))
+        }
+        _ => None,
+    };
+    #[cfg(not(feature = "ssh"))]
+    ensure!(
+        world_ssh_port.is_none(),
+        "this build has no SSH support (feature `ssh`)"
+    );
+
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
 
-    println!("node: {serve_node_id}");
+    status!("node: {serve_node_id}");
     if ephemeral {
-        println!("mode: ephemeral (in-memory)");
+        status!("mode: ephemeral (in-memory)");
     } else {
-        println!("mode: persistent ({STORE_PATH})");
+        status!("mode: persistent ({STORE_PATH})");
     }
     if no_relay {
-        println!("relay: disabled");
+        status!("relay: disabled");
     }
     if no_gossip {
-        println!("peers: disabled");
+        status!("peers: disabled");
     }
     if no_mdns {
-        println!("mdns: disabled");
+        status!("mdns: disabled");
     } else {
-        println!("mdns: enabled");
+        status!("mdns: enabled");
+    }
+    if access.is_open() {
+        status!("access: OPEN WRITES (any peer may modify this store)");
+    } else {
+        status!(
+            "access: read-only for peers; {} node(s) may write",
+            access.writers().len()
+        );
+    }
+    #[cfg(feature = "world")]
+    if world {
+        status!(
+            "world {world_name}: enabled (iroh {})",
+            String::from_utf8_lossy(crate::world_net::WORLD_ALPN)
+        );
+        #[cfg(feature = "web")]
+        if web {
+            status!("world: web bridge at /ws/world");
+        }
     }
 
     // Start web server now that the lock file is written
@@ -473,10 +1010,31 @@ pub async fn cmd_serve(
             Arc::clone(&tag_store),
             key.to_bytes(),
             identity_db_path,
+            crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
+            world_hub.clone(),
         )
         .await?;
         let actual_port = web_port.unwrap_or(port);
-        println!("web: http://localhost:{actual_port}");
+        let shown_host = if bind.is_unspecified() || bind.is_loopback() {
+            "localhost".to_owned()
+        } else {
+            bind.to_string()
+        };
+        if let Some(t) = &web_token {
+            status!("web: http://{shown_host}:{actual_port}/?token={t}");
+        } else {
+            status!("web: http://{shown_host}:{actual_port}");
+        }
+        #[cfg(feature = "world")]
+        if world {
+            status!("world: browser http://{shown_host}:{actual_port}/world");
+        }
+        if !bind.is_loopback() && web_token.is_none() {
+            status_err!(
+                "warning: the web UI is bound to {bind} without --web-token; \
+                 anyone who can reach port {actual_port} can read and modify files"
+            );
+        }
         Some(tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, web_router).await {
                 tracing::error!("web server error: {}", e);
@@ -486,9 +1044,37 @@ pub async fn cmd_serve(
         None
     };
 
+    #[cfg(feature = "ssh")]
+    let ssh_handle = ssh.map(|(listener, ssh_port, hub, host_key)| {
+        status!("world ssh: port {ssh_port} (ssh -p {ssh_port} <world>@<host>)");
+        status!(
+            "world ssh host key: {}",
+            crate::world_ssh::host_key_fingerprint(&host_key)
+        );
+        tokio::spawn(async move {
+            if let Err(e) = crate::world_ssh::serve(listener, hub, host_key).await {
+                tracing::error!("world ssh server error: {}", e);
+            }
+        })
+    });
+
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
     router.shutdown().await?;
+    #[cfg(feature = "web")]
+    if let Some(web_task) = _web_handle {
+        web_task.abort();
+        let _ = web_task.await;
+    }
+    #[cfg(feature = "ssh")]
+    if let Some(ssh_task) = ssh_handle {
+        ssh_task.abort();
+        let _ = ssh_task.await;
+    }
+    #[cfg(feature = "world")]
+    if let Some(hub) = &world_hub {
+        hub.shutdown_all().await;
+    }
     store.shutdown().await?;
     Ok(())
 }
@@ -505,7 +1091,7 @@ pub async fn cmd_serve(
 async fn run_gossip_loop(
     node_id: EndpointId,
     sender: distributed_topic_tracker::GossipSender,
-    receiver: distributed_topic_tracker::GossipReceiver,
+    mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
@@ -560,7 +1146,7 @@ async fn run_gossip_loop(
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
-                Some(Ok(event)) => match event {
+                Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
                         match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
@@ -585,11 +1171,8 @@ async fn run_gossip_loop(
                         warn!("gossip receiver lagged, some messages were missed");
                     }
                 },
-                Some(Err(e)) => {
-                    debug!("gossip receive error: {}", e);
-                }
-                None => {
-                    debug!("gossip receiver stream ended");
+                Err(e) => {
+                    debug!("gossip receiver stream ended: {}", e);
                     break;
                 }
             }
@@ -663,6 +1246,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn world_mode_requires_an_admin_token_but_not_web() {
+        assert!(validate_world_options(true, None, None, "lobby", "deny").is_err());
+        assert!(validate_world_options(true, Some(""), None, "lobby", "deny").is_err());
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny").is_ok());
+        assert!(validate_world_options(false, None, None, "lobby", "deny").is_ok());
+        assert!(
+            validate_world_options(
+                true,
+                Some("admin"),
+                Some(&PathBuf::from("world.wasm")),
+                "lobby",
+                "deny"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_world_options(
+                false,
+                None,
+                Some(&PathBuf::from("world.wasm")),
+                "lobby",
+                "deny"
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn mail_sink_picks_one_transport_and_refuses_an_unusable_relay() {
+        let loopback: SocketAddr = "127.0.0.1:25".parse().unwrap();
+        let remote: SocketAddr = "203.0.113.5:25".parse().unwrap();
+        let sender = Some("id@example.test".to_owned());
+        assert!(mail_sink(None, None, None, None).unwrap().is_none());
+        assert!(mail_sink(None, None, Some(loopback), None).is_err());
+        assert!(mail_sink(None, None, Some(remote), sender.clone()).is_err());
+        assert!(
+            mail_sink(None, None, Some(loopback), sender)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn world_names_are_bounded_and_are_a_single_path_segment() {
+        for bad in [
+            "",
+            "../evil",
+            ".",
+            "..",
+            "Tic-Tac-Toe",
+            "a/b",
+            "sp ace",
+            "wörld",
+        ] {
+            assert!(
+                validate_world_options(true, Some("admin"), None, bad, "deny").is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        assert!(validate_world_options(true, Some("admin"), None, "tt-2_x", "deny").is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(64), "deny").is_ok());
+        assert!(
+            validate_world_options(true, Some("admin"), None, &"a".repeat(65), "deny").is_err()
+        );
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny").is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "grant-on-use").is_ok());
+        assert!(
+            validate_world_options(true, Some("admin"), None, "lobby", "sometimes").is_err(),
+            "an unknown policy is refused"
+        );
+    }
+
+    #[test]
     fn test_is_process_alive_current_process() {
         let pid = std::process::id();
         assert!(is_process_alive(pid));
@@ -693,7 +1350,7 @@ mod tests {
     fn test_serve_info_struct() {
         use iroh_base::SecretKey;
 
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         let node_id = key.public();
 
         let info = ServeInfo {
@@ -714,7 +1371,7 @@ mod tests {
     fn test_serve_info_clone() {
         use iroh_base::SecretKey;
 
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         let node_id = key.public();
         let info = ServeInfo {
             node_id: node_id.to_string(),

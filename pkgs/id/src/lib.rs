@@ -128,7 +128,7 @@
 //!
 //! Two protocols are used:
 //! - **Blobs Protocol** (`/iroh-blobs/1`): For blob data transfer
-//! - **Meta Protocol** (`/iroh-meta/1`): For metadata operations (list, find, delete, etc.)
+//! - **Meta Protocol** (`/iroh-meta/2`): For metadata operations (list, find, delete, etc.)
 //!
 //! ## Features
 //!
@@ -152,15 +152,51 @@
 //! id get abc123... myfile.txt
 //! ```
 
+pub mod access;
 pub mod cli;
 pub mod commands;
+#[cfg(feature = "world")]
+pub mod directory;
+#[cfg(feature = "world")]
+pub mod directory_auth;
+#[cfg(feature = "world")]
+pub mod directory_mail;
+#[cfg(feature = "world")]
+pub mod directory_view;
 pub mod discovery;
+pub mod fileops;
 pub mod helpers;
+pub mod local;
+pub mod meta_client;
 pub mod protocol;
 pub mod repl;
+#[cfg(feature = "sandbox")]
+pub mod sandbox;
 pub mod store;
 pub mod tags;
 pub mod tuple;
+#[cfg(feature = "world")]
+pub mod world;
+#[cfg(feature = "world")]
+pub mod world_caps;
+#[cfg(feature = "world")]
+pub mod world_compile;
+#[cfg(feature = "world")]
+pub mod world_hub;
+#[cfg(feature = "world")]
+pub mod world_limits;
+#[cfg(feature = "world")]
+pub mod world_native;
+#[cfg(feature = "world")]
+pub mod world_net;
+#[cfg(feature = "world")]
+pub mod world_records;
+#[cfg(feature = "world")]
+pub mod world_session;
+#[cfg(feature = "ssh")]
+pub mod world_ssh;
+#[cfg(feature = "world")]
+pub mod world_store;
 
 #[cfg(feature = "web")]
 pub mod web;
@@ -168,12 +204,12 @@ pub mod web;
 // Re-export commonly used types for convenience
 pub use cli::{Cli, Command, TagCommand};
 pub use commands::{
-    PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo, cmd_find,
-    cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash,
-    cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek, cmd_peers, cmd_put_hash,
-    cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one, cmd_put_one_remote,
-    cmd_search, cmd_serve, cmd_show, cmd_tag, create_local_client_endpoint, create_serve_lock,
-    get_serve_info, is_process_alive, remove_serve_lock,
+    PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
+    ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
+    cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek,
+    cmd_peers, cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
+    cmd_put_one_remote, cmd_search, cmd_serve, cmd_show, cmd_tag, create_local_client_endpoint,
+    create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
 pub use discovery::{
     ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
@@ -208,8 +244,9 @@ pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
 
 /// Directory name for persistent blob storage.
 ///
-/// Contains an `SQLite` database with blob data and metadata. Only one process
-/// can access this at a time due to `SQLite` locking.
+/// Contains the iroh-blobs file store (a `redb` database plus data files) and the
+/// iroh-docs store under `docs/`. Only one process can open it at a time; while
+/// `id serve` runs, the CLI talks to the server instead of opening the store.
 pub const STORE_PATH: &str = ".iroh-store";
 
 /// Filename for the serve lock file.
@@ -222,7 +259,16 @@ pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 ///
 /// Used during QUIC handshake to identify connections for metadata operations
 /// (list, find, delete, rename, etc.) as opposed to blob data transfer.
-pub const META_ALPN: &[u8] = b"/iroh-meta/1";
+///
+/// **Version 2** carries tag keys/values as raw bytes (binary-safe), defines
+/// `DelTag` with no value as "delete every value of the key", and adds `Whoami`
+/// and `Error`. It is not wire-compatible with `/iroh-meta/1`; the ALPN bump
+/// makes old and new nodes fail the handshake cleanly instead of mis-decoding.
+///
+/// Compatibility rule: within a version, only **append** enum variants. Any
+/// other change to [`protocol::MetaRequest`] / [`protocol::MetaResponse`]
+/// requires a new ALPN. `protocol::tests` pins every discriminant.
+pub const META_ALPN: &[u8] = b"/iroh-meta/2";
 
 // ============================================================================
 // Utility Functions
@@ -583,7 +629,7 @@ mod tests {
         assert_eq!(CLIENT_KEY_FILE, ".iroh-key-client");
         assert_eq!(STORE_PATH, ".iroh-store");
         assert_eq!(SERVE_LOCK, ".iroh-serve.lock");
-        assert_eq!(META_ALPN, b"/iroh-meta/1");
+        assert_eq!(META_ALPN, b"/iroh-meta/2");
     }
 
     #[tokio::test]

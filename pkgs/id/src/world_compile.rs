@@ -1,0 +1,733 @@
+//! On-the-fly compilation of Roc world programs.
+//!
+//! An admin sends `.roc` files (`id world compile`); the server lays them out
+//! in a private job directory beside a copy of the world platform, runs the
+//! configured `roc` binary under limits, validates the result with the same
+//! import-free policy as an upload, and installs it through the normal
+//! journaled path. Diagnostics are returned to the caller.
+//!
+//! Compilation is **admin-only**: it runs a compiler on attacker-chosen
+//! text, and the defense is limits (CPU, memory, file size, wall clock,
+//! bounded output), not trust. The compiler itself is a trusted binary
+//! configured by the operator (`--roc-bin`); packages are not fetched (the
+//! world platform declares none), and the cache lives inside the job
+//! directory so concurrent jobs cannot interfere.
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail, ensure};
+
+/// Most files one compile request may carry (including `main.roc`).
+pub const MAX_COMPILE_FILES: usize = 8;
+/// Largest single file, in bytes.
+pub const MAX_COMPILE_FILE_BYTES: usize = 128 * 1024;
+/// Largest total request, in bytes.
+pub const MAX_COMPILE_TOTAL_BYTES: usize = 256 * 1024;
+/// Wall-clock budget per compilation.
+pub const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Largest captured compiler output, per stream, in bytes.
+const MAX_CAPTURE_BYTES: usize = 64 * 1024;
+/// Initial linear memory for Wasm apps: 129 pages, inside the sandbox's 16 MiB.
+/// Roc's default (1024 pages) would trap when the module instantiates.
+const WASM_MEMORY_BYTES: usize = 129 * 65536;
+
+/// The files to compile, in order; the first must be `main.roc`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompileSpec {
+    /// `(file name, UTF-8 content)` pairs.
+    pub files: Vec<(String, String)>,
+    /// Seed for the compiled program's `init`.
+    pub seed: u64,
+    /// Compile a native worker (`x64musl`) instead of Wasm.
+    pub native: bool,
+}
+
+/// How the server compiles: the platform tree and the compiler binary.
+#[derive(Clone, Debug)]
+pub struct Compiler {
+    /// Directory containing `platform.roc` and `targets/`.
+    pub platform_dir: PathBuf,
+    /// The `roc` binary to run.
+    pub roc_bin: String,
+    modules: Vec<String>,
+}
+
+impl Compiler {
+    /// # Errors
+    ///
+    /// Fails when the platform directory does not look like one.
+    pub fn new(platform_dir: PathBuf, roc_bin: String) -> Result<Self> {
+        ensure!(
+            platform_dir.join("platform.roc").is_file()
+                && platform_dir.join("targets/wasm32/host.wasm").is_file(),
+            "{} is not a world platform directory (need platform.roc and targets/wasm32/host.wasm)",
+            platform_dir.display()
+        );
+        let modules = platform_modules(&platform_dir)?;
+        Ok(Self {
+            platform_dir,
+            roc_bin,
+            modules,
+        })
+    }
+}
+
+/// The platform's modules, by name: every `.roc` file but `platform.roc`.
+fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
+    let mut modules = Vec::new();
+    for entry in std::fs::read_dir(platform_dir).context("read platform directory")? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "roc")
+            && let Some(stem) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|stem| *stem != "platform")
+        {
+            modules.push(stem.to_owned());
+        }
+    }
+    modules.sort();
+    Ok(modules)
+}
+
+/// Refuse source that imports a platform module the world does not grant.
+/// Imports the platform does not provide are left to the compiler.
+///
+/// # Errors
+///
+/// Names the file and the module of the first refused import.
+pub fn check_imports(spec: &CompileSpec, modules: &[String], granted: &[String]) -> Result<()> {
+    for (name, content) in &spec.files {
+        for line in content.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("import ") else {
+                continue;
+            };
+            let path = rest
+                .split(|c: char| c.is_whitespace() || matches!(c, '[' | '{' | '('))
+                .next()
+                .unwrap_or_default();
+            for segment in path.split('.') {
+                let is_platform_module = modules.iter().any(|module| module == segment);
+                let is_granted = granted.iter().any(|grant| grant == "*" || grant == segment);
+                ensure!(
+                    !is_platform_module || is_granted,
+                    "{name} imports {segment}, which this world does not grant (grant it with `id world caps --grant {segment}`)"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate names, sizes and the `main.roc` requirement.
+///
+/// # Errors
+///
+/// Anything outside the bounds.
+pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
+    ensure!(
+        !spec.files.is_empty() && spec.files.len() <= MAX_COMPILE_FILES,
+        "a compile request carries 1 to {MAX_COMPILE_FILES} files"
+    );
+    ensure!(
+        spec.files
+            .first()
+            .is_some_and(|(name, _)| name == "main.roc"),
+        "the first file must be main.roc"
+    );
+    let mut total = 0usize;
+    for (name, content) in &spec.files {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                && !name.starts_with('.'),
+            "file name {name:?} is not a safe relative name"
+        );
+        ensure!(
+            content.len() <= MAX_COMPILE_FILE_BYTES,
+            "{name} exceeds {MAX_COMPILE_FILE_BYTES} bytes"
+        );
+        std::str::from_utf8(content.as_bytes()).context("files must be UTF-8")?;
+        total += content.len();
+    }
+    ensure!(
+        total <= MAX_COMPILE_TOTAL_BYTES,
+        "the request exceeds {MAX_COMPILE_TOTAL_BYTES} bytes"
+    );
+    Ok(())
+}
+
+/// Compile `spec` and return the validated Wasm module plus compiler
+/// diagnostics. `granted` is the world's ceiling: the platform modules the
+/// source may import.
+///
+/// # Errors
+///
+/// Anything outside the bounds, an import the world does not grant, a compiler
+/// failure (with its diagnostics), or output the sandbox refuses.
+pub async fn compile(
+    spec: &CompileSpec,
+    compiler: &Compiler,
+    granted: &[String],
+    timeout: Duration,
+) -> Result<(Vec<u8>, String)> {
+    use crate::world_session::MAX_WORLD_MODULE_BYTES;
+
+    validate_spec(spec)?;
+    check_imports(spec, &compiler.modules, granted)?;
+    let target = if spec.native {
+        ensure!(
+            compiler
+                .platform_dir
+                .join("targets/x64musl/libhost.a")
+                .is_file(),
+            "this platform has no native targets (run examples/roc-world/build-native.sh)"
+        );
+        "x64musl"
+    } else {
+        "wasm32"
+    };
+    let job = tempfile::tempdir().context("create compile job directory")?;
+    copy_platform(&compiler.platform_dir, job.path())?;
+    for (name, content) in &spec.files {
+        let path = job.path().join(sanitize_file_name(name)?);
+        tokio::fs::write(&path, content)
+            .await
+            .with_context(|| format!("write {name}"))?;
+    }
+    // The app's own platform reference is rewritten to the staged copy.
+    let main_path = job.path().join("main.roc");
+    let main = tokio::fs::read_to_string(&main_path)
+        .await
+        .context("read main.roc")?;
+    let rewritten = rewrite_platform_path(&main)?;
+    tokio::fs::write(&main_path, rewritten).await?;
+
+    let output_path = job.path().join("out");
+    let roc_bin = compiler.roc_bin.clone();
+    let job_dir = job.path().to_owned();
+    let output = PathBuf::from(&output_path);
+    // The compiler is a whole LLVM process; run it on a blocking thread and
+    // poll for the deadline so a hung run cannot block the runtime.
+    let run = tokio::task::spawn_blocking(move || {
+        let mut command = std::process::Command::new(&roc_bin);
+        let mut args = vec![
+            "build".to_owned(),
+            "main.roc".to_owned(),
+            format!("--target={target}"),
+            "--debug".to_owned(),
+            format!("--output={}", output.display()),
+        ];
+        if target == "wasm32" {
+            args.push(format!("--wasm-memory={WASM_MEMORY_BYTES}"));
+        }
+        command
+            .current_dir(&job_dir)
+            .args(&args)
+            .env_clear()
+            .env("HOME", &job_dir)
+            .env("XDG_CACHE_HOME", job_dir.join("cache"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Safety: `pre_exec` runs the hook between fork and exec; the
+            // hook only calls `setrlimit`, which is async-signal-safe.
+            #[allow(unsafe_code)]
+            unsafe {
+                command.pre_exec(apply_rlimits);
+            }
+        }
+        let mut child = command.spawn().context("spawn the Roc compiler")?;
+        let mut stdout = child.stdout.take().context("compiler stdout")?;
+        let mut stderr = child.stderr.take().context("compiler stderr")?;
+        let readers = (
+            std::thread::spawn(move || {
+                let mut out = Vec::new();
+                use std::io::Read;
+                let _ = stdout.read_to_end(&mut out);
+                out
+            }),
+            std::thread::spawn(move || {
+                let mut err = Vec::new();
+                use std::io::Read;
+                let _ = stderr.read_to_end(&mut err);
+                err
+            }),
+        );
+        let deadline = std::time::Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait().context("wait for the compiler")? {
+                Some(status) => break status,
+                None => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        bail!("compilation timed out after {}s", timeout.as_secs());
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        };
+        let captured_err = readers.1.join().unwrap_or_default();
+        let captured_out = readers.0.join().unwrap_or_default();
+        Ok((status, captured_err, captured_out))
+    });
+    let (status, captured_err, _captured_out) = run
+        .await
+        .context("compile task")?
+        .map_err(|error| error.context("compilation failed"))?;
+    if !status.success() {
+        bail!(
+            "the Roc compiler failed: {}",
+            tail(&captured_err, MAX_CAPTURE_BYTES)
+        );
+    }
+
+    let wasm = tokio::fs::read(&output_path)
+        .await
+        .context("read compiled module")?;
+    ensure!(
+        wasm.len() <= MAX_WORLD_MODULE_BYTES,
+        "compiled module exceeds {MAX_WORLD_MODULE_BYTES} bytes"
+    );
+    if spec.native {
+        // The install loads the worker under its sandbox, which is where a
+        // bad executable is refused.
+        ensure!(
+            crate::world_native::is_native_module(&wasm),
+            "the compiler did not produce a native executable"
+        );
+        return Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)));
+    }
+    // Same policy as an upload: import-free and allowlisted.
+    #[cfg(feature = "sandbox")]
+    crate::sandbox::Sandbox::compile(
+        &wasm,
+        crate::sandbox::SandboxLimits {
+            module_bytes: MAX_WORLD_MODULE_BYTES,
+            ..crate::sandbox::SandboxLimits::default()
+        },
+    )
+    .context("the compiled module is not a valid world module")?;
+    Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)))
+}
+
+/// Copy the platform pieces a compilation needs (its `.roc` modules, including
+/// `platform.roc`, and the prebuilt `targets/`), bounded and symlink-free.
+fn copy_platform(from: &Path, job: &Path) -> Result<()> {
+    let staged = job.join("platform");
+    std::fs::create_dir_all(&staged).context("create staged platform directory")?;
+    for entry in std::fs::read_dir(from).context("read platform directory")? {
+        let entry = entry?;
+        let path = entry.path();
+        ensure!(
+            !entry.file_type()?.is_symlink(),
+            "no symlinks in the platform"
+        );
+        if path.extension().is_some_and(|ext| ext == "roc") && path.is_file() {
+            std::fs::copy(&path, staged.join(entry.file_name()))
+                .with_context(|| format!("copy {}", path.display()))?;
+        }
+    }
+    copy_dir(&from.join("targets"), &staged.join("targets"), 0)?;
+    Ok(())
+}
+
+fn copy_dir(from: &Path, to: &Path, depth: usize) -> Result<()> {
+    ensure!(depth <= 4, "platform targets tree is unexpectedly deep");
+    std::fs::create_dir_all(to).with_context(|| format!("create {}", to.display()))?;
+    for entry in std::fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        ensure!(
+            !entry.file_type()?.is_symlink(),
+            "no symlinks in the platform"
+        );
+        if path.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()), depth + 1)?;
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name()))
+                .with_context(|| format!("copy {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Point the app at the staged platform: the first `pf: platform "..."` gets
+/// `platform/platform.roc`.
+fn rewrite_platform_path(main: &str) -> Result<String> {
+    let needle = "pf: platform \"";
+    let start = main
+        .find(needle)
+        .context("main.roc must declare its platform with `pf: platform \"...\"`")?;
+    let after = start + needle.len();
+    let end = main[after..]
+        .find('"')
+        .context("the platform path is unterminated")?;
+    Ok(format!(
+        "{}platform/platform.roc{}",
+        &main[..after],
+        &main[after + end..]
+    ))
+}
+
+fn sanitize_file_name(name: &str) -> Result<String> {
+    ensure!(
+        name.split('.').all(|part| part != "." && part != ".."),
+        "file name {name:?} must stay inside the job directory"
+    );
+    Ok(name.to_owned())
+}
+
+fn tail(bytes: &[u8], max: usize) -> String {
+    let bytes = if bytes.len() > max {
+        &bytes[bytes.len() - max..]
+    } else {
+        bytes
+    };
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// CPU, memory, file-size and process limits for the compiler child.
+#[cfg(unix)]
+/// Safety: runs between fork and exec; only async-signal-safe calls
+/// (`setrlimit`) are made.
+fn apply_rlimits() -> std::io::Result<()> {
+    let cap = |resource: u32, limit: libc::rlim_t| {
+        let limits = libc::rlimit {
+            rlim_cur: limit,
+            rlim_max: limit,
+        };
+        // Safety: between fork and exec; `setrlimit` is async-signal-safe.
+        #[allow(unsafe_code)]
+        if unsafe { libc::setrlimit(resource, &limits) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // No process limit: RLIMIT_NPROC counts the user's whole process table
+    // (threads included), so a low soft limit would starve the compiler's
+    // worker threads for reasons unrelated to this job.
+    cap(libc::RLIMIT_CPU, 120)?;
+    cap(libc::RLIMIT_AS, 8 * 1024 * 1024 * 1024)?;
+    cap(libc::RLIMIT_FSIZE, 256 * 1024 * 1024)?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "sandbox"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn spec(files: Vec<(&str, &str)>) -> CompileSpec {
+        CompileSpec {
+            files: files
+                .into_iter()
+                .map(|(name, content)| (name.to_owned(), content.to_owned()))
+                .collect(),
+            seed: 1,
+            native: false,
+        }
+    }
+
+    #[test]
+    fn specs_are_bounded_and_need_main_first() {
+        validate_spec(&spec(vec![("main.roc", "app [x] {}")])).unwrap();
+        assert!(validate_spec(&spec(vec![("lib.roc", "x")])).is_err());
+        assert!(validate_spec(&spec(vec![("main.roc", "x"), ("../evil.roc", "y")])).is_err());
+        assert!(validate_spec(&spec(vec![("main.roc", "x"), (".hidden", "y")])).is_err());
+        let too_big = spec(vec![("main.roc", &"x".repeat(MAX_COMPILE_FILE_BYTES + 1))]);
+        assert!(validate_spec(&too_big).is_err());
+        let mut many = vec![("main.roc", "x")];
+        for i in 0..MAX_COMPILE_FILES {
+            many.push((Box::leak(format!("f{i}.roc").into_boxed_str()), "y"));
+        }
+        assert!(validate_spec(&spec(many)).is_err());
+    }
+
+    #[test]
+    fn the_platform_path_is_rewritten_to_the_staged_copy() {
+        let main = "app [program] { pf: platform \"../roc-world/platform.roc\" }\n";
+        assert_eq!(
+            rewrite_platform_path(main).unwrap(),
+            "app [program] { pf: platform \"platform/platform.roc\" }\n"
+        );
+        assert!(rewrite_platform_path("app [x] {}").is_err());
+        assert!(rewrite_platform_path("pf: platform \"unterminated").is_err());
+    }
+
+    #[test]
+    fn the_platform_modules_are_staged_with_the_platform() {
+        let from = tempfile::tempdir().unwrap();
+        let job = tempfile::tempdir().unwrap();
+        std::fs::write(from.path().join("platform.roc"), "x").unwrap();
+        std::fs::write(from.path().join("Screen.roc"), "y").unwrap();
+        std::fs::write(from.path().join("notes.txt"), "z").unwrap();
+        std::fs::create_dir_all(from.path().join("targets")).unwrap();
+        copy_platform(from.path(), job.path()).unwrap();
+        assert!(job.path().join("platform/platform.roc").is_file());
+        assert!(job.path().join("platform/Screen.roc").is_file());
+        assert!(!job.path().join("platform/notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn the_counter_source_compiles_installs_and_runs() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let counter = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        eprintln!("PROBE roc={}", compiler.roc_bin);
+        let (wasm, _diagnostics) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), counter)],
+                seed: 42,
+                native: false,
+            },
+            &compiler,
+            &[],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        // The compiled module behaves like the checked-in one.
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(42).unwrap();
+        crate::world::WorldProgram::update(
+            &mut world,
+            &crate::world::WorldEvent {
+                sequence: 1,
+                participant_id: 1,
+                kind: crate::world::WorldEventKind::Input(b"inc".to_vec()),
+            },
+        )
+        .unwrap();
+        assert_eq!(world.view().unwrap(), b"count=1");
+    }
+
+    #[tokio::test]
+    async fn apps_can_import_the_platform_screen_module() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-screen/main.roc"
+        ))
+        .unwrap();
+        let (wasm, _diagnostics) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app)],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["Screen".to_owned(), "Key".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        crate::world::WorldProgram::update(
+            &mut world,
+            &crate::world::WorldEvent {
+                sequence: 1,
+                participant_id: 1,
+                kind: crate::world::WorldEventKind::Input(b"+".to_vec()),
+            },
+        )
+        .unwrap();
+        let frame = String::from_utf8(world.view().unwrap()).unwrap();
+        let rows: Vec<&str> = frame.split('\n').collect();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].starts_with("+-counter"));
+        assert!(rows[1].starts_with("| count=1"));
+        assert_eq!(rows[2], format!("+{}+", "-".repeat(18)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_counter_source_compiles_natively_and_runs_in_the_worker() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        if !platform_dir.join("targets/x64musl/libhost.a").is_file() {
+            eprintln!("skipping: the platform has no native targets");
+            return;
+        }
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let counter = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        let (native, _diagnostics) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), counter)],
+                seed: 42,
+                native: true,
+            },
+            &compiler,
+            &[],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert!(crate::world_native::is_native_module(&native));
+        let job = tempfile::tempdir().unwrap();
+        let path = job.path().join("counter");
+        std::fs::write(&path, &native).unwrap();
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let mut world = crate::world_native::NativeProgram::new(
+            &path,
+            42,
+            crate::world_native::NativeLimits::default(),
+            None,
+        )
+        .unwrap();
+        crate::world::WorldProgram::update(
+            &mut world,
+            &crate::world::WorldEvent {
+                sequence: 1,
+                participant_id: 1,
+                kind: crate::world::WorldEventKind::Input(b"inc".to_vec()),
+            },
+        )
+        .unwrap();
+        let view = crate::world::WorldProgram::view(
+            &mut world,
+            &crate::world::Participant {
+                id: 1,
+                display_name: "ann".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(view.as_deref(), Some("count=1"));
+    }
+
+    #[test]
+    fn an_ungranted_platform_import_is_refused_by_name() {
+        let modules = vec!["Key".to_owned(), "Screen".to_owned()];
+        let app = spec(vec![("main.roc", "import pf.Screen\napp [x] {}")]);
+        let refused = check_imports(&app, &modules, &[]).unwrap_err().to_string();
+        assert!(refused.contains("main.roc imports Screen"), "{refused}");
+        assert!(check_imports(&app, &modules, &["Screen".to_owned()]).is_ok());
+        assert!(check_imports(&app, &modules, &["*".to_owned()]).is_ok());
+        assert!(check_imports(&app, &modules, &["Key".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn imports_outside_the_platform_and_comments_pass_the_gate() {
+        let modules = vec!["Screen".to_owned()];
+        let app = spec(vec![
+            (
+                "main.roc",
+                "# import pf.Screen\nimport pf.Other exposing [x]\nimport Helper\n",
+            ),
+            ("Helper.roc", "module []\n"),
+        ]);
+        assert!(check_imports(&app, &modules, &[]).is_ok());
+    }
+
+    #[test]
+    fn a_sibling_file_cannot_smuggle_an_ungranted_import() {
+        let modules = vec!["Key".to_owned()];
+        let app = spec(vec![
+            ("main.roc", "app [x] {}"),
+            ("Helper.roc", "import pf.Key\n"),
+        ]);
+        assert!(check_imports(&app, &modules, &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_import_is_refused_before_the_compiler_runs() {
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no platform directory found");
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, "/nonexistent/roc".to_owned()).unwrap();
+        let app = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-screen/main.roc"
+        ))
+        .unwrap();
+        let error = compile(
+            &spec(vec![("main.roc", &app)]),
+            &compiler,
+            &[],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("imports Screen"), "{error:#}");
+    }
+
+    /// The roc the platform's ABI bindings were generated with; a different
+    /// nightly produces a different module layout (found the hard way).
+    fn which_roc() -> Result<String> {
+        if let Ok(path) = std::env::var("ID_ROC_BIN") {
+            return Ok(path);
+        }
+        let tag = "nightly-2026-10-04-130536d";
+        let version = tag.trim_start_matches("nightly-");
+        for home in [
+            std::env::var("HOME").unwrap_or_default(),
+            "/home/user".to_owned(),
+        ] {
+            let path = format!(
+                "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
+            );
+            if Path::new(&path).is_file() {
+                return Ok(path);
+            }
+        }
+        let output = std::process::Command::new("roc").arg("version").output();
+        match output {
+            Ok(output) if output.status.success() => Ok("roc".to_owned()),
+            _ => bail!("no roc binary"),
+        }
+    }
+
+    fn default_platform_dir() -> Option<PathBuf> {
+        let candidates = [
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world")),
+            PathBuf::from("examples/roc-world"),
+            PathBuf::from("../examples/roc-world"),
+        ];
+        candidates.into_iter().find(|dir| dir.is_dir())
+    }
+}

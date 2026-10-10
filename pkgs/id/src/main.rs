@@ -8,9 +8,9 @@ use clap::Parser;
 
 // Import from library
 use id::{
-    Cli, Command, PeekOptions, PeersOptions, SearchOptions, cmd_find, cmd_get_multi, cmd_gethash,
-    cmd_id, cmd_list, cmd_migrate_tags, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_multi,
-    cmd_search, cmd_serve, cmd_show, cmd_tag, run_repl,
+    Cli, Command, PeekOptions, PeersOptions, SearchOptions, ServeOptions, cmd_find, cmd_get_multi,
+    cmd_gethash, cmd_id, cmd_list, cmd_migrate_tags, cmd_peek, cmd_peers, cmd_put_hash,
+    cmd_put_multi, cmd_search, cmd_serve, cmd_show, cmd_tag, run_repl,
 };
 
 /// Determine the log level based on CLI flags and environment variables.
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         // --new [NAME] creates .iroh/<name>/ under the current directory
         let name = if name.is_empty() {
             // Generate a short random name (8 hex chars)
-            use rand::Rng;
+            use rand::RngExt;
             let mut rng = rand::rng();
             let n: u32 = rng.random();
             format!("{n:08x}")
@@ -160,8 +160,31 @@ async fn main() -> Result<()> {
             replace_defaults,
             no_mdns,
             iroh_port,
+            bind,
+            web_token,
+            world,
+            world_admin_token,
+            world_module,
+            world_mail_outbox,
+            world_mail_command,
+            world_mail_smtp,
+            world_mail_from,
+            world_name,
+            world_ssh_port,
+            world_checkpoint_every,
+            world_max_open,
+            world_max_sessions,
+            world_idle_secs,
+            world_caps,
+            world_cap_policy,
+            roc_bin,
+            roc_platform,
+            world_native,
+            world_runtime,
+            allow_node,
+            open_writes,
         }) => {
-            cmd_serve(
+            cmd_serve(ServeOptions {
                 ephemeral,
                 no_relay,
                 no_gossip,
@@ -175,10 +198,33 @@ async fn main() -> Result<()> {
                 replace_defaults,
                 no_mdns,
                 iroh_port,
-            )
+                bind,
+                web_token,
+                world,
+                world_admin_token,
+                world_module,
+                world_mail_outbox,
+                world_mail_command,
+                world_mail_smtp,
+                world_mail_from,
+                world_name,
+                world_ssh_port,
+                world_checkpoint_every,
+                world_max_open,
+                world_max_sessions,
+                world_idle_secs,
+                world_caps,
+                world_cap_policy,
+                roc_bin,
+                roc_platform,
+                world_native,
+                world_runtime,
+                allow_node,
+                open_writes,
+            })
             .await
         }
-        Some(Command::Id) => cmd_id().await,
+        Some(Command::Id { client }) => cmd_id(client).await,
         Some(Command::Peers {
             gossip,
             rpc,
@@ -214,6 +260,10 @@ async fn main() -> Result<()> {
         }
         Some(Command::List { node, no_relay }) => cmd_list(node, no_relay).await,
         Some(Command::Tag(tag_cmd)) => cmd_tag(tag_cmd).await,
+        #[cfg(feature = "world")]
+        Some(Command::World(world_cmd)) => id::commands::cmd_world(world_cmd).await,
+        #[cfg(not(feature = "world"))]
+        Some(Command::World(_)) => anyhow::bail!("this build has no world support"),
         Some(Command::MigrateTags) => cmd_migrate_tags().await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {

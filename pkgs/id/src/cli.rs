@@ -82,9 +82,10 @@
 //! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
 //! - **Renaming**: Use `source:dest` syntax for any path argument
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -304,6 +305,119 @@ pub enum Command {
         /// multiple servers that need predictable port assignments.
         #[arg(long, default_value = "0")]
         iroh_port: u16,
+        /// Address the web interface binds to.
+        ///
+        /// Defaults to loopback, so the UI is reachable only from this
+        /// machine. Use `0.0.0.0` to expose it on the network, and set
+        /// `--web-token` when you do.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
+        /// Require this token to use the web interface.
+        ///
+        /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
+        /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
+        #[arg(long, env = "ID_WEB_TOKEN")]
+        web_token: Option<String>,
+        /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
+        #[arg(long, requires = "world_admin_token")]
+        world: bool,
+        /// Admin secret required to mint world guest capabilities.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN")]
+        world_admin_token: Option<String>,
+        /// Start with this precompiled Wasm world module (Roc platform ABI).
+        #[arg(long, requires = "world")]
+        world_module: Option<PathBuf>,
+        /// Write confirmation mail into this directory, one private file per message.
+        #[arg(
+            long,
+            requires = "world",
+            conflicts_with_all = ["world_mail_command", "world_mail_smtp"]
+        )]
+        world_mail_outbox: Option<PathBuf>,
+        /// Run this program for each confirmation mail, with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` set.
+        #[arg(
+            long,
+            requires = "world",
+            conflicts_with_all = ["world_mail_outbox", "world_mail_smtp"]
+        )]
+        world_mail_command: Option<PathBuf>,
+        /// Relay confirmation mail through this SMTP server, which must be on loopback and forward with TLS.
+        #[arg(
+            long,
+            requires_all = ["world", "world_mail_from"],
+            conflicts_with_all = ["world_mail_outbox", "world_mail_command"]
+        )]
+        world_mail_smtp: Option<SocketAddr>,
+        /// Sender address for mail sent with `--world-mail-smtp`.
+        #[arg(long, requires = "world_mail_smtp")]
+        world_mail_from: Option<String>,
+        /// Name of the world this server offers (one world per process).
+        ///
+        /// The world's files live in `.id-worlds/<NAME>/`. Names may contain
+        /// `a-z`, `0-9`, `-` and `_`.
+        #[arg(long, default_value = "lobby", requires = "world")]
+        world_name: String,
+        /// Trim the world's journal behind a program snapshot every N events.
+        ///
+        /// A journal otherwise grows (and restarts slow down) without bound.
+        /// Programs that export `plaza_snapshot`/`plaza_restore` are trimmed;
+        /// others keep their full history. `0` never trims.
+        #[arg(long, default_value_t = 1000, requires = "world")]
+        world_checkpoint_every: u64,
+        /// Most worlds open at once; idle durable worlds close to make room.
+        #[arg(long, default_value_t = 256, requires = "world")]
+        world_max_open: usize,
+        /// Most world sessions at once, across every world.
+        #[arg(long, default_value_t = 1024, requires = "world")]
+        world_max_sessions: usize,
+        /// Close durable worlds that no session used for this many seconds
+        /// (they reopen from their journal on demand). `0` keeps them open.
+        #[arg(long, default_value_t = 600, requires = "world")]
+        world_idle_secs: u64,
+        /// Serve the world over SSH on this port, bound to `--bind`.
+        ///
+        /// Connect with `ssh -p <PORT> <WORLD>@<host>`; the password is the
+        /// guest capability from an invite.
+        #[arg(long, requires = "world")]
+        world_ssh_port: Option<u16>,
+        /// Accept native (ELF) module installs. Unlike Wasm, the guarantee
+        /// is the OS sandbox (Landlock, seccomp, rlimits), not an
+        /// import-free format, so this tier is opt-in.
+        #[arg(long, requires = "world")]
+        world_native: bool,
+        /// Execution bounds for world programs.
+        #[command(flatten)]
+        world_runtime: WorldRuntimeArgs,
+        /// Capability the default world's program may use (repeatable; `*`
+        /// grants the whole catalog).
+        #[arg(long = "world-cap", value_name = "NAME", requires = "world")]
+        world_caps: Vec<String>,
+        /// What an unlisted capability costs the program: `deny` (default) or
+        /// `grant-on-use`, which grants a known capability the first time the
+        /// program uses it.
+        #[arg(long, default_value = "deny", requires = "world")]
+        world_cap_policy: String,
+        /// The Roc binary used to compile sources sent to `id world compile`
+        /// (default: $ID_ROC_BIN or `roc` from PATH).
+        #[arg(long, env = "ID_ROC_BIN")]
+        roc_bin: Option<String>,
+        /// The world platform directory used for on-the-fly compilation
+        /// (default: $ID_ROC_PLATFORM or ./examples/roc-world).
+        #[arg(long, env = "ID_ROC_PLATFORM")]
+        roc_platform: Option<PathBuf>,
+        /// Allow this node to modify the store (repeatable, comma-separated).
+        ///
+        /// Reading names, hashes and tags is public. Writing (put, delete,
+        /// rename, copy, tag changes, blob pushes) requires the node's ID to be
+        /// listed here or in `.iroh-allowed` (one ID per line). This machine's
+        /// own server and client keys are always allowed.
+        #[arg(long = "allow-node", value_delimiter = ',')]
+        allow_node: Vec<String>,
+        /// Let every peer modify the store (insecure).
+        ///
+        /// For demos and trusted networks only.
+        #[arg(long)]
+        open_writes: bool,
     },
     /// Start an interactive REPL for issuing commands.
     ///
@@ -862,6 +976,21 @@ pub enum Command {
     /// ```
     #[command(subcommand, aliases = ["label", "link"])]
     Tag(TagCommand),
+    /// Mint invites for, and join, multiplayer worlds hosted over Iroh.
+    ///
+    /// The host runs `id serve --world --world-admin-token <T>`. Whoever holds
+    /// the admin token mints a guest capability with `id world invite`; a guest
+    /// presents it with `id world join`. Reaching a node proves only which node
+    /// you are, never what you may do: the capability is the authority.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id world invite NODE_ID --admin-token T --name ann
+    /// ID_WORLD_CAPABILITY=... id world join NODE_ID
+    /// ```
+    #[command(subcommand)]
+    World(WorldCommand),
     /// Migrate existing files to have name/file auto-tags.
     ///
     /// Scans all blob tags in the store and adds `name` and `file`
@@ -886,8 +1015,17 @@ pub enum Command {
     /// ```bash
     /// id id
     /// # Output: abc123...def456
+    ///
+    /// # The identity this machine uses as a *client*. A server owner adds it
+    /// # with `id serve --allow-node <ID>` so this machine may write to it.
+    /// id id --client
     /// ```
-    Id,
+    Id {
+        /// Print the client identity (used when connecting to other nodes)
+        /// instead of the server identity.
+        #[arg(long)]
+        client: bool,
+    },
     /// Discover and list known peers.
     ///
     /// Discovers other `id` servers via gossip-based networking, RPC
@@ -994,6 +1132,262 @@ pub enum Command {
     },
 }
 
+/// Execution bounds for world programs. Each is validated when the server
+/// starts; see `world_limits::RuntimeLimits`.
+#[derive(Args, Debug, Clone)]
+pub struct WorldRuntimeArgs {
+    /// Wasm fuel (instruction budget) for one world call.
+    #[arg(
+        long,
+        default_value_t = 10_000_000,
+        requires = "world",
+        value_name = "UNITS"
+    )]
+    pub world_fuel: u64,
+    /// Linear memory for a Wasm world program, in MiB (1..=2048).
+    #[arg(long, default_value_t = 16, requires = "world", value_name = "MIB")]
+    pub world_memory_mib: u64,
+    /// Largest Wasm payload (input or output), in KiB (1..=1024).
+    #[arg(long, default_value_t = 1024, requires = "world", value_name = "KIB")]
+    pub world_message_kib: u64,
+    /// Address-space cap for a native worker, in MiB (16..=65536).
+    #[arg(long, default_value_t = 256, requires = "world", value_name = "MIB")]
+    pub world_native_memory_mib: u64,
+    /// CPU seconds a native worker may use in total.
+    #[arg(long, default_value_t = 10, requires = "world", value_name = "SECS")]
+    pub world_native_cpu_secs: u64,
+    /// Wall-clock budget for one native worker call, in milliseconds.
+    #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
+    pub world_native_deadline_ms: u64,
+}
+
+/// Subcommands for `id world`.
+#[derive(Subcommand, Debug)]
+pub enum WorldCommand {
+    /// Mint a guest capability on a world host (needs the host's admin token).
+    Invite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Display name for the new participant.
+        #[arg(long)]
+        name: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Upload and activate a compiled `.wasm` world program on a host.
+    Install {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Wasm module built for the `id` Roc world ABI.
+        module: PathBuf,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Deterministic seed supplied to the guest initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Print the world's structured records (a JSON object).
+    Records {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Only keys starting with this prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Replicate the world's records over Iroh with an iroh-docs replica.
+    Mirror {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Keep printing whenever the records change.
+        #[arg(short, long)]
+        follow: bool,
+        /// Store the replica on disk so it survives between runs.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
+        /// Give up after this many seconds without a completed sync.
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Download the module backing the world's current state, verified
+    /// by hash. Prints the module hash; writes the bytes to `--output`.
+    Download {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Where to write the verified module bytes.
+        #[arg(long)]
+        output: PathBuf,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Join a world and chat. Stdin lines are chat; `/input <hex>` sends
+    /// opaque input. Server frames print as JSON lines.
+    Join {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Replay events after this sequence instead of a full snapshot.
+        #[arg(long)]
+        after: Option<u64>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Compile Roc sources on the host and install the result.
+    ///
+    /// The host rewrites the app's `pf: platform "..."` path to its staged
+    /// copy of the world platform, so any relative path works.
+    Compile {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// The app's main.roc.
+        main_file: PathBuf,
+        /// Additional source files (repeatable; paths become file names).
+        #[arg(short = 'f', long = "file")]
+        files: Vec<PathBuf>,
+        /// Seed for the compiled program's initializer (default: random).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Build a native worker (x64musl) instead of Wasm; the host must run
+        /// with `--world-native` and a platform with native targets.
+        #[arg(long)]
+        native: bool,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Show (and, with `--grant`/`--revoke`, change) a world's capabilities.
+    ///
+    /// Without `--grant`/`--revoke` this needs only a guest capability and
+    /// prints what the world has granted, what its program wants, and what it
+    /// has used. With them it needs the admin token.
+    Caps {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: Option<String>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: Option<String>,
+        /// Capability to grant (repeatable; `*` grants the whole catalog).
+        #[arg(long)]
+        grant: Vec<String>,
+        /// Capability to revoke (repeatable).
+        #[arg(long)]
+        revoke: Vec<String>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// List the worlds a host serves (needs the host's admin token).
+    List {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Create a world on a host (needs the host's admin token).
+    Create {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Name of the new world: `a-z`, `0-9`, `-` and `_`.
+        name: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+}
+
 /// Subcommands for `id tag`.
 ///
 /// Manage metadata tags (key/value pairs) attached to files.
@@ -1018,18 +1412,27 @@ pub enum TagCommand {
         file: String,
         /// The tag key.
         key: String,
-        /// Optional tag value.
+        /// Optional tag value (UTF-8 text).
+        #[arg(conflicts_with_all = ["value_hex", "value_file"])]
         value: Option<String>,
+        /// Tag value as hex-encoded raw bytes (binary-safe).
+        #[arg(long, value_name = "HEX", conflicts_with = "value_file")]
+        value_hex: Option<String>,
+        /// Read the raw tag value from a file (`-` for stdin).
+        #[arg(long, value_name = "PATH")]
+        value_file: Option<PathBuf>,
     },
     /// Delete a metadata tag from a file.
     ///
-    /// Removes a specific key (and optionally value) from the file's tags.
+    /// With a value, removes exactly that `(key, value)` tag. Without one,
+    /// removes **every** tag with that key (all values, and a value-less
+    /// key-only tag).
     ///
     /// # Examples
     ///
     /// ```bash
-    /// id tag del README.md priority high
-    /// id tag del README.md pinned
+    /// id tag del README.md priority high   # only priority=high
+    /// id tag del README.md priority        # priority=* and bare "priority"
     /// ```
     #[command(aliases = ["rm", "remove", "rem", "delete", "unset"])]
     Del {
@@ -1037,8 +1440,12 @@ pub enum TagCommand {
         file: String,
         /// The tag key to remove.
         key: String,
-        /// Optional specific value to remove.
+        /// Specific value to remove (UTF-8 text). Omit to remove all values.
+        #[arg(conflicts_with = "value_hex")]
         value: Option<String>,
+        /// Specific value to remove, as hex-encoded raw bytes.
+        #[arg(long, value_name = "HEX")]
+        value_hex: Option<String>,
     },
     /// List metadata tags.
     ///
@@ -1054,10 +1461,10 @@ pub enum TagCommand {
     List {
         /// File to list tags for (omit for all).
         file: Option<String>,
-        /// Show binary values as hex strings.
+        /// Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.
         #[arg(long)]
         hex: bool,
-        /// Include binary (non-UTF-8) tag values in output.
+        /// Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.
         #[arg(long)]
         binary: bool,
         /// Don't truncate long values (default: truncate at 256 bytes).
@@ -1091,10 +1498,10 @@ pub enum TagCommand {
         /// Search query terms.
         #[arg(num_args = 1.., required = true)]
         query: Vec<String>,
-        /// Show binary values as hex strings.
+        /// Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.
         #[arg(long)]
         hex: bool,
-        /// Include binary (non-UTF-8) tag values in output.
+        /// Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.
         #[arg(long)]
         binary: bool,
         /// Don't truncate long values (default: truncate at 256 bytes).
@@ -1171,6 +1578,25 @@ mod tests {
                 replace_defaults,
                 no_mdns,
                 iroh_port,
+                bind,
+                web_token,
+                world,
+                world_admin_token,
+                world_module,
+                world_name,
+                world_ssh_port,
+                world_checkpoint_every,
+                world_max_open,
+                world_max_sessions,
+                world_idle_secs,
+                world_caps,
+                world_cap_policy,
+                roc_bin,
+                roc_platform,
+                world_native,
+                allow_node,
+                open_writes,
+                ..
             }) => {
                 assert!(!ephemeral);
                 assert!(!no_relay);
@@ -1185,6 +1611,25 @@ mod tests {
                 assert!(!replace_defaults);
                 assert!(!no_mdns);
                 assert_eq!(iroh_port, 0);
+                // Security defaults: loopback only, no token, nobody extra may write.
+                assert_eq!(bind, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+                assert!(web_token.is_none());
+                assert!(!world);
+                assert!(world_admin_token.is_none());
+                assert!(world_module.is_none());
+                assert_eq!(world_name, "lobby");
+                assert!(world_ssh_port.is_none());
+                assert_eq!(world_checkpoint_every, 1000);
+                assert_eq!(world_max_open, 256);
+                assert_eq!(world_max_sessions, 1024);
+                assert_eq!(world_idle_secs, 600);
+                assert!(world_caps.is_empty());
+                assert_eq!(world_cap_policy, "deny");
+                assert!(roc_bin.is_none());
+                assert!(roc_platform.is_none());
+                assert!(!world_native);
+                assert!(allow_node.is_empty());
+                assert!(!open_writes);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -1208,6 +1653,7 @@ mod tests {
                 replace_defaults,
                 no_mdns,
                 iroh_port,
+                ..
             }) => {
                 assert!(ephemeral);
                 assert!(no_relay);
@@ -1510,7 +1956,7 @@ mod tests {
     #[test]
     fn test_cli_parse_id() {
         let cli = Cli::parse_from(["id", "id"]);
-        assert!(matches!(cli.command, Some(Command::Id)));
+        assert!(matches!(cli.command, Some(Command::Id { client: false })));
     }
 
     #[test]
@@ -2188,7 +2634,9 @@ mod tests {
     fn test_cli_parse_tag_set() {
         let cli = Cli::parse_from(["id", "tag", "set", "README.md", "priority", "high"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "README.md");
                 assert_eq!(key, "priority");
                 assert_eq!(value, Some("high".to_owned()));
@@ -2201,7 +2649,9 @@ mod tests {
     fn test_cli_parse_tag_set_without_value() {
         let cli = Cli::parse_from(["id", "tag", "set", "README.md", "pinned"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "README.md");
                 assert_eq!(key, "pinned");
                 assert!(value.is_none());
@@ -2214,7 +2664,9 @@ mod tests {
     fn test_cli_parse_tag_set_alias_add() {
         let cli = Cli::parse_from(["id", "tag", "add", "file.txt", "label", "rust"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "label");
                 assert_eq!(value, Some("rust".to_owned()));
@@ -2227,7 +2679,9 @@ mod tests {
     fn test_cli_parse_tag_del() {
         let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "label", "rust"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Del { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Del {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "label");
                 assert_eq!(value, Some("rust".to_owned()));
@@ -2240,7 +2694,9 @@ mod tests {
     fn test_cli_parse_tag_del_without_value() {
         let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "pinned"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Del { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Del {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "pinned");
                 assert!(value.is_none());
@@ -2338,7 +2794,9 @@ mod tests {
         // "label" should work as alias for "tag"
         let cli = Cli::parse_from(["id", "label", "set", "file.txt", "key", "val"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "key");
                 assert_eq!(value, Some("val".to_owned()));
@@ -2352,7 +2810,9 @@ mod tests {
         // "link" should work as alias for "tag"
         let cli = Cli::parse_from(["id", "link", "set", "file.txt", "key", "val"]);
         match cli.command {
-            Some(Command::Tag(TagCommand::Set { file, key, value })) => {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
                 assert_eq!(file, "file.txt");
                 assert_eq!(key, "key");
                 assert_eq!(value, Some("val".to_owned()));
@@ -2386,5 +2846,250 @@ mod tests {
             matches!(cli.command, Some(Command::Tag(TagCommand::Search { .. }))),
             "label search should parse as Tag Search"
         );
+    }
+
+    #[test]
+    fn test_cli_parse_world_mail_flags() {
+        let smtp = [
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+        ];
+        let cli = match Cli::try_parse_from(smtp) {
+            Ok(cli) => cli,
+            Err(error) => panic!("smtp mail with a sender should parse: {error}"),
+        };
+        match cli.command {
+            Some(Command::Serve {
+                world_mail_smtp,
+                world_mail_from,
+                ..
+            }) => {
+                assert_eq!(world_mail_smtp, Some("127.0.0.1:25".parse().unwrap()));
+                assert_eq!(world_mail_from.as_deref(), Some("id@example.test"));
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        let refused = |args: &[&str]| {
+            let mut full = vec!["id", "serve", "--world", "--world-admin-token", "x"];
+            full.extend_from_slice(args);
+            Cli::try_parse_from(full).is_err()
+        };
+        assert!(
+            refused(&["--world-mail-smtp", "127.0.0.1:25"]),
+            "needs a sender"
+        );
+        assert!(
+            refused(&["--world-mail-from", "id@example.test"]),
+            "needs a relay"
+        );
+        assert!(refused(&[
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+            "--world-mail-outbox",
+            "/tmp/mail",
+        ]));
+        assert!(refused(&[
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+            "--world-mail-command",
+            "/bin/true",
+        ]));
+        assert!(refused(&[
+            "--world-mail-outbox",
+            "/tmp/mail",
+            "--world-mail-command",
+            "/bin/true"
+        ]));
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world-mail-smtp",
+                "127.0.0.1:25",
+                "--world-mail-from",
+                "x@y.z"
+            ])
+            .is_err(),
+            "mail needs --world"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world",
+                "--world-mail-smtp",
+                "not-an-address",
+                "--world-mail-from",
+                "x@y.z"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_serve_security_flags() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--bind",
+            "0.0.0.0",
+            "--web-token",
+            "t0k",
+            "--web",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--allow-node",
+            "aa,bb",
+            "--allow-node",
+            "cc",
+            "--open-writes",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                bind,
+                web_token,
+                web,
+                world,
+                world_admin_token,
+                allow_node,
+                open_writes,
+                ..
+            }) => {
+                assert!(bind.is_unspecified());
+                assert_eq!(web_token.as_deref(), Some("t0k"));
+                assert!(web);
+                assert!(world);
+                assert_eq!(world_admin_token.as_deref(), Some("admin"));
+                assert_eq!(allow_node, vec!["aa", "bb", "cc"]);
+                assert!(open_writes);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        // Over Iroh the lobby needs no web server.
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world", "--world-admin-token", "x"]).is_ok()
+        );
+        // `--world` is refused before serve starts when its prerequisites are
+        // missing (clap requirement plus the serve-time validation).
+        assert!(Cli::try_parse_from(["id", "serve", "--world"]).is_err());
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--web", "--world"]).is_err(),
+            "an empty admin secret must not be accepted"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_id_client() {
+        let cli = Cli::parse_from(["id", "id", "--client"]);
+        assert!(matches!(cli.command, Some(Command::Id { client: true })));
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_binary_inputs() {
+        let cli = Cli::parse_from(["id", "tag", "set", "f", "k", "--value-hex", "deadbeef"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                value,
+                value_hex,
+                value_file,
+                ..
+            })) => {
+                assert!(value.is_none());
+                assert_eq!(value_hex.as_deref(), Some("deadbeef"));
+                assert!(value_file.is_none());
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+        let cli = Cli::parse_from(["id", "tag", "set", "f", "k", "--value-file", "-"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::Set {
+                value_file: Some(_),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_tag_set_value_inputs_conflict() {
+        assert!(
+            Cli::try_parse_from(["id", "tag", "set", "f", "k", "v", "--value-hex", "00"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "tag",
+                "set",
+                "f",
+                "k",
+                "--value-hex",
+                "00",
+                "--value-file",
+                "x"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["id", "tag", "del", "f", "k", "v", "--value-hex", "00"]).is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_commands() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--addr",
+            "127.0.0.1:9",
+            "--no-relay",
+        ]);
+        match cli.command {
+            Some(Command::World(WorldCommand::Invite {
+                admin_token,
+                name,
+                addrs,
+                no_relay,
+                ..
+            })) => {
+                assert_eq!(admin_token, "t");
+                assert_eq!(name, "ann");
+                assert_eq!(addrs.len(), 1);
+                assert!(no_relay);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--after",
+            "7",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(WorldCommand::Join { after: Some(7), .. }))
+        ));
     }
 }

@@ -81,15 +81,19 @@ use futures_lite::StreamExt;
 use iroh::endpoint::{Connection, Endpoint, presets};
 use iroh_base::EndpointId;
 use iroh_blobs::{
-    ALPN as BLOBS_ALPN, BlobFormat, Hash,
-    api::{Store, blobs::AddBytesOptions},
+    ALPN as BLOBS_ALPN, Hash,
+    api::Store,
     protocol::{ChunkRanges, ChunkRangesSeq, PushRequest},
 };
 use std::{io::Read, path::PathBuf};
 use tokio::fs as afs;
 
 use crate::commands::client::create_local_client_endpoint;
+use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
+use crate::commands::tag::{self as tag, TagDisplayOptions};
+use crate::local::LocalNode;
+use crate::meta_client::{MetaRequester, expect_ok, request_over};
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
     export_blob, is_node_id, load_or_create_keypair, open_store,
@@ -156,8 +160,9 @@ pub enum ReplContextInner {
     /// All operations go directly to the local blob store.
     /// No networking is available in this mode.
     Local {
-        /// The local blob store
-        store: StoreType,
+        /// The local stores (blobs, iroh-docs, tags); requests are answered
+        /// in-process by the same handler a server uses.
+        node: Box<LocalNode>,
     },
     /// Connected to a remote peer node over the network.
     ///
@@ -241,9 +246,11 @@ impl ReplContext {
                 session_target: None,
             })
         } else {
-            let store = open_store(false).await?;
+            let node = LocalNode::open(false).await?;
             Ok(Self {
-                inner: ReplContextInner::Local { store },
+                inner: ReplContextInner::Local {
+                    node: Box::new(node),
+                },
                 session_target: None,
             })
         }
@@ -286,7 +293,7 @@ impl ReplContext {
     pub fn store_handle(&self) -> Store {
         match &self.inner {
             ReplContextInner::Remote { store, .. } => store.as_store(),
-            ReplContextInner::Local { store } => store.as_store(),
+            ReplContextInner::Local { node } => node.blobs(),
             ReplContextInner::RemoteNode { store, .. } => store.as_store(),
         }
     }
@@ -431,8 +438,8 @@ impl ReplContext {
                 }
                 _ => bail!("unexpected response"),
             }
-        } else if let ReplContextInner::Local { store } = &self.inner {
-            let store_handle = store.as_store();
+        } else if let ReplContextInner::Local { node } = &self.inner {
+            let store_handle = node.blobs();
             let mut list = store_handle.tags().list().await?;
             let mut count = 0;
             while let Some(item) = list.next().await {
@@ -458,8 +465,12 @@ impl ReplContext {
     /// # Protocol Flow (connected mode)
     ///
     /// 1. Read data from source and add to local store
-    /// 2. Send `MetaRequest::Put { filename, hash }` to register the name
-    /// 3. Push blob data via `BLOBS_ALPN` connection
+    /// 2. Push blob data via `BLOBS_ALPN` connection
+    /// 3. Send `MetaRequest::Put { filename, hash }` to register the name
+    ///
+    /// The order matters: the server verifies the blob is present before it
+    /// creates the name. In local mode step 2 is skipped and step 3 is
+    /// answered in-process.
     ///
     /// # Errors
     ///
@@ -490,54 +501,28 @@ impl ReplContext {
             (data, filename)
         };
 
+        let store_handle = self.store_handle();
+        let (hash, _guard) = add_raw(&store_handle, data).await?;
+
+        // Bytes first, name second: the server refuses to name a blob it does
+        // not have, so a failed push can never leave a dangling name.
         if self.is_connected() {
-            let hash = {
-                let store_handle = self.store_handle();
-                let result = store_handle
-                    .add_bytes_with_opts(AddBytesOptions {
-                        data: data.into(),
-                        format: BlobFormat::Raw,
-                    })
-                    .await?;
-                result.hash
-            };
-
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::Put {
-                filename: filename.clone(),
-                hash,
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-
-            match resp {
-                MetaResponse::Put { success: true } => {
-                    let blobs_conn = self.blobs_conn().await?.clone();
-                    let store_handle = self.store_handle();
-                    let push_request =
-                        PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
-                    store_handle
-                        .remote()
-                        .execute_push(blobs_conn, push_request)
-                        .await?;
-                    println!("stored: {filename} -> {hash}");
-                }
-                MetaResponse::Put { success: false } => bail!("server rejected"),
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            let store_handle = self.store_handle();
-            let result = store_handle
-                .add_bytes_with_opts(AddBytesOptions {
-                    data: data.into(),
-                    format: BlobFormat::Raw,
-                })
+            let blobs_conn = self.blobs_conn().await?.clone();
+            let push_request =
+                PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
+            store_handle
+                .remote()
+                .execute_push(blobs_conn, push_request)
                 .await?;
-            store_handle.tags().set(&filename, result.hash).await?;
-            println!("stored: {} -> {}", filename, result.hash);
+        }
+        let put = MetaRequest::Put {
+            filename: filename.clone(),
+            hash,
+        };
+        match expect_ok(self.request(put).await?)? {
+            MetaResponse::Put { success: true } => println!("stored: {filename} -> {hash}"),
+            MetaResponse::Put { success: false } => bail!("server rejected"),
+            _ => bail!("unexpected response"),
         }
         Ok(())
     }
@@ -628,26 +613,13 @@ impl ReplContext {
     ///
     /// Returns an error if the name is not found.
     pub async fn delete(&mut self, name: &str) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::Delete {
-                filename: name.to_owned(),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-
-            match resp {
-                MetaResponse::Delete { success: true } => println!("deleted: {name}"),
-                MetaResponse::Delete { success: false } => bail!("not found: {name}"),
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            let store_handle = self.store_handle();
-            store_handle.tags().delete(name).await?;
-            println!("deleted: {name}");
+        let req = MetaRequest::Delete {
+            filename: name.to_owned(),
+        };
+        match expect_ok(self.request(req).await?)? {
+            MetaResponse::Delete { success: true } => println!("deleted: {name}"),
+            MetaResponse::Delete { success: false } => bail!("not found: {name}"),
+            _ => bail!("unexpected response"),
         }
         Ok(())
     }
@@ -666,67 +638,14 @@ impl ReplContext {
     ///
     /// Returns an error if `from` is not found.
     pub async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::Rename {
-                from: from.to_owned(),
-                to: to.to_owned(),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-
-            match resp {
-                MetaResponse::Rename { success: true } => println!("renamed: {from} -> {to}"),
-                MetaResponse::Rename { success: false } => bail!("not found: {from}"),
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            let store_handle = self.store_handle();
-            let tag = store_handle
-                .tags()
-                .get(from)
-                .await?
-                .ok_or_else(|| anyhow!("not found: {from}"))?;
-            let hash = tag.hash;
-
-            // Archive replaced file if target already exists
-            if let Ok(Some(existing)) = store_handle.tags().get(to).await {
-                let ts = crate::tags::now_unix();
-                let archive_name = format!("{to}.archive.{ts}");
-                let _ = store_handle.tags().set(&archive_name, existing.hash).await;
-            }
-
-            store_handle.tags().set(to, hash).await?;
-
-            // Archive original
-            {
-                let ts = crate::tags::now_unix();
-                let archive_name = format!("{from}.archive.{ts}");
-                let _ = store_handle.tags().set(&archive_name, hash).await;
-            }
-
-            // Update metadata tags
-            {
-                if let Ok(mut meta) = crate::tags::load_meta(&store_handle).await {
-                    crate::tags::transfer_tags(&mut meta, from, to);
-                    let hash_str = hash.to_string();
-                    let archive_name = format!("{from}.archive.{}", crate::tags::now_unix());
-                    crate::tags::add_archive_tag(
-                        &mut meta,
-                        from,
-                        &archive_name,
-                        &hash_str,
-                        "rename",
-                    );
-                    let _ = crate::tags::save_meta(&store_handle, &meta).await;
-                }
-            }
-
-            store_handle.tags().delete(from).await?;
-            println!("renamed: {from} -> {to}");
+        let req = MetaRequest::Rename {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        };
+        match expect_ok(self.request(req).await?)? {
+            MetaResponse::Rename { success: true } => println!("renamed: {from} -> {to}"),
+            MetaResponse::Rename { success: false } => bail!("not found: {from}"),
+            _ => bail!("unexpected response"),
         }
         Ok(())
     }
@@ -745,32 +664,14 @@ impl ReplContext {
     ///
     /// Returns an error if `from` is not found.
     pub async fn copy(&mut self, from: &str, to: &str) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::Copy {
-                from: from.to_owned(),
-                to: to.to_owned(),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-
-            match resp {
-                MetaResponse::Copy { success: true } => println!("copied: {from} -> {to}"),
-                MetaResponse::Copy { success: false } => bail!("not found: {from}"),
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            let store_handle = self.store_handle();
-            let tag = store_handle
-                .tags()
-                .get(from)
-                .await?
-                .ok_or_else(|| anyhow!("not found: {from}"))?;
-            store_handle.tags().set(to, tag.hash).await?;
-            println!("copied: {from} -> {to}");
+        let req = MetaRequest::Copy {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        };
+        match expect_ok(self.request(req).await?)? {
+            MetaResponse::Copy { success: true } => println!("copied: {from} -> {to}"),
+            MetaResponse::Copy { success: false } => bail!("not found: {from}"),
+            _ => bail!("unexpected response"),
         }
         Ok(())
     }
@@ -886,46 +787,14 @@ impl ReplContext {
     /// * `key` - The tag key
     /// * `value` - Optional tag value
     pub async fn set_tag(&mut self, subject: &str, key: &str, value: Option<&str>) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::SetTag {
-                subject: subject.to_owned(),
-                key: key.to_owned(),
-                value: value.map(String::from),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-            match resp {
-                MetaResponse::SetTag { success } => {
-                    if success {
-                        if let Some(v) = value {
-                            println!("tag set: {subject} [{key}={v}]");
-                        } else {
-                            println!("tag set: {subject} [{key}]");
-                        }
-                    } else {
-                        println!("failed to set tag (server has no TagStore)");
-                    }
-                }
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            // Local mode: use legacy MetaDoc
-            let store = self.store_handle();
-            let mut meta = crate::tags::load_meta(&store).await?;
-            let now = crate::tags::now_unix();
-            crate::tags::add_tag(&mut meta, subject, key, value, None);
-            crate::tags::save_meta(&store, &meta).await?;
-            if let Some(v) = value {
-                println!("tag set: {subject} [{key}={v}] (legacy, ts={now})");
-            } else {
-                println!("tag set: {subject} [{key}] (legacy, ts={now})");
-            }
-        }
-        Ok(())
+        tag::run_set(
+            self,
+            subject,
+            key,
+            value.map(str::as_bytes),
+            &TagDisplayOptions::default(),
+        )
+        .await
     }
 
     /// Delete a metadata tag from a file.
@@ -933,32 +802,7 @@ impl ReplContext {
     /// In connected mode, sends a `DelTag` request to the server.
     /// In local mode, uses the legacy `MetaDoc` system.
     pub async fn del_tag(&mut self, subject: &str, key: &str, value: Option<&str>) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::DelTag {
-                subject: subject.to_owned(),
-                key: key.to_owned(),
-                value: value.map(String::from),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-            match resp {
-                MetaResponse::DelTag { success } => {
-                    if success {
-                        println!("tag deleted: {subject} [{key}]");
-                    } else {
-                        println!("failed to delete tag");
-                    }
-                }
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            println!("tag delete not supported in local mode (no TagStore)");
-        }
-        Ok(())
+        tag::run_del(self, subject, key, value.map(str::as_bytes)).await
     }
 
     /// List metadata tags for a file or all files.
@@ -966,67 +810,7 @@ impl ReplContext {
     /// In connected mode, sends a `GetTags` request to the server.
     /// In local mode, uses the legacy `MetaDoc` system.
     pub async fn get_tags(&mut self, subject: Option<&str>) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::GetTags {
-                subject: subject.map(String::from),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(1024 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-            match resp {
-                MetaResponse::GetTags { tags } => {
-                    if tags.is_empty() {
-                        if let Some(s) = subject {
-                            println!("(no tags for {s})");
-                        } else {
-                            println!("(no tags)");
-                        }
-                    } else {
-                        for (subj, key, value) in &tags {
-                            if let Some(v) = value {
-                                let v = crate::commands::tag::TagDisplayOptions::default()
-                                    .format_value(v);
-                                println!("  {subj}  [{key}={v}]");
-                            } else {
-                                println!("  {subj}  [{key}]");
-                            }
-                        }
-                        println!("{} tag(s)", tags.len());
-                    }
-                }
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            // Local mode: use legacy MetaDoc
-            let store = self.store_handle();
-            let meta = crate::tags::load_meta(&store).await?;
-            let tags: Vec<_> = if let Some(subj) = subject {
-                meta.tags.iter().filter(|t| t.subject == subj).collect()
-            } else {
-                meta.tags.iter().collect()
-            };
-            if tags.is_empty() {
-                if let Some(s) = subject {
-                    println!("(no tags for {s})");
-                } else {
-                    println!("(no tags)");
-                }
-            } else {
-                for t in &tags {
-                    if let Some(v) = &t.value {
-                        let v = crate::commands::tag::TagDisplayOptions::default().format_value(v);
-                        println!("  {}  [{}={}]", t.subject, t.key, v);
-                    } else {
-                        println!("  {}  [{}]", t.subject, t.key);
-                    }
-                }
-                println!("{} tag(s)", tags.len());
-            }
-        }
-        Ok(())
+        tag::run_list(self, subject, &TagDisplayOptions::default()).await
     }
 
     /// Search tags using structured query syntax.
@@ -1036,81 +820,7 @@ impl ReplContext {
     ///
     /// In connected mode, sends a `SearchTags` request to the server.
     pub async fn search_tags(&mut self, query: &str) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::SearchTags {
-                query: query.to_owned(),
-            })?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(1024 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-            match resp {
-                MetaResponse::SearchTags { tags } => {
-                    if tags.is_empty() {
-                        println!("(no matching tags)");
-                    } else {
-                        for (subj, k, v) in &tags {
-                            if let Some(val) = v {
-                                let val = crate::commands::tag::TagDisplayOptions::default()
-                                    .format_value(val);
-                                println!("  {subj}  [{k}={val}]");
-                            } else {
-                                println!("  {subj}  [{k}]");
-                            }
-                        }
-                        println!("{} tag(s)", tags.len());
-                    }
-                }
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            // Local mode: search via legacy MetaDoc with search query parser
-            let store = self.store_handle();
-            let meta = crate::tags::load_meta(&store).await?;
-            let search_terms = crate::tags::parse_search_query(query);
-            let tags: Vec<_> = meta
-                .tags
-                .iter()
-                .filter(|t| {
-                    search_terms.iter().all(|term| {
-                        use crate::tags::SearchTerm;
-                        match term {
-                            SearchTerm::KeyOnly(k) => t.key == *k,
-                            SearchTerm::ValueOnly(v) => t.value.as_deref() == Some(v.as_str()),
-                            SearchTerm::KeyValue(k, v) => {
-                                t.key == *k && t.value.as_deref() == Some(v.as_str())
-                            }
-                            SearchTerm::Literal(text) | SearchTerm::BareWord(text) => {
-                                let text_lower = text.to_lowercase();
-                                t.subject.to_lowercase().contains(&text_lower)
-                                    || t.key.to_lowercase().contains(&text_lower)
-                                    || t.value
-                                        .as_deref()
-                                        .unwrap_or("")
-                                        .to_lowercase()
-                                        .contains(&text_lower)
-                            }
-                        }
-                    })
-                })
-                .collect();
-            if tags.is_empty() {
-                println!("(no matching tags)");
-            } else {
-                for t in &tags {
-                    if let Some(v) = &t.value {
-                        let v = crate::commands::tag::TagDisplayOptions::default().format_value(v);
-                        println!("  {}  [{}={}]", t.subject, t.key, v);
-                    } else {
-                        println!("  {}  [{}]", t.subject, t.key);
-                    }
-                }
-                println!("{} tag(s)", tags.len());
-            }
-        }
-        Ok(())
+        tag::run_search(self, query, &TagDisplayOptions::default()).await
     }
 
     /// Migrate all existing blob tags to have name/file auto-tags.
@@ -1118,24 +828,7 @@ impl ReplContext {
     /// In connected mode, sends `MetaRequest::MigrateTags` to the serve
     /// instance. In local mode, prints a message since `TagStore` is required.
     pub async fn migrate_tags(&mut self) -> Result<()> {
-        if self.is_connected() {
-            let meta_conn = self.meta_conn().await?;
-            let (mut send, mut recv) = meta_conn.open_bi().await?;
-            let req = postcard::to_allocvec(&MetaRequest::MigrateTags)?;
-            send.write_all(&req).await?;
-            send.finish()?;
-            let resp_buf = recv.read_to_end(1024 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-            match resp {
-                MetaResponse::MigrateTags { migrated } => {
-                    println!("migrated {migrated} file(s)");
-                }
-                _ => bail!("unexpected response"),
-            }
-        } else {
-            println!("migrate-tags requires a running serve instance (id serve)");
-        }
-        Ok(())
+        tag::run_migrate(self).await
     }
 
     /// List files on a specific remote node using @`NODE_ID` syntax.
@@ -1227,44 +920,18 @@ impl ReplContext {
             (data, filename)
         };
 
-        let hash = {
-            let store_handle = self.store_handle();
-            let result = store_handle
-                .add_bytes_with_opts(AddBytesOptions {
-                    data: data.into(),
-                    format: BlobFormat::Raw,
-                })
-                .await?;
-            result.hash
-        };
-
-        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
-        let (mut send, mut recv) = meta_conn.open_bi().await?;
-        let req = postcard::to_allocvec(&MetaRequest::Put {
-            filename: filename.clone(),
+        let store_handle = self.store_handle();
+        let (hash, _guard) = add_raw(&store_handle, data).await?;
+        // Bytes first, name second (see `put`).
+        push_and_name(
+            &store_handle,
+            endpoint,
+            iroh::EndpointAddr::from(node_id),
+            &filename,
             hash,
-        })?;
-        send.write_all(&req).await?;
-        send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
-
-        match resp {
-            MetaResponse::Put { success: true } => {
-                let blobs_conn = endpoint.connect(node_id, BLOBS_ALPN).await?;
-                let store_handle = self.store_handle();
-                let push_request =
-                    PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
-                store_handle
-                    .remote()
-                    .execute_push(blobs_conn, push_request)
-                    .await?;
-                println!("stored: {} -> {} (@{})", filename, hash, &node_str[..8]);
-            }
-            MetaResponse::Put { success: false } => bail!("server rejected"),
-            _ => bail!("unexpected response"),
-        }
-        meta_conn.close(0u32.into(), b"done");
+        )
+        .await?;
+        println!("stored: {} -> {} (@{})", filename, hash, &node_str[..8]);
         Ok(())
     }
 
@@ -1497,10 +1164,22 @@ impl ReplContext {
                 endpoint.close().await;
                 store.shutdown().await?;
             }
-            ReplContextInner::Local { store } => {
-                store.shutdown().await?;
+            ReplContextInner::Local { node } => {
+                node.shutdown().await?;
             }
         }
         Ok(())
+    }
+}
+
+impl MetaRequester for ReplContext {
+    /// Answer a meta request: over QUIC when connected to a server or peer,
+    /// in-process (via the same handler) in local mode.
+    async fn request(&mut self, req: MetaRequest) -> Result<MetaResponse> {
+        if let ReplContextInner::Local { node } = &self.inner {
+            return Ok(node.request(req).await);
+        }
+        let conn = self.meta_conn().await?;
+        request_over(conn, &req).await
     }
 }

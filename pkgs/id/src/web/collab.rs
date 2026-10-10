@@ -617,7 +617,7 @@ impl CollabMessage {
 /// Extract binary data from a WebSocket message (handles both Binary and legacy Text).
 fn extract_binary(msg: &Message) -> Option<Vec<u8>> {
     match msg {
-        Message::Binary(data) => Some(data.clone()),
+        Message::Binary(data) => Some(data.to_vec()),
         _ => None,
     }
 }
@@ -724,7 +724,7 @@ async fn handle_collab_socket(
                                         name: Some(display_name.clone()),
                                         token: Some(fresh_token),
                                     };
-                                    if sender.send(Message::Binary(auth_ok.encode())).await.is_err() {
+                                    if sender.send(Message::Binary(auth_ok.encode().into())).await.is_err() {
                                         tracing::warn!("[collab] Client disconnected during auth response");
                                         doc.client_disconnected().await;
                                         return;
@@ -771,7 +771,11 @@ async fn handle_collab_socket(
         doc.version()
     );
 
-    if sender.send(Message::Binary(init_bytes)).await.is_err() {
+    if sender
+        .send(Message::Binary(init_bytes.into()))
+        .await
+        .is_err()
+    {
         tracing::warn!("[collab] Client disconnected during init send");
         doc.client_disconnected().await;
         return;
@@ -798,7 +802,11 @@ async fn handle_collab_socket(
                 catch_up_bytes.len()
             );
 
-            if sender.send(Message::Binary(catch_up_bytes)).await.is_err() {
+            if sender
+                .send(Message::Binary(catch_up_bytes.into()))
+                .await
+                .is_err()
+            {
                 tracing::warn!("[collab] Client disconnected during catch-up send");
                 doc.client_disconnected().await;
                 return;
@@ -833,7 +841,7 @@ async fn handle_collab_socket(
                 idle_secs: Some(idle_secs),
             };
             if sender
-                .send(Message::Binary(cursor_msg.encode()))
+                .send(Message::Binary(cursor_msg.encode().into()))
                 .await
                 .is_err()
             {
@@ -873,7 +881,7 @@ async fn handle_collab_socket(
                 Ok(msg) => {
                     let bytes = msg.encode();
                     let mut sender = sender_for_broadcast.lock().await;
-                    if sender.send(Message::Binary(bytes)).await.is_err() {
+                    if sender.send(Message::Binary(bytes.into())).await.is_err() {
                         break; // Client disconnected
                     }
                 }
@@ -889,7 +897,9 @@ async fn handle_collab_socket(
                         error: format!("Session desynchronized: {n} messages lost"),
                     };
                     let mut sender = sender_for_broadcast.lock().await;
-                    let _ = sender.send(Message::Binary(error_msg.encode())).await;
+                    let _ = sender
+                        .send(Message::Binary(error_msg.encode().into()))
+                        .await;
                     break; // Stop broadcasting — client will reconnect
                 }
                 Err(broadcast::error::RecvError::Closed) => {
@@ -937,10 +947,10 @@ async fn handle_collab_socket(
                         "[collab] Sending empty text message (cursor refresh trigger), idle={}s",
                         elapsed.as_secs()
                     );
-                    sender.send(Message::Text(String::new())).await
+                    sender.send(Message::Text(String::new().into())).await
                 } else {
                     tracing::debug!("[collab] Sending ping, idle={}s", elapsed.as_secs());
-                    sender.send(Message::Ping(vec![])).await
+                    sender.send(Message::Ping(Vec::<u8>::new().into())).await
                 };
 
                 if result.is_err() {
@@ -955,7 +965,7 @@ async fn handle_collab_socket(
     // If we buffered a non-AUTH message during the auth phase, process it first.
     let buffered_iter = buffered_msg
         .take()
-        .map(|m| Ok(Message::Binary(m.encode())))
+        .map(|m| Ok(Message::Binary(m.encode().into())))
         .into_iter();
     let ws_stream = futures::stream::iter(buffered_iter).chain(receiver);
     tokio::pin!(ws_stream);
@@ -998,7 +1008,7 @@ async fn handle_collab_socket(
                                 version
                             );
                             let mut sender = sender.lock().await;
-                            let _ = sender.send(Message::Binary(error_msg.encode())).await;
+                            let _ = sender.send(Message::Binary(error_msg.encode().into())).await;
                             continue;
                         }
 
@@ -1038,7 +1048,7 @@ async fn handle_collab_socket(
                             new_version
                         );
                         let mut sender = sender.lock().await;
-                        let _ = sender.send(Message::Binary(ack.encode())).await;
+                        let _ = sender.send(Message::Binary(ack.encode().into())).await;
                     }
                     CollabMessage::Cursor {
                         client_id,
