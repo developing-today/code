@@ -69,9 +69,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             world,
             addrs,
             no_relay,
+            expires_in,
+            uses,
         } => {
+            crate::world_session::check_invite_bounds(expires_in, uses)
+                .map_err(anyhow::Error::msg)?;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let result = client.invite(&admin_token, &name).await;
+            let result = client.invite(&admin_token, &name, expires_in, uses).await;
             client.close();
             endpoint.close().await;
             // Only the capability goes to stdout, so it can be captured.

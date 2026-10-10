@@ -1202,6 +1202,80 @@ mod serve_tests {
     }
 
     #[test]
+    fn test_world_invite_bounds_from_the_cli() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &["--world", "--world-admin-token", "adm"],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+
+        for (args, reason) in [
+            (&["--expires-in", "31d"][..], "30 days"),
+            (&["--expires-in", "0h"][..], "1 second"),
+            (&["--expires-in", "2w"][..], "needs a unit"),
+            (&["--uses", "0"][..], "uses must be at least 1"),
+        ] {
+            let mut full = [
+                "invite",
+                node.as_str(),
+                "--admin-token",
+                "adm",
+                "--name",
+                "ann",
+            ]
+            .to_vec();
+            full.extend_from_slice(args);
+            let refused = world(&full).output().unwrap();
+            assert!(!refused.status.success(), "{args:?} should be refused");
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains(reason),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            assert!(
+                refused.stdout.is_empty(),
+                "nothing may be printed on refusal"
+            );
+        }
+
+        let invited = world(&[
+            "invite",
+            &node,
+            "--admin-token",
+            "adm",
+            "--name",
+            "ann",
+            "--expires-in",
+            "12h",
+            "--uses",
+            "2",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
+    }
+
+    #[test]
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

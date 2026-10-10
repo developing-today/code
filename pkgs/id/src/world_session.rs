@@ -308,18 +308,33 @@ pub const INVITE_DEFAULT_SECS: u64 = 7 * 24 * 60 * 60;
 /// Longest lifetime an invite may be given.
 pub const INVITE_MAX_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// Check an invite's requested lifetime and use limit. The host applies it to
+/// every invite, and `id world invite` applies it before dialing.
+///
+/// # Errors
+///
+/// Returns the refusal reason for a lifetime outside 1 second to 30 days, or a
+/// use limit below one.
+pub fn check_invite_bounds(
+    expires_in_secs: Option<u64>,
+    uses: Option<u32>,
+) -> Result<(), &'static str> {
+    if expires_in_secs.is_some_and(|secs| secs == 0 || secs > INVITE_MAX_SECS) {
+        return Err("invite lifetime must be from 1 second to 30 days");
+    }
+    if uses == Some(0) {
+        return Err("uses must be at least 1");
+    }
+    Ok(())
+}
+
 fn invite_bounds(
     expires_in_secs: Option<u64>,
     uses: Option<u32>,
     now_ms: u64,
 ) -> Result<CapabilityBounds, &'static str> {
+    check_invite_bounds(expires_in_secs, uses)?;
     let secs = expires_in_secs.unwrap_or(INVITE_DEFAULT_SECS);
-    if secs == 0 || secs > INVITE_MAX_SECS {
-        return Err("expires_in_secs must be from 1 to 2592000 (30 days)");
-    }
-    if uses == Some(0) {
-        return Err("uses must be at least 1");
-    }
     Ok(CapabilityBounds {
         expires_at: Some(now_ms.saturating_add(secs * 1000)),
         uses,
