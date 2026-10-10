@@ -107,7 +107,10 @@
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             # Configure cargo to use vendored dependencies (nix sandbox has no network)
-            cat >> .cargo/config.toml << EOF
+            export SQLITE3_DIR="${cargoDeps}/libsql-ffi-0.5.0/sqlite3"
+              export CC_x86_64_unknown_linux_gnu="gcc"
+              chmod -R +w ${cargoDeps} || true
+              cat >> .cargo/config.toml << EOF
 
             [source.crates-io]
             replace-with = "vendored-sources"
@@ -185,6 +188,9 @@
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               # Configure cargo to use vendored dependencies (nix sandbox has no network)
+              export SQLITE3_DIR="${cargoDeps}/libsql-ffi-0.5.0/sqlite3"
+              export CC_x86_64_unknown_linux_gnu="gcc"
+              chmod -R +w ${cargoDeps} || true
               cat >> .cargo/config.toml << EOF
 
               [source.crates-io]
@@ -353,6 +359,9 @@
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               # Configure cargo to use vendored dependencies (nix sandbox has no network)
+              export SQLITE3_DIR="${cargoDeps}/libsql-ffi-0.5.0/sqlite3"
+              export CC_x86_64_unknown_linux_gnu="gcc"
+              chmod -R +w ${cargoDeps} || true
               cat >> .cargo/config.toml << EOF
 
               [source.crates-io]

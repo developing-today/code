@@ -14,6 +14,7 @@ import { keymap } from "prosemirror-keymap";
 import {
   findNext,
   findPrev,
+  getMatchHighlights,
   getSearchState,
   replaceAll,
   replaceNext,
@@ -54,15 +55,10 @@ function countMatches(view: EditorView): number {
   const ss = getSearchState(view.state);
   if (!ss || !ss.query.valid) return 0;
 
-  let count = 0;
-  let result = ss.query.findNext(view.state, 0);
-  const seen = new Set<number>();
-  while (result && !seen.has(result.from)) {
-    seen.add(result.from);
-    count++;
-    result = ss.query.findNext(view.state, result.to);
-  }
-  return count;
+  // ⚡ Bolt Optimization: Use pre-calculated decorations instead of traversing the document again
+  // The prosemirror-search plugin already finds all matches and stores them as decorations.
+  // getMatchHighlights(...).find().length is O(M) (where M is number of matches) compared to O(N) (N = doc size) for the previous loop traversal.
+  return getMatchHighlights(view.state).find().length;
 }
 
 /** Update match count label. */
