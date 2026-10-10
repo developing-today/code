@@ -295,6 +295,9 @@ const ENVELOPE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// How far ahead of the receiving clock an envelope may be dated.
 const ENVELOPE_SKEW_MS: u64 = 5 * 60 * 1000;
 
+/// Friend requests one sender account may have pending on a server at once.
+pub const MAX_PENDING_FRIEND_REQUESTS: usize = 20;
+
 /// A friend request or acceptance, signed by its sender's account key. Anyone
 /// holding it can check the signature without asking the server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1143,6 +1146,14 @@ impl Directory {
             NotFound,
             "envelope is for no account on this server"
         );
+        if matches!(envelope.kind, EnvelopeKind::FriendRequest) {
+            refuse_unless!(
+                self.pending_from(&envelope.from) < MAX_PENDING_FRIEND_REQUESTS,
+                Forbidden,
+                "{} already has {MAX_PENDING_FRIEND_REQUESTS} friend requests pending on this server",
+                envelope.from
+            );
+        }
         let entry = match (envelope.kind, &envelope.request) {
             (EnvelopeKind::FriendRequest, None) => DirectoryEntry::FriendRequested {
                 from: envelope.from.clone(),
@@ -1159,6 +1170,13 @@ impl Directory {
         };
         self.apply(&entry)?;
         Ok(Received::Applied(entry))
+    }
+
+    fn pending_from(&self, from: &str) -> usize {
+        self.requests
+            .keys()
+            .filter(|(sender, _)| sender == from)
+            .count()
     }
 
     fn pending_id(&self, from: &str, to: &str) -> Option<String> {
@@ -1422,10 +1440,11 @@ impl Directory {
                 id,
             } => {
                 let Some(pending) = self.requests.get(&(from.clone(), to.clone())) else {
-                    bail!("no pending request from {from} to {to}");
+                    refuse!(Conflict, "no pending request from {from} to {to}");
                 };
-                ensure!(
+                refuse_unless!(
                     pending == request,
+                    Conflict,
                     "no pending request {} from {from} to {to}",
                     request.as_deref().unwrap_or("without an ID")
                 );
@@ -2001,9 +2020,10 @@ mod tests {
         home.remove_friend(&ann_credential, &bo).unwrap();
         home.request_friend(&ann_credential, &bo, "away", 3)
             .unwrap();
+        let stale = home.receive(&second, "home", 3).unwrap_err();
         assert!(
-            home.receive(&second, "home", 3).is_err(),
-            "an acceptance of a consumed request is refused"
+            matches!(stale.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
+            "an acceptance of a consumed request is refused: {stale:#}"
         );
         assert_eq!(
             home.receive(&accept, "home", 3).unwrap(),
@@ -2072,6 +2092,32 @@ mod tests {
         )
         .unwrap();
         assert!(home.receive(&unnamed, "home", 2).is_err());
+    }
+
+    #[test]
+    fn a_sender_has_at_most_twenty_requests_pending_on_a_server() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (_, ann_credential) = account(&mut home, "Ann");
+        for n in 0..=MAX_PENDING_FRIEND_REQUESTS {
+            let (bo, _) = account(&mut away, &format!("Bo {n}"));
+            let (request, _) = home
+                .request_friend(&ann_credential, &bo, "away", 1)
+                .unwrap();
+            let received = away.receive(&request, "away", 1);
+            if n < MAX_PENDING_FRIEND_REQUESTS {
+                assert!(matches!(received.unwrap(), Received::Applied(_)));
+            } else {
+                let refused = received.unwrap_err();
+                assert!(
+                    matches!(
+                        refused.downcast_ref::<Refusal>(),
+                        Some(Refusal::Forbidden(_))
+                    ),
+                    "the request past the cap is refused: {refused:#}"
+                );
+            }
+        }
     }
 
     #[test]

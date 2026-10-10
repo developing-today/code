@@ -10,10 +10,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::directory::{
-    Actor, Directory, Envelope, Level, Member, Refusal, normalize_email, normalize_key,
+    Actor, Directory, Envelope, EnvelopeKind, Level, Member, Received, Refusal, normalize_email,
+    normalize_key,
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
+use crate::envelope_outbox::{Entry, Finish, Outbox, check_url};
 use crate::world::WorldScopes;
 
 /// Who is looking at the directory.
@@ -79,6 +81,9 @@ pub struct DirectoryView {
     pub accounts: Vec<AccountView>,
     /// Public groups, every group the viewer belongs to, and every group for the admin.
     pub groups: Vec<GroupView>,
+    /// The viewer's own envelopes still in, or recently left, the outbox.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<DeliveryView>,
 }
 
 /// An account as one viewer sees it.
@@ -234,15 +239,21 @@ pub enum DirectoryAction {
         /// The level to hold, or none to remove.
         level: Option<Level>,
     },
-    /// Ask an account to be friends.
+    /// Ask an account to be friends. A remote account is signed for with the
+    /// viewer's credential and queued for its server.
     RequestFriend {
         /// The account asked.
         to: String,
+        /// Where the account lives, if it is on another server.
+        remote: Option<RemoteFriend>,
     },
-    /// Accept a friend request.
+    /// Accept a friend request. A remote requester is answered through its
+    /// server, signed with the viewer's credential.
     AcceptFriend {
         /// The account that asked.
         from: String,
+        /// Where the requester lives, if it is on another server.
+        remote: Option<RemoteFriend>,
     },
     /// Remove a friend, or withdraw a request.
     RemoveFriend {
@@ -261,11 +272,88 @@ pub enum DirectoryAction {
     },
 }
 
+/// Where an account on another server is reached.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteFriend {
+    /// The other server's base URL. Envelopes go to its `/envelope` route.
+    pub server: String,
+    /// The other server's world ID, which the envelope is addressed to.
+    pub audience: String,
+}
+
 impl DirectoryAction {
     /// Whether the action sends mail, and so needs a mail sink configured.
     #[must_use]
     pub const fn sends_mail(&self) -> bool {
         matches!(self, Self::AddEmail { .. } | Self::SignInEmail { .. })
+    }
+
+    /// Whether the action queues an envelope for another server.
+    #[must_use]
+    pub const fn sends_envelope(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestFriend {
+                remote: Some(_),
+                ..
+            } | Self::AcceptFriend {
+                remote: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+/// An envelope an action signed, for the caller to queue for another server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outbound {
+    /// The `/envelope` endpoint on the other server.
+    pub url: String,
+    /// The signed envelope.
+    pub envelope: Envelope,
+}
+
+/// What became of one of the viewer's envelopes in the outbox.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryView {
+    /// `friend request` or `friend acceptance`.
+    pub kind: String,
+    /// The account the envelope is for.
+    pub to: String,
+    /// `not yet delivered`, `delivered`, `refused: REASON`, or `gave up: REASON`.
+    pub status: String,
+}
+
+/// The viewer's own envelopes in the outbox. The admin sees all of them.
+#[must_use]
+pub fn deliveries(outbox: &Outbox, viewer: &str) -> Vec<DeliveryView> {
+    outbox
+        .entries()
+        .filter(|entry| match viewer {
+            "admin" => true,
+            "anonymous" => false,
+            account => entry.envelope.from == account,
+        })
+        .map(delivery)
+        .collect()
+}
+
+fn delivery(entry: &Entry) -> DeliveryView {
+    let kind = match entry.envelope.kind {
+        EnvelopeKind::FriendRequest => "friend request",
+        EnvelopeKind::FriendAccept => "friend acceptance",
+    };
+    let reason = entry.last_error.as_deref().unwrap_or("no reason given");
+    let status = match entry.finish {
+        None => "not yet delivered".to_owned(),
+        Some(Finish::Delivered) => "delivered".to_owned(),
+        Some(Finish::Refused) => format!("refused: {reason}"),
+        Some(Finish::GaveUp) => format!("gave up: {reason}"),
+    };
+    DeliveryView {
+        kind: kind.to_owned(),
+        to: entry.envelope.to.clone(),
+        status,
     }
 }
 
@@ -300,7 +388,9 @@ commands:
   group public ID yes|no              show a group to anonymous viewers
   group delete ID
   group member ID account:ID|group:N LEVEL|none
-  friend request|accept|remove ACCOUNT
+  friend request ACCOUNT [at URL for WORLD]   ask an account; a remote one needs its server and world
+  friend accept ACCOUNT [at URL for WORLD]    accept a request, likewise for a remote requester
+  friend remove ACCOUNT
   receive ENVELOPE_JSON               apply a friend envelope from another server
   verify ACCOUNT                      admin only
   help, quit";
@@ -371,12 +461,14 @@ pub fn parse_line(line: &str) -> Result<Line> {
         ),
         "friend" => match split_first(rest) {
             ("request", tail) => {
-                let [to] = words_n(&split_words(tail), "friend request ACCOUNT")?;
-                ("request_friend", vec![("to", to)])
+                let (to, remote) =
+                    friend_target(tail, "friend request ACCOUNT [at URL for WORLD]")?;
+                ("request_friend", friend_pairs("to", to, remote))
             }
             ("accept", tail) => {
-                let [from] = words_n(&split_words(tail), "friend accept ACCOUNT")?;
-                ("accept_friend", vec![("from", from)])
+                let (from, remote) =
+                    friend_target(tail, "friend accept ACCOUNT [at URL for WORLD]")?;
+                ("accept_friend", friend_pairs("from", from, remote))
             }
             ("remove", tail) => {
                 let [other] = words_n(&split_words(tail), "friend remove ACCOUNT")?;
@@ -393,6 +485,31 @@ pub fn parse_line(line: &str) -> Result<Line> {
         .collect();
     fields.insert("action".to_owned(), action.to_owned());
     Ok(Line::Action(action_from_fields(&fields)?))
+}
+
+/// `ACCOUNT`, or `ACCOUNT at URL for WORLD` for an account on another server.
+fn friend_target(tail: &str, usage: &str) -> Result<(String, Option<(String, String)>)> {
+    match split_words(tail).as_slice() {
+        [account] => Ok(((*account).to_owned(), None)),
+        [account, "at", server, "for", world] => Ok((
+            (*account).to_owned(),
+            Some(((*server).to_owned(), (*world).to_owned())),
+        )),
+        _ => bail!("usage: {usage}"),
+    }
+}
+
+fn friend_pairs(
+    key: &'static str,
+    account: String,
+    remote: Option<(String, String)>,
+) -> Vec<(&'static str, String)> {
+    let mut pairs = vec![(key, account)];
+    if let Some((server, audience)) = remote {
+        pairs.push(("server", server));
+        pairs.push(("audience", audience));
+    }
+    pairs
 }
 
 fn group_command(rest: &str) -> Result<(&'static str, Vec<(&'static str, String)>)> {
@@ -539,6 +656,30 @@ fn parse_member(text: &str) -> Result<Member> {
     bail!("a member is account:ID or group:N, not {text:?}")
 }
 
+/// The server and world a friend action names. Absent or blank fields mean the
+/// account is on this server.
+fn remote_of(fields: &BTreeMap<String, String>) -> Result<Option<RemoteFriend>> {
+    let server = fields
+        .get("server")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let audience = fields
+        .get("audience")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    match (server, audience) {
+        (None, None) => Ok(None),
+        (Some(server), Some(audience)) => {
+            check_url(server)?;
+            Ok(Some(RemoteFriend {
+                server: server.to_owned(),
+                audience: audience.to_owned(),
+            }))
+        }
+        _ => bail!("a friend on another server needs both its server URL and its world ID"),
+    }
+}
+
 /// Build an action from named fields. The field `action` names it, in the
 /// `snake_case` of the variant, and the rest are the variant's fields. Lists
 /// are comma-separated, and `-` is an empty list.
@@ -606,9 +747,11 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
         },
         "request_friend" => DirectoryAction::RequestFriend {
             to: field(fields, "to")?.to_owned(),
+            remote: remote_of(fields)?,
         },
         "accept_friend" => DirectoryAction::AcceptFriend {
             from: field(fields, "from")?.to_owned(),
+            remote: remote_of(fields)?,
         },
         "remove_friend" => DirectoryAction::RemoveFriend {
             other: field(fields, "other")?.to_owned(),
@@ -641,6 +784,12 @@ pub struct DirectoryOutcome {
     /// A message to send. Never serialized: it carries a code.
     #[serde(skip)]
     pub mail: Option<Mail>,
+    /// An envelope to queue for another server. Never serialized.
+    #[serde(skip)]
+    pub outbound: Option<Outbound>,
+    /// What receiving an envelope did. Never serialized.
+    #[serde(skip)]
+    pub received: Option<Received>,
 }
 
 impl std::fmt::Debug for DirectoryOutcome {
@@ -654,6 +803,8 @@ impl std::fmt::Debug for DirectoryOutcome {
             .field("session", &self.session.as_ref().map(|_| "[REDACTED]"))
             .field("mailed", &self.mailed)
             .field("mail", &self.mail.as_ref().map(|_| "[REDACTED]"))
+            .field("outbound", &self.outbound)
+            .field("received", &self.received)
             .finish()
     }
 }
@@ -676,6 +827,8 @@ pub fn run(
     let mut credential = None;
     let mut session = None;
     let mut mail = None;
+    let mut outbound = None;
+    let mut received = None;
     match action {
         DirectoryAction::View => {}
         DirectoryAction::SignUp { name } => {
@@ -807,20 +960,46 @@ pub fn run(
         } => {
             directory.set_member(actor_of(&viewer)?, group, member, level)?;
         }
-        DirectoryAction::RequestFriend { to } => {
+        DirectoryAction::RequestFriend { to, remote } => {
             let me = signed_in(&viewer)?;
-            directory.request_friend_as(me, &to)?;
+            match remote {
+                None => {
+                    directory.request_friend_as(me, &to)?;
+                }
+                Some(remote) => {
+                    let (envelope, _) = directory.request_friend(
+                        sender_credential(caller)?,
+                        &to,
+                        &remote.audience,
+                        now,
+                    )?;
+                    outbound = Some(outbound_to(&remote, envelope));
+                }
+            }
         }
-        DirectoryAction::AcceptFriend { from } => {
+        DirectoryAction::AcceptFriend { from, remote } => {
             let me = signed_in(&viewer)?;
-            directory.accept_friend_as(me, &from)?;
+            match remote {
+                None => {
+                    directory.accept_friend_as(me, &from)?;
+                }
+                Some(remote) => {
+                    let (envelope, _) = directory.accept_friend(
+                        sender_credential(caller)?,
+                        &from,
+                        &remote.audience,
+                        now,
+                    )?;
+                    outbound = Some(outbound_to(&remote, envelope));
+                }
+            }
         }
         DirectoryAction::RemoveFriend { other } => {
             let me = signed_in(&viewer)?;
             directory.remove_friend_as(me, &other)?;
         }
         DirectoryAction::Receive { envelope } => {
-            directory.receive(&envelope, world, now)?;
+            received = Some(directory.receive(&envelope, world, now)?);
         }
         DirectoryAction::Verify { account } => {
             directory.verify_account(actor_of(&viewer)?, &account)?;
@@ -832,11 +1011,26 @@ pub fn run(
         session,
         mailed: false,
         mail,
+        outbound,
+        received,
     })
 }
 
 fn unauthenticated(message: &str) -> anyhow::Error {
     anyhow!(Refusal::Unauthenticated(message.to_owned()))
+}
+
+fn sender_credential(caller: &Caller) -> Result<&str> {
+    caller.credential.as_deref().ok_or_else(|| {
+        unauthenticated("sending to an account on another server needs your credential")
+    })
+}
+
+fn outbound_to(remote: &RemoteFriend, envelope: Envelope) -> Outbound {
+    Outbound {
+        url: format!("{}/envelope", remote.server.trim_end_matches('/')),
+        envelope,
+    }
 }
 
 fn signed_in(viewer: &Viewer) -> Result<&str> {
@@ -926,6 +1120,7 @@ fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
         viewer: label,
         accounts,
         groups,
+        deliveries: Vec::new(),
     }
 }
 
@@ -1051,6 +1246,16 @@ pub fn render_text(view: &DirectoryView) -> String {
             ));
         }
     }
+    if !view.deliveries.is_empty() {
+        lines.push(String::new());
+        lines.push("deliveries:".to_owned());
+        for delivery in &view.deliveries {
+            lines.push(format!(
+                "  {}  {}  {}",
+                delivery.kind, delivery.to, delivery.status
+            ));
+        }
+    }
     let mut text = lines.join("\n");
     text.push('\n');
     text
@@ -1132,6 +1337,88 @@ mod tests {
             0,
             action,
         )
+    }
+
+    #[test]
+    fn a_remote_request_is_queued_for_its_server_and_received_there() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann_credential, ann) = sign(&mut home, "Ann");
+        let (_, bo) = sign(&mut away, "Bo");
+        let remote = DirectoryAction::RequestFriend {
+            to: bo.clone(),
+            remote: Some(RemoteFriend {
+                server: "https://away.example/".to_owned(),
+                audience: "lobby".to_owned(),
+            }),
+        };
+        let refused = act(&mut home, &Caller::default(), remote.clone()).unwrap_err();
+        assert!(matches!(
+            refused.downcast_ref::<Refusal>(),
+            Some(Refusal::Unauthenticated(_))
+        ));
+        let caller = Caller {
+            credential: Some(ann_credential),
+            ..Caller::default()
+        };
+        let outbound = act(&mut home, &caller, remote).unwrap().outbound.unwrap();
+        assert_eq!(outbound.url, "https://away.example/envelope");
+        assert_eq!(outbound.envelope.audience, "lobby");
+        assert_eq!(outbound.envelope.to, bo);
+        assert!(matches!(
+            away.receive(&outbound.envelope, "lobby", 0).unwrap(),
+            Received::Applied(_)
+        ));
+        assert_eq!(away.pending_for(&bo).0, vec![ann]);
+    }
+
+    #[test]
+    fn a_queued_remote_request_shows_until_it_is_delivered_or_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann_credential, ann) = sign(&mut home, "Ann");
+        let (_, bo) = sign(&mut away, "Bo");
+        let caller = Caller {
+            credential: Some(ann_credential),
+            ..Caller::default()
+        };
+        let outbound = act(
+            &mut home,
+            &caller,
+            DirectoryAction::RequestFriend {
+                to: bo.clone(),
+                remote: Some(RemoteFriend {
+                    server: "https://away.example".to_owned(),
+                    audience: "lobby".to_owned(),
+                }),
+            },
+        )
+        .unwrap()
+        .outbound
+        .unwrap();
+        let id = outbound.envelope.id.clone();
+        let mut outbox = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
+        outbox.enqueue(&outbound.url, outbound.envelope).unwrap();
+
+        let shown = deliveries(&outbox, &ann);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].to, bo);
+        assert_eq!(shown[0].status, "not yet delivered");
+        assert!(deliveries(&outbox, &bo).is_empty());
+        assert!(deliveries(&outbox, "anonymous").is_empty());
+
+        outbox
+            .record(
+                &id,
+                0,
+                crate::envelope_outbox::Outcome::Refused("no such account".to_owned()),
+            )
+            .unwrap();
+        assert_eq!(
+            deliveries(&outbox, &ann)[0].status,
+            "refused: no such account"
+        );
     }
 
     #[test]
@@ -1475,7 +1762,18 @@ mod tests {
         assert_eq!(
             parse_line("friend request abc").unwrap(),
             Line::Action(DirectoryAction::RequestFriend {
-                to: "abc".to_owned()
+                to: "abc".to_owned(),
+                remote: None,
+            })
+        );
+        assert_eq!(
+            parse_line("friend accept abc at https://example.com for lobby").unwrap(),
+            Line::Action(DirectoryAction::AcceptFriend {
+                from: "abc".to_owned(),
+                remote: Some(RemoteFriend {
+                    server: "https://example.com".to_owned(),
+                    audience: "lobby".to_owned(),
+                }),
             })
         );
     }

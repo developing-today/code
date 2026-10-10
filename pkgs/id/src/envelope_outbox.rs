@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use reqwest::{Client, StatusCode, Url, redirect};
+use reqwest::{Client, StatusCode, Url, header::CONTENT_TYPE, redirect};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 use crate::directory::Envelope;
 
@@ -50,7 +51,7 @@ pub enum Outcome {
 /// One queued envelope and what has happened to it so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// The explorer endpoint on the recipient's server.
+    /// The `/envelope` endpoint on the recipient's server.
     pub url: String,
     /// The envelope to deliver.
     pub envelope: Envelope,
@@ -206,23 +207,9 @@ impl Outbox {
         self.commit(record)
     }
 
-    /// Delivers every envelope due at `now`, recording each outcome as it
-    /// happens. Returns how many attempts were made.
-    ///
-    /// # Errors
-    ///
-    /// Fails if an outcome cannot be written. Envelopes already recorded stay
-    /// recorded.
-    pub async fn flush(&mut self, client: &Client, now: u64) -> Result<usize> {
-        let due = self.due(now);
-        for id in &due {
-            let Some(entry) = self.entries.get(id) else {
-                continue;
-            };
-            let outcome = deliver(client, &entry.url, &entry.envelope).await;
-            self.record(id, now, outcome)?;
-        }
-        Ok(due.len())
+    /// Every queued envelope, finished or not, in ID order.
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.values()
     }
 
     fn commit(&mut self, record: Record) -> Result<()> {
@@ -291,6 +278,34 @@ impl Outbox {
     }
 }
 
+/// Delivers every envelope due at `now`, recording each outcome as it happens.
+///
+/// The lock is released while a request is in flight, so enqueueing is not
+/// held up by a slow recipient. Returns how many attempts were made.
+///
+/// # Errors
+///
+/// Fails if an outcome cannot be written. Envelopes already recorded stay
+/// recorded.
+pub async fn flush(outbox: &Mutex<Outbox>, client: &Client, now: u64) -> Result<usize> {
+    let due: Vec<(String, String, Envelope)> = {
+        let queue = outbox.lock().await;
+        queue
+            .due(now)
+            .into_iter()
+            .filter_map(|id| {
+                let entry = queue.entry(&id)?;
+                Some((id.clone(), entry.url.clone(), entry.envelope.clone()))
+            })
+            .collect()
+    };
+    for (id, url, envelope) in &due {
+        let outcome = deliver(client, url, envelope).await;
+        outbox.lock().await.record(id, now, outcome)?;
+    }
+    Ok(due.len())
+}
+
 /// Accepts `https` URLs, and `http` only for a loopback host.
 ///
 /// # Errors
@@ -333,8 +348,7 @@ pub fn http_client() -> Result<Client> {
         .context("building the envelope delivery client")
 }
 
-/// Posts `envelope` to the explorer endpoint at `url`, as the manual receive
-/// form does.
+/// Posts `envelope` as JSON to the `/envelope` endpoint at `url`.
 pub async fn deliver(client: &Client, url: &str, envelope: &Envelope) -> Outcome {
     let json = match serde_json::to_string(envelope) {
         Ok(json) => json,
@@ -342,7 +356,8 @@ pub async fn deliver(client: &Client, url: &str, envelope: &Envelope) -> Outcome
     };
     match client
         .post(url)
-        .form(&[("action", "receive"), ("envelope", json.as_str())])
+        .header(CONTENT_TYPE, "application/json")
+        .body(json)
         .send()
         .await
     {
@@ -397,7 +412,7 @@ mod tests {
     /// Accepts one connection, answers `status`, and returns what it read.
     async fn stub(status: &'static str) -> (String, tokio::task::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/explore/act", listener.local_addr().unwrap());
+        let url = format!("http://{}/envelope", listener.local_addr().unwrap());
         let handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut buf = Vec::new();
@@ -438,7 +453,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
+            .enqueue("https://bo.example/envelope", envelope("e1"))
             .unwrap();
         drop(outbox);
 
@@ -452,7 +467,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
+            .enqueue("https://bo.example/envelope", envelope("e1"))
             .unwrap();
 
         outbox
@@ -482,7 +497,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
+            .enqueue("https://bo.example/envelope", envelope("e1"))
             .unwrap();
         outbox
             .record("e1", NOW, Outcome::Refused("bad signature".to_owned()))
@@ -499,7 +514,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
+            .enqueue("https://bo.example/envelope", envelope("e1"))
             .unwrap();
         drop(outbox);
         let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
@@ -509,7 +524,7 @@ mod tests {
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         assert!(outbox.entry("e1").is_some());
         outbox
-            .enqueue("https://bo.example/explore/act", envelope("e2"))
+            .enqueue("https://bo.example/envelope", envelope("e2"))
             .unwrap();
         drop(outbox);
 
@@ -526,25 +541,29 @@ mod tests {
 
     #[test]
     fn only_https_or_loopback_http_urls_are_accepted() {
-        assert!(check_url("https://bo.example/explore/act").is_ok());
-        assert!(check_url("http://127.0.0.1:9/explore/act").is_ok());
-        assert!(check_url("http://localhost:9/explore/act").is_ok());
-        assert!(check_url("http://[::1]:9/explore/act").is_ok());
-        assert!(check_url("http://bo.example/explore/act").is_err());
-        assert!(check_url("ftp://bo.example/explore/act").is_err());
+        assert!(check_url("https://bo.example/envelope").is_ok());
+        assert!(check_url("http://127.0.0.1:9/envelope").is_ok());
+        assert!(check_url("http://localhost:9/envelope").is_ok());
+        assert!(check_url("http://[::1]:9/envelope").is_ok());
+        assert!(check_url("http://bo.example/envelope").is_err());
+        assert!(check_url("ftp://bo.example/envelope").is_err());
         assert!(check_url("not a url").is_err());
     }
 
     #[tokio::test]
-    async fn delivery_posts_the_envelope_to_the_act_route() {
+    async fn delivery_posts_the_envelope_as_json_to_the_envelope_route() {
         let client = http_client().unwrap();
         let (url, request) = stub("200 OK").await;
         let outcome = deliver(&client, &url, &envelope("e1")).await;
         assert_eq!(outcome, Outcome::Delivered);
         let received = request.await.unwrap();
-        assert!(received.starts_with("POST /explore/act "));
-        assert!(received.contains("action=receive"));
-        assert!(received.contains("envelope=%7B"));
+        assert!(received.starts_with("POST /envelope "));
+        assert!(received.contains("content-type: application/json"));
+        let body = &received[received.find("\r\n\r\n").unwrap() + 4..];
+        assert_eq!(
+            serde_json::from_str::<Envelope>(body).unwrap(),
+            envelope("e1")
+        );
     }
 
     #[tokio::test]
@@ -573,7 +592,7 @@ mod tests {
         request.await.unwrap();
 
         let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/explore/act", closed.local_addr().unwrap());
+        let url = format!("http://{}/envelope", closed.local_addr().unwrap());
         drop(closed);
         assert!(matches!(
             deliver(&client, &url, &envelope("e1")).await,
@@ -588,16 +607,26 @@ mod tests {
         let (ok_url, ok_request) = stub("200 OK").await;
         let (busy_url, busy_request) = stub("503 Service Unavailable").await;
 
-        let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox.enqueue(&ok_url, envelope("e1")).unwrap();
-        outbox.enqueue(&busy_url, envelope("e2")).unwrap();
+        let outbox = Mutex::new(Outbox::open(path(&dir)).unwrap());
+        outbox
+            .lock()
+            .await
+            .enqueue(&ok_url, envelope("e1"))
+            .unwrap();
+        outbox
+            .lock()
+            .await
+            .enqueue(&busy_url, envelope("e2"))
+            .unwrap();
 
-        assert_eq!(outbox.flush(&client, NOW).await.unwrap(), 2);
+        assert_eq!(flush(&outbox, &client, NOW).await.unwrap(), 2);
         ok_request.await.unwrap();
         busy_request.await.unwrap();
-        assert_eq!(outbox.entry("e1").unwrap().finish, Some(Finish::Delivered));
-        assert_eq!(outbox.entry("e2").unwrap().next_at, NOW + MINUTE);
-        assert!(outbox.due(NOW).is_empty());
+        let queue = outbox.lock().await;
+        assert_eq!(queue.entry("e1").unwrap().finish, Some(Finish::Delivered));
+        assert_eq!(queue.entry("e2").unwrap().next_at, NOW + MINUTE);
+        assert!(queue.due(NOW).is_empty());
+        drop(queue);
 
         let reopened = Outbox::open(path(&dir)).unwrap();
         assert_eq!(

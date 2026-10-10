@@ -434,3 +434,52 @@ Flags: none added. Nothing is sent by default, and nothing can be sent until a p
 Dependencies: `reqwest` 0.13 (`rustls-no-provider`, `form`) and `rustls` 0.23, both optional under `world`. No new crate versions. `http_client` installs the aws-lc-rs provider as the process default if none is set.
 
 Tests: directory and outbox suites pass. `--features world`: 658 pass, 3 fail (`world_compile`, missing `host.wasm`). `--features "world web"`: 852 pass, the same 3 fail. Clippy `-D warnings` on this toolchain reports 116 lib errors in untouched code, none in changed files.
+
+---
+
+## Implementation: envelope delivery
+
+Date: 2026-10-10. Branch `feat/id-envelope-delivery`, from `origin/main` d1eb988a. This section supersedes the "Deferred" and "Posts to `/explore/act`" notes in the envelope transport section above: the outbox now posts JSON to `/envelope`, the producer exists, and the outbox status is shown.
+
+Decisions applied:
+- **D3, no peer allow-list.** A per-sender limit only: one sender may hold at most 20 pending friend requests on a server (`MAX_PENDING_FRIEND_REQUESTS`). `Directory::receive` enforces it for friend requests and refuses the 21st with 403.
+- **D4, address by server and world.** The sender types `friend request ACCOUNT at URL for WORLD` (and likewise `friend accept`). `URL` is the other server's base URL, and envelopes go to `URL/envelope`. `WORLD` is the audience the envelope is signed for. There is no contact card.
+- **D6, removal stays one-sided.** `friend remove` changes only the local directory. No envelope is sent, so the other server keeps its entry.
+
+Built:
+- **Producer.** `RequestFriend` and `AcceptFriend` take an optional `remote` (server and audience). A remote action signs the envelope with the caller's credential and returns it as an `Outbound`. `WorldService::directory` queues it in the outbox with its URL. Local actions are unchanged. A remote action with no credential is refused as unauthenticated.
+- **Push endpoint.** `POST /envelope` on the explorer router, with no session. A body over 64 KiB returns 413. Applied returns 200 `{"status":"applied"}`, and a duplicate returns 200 `{"status":"duplicate"}`. A refusal returns its 4xx: bad signature 401, wrong audience 403, expired or future-dated 403, unknown account 404, pending cap 403, stale acceptance 409. Malformed JSON returns 400. Any other failure, such as a journal write or a busy world, returns 503. These mappings agree with `classify`: 429 and 5xx retry, and other non-2xx refuse.
+- **Outbox.** `outbox.jsonl` sits in each durable world's data directory, next to `directory.jsonl`, and is opened in `open_world`. The directory view shows the viewer's own envelopes: `not yet delivered`, `delivered`, `refused: REASON`, or `gave up: REASON`. The explorer lists them under "Sent to other servers".
+- **Flush.** `WorldHub::spawn_outbox_flush` runs every 30 s over the open worlds, using `http_client()` and the current time. `serve` starts it when a world is served with a data directory, which excludes `--ephemeral`. It is aborted and awaited before `shutdown_all`.
+- **Explorer forms.** The request and accept forms take `server`, `audience`, and `credential`. The credential is read only for remote actions and is not stored.
+
+Flags and defaults:
+- The endpoint and explorer exist only when the web bridge is enabled (`--web`, off by default).
+- The flush needs no flag. It runs for every served durable world.
+- Outbox URLs must be `https`, or `http` to a loopback host. Redirects are not followed, and each request has a 30 s timeout.
+- Retries back off from 1 minute, doubling to 6 hours. An envelope is given up after 12 attempts.
+- Pending cap 20. Body limit 64 KiB.
+
+Known limits, flagged:
+- **`--web-token` applies to `/envelope`.** The token check covers every web route. A peer whose server requires a token gets 401, which is a permanent refusal, so its envelope is marked refused. Needs a decision: exempt `/envelope`, or let peers present a token.
+- **Crash window.** The action is applied to the directory journal before its envelope is queued. If the outbox write then fails, the action returns an error although it took effect, and nothing is sent. The recipient never learns of the request.
+- **Idle eviction.** The evictor closes an idle world, and a closed world's outbox is not flushed. Its pending envelopes wait until the world next opens. Fix by keeping worlds with pending entries open, or by flushing outboxes from disk.
+- **The 503 path is tested by its mapping, not end to end.** `envelope_status` is tested directly. No test forces a journal write to fail.
+- **Credential in the browser.** A remote action from the explorer takes the account credential in a form field, as sign-in already does. A signing session would be safer than a pasted secret.
+
+Remaining work:
+- **Section 3, network sync.** Not started. This path moves friend envelopes only, and nothing replicates directory state between servers.
+- **Removal envelopes.** None. D6 keeps removal one-sided, so a removed friend keeps the other side's entry.
+- **Server identity.** Envelopes are signed by account keys and addressed by world ID. Nothing authenticates the server that delivers them, so the sender trusts the URL it typed. A per-server key, pinned when the server is first contacted, is still open.
+
+Tests:
+- Directory: the cap (20 accepted, the 21st refused as Forbidden). A stale acceptance is refused as Conflict.
+- Directory view: a remote request is queued with `…/envelope` and the audience, and it applies on a second directory. Without a credential it is refused as Unauthenticated. The outbox status goes from `not yet delivered` to `refused: …`. The grammar accepts the remote form.
+- Explorer: `/envelope` returns 200 applied, then 200 duplicate. It returns 403 for a wrong audience, 401 for a bad signature, 404 for an unknown account, and 413 for a body over 64 KiB. The status mapping separates transient failures from refusals.
+- Outbox: the delivery body is JSON, and a flush to a `TcpListener` stub keeps what it should.
+
+Verification:
+- `cargo test --lib --features world`: 683 pass. The 3 failures are the `world_compile` tests, which need the missing `examples/roc-world/targets/wasm32/host.wasm`.
+- `cargo test --lib --features "world web"`, with `web/dist` copied read-only from the main checkout and deleted afterwards: 881 pass. The same 3 fail.
+- `cargo fmt --check`: clean. No dependencies were added.
+- `cargo clippy --all-targets --features "world web" -- -D warnings`, run with the rustup 1.97.0 toolchain because the system cargo mismatches. It reports 160 lint errors across the crate, all in code this change did not touch, such as a renamed lint and wildcard `map_err`. None is on a changed line.

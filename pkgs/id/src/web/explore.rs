@@ -5,17 +5,18 @@ use std::collections::BTreeMap;
 
 use axum::{
     Form, Router,
-    extract::State,
+    body::Bytes,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 
-use crate::directory::{Member, Refusal};
+use crate::directory::{Envelope, Member, Received, Refusal};
 use crate::directory_auth::{Caller, SESSION_TTL_MS};
 use crate::directory_view::{
-    AccountView, DirectoryAction, DirectoryOutcome, DirectoryView, GroupView, action_from_fields,
-    level_name,
+    AccountView, DeliveryView, DirectoryAction, DirectoryOutcome, DirectoryView, GroupView,
+    action_from_fields, level_name,
 };
 use crate::world_hub::{ResolveError, WorldHub};
 
@@ -35,11 +36,72 @@ const STYLE: &str = "body{font-family:system-ui,sans-serif;max-width:52rem;margi
                      .note{background:#eef;padding:.5rem}\
                      .error{background:#fee;padding:.5rem}";
 
+const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
+
 pub(super) fn explore_routes() -> Router<WorldWebState> {
     Router::new()
         .route("/explore", get(page_handler))
         .route("/explore/login", post(login_handler))
         .route("/explore/act", post(act_handler))
+        .route(
+            "/envelope",
+            post(envelope_handler).layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES)),
+        )
+}
+
+async fn envelope_handler(State(state): State<WorldWebState>, body: Bytes) -> Response {
+    let Some(hub) = state.hub else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let envelope: Envelope = match serde_json::from_slice(&body) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, format!("not an envelope: {error}")).into_response();
+        }
+    };
+    let Ok(lease) = hub.lease(None, None).await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is busy; try again",
+        )
+            .into_response();
+    };
+    let action = DirectoryAction::Receive { envelope };
+    match lease.service().directory(Caller::default(), action).await {
+        Ok(DirectoryOutcome {
+            received: Some(Received::Applied(_)),
+            ..
+        }) => applied_json("applied"),
+        Ok(DirectoryOutcome {
+            received: Some(Received::Duplicate),
+            ..
+        }) => applied_json("duplicate"),
+        Ok(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "envelope was not received",
+        )
+            .into_response(),
+        Err(error) => (envelope_status(&error), format!("{error:#}")).into_response(),
+    }
+}
+
+fn applied_json(status: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        format!("{{\"status\":\"{status}\"}}"),
+    )
+        .into_response()
+}
+
+/// A refused envelope is a permanent 4xx; any other failure, such as a journal
+/// write, is transient and the sender retries.
+fn envelope_status(error: &anyhow::Error) -> StatusCode {
+    if error.downcast_ref::<Refusal>().is_some() {
+        refusal_status(error)
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 async fn page_handler(State(state): State<WorldWebState>, headers: HeaderMap) -> Response {
@@ -104,14 +166,20 @@ async fn act_handler(
         Err(error) => return failure(&error, secure),
     };
     let signs_out = matches!(action, DirectoryAction::SignOut);
+    let sends = action.sends_envelope();
     let mailed_to = match &action {
         DirectoryAction::AddEmail { address } | DirectoryAction::SignInEmail { address } => {
             Some(address.clone())
         }
         _ => None,
     };
+    let credential = fields
+        .get("credential")
+        .filter(|credential| !credential.is_empty())
+        .cloned();
     let caller = Caller {
         session: session_of(&headers),
+        credential: credential.filter(|_| sends),
         ..Caller::default()
     };
     let outcome = match run(&hub, caller, action).await {
@@ -266,9 +334,29 @@ fn view_html(view: &DirectoryView) -> String {
         format!("<ul>{items}</ul>")
     };
     format!(
-        "<p>viewer: <code>{}</code></p><h2>Accounts</h2>{accounts}<h2>Groups</h2>{groups}",
-        html_escape(&view.viewer)
+        "<p>viewer: <code>{}</code></p><h2>Accounts</h2>{accounts}<h2>Groups</h2>{groups}{}",
+        html_escape(&view.viewer),
+        deliveries_html(&view.deliveries)
     )
+}
+
+fn deliveries_html(deliveries: &[DeliveryView]) -> String {
+    if deliveries.is_empty() {
+        return String::new();
+    }
+    let items: String = deliveries
+        .iter()
+        .map(|delivery| {
+            format!(
+                "<li>{} to <code>{}</code>: {}</li>",
+                html_escape(&delivery.kind),
+                html_escape(&delivery.to),
+                html_escape(&delivery.status)
+            )
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    format!("<h2>Sent to other servers</h2><ul>{items}</ul>")
 }
 
 fn account_html(account: &AccountView) -> String {
@@ -412,12 +500,22 @@ const ACCOUNT_FORMS: &[ActionForm] = &[
     ActionForm {
         title: "Request friend",
         action: "request_friend",
-        fields: &[("to", "Account ID")],
+        fields: &[
+            ("to", "Account ID"),
+            ("server", "Their server URL (blank for this server)"),
+            ("audience", "Their world ID (with a server URL)"),
+            ("credential", "Your credential (with a server URL)"),
+        ],
     },
     ActionForm {
         title: "Accept friend",
         action: "accept_friend",
-        fields: &[("from", "Account ID")],
+        fields: &[
+            ("from", "Account ID"),
+            ("server", "Their server URL (blank for this server)"),
+            ("audience", "Their world ID (with a server URL)"),
+            ("credential", "Your credential (with a server URL)"),
+        ],
     },
     ActionForm {
         title: "Remove friend",
@@ -535,6 +633,7 @@ fn login_forms() -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::directory::Directory;
     use crate::directory_view::render_text;
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
@@ -553,6 +652,97 @@ mod tests {
             hub: Some(hub),
             cookie_secure,
         })
+    }
+
+    async fn lobby_with_bo() -> (Router, String) {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, None);
+        let bo = service
+            .directory(
+                Caller::default(),
+                DirectoryAction::SignUp {
+                    name: "Bo".to_owned(),
+                },
+            )
+            .await
+            .unwrap()
+            .view
+            .viewer;
+        let hub = WorldHub::single(service);
+        let app = explore_routes().with_state(WorldWebState {
+            hub: Some(hub),
+            cookie_secure: false,
+        });
+        (app, bo)
+    }
+
+    fn sent_from_home(to: &str, audience: &str, at: u64) -> Envelope {
+        let mut home = Directory::new();
+        let (credential, _) = home.sign_up("Ann").unwrap();
+        home.request_friend(&credential, to, audience, at)
+            .unwrap()
+            .0
+    }
+
+    fn push(envelope: &Envelope) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/envelope")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(envelope).unwrap()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_pushed_envelope_is_applied_once_and_refusals_are_permanent() {
+        let (app, bo) = lobby_with_bo().await;
+        let at = crate::world::unix_ms();
+        let envelope = sent_from_home(&bo, "lobby", at);
+
+        let (status, _, body) = send(&app, push(&envelope)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("applied"), "{body}");
+        let (status, _, body) = send(&app, push(&envelope)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("duplicate"), "{body}");
+
+        let elsewhere = sent_from_home(&bo, "elsewhere", at);
+        let (status, _, _) = send(&app, push(&elsewhere)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "wrong audience");
+
+        let mut forged = sent_from_home(&bo, "lobby", at);
+        forged.at = at + 1;
+        let (status, _, _) = send(&app, push(&forged)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "bad signature");
+
+        let stranger = sent_from_home(&"ab".repeat(32), "lobby", at);
+        let (status, _, _) = send(&app, push(&stranger)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "unknown account");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_envelope_is_refused_before_it_is_read() {
+        let (app, _) = lobby_with_bo().await;
+        let oversized = Request::builder()
+            .method("POST")
+            .uri("/envelope")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(vec![b' '; MAX_ENVELOPE_BYTES + 1]))
+            .unwrap();
+        let (status, _, _) = send(&app, oversized).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn only_refusals_are_permanent_and_anything_else_is_retried() {
+        assert_eq!(
+            envelope_status(&anyhow::anyhow!("journal write failed")),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            envelope_status(&anyhow::Error::from(Refusal::Conflict("stale".to_owned()))),
+            StatusCode::CONFLICT
+        );
     }
 
     fn get(path: &str, cookie: Option<&str>) -> Request<Body> {
@@ -797,6 +987,7 @@ mod tests {
                     "scopes" => "-",
                     "level" => "read",
                     "member" => "account:abc",
+                    "server" => "https://example.com",
                     "envelope" => {
                         r#"{"kind":"friend_request","from":"a","to":"b","audience":"c","id":"d","at":1,"signature":"e"}"#
                     }
