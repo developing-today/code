@@ -12,6 +12,8 @@
 
 ---
 
+- consider removing the mail outbox (`--world-mail-outbox`), which writes confirmation codes to disk. Decide after the envelope outbox and mail paths settle.
+
 - cursors that are inactive and losing opacity should slowly stop strobing. once they hit minimum opacity until timeout they reactivating them should enable full strobing.
 - ensure cursors become totally visible when a client hovers on them.
 - i'm not totally sure the cursors are actually reducing opacity. review the code make sure it seems right.
