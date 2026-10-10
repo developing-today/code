@@ -473,8 +473,15 @@ const ADMIN_FORMS: &[ActionForm] = &[ActionForm {
     fields: &[("account", "Account ID")],
 }];
 
+const RECEIVE_FORM: ActionForm = ActionForm {
+    title: "Receive friend envelope",
+    action: "receive",
+    fields: &[("envelope", "Envelope (JSON)")],
+};
+
 fn actions_html(viewer: &str) -> String {
     let mut html = String::from("<h2>Actions</h2>");
+    html.push_str(&act_form(&RECEIVE_FORM));
     match viewer {
         "anonymous" => {
             html.push_str(&login_forms());
@@ -779,7 +786,7 @@ mod tests {
             .iter()
             .chain(ACCOUNT_FORMS)
             .chain(ADMIN_FORMS)
-            .chain(std::iter::once(&SIGN_OUT))
+            .chain([&SIGN_OUT, &RECEIVE_FORM])
         {
             let mut fields: BTreeMap<String, String> = BTreeMap::new();
             fields.insert("action".to_owned(), form.action.to_owned());
@@ -790,6 +797,9 @@ mod tests {
                     "scopes" => "-",
                     "level" => "read",
                     "member" => "account:abc",
+                    "envelope" => {
+                        r#"{"kind":"friend_request","from":"a","to":"b","audience":"c","id":"d","at":1,"signature":"e"}"#
+                    }
                     _ => "x",
                 };
                 fields.insert((*name).to_owned(), value.to_owned());

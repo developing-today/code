@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -243,6 +243,9 @@ pub enum DirectoryEntry {
         from: String,
         /// The account asked.
         to: String,
+        /// The envelope ID of the request, when it came in an envelope.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// A pending request was accepted.
     FriendAccepted {
@@ -250,6 +253,12 @@ pub enum DirectoryEntry {
         from: String,
         /// The account that accepted it.
         to: String,
+        /// The envelope ID of the request accepted. Must match the pending one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<String>,
+        /// The envelope ID of this acceptance, when it came in an envelope.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// A friendship ended.
     FriendRemoved {
@@ -279,6 +288,11 @@ pub enum EnvelopeKind {
     FriendAccept,
 }
 
+/// Longest time after it is made that an envelope is accepted.
+const ENVELOPE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// How far ahead of the receiving clock an envelope may be dated.
+const ENVELOPE_SKEW_MS: u64 = 5 * 60 * 1000;
+
 /// A friend request or acceptance, signed by its sender's account key. Anyone
 /// holding it can check the signature without asking the server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +303,13 @@ pub struct Envelope {
     pub from: String,
     /// The recipient's account ID.
     pub to: String,
+    /// The world ID of the server the envelope is for.
+    pub audience: String,
+    /// A random ID unique to this envelope. A request's ID names the request.
+    pub id: String,
+    /// For an acceptance, the ID of the request it accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
     /// When it was made, in Unix milliseconds.
     pub at: u64,
     /// Hex Ed25519 signature over the canonical body.
@@ -300,20 +321,49 @@ struct SignedBody<'a> {
     kind: EnvelopeKind,
     from: &'a str,
     to: &'a str,
+    audience: &'a str,
+    id: &'a str,
+    request: Option<&'a str>,
     at: u64,
 }
 
 impl Envelope {
-    fn signed(key: &SigningKey, kind: EnvelopeKind, from: &str, to: &str, at: u64) -> Result<Self> {
-        let body = serde_json::to_vec(&SignedBody { kind, from, to, at })?;
-        let signature = key.sign(&body);
-        Ok(Self {
+    fn body(&self) -> SignedBody<'_> {
+        SignedBody {
+            kind: self.kind,
+            from: &self.from,
+            to: &self.to,
+            audience: &self.audience,
+            id: &self.id,
+            request: self.request.as_deref(),
+            at: self.at,
+        }
+    }
+
+    fn signed(
+        key: &SigningKey,
+        kind: EnvelopeKind,
+        from: &str,
+        to: &str,
+        audience: &str,
+        request: Option<&str>,
+        at: u64,
+    ) -> Result<Self> {
+        let mut nonce = [0_u8; 16];
+        rand::rng().fill(&mut nonce);
+        let mut envelope = Self {
             kind,
             from: from.to_owned(),
             to: to.to_owned(),
+            audience: audience.to_owned(),
+            id: hex_encode(&nonce),
+            request: request.map(str::to_owned),
             at,
-            signature: hex_encode(&signature.to_bytes()),
-        })
+            signature: String::new(),
+        };
+        let signature = key.sign(&serde_json::to_vec(&envelope.body())?);
+        envelope.signature = hex_encode(&signature.to_bytes());
+        Ok(envelope)
     }
 
     /// Check the signature against the sender's account key.
@@ -330,15 +380,19 @@ impl Envelope {
         let signature = Signature::from_bytes(
             &hex_to_array::<64>(&self.signature).context("malformed envelope signature")?,
         );
-        let body = serde_json::to_vec(&SignedBody {
-            kind: self.kind,
-            from: &self.from,
-            to: &self.to,
-            at: self.at,
-        })?;
+        let body = serde_json::to_vec(&self.body())?;
         key.verify(&body, &signature)
             .context("envelope signature does not verify")
     }
+}
+
+/// What receiving an envelope did to the directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Received {
+    /// The envelope changed the directory.
+    Applied(DirectoryEntry),
+    /// The envelope was already applied, so nothing changed.
+    Duplicate,
 }
 
 /// The directory of accounts, groups, memberships and friends on one server.
@@ -350,7 +404,8 @@ pub struct Directory {
     members: BTreeMap<(u64, Member), Level>,
     tiers: BTreeMap<Tier, WorldScopes>,
     friends: BTreeSet<(String, String)>,
-    requests: BTreeSet<(String, String)>,
+    requests: BTreeMap<(String, String), Option<String>>,
+    seen: BTreeSet<String>,
     next_group: u64,
     journal: Option<PathBuf>,
 }
@@ -380,7 +435,8 @@ impl Directory {
             members: BTreeMap::new(),
             tiers,
             friends: BTreeSet::new(),
-            requests: BTreeSet::new(),
+            requests: BTreeMap::new(),
+            seen: BTreeSet::new(),
             next_group: 1,
             journal: None,
         }
@@ -639,12 +695,13 @@ impl Directory {
         let entry = DirectoryEntry::FriendRequested {
             from: me.to_owned(),
             to: to.to_owned(),
+            id: None,
         };
         self.apply(&entry)?;
         Ok(entry)
     }
 
-    /// Accept a pending request from `from` on behalf of an authenticated account.
+    /// Accept the pending request from `from` on behalf of an authenticated account.
     ///
     /// # Errors
     ///
@@ -653,6 +710,8 @@ impl Directory {
         let entry = DirectoryEntry::FriendAccepted {
             from: from.to_owned(),
             to: me.to_owned(),
+            request: self.pending_id(from, me),
+            id: None,
         };
         self.apply(&entry)?;
         Ok(entry)
@@ -936,13 +995,13 @@ impl Directory {
     pub fn pending_for(&self, id: &str) -> (Vec<String>, Vec<String>) {
         let incoming = self
             .requests
-            .iter()
+            .keys()
             .filter(|(_, to)| to == id)
             .map(|(from, _)| from.clone())
             .collect();
         let outgoing = self
             .requests
-            .iter()
+            .keys()
             .filter(|(from, _)| from == id)
             .map(|(_, to)| to.clone())
             .collect();
@@ -967,6 +1026,7 @@ impl Directory {
     }
 
     /// Ask `to` to be friends, signed with the requester's account key.
+    /// `audience` is the world ID of the server `to` lives on.
     ///
     /// # Errors
     ///
@@ -976,85 +1036,124 @@ impl Directory {
         &mut self,
         credential: &str,
         to: &str,
+        audience: &str,
         at: u64,
     ) -> Result<(Envelope, DirectoryEntry)> {
         let (from, key) = self.authenticate(credential)?;
-        let envelope = Envelope::signed(&key, EnvelopeKind::FriendRequest, &from, to, at)?;
+        let envelope = Envelope::signed(
+            &key,
+            EnvelopeKind::FriendRequest,
+            &from,
+            to,
+            audience,
+            None,
+            at,
+        )?;
         let entry = DirectoryEntry::FriendRequested {
             from,
             to: to.to_owned(),
+            id: Some(envelope.id.clone()),
         };
         self.apply(&entry)?;
         Ok((envelope, entry))
     }
 
-    /// Accept a pending request from `from`, returning the signed acceptance.
+    /// Accept the pending request from `from`, returning the signed acceptance.
+    /// `audience` is the world ID of the server `from` lives on.
     ///
     /// # Errors
     ///
-    /// Fails for an invalid credential or when no request is pending.
+    /// Fails for an invalid credential, when no request is pending, or when
+    /// the pending request has no envelope ID to name.
     pub fn accept_friend(
         &mut self,
         credential: &str,
         from: &str,
+        audience: &str,
         at: u64,
     ) -> Result<(Envelope, DirectoryEntry)> {
         let (me, key) = self.authenticate(credential)?;
-        let envelope = Envelope::signed(&key, EnvelopeKind::FriendAccept, &me, from, at)?;
+        let Some(request) = self.pending_id(from, &me) else {
+            bail!("no pending request from {from}");
+        };
+        let envelope = Envelope::signed(
+            &key,
+            EnvelopeKind::FriendAccept,
+            &me,
+            from,
+            audience,
+            Some(&request),
+            at,
+        )?;
         let entry = DirectoryEntry::FriendAccepted {
             from: from.to_owned(),
             to: me,
+            request: Some(request),
+            id: Some(envelope.id.clone()),
         };
         self.apply(&entry)?;
         Ok((envelope, entry))
     }
 
-    /// Record a request another server signed, addressed to a local account.
+    /// Apply an envelope another server signed, for a local account. It is
+    /// refused unless its signature verifies, it is for `audience`, it is
+    /// dated within the expiry window, and its target is a local account. A
+    /// stale acceptance names a request that is no longer pending and is
+    /// refused. An envelope already applied is reported as a duplicate.
     ///
     /// # Errors
     ///
-    /// Fails if the signature does not verify, the envelope is not a request,
-    /// or it is addressed to no local account.
-    pub fn receive_request(&mut self, envelope: &Envelope) -> Result<DirectoryEntry> {
-        envelope.verify()?;
-        ensure!(
-            envelope.kind == EnvelopeKind::FriendRequest,
-            "envelope is not a friend request"
+    /// Fails with a [`Refusal`] for an envelope this server must not apply.
+    pub fn receive(&mut self, envelope: &Envelope, audience: &str, now: u64) -> Result<Received> {
+        envelope
+            .verify()
+            .map_err(|error| Refusal::Unauthenticated(format!("{error:#}")))?;
+        refuse_unless!(
+            envelope.audience == audience,
+            Forbidden,
+            "envelope is for another server"
         );
-        ensure!(
+        if self.seen.contains(&envelope.id) {
+            return Ok(Received::Duplicate);
+        }
+        refuse_unless!(
+            envelope.at <= now.saturating_add(ENVELOPE_SKEW_MS),
+            Forbidden,
+            "envelope is dated in the future"
+        );
+        refuse_unless!(
+            now.saturating_sub(envelope.at) <= ENVELOPE_TTL_MS,
+            Forbidden,
+            "envelope has expired"
+        );
+        refuse_unless!(
             self.accounts.contains_key(&envelope.to),
-            "request is not for an account on this server"
+            NotFound,
+            "envelope is for no account on this server"
         );
-        let entry = DirectoryEntry::FriendRequested {
-            from: envelope.from.clone(),
-            to: envelope.to.clone(),
+        let entry = match (envelope.kind, &envelope.request) {
+            (EnvelopeKind::FriendRequest, None) => DirectoryEntry::FriendRequested {
+                from: envelope.from.clone(),
+                to: envelope.to.clone(),
+                id: Some(envelope.id.clone()),
+            },
+            (EnvelopeKind::FriendAccept, Some(request)) => DirectoryEntry::FriendAccepted {
+                from: envelope.to.clone(),
+                to: envelope.from.clone(),
+                request: Some(request.clone()),
+                id: Some(envelope.id.clone()),
+            },
+            _ => refuse!(Forbidden, "envelope names a request only as an acceptance"),
         };
         self.apply(&entry)?;
-        Ok(entry)
+        Ok(Received::Applied(entry))
     }
 
-    /// Record a signed acceptance of one of this server's requests.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the signature does not verify, the envelope is not an
-    /// acceptance, or no matching request is pending.
-    pub fn receive_accept(&mut self, envelope: &Envelope) -> Result<DirectoryEntry> {
-        envelope.verify()?;
-        ensure!(
-            envelope.kind == EnvelopeKind::FriendAccept,
-            "envelope is not a friend acceptance"
-        );
-        ensure!(
-            self.accounts.contains_key(&envelope.to),
-            "acceptance is not for an account on this server"
-        );
-        let entry = DirectoryEntry::FriendAccepted {
-            from: envelope.to.clone(),
-            to: envelope.from.clone(),
-        };
-        self.apply(&entry)?;
-        Ok(entry)
+    fn pending_id(&self, from: &str, to: &str) -> Option<String> {
+        self.requests
+            .get(&(from.to_owned(), to.to_owned()))
+            .cloned()
+            .flatten()
     }
 
     /// End a friendship.
@@ -1290,24 +1389,36 @@ impl Directory {
             DirectoryEntry::TierSet { tier, scopes } => {
                 self.tiers.insert(*tier, permissions(*scopes)?);
             }
-            DirectoryEntry::FriendRequested { from, to } => {
+            DirectoryEntry::FriendRequested { from, to, id } => {
                 ensure_account_id(from)?;
                 ensure_account_id(to)?;
                 ensure!(from != to, "no one befriends themselves");
                 refuse_unless!(!self.are_friends(from, to), Conflict, "already friends");
                 refuse_unless!(
-                    !self.requests.contains(&(from.clone(), to.clone()))
-                        && !self.requests.contains(&(to.clone(), from.clone())),
+                    !self.requests.contains_key(&(from.clone(), to.clone()))
+                        && !self.requests.contains_key(&(to.clone(), from.clone())),
                     Conflict,
                     "a request is already pending"
                 );
-                self.requests.insert((from.clone(), to.clone()));
+                self.note_envelope(id.as_deref())?;
+                self.requests.insert((from.clone(), to.clone()), id.clone());
             }
-            DirectoryEntry::FriendAccepted { from, to } => {
+            DirectoryEntry::FriendAccepted {
+                from,
+                to,
+                request,
+                id,
+            } => {
+                let Some(pending) = self.requests.get(&(from.clone(), to.clone())) else {
+                    bail!("no pending request from {from} to {to}");
+                };
                 ensure!(
-                    self.requests.remove(&(from.clone(), to.clone())),
-                    "no pending request from {from} to {to}"
+                    pending == request,
+                    "no pending request {} from {from} to {to}",
+                    request.as_deref().unwrap_or("without an ID")
                 );
+                self.note_envelope(id.as_deref())?;
+                self.requests.remove(&(from.clone(), to.clone()));
                 self.friends.insert(pair(from, to));
             }
             DirectoryEntry::FriendRemoved { a, b } => {
@@ -1321,6 +1432,16 @@ impl Directory {
     #[must_use]
     pub fn are_friends(&self, a: &str, b: &str) -> bool {
         self.friends.contains(&pair(a, b))
+    }
+
+    fn note_envelope(&mut self, id: Option<&str>) -> Result<()> {
+        if let Some(id) = id {
+            ensure!(
+                self.seen.insert(id.to_owned()),
+                "envelope {id} was already applied"
+            );
+        }
+        Ok(())
     }
 
     /// Whether `target` is `from` or is nested, at any depth, inside it.
@@ -1780,13 +1901,19 @@ mod tests {
         let mut directory = Directory::new();
         let (ann, ann_credential) = account(&mut directory, "Ann");
         let (bo, bo_credential) = account(&mut directory, "Bo");
-        let (request, _) = directory.request_friend(&ann_credential, &bo, 1).unwrap();
+        let (request, _) = directory
+            .request_friend(&ann_credential, &bo, "home", 1)
+            .unwrap();
         assert!(request.verify().is_ok());
         assert!(
-            directory.request_friend(&bo_credential, &ann, 2).is_err(),
+            directory
+                .request_friend(&bo_credential, &ann, "home", 2)
+                .is_err(),
             "a request is already pending"
         );
-        let (accept, _) = directory.accept_friend(&bo_credential, &ann, 3).unwrap();
+        let (accept, _) = directory
+            .accept_friend(&bo_credential, &ann, "home", 3)
+            .unwrap();
         assert!(accept.verify().is_ok());
         assert_eq!(directory.friends_of(&ann), vec![bo.clone()]);
         assert_eq!(directory.friends_of(&bo), vec![ann.clone()]);
@@ -1799,7 +1926,9 @@ mod tests {
         let mut directory = Directory::new();
         let (_, ann_credential) = account(&mut directory, "Ann");
         let (bo, _) = account(&mut directory, "Bo");
-        let (mut request, _) = directory.request_friend(&ann_credential, &bo, 1).unwrap();
+        let (mut request, _) = directory
+            .request_friend(&ann_credential, &bo, "home", 1)
+            .unwrap();
         request.at = 2;
         assert!(request.verify().is_err());
     }
@@ -1810,21 +1939,161 @@ mod tests {
         let mut away = Directory::new();
         let (ann, ann_credential) = account(&mut home, "Ann");
         let (bo, bo_credential) = account(&mut away, "Bo");
-        let (request, _) = home.request_friend(&ann_credential, &bo, 1).unwrap();
-        away.receive_request(&request).unwrap();
-        let (accept, _) = away.accept_friend(&bo_credential, &ann, 2).unwrap();
-        home.receive_accept(&accept).unwrap();
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        let (accept, _) = away.accept_friend(&bo_credential, &ann, "home", 2).unwrap();
+        home.receive(&accept, "home", 2).unwrap();
         assert_eq!(home.friends_of(&ann), vec![bo.clone()]);
         assert_eq!(away.friends_of(&bo), vec![ann.clone()]);
         assert!(
-            away.receive_request(&accept).is_err(),
-            "an acceptance is not a request"
+            away.receive(&accept, "away", 2).is_err(),
+            "an acceptance for another server is refused"
         );
         let mut stranger = Directory::new();
         assert!(
-            stranger.receive_request(&request).is_err(),
+            stranger.receive(&request, "away", 1).is_err(),
             "a request for an account this server does not hold is refused"
         );
+    }
+
+    fn key_of(credential: &str) -> SigningKey {
+        let secret = hex_to_array::<32>(credential.rsplit('.').next().unwrap()).unwrap();
+        signing_key(&secret)
+    }
+
+    #[test]
+    fn a_stale_acceptance_cannot_befriend_after_a_new_request() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, bo_credential) = account(&mut away, "Bo");
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        let (accept, _) = away.accept_friend(&bo_credential, &ann, "home", 2).unwrap();
+        let second = Envelope::signed(
+            &key_of(&bo_credential),
+            EnvelopeKind::FriendAccept,
+            &bo,
+            &ann,
+            "home",
+            Some(&request.id),
+            2,
+        )
+        .unwrap();
+        home.receive(&accept, "home", 2).unwrap();
+        away.remove_friend(&bo_credential, &ann).unwrap();
+        home.remove_friend(&ann_credential, &bo).unwrap();
+        home.request_friend(&ann_credential, &bo, "away", 3)
+            .unwrap();
+        assert!(
+            home.receive(&second, "home", 3).is_err(),
+            "an acceptance of a consumed request is refused"
+        );
+        assert_eq!(
+            home.receive(&accept, "home", 3).unwrap(),
+            Received::Duplicate,
+            "an applied acceptance replayed is a no-op"
+        );
+        assert!(!home.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn a_repeated_envelope_is_a_duplicate_and_changes_nothing() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, _) = account(&mut away, "Bo");
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        assert!(matches!(
+            away.receive(&request, "away", 1).unwrap(),
+            Received::Applied(_)
+        ));
+        assert_eq!(
+            away.receive(&request, "away", 1).unwrap(),
+            Received::Duplicate
+        );
+        assert_eq!(away.pending_for(&bo).0, vec![ann]);
+    }
+
+    #[test]
+    fn an_envelope_for_another_server_or_outside_its_window_is_refused() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (_, ann_credential) = account(&mut home, "Ann");
+        let (bo, _) = account(&mut away, "Bo");
+        let at = ENVELOPE_TTL_MS;
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", at)
+            .unwrap();
+        assert!(away.receive(&request, "elsewhere", at).is_err());
+        assert!(
+            away.receive(&request, "away", at + ENVELOPE_TTL_MS + 1)
+                .is_err()
+        );
+        assert!(
+            away.receive(&request, "away", at - ENVELOPE_SKEW_MS - 1)
+                .is_err()
+        );
+        assert!(away.receive(&request, "away", at).is_ok());
+    }
+
+    #[test]
+    fn an_acceptance_must_name_its_request() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, _) = account(&mut home, "Ann");
+        let (bo, bo_credential) = account(&mut away, "Bo");
+        let unnamed = Envelope::signed(
+            &key_of(&bo_credential),
+            EnvelopeKind::FriendAccept,
+            &bo,
+            &ann,
+            "home",
+            None,
+            2,
+        )
+        .unwrap();
+        assert!(home.receive(&unnamed, "home", 2).is_err());
+    }
+
+    #[test]
+    fn applied_envelopes_are_still_seen_after_a_restart() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut away = Directory::open(&path).unwrap();
+        let (bo, _) = account(&mut away, "Bo");
+        let mut home = Directory::new();
+        let (_, ann_credential) = account(&mut home, "Ann");
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        let mut reopened = Directory::open(&path).unwrap();
+        assert_eq!(
+            reopened.receive(&request, "away", 1).unwrap(),
+            Received::Duplicate
+        );
+    }
+
+    #[test]
+    fn friend_lines_from_before_envelopes_still_replay() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let requested = format!(r#"{{"entry":"friend_requested","from":"{ann}","to":"{bo}"}}"#);
+        let accepted = format!(r#"{{"entry":"friend_accepted","from":"{ann}","to":"{bo}"}}"#);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text = format!("{text}{requested}\n{accepted}\n");
+        std::fs::write(&path, text).unwrap();
+        assert!(Directory::replay(&path).unwrap().are_friends(&ann, &bo));
     }
 
     #[test]
@@ -1880,7 +2149,9 @@ mod tests {
         let (ann, _) = account(&mut directory, "Ann");
         let (bo, _) = account(&mut directory, "Bo");
         let (_, cy_credential) = account(&mut directory, "Cy");
-        let (mut request, _) = directory.request_friend(&cy_credential, &bo, 1).unwrap();
+        let (mut request, _) = directory
+            .request_friend(&cy_credential, &bo, "home", 1)
+            .unwrap();
         request.from = ann;
         assert!(request.verify().is_err());
     }

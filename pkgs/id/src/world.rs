@@ -1930,10 +1930,12 @@ impl WorldActor {
                 action,
                 reply,
             } => {
+                let world = self.core.world_id().to_owned();
                 let result = crate::directory_view::run(
                     self.core.directory_mut(),
                     &mut self.auth,
                     &caller,
+                    &world,
                     unix_ms(),
                     action,
                 );
@@ -3903,11 +3905,12 @@ mod account_tests {
     }
 
     fn befriend(core: &mut WorldCore, a: &str, a_credential: &str, b: &str, b_credential: &str) {
+        let world = core.world_id().to_owned();
         core.directory_mut()
-            .request_friend(a_credential, b, 1)
+            .request_friend(a_credential, b, &world, 1)
             .unwrap();
         core.directory_mut()
-            .accept_friend(b_credential, a, 2)
+            .accept_friend(b_credential, a, &world, 2)
             .unwrap();
     }
 
