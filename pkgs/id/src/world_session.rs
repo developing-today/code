@@ -462,7 +462,7 @@ impl WorldService {
             )
             .into());
         }
-        let mut outcome = self.world.directory(caller, action).await?;
+        let mut outcome = self.world.directory(caller.clone(), action).await?;
         if let (Some(sink), Some(mail)) = (&self.mail, outcome.mail.take()) {
             let sink = Arc::clone(sink);
             tokio::task::spawn_blocking(move || sink.send(&mail))
@@ -471,14 +471,42 @@ impl WorldService {
             outcome.mailed = true;
         }
         if let Some(outbox) = &self.outbox {
-            let mut queue = outbox.lock().await;
-            if let Some(outbound) = outcome.outbound.take() {
-                queue.enqueue(&outbound.url, outbound.envelope)?;
+            if let (Some(outbound), Some(entry)) = (outcome.outbound.take(), outcome.pending.take())
+            {
+                self.queue_then_apply(outbox, outbound, entry).await?;
+                outcome = self
+                    .world
+                    .directory(caller, crate::directory_view::DirectoryAction::View)
+                    .await?;
             }
+            let queue = outbox.lock().await;
             outcome.view.deliveries =
                 crate::directory_view::deliveries(&queue, &outcome.view.viewer);
         }
         Ok(outcome)
+    }
+
+    /// Queue the envelope, then apply its change. The outbox lock is held
+    /// across the apply so a flush cannot send the envelope before the change
+    /// is in. If the apply is refused, the envelope is withdrawn.
+    async fn queue_then_apply(
+        &self,
+        outbox: &Mutex<crate::envelope_outbox::Outbox>,
+        outbound: crate::directory_view::Outbound,
+        entry: crate::directory::DirectoryEntry,
+    ) -> anyhow::Result<()> {
+        let id = outbound.envelope.id.clone();
+        let mut queue = outbox.lock().await;
+        queue.enqueue(&outbound.url, outbound.envelope)?;
+        if let Err(error) = self.world.apply_directory_entry(entry).await {
+            if let Err(withdrawn) = queue.withdraw(&id) {
+                tracing::error!(
+                    "envelope {id} stays queued though its change was refused: {withdrawn:#}"
+                );
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Attempt every due outbox envelope once. Returns how many were attempted.

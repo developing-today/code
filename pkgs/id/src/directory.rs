@@ -1054,6 +1054,25 @@ impl Directory {
         audience: &str,
         at: u64,
     ) -> Result<(Envelope, DirectoryEntry)> {
+        let (envelope, entry) = self.prepare_request_friend(credential, to, audience, at)?;
+        self.apply(&entry)?;
+        Ok((envelope, entry))
+    }
+
+    /// Sign a friend request and check that it would apply, without applying
+    /// it. Apply the returned entry with [`Self::apply`] once the envelope is
+    /// safely queued.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Self::request_friend`] does.
+    pub fn prepare_request_friend(
+        &self,
+        credential: &str,
+        to: &str,
+        audience: &str,
+        at: u64,
+    ) -> Result<(Envelope, DirectoryEntry)> {
         let (from, key) = self.authenticate(credential)?;
         let envelope = Envelope::signed(
             &key,
@@ -1069,7 +1088,7 @@ impl Directory {
             to: to.to_owned(),
             id: Some(envelope.id.clone()),
         };
-        self.apply(&entry)?;
+        self.checked(&entry)?;
         Ok((envelope, entry))
     }
 
@@ -1082,6 +1101,25 @@ impl Directory {
     /// the pending request has no envelope ID to name.
     pub fn accept_friend(
         &mut self,
+        credential: &str,
+        from: &str,
+        audience: &str,
+        at: u64,
+    ) -> Result<(Envelope, DirectoryEntry)> {
+        let (envelope, entry) = self.prepare_accept_friend(credential, from, audience, at)?;
+        self.apply(&entry)?;
+        Ok((envelope, entry))
+    }
+
+    /// Sign an acceptance and check that it would apply, without applying it.
+    /// Apply the returned entry with [`Self::apply`] once the envelope is safely
+    /// queued.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Self::accept_friend`] does.
+    pub fn prepare_accept_friend(
+        &self,
         credential: &str,
         from: &str,
         audience: &str,
@@ -1106,7 +1144,7 @@ impl Directory {
             request: Some(request),
             id: Some(envelope.id.clone()),
         };
-        self.apply(&entry)?;
+        self.checked(&entry)?;
         Ok((envelope, entry))
     }
 
@@ -1251,14 +1289,19 @@ impl Directory {
     }
 
     pub(crate) fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
-        let mut next = self.clone();
-        next.change(entry)?;
-        next.ensure_admins()?;
+        let next = self.checked(entry)?;
         if let Some(path) = &self.journal {
             Self::append(path, entry)?;
         }
         *self = next;
         Ok(())
+    }
+
+    fn checked(&self, entry: &DirectoryEntry) -> Result<Self> {
+        let mut next = self.clone();
+        next.change(entry)?;
+        next.ensure_admins()?;
+        Ok(next)
     }
 
     fn change(&mut self, entry: &DirectoryEntry) -> Result<()> {

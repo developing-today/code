@@ -361,7 +361,22 @@ pub async fn open_world(
     };
     report.sequence = restored.core.current_sequence();
     let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
+    let undelivered = outbox.entries().any(|entry| entry.finish.is_none());
     let service = service(handle).with_module_dir(modules).with_outbox(outbox);
+    if undelivered {
+        let flush = service.clone();
+        let name = world_id.to_owned();
+        tokio::spawn(async move {
+            match crate::envelope_outbox::http_client() {
+                Ok(client) => {
+                    if let Err(error) = flush.flush_outbox(&client, crate::world::unix_ms()).await {
+                        tracing::warn!("world {name}: outbox flush on open failed: {error:#}");
+                    }
+                }
+                Err(error) => tracing::warn!("world {name}: outbox client: {error:#}"),
+            }
+        });
+    }
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
     }
@@ -1129,5 +1144,95 @@ mod tests {
             assert!(format!("{err:#}").contains("read-only"), "{err:#}");
             assert!(handle.issue("bob", WorldScopes::GUEST).await.is_err());
         });
+    }
+
+    fn remote_request(to: &str) -> crate::directory_view::DirectoryAction {
+        crate::directory_view::DirectoryAction::RequestFriend {
+            to: to.to_owned(),
+            remote: Some(crate::directory_view::RemoteFriend {
+                server: "https://away.example".to_owned(),
+                audience: "lobby".to_owned(),
+            }),
+        }
+    }
+
+    async fn signed_up(svc: &WorldService, name: &str) -> crate::directory_auth::Caller {
+        let secret = svc
+            .directory(
+                crate::directory_auth::Caller::default(),
+                crate::directory_view::DirectoryAction::SignUp {
+                    name: name.to_owned(),
+                },
+            )
+            .await
+            .unwrap()
+            .credential
+            .unwrap();
+        crate::directory_auth::Caller::from_secret(&secret)
+    }
+
+    #[tokio::test]
+    async fn a_remote_friend_request_whose_envelope_cannot_be_queued_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        let ann = signed_up(&svc, "Ann").await;
+        let outbox_path = dir.path().join("outbox.jsonl");
+        let _ = std::fs::remove_file(&outbox_path);
+        std::fs::create_dir_all(&outbox_path).unwrap();
+
+        let bo = "ab".repeat(32);
+        assert!(
+            svc.directory(ann.clone(), remote_request(&bo))
+                .await
+                .is_err()
+        );
+        let view = svc
+            .directory(ann, crate::directory_view::DirectoryAction::View)
+            .await
+            .unwrap()
+            .view;
+        let me = view.accounts.iter().find(|a| a.name == "Ann").unwrap();
+        assert!(me.outgoing.as_deref().unwrap_or_default().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_remote_friend_request_is_queued_once_and_a_refused_repeat_queues_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        let ann = signed_up(&svc, "Ann").await;
+        let bo = "ab".repeat(32);
+
+        svc.directory(ann.clone(), remote_request(&bo))
+            .await
+            .unwrap();
+        assert!(
+            svc.directory(ann.clone(), remote_request(&bo))
+                .await
+                .is_err()
+        );
+        let view = svc
+            .directory(ann, crate::directory_view::DirectoryAction::View)
+            .await
+            .unwrap()
+            .view;
+        let me = view.accounts.iter().find(|a| a.name == "Ann").unwrap();
+        assert_eq!(me.outgoing, Some(vec![bo]));
+        assert_eq!(view.deliveries.len(), 1);
     }
 }

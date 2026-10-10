@@ -10,8 +10,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::directory::{
-    Actor, Directory, Envelope, EnvelopeKind, Level, Member, Received, Refusal, normalize_email,
-    normalize_key,
+    Actor, Directory, DirectoryEntry, Envelope, EnvelopeKind, Level, Member, Received, Refusal,
+    normalize_email, normalize_key,
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
@@ -787,6 +787,11 @@ pub struct DirectoryOutcome {
     /// An envelope to queue for another server. Never serialized.
     #[serde(skip)]
     pub outbound: Option<Outbound>,
+    /// The change behind `outbound`, not yet applied. The caller queues the
+    /// envelope, applies this, and then re-reads the view, which above predates
+    /// the change. Never serialized.
+    #[serde(skip)]
+    pub pending: Option<DirectoryEntry>,
     /// What receiving an envelope did. Never serialized.
     #[serde(skip)]
     pub received: Option<Received>,
@@ -804,6 +809,7 @@ impl std::fmt::Debug for DirectoryOutcome {
             .field("mailed", &self.mailed)
             .field("mail", &self.mail.as_ref().map(|_| "[REDACTED]"))
             .field("outbound", &self.outbound)
+            .field("pending", &self.pending)
             .field("received", &self.received)
             .finish()
     }
@@ -828,6 +834,7 @@ pub fn run(
     let mut session = None;
     let mut mail = None;
     let mut outbound = None;
+    let mut pending = None;
     let mut received = None;
     match action {
         DirectoryAction::View => {}
@@ -967,13 +974,14 @@ pub fn run(
                     directory.request_friend_as(me, &to)?;
                 }
                 Some(remote) => {
-                    let (envelope, _) = directory.request_friend(
+                    let (envelope, entry) = directory.prepare_request_friend(
                         sender_credential(caller)?,
                         &to,
                         &remote.audience,
                         now,
                     )?;
                     outbound = Some(outbound_to(&remote, envelope));
+                    pending = Some(entry);
                 }
             }
         }
@@ -984,13 +992,14 @@ pub fn run(
                     directory.accept_friend_as(me, &from)?;
                 }
                 Some(remote) => {
-                    let (envelope, _) = directory.accept_friend(
+                    let (envelope, entry) = directory.prepare_accept_friend(
                         sender_credential(caller)?,
                         &from,
                         &remote.audience,
                         now,
                     )?;
                     outbound = Some(outbound_to(&remote, envelope));
+                    pending = Some(entry);
                 }
             }
         }
@@ -1012,6 +1021,7 @@ pub fn run(
         mailed: false,
         mail,
         outbound,
+        pending,
         received,
     })
 }
