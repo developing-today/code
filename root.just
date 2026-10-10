@@ -247,3 +247,12 @@ stage-docs-all *args:
 switch:
     ./s
 
+# =============================================================================
+# Mail Worker
+# =============================================================================
+
+# Deploy the mail Worker via the nix flake app (extra args go to deploy.mjs, e.g. --dry-run)
+[group('mail')]
+id-mail-deploy *args:
+    nix run .#id-mail-deploy -- {{args}}
+

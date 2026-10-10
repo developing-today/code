@@ -147,6 +147,35 @@
               "namepath": "id::root::fmt",
               "shebang": false
             },
+            "id-mail-deploy": {
+              "attributes": [{ "group": "mail" }],
+              "body": [["nix run .#id-mail-deploy -- ", [["variable", "args"]]]],
+              "dependencies": [],
+              "doc": "Deploy the mail Worker via the nix flake app (extra args go to deploy.mjs, e.g. --dry-run)",
+              "name": "id-mail-deploy",
+              "parameters": [
+                {
+                  "default": null,
+                  "export": false,
+                  "flag": false,
+                  "help": null,
+                  "kind": "star",
+                  "long": null,
+                  "max": null,
+                  "min": null,
+                  "multiple": false,
+                  "name": "args",
+                  "pattern": null,
+                  "short": null,
+                  "value": null
+                }
+              ],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::id-mail-deploy",
+              "shebang": false
+            },
             "just-recipes": {
               "attributes": [{ "group": "deps" }],
               "body": [
@@ -3063,6 +3092,35 @@
       "private": false,
       "quiet": false,
       "namepath": "fmt",
+      "shebang": false
+    },
+    "id-mail-deploy": {
+      "attributes": [{ "group": "mail" }],
+      "body": [["nix run .#id-mail-deploy -- ", [["variable", "args"]]]],
+      "dependencies": [],
+      "doc": "Deploy the mail Worker via the nix flake app (extra args go to deploy.mjs, e.g. --dry-run)",
+      "name": "id-mail-deploy",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "id-mail-deploy",
       "shebang": false
     },
     "just-recipes": {
