@@ -561,6 +561,8 @@ in
       Wants = [ "network-online.target" ];
     };
     Service = {
+      Type = "notify";
+      NotifyAccess = "all";
       ExecStart = "${mcpx}/bin/mcpx daemon";
       ExecReload = "${mcpx}/bin/mcpx reload";
       Restart = "always";
@@ -568,6 +570,13 @@ in
     };
     Install.WantedBy = [ "default.target" ];
   };
+
+  # A switch loads the new mcpx by handing the running daemon over to it, with
+  # the MCP children and the listener passed along. Falls back to a plain start
+  # when no daemon is running.
+  home.activation.mcpxUpgrade = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    run ${mcpx}/bin/mcpx upgrade || run systemctl --user start mcpx.service
+  '';
 
   # Watch .mcpx.json to hot-reload the standing mcpx daemon seamlessly.
   systemd.user.paths.mcpx-config = {
