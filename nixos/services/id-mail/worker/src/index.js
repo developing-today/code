@@ -9,9 +9,10 @@ export default {
     if (request.method !== "POST") {
       return json({ error: "method not allowed" }, 405);
     }
-    if (!env.CALLERS) {
-      return json({ error: "worker has no CALLERS secret" }, 500);
+    if (!env.CALLERS || !env.MAIL_CONFIG) {
+      return json({ error: "worker is not configured" }, 500);
     }
+    const config = JSON.parse(env.MAIL_CONFIG);
     const caller = await authenticate(request, env.CALLERS);
     if (!caller) {
       return json({ error: "unauthorized" }, 401);
@@ -23,11 +24,11 @@ export default {
     } catch {
       return json({ error: "body is not JSON" }, 400);
     }
-    if (!body || typeof body !== "object") {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
       return json({ error: "body must be a JSON object" }, 400);
     }
-    const name = body.transport ?? "email";
-    if (typeof name !== "string" || !Object.hasOwn(TRANSPORTS, name)) {
+    const name = body.transport ?? config.defaultTransport;
+    if (typeof name !== "string" || !config.transports.includes(name) || !Object.hasOwn(TRANSPORTS, name)) {
       return json({ error: "unknown transport" }, 400);
     }
     if (!Object.hasOwn(caller.transports, name)) {
@@ -36,20 +37,19 @@ export default {
     const transport = TRANSPORTS[name];
     const grant = caller.transports[name];
 
-    const refusal = transport.check(body, grant);
+    const refusal = transport.check(body, grant, config);
     if (refusal) {
       return json({ error: refusal.error }, refusal.status);
     }
 
-    const windowMs = 60_000;
-    const callerAllowed = await take(env, `caller:${caller.name}`, Number(env.CALLER_LIMIT_PER_MINUTE), windowMs);
-    const targetAllowed = await take(
-      env,
-      `target:${name}:${transport.rateKey(body)}`,
-      Number(env.RECIPIENT_LIMIT_PER_MINUTE),
-      windowMs,
+    const windowMs = config.limits.windowSeconds * 1000;
+    const callerAllowed = await take(env, `caller:${caller.name}`, config.limits.callerPerWindow, windowMs);
+    const recipientChecks = await Promise.all(
+      transport
+        .rateKeys(body)
+        .map((key) => take(env, `target:${name}:${key}`, config.limits.recipientPerWindow, windowMs)),
     );
-    if (!callerAllowed || !targetAllowed) {
+    if (!callerAllowed || !recipientChecks.every(Boolean)) {
       return json({ error: "rate limited" }, 429);
     }
 

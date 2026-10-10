@@ -1,43 +1,75 @@
-const TEMPLATE_SUBJECTS = new Set(["id: confirm your address", "id: sign-in code"]);
-const TEMPLATE_BODY = /^Your code is \d{6}\. It works for 15 minutes\.\n?$/;
 const EMAIL_ADDRESS = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/;
+const MAX_ADDRESS = 254;
 const MAX_SUBJECT = 200;
 const MAX_TEXT = 10000;
+const PLACEHOLDER = "{code}";
 
-// Grant: { mode: "template" | "free", from: [addresses this caller may send as] }.
+// Grant: { mode: "template" | "free", from: [addresses], maxRecipients: n }.
 export default {
-  check({ to, subject, text, from }, grant) {
-    const sender = from ?? grant.from[0];
-    if ([to, subject, text, sender].some((value) => typeof value !== "string")) {
+  check(body, grant, config) {
+    const { subject, text } = body;
+    const from = body.from ?? grant.from[0];
+    const recipients = recipientList(body);
+    if (!recipients || [subject, text, from].some((value) => typeof value !== "string")) {
       return refuse(400, "to, subject, text and from must be strings");
     }
-    if ([to, subject, sender].some((value) => /[\r\n]/.test(value))) {
+    if ([subject, from, ...recipients].some((value) => /[\r\n]/.test(value))) {
       return refuse(400, "to, subject and from must be one line");
     }
-    if (!EMAIL_ADDRESS.test(to) || to.length > 254) {
-      return refuse(400, "to must be one email address");
+    if (recipients.length === 0 || recipients.length > grant.maxRecipients) {
+      return refuse(400, `to must have 1 to ${grant.maxRecipients} addresses`);
+    }
+    if (recipients.some((to) => !EMAIL_ADDRESS.test(to) || to.length > MAX_ADDRESS)) {
+      return refuse(400, "to must be email addresses");
     }
     if (subject.length > MAX_SUBJECT || text.length > MAX_TEXT) {
       return refuse(400, "subject or text is too long");
     }
-    if (!grant.from.includes(sender)) {
+    if (!grant.from.includes(from)) {
       return refuse(403, "caller may not send from that address");
     }
-    if (grant.mode === "template" && !(TEMPLATE_SUBJECTS.has(subject) && TEMPLATE_BODY.test(text))) {
+    if (grant.mode === "template" && !config.templates.some((template) => matchesTemplate(template, subject, text))) {
       return refuse(400, "template");
     }
     return null;
   },
 
-  rateKey({ to }) {
-    return to.toLowerCase();
+  rateKeys(body) {
+    return recipientList(body).map((to) => to.toLowerCase());
   },
 
-  async deliver({ to, subject, text, from }, grant, env) {
-    const sent = await env.EMAIL.send({ from: from ?? grant.from[0], to, subject, text });
-    return { messageId: sent.messageId };
+  async deliver(body, grant, env) {
+    const from = body.from ?? grant.from[0];
+    const messageIds = [];
+    for (const to of recipientList(body)) {
+      const sent = await env.EMAIL.send({ from, to, subject: body.subject, text: body.text });
+      messageIds.push(sent.messageId);
+    }
+    return { messageIds };
   },
 };
+
+function recipientList({ to }) {
+  if (typeof to === "string") {
+    return [to];
+  }
+  if (Array.isArray(to) && to.every((value) => typeof value === "string")) {
+    return to;
+  }
+  return null;
+}
+
+function matchesTemplate({ subject, body }, actualSubject, actualText) {
+  if (subject !== actualSubject) {
+    return false;
+  }
+  const pattern = body.split(PLACEHOLDER).map(escapeRegExp).join("\\d{6}");
+  return new RegExp(`^${pattern}$`).test(actualText);
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function refuse(status, error) {
   return { status, error };
