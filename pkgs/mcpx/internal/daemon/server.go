@@ -76,6 +76,19 @@ type Server struct {
 	version  string
 	started  time.Time
 
+	// httpErr carries a failure from either HTTP server to Serve. Every server
+	// the daemon starts reports here, including one restored after a takeover
+	// that did not commit.
+	httpErr chan error
+	// takeoverMu admits one takeover at a time. committed is set once a
+	// successor has accepted the daemon's children, after which this process
+	// must not stop, since it still owns the child stdin pipes until the
+	// successor hangs up. handedOff closes when Serve may return.
+	takeoverMu    sync.Mutex
+	committed     atomic.Bool
+	handedOff     chan struct{}
+	handedOffOnce sync.Once
+
 	// idleExit stops a daemon that nobody has used for this long and that
 	// holds no live MCP instances. Auto-started daemons set it so that a repo
 	// visited once does not leave a process behind forever; a daemon run under
@@ -178,16 +191,18 @@ func NewServer(opts Options) (*Server, error) {
 		pool.Trace = func(f string, a ...any) { opts.Logger.Printf(f, a...) }
 	}
 	srv := &Server{
-		set:      opts.Settings,
-		reg:      reg,
-		paths:    opts.Paths,
-		cfg:      opts.Config,
-		logger:   opts.Logger,
-		version:  opts.Version,
-		idleExit: opts.IdleExit,
-		sink:     opts.Sink,
-		augment:  opts.Augment,
-		Events:   events.New(opts.Settings.Int("events.history")),
+		set:       opts.Settings,
+		reg:       reg,
+		paths:     opts.Paths,
+		cfg:       opts.Config,
+		logger:    opts.Logger,
+		version:   opts.Version,
+		idleExit:  opts.IdleExit,
+		sink:      opts.Sink,
+		augment:   opts.Augment,
+		Events:    events.New(opts.Settings.Int("events.history")),
+		httpErr:   make(chan error, 4),
+		handedOff: make(chan struct{}),
 	}
 	// The broker is optional: a daemon whose state directory cannot hold a
 	// database still serves tools, and answers every server question with
@@ -244,7 +259,11 @@ func (s *Server) Listen(tcpPort int) error {
 	s.unixLn, s.tcpLn = unixLn, tcpLn
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
+	return s.publish()
+}
 
+// publish writes the daemon record clients find the daemon by.
+func (s *Server) publish() error {
 	cfgPath := ""
 	if cfg := s.currentConfig(); cfg != nil {
 		cfgPath = cfg.Path
@@ -258,6 +277,21 @@ func (s *Server) Listen(tcpPort int) error {
 		Version:    s.version,
 		StartedAt:  s.started.Format(time.RFC3339),
 	})
+}
+
+// startHTTP serves the API on the daemon's listeners. It is called again when
+// a handoff that did not commit restores them.
+func (s *Server) startHTTP() {
+	mux := http.NewServeMux()
+	s.routes(mux)
+	srv := &http.Server{
+		Handler:           s.refuseBrowserPages(s.trackActivity(mux)),
+		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
+	}
+	s.httpSrv = srv
+	for _, ln := range []net.Listener{s.unixLn, s.tcpLn} {
+		go func() { s.httpErr <- srv.Serve(ln) }()
+	}
 }
 
 func (s *Server) clearStaleSocket() error {
@@ -311,16 +345,9 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	mux := http.NewServeMux()
-	s.routes(mux)
-	s.httpSrv = &http.Server{
-		Handler:           s.refuseBrowserPages(s.trackActivity(mux)),
-		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
+	if s.httpSrv == nil {
+		s.startHTTP()
 	}
-
-	errCh := make(chan error, 2)
-	go func() { errCh <- s.httpSrv.Serve(s.unixLn) }()
-	go func() { errCh <- s.httpSrv.Serve(s.tcpLn) }()
 
 	s.logger.Printf("mcpx %s listening on %s and %s", s.version, s.paths.Socket, s.endpoint)
 	if cfg := s.currentConfig(); cfg != nil && cfg.Path != "" {
@@ -338,11 +365,20 @@ func (s *Server) Serve(ctx context.Context) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
 
+	done := ctx.Done()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-done:
+			if s.committed.Load() {
+				done = nil
+				continue
+			}
 			return s.shutdown()
 		case sig := <-sigCh:
+			if s.committed.Load() {
+				s.logger.Printf("received %s during takeover; ignoring it", sig)
+				continue
+			}
 			if sig == syscall.SIGHUP {
 				s.logger.Printf("received SIGHUP, reloading configuration")
 				s.reloadMu.Lock()
@@ -357,12 +393,17 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			s.logger.Printf("received %s, shutting down", sig)
 			return s.shutdown()
-		case err := <-errCh:
+		case err := <-s.httpErr:
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				_ = s.shutdown()
 				return err
 			}
+		case <-s.handedOff:
+			return nil
 		case <-reapT.C:
+			if s.committed.Load() {
+				continue
+			}
 			s.watchConfig()
 			s.reg.Reap()
 			if s.shouldIdleExit() {
@@ -391,7 +432,7 @@ func (s *Server) trackActivity(next http.Handler) http.Handler {
 }
 
 func (s *Server) shouldIdleExit() bool {
-	if s.idleExit <= 0 {
+	if s.idleExit <= 0 || s.committed.Load() {
 		return false
 	}
 	if time.Since(time.Unix(0, s.lastReq.Load())) < s.idleExit {
@@ -447,6 +488,7 @@ func (s *Server) WarmAsync() {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
+	mux.HandleFunc("POST "+takeoverRoute, s.handleTakeover)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	// Server-sent events, because they are plain HTTP: they go through every
 	// proxy that HTTP goes through, reconnect themselves in a browser, and
