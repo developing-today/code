@@ -276,6 +276,59 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", result?);
             Ok(())
         }
+        WorldCommand::CrossWorldWrite {
+            node,
+            mode,
+            admin_token,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = client
+                .set_cross_world_write(&admin_token, mode == "on")
+                .await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
+        WorldCommand::ForceCrossWorldWrite {
+            node,
+            admin_token,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = client.force_cross_world_write(&admin_token).await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
+        WorldCommand::FileScope {
+            node,
+            scope,
+            write_override,
+            admin_token,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = client
+                .set_file_scope(
+                    &admin_token,
+                    &scope,
+                    write_override.as_deref().map(|mode| mode == "on"),
+                )
+                .await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
         WorldCommand::List {
             node,
             admin_token,

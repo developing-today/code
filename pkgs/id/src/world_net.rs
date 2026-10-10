@@ -355,6 +355,80 @@ impl WorldClient {
         Ok(reply["report"].clone())
     }
 
+    /// Let other unisolated worlds write into this world, with the admin token.
+    /// Returns the world's policy after the change.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or the change is refused.
+    pub async fn set_cross_world_write(
+        &mut self,
+        admin_token: &str,
+        enabled: bool,
+    ) -> Result<serde_json::Value> {
+        self.policy_request(serde_json::json!({
+            "type": "set_cross_world_write",
+            "admin_token": admin_token,
+            "enabled": enabled,
+        }))
+        .await
+    }
+
+    /// Force cross-world writes on for an unisolated world, with the admin token.
+    /// Returns the world's policy after the change.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or the change is refused.
+    pub async fn force_cross_world_write(
+        &mut self,
+        admin_token: &str,
+    ) -> Result<serde_json::Value> {
+        self.policy_request(serde_json::json!({
+            "type": "force_cross_world_write",
+            "admin_token": admin_token,
+        }))
+        .await
+    }
+
+    /// Set the file scope (`confined` or `unrestricted`) with the admin token,
+    /// and with `write_override` the admin's file write override.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or the change is refused.
+    pub async fn set_file_scope(
+        &mut self,
+        admin_token: &str,
+        scope: &str,
+        write_override: Option<bool>,
+    ) -> Result<serde_json::Value> {
+        self.policy_request(serde_json::json!({
+            "type": "set_file_scope",
+            "admin_token": admin_token,
+            "scope": scope,
+            "write_override": write_override,
+        }))
+        .await
+    }
+
+    async fn policy_request(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
+        self.send_json(&request).await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "policy" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the policy change")
+            );
+        }
+        Ok(reply["policy"].clone())
+    }
+
     /// Set the world's isolation with the admin token and return the new
     /// setting (`isolated` or `unisolated`).
     ///
