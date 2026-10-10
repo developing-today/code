@@ -1048,16 +1048,17 @@ type InstanceStatus struct {
 
 // Status describes the pool.
 type Status struct {
-	Name      string           `json:"name"`
-	Namespace string           `json:"namespace"`
-	Sharing   string           `json:"sharing"`
-	Scope     string           `json:"scope"`
-	Max       int              `json:"max"`
-	Live      int              `json:"live"`
-	Tools     int              `json:"tools"`
-	SchemaAge string           `json:"schemaAge,omitempty"`
-	LastError string           `json:"lastError,omitempty"`
-	Instances []InstanceStatus `json:"instances,omitempty"`
+	Name            string           `json:"name"`
+	Namespace       string           `json:"namespace"`
+	Sharing         string           `json:"sharing"`
+	Scope           string           `json:"scope"`
+	Max             int              `json:"max"`
+	Live            int              `json:"live"`
+	Tools           int              `json:"tools"`
+	SchemaAge       string           `json:"schemaAge,omitempty"`
+	LastError       string           `json:"lastError,omitempty"`
+	Instances       []InstanceStatus `json:"instances,omitempty"`
+	RequiresSecrets []string         `json:"requiresSecrets,omitempty"`
 }
 
 // Status snapshots the pool for `mcpx status`.
@@ -1070,6 +1071,9 @@ func (p *Pool) Status() Status {
 		Scope:     string(p.cfg.Scope),
 		Max:       p.cfg.Max,
 		Live:      len(p.instances),
+	}
+	if p.cfg != nil && len(p.cfg.RequiresSecrets) > 0 {
+		st.RequiresSecrets = p.cfg.RequiresSecrets
 	}
 	if p.lastErr != nil {
 		st.LastError = p.lastErr.Error()
