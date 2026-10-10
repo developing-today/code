@@ -325,3 +325,53 @@ compile again, and re-granting restores it.
 
 Not done here: expiry and use limits on capabilities, attributed ticks, and
 the "who a request acts for" check for ticks.
+
+## 2026-10-10T02-56-13Z Audit: capability checklist
+
+Checked each claim in this doc against the code. Line numbers are in
+`pkgs/id/src` (`world.rs`, `world_caps.rs`, `world_compile.rs`,
+`world_store.rs`). Status: DONE means implemented and tested; PARTIAL means
+implemented with a gap or deviation noted; MISSING means not implemented.
+
+Verification plan:
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Ledger: ceiling removal takes effect on existing capabilities without reissue | DONE | `decide_for` consults the ledger on every use (`world_caps.rs:349`); `set_granted` (`world_caps.rs:379`); test `revoking_a_grant_applies_to_capabilities_already_issued` (`world.rs:3176`), added in this audit |
+| Attenuation: child cannot widen its parent | DONE | `WorldScopes::attenuate` requires a subset (`world.rs:116`); `attenuate` (`world.rs:2370`); test `attenuation_only_narrows_and_needs_delegate` (`world.rs:3447`) |
+| Attenuation: child cannot outlive its parent | DONE | `delegate` rejects a later expiry and uses above the parent's remaining uses (`world.rs:1005`, `ensure_not_expired` `world.rs:1052`); tests `delegation_may_not_outlive_or_expire_in_the_past` (`world.rs:3235`), `restore_refuses_a_delegate_outliving_its_parent` (`world.rs:3356`) |
+| Attenuation: child cannot delegate when `may_delegate` is false | DONE | Delegation requires `DELEGATE` (`world.rs:117`); GUEST excludes it (`world.rs:75`); test `attenuation_only_narrows_and_needs_delegate` (`world.rs:3447`, JOIN|DELEGATE case) |
+| Revocation: revoking a parent refuses the subtree | DONE | `revoke_tree` (`world.rs:1136`); tests `revoked_capabilities_cannot_read_or_write` (`world.rs:3437`), `delegated_capabilities_are_narrow_and_die_with_their_parent` (`world.rs:3481`) |
+| Revocation: journal replay reproduces the same state | DONE | `Revoked` replay in `WorldCore::restore` (`world.rs:674`); test `a_restored_delegation_keeps_its_parent_link` (`world.rs:3560`); `a_revoked_delegation_subtree_stays_revoked_after_restart` (`world_store.rs:504`), added in this audit |
+| Participant attribution: `chat.say` by a `JOIN\|CHAT` participant is allowed | DONE | Added in this audit: `a_participant_with_chat_lets_the_program_say_what_it_asks` (`world.rs:2830`) asserts an allowed use and zero denials. Gate: `execute` uses `actor_permits` from `acting` (`world.rs:1743`) |
+| Participant attribution: `chat.say` by a participant without CHAT is refused | PARTIAL | `a_participant_cannot_make_the_program_do_what_its_scopes_forbid` (`world.rs:2798`) uses a JOIN\|INPUT participant. The refusal code is `actor_denied`, not `cap_denied` (`world_caps.rs:290`, `:357`); see deviations. A JOIN-only participant cannot submit input at all, so that exact case is not reachable through the input path |
+| Import gate: a program importing an ungranted module fails to compile | DONE | `check_imports` (`world_compile.rs:101`), run before the compiler (`world_compile.rs:182`); tests `an_ungranted_platform_import_is_refused_by_name` (`world_compile.rs:643`), `a_sibling_file_cannot_smuggle_an_ungranted_import` (`world_compile.rs:667`), `an_ungranted_import_is_refused_before_the_compiler_runs` (`world_compile.rs:677`) |
+| Import gate: a program importing only granted modules compiles and runs | PARTIAL | Compile and install are tested (`apps_can_import_the_platform_screen_module`, `world_compile.rs:528`; end-to-end check in the 11-28-37Z section). No test asserts that such a program then runs and answers requests |
+| Journal: no secret in any entry after mint, attenuate and revoke | DONE | `attenuated_capability_secrets_never_reach_the_journal` (`world_store.rs:556`), added in this audit, scans the journal after all three operations; `journal_never_contains_capability_secrets` (`world_store.rs:478`) covers the manual `Issued` path |
+| Existing tests keep passing (join, invite, capability tests in `world.rs` and `sandbox.rs`) | DONE | `cargo test --lib`: 641 passed, 0 failed (640 before this audit, plus the one added here) |
+
+Claims beyond the verification plan:
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Ticks run with no acting participant (ceiling only, no attribution) | DONE | `acting` cleared after each command (`world.rs:1520`); `fire_ticks` (`world.rs:1721`); tests `subscribed_ticks_arrive_only_while_someone_is_present` (`world.rs:3054`), `ticks_follow_the_world_grant_not_a_participant_capability` (`world.rs:3077`), `ticks_speak_for_the_world_not_for_a_present_participant` (`world.rs:3137`), added in this audit |
+| Use limits draw down every ancestor | DONE | `spend` (`world.rs:1074`), `ensure_uses_left` (`world.rs:1065`); test `use_limits_draw_down_every_ancestor` (`world.rs:3279`). Counted on committed chat and input only (`commit`, `world.rs:1289`) |
+| Account-held scopes have a directory ceiling | DONE | `issue_for_account` (`world.rs:910`); `effective_scopes` (`world.rs` near 1015) |
+| Ceiling for program-level (non-account) capabilities | PARTIAL | Program effects are gated by `CapLedger` only (`world_caps.rs:349`). A non-account capability has no scope ceiling. Not implemented: a policy decision, not a bug |
+| Direct participant `chat` and `input` gated by the ledger | PARTIAL | `chat` (`world.rs:1170`) and `prepare_input` (`world.rs:1189`) check scope only, not the ledger. Gating them would silence chat under the default `deny` policy. Not implemented: a policy decision |
+| Grant-on-use restricted to development | PARTIAL | `--world-cap-policy` defaults to `deny` (`cli.rs` near 393); `grant-on-use` is accepted by `serve.rs` (near 351) with no development-only restriction. Not implemented |
+| Wasm host-import gating | MISSING, vacuous | The sandbox rejects every module import (`sandbox.rs` near 77-84; test `rejects_modules_with_host_imports`, `sandbox.rs:1157`), so there is nothing to gate. The native worker has no host function table. Not implemented |
+
+Open questions answered by the implementation:
+
+- Ticks: ceiling only, no per-participant attribution (`fire_ticks`, `world.rs:1721`).
+- CLI default: `deny` (`cli.rs` near 393).
+- Delegation default: GUEST lacks DELEGATE, so delegation is off unless granted.
+- Import gate: per module, checked at compile time (`check_imports`).
+
+Deviations from the doc:
+
+- A refused program effect from a participant returns `actor_denied`, not `cap_denied` (`world_caps.rs:290`). The doc asked for `cap_denied`. Changing the wire code is left for a decision.
+- A JOIN-only participant cannot submit input, so the JOIN-only refusal case is covered by a JOIN|INPUT participant instead.
+
+Verification run for this audit: `cargo fmt --check` clean; `cargo test --lib` 641 passed; `cargo clippy --all-targets` (default features) exits 0 with the same 143 pre-existing warnings and none on lines added in this audit. The `--all-features` (web) build was not run here. Its `web/dist` assets were not built, so `rust-embed` fails.
