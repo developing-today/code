@@ -2125,11 +2125,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791615616,
-        "narHash": "sha256-a0rys4SrqsVyP8FxnlDZQNdEC0rQ0OE5tCq0ANWfSN8=",
+        "lastModified": 1791621841,
+        "narHash": "sha256-iRk6dqykia2oIsJfdoxCHsKm42XRm26bkxAtUrBhzYQ=",
         "owner": "developing-today",
         "repo": "openchamber",
-        "rev": "dca425103e7e142f93840dd17c988cebabf4b569",
+        "rev": "a33ebfb9a1fecc0d2224a5f790e47f60f30c65be",
         "type": "github"
       },
       "original": {
