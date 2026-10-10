@@ -31,6 +31,7 @@ func (a *App) handWritten() map[string]Handler {
 		"client":     a.CmdClient,
 		"status":     a.CmdStatus,
 		"refresh":    a.CmdRefresh,
+		"reload":     a.CmdReload,
 		"restart":    a.CmdRestart,
 		"stop":       a.CmdStop,
 		"daemons":    a.CmdDaemons,

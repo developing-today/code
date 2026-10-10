@@ -1387,6 +1387,27 @@ func (a *App) CmdRefresh(ctx context.Context, args []string) error {
 	return a.CmdLs(ctx, nil)
 }
 
+// CmdReload tells the running daemon to reload its configuration.
+func (a *App) CmdReload(ctx context.Context, args []string) error {
+	c, err := a.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	res, err := c.Reload(ctx)
+	if err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.out(res)
+	}
+	added, _ := res["added"].([]any)
+	removed, _ := res["removed"].([]any)
+	fmt.Printf("reloaded in %s: %d added, %d removed\n",
+		time.Since(start).Truncate(time.Millisecond), len(added), len(removed))
+	return a.CmdLs(ctx, nil)
+}
+
 // CmdRestart restarts running instances and waits for the replacements, or
 // with --lazy only stops them.
 func (a *App) CmdRestart(ctx context.Context, args []string) error {

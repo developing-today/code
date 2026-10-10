@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (72)
+## /v1 operations (73)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -84,6 +84,7 @@ carry instead is a description that says so and MCP annotations
 | `recipe_run` | `POST /v1/recipes/{name}/run` | `mcpx recipes run` | `mcpx_recipe_run` | `ops.recipeRun()` |  |
 | `refresh` | `POST /v1/refresh` | `mcpx refresh` | `mcpx_refresh` | `ops.refresh()` | Privileged. |
 | `registry_search` | `GET /v1/registry/search` | `mcpx registry search` | `mcpx_registry_search` | `ops.registrySearch()`, `registrySearch()` |  |
+| `reload` | `POST /v1/reload` | `mcpx reload` | `mcpx_reload` | `ops.reload()` | Privileged. |
 | `resolve` | `GET /v1/resolve` | `mcpx resolve` *generated* | `mcpx_resolve` | `ops.resolve()`, `resolve()` |  |
 | `resource_read` | `POST /v1/resource` | `mcpx resources` | `mcpx_resource_read` | `ops.resourceRead()` |  |
 | `resource_templates` | `GET /v1/resource-templates` | `mcpx resources --templates` | `mcpx_resource_templates` | `ops.resourceTemplates()` |  |
@@ -109,7 +110,7 @@ carry instead is a description that says so and MCP annotations
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 
-## CLI commands (59)
+## CLI commands (61)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -156,6 +157,7 @@ that reaches none says why: those are decisions, not gaps.
 | `recipes` | `recipes_list`, `recipe_get`, `recipe_save`, `recipe_run` |  |
 | `refresh` | `refresh` |  |
 | `registry` | `registry_search` |  |
+| `reload` | `reload` |  |
 | `resolve` | `resolve` | Generated from the operation table. |
 | `resources` | `resource_read`, `resource_templates`, `resources` |  |
 | `restart` | `daemon_restart`, `restart` |  |
@@ -167,6 +169,7 @@ that reaches none says why: those are decisions, not gaps.
 | `servers` | `servers_list`, `servers_add`, `servers_remove` |  |
 | `session` | `session_release` | Generated from the operation table. |
 | `settings` | `settings_list`, `settings_unset`, `settings_get`, `settings_set` |  |
+| `skills` | – | Manages embedded agent skills. |
 | `stats` | `stats_query` |  |
 | `status` | `status` |  |
 | `stop` | `shutdown` |  |

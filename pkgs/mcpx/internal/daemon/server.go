@@ -511,6 +511,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/resource", s.handleResource)
 	mux.HandleFunc("POST /v1/session/release", s.handleRelease)
 	mux.HandleFunc("POST /v1/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /v1/reload", s.handleReload)
 	mux.HandleFunc("POST /v1/restart", s.handleRestart)
 	mux.HandleFunc("GET /dashboard", s.handleDashboard)
 	mux.HandleFunc("GET /v1/dashboard", s.handleDashboard)
@@ -996,6 +997,24 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"namespaces": s.reg.Namespaces(config.Profile{All: true}),
 		"added":      added, "removed": removed, "errors": out})
+}
+
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	s.reloadMu.Lock()
+	added, removed, err := s.reloadConfig()
+	s.reloadMu.Unlock()
+	if err != nil {
+		s.logger.Printf("HTTP reload error: %v", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.logger.Printf("HTTP reload successful: %d added, %d removed", len(added), len(removed))
+	writeJSON(w, 200, map[string]any{
+		"status":     "reloaded",
+		"added":      added,
+		"removed":    removed,
+		"namespaces": s.reg.Namespaces(config.Profile{All: true}),
+	})
 }
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {

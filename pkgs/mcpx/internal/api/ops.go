@@ -540,6 +540,14 @@ func Ops() []Op {
 			Admin: true, Mutating: true,
 		},
 		{
+			Name: "reload", Method: "POST", Path: "/v1/reload",
+			Command: "reload",
+			Summary: "Re-read the configuration and swap server pools without restarting unchanged servers",
+			Description: "Re-reads the daemon configuration files without re-probing all unchanged server schemas. " +
+				"Unchanged server processes and their cached schemas remain live.",
+			Admin: true, Mutating: true,
+		},
+		{
 			Name: "restart", Method: "POST", Path: "/v1/restart",
 			Command: "restart",
 			Summary: "Restart a server's instances, or every server's",

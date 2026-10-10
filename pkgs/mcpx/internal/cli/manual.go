@@ -129,6 +129,13 @@ func handCommands() []Command {
 				"marked, because otherwise the shadowing is invisible.",
 		},
 		{
+			Name: "skills", Group: "running",
+			Local:   "Manages embedded agent skills.",
+			Usage:   "[list|install] [--agent <name>] [--to <dir>]",
+			Summary: "list or install embedded mcpx agent skills",
+			Detail: "Lists available agent skills embedded with mcpx or installs them into the target agent configuration.",
+		},
+		{
 			Name: "recipes", Group: "running",
 			Usage:   "[list|show|match|save|run] [<name>] [key=value...]",
 			Summary: "saved scripts that declare their own holes",
@@ -230,6 +237,10 @@ func handCommands() []Command {
 		{
 			Name: "refresh", Group: "daemon",
 			Summary: "re-read tool schemas from every server",
+		},
+		{
+			Name: "reload", Group: "daemon",
+			Summary: "re-read configuration and reload daemon without restarting unchanged servers",
 		},
 		{
 			Name: "restart", Group: "daemon",

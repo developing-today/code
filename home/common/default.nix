@@ -21,6 +21,8 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
+  # mcpx MCP gateway and Code Mode execution runner.
+  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
 in
 {
   wayland.windowManager.hyprland = {
@@ -549,11 +551,50 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  # mcpx standing daemon: pool management and Code Mode runner.
+  # Runs independently on boot; survives openchamber/opencode restarts.
+  # Supports seamless hot reload via `mcpx reload` on SIGHUP or config changes.
+  systemd.user.services.mcpx = {
+    Unit = {
+      Description = "mcpx standing MCP gateway daemon";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${mcpx}/bin/mcpx daemon";
+      ExecReload = "${mcpx}/bin/mcpx reload";
+      Restart = "always";
+      RestartSec = 3;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # Watch .mcpx.json to hot-reload the standing mcpx daemon seamlessly.
+  systemd.user.paths.mcpx-config = {
+    Unit.Description = "Watch .mcpx.json for live reload";
+    Path = {
+      PathChanged = [
+        "%h/code/.mcpx.json"
+        "%h/.config/mcpx/config.json"
+      ];
+      Unit = "mcpx-reload.service";
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.mcpx-reload = {
+    Unit.Description = "Reload mcpx daemon configuration";
+    Service = {
+      Type = "oneshot";
+      ExecStart = "${mcpx}/bin/mcpx reload";
+    };
+  };
+
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
-      After = [ "network-online.target" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
-      Wants = [ "network-online.target" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      After = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      Wants = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
     };
     Service = {
       ExecStart = toString (
@@ -577,6 +618,7 @@ in
             --port 3000 --host 127.0.0.1
         ''
       );
+      ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
@@ -584,6 +626,7 @@ in
         "PATH=${
           lib.makeBinPath [
             inputs.opencode-fork.packages.${system}.opencode # OpenChamber needs >= 2.0.20
+            mcpx
             pkgs.git
             pkgs.openssh
           ]

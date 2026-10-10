@@ -656,6 +656,16 @@ func (c *Client) Refresh(ctx context.Context) (map[string]any, error) {
 	return out, json.Unmarshal(b, &out)
 }
 
+// Reload tells the running daemon to reload its configuration without restarting unchanged servers.
+func (c *Client) Reload(ctx context.Context) (map[string]any, error) {
+	b, err := c.do(ctx, http.MethodPost, "/v1/reload", nil)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	return out, json.Unmarshal(b, &out)
+}
+
 // RestartReply is what POST /v1/restart answers.
 type RestartReply struct {
 	Stopped int  `json:"stopped"`

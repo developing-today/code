@@ -487,6 +487,12 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  reload: {
+    method: "POST",
+    path: "/v1/reload",
+    params: {},
+    response: "json",
+  },
   resolve: {
     method: "GET",
     path: "/v1/resolve",
@@ -1142,6 +1148,14 @@ export class DaemonOps {
    */
   registrySearch(args: { q: string; limit?: number }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("registry_search", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Re-read the configuration and swap server pools without restarting unchanged servers. `POST /v1/reload`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  reload(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("reload", args, opts) as Promise<unknown>
   }
 
   /**
