@@ -2143,11 +2143,11 @@
         "nixpkgs": "nixpkgs_16"
       },
       "locked": {
-        "lastModified": 1791605217,
-        "narHash": "sha256-efbBgv6Mud0/lwXPwLiOs3gmQl0lQr2U6QJH5Y4gIvA=",
+        "lastModified": 1791634020,
+        "narHash": "sha256-ZDcETO2y5yU+YaQVv7oUdQZHhaBGl7cMxJ+xX6KXcLA=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "e6b893115531cb9bd25b9690fd12ad622e8c4540",
+        "rev": "1b04303a2a2a49ef7c6b06e55dcc47a3315ba8c7",
         "type": "github"
       },
       "original": {
