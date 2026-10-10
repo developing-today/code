@@ -8,6 +8,7 @@
 //! after its time is up.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
@@ -211,20 +212,40 @@ fn code_digest(address: &str, code: &str) -> [u8; 32] {
 }
 
 /// Remembers signed requests for their window, so a captured one cannot be
-/// replayed inside it.
+/// replayed inside it. The memory is empty after a restart, so a boot window
+/// refuses every signed request until it closes.
 #[derive(Debug, Default)]
 pub struct ReplayGuard {
     seen: HashMap<String, u64>,
+    quiet_until: u64,
 }
 
 impl ReplayGuard {
+    /// A guard that refuses signed requests until `window` has passed since
+    /// `boot` (Unix milliseconds). A zero window refuses nothing.
+    #[must_use]
+    pub fn after_boot(boot: u64, window: Duration) -> Self {
+        let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+        Self {
+            seen: HashMap::new(),
+            quiet_until: boot.saturating_add(window_ms),
+        }
+    }
+
     /// Record a request's key and nonce.
     ///
     /// # Errors
     ///
-    /// Fails if the same key and nonce were already used in the window, or if
-    /// too many requests are being remembered.
+    /// Fails during the boot window, if the same key and nonce were already
+    /// used in the window, or if too many requests are being remembered.
     pub fn accept(&mut self, key: &str, nonce: &str, at: u64, now: u64) -> Result<()> {
+        if now < self.quiet_until {
+            let seconds = (self.quiet_until - now).div_ceil(1000);
+            return Err(Refusal::RateLimited(format!(
+                "the server started recently; signed requests are refused for {seconds} more seconds"
+            ))
+            .into());
+        }
         self.seen
             .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS > now);
         let id = format!("{key}:{nonce}");
@@ -478,5 +499,48 @@ mod tests {
             moved.at = at;
             assert!(verify_signed(&mut replays, &moved, method, target, body, now()).is_err());
         }
+    }
+
+    fn boot_refused(error: &anyhow::Error) -> bool {
+        matches!(
+            error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        )
+    }
+
+    #[test]
+    fn signed_requests_are_refused_inside_the_boot_window_and_accepted_after_it() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let boot = now();
+        let window = Duration::from_mins(10);
+        let mut replays = ReplayGuard::after_boot(boot, window);
+        let target = "/api/world/directory";
+
+        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1");
+        let error =
+            verify_signed(&mut replays, &early, "GET", target, b"", boot + 599_000).unwrap_err();
+        assert!(boot_refused(&error), "{error:#}");
+
+        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2");
+        assert!(verify_signed(&mut replays, &late, "GET", target, b"", boot + 600_000).is_ok());
+    }
+
+    #[test]
+    fn a_request_captured_before_a_restart_is_refused_during_the_boot_window() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let boot = now();
+        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old");
+        let mut replays = ReplayGuard::after_boot(boot, Duration::from_mins(10));
+        let error =
+            verify_signed(&mut replays, &captured, "GET", "/x", b"", boot + 60_000).unwrap_err();
+        assert!(boot_refused(&error), "{error:#}");
+    }
+
+    #[test]
+    fn a_zero_boot_window_refuses_nothing() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
+        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
+        assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
     }
 }

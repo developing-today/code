@@ -312,6 +312,8 @@ pub struct ServeOptions {
     pub world_max_sessions: usize,
     /// Close durable worlds idle for this many seconds (`0` never).
     pub world_idle_secs: u64,
+    /// Refuse signed world requests for this many seconds after startup (`0` none).
+    pub world_boot_window_secs: u64,
     /// Capabilities the default world's program may use.
     pub world_caps: Vec<String>,
     /// `deny` or `grant-on-use`.
@@ -686,6 +688,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_max_open,
         world_max_sessions,
         world_idle_secs,
+        world_boot_window_secs,
         world_caps,
         world_cap_policy,
         roc_bin,
@@ -806,6 +809,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             HubLimits {
                 max_open_worlds: world_max_open,
                 max_sessions: world_max_sessions,
+                signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
             },
         );
         let default_service = hub.open_default().await?;

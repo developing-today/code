@@ -85,6 +85,9 @@ pub struct HubLimits {
     pub max_open_worlds: usize,
     /// Most sessions at once, across all worlds.
     pub max_sessions: usize,
+    /// How long after the hub starts signed requests are refused, because a
+    /// restart empties the replay memory. `ZERO` refuses none.
+    pub signed_boot_window: Duration,
 }
 
 impl Default for HubLimits {
@@ -92,6 +95,7 @@ impl Default for HubLimits {
         Self {
             max_open_worlds: 256,
             max_sessions: 1024,
+            signed_boot_window: Duration::ZERO,
         }
     }
 }
@@ -281,7 +285,10 @@ impl WorldHub {
                 limits,
                 sessions: Arc::new(Semaphore::new(limits.max_sessions.max(1))),
                 slots: StdMutex::new(HashMap::new()),
-                replays: StdMutex::new(crate::directory_auth::ReplayGuard::default()),
+                replays: StdMutex::new(crate::directory_auth::ReplayGuard::after_boot(
+                    crate::world::unix_ms(),
+                    limits.signed_boot_window,
+                )),
             }),
         }
     }
@@ -309,7 +316,8 @@ impl WorldHub {
     ///
     /// # Errors
     ///
-    /// Fails with an unauthenticated refusal for a bad, stale, or reused request.
+    /// Fails with an unauthenticated refusal for a bad, stale, or reused request,
+    /// and with a rate-limited refusal during the boot window.
     pub fn verify_signed(
         &self,
         signed: &crate::directory_auth::Signed,

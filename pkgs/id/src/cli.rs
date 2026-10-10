@@ -318,7 +318,7 @@ pub enum Command {
         /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
         #[arg(long, env = "ID_WEB_TOKEN")]
         web_token: Option<String>,
-        /// Mark the directory explorer's session cookies `Secure`.
+        /// Mark the web session cookies (`id_token` and the directory explorer's) `Secure`.
         ///
         /// Set this only when HTTPS is terminated in front of the server.
         /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
@@ -380,6 +380,11 @@ pub enum Command {
         /// (they reopen from their journal on demand). `0` keeps them open.
         #[arg(long, default_value_t = 600, requires = "world")]
         world_idle_secs: u64,
+        /// Refuse signed world and directory requests for this many seconds
+        /// after startup, so a request captured before a restart cannot be
+        /// replayed into a server with empty replay memory. `0` disables.
+        #[arg(long, default_value_t = 600, requires = "world")]
+        world_boot_window_secs: u64,
         /// Serve the world over SSH on this port, bound to `--bind`.
         ///
         /// Connect with `ssh -p <PORT> <WORLD>@<host>`; the password is the
@@ -1605,6 +1610,7 @@ mod tests {
                 world_max_open,
                 world_max_sessions,
                 world_idle_secs,
+                world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
                 roc_bin,
@@ -1639,6 +1645,7 @@ mod tests {
                 assert_eq!(world_max_open, 256);
                 assert_eq!(world_max_sessions, 1024);
                 assert_eq!(world_idle_secs, 600);
+                assert_eq!(world_boot_window_secs, 600);
                 assert!(world_caps.is_empty());
                 assert_eq!(world_cap_policy, "deny");
                 assert!(roc_bin.is_none());
@@ -3018,6 +3025,26 @@ mod tests {
             Some(Command::Serve {
                 web_cookie_secure, ..
             }) => assert!(!web_cookie_secure),
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_world_boot_window() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-boot-window-secs",
+            "0",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                world_boot_window_secs,
+                ..
+            }) => assert_eq!(world_boot_window_secs, 0),
             _ => panic!("Expected Serve command"),
         }
     }
