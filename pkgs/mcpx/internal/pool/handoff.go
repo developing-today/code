@@ -39,7 +39,7 @@ func (p *Pool) Detach() (*PoolHandoff, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return &PoolHandoff{PoolID: p.cfg.PoolID()}, nil
+		return nil, errors.New("pool is closed")
 	}
 	p.closed = true
 	parked := p.instances
