@@ -40,6 +40,18 @@ in
       default = false;
       description = "Whether to accept routes from other nodes";
     };
+    acceptDns = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether tailscaled may manage the system DNS configuration (MagicDNS).
+        With dhcpcd + openresolv (no systemd-resolved) tailscaled takes over
+        /etc/resolv.conf and only forwards to whatever upstreams it scraped from
+        the old file. When a DHCP/Wi-Fi renewal momentarily empties that list it
+        answers SERVFAIL ("no upstream resolvers set") for everything, sometimes
+        permanently. Set to false to leave DNS alone.
+      '';
+    };
   };
   config = mkIf cfg.enable {
     assertions = [
@@ -55,65 +67,45 @@ in
         assertion = cfg.advertiseExitNode -> cfg.exitNode == "";
         message = "advertiseExitNode must be false if exitNode is set";
       }
+      {
+        assertion = cfg.acceptDns -> config.services.resolved.enable;
+        message = "services.tailscaleAutoconnect.acceptDns requires services.resolved.enable (tailscaled + openresolv loses DNS when its upstream list empties)";
+      }
     ];
-    systemd.services.tailscale-autoconnect = {
-      description = "Automatic connection to Tailscale";
-      # make sure tailscale is running before trying to connect to tailscale
-      after = [
-        "network-pre.target"
-        "tailscaled.service"
-      ];
-      wants = [
-        "network-pre.target"
-        "tailscaled.service"
-      ];
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig.Type = "oneshot";
-      script = with pkgs; ''
-        set -x # -ex?
-        # wait for tailscaled to settle
-        sleep 2
-        # check if we are already authenticated to tailscale
-        status="$(${tailscale}/bin/tailscale status -json | ${jq}/bin/jq -r .BackendState)"
-        # if status is not null, then we are already authenticated
-        echo "tailscale status: $status"
-        if [ "$status" != "NeedsLogin" ]; then
-          ${coreutils}/bin/timeout 10 ${tailscale}/bin/tailscale up \
-            ${lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}"} \
-            ${lib.optionalString cfg.advertiseExitNode "--advertise-exit-node"} \
-            ${lib.optionalString (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"} \
-            ${lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access"} \
-            ${lib.optionalString cfg.acceptRoutes "--accept-routes"}
-          exit 0
-        fi
-        # otherwise authenticate with tailscale
-        # timeout after 10 seconds to avoid hanging the boot process
-        ${coreutils}/bin/timeout 10 ${tailscale}/bin/tailscale up \
-          ${lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}"} \
-          --authkey=$(cat "${cfg.authkeyFile}")
-        # we have to proceed in two steps because some options are only available
-        # after authentication
-        ${coreutils}/bin/timeout 10 ${tailscale}/bin/tailscale up \
-          ${lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}"} \
-          ${lib.optionalString cfg.advertiseExitNode "--advertise-exit-node"} \
-          ${lib.optionalString (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"} \
-          ${lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access"} \
-          ${lib.optionalString cfg.acceptRoutes "--accept-routes"}
-      '';
-    };
+    # Login/auth is handled by the NixOS built-in `tailscaled-autoconnect`
+    # (services.tailscale.authKeyFile): it runs `tailscale up --auth-key ...` only
+    # when the backend is NeedsLogin/NeedsMachineAuth. A previous hand-rolled
+    # `tailscale-autoconnect` unit duplicated that, and failed on boot whenever the
+    # network was not up yet (`tailscale up` blocks until connected -> timeout 124).
+    # Don't let the built-in unit block boot for the default 90s while waiting for a
+    # backend that cannot leave NoState without a network.
+    systemd.services.tailscaled-autoconnect.serviceConfig.TimeoutStartSec = "20s";
     networking.firewall = {
       trustedInterfaces = [ "tailscale0" ];
       allowedUDPPorts = [ config.services.tailscale.port ];
     };
     services.tailscale = {
       enable = true;
-      extraUpFlags = [
-        (lib.optionalString (cfg.loginServer != "") "--login-server=${cfg.loginServer}")
-        (lib.optionalString cfg.advertiseExitNode "--advertise-exit-node")
-        (lib.optionalString (cfg.exitNode != "") "--exit-node=${cfg.exitNode}")
-        (lib.optionalString cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access")
-        (lib.optionalString cfg.acceptRoutes "--accept-routes")
-      ];
+      # Only used on first login (NeedsLogin). No empty-string entries: they would be
+      # passed to `tailscale up` as bogus positional arguments.
+      extraUpFlags =
+        lib.optional (cfg.loginServer != "") "--login-server=${cfg.loginServer}"
+        ++ lib.optional cfg.advertiseExitNode "--advertise-exit-node"
+        ++ lib.optional (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"
+        ++ lib.optional cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access"
+        ++ lib.optional cfg.acceptRoutes "--accept-routes"
+        ++ lib.optional (!cfg.acceptDns) "--accept-dns=false";
+      # Applied on every boot (`tailscaled-set`) so flags also reach an already
+      # logged-in node whose persisted prefs predate the config. `tailscale set` does
+      # not block waiting for connectivity. exit-node flags are only passed when set.
+      extraSetFlags =
+        [
+          "--accept-routes=${lib.boolToString cfg.acceptRoutes}"
+          "--accept-dns=${lib.boolToString cfg.acceptDns}"
+          "--advertise-exit-node=${lib.boolToString cfg.advertiseExitNode}"
+        ]
+        ++ lib.optional (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"
+        ++ lib.optional cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access";
       authKeyFile = cfg.authkeyFile;
       useRoutingFeatures = if cfg.advertiseExitNode then "both" else "client"; # both or server?
       # services.tailscale.interfaceName = "userspace-networking";
