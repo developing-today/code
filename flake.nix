@@ -268,19 +268,14 @@ rec {
     #   # follows?
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
-    # OpenCode 2.x line (upstream `v2` branch).
-    opencode-2x = {
-      url = "github:anomalyco/opencode/v2";
-    };
-    opencode.follows = "opencode-2x";
-    # Fork of the OpenCode v2 line carrying the model-routing work; the default branch tracks it.
-    opencode-fork = {
+    # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
+    opencode = {
       url = "github:developing-today/opencode";
     };
-    # Fork of OpenChamber, built from its own flake against the opencode fork above.
+    # OpenChamber, built from its own flake against the opencode input above.
     openchamber = {
       url = "github:developing-today/openchamber";
-      inputs.opencode-fork.follows = "opencode-fork";
+      inputs.opencode.follows = "opencode";
     };
     # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
     # Not in nixpkgs and unlikely to be soon -- seven `helium: init` PRs have been

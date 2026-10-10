@@ -368,7 +368,7 @@ in
           ]
         }"
         "T3CODE_HOME=%h/.local/share/t3code"
-        "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
+        "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
       ];
     };
@@ -617,10 +617,10 @@ in
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
-        "OPENCODE_BINARY=${inputs.opencode-fork.packages.${system}.opencode}/bin/opencode"
+        "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "PATH=${
           lib.makeBinPath [
-            inputs.opencode-fork.packages.${system}.opencode # OpenChamber needs >= 2.0.20
+            inputs.opencode.packages.${system}.opencode # OpenChamber needs >= 2.0.20
             mcpx
             pkgs.git
             pkgs.openssh
@@ -668,20 +668,13 @@ in
       # inherit the login shell's PATH, so without this it would find none of
       # them and every provider would show as unavailable.
       #
-      # Both opencode generations are exposed deliberately. t3 accepts either --
-      # opencodeVersionProbe.ts classifies `major >= 2 ? "v2" : "v1"` and
-      # opencodeRuntime.ts imports "@opencode-ai/sdk/v2", with
-      # MINIMUM_OPENCODE_VERSION = "1.14.19" and no upper bound. Only one can own
-      # the plain `opencode` name on PATH (2.0.23 does, matching the system);
-      # register the 1.x build as a second provider instance in the t3 UI using
-      # the explicit binaryPath noted below.
+      # t3 drives the same opencode build as the system `opencode`; its binary
+      # is the one noted in OPENCODE_V2_BIN below.
       Environment = [
         "T3CODE_HOME=%h/.local/share/t3code"
         "PATH=${
           lib.makeBinPath [
-            # The anomalyco fork 2.x, matching the system `opencode` -- NOT
-            # pkgs.opencode, which is nixpkgs' own 1.18.18.
-            inputs.opencode-2x.packages.${system}.opencode # 2.0.23, driver "opencode"
+            inputs.opencode.packages.${system}.opencode # driver "opencode"
             latestCli.codex # 0.160.0   -- t3 driver "codex"
             claude-code # 2.1.293 -- t3 driver "claudeAgent"
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
@@ -696,7 +689,7 @@ in
         #
         #   systemctl --user show t3code -p Environment | tr ' ' '\n' | grep _BIN=
         #
-        "OPENCODE_V2_BIN=${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode"
+        "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "CODEX_BIN=${latestCli.codex}/bin/codex"
         "CLAUDE_BIN=${claude-code}/bin/claude"
         "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
@@ -1129,7 +1122,7 @@ in
             ) &
           fi
 
-          exec ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode "$@"
+          exec ${inputs.opencode.packages.${system}.opencode}/bin/opencode "$@"
         '')
         #
         #         dog

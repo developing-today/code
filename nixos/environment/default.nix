@@ -143,13 +143,13 @@ let
   my-helmfile = pkgs.helmfile-wrapped.override { inherit (my-kubernetes-helm) pluginsDir; };
 
   # opencode-desktop: upstream rewrote the desktop app (electron/bun, no more tauri/cargo)
-  opencode-desktop = inputs.opencode-2x.packages.${system}.opencode-desktop;
+  opencode-desktop = inputs.opencode.packages.${system}.opencode-desktop;
 
-  # OpenCode packages: opencode-2x is the canonical opencode
+  # OpenCode packages: opencode is the canonical opencode
   opencode-v2-compat = pkgs.runCommand "opencode-v2-compat" { } ''
     mkdir -p $out/bin
-    ln -s ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode $out/bin/opencode-v2
-    ln -s ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode $out/bin/opencode2
+    ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode-v2
+    ln -s ${inputs.opencode.packages.${system}.opencode}/bin/opencode $out/bin/opencode2
   '';
 
   # 2x scaling for Electron apps.
@@ -363,7 +363,7 @@ in
       zen-browser.packages.${system}.default
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
-      opencode-2x.packages.${system}.opencode
+      opencode.packages.${system}.opencode
     ])
     ++ [
       # Wrapped for 2x scaling; see scaleElectron2x above. These sit outside the
