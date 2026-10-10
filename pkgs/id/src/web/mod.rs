@@ -150,6 +150,8 @@ pub struct AppState {
     pub identity: IdentityStore,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
     pub world: Option<crate::world_hub::WorldHub>,
+    /// Mark the directory explorer's session cookies `Secure`.
+    pub cookie_secure: bool,
 }
 
 impl std::fmt::Debug for AppState {
@@ -164,6 +166,7 @@ impl std::fmt::Debug for AppState {
             .field("save_limiter", &self.save_limiter)
             .field("identity", &self.identity)
             .field("world", &self.world)
+            .field("cookie_secure", &self.cookie_secure)
             .finish()
     }
 }
@@ -191,6 +194,7 @@ impl AppState {
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
             identity: IdentityStore::new(secret_key, identity_db_path).await?,
             world: None,
+            cookie_secure: false,
         })
     }
 }
@@ -266,6 +270,7 @@ pub async fn web_router(
     identity_db_path: std::path::PathBuf,
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
+    cookie_secure: bool,
 ) -> anyhow::Result<Router> {
     let mut state = AppState::new(
         store,
@@ -277,6 +282,7 @@ pub async fn web_router(
     )
     .await?;
     state.world = world;
+    state.cookie_secure = cookie_secure;
     Ok(
         create_router(state).layer(axum::middleware::from_fn_with_state(
             Arc::new(security),

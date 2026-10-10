@@ -788,3 +788,59 @@ Verification:
 Not covered end to end: the use limit is not spent through a join here. The
 host's use accounting is tested in `world.rs` (`a_bounded_issue_stops_after_its_uses`),
 and the caps report does not show invite bounds.
+
+---
+
+## 2026-10-10T02-37-54Z Implementation: explorer cookie flags
+
+The explorer's session cookie (`id_explore`) already had `HttpOnly` and
+`SameSite=Strict`, but no `Secure` flag, and the admin token form sent the token
+over whatever scheme the server speaks. The server speaks only plain HTTP; TLS
+is terminated by a proxy in front, which the server cannot see. This supersedes
+the Known limitations item about the missing `Secure` flag: the flag now exists,
+but a TLS deployment still has to terminate HTTPS and pass it.
+
+Choices:
+
+- An opt-in flag, `--web-cookie-secure` (env `ID_WEB_COOKIE_SECURE`), default
+  off. The operator sets it when HTTPS is terminated in front. It is off by
+  default because browsers drop `Secure` cookies over plain HTTP except on
+  localhost, so a default-on flag would silently break sign-in on a plain-HTTP
+  LAN address.
+- The scheme is not inferred from headers. `X-Forwarded-Proto` is not read,
+  because a client can set it unless a trusted proxy strips it.
+- With the flag, `Secure` is added to every explorer `Set-Cookie`: sign-in,
+  sign-out and the clear sent on a 401. Without it the attribute is absent.
+- Startup warning. When a hosted world is enabled (so the admin form is
+  served), the bind is not loopback, and the flag is not set, `serve` prints a
+  warning that the token and session cookie travel in clear unless HTTPS is
+  terminated in front.
+
+Scope: explorer cookies only. The `id_token` cookie in `web/security.rs` is also
+set without `Secure`, and is not changed here.
+
+Changed: `cli.rs` (flag), `main.rs` and `commands/serve.rs` (option and warning),
+`web/mod.rs` (`cookie_secure` on `AppState`, passed to `web_router`),
+`web/routes.rs` and `web/world_ws.rs` (`WorldWebState::cookie_secure`), and
+`web/explore.rs` (cookie builders take `secure`).
+
+Verification:
+
+- `cargo test --features web --lib -- web::explore cli::tests`: 110 passed.
+  New tests: `explorer_cookies_are_http_only_strict_and_not_secure_by_default`,
+  `explorer_cookies_are_secure_when_https_is_terminated_in_front`,
+  `test_cli_parse_web_cookie_secure`.
+- `cargo clippy --all-targets --all-features` with the rustup 1.97.0 cargo:
+  exit 0, with no new warnings in the changed code.
+- `cargo test --all-features -- --skip serve_tests`: 837 passed. Three
+  `world_compile` tests fail because `examples/roc-world` has no built
+  `targets/wasm32/host.wasm`. They are unrelated to this change.
+- `bun run test` (343 passed), `bun run typecheck` and `cargo doc` pass.
+  `just ci` stops at `web-fmt-check`, which flags `web/src/world.ts`; this
+  change does not touch `web/`.
+- Live check, `id serve --ephemeral --web --world` on `0.0.0.0` over plain HTTP.
+  Default: `Set-Cookie` has `HttpOnly; SameSite=Strict` and no `Secure`, and the
+  warning prints. With `--web-cookie-secure`: `Secure` is on the sign-in and
+  clear cookies, and the warning does not print. Loopback bind: no warning.
+- Not verified in a browser. Cookie acceptance over HTTPS through a real TLS
+  proxy was not tested.

@@ -318,6 +318,12 @@ pub enum Command {
         /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
         #[arg(long, env = "ID_WEB_TOKEN")]
         web_token: Option<String>,
+        /// Mark the directory explorer's session cookies `Secure`.
+        ///
+        /// Set this only when HTTPS is terminated in front of the server.
+        /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
+        #[arg(long, env = "ID_WEB_COOKIE_SECURE")]
+        web_cookie_secure: bool,
         /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
         #[arg(long, requires = "world_admin_token")]
         world: bool,
@@ -2998,6 +3004,22 @@ mod tests {
             Cli::try_parse_from(["id", "serve", "--web", "--world"]).is_err(),
             "an empty admin secret must not be accepted"
         );
+    }
+
+    #[test]
+    fn test_cli_parse_web_cookie_secure() {
+        match Cli::parse_from(["id", "serve", "--web", "--web-cookie-secure"]).command {
+            Some(Command::Serve {
+                web_cookie_secure, ..
+            }) => assert!(web_cookie_secure),
+            _ => panic!("Expected Serve command"),
+        }
+        match Cli::parse_from(["id", "serve", "--web"]).command {
+            Some(Command::Serve {
+                web_cookie_secure, ..
+            }) => assert!(!web_cookie_secure),
+            _ => panic!("Expected Serve command"),
+        }
     }
 
     #[test]
