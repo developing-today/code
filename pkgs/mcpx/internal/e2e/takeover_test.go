@@ -65,7 +65,8 @@ type successor struct {
 	done   chan struct{}
 }
 
-func startSuccessor(t *testing.T, e *env) *successor {
+// listenNotify opens a systemd notification socket and returns its path.
+func listenNotify(t *testing.T) (string, *net.UnixConn) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ntf")
 	if err != nil {
@@ -78,6 +79,12 @@ func startSuccessor(t *testing.T, e *env) *successor {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	return sock, ln
+}
+
+func startSuccessor(t *testing.T, e *env) *successor {
+	t.Helper()
+	sock, ln := listenNotify(t)
 
 	var out bytes.Buffer
 	cmd := exec.Command(e.mcpx, "daemon", "--takeover")
@@ -136,13 +143,18 @@ func (e *env) awaitSuccessor(t *testing.T, s *successor) daemonDoc {
 // successor's MAINPID with READY in the same datagram.
 func (s *successor) mainPIDReported(t *testing.T) {
 	t.Helper()
-	want := fmt.Sprintf("MAINPID=%d\nREADY=1", s.cmd.Process.Pid)
-	if err := s.notify.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	awaitMainPID(t, s.notify, s.cmd.Process.Pid)
+}
+
+func awaitMainPID(t *testing.T, ln *net.UnixConn, pid int) {
+	t.Helper()
+	want := fmt.Sprintf("MAINPID=%d\nREADY=1", pid)
+	if err := ln.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 4096)
 	for {
-		n, _, err := s.notify.ReadFrom(buf)
+		n, _, err := ln.ReadFrom(buf)
 		if err != nil {
 			t.Fatalf("no %q on NOTIFY_SOCKET: %v", want, err)
 		}
