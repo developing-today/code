@@ -1,5 +1,5 @@
 # Sends one confirmation mail. Run by `id serve --world-mail-command`, which sets ID_MAIL_TO, ID_MAIL_SUBJECT and ID_MAIL_BODY.
-# ID_MAIL_TRANSPORT picks how it leaves: rest (Cloudflare Email Sending API) or worker (the id-mail Worker's send_email binding).
+# ID_MAIL_TRANSPORT picks how it leaves: rest (Cloudflare Email Sending API) or worker (the mail Worker's send_email binding).
 : "${ID_MAIL_TO:?}" "${ID_MAIL_SUBJECT:?}" "${ID_MAIL_BODY:?}"
 transport=${ID_MAIL_TRANSPORT:-rest}
 

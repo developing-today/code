@@ -41,13 +41,13 @@ in
         "worker"
       ];
       default = "rest";
-      description = "How confirmation mail leaves: the Cloudflare Email Sending REST API, or the id-mail Worker's send_email binding.";
+      description = "How confirmation mail leaves: the Cloudflare Email Sending REST API, or the mail Worker's send_email binding.";
     };
 
     workerUrl = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "URL of the id-mail Worker. Required when transport is worker.";
+      description = "URL of the mail Worker. Required when transport is worker.";
     };
   };
 
