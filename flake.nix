@@ -22,6 +22,18 @@ rec {
       lib.make-root-apps
       lib.make-id
       lib.make-mcpx-overlay
+      (inputs.flake-utils.lib.eachDefaultSystem (
+        system:
+        let
+          pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
+        in
+        {
+          packages.openchamber-src = pkgs.callPackage (lib.from-root "pkgs/openchamber-src") {
+            src = inputs.openchamber-src;
+            opencode = inputs.opencode-fork.packages.${system}.opencode;
+          };
+        }
+      ))
     ];
   inputs = {
     nixgl = {
@@ -277,6 +289,16 @@ rec {
     # The 1.18.x build from `opencode` above is exposed under `opencode-v1`.
     opencode-2x = {
       url = "github:anomalyco/opencode/v2.0.23";
+    };
+    # Fork of OpenCode 2.0.23 carrying the model-routing work.
+    opencode-fork = {
+      url = "github:developing-today/opencode/model-routing";
+    };
+    # Fork of OpenChamber carrying the route-pools work, built from source by
+    # pkgs/openchamber-src.
+    openchamber-src = {
+      url = "github:developing-today/openchamber/route-pools";
+      flake = false;
     };
     # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
     # Not in nixpkgs and unlikely to be soon -- seven `helium: init` PRs have been
