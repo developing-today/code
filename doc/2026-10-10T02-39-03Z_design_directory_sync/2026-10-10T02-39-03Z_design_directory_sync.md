@@ -411,3 +411,26 @@ Deferred:
 - **Codes on disk via the outbox.** `--world-mail-outbox` writes each confirmation mail, including its six-digit code, to a 0600 file. Changing this removes or redacts a delivery channel, so it needs a decision.
 - **Persisted sessions (option 2).** Not built. Sessions still end on restart.
 - **Library default.** `HubLimits::default()` has a zero window, so test hubs sign immediately. The CLI default is 600.
+
+---
+
+## Implementation: envelope transport
+
+Date: 2026-10-10. Branch `feat/id-envelope-transport`.
+
+Built:
+- Stale accept fixed. An acceptance names its request, the pending entry stores that request's ID, and `change` requires an exact match. Regression `a_stale_acceptance_cannot_befriend_after_a_new_request` failed before the fix.
+- `receive` checks, in order: signature, audience (world ID), seen-set (replay returns `Duplicate`), skew (5 min future), expiry (30 days), local account, request shape. New journal fields default when absent, so old journals replay.
+- Explorer `receive` action in the shared grammar, with a form shown to all viewers.
+- `envelope_outbox`: append-only JSONL queue, synced per record, torn tail dropped on open. Backoff 1 min doubling to 6 h, 12 attempts then given up. 429 and 5xx retry, other non-2xx refuse. Redirects not followed, 30 s timeout. Only `https`, or `http` to a loopback host. Posts `action=receive&envelope=…` to `/explore/act`.
+
+Deferred:
+- Nothing enqueues an envelope and no loop calls `flush`. Blocked on decision 4 (recipient address source).
+- Outbox status is not shown in the view ("not yet delivered").
+- Removal envelopes (decision 6), per-sender pending cap, section 3.
+
+Flags: none added. Nothing is sent by default, and nothing can be sent until a producer exists. Explorer `receive` is reachable only with the existing `--web` flag, which is off by default.
+
+Dependencies: `reqwest` 0.13 (`rustls-no-provider`, `form`) and `rustls` 0.23, both optional under `world`. No new crate versions. `http_client` installs the aws-lc-rs provider as the process default if none is set.
+
+Tests: directory and outbox suites pass. `--features world`: 658 pass, 3 fail (`world_compile`, missing `host.wasm`). `--features "world web"`: 852 pass, the same 3 fail. Clippy `-D warnings` on this toolchain reports 116 lib errors in untouched code, none in changed files.
