@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/pool"
 )
 
@@ -34,7 +35,7 @@ func (r *Registry) Detach(wait time.Duration) (*RegistryHandoff, error) {
 		if !errors.Is(err, pool.ErrBusy) || !time.Now().Before(deadline) {
 			return h, err
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(defaults.HandoffRetryInterval)
 	}
 }
 

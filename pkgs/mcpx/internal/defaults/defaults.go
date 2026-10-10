@@ -75,6 +75,7 @@ type Defaults struct {
 		TaskResultWait       string `json:"taskResultWait"`
 		StatsTop             int    `json:"statsTop"`
 		RegistryLimit        int    `json:"registryLimit"`
+		HandoffRetryInterval string `json:"handoffRetryInterval"`
 	} `json:"plumbing"`
 	// Resolve governs GET /v1/resolve, which answers "which daemon serves
 	// this directory" for a caller that has no mcpx binary.
@@ -493,6 +494,9 @@ var (
 	TaskResultWait     = mustDur(builtin.Plumbing.TaskResultWait, "plumbing.taskResultWait")
 	StatsTop           = builtin.Plumbing.StatsTop
 	RegistryLimit      = builtin.Plumbing.RegistryLimit
+	// HandoffRetryInterval is how often a takeover re-checks pools that were
+	// busy with in-flight calls.
+	HandoffRetryInterval = mustDur(builtin.Plumbing.HandoffRetryInterval, "plumbing.handoffRetryInterval")
 
 	// ResolveDialTimeout bounds the liveness check /v1/resolve makes against
 	// the socket it is about to name. It is a local connect on a unix

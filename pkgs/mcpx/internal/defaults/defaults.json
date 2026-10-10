@@ -79,7 +79,8 @@
     "taskTTL": "10m",
     "taskResultWait": "2m",
     "statsTop": 20,
-    "registryLimit": 20
+    "registryLimit": 20,
+    "handoffRetryInterval": "10ms"
   },
   "resolve": {
     "dialTimeout": "200ms"
