@@ -278,7 +278,7 @@ rec {
       url = "github:developing-today/opencode";
     };
     # Fork of OpenChamber, built from its own flake against the opencode fork above.
-    openchamber-fork = {
+    openchamber = {
       url = "github:developing-today/openchamber";
       inputs.opencode-fork.follows = "opencode-fork";
     };

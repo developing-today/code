@@ -198,10 +198,10 @@ let
     };
 
   # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
-  openchamber-desktop = inputs.openchamber-fork.packages.${system}.openchamber-desktop;
+  openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
 
   # OpenChamber CLI/server built from the developing-today/openchamber fork.
-  openchamber = inputs.openchamber-fork.packages.${system}.openchamber;
+  openchamber = inputs.openchamber.packages.${system}.openchamber;
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
   # only documented install is a `curl | sh` that self-updates; see the
