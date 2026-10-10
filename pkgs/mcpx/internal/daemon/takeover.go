@@ -336,6 +336,9 @@ func (s *Server) sendChildren(c *net.UnixConn, ho *RegistryHandoff) error {
 	for pi := range ho.Pools {
 		for ii := range ho.Pools[pi].Instances {
 			st := ho.Pools[pi].Instances[ii].Stdio
+			if st == nil {
+				continue
+			}
 			pipes := []struct {
 				slot string
 				f    *os.File
@@ -567,6 +570,9 @@ func attachPipes(in *takeoverIn) error {
 		for ii := range in.pools[pi].Instances {
 			inst := &in.pools[pi].Instances[ii]
 			if inst.Stdio == nil {
+				if inst.HTTP != nil {
+					continue
+				}
 				return fmt.Errorf("instance %s carries no child", inst.ID)
 			}
 			for _, slot := range []string{"stdin", "stdout", "stderr"} {
@@ -579,6 +585,9 @@ func attachPipes(in *takeoverIn) error {
 	for pi := range in.pools {
 		for ii := range in.pools[pi].Instances {
 			inst := &in.pools[pi].Instances[ii]
+			if inst.Stdio == nil {
+				continue
+			}
 			inst.Stdio.Stdin = in.pipes[takeoverPipe{Pool: pi, Instance: ii, Slot: "stdin"}]
 			inst.Stdio.Stdout = in.pipes[takeoverPipe{Pool: pi, Instance: ii, Slot: "stdout"}]
 			inst.Stdio.Stderr = in.pipes[takeoverPipe{Pool: pi, Instance: ii, Slot: "stderr"}]

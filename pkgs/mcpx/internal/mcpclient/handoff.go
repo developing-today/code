@@ -225,6 +225,27 @@ func (c *Client) Release() {
 	c.fail(errors.New("session handed to a successor process"))
 }
 
+// Abandon is Release for an HTTP session: the upstream session is left open
+// for the successor, so the transport must not send its DELETE.
+func (c *Client) Abandon() {
+	c.fail(errors.New("session handed to a successor process"))
+	if t, ok := c.t.(*HTTPTransport); ok {
+		t.Abandon()
+	}
+}
+
+// HTTPSession is the upstream session this client holds, if it is streamable HTTP.
+func (c *Client) HTTPSession() (HTTPHandoff, bool) {
+	t, ok := c.t.(*HTTPTransport)
+	if !ok {
+		return HTTPHandoff{}, false
+	}
+	return t.Handoff(), true
+}
+
+// SessionState is the protocol state a resumed client needs, without a handshake.
+func (c *Client) SessionState() Session { return c.session() }
+
 func (c *Client) session() Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()

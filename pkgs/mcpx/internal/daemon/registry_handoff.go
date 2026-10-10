@@ -92,16 +92,23 @@ func (r *Registry) Adopt(hs []pool.PoolHandoff) (*Adoption, error) {
 	a := &Adoption{byPool: map[*pool.Pool][]*pool.Adopted{}, seq: map[*pool.Pool]int{}}
 	for _, h := range hs {
 		ads, err := pool.Adopt(h.Instances)
+		a.all = append(a.all, ads...)
 		if err != nil {
 			a.Abort()
 			return nil, err
 		}
-		a.all = append(a.all, ads...)
 		p, ok := byID[h.PoolID]
 		if !ok {
 			a.orphans = append(a.orphans, ads...)
 			continue
 		}
+		sessions, err := p.AdoptSessions(h.Instances)
+		a.all = append(a.all, sessions...)
+		if err != nil {
+			a.Abort()
+			return nil, err
+		}
+		ads = append(ads, sessions...)
 		a.byPool[p] = append(a.byPool[p], ads...)
 		if h.Seq > a.seq[p] {
 			a.seq[p] = h.Seq
