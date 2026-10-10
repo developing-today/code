@@ -97,6 +97,7 @@
           dontUseBunBuild = true;
           dontUseBunCheck = true;
           dontUseBunInstall = true;
+          dontUseCmakeConfigure = true;
 
           buildPhase = ''
             export HOME=$(mktemp -d)
@@ -174,6 +175,7 @@
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
+            dontUseCmakeConfigure = true;
 
             buildPhase = ''
               export HOME=$(mktemp -d)
@@ -341,6 +343,7 @@
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
+            dontUseCmakeConfigure = true;
 
             buildPhase = ''
               export HOME=$(mktemp -d)
@@ -569,6 +572,7 @@
             inherit buildInputs;
             nativeBuildInputs = [
               pkgs.pkg-config
+              pkgs.cmake
               rustToolchain
               pkgs.bun
               bun2nixPkg.hook
@@ -581,6 +585,7 @@
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
+            dontUseCmakeConfigure = true;
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -620,10 +625,12 @@
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
             buildFeatures = [ "sandbox" "world" ];
+            dontUseCmakeConfigure = true;
 
             inherit buildInputs;
             nativeBuildInputs = [
               pkgs.pkg-config
+              pkgs.cmake
               rustToolchain
             ];
 

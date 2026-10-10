@@ -52,6 +52,7 @@ let
       # Build dependencies
       pkg-config
       openssl
+      cmake # libsql-ffi builds its bundled SQLite via cmake
 
       # Cargo plugins
       cargo-watch
