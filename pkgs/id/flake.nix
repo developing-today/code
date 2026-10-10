@@ -84,7 +84,7 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook pkgs.cmake ];
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
           inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -162,7 +162,7 @@
             name = "id-${name}";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook pkgs.cmake ];
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -571,6 +571,7 @@
 
             inherit buildInputs;
             nativeBuildInputs = [
+              pkgs.cmake
               pkgs.pkg-config
               pkgs.cmake
               rustToolchain
@@ -629,6 +630,7 @@
 
             inherit buildInputs;
             nativeBuildInputs = [
+              pkgs.cmake
               pkgs.pkg-config
               pkgs.cmake
               rustToolchain
