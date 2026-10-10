@@ -431,16 +431,24 @@ impl WorldClient {
     }
 
     /// Ask the host to mint a guest capability and return it. The session ends
-    /// afterwards.
+    /// afterwards. `None` bounds take the host's defaults.
     ///
     /// # Errors
     ///
     /// Fails with the host's message if the invite is refused.
-    pub async fn invite(&mut self, admin_token: &str, display_name: &str) -> Result<String> {
+    pub async fn invite(
+        &mut self,
+        admin_token: &str,
+        display_name: &str,
+        expires_in_secs: Option<u64>,
+        uses: Option<u32>,
+    ) -> Result<String> {
         self.send_json(&serde_json::json!({
             "type": "invite",
             "admin_token": admin_token,
             "display_name": display_name,
+            "expires_in_secs": expires_in_secs,
+            "uses": uses,
         }))
         .await?;
         let reply = self
@@ -753,7 +761,7 @@ mod tests {
 
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
-    use crate::world_session::WorldService;
+    use crate::world_session::{INVITE_MAX_SECS, WorldService};
 
     async fn endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
@@ -897,7 +905,10 @@ mod tests {
         let mut invite_client = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        let capability = invite_client.invite("admin", "ann").await.unwrap();
+        let capability = invite_client
+            .invite("admin", "ann", None, None)
+            .await
+            .unwrap();
         invite_client.close();
 
         let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
@@ -964,7 +975,7 @@ mod tests {
         let mut inviter = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        let capability = inviter.invite("admin", "ann").await.unwrap();
+        let capability = inviter.invite("admin", "ann", None, None).await.unwrap();
         inviter.close();
 
         let mut query = WorldClient::connect(&client_ep, addr.clone())
@@ -1048,7 +1059,7 @@ mod tests {
         let mut inviter = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        let capability = inviter.invite("admin", "ann").await.unwrap();
+        let capability = inviter.invite("admin", "ann", None, None).await.unwrap();
         inviter.close();
 
         let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
@@ -1098,7 +1109,7 @@ mod tests {
                 for world in ["alpha", "beta", "gamma"] {
                     let mut inviter = root.open_session(Some(world)).await.unwrap();
                     let capability = inviter
-                        .invite("admin", &format!("player{client_no}"))
+                        .invite("admin", &format!("player{client_no}"), None, None)
                         .await
                         .unwrap();
                     let mut session = root.open_session(Some(world)).await.unwrap();
@@ -1124,14 +1135,23 @@ mod tests {
         let mut ok = WorldClient::connect(&client_ep, host.addr.clone())
             .await
             .unwrap();
-        let capability = ok.invite("admin", "ann").await.unwrap();
+        let capability = ok.invite("admin", "ann", None, None).await.unwrap();
         assert!(!capability.is_empty());
 
         let mut bad = WorldClient::connect(&client_ep, host.addr.clone())
             .await
             .unwrap();
-        let err = bad.invite("wrong", "eve").await.unwrap_err();
+        let err = bad.invite("wrong", "eve", None, None).await.unwrap_err();
         assert!(err.to_string().contains("invite denied"), "{err:#}");
+
+        let mut too_long = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let err = too_long
+            .invite("admin", "fay", Some(INVITE_MAX_SECS + 1), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("30 days"), "{err:#}");
 
         client_ep.close().await;
         host.router.shutdown().await.unwrap();

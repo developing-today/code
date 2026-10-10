@@ -1183,6 +1183,16 @@ pub enum WorldCommand {
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
+        /// How long the invite works, such as `12h` or `3d`.
+        ///
+        /// Defaults to 7 days; the maximum is 30 days.
+        #[arg(long, value_name = "DURATION", value_parser = crate::helpers::parse_duration_secs)]
+        expires_in: Option<u64>,
+        /// How many committed actions the invite may take (at least 1).
+        ///
+        /// Unlimited when omitted.
+        #[arg(long, value_name = "N")]
+        uses: Option<u32>,
     },
     /// Upload and activate a compiled `.wasm` world program on a host.
     Install {
@@ -3077,6 +3087,44 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--expires-in",
+            "3d",
+            "--uses",
+            "2",
+        ]);
+        match cli.command {
+            Some(Command::World(WorldCommand::Invite {
+                expires_in, uses, ..
+            })) => {
+                assert_eq!(expires_in, Some(259_200));
+                assert_eq!(uses, Some(2));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "invite",
+                &node,
+                "--admin-token",
+                "t",
+                "--name",
+                "ann",
+                "--expires-in",
+                "soon",
+            ])
+            .is_err()
+        );
         let cli = Cli::parse_from([
             "id",
             "world",

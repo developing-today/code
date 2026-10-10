@@ -751,3 +751,40 @@ stands). Two follow-ups are possible. One is SMTPUTF8 in `SmtpSink`: an
 EHLO keyword check, the `MAIL FROM` parameter, and UTF-8 headers, which needs a
 relay that advertises it. The other is punycode for internationalised domains
 with an ASCII local part.
+
+---
+
+## 2026-10-10T02-40-46Z Implementation: invite bounds on the CLI
+
+`id world invite` takes `--expires-in <DURATION>` (`45s`, `90m`, `12h`, `3d`) and
+`--uses <N>`. Both are optional. Without them the invite gets the host's rules:
+7 days and no use limit.
+
+- One rule. `check_invite_bounds` in `world_session.rs` holds the lifetime range
+  (1 second to 30 days) and the use minimum (1). The host's `invite_bounds` calls
+  it, and `id world invite` calls it before dialing, so a refused value fails
+  without touching the network.
+- Wire. The `invite` frame carries `expires_in_secs` and `uses`, and
+  `WorldClient::invite` takes both. The host still validates them, so a client
+  that skips the check is refused the same way.
+- Duration grammar. `helpers::parse_duration_secs` accepts a whole number and one
+  of `s`, `m`, `h`, `d`. Fractions, combined forms such as `1d12h`, and bare
+  numbers are refused, so `12` never means twelve seconds by accident.
+- Wording. The refusal changed from `expires_in_secs must be from 1 to 2592000
+  (30 days)` to `invite lifetime must be from 1 second to 30 days`. The rule is
+  the same. HTTP and frame clients now see the new text too.
+
+Verification:
+
+- `helpers`: units, malformed input, and overflow.
+- `cli`: the flags reach `WorldCommand::Invite`, and `--expires-in soon` is a
+  parse error.
+- `world_net`: an out-of-range lifetime sent over Iroh is refused by the host
+  with the same message.
+- `tests/cli_integration.rs` `test_world_invite_bounds_from_the_cli`: `31d`,
+  `0h`, `2w` and `--uses 0` are refused with a message on stderr and nothing on
+  stdout. `--expires-in 12h --uses 2` against a live host prints a capability.
+
+Not covered end to end: the use limit is not spent through a join here. The
+host's use accounting is tested in `world.rs` (`a_bounded_issue_stops_after_its_uses`),
+and the caps report does not show invite bounds.
