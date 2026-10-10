@@ -107,9 +107,13 @@ func (t *StdioTransport) Reattach() {
 
 // AdoptStdio takes over a child a predecessor process detached. It fails if
 // the child is no longer running, so a dead child is never resumed.
+// ErrChildGone is returned by AdoptStdio when the child has exited, so a
+// successor can drop it instead of failing the whole handoff over it.
+var ErrChildGone = errors.New("child is not running")
+
 func AdoptStdio(h StdioHandoff) (*StdioTransport, error) {
 	if !childAlive(h.PID, h.StartTime) {
-		return nil, fmt.Errorf("child %d (%s) is not running", h.PID, h.Label)
+		return nil, fmt.Errorf("child %d (%s): %w", h.PID, h.Label, ErrChildGone)
 	}
 	_ = h.Stdout.SetReadDeadline(time.Time{})
 	_ = h.Stderr.SetReadDeadline(time.Time{})
