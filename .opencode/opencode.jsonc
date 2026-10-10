@@ -3557,7 +3557,7 @@
     }
   },
   "instructions": [
-    ".opencode/instructions/lootbox.md",
+    ".opencode/instructions/mcpx.md",
     ".opencode/instructions/subagents.md"
   ],
   "compaction": {

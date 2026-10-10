@@ -35,6 +35,7 @@ func (a *App) handWritten() map[string]Handler {
 		"stop":       a.CmdStop,
 		"daemons":    a.CmdDaemons,
 		"scripts":    a.CmdScripts,
+		"skills":     a.CmdSkills,
 		"log":        a.CmdLog,
 		"logs":       a.CmdLog,
 		"stats":      a.CmdStats,

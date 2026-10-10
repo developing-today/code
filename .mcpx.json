@@ -1,6 +1,5 @@
 {
-  "port": 9420,
-  "lootboxRoot": ".lootbox",
+  "$schema": "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json",
   "mcpServers": {
     "codedb": {
       "command": "/home/user/bin/codedb",
@@ -25,7 +24,11 @@
         "--no-usage-statistics",
         "--no-performance-crux",
         "--no-category-emulation"
-      ]
+      ],
+      "mcpx": {
+        "sharing": "exclusive",
+        "scope": "session"
+      }
     },
     "context7": {
       "command": "npx",

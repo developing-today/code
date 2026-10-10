@@ -218,57 +218,44 @@
               "namepath": "id::root::lockfiles",
               "shebang": false
             },
-            "lootbox-kill": {
+            "mcpx-daemon": {
               "attributes": [{ "group": "util" }],
-              "body": [
-                ["#!/usr/bin/env bash"],
-                ["set -euo pipefail"],
-                ["pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\\K[0-9]+' || true)"],
-                ["if [ -n \"$pid\" ]; then"],
-                ["    kill \"$pid\""],
-                ["    echo \"Killed lootbox server (PID $pid)\""],
-                ["else"],
-                ["    echo \"No lootbox server running on port 9420\""],
-                ["fi"]
-              ],
+              "body": [["mcpx daemon run"]],
               "dependencies": [],
-              "doc": "Kill running lootbox server",
-              "name": "lootbox-kill",
+              "doc": "Start mcpx daemon",
+              "name": "mcpx-daemon",
               "parameters": [],
               "priors": 0,
               "private": false,
               "quiet": false,
-              "namepath": "id::root::lootbox-kill",
-              "shebang": true
+              "namepath": "id::root::mcpx-daemon",
+              "shebang": false
             },
-            "lootbox-server": {
+            "mcpx-status": {
               "attributes": [{ "group": "util" }],
-              "body": [
-                ["#!/usr/bin/env bash"],
-                ["set -euo pipefail"],
-                ["if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-                ["    echo \"Lootbox server already running on port 9420\""],
-                ["else"],
-                ["    echo \"Starting lootbox server...\""],
-                ["    nohup lootbox server --port 9420 &>/dev/null &"],
-                ["    disown"],
-                ["    sleep 1"],
-                ["    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-                ["        echo \"Lootbox server started on port 9420\""],
-                ["    else"],
-                ["        echo \"Lootbox server may still be starting up...\""],
-                ["    fi"],
-                ["fi"]
-              ],
+              "body": [["mcpx status"]],
               "dependencies": [],
-              "doc": "Start lootbox server (if not already running)",
-              "name": "lootbox-server",
+              "doc": "Check mcpx daemon status",
+              "name": "mcpx-status",
               "parameters": [],
               "priors": 0,
               "private": false,
               "quiet": false,
-              "namepath": "id::root::lootbox-server",
-              "shebang": true
+              "namepath": "id::root::mcpx-status",
+              "shebang": false
+            },
+            "mcpx-stop": {
+              "attributes": [{ "group": "util" }],
+              "body": [["mcpx stop"]],
+              "dependencies": [],
+              "doc": "Stop running mcpx daemon",
+              "name": "mcpx-stop",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::mcpx-stop",
+              "shebang": false
             },
             "stage-docs": {
               "attributes": [{ "group": "docs" }],
@@ -533,25 +520,6 @@
               "quiet": false,
               "namepath": "id::root::update-inputs-all",
               "shebang": false
-            },
-            "update-lootbox": {
-              "attributes": [{ "group": "util" }],
-              "body": [
-                ["#!/usr/bin/env bash"],
-                ["set -euo pipefail"],
-                ["echo \"Updating lootbox...\""],
-                ["curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash"],
-                ["echo \"lootbox updated to $(lootbox --version)\""]
-              ],
-              "dependencies": [],
-              "doc": "Reinstall/update lootbox binary from latest source",
-              "name": "update-lootbox",
-              "parameters": [],
-              "priors": 0,
-              "private": false,
-              "quiet": false,
-              "namepath": "id::root::update-lootbox",
-              "shebang": true
             },
             "update-nixpkgs": {
               "attributes": [{ "group": "nixpkgs" }],
@@ -3165,57 +3133,44 @@
       "namepath": "lockfiles",
       "shebang": false
     },
-    "lootbox-kill": {
+    "mcpx-daemon": {
       "attributes": [{ "group": "util" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\\K[0-9]+' || true)"],
-        ["if [ -n \"$pid\" ]; then"],
-        ["    kill \"$pid\""],
-        ["    echo \"Killed lootbox server (PID $pid)\""],
-        ["else"],
-        ["    echo \"No lootbox server running on port 9420\""],
-        ["fi"]
-      ],
+      "body": [["mcpx daemon run"]],
       "dependencies": [],
-      "doc": "Kill running lootbox server",
-      "name": "lootbox-kill",
+      "doc": "Start mcpx daemon",
+      "name": "mcpx-daemon",
       "parameters": [],
       "priors": 0,
       "private": false,
       "quiet": false,
-      "namepath": "lootbox-kill",
-      "shebang": true
+      "namepath": "mcpx-daemon",
+      "shebang": false
     },
-    "lootbox-server": {
+    "mcpx-status": {
       "attributes": [{ "group": "util" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-        ["    echo \"Lootbox server already running on port 9420\""],
-        ["else"],
-        ["    echo \"Starting lootbox server...\""],
-        ["    nohup lootbox server --port 9420 &>/dev/null &"],
-        ["    disown"],
-        ["    sleep 1"],
-        ["    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-        ["        echo \"Lootbox server started on port 9420\""],
-        ["    else"],
-        ["        echo \"Lootbox server may still be starting up...\""],
-        ["    fi"],
-        ["fi"]
-      ],
+      "body": [["mcpx status"]],
       "dependencies": [],
-      "doc": "Start lootbox server (if not already running)",
-      "name": "lootbox-server",
+      "doc": "Check mcpx daemon status",
+      "name": "mcpx-status",
       "parameters": [],
       "priors": 0,
       "private": false,
       "quiet": false,
-      "namepath": "lootbox-server",
-      "shebang": true
+      "namepath": "mcpx-status",
+      "shebang": false
+    },
+    "mcpx-stop": {
+      "attributes": [{ "group": "util" }],
+      "body": [["mcpx stop"]],
+      "dependencies": [],
+      "doc": "Stop running mcpx daemon",
+      "name": "mcpx-stop",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "mcpx-stop",
+      "shebang": false
     },
     "stage-docs": {
       "attributes": [{ "group": "docs" }],
@@ -3477,25 +3432,6 @@
       "quiet": false,
       "namepath": "update-inputs-all",
       "shebang": false
-    },
-    "update-lootbox": {
-      "attributes": [{ "group": "util" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["echo \"Updating lootbox...\""],
-        ["curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash"],
-        ["echo \"lootbox updated to $(lootbox --version)\""]
-      ],
-      "dependencies": [],
-      "doc": "Reinstall/update lootbox binary from latest source",
-      "name": "update-lootbox",
-      "parameters": [],
-      "priors": 0,
-      "private": false,
-      "quiet": false,
-      "namepath": "update-lootbox",
-      "shebang": true
     },
     "update-nixpkgs": {
       "attributes": [{ "group": "nixpkgs" }],

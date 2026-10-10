@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/dezren39/mcpx/plugin/opencode/skills"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1706,6 +1708,172 @@ func (a *App) CmdScripts(ctx context.Context, args []string) error {
 	fmt.Println("\nRun one with: mcpx run <name>")
 	return nil
 }
+
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func (a *App) CmdSkills(ctx context.Context, args []string) error {
+	var toDir, agent string
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--to" && i+1 < len(args) {
+			toDir = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--to=") {
+			toDir = strings.TrimPrefix(arg, "--to=")
+		} else if arg == "--agent" && i+1 < len(args) {
+			agent = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--agent=") {
+			agent = strings.TrimPrefix(arg, "--agent=")
+		} else if !strings.HasPrefix(arg, "-") {
+			rest = append(rest, arg)
+		}
+	}
+
+	entries, err := fs.ReadDir(skills.FS, ".")
+	if err != nil {
+		return fmt.Errorf("reading embedded skills: %w", err)
+	}
+
+	var available []SkillInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		desc := ""
+		if data, err := fs.ReadFile(skills.FS, name+"/SKILL.md"); err == nil {
+			lines := strings.Split(string(data), "\n")
+			inDesc := false
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "description:") {
+					desc = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+					desc = strings.Trim(desc, `>-"' `)
+					if desc != "" {
+						break
+					}
+					inDesc = true
+					continue
+				}
+				if inDesc {
+					if strings.HasPrefix(trimmed, "---") || (strings.Contains(line, ":") && !strings.HasPrefix(line, " ")) {
+						break
+					}
+					desc += " " + trimmed
+				}
+			}
+		}
+		available = append(available, SkillInfo{Name: name, Description: strings.TrimSpace(desc)})
+	}
+
+	subcmd := "list"
+	targetSkills := []string{}
+	if len(rest) > 0 {
+		subcmd = rest[0]
+		targetSkills = rest[1:]
+	}
+
+	if subcmd == "list" {
+		if a.JSON {
+			return a.out(available)
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SKILL\tDESCRIPTION")
+		for _, s := range available {
+			fmt.Fprintf(tw, "%s\t%s\n", s.Name, truncate(oneLine(s.Description), 60))
+		}
+		tw.Flush()
+		fmt.Println("\nInstall with: mcpx skills install [--agent opencode|claude|codex|agy] [--to <dir>]")
+		return nil
+	}
+
+	if subcmd == "install" {
+		dest := toDir
+		if dest == "" {
+			switch agent {
+			case "claude":
+				if st, err := os.Stat(".claude"); err == nil && st.IsDir() {
+					dest = ".claude/skills"
+				} else {
+					dest = filepath.Join(os.Getenv("HOME"), ".claude", "skills")
+				}
+			case "codex":
+				if st, err := os.Stat(".codex"); err == nil && st.IsDir() {
+					dest = ".codex/skills"
+				} else {
+					dest = filepath.Join(os.Getenv("HOME"), ".codex", "skills")
+				}
+			case "agy":
+				if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
+					dest = ".agents/skills"
+				} else {
+					dest = filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity", "skills")
+				}
+			default:
+				if st, err := os.Stat(".opencode"); err == nil && st.IsDir() {
+					dest = ".opencode/skills"
+				} else if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
+					dest = ".agents/skills"
+				} else {
+					dest = filepath.Join(os.Getenv("HOME"), ".config", "opencode", "skills")
+				}
+			}
+		}
+
+		shouldInstall := func(name string) bool {
+			if len(targetSkills) == 0 {
+				return true
+			}
+			for _, t := range targetSkills {
+				if t == name {
+					return true
+				}
+			}
+			return false
+		}
+
+		count := 0
+		for _, s := range available {
+			if !shouldInstall(s.Name) {
+				continue
+			}
+			skillDir := filepath.Join(dest, s.Name)
+			err := fs.WalkDir(skills.FS, s.Name, func(p string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				rel, _ := filepath.Rel(s.Name, p)
+				targetPath := filepath.Join(skillDir, rel)
+				if d.IsDir() {
+					return os.MkdirAll(targetPath, 0755)
+				}
+				data, err := fs.ReadFile(skills.FS, p)
+				if err != nil {
+					return err
+				}
+				if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+					return err
+				}
+				return os.WriteFile(targetPath, data, 0644)
+			})
+			if err != nil {
+				return fmt.Errorf("installing skill %s: %w", s.Name, err)
+			}
+			count++
+			fmt.Printf("✓ Installed %s to %s\n", s.Name, skillDir)
+		}
+		fmt.Printf("Installed %d skill(s) into %s\n", count, dest)
+		return nil
+	}
+
+	return fmt.Errorf("unknown skills command %q (use 'list' or 'install')", subcmd)
+}
+
 
 func mustGetwd() string {
 	wd, err := os.Getwd()
