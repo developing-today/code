@@ -1,34 +1,3523 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
+  "default": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731",
   "provider": {
-    // No whitelists -- every model each provider publishes shows up in /models.
-    //
-    // Auth, via /connect or env:
-    //   Workers AI : CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_KEY
-    //   AI Gateway : CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID, CLOUDFLARE_API_TOKEN
-    //   Google     : GEMINI_API_KEY (or GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY)
-    //
-    // Cloudflare needs no plugin: both ids are first-class models.dev
-    // providers. Workers AI goes through @ai-sdk/openai-compatible against
-    // Cloudflare's OpenAI-shaped endpoint; AI Gateway uses Cloudflare's own
-    // ai-gateway-provider package and fronts other vendors with BYOK billing.
-    //
-    // "google" is the direct Gemini API -- there is no "gemini" or
-    // "google-generative-ai" id. This is NOT gemini-cli, which stays
-    // deliberately uninstalled; the API provider is unaffected by that sunset.
-    // "google-vertex" and "google-vertex-anthropic" also exist, but need
-    // GOOGLE_VERTEX_PROJECT / _LOCATION / GOOGLE_APPLICATION_CREDENTIALS from
-    // `gcloud auth application-default login`.
-    //
-    // FYI rather than something to configure around: a few Workers AI models
-    // are tool_call:false in the models.dev catalog (llama-3.1-8b,
-    // qwen2.5-coder-32b, qwq-32b among them), so they will appear in the picker
-    // but cannot drive an agent loop. `blacklist` here, or top-level
-    // `disabled_providers`, if the list ever gets noisy.
+    "cloudflare-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cloudflare Workers AI (via AI Gateway)",
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway/workers-ai/v1",
+        "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
+      },
+      "models": {
+        "@cf/deepseek-ai/deepseek-v4-flash-0731": {
+          "name": "DeepSeek V4 Flash (1M Context, Agentic)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 16384
+          }
+        },
+        "@cf/deepseek-ai/deepseek-v4-pro-0813": {
+          "name": "DeepSeek V4 Pro (1M Context, Deep Reasoning)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "high",
+                "max_tokens": 16384
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 16384
+          }
+        },
+        "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {
+          "name": "DeepSeek R1 Distill Qwen 32B (Reasoning)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/zai-org/glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (1M Context, Fast Agentic)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 16384
+          }
+        },
+        "@cf/zai-org/glm-5.3": {
+          "name": "GLM 5.3 Flagship (1.3M Context, Multimodal)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1310720,
+            "output": 16384
+          }
+        },
+        "@cf/meta/llama-4-scout-17b-16e-instruct": {
+          "name": "Llama 4 Scout 17B-16E (MoE, 131k Context)",
+          "variants": {
+            "low": {
+              "options": {
+                "temperature": 0.2
+              }
+            },
+            "medium": {
+              "options": {
+                "temperature": 0.5
+              }
+            },
+            "high": {
+              "options": {
+                "temperature": 0.7
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+          "name": "Llama 3.3 70B Instruct Fast (24k Context, FP8)",
+          "limit": {
+            "context": 24000,
+            "output": 8192
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "temperature": 0.2
+              }
+            },
+            "medium": {
+              "options": {
+                "temperature": 0.5
+              }
+            },
+            "high": {
+              "options": {
+                "temperature": 0.7
+              }
+            }
+          }
+        },
+        "@cf/meta/llama-3.2-11b-vision-instruct": {
+          "name": "Llama 3.2 11B Vision Instruct (Multimodal)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "@cf/google/gemma-4-26b-a4b-it": {
+          "name": "Gemma 4 26B-A4B Instruct (Google Open Weights)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "@cf/qwen/qwen3.8-27b": {
+          "name": "Qwen 3.8 27B (262k Context)",
+          "limit": {
+            "context": 262144,
+            "output": 16384
+          }
+        },
+        "@cf/qwen/qwen3-30b-a3b-fp8": {
+          "name": "Qwen 3 MoE 30B-A3B (Edge Speed)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/qwen/qwen2.5-coder-32b-instruct": {
+          "name": "Qwen 2.5 Coder 32B (Code Specialist)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/qwen/qwq-32b": {
+          "name": "QwQ 32B (Thinking / Math & Architecture)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/moonshotai/kimi-k2.7-code": {
+          "name": "Kimi K2.7 Code (262k Context, Repo Analysis)",
+          "limit": {
+            "context": 262144,
+            "output": 16384
+          }
+        },
+        "@cf/mistralai/mistral-small-3.1-24b-instruct": {
+          "name": "Mistral Small 3.1 24B Instruct",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/openai/gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Open-Weight Flagship)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/openai/gpt-oss-20b": {
+          "name": "GPT-OSS 20B (Open-Weight Latency Tier)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/cloudflare/clef": {
+          "name": "Cloudflare Clef 27B (Typed Classifier)",
+          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        },
+        "@cf/cloudflare/clef-flash": {
+          "name": "Cloudflare Clef Flash 9B (Edge Classifier)",
+          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        },
+        "@cf/meta/llama-guard-3-8b": {
+          "name": "Llama Guard 3 8B",
+          "limit": {
+            "context": 131072,
+            "output": 131072
+          }
+        },
+        "@cf/meta/llama-3.1-8b-instruct-fp8": {
+          "name": "Llama 3.1 8B Instruct fp8",
+          "limit": {
+            "context": 32000,
+            "output": 32000
+          }
+        },
+        "@cf/meta/llama-3.2-1b-instruct": {
+          "name": "Llama 3.2 1B Instruct",
+          "limit": {
+            "context": 60000,
+            "output": 60000
+          }
+        },
+        "@cf/meta/llama-3.2-3b-instruct": {
+          "name": "Llama 3.2 3B Instruct",
+          "limit": {
+            "context": 80000,
+            "output": 80000
+          }
+        },
+        "@cf/aisingapore/gemma-sea-lion-v4-27b-it": {
+          "name": "Gemma Sea Lion V4 27B It",
+          "limit": {
+            "context": 128000,
+            "output": 128000
+          }
+        },
+        "@cf/ibm-granite/granite-4.0-h-micro": {
+          "name": "Granite 4.0 H Micro",
+          "limit": {
+            "context": 131000,
+            "output": 131000
+          }
+        },
+        "@cf/moonshotai/kimi-k2.6": {
+          "name": "Kimi K2.6",
+          "limit": {
+            "context": 262144,
+            "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/zai-org/glm-4.7-flash": {
+          "name": "GLM-4.7-Flash",
+          "limit": {
+            "context": 131072,
+            "output": 131072
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/zai-org/glm-5.2": {
+          "name": "Glm 5.2",
+          "limit": {
+            "context": 262144,
+            "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/nvidia/nemotron-3-120b-a12b": {
+          "name": "Nemotron 3 Super 120B",
+          "limit": {
+            "context": 256000,
+            "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        }
+      }
+    },
     "cloudflare-workers-ai": {},
-    "cloudflare-ai-gateway": {},
-    "google": {}
+    "cloudflare-ai-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cloudflare AI Gateway (Unified Routing)",
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway",
+        "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
+      },
+      "models": {
+        "anthropic/claude-sonnet-5.5": {
+          "name": "Claude Sonnet 5.5 (via AI Gateway)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 4096
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 64000
+                }
+              }
+            }
+          }
+        },
+        "anthropic/claude-opus-5.5": {
+          "name": "Claude Opus 5.5 (via AI Gateway)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 8192
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 64000
+                }
+              }
+            }
+          }
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "name": "Claude Sonnet 4.5 (via AI Gateway)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "openai/gpt-4o": {
+          "name": "GPT-4o (via AI Gateway)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "openai/gpt-4o-mini": {
+          "name": "GPT-4o mini (via AI Gateway)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "openai/o1": {
+          "name": "o1 (via AI Gateway)",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          }
+        },
+        "openai/o3-mini": {
+          "name": "o3-mini (via AI Gateway)",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "openai/gpt-5-mini": {
+          "name": "GPT-5 mini (via AI Gateway)",
+          "limit": {
+            "context": 200000,
+            "output": 32768
+          }
+        },
+        "openai/gpt-5.6-sol": {
+          "name": "GPT-5.6-SOL (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.6-sol-fast": {
+          "name": "GPT-5.6-SOL-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.6-luna": {
+          "name": "GPT-5.6-LUNA (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.6-luna-fast": {
+          "name": "GPT-5.6-LUNA-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.6-terra": {
+          "name": "GPT-5.6-TERRA (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.6-terra-fast": {
+          "name": "GPT-5.6-TERRA-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6-sol": {
+          "name": "GPT-6-SOL (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6-sol-fast": {
+          "name": "GPT-6-SOL-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6.1-sol": {
+          "name": "GPT-6.1-SOL (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6.1-sol-fast": {
+          "name": "GPT-6.1-SOL-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6-luna": {
+          "name": "GPT-6-LUNA (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6-luna-fast": {
+          "name": "GPT-6-LUNA-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6-astra": {
+          "name": "GPT-6-ASTRA (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-6-astra-fast": {
+          "name": "GPT-6-ASTRA-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.5": {
+          "name": "GPT-5.5 (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.5-fast": {
+          "name": "GPT-5.5-FAST (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.4": {
+          "name": "GPT-5.4 (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.4-pro": {
+          "name": "GPT-5.4-PRO (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "openai/gpt-5.5-pro": {
+          "name": "GPT-5.5-PRO (via AI Gateway)",
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "google": {
+      "models": {
+        "antigravity-claude-sonnet-5.5": {
+          "name": "Claude Sonnet 5.5 (Antigravity)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 4096
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "xhigh": {
+              "thinkingConfig": {
+                "thinkingBudget": 48000
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-claude-sonnet-5.5-thinking": {
+          "name": "Claude Sonnet 5.5 Thinking (Antigravity)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 4096
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "xhigh": {
+              "thinkingConfig": {
+                "thinkingBudget": 48000
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5 (Antigravity, agy-compat)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 4096
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "xhigh": {
+              "thinkingConfig": {
+                "thinkingBudget": 48000
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-claude-opus-5.5": {
+          "name": "Claude Opus 5.5 (Antigravity)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 8192
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "xhigh": {
+              "thinkingConfig": {
+                "thinkingBudget": 48000
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-claude-opus-5.5-thinking": {
+          "name": "Claude Opus 5.5 Thinking (Antigravity)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 8192
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "xhigh": {
+              "thinkingConfig": {
+                "thinkingBudget": 48000
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (Antigravity, agy-compat)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 8192
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "xhigh": {
+              "thinkingConfig": {
+                "thinkingBudget": 48000
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-claude-sonnet-4-6": {
+          "name": "Claude Sonnet 4.6 (Antigravity)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "antigravity-claude-opus-4-6-thinking": {
+          "name": "Claude Opus 4.6 Thinking (Antigravity)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": {
+                "thinkingBudget": 8192
+              }
+            },
+            "medium": {
+              "thinkingConfig": {
+                "thinkingBudget": 16384
+              }
+            },
+            "high": {
+              "thinkingConfig": {
+                "thinkingBudget": 32768
+              }
+            },
+            "max": {
+              "thinkingConfig": {
+                "thinkingBudget": 64000
+              }
+            }
+          }
+        },
+        "antigravity-gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "minimal": {
+              "thinkingLevel": "minimal"
+            },
+            "low": {
+              "thinkingLevel": "low"
+            },
+            "medium": {
+              "thinkingLevel": "medium"
+            },
+            "high": {
+              "thinkingLevel": "high"
+            },
+            "max": {
+              "thinkingLevel": "high"
+            }
+          }
+        },
+        "antigravity-gemini-3.7-flash": {
+          "name": "Gemini 3.7 Flash (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "minimal": {
+              "thinkingLevel": "minimal"
+            },
+            "low": {
+              "thinkingLevel": "low"
+            },
+            "medium": {
+              "thinkingLevel": "medium"
+            },
+            "high": {
+              "thinkingLevel": "high"
+            }
+          }
+        },
+        "antigravity-gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingLevel": "low"
+            },
+            "medium": {
+              "thinkingLevel": "medium"
+            },
+            "high": {
+              "thinkingLevel": "high"
+            }
+          }
+        },
+        "antigravity-gemini-3.1-pro": {
+          "name": "Gemini 3.1 Pro (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingLevel": "low"
+            },
+            "high": {
+              "thinkingLevel": "high"
+            },
+            "max": {
+              "thinkingLevel": "high"
+            }
+          }
+        },
+        "antigravity-gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Antigravity)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "low": {
+              "thinkingLevel": "low"
+            },
+            "medium": {
+              "thinkingLevel": "medium"
+            },
+            "high": {
+              "thinkingLevel": "high"
+            }
+          }
+        },
+        "gemini-flash-latest": {
+          "name": "Gemini Flash Latest",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemma-4-31b-it": {
+          "name": "Gemma 4 31B IT",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-omni-flash-preview": {
+          "name": "Gemini Omni Flash Preview",
+          "limit": {
+            "context": 131072,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.1-flash-image-preview": {
+          "name": "Nano Banana 2",
+          "limit": {
+            "context": 65536,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "veo-3.1-lite-generate-preview": {
+          "name": "Veo 3.1 lite",
+          "limit": {
+            "context": 480,
+            "output": 8192
+          }
+        },
+        "lyria-3-pro-preview": {
+          "name": "Lyria 3 Pro Preview",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-tts-preview": {
+          "name": "Gemini 3.1 Flash TTS Preview",
+          "limit": {
+            "context": 8192,
+            "output": 16384
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-2.5-flash-image": {
+          "name": "Nano Banana",
+          "limit": {
+            "context": 32768,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-flash-lite-latest": {
+          "name": "Gemini Flash-Lite Latest",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-embedding-2": {
+          "name": "Gemini Embedding 2",
+          "limit": {
+            "context": 8192,
+            "output": 1
+          }
+        },
+        "gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemma-4-26b-a4b-it": {
+          "name": "Gemma 4 26B A4B IT",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3-pro-image-preview": {
+          "name": "Nano Banana Pro",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-2.5-pro-preview-tts": {
+          "name": "Gemini 2.5 Pro Preview TTS",
+          "limit": {
+            "context": 8192,
+            "output": 16384
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Nano Banana 2",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "lyria-3-clip-preview": {
+          "name": "Lyria 3 Clip Preview",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-pro-preview": {
+          "name": "Gemini 3.1 Pro Preview",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-2.5-computer-use-preview-10-2025": {
+          "name": "Gemini 2.5 Computer Use Preview 10-2025",
+          "limit": {
+            "context": 128000,
+            "output": 64000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3-pro-image": {
+          "name": "Nano Banana Pro",
+          "limit": {
+            "context": 65536,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 2.5 Flash",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-2.5-flash-preview-tts": {
+          "name": "Gemini 2.5 Flash Preview TTS",
+          "limit": {
+            "context": 8192,
+            "output": 16384
+          }
+        },
+        "gemini-3.1-flash-lite-image": {
+          "name": "Nano Banana 2 Lite",
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "deep-research-preview-04-2026": {
+          "name": "Deep Research Preview (Apr-21-2026)",
+          "limit": {
+            "context": 131072,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "deep-research-max-preview-04-2026": {
+          "name": "Deep Research Max Preview (Apr-21-2026)",
+          "limit": {
+            "context": 131072,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "veo-3.1-fast-generate-preview": {
+          "name": "Veo 3.1 fast",
+          "limit": {
+            "context": 480,
+            "output": 8192
+          }
+        },
+        "gemini-3.7-flash": {
+          "name": "Gemini 3.7 Flash",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "veo-3.1-generate-preview": {
+          "name": "Veo 3.1",
+          "limit": {
+            "context": 480,
+            "output": 8192
+          }
+        },
+        "gemini-3.1-pro-preview-customtools": {
+          "name": "Gemini 3.1 Pro Preview Custom Tools",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3-flash-preview": {
+          "name": "Gemini 3 Flash Preview",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.5-live-translate-preview": {
+          "name": "Gemini 3.5 Live Translate Preview",
+          "limit": {
+            "context": 16384,
+            "output": 32768
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 2.5 Flash-Lite",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-embedding-001": {
+          "name": "Gemini Embedding 001",
+          "limit": {
+            "context": 2048,
+            "output": 1
+          }
+        },
+        "gemini-3.1-flash-lite-preview": {
+          "name": "Gemini 3.1 Flash Lite Preview",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.1-flash-live-preview": {
+          "name": "Gemini 3.1 Flash Live Preview",
+          "limit": {
+            "context": 131072,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
+        }
+      }
+    },
+    "antigravity-agy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Antigravity CLI (via agy)",
+      "options": {
+        "baseURL": "http://127.0.0.1:18743/v1",
+        "apiKey": "agy-local"
+      },
+      "models": {
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash": {
+          "name": "Gemini 3.7 Flash (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-pro": {
+          "name": "Gemini 3.1 Pro (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5 (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (agy)",
+          "variants": {
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "gemini-3.8-flash-low": {
+          "name": "Gemini 3.8 Flash (Low)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-medium": {
+          "name": "Gemini 3.8 Flash (Medium)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-high": {
+          "name": "Gemini 3.8 Flash (High)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash-low": {
+          "name": "Gemini 3.7 Flash (Low)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash-medium": {
+          "name": "Gemini 3.7 Flash (Medium)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash-high": {
+          "name": "Gemini 3.7 Flash (High)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash-low": {
+          "name": "Gemini 3.6 Flash (Low)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash-medium": {
+          "name": "Gemini 3.6 Flash (Medium)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash-high": {
+          "name": "Gemini 3.6 Flash (High)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-pro-low": {
+          "name": "Gemini 3.1 Pro (Low)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-pro-high": {
+          "name": "Gemini 3.1 Pro (High)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "claude-sonnet-5-5-low": {
+          "name": "Claude Sonnet 5.5 (Low)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-sonnet-5-5-medium": {
+          "name": "Claude Sonnet 5.5 (Medium)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-sonnet-5-5-high": {
+          "name": "Claude Sonnet 5.5 (High)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5-low": {
+          "name": "Claude Opus 5.5 (Low)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5-medium": {
+          "name": "Claude Opus 5.5 (Medium)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5-high": {
+          "name": "Claude Opus 5.5 (High)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-oss-120b-medium": {
+          "name": "GPT-OSS 120B (Medium)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash-agent": {
+          "name": "Gemini 3.5 Flash (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "extra-low": {
+              "options": {
+                "reasoning_effort": "extra-low"
+              }
+            },
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            }
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash-tiered": {
+          "name": "gemini-3.6-flash-tiered (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash-tiered": {
+          "name": "gemini-3.7-flash-tiered (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-pro-agent": {
+          "name": "Gemini 3.1 Pro (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        }
+      }
+    },
+    "antigravity-ls": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
+      "options": {
+        "baseURL": "http://127.0.0.1:18745/v1",
+        "apiKey": "antigravity-local"
+      },
+      "models": {
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash": {
+          "name": "Gemini 3.7 Flash (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-pro": {
+          "name": "Gemini 3.1 Pro (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5 (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Direct LS)",
+          "variants": {
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 2.5 Flash (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash-agent": {
+          "name": "Gemini 3.5 Flash (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "extra-low": {
+              "options": {
+                "reasoning_effort": "extra-low"
+              }
+            },
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            }
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.6-flash-tiered": {
+          "name": "gemini-3.6-flash-tiered (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.7-flash-tiered": {
+          "name": "gemini-3.7-flash-tiered (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-pro-agent": {
+          "name": "Gemini 3.1 Pro (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        }
+      }
+    },
+    "openai": {
+      "models": {
+        "gpt-4o": {
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-4o-mini": {
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "o1": {
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          }
+        },
+        "o3-mini": {
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          }
+        },
+        "gpt-5.6-sol": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-sol-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-luna": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-luna-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-terra": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-terra-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-sol": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-sol-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-luna": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-luna-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.4": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.4-pro": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5-pro": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5-mini": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.1": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.2": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.3-codex": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.4-mini": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "chatgpt-image-latest": {
+          "name": "chatgpt-image-latest",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-3.5-turbo": {
+          "name": "GPT-3.5-turbo",
+          "limit": {
+            "context": 16385,
+            "output": 4096
+          }
+        },
+        "text-embedding-3-small": {
+          "name": "text-embedding-3-small",
+          "limit": {
+            "context": 8191,
+            "output": 1536
+          }
+        },
+        "gpt-5.4-nano": {
+          "name": "GPT-5.4 nano",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-realtime-2.1": {
+          "name": "GPT-Realtime-2.1",
+          "limit": {
+            "context": 128000,
+            "input": 96000,
+            "output": 32000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-4o-2024-05-13": {
+          "name": "GPT-4o (2024-05-13)",
+          "limit": {
+            "context": 128000,
+            "output": 4096
+          }
+        },
+        "gpt-image-2": {
+          "name": "gpt-image-2",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-5.2-pro": {
+          "name": "GPT-5.2 Pro",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "o4-mini": {
+          "name": "o4-mini",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "text-embedding-ada-002": {
+          "name": "text-embedding-ada-002",
+          "limit": {
+            "context": 8192,
+            "output": 1536
+          }
+        },
+        "gpt-4": {
+          "name": "GPT-4",
+          "limit": {
+            "context": 8192,
+            "output": 8192
+          }
+        },
+        "gpt-4.1-nano": {
+          "name": "GPT-4.1 nano",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-5-nano": {
+          "name": "GPT-5 Nano",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5.6": {
+          "name": "GPT-5.6",
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5.2-chat-latest": {
+          "name": "GPT-5.2 Chat",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5-pro": {
+          "name": "GPT-5 Pro",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 272000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5.3-codex-spark": {
+          "name": "GPT-5.3 Codex Spark",
+          "limit": {
+            "context": 128000,
+            "input": 100000,
+            "output": 32000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "text-embedding-3-large": {
+          "name": "text-embedding-3-large",
+          "limit": {
+            "context": 8191,
+            "output": 3072
+          }
+        },
+        "gpt-4o-2024-08-06": {
+          "name": "GPT-4o (2024-08-06)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "o3-pro": {
+          "name": "o3-pro",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-image-1": {
+          "name": "gpt-image-1",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-daybreak-blue-latest": {
+          "name": "Daybreak Blue",
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-4.1": {
+          "name": "GPT-4.1",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-4o-2024-11-20": {
+          "name": "GPT-4o (2024-11-20)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-4.1-mini": {
+          "name": "GPT-4.1 mini",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-5.3-chat-latest": {
+          "name": "GPT-5.3 Chat (latest)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-image-1-mini": {
+          "name": "gpt-image-1-mini",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-image-1.5": {
+          "name": "gpt-image-1.5",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-4-turbo": {
+          "name": "GPT-4 Turbo",
+          "limit": {
+            "context": 128000,
+            "output": 4096
+          }
+        },
+        "gpt-daybreak-red-latest": {
+          "name": "Daybreak Red",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "o3": {
+          "name": "o3",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "o1-pro": {
+          "name": "o1-pro",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        }
+      }
+    },
+    "openai-codex": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenAI Codex CLI (via codex)",
+      "options": {
+        "baseURL": "http://127.0.0.1:18744/v1",
+        "apiKey": "codex-local"
+      },
+      "models": {
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6-sol": {
+          "name": "GPT-6 Sol (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT-5.6 Terra (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT-5.6 Luna (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5": {
+          "name": "GPT-5.5 (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-reserve": {
+          "name": "GPT Reserve (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "codex-auto-review": {
+          "name": "Codex Auto Review",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        }
+      }
+    }
   },
   "agent": {
     "build": {
@@ -36,39 +3525,43 @@
     },
     "compaction": {
       "threshold": 0.5
+    },
+    "coder": {
+      "model": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731",
+      "temperature": 0.2
+    },
+    "reasoner": {
+      "model": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-pro-0813",
+      "temperature": 0
+    },
+    "classifier": {
+      "model": "cloudflare-gateway/@cf/cloudflare/clef-flash",
+      "temperature": 0,
+      "maxTokens": 256
+    },
+    "classifier-complex": {
+      "model": "cloudflare-gateway/@cf/cloudflare/clef",
+      "temperature": 0,
+      "maxTokens": 512
     }
   },
   "instructions": [
     ".opencode/instructions/lootbox.md",
     ".opencode/instructions/subagents.md"
   ],
-  // Jules cannot be an opencode `provider`: it is an agent service, not a
-  // chat-completions endpoint, and it is absent from models.dev. The supported
-  // way to reach it from another agent is Google's own MCP server,
-  // @google/jules-mcp (ISC), which wraps the v1alpha REST API and exposes
-  // create_session, list_sessions, get_session_state, send_reply_to_session,
-  // get_code_review_context, show_code_diff and query_cache.
-  //
-  // Disabled by default because it needs a key: mint one at
-  // https://jules.google.com/settings (max 3 per account) and export
-  // JULES_API_KEY, then flip `enabled` to true.
-  //
-  // Note this is distinct from the `jules` CLI installed via pkgs/jules --
-  // that is the interactive TUI; this is the machine-driven path, and
-  // OpenChamber inherits it through opencode.
   "mcp": {
     "jules": {
       "type": "local",
-      "command": ["npx", "-y", "@google/jules-mcp"],
+      "command": [
+        "npx",
+        "-y",
+        "@google/jules-mcp"
+      ],
       "enabled": true,
       "environment": {
         "JULES_API_KEY": "{env:JULES_API_KEY}"
       }
     },
-    // Antigravity x Jules autonomous orchestration (Scarmonit). The GitHub repo
-    // declares no licence; this npm mirror is published MIT and ships the same
-    // thing as an MCP stdio server, so it is used instead of the bare repo.
-    // Needs JULES_API_KEY, and `agy` must be authenticated.
     "antigravity-jules-orchestration": {
       "type": "local",
       "command": [
@@ -81,12 +3574,13 @@
         "JULES_API_KEY": "{env:JULES_API_KEY}"
       }
     },
-    // Exposes the Antigravity CLI (`agy`) as an MCP tool -- a subscription-backed
-    // second opinion from inside opencode, without burning Gemini API quota.
-    // Upstream labels it EXPERIMENTAL.
     "antigravity": {
       "type": "local",
-      "command": ["npx", "-y", "@ask-llm/antigravity-mcp"],
+      "command": [
+        "npx",
+        "-y",
+        "@ask-llm/antigravity-mcp"
+      ],
       "enabled": true
     }
   },
@@ -96,6 +3590,7 @@
   "websearch": {
     "provider": "random"
   },
+  "warming": true,
   "plugin": [
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
@@ -106,14 +3601,10 @@
     "@franlol/opencode-md-table-formatter@latest",
     "opencode-cmd-provider@latest",
     "opencode-cockpit@latest",
-    "@openchamber/opencode-claude@1.3.5",
+    "@openchamber/opencode-claude@1.3.8",
     "opencode-models-discovery@latest",
-    // Antigravity OAuth for opencode: reach Gemini models through an Antigravity
-    // subscription instead of a GEMINI_API_KEY. Complements the "google"
-    // provider above rather than replacing it -- that one is the direct API.
-    "@cortexkit/opencode-antigravity-auth@latest",
+    "@pieliesdie/opencode-antigravity-auth@2.0.0",
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
-  ],
-  "warming": true
+  ]
 }

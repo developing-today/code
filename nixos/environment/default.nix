@@ -268,6 +268,13 @@ let
   # redistributing or caching this anywhere shared.
   command-code = pkgs.callPackage (lib.from-root "pkgs/command-code") { };
 
+  # Desktop Commander MCP, the local device agent behind OpenAI's "Remote
+  # Desktop Commander" plugin. See the derivation header for why it is packaged
+  # here; the ChatGPT/Codex side of the plugin is installed from its plugin
+  # directory and is not expressible in Nix. The user unit that keeps the agent
+  # online lives in home/common.
+  desktop-commander = pkgs.callPackage (lib.from-root "pkgs/desktop-commander") { };
+
   # Jules Tools, the CLI for Google's async coding agent. Not in nixpkgs; the
   # npm package is a stub that downloads a dynamically linked Go binary, which
   # will not exec on NixOS without autoPatchelfHook. See the derivation header.
@@ -296,7 +303,10 @@ let
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
 
-  # Claude Code 2.1.289 (nixpkgs has 2.1.234 in both channel and unstable).
+  # mcpx MCP gateway and Code Mode execution runner.
+  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") { };
+
+  # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
 
   jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
@@ -380,6 +390,8 @@ in
       muse-code
       vercel-cli
       command-code
+      desktop-commander
+      mcpx
       jules
       antigravity-acp
       antigravity-hub
@@ -433,6 +445,8 @@ in
       wpa_supplicant_gui
       # Cloudflare Workers CLI; available as a native nixpkgs package.
       wrangler
+      bitwarden-cli # Bitwarden Vault CLI (bw)
+      bws # Bitwarden Secrets Manager CLI (bws)
     ])
     ++ (with pkgs; [
       # Embedded development: ESP32/ESP8266, Arduino, RP2040, AVR, ARM and RISC-V
@@ -658,7 +672,7 @@ in
       # because unstable is cached (see the chromium note below) and these
       # are large node/electron closures.
       # claude-code moved out of this list: nixpkgs (channel and unstable both)
-      # carries 2.1.234 while npm is on 2.1.289. Now from pkgs/claude-code,
+      # carries 2.1.234 while npm is on 2.1.293. Now from pkgs/claude-code,
       # which pins the platform-native binary directly -- see that file for why
       # the npm wrapper package cannot be used.
       # codex moved out of this list: nixpkgs-unstable carries 0.147.0 while

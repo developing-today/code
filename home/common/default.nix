@@ -17,6 +17,10 @@ let
   # 2.1.289; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
   # claudeAgent driver and the shell CLI are the same build.
   claude-code = pkgs.callPackage ../../pkgs/claude-code { };
+  # Desktop Commander MCP: the local half of OpenAI's "Remote Desktop
+  # Commander" plugin. See pkgs/desktop-commander for the packaging; the
+  # desktop-commander-remote unit below keeps the device agent online.
+  desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
 in
 {
   wayland.windowManager.hyprland = {
@@ -331,6 +335,9 @@ in
         "%h/.claude.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
+        "%h/.config/cloudflare/ai-inference-token"
+        "%h/.config/openchamber/classifier-endpoint.json"
+        "%h/.config/openchamber/classification.json"
       ];
       Unit = "agent-backup.service";
     };
@@ -384,11 +391,174 @@ in
   # it with:
   #   install -m600 /dev/null ~/.config/openchamber/ui-password
   #   printf '%s' 'your-password' > ~/.config/openchamber/ui-password
+  systemd.user.services.clef-proxy = {
+    Unit = {
+      Description = "Clef System One Local Proxy for OpenChamber";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "clef-proxy-start" ''
+          exec ${pkgs.nodejs}/bin/node ${../../bin/clef-proxy.mjs}
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "CLEF_PROXY_PORT=18742"
+        "CLEF_PROXY_HOST=127.0.0.1"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.agy-proxy = {
+    Unit = {
+      Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "agy-proxy-start" ''
+          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/agy-proxy.mjs}
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "AGY_PROXY_PORT=18743"
+        "AGY_PROXY_HOST=127.0.0.1"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.codex-proxy = {
+    Unit = {
+      Description = "OpenAI Codex CLI (codex) Local Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "codex-proxy-start" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/codex-proxy.mjs}
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "CODEX_PROXY_PORT=18744"
+        "CODEX_PROXY_HOST=127.0.0.1"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.antigravity-ls-proxy = {
+    Unit = {
+      Description = "Antigravity Language Server Direct gRPC Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "antigravity-ls-proxy-start" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/antigravity-ls-proxy.mjs}
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "ANTIGRAVITY_LS_PROXY_PORT=18745"
+        "ANTIGRAVITY_LS_PROXY_HOST=127.0.0.1"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.sync-models = {
+    Unit = {
+      Description = "Sync AI models for OpenCode providers from models.dev, agy, and Codex";
+      After = [ "network-online.target" ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = toString (
+        pkgs.writeShellScript "sync-models-run" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs}
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.sync-models = {
+    Unit = {
+      Description = "Periodically sync AI models for OpenCode providers";
+    };
+    Timer = {
+      OnCalendar = "daily";
+      Persistent = true;
+      RandomizedDelaySec = "1h";
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  # Desktop Commander's Remote Device: the local half of OpenAI's "Remote
+  # Desktop Commander" plugin. The hosted Remote MCP at
+  # mcp.desktopcommander.app forwards tool calls to this process, which drives
+  # the local Desktop Commander MCP server under the user's own permissions.
+  # Installing the plugin itself is a ChatGPT/Codex action and cannot be done
+  # by a NixOS unit; what this unit buys is that the device is online whenever
+  # the user session is, rather than living in a stray terminal.
+  #
+  # FIRST RUN IS INTERACTIVE. `remote` starts an OAuth device flow and prints a
+  # verification URL and code, so the unit only pairs unattended once a session
+  # has been stored. Watch it with:
+  #   journalctl --user -u desktop-commander-remote -f
+  # and approve at mcp.desktopcommander.app. The session is saved to
+  # ~/.desktop-commander-device/device.json (0600) and reused on restart.
+  #
+  # PATH matters for the same reason it does in t3code below: a systemd user
+  # unit does not inherit the login shell's PATH, and Desktop Commander exists
+  # to run arbitrary user commands, so it needs the real one. Sourcing the
+  # profiles is deliberately broader than a makeBinPath list -- a curated set
+  # would silently hide most of what the remote shell is meant to reach. The
+  # agent's own ripgrep is already on its wrapped PATH from the derivation.
+  systemd.user.services.desktop-commander-remote = {
+    Unit = {
+      Description = "Desktop Commander Remote MCP device agent";
+      Documentation = "https://mcp.desktopcommander.app";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "desktop-commander-remote-start" ''
+          export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
+          exec ${desktop-commander}/bin/desktop-commander remote
+        ''
+      );
+      # The device reconnects after a network blip on its own, so only a crash
+      # or a revoked authorization should take the unit down: on-failure, with
+      # a slow restart so a failing OAuth flow cannot spin.
+      Restart = "on-failure";
+      RestartSec = 15;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
+      After = [ "network-online.target" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      Wants = [ "network-online.target" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
     };
     Service = {
       ExecStart = toString (
@@ -396,6 +566,11 @@ in
           pw="$HOME/.config/openchamber/ui-password"
           if [ -r "$pw" ]; then
             export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
+          fi
+          if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+            export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+            export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
           fi
           exec ${inputs.openchamber.packages.${system}.openchamber.override {
             opencode = inputs.opencode-2x.packages.${system}.opencode;
@@ -517,6 +692,12 @@ in
       initExtra = ''
         if [ -r "$HOME/.config/jules/api-key" ]; then
           export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
+        fi
+
+        if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+          export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+          export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+          export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
         fi
       '';
     };
@@ -864,6 +1045,40 @@ in
       with pkgs;
       [
         libnotify
+        (pkgs.writeShellScriptBin "clef-proxy" ''
+          exec ${pkgs.nodejs}/bin/node ${../../bin/clef-proxy.mjs} "$@"
+        '')
+        (pkgs.writeShellScriptBin "agy-proxy" ''
+          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/agy-proxy.mjs} "$@"
+        '')
+        (pkgs.writeShellScriptBin "codex-proxy" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/codex-proxy.mjs} "$@"
+        '')
+        (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/antigravity-ls-proxy.mjs} "$@"
+        '')
+        (pkgs.writeShellScriptBin "sync-models" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+        '')
+        (pkgs.writeShellScriptBin "update-models" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+        '')
+        (pkgs.writeShellScriptBin "opencode" ''
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+            [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+            [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+          fi
+          if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
+            export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
+          fi
+          exec ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode "$@"
+        '')
         #
         #         dog
         #         felix
