@@ -1,8 +1,9 @@
-//! Iroh transport for friend envelopes (`/id-envelope/1`).
+//! Iroh transport for friend envelopes (`/id-envelope/1`) and signed artifacts
+//! (`/id-artifact-push/1`).
 //!
-//! One bidirectional stream carries one envelope: the sender writes a frame
-//! holding the envelope's JSON, and the receiver answers with a frame holding a
-//! [`Reply`]. The envelope's signature is what makes it trusted, not the iroh
+//! One bidirectional stream carries one payload: the sender writes a frame
+//! holding the payload's JSON, and the receiver answers with a frame holding a
+//! [`Reply`]. The payload's signature is what makes it trusted, not the iroh
 //! node that delivered it.
 
 use std::time::Duration;
@@ -28,13 +29,24 @@ pub const ENVELOPE_ALPN: &[u8] = b"/id-envelope/1";
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The answer to one frame. `Refused` will never succeed; `Retry` may.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-enum Reply {
+pub enum Reply {
+    /// The frame was applied.
     Applied,
+    /// The frame was already applied.
     Duplicate,
-    Refused { message: String },
-    Retry { message: String },
+    /// The frame is invalid and must not be sent again.
+    Refused {
+        /// Why it was refused.
+        message: String,
+    },
+    /// The frame could not be applied now but may be later.
+    Retry {
+        /// Why it could not be applied now.
+        message: String,
+    },
 }
 
 /// Sends `envelope` to the node at `target`, and says whether it is done.
@@ -47,7 +59,12 @@ pub async fn deliver(
         Ok(json) => json,
         Err(error) => return Outcome::Refused(format!("envelope does not encode: {error}")),
     };
-    match tokio::time::timeout(TIMEOUT, exchange(endpoint, target.into(), &json)).await {
+    send(endpoint, ENVELOPE_ALPN, target.into(), &json).await
+}
+
+/// Sends one frame on `alpn` to `target`, and says whether the peer took it.
+pub async fn send(endpoint: &Endpoint, alpn: &[u8], target: EndpointAddr, json: &[u8]) -> Outcome {
+    match tokio::time::timeout(TIMEOUT, exchange(endpoint, alpn, target, json)).await {
         Ok(Ok(Reply::Applied | Reply::Duplicate)) => Outcome::Delivered,
         Ok(Ok(Reply::Refused { message })) => Outcome::Refused(message),
         Ok(Ok(Reply::Retry { message })) => Outcome::Retry(message),
@@ -56,9 +73,14 @@ pub async fn deliver(
     }
 }
 
-async fn exchange(endpoint: &Endpoint, target: EndpointAddr, json: &[u8]) -> Result<Reply> {
+async fn exchange(
+    endpoint: &Endpoint,
+    alpn: &[u8],
+    target: EndpointAddr,
+    json: &[u8],
+) -> Result<Reply> {
     let conn = endpoint
-        .connect(target, ENVELOPE_ALPN)
+        .connect(target, alpn)
         .await
         .context("connecting to the recipient's server")?;
     let reply = async {
@@ -90,23 +112,37 @@ impl EnvelopeProtocol {
 
 impl ProtocolHandler for EnvelopeProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-            let reply = match read_frame(&mut recv).await {
-                Ok(Some(body)) => receive(&self.hub, &body).await,
-                Ok(None) => continue,
-                Err(error) => Reply::Refused {
-                    message: format!("{error:#}"),
-                },
-            };
-            let Ok(json) = serde_json::to_vec(&reply) else {
-                continue;
-            };
-            if write_frame(&mut send, &json).await.is_ok() {
-                let _ = send.finish();
-            }
-        }
-        Ok(())
+        let hub = self.hub.clone();
+        answer_frames(&conn, move |body| {
+            let hub = hub.clone();
+            async move { receive(&hub, &body).await }
+        })
+        .await
     }
+}
+
+/// Answers every frame on `conn` with the [`Reply`] `receive` gives it, until the peer stops.
+pub async fn answer_frames<F, Fut>(conn: &Connection, receive: F) -> Result<(), AcceptError>
+where
+    F: Fn(Vec<u8>) -> Fut,
+    Fut: Future<Output = Reply> + Send,
+{
+    while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+        let reply = match read_frame(&mut recv).await {
+            Ok(Some(body)) => receive(body).await,
+            Ok(None) => continue,
+            Err(error) => Reply::Refused {
+                message: format!("{error:#}"),
+            },
+        };
+        let Ok(json) = serde_json::to_vec(&reply) else {
+            continue;
+        };
+        if write_frame(&mut send, &json).await.is_ok() {
+            let _ = send.finish();
+        }
+    }
+    Ok(())
 }
 
 async fn receive(hub: &WorldHub, body: &[u8]) -> Reply {

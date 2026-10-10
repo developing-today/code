@@ -471,13 +471,18 @@ impl WorldService {
             outcome.mailed = true;
         }
         if let Some(outbox) = &self.outbox {
-            if let (Some(outbound), Some(entry)) = (outcome.outbound.take(), outcome.pending.take())
-            {
-                self.queue_then_apply(outbox, outbound, entry).await?;
-                outcome = self
-                    .world
-                    .directory(caller, crate::directory_view::DirectoryAction::View)
-                    .await?;
+            let outbound = std::mem::take(&mut outcome.outbound);
+            match outcome.pending.take() {
+                Some(entry) => {
+                    self.queue_then_apply(outbox, outbound, entry).await?;
+                    outcome = self
+                        .world
+                        .directory(caller, crate::directory_view::DirectoryAction::View)
+                        .await?;
+                }
+                None => {
+                    enqueue_all(&mut *outbox.lock().await, outbound)?;
+                }
             }
             let queue = outbox.lock().await;
             outcome.view.deliveries =
@@ -486,24 +491,19 @@ impl WorldService {
         Ok(outcome)
     }
 
-    /// Queue the envelope, then apply its change. The outbox lock is held
-    /// across the apply so a flush cannot send the envelope before the change
-    /// is in. If the apply is refused, the envelope is withdrawn.
+    /// Queue the outbound payloads, then apply the change. The outbox lock is
+    /// held across the apply so a flush cannot send anything before the change
+    /// is in. If the apply is refused, the payloads are withdrawn.
     async fn queue_then_apply(
         &self,
         outbox: &Mutex<crate::envelope_outbox::Outbox>,
-        outbound: crate::directory_view::Outbound,
+        outbound: Vec<crate::directory_view::Outbound>,
         entry: crate::directory::DirectoryEntry,
     ) -> anyhow::Result<()> {
-        let id = outbound.envelope.id.clone();
         let mut queue = outbox.lock().await;
-        queue.enqueue(&outbound.target, outbound.envelope)?;
+        let keys = enqueue_all(&mut queue, outbound)?;
         if let Err(error) = self.world.apply_directory_entry(entry).await {
-            if let Err(withdrawn) = queue.withdraw(&id) {
-                tracing::error!(
-                    "envelope {id} stays queued though its change was refused: {withdrawn:#}"
-                );
-            }
+            withdraw_all(&mut queue, &keys);
             return Err(error);
         }
         Ok(())
@@ -2083,6 +2083,35 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
+    }
+}
+
+fn enqueue_all(
+    queue: &mut crate::envelope_outbox::Outbox,
+    outbound: Vec<crate::directory_view::Outbound>,
+) -> anyhow::Result<Vec<String>> {
+    use crate::envelope_outbox::Payload;
+    let mut keys = Vec::with_capacity(outbound.len());
+    for crate::directory_view::Outbound { target, payload } in outbound {
+        let key = payload.key(&target);
+        let queued = match payload {
+            Payload::Envelope(envelope) => queue.enqueue(&target, envelope),
+            Payload::Artifact(artifact) => queue.enqueue_artifact(&target, artifact),
+        };
+        if let Err(error) = queued {
+            withdraw_all(queue, &keys);
+            return Err(error);
+        }
+        keys.push(key);
+    }
+    Ok(keys)
+}
+
+fn withdraw_all(queue: &mut crate::envelope_outbox::Outbox, keys: &[String]) {
+    for key in keys {
+        if let Err(withdrawn) = queue.withdraw(key) {
+            tracing::error!("{key} stays queued though its change was refused: {withdrawn:#}");
+        }
     }
 }
 

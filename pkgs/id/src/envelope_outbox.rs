@@ -1,8 +1,8 @@
-//! A durable queue of friend envelopes waiting to be pushed to the recipient's
-//! server.
+//! A durable queue of what this server sends to other servers: friend envelopes
+//! and signed artifacts, each to a target endpoint.
 //!
 //! Each change is one JSON line, synced before it counts. The file is replayed
-//! on open, so an envelope that was not finished survives a restart. A line cut
+//! on open, so an entry that was not finished survives a restart. A line cut
 //! short by a crash was never acknowledged, so it is dropped on open.
 
 use std::collections::BTreeMap;
@@ -10,12 +10,14 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use iroh::{Endpoint, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh_tickets::endpoint::EndpointTicket;
 
+use crate::artifact::{self, SignedArtifact};
 use crate::directory::Envelope;
 use crate::envelope_net::deliver;
 
@@ -47,20 +49,40 @@ pub enum Outcome {
     Retry(String),
 }
 
-/// One queued envelope and what has happened to it so far.
+/// What the outbox carries to another server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Payload {
+    /// A friend envelope, for the recipient's server.
+    Envelope(Envelope),
+    /// A signed artifact, for a home server that holds the account's chain.
+    Artifact(SignedArtifact),
+}
+
+impl Payload {
+    /// The key the queue files this payload under, so one payload is queued once.
+    #[must_use]
+    pub fn key(&self, target: &str) -> String {
+        match self {
+            Self::Envelope(envelope) => envelope.id.clone(),
+            Self::Artifact(artifact) => format!("artifact {target} {}", artifact.hash),
+        }
+    }
+}
+
+/// One queued payload and what has happened to it so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// The recipient's iroh node ID.
+    /// The recipient: an endpoint ticket or a bare node ID.
     pub target: String,
-    /// The envelope to deliver.
-    pub envelope: Envelope,
+    /// What to deliver.
+    pub payload: Payload,
     /// Attempts made so far.
     pub attempts: u32,
     /// The earliest time the next attempt may run, in Unix milliseconds.
     pub next_at: u64,
     /// The reason for the last failed attempt or the final outcome.
     pub last_error: Option<String>,
-    /// Set once the envelope is no longer queued.
+    /// Set once the payload is no longer queued.
     pub finish: Option<Finish>,
 }
 
@@ -70,6 +92,10 @@ enum Record {
     Queued {
         target: String,
         envelope: Envelope,
+    },
+    QueuedArtifact {
+        target: String,
+        artifact: SignedArtifact,
     },
     Attempted {
         id: String,
@@ -144,15 +170,34 @@ impl Outbox {
     /// record cannot be written.
     pub fn enqueue(&mut self, target: &str, envelope: Envelope) -> Result<()> {
         check_target(target)?;
-        ensure!(
-            !self.entries.contains_key(&envelope.id),
-            "envelope {} is already queued",
-            envelope.id
-        );
-        self.commit(Record::Queued {
-            target: target.to_owned(),
-            envelope,
-        })
+        self.enqueue_payload(&Payload::Envelope(envelope), target)
+    }
+
+    /// Queues `artifact` for a home server at `target`, due immediately.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the target is malformed, the artifact is already queued for it,
+    /// or the record cannot be written.
+    pub fn enqueue_artifact(&mut self, target: &str, artifact: SignedArtifact) -> Result<()> {
+        check_target(target)?;
+        self.enqueue_payload(&Payload::Artifact(artifact), target)
+    }
+
+    fn enqueue_payload(&mut self, payload: &Payload, target: &str) -> Result<()> {
+        let key = payload.key(target);
+        ensure!(!self.entries.contains_key(&key), "{key} is already queued");
+        let record = match payload {
+            Payload::Envelope(envelope) => Record::Queued {
+                target: target.to_owned(),
+                envelope: envelope.clone(),
+            },
+            Payload::Artifact(artifact) => Record::QueuedArtifact {
+                target: target.to_owned(),
+                artifact: artifact.clone(),
+            },
+        };
+        self.commit(record)
     }
 
     /// The IDs of envelopes that are queued and due at `now`.
@@ -245,23 +290,10 @@ impl Outbox {
     fn apply(&mut self, record: Record) -> Result<()> {
         match record {
             Record::Queued { target, envelope } => {
-                ensure!(
-                    !self.entries.contains_key(&envelope.id),
-                    "envelope {} is queued twice",
-                    envelope.id
-                );
-                let id = envelope.id.clone();
-                self.entries.insert(
-                    id,
-                    Entry {
-                        target,
-                        envelope,
-                        attempts: 0,
-                        next_at: 0,
-                        last_error: None,
-                        finish: None,
-                    },
-                );
+                self.insert_queued(target, Payload::Envelope(envelope))?;
+            }
+            Record::QueuedArtifact { target, artifact } => {
+                self.insert_queued(target, Payload::Artifact(artifact))?;
             }
             Record::Attempted {
                 id,
@@ -295,6 +327,23 @@ impl Outbox {
         Ok(())
     }
 
+    fn insert_queued(&mut self, target: String, payload: Payload) -> Result<()> {
+        let key = payload.key(&target);
+        ensure!(!self.entries.contains_key(&key), "{key} is queued twice");
+        self.entries.insert(
+            key,
+            Entry {
+                target,
+                payload,
+                attempts: 0,
+                next_at: 0,
+                last_error: None,
+                finish: None,
+            },
+        );
+        Ok(())
+    }
+
     fn entry_mut(&mut self, id: &str) -> Result<&mut Entry> {
         self.entries
             .get_mut(id)
@@ -312,20 +361,23 @@ impl Outbox {
 /// Fails if an outcome cannot be written. Envelopes already recorded stay
 /// recorded.
 pub async fn flush(outbox: &Mutex<Outbox>, endpoint: &Endpoint, now: u64) -> Result<usize> {
-    let due: Vec<(String, String, Envelope)> = {
+    let due: Vec<(String, String, Payload)> = {
         let queue = outbox.lock().await;
         queue
             .due(now)
             .into_iter()
             .filter_map(|id| {
                 let entry = queue.entry(&id)?;
-                Some((id.clone(), entry.target.clone(), entry.envelope.clone()))
+                Some((id.clone(), entry.target.clone(), entry.payload.clone()))
             })
             .collect()
     };
-    for (id, target, envelope) in &due {
+    for (id, target, payload) in &due {
         let outcome = match check_target(target) {
-            Ok(node) => deliver(endpoint, node, envelope).await,
+            Ok(addr) => match payload {
+                Payload::Envelope(envelope) => deliver(endpoint, addr, envelope).await,
+                Payload::Artifact(artifact) => artifact::push(endpoint, addr, artifact).await,
+            },
             Err(error) => Outcome::Refused(format!("{error:#}")),
         };
         outbox.lock().await.record(id, now, outcome)?;
@@ -333,14 +385,20 @@ pub async fn flush(outbox: &Mutex<Outbox>, endpoint: &Endpoint, now: u64) -> Res
     Ok(due.len())
 }
 
-/// Parses a recipient's iroh node ID.
+/// Reads a recipient: an endpoint ticket, or a bare node ID that resolves
+/// through the discovery services the endpoint uses.
 ///
 /// # Errors
 ///
-/// Fails if `node` is not a node ID, so nothing is queued for it.
-pub fn check_target(node: &str) -> Result<EndpointId> {
-    node.parse()
-        .map_err(|error| anyhow::anyhow!("not an iroh node ID: {error}"))
+/// Fails if `target` is neither, so nothing is queued for it.
+pub fn check_target(target: &str) -> Result<EndpointAddr> {
+    if let Ok(ticket) = target.parse::<EndpointTicket>() {
+        return Ok(ticket.endpoint_addr().clone());
+    }
+    target
+        .parse::<EndpointId>()
+        .map(EndpointAddr::from)
+        .map_err(|error| anyhow!("{target} is neither an endpoint ticket nor a node ID: {error}"))
 }
 
 fn backoff_ms(attempts: u32) -> u64 {
@@ -379,6 +437,16 @@ mod tests {
     }
 
     #[test]
+    fn a_target_is_a_ticket_or_a_bare_node_id() {
+        let id = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let addr = EndpointAddr::from(id);
+        let ticket = EndpointTicket::new(addr.clone()).to_string();
+        assert_eq!(check_target(&ticket).unwrap(), addr);
+        assert_eq!(check_target(&id.to_string()).unwrap(), addr);
+        assert!(check_target("not a target").is_err());
+    }
+
+    #[test]
     fn queued_envelopes_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
@@ -387,7 +455,10 @@ mod tests {
 
         let reopened = Outbox::open(path(&dir)).unwrap();
         assert_eq!(reopened.due(NOW), vec!["e1".to_owned()]);
-        assert_eq!(reopened.entry("e1").unwrap().envelope, envelope("e1"));
+        assert_eq!(
+            reopened.entry("e1").unwrap().payload,
+            Payload::Envelope(envelope("e1"))
+        );
     }
 
     #[test]

@@ -2883,6 +2883,7 @@ dependencies = [
  "iroh-docs",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
+ "iroh-tickets",
  "libc",
  "libsql",
  "mime_guess",

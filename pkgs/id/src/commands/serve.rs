@@ -862,6 +862,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             .accept(
                 crate::envelope_net::ENVELOPE_ALPN,
                 crate::envelope_net::EnvelopeProtocol::new(hub.clone()),
+            )
+            .accept(
+                crate::artifact::PUSH_ALPN,
+                crate::artifact::ArtifactPushProtocol::new(hub.clone()),
+            )
+            .accept(
+                crate::artifact::PULL_ALPN,
+                crate::artifact::ArtifactPullProtocol::new(hub.clone()),
             ),
         None => router_builder,
     };

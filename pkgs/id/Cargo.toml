@@ -46,6 +46,7 @@ futures-lite = "2"
 iroh = "1"
 iroh-mdns-address-lookup = "0.6"
 iroh-base = "1"
+iroh-tickets = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
