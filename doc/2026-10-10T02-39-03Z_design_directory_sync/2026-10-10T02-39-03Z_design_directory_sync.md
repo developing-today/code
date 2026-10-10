@@ -386,3 +386,28 @@ Deferred:
 - Stable server identity for server-signed entries (open question above).
 - Entry-derived group IDs (decision 8). `GroupCreated` still requires the sequential ID, so two servers creating groups still refuse each other's group 1.
 - Privacy decisions 2 and 5 are not enforced. `AccountSignedUp` digests and `AccountEmailConfirmed` addresses enter the log as-is, so they replicate once sync exists. Sessions and codes never enter an entry.
+
+---
+
+## Implementation: session boot window and cookie flags
+
+Date: 2026-10-09. Covers section 1 (option 3) and the `id_token` cookie. Sessions and codes stay volatile; nothing new is persisted.
+
+Built:
+
+- **Boot window.** `ReplayGuard::after_boot` refuses signed requests until boot plus the window, with a rate-limited refusal that gives the seconds left. The check runs in `accept`, after the signature verifies. `WorldHub` sets the guard from `HubLimits::signed_boot_window`, measured from hub construction.
+- **Cookie.** `id_token` carries `Secure` when `--web-cookie-secure` is on, the same switch as the explorer cookies. `secure_attribute` moved to `web/security.rs` and is shared by both. `web_router` sets `WebSecurity::cookie_secure` from its one flag parameter.
+- **Codes.** Pending codes and sessions live only in `DirectoryAuth` memory and are never journaled. The one disk path is `--world-mail-outbox`; see deferrals.
+
+Flags and defaults:
+
+| Flag                                           | Default                                 | Notes                                 |
+| ---------------------------------------------- | --------------------------------------- | ------------------------------------- |
+| `--world-boot-window-secs`                     | `600` (2 × the 5-minute signing window) | Needs `--world`. `0` disables.        |
+| `--web-cookie-secure` / `ID_WEB_COOKIE_SECURE` | off                                     | Now also sets `Secure` on `id_token`. |
+
+Deferred:
+
+- **Codes on disk via the outbox.** `--world-mail-outbox` writes each confirmation mail, including its six-digit code, to a 0600 file. Changing this removes or redacts a delivery channel, so it needs a decision.
+- **Persisted sessions (option 2).** Not built. Sessions still end on restart.
+- **Library default.** `HubLimits::default()` has a zero window, so test hubs sign immediately. The CLI default is 600.

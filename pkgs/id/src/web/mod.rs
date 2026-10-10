@@ -283,6 +283,10 @@ pub async fn web_router(
     .await?;
     state.world = world;
     state.cookie_secure = cookie_secure;
+    let security = WebSecurity {
+        cookie_secure,
+        ..security
+    };
     Ok(
         create_router(state).layer(axum::middleware::from_fn_with_state(
             Arc::new(security),

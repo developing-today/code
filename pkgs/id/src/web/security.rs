@@ -41,6 +41,13 @@ pub struct WebSecurity {
     /// Lower-case host names (no port) that may appear in the `Host` header.
     /// Empty disables the host check.
     pub allowed_hosts: Vec<String>,
+    /// Mark the `id_token` cookie `Secure` (HTTPS in front).
+    pub cookie_secure: bool,
+}
+
+/// `; Secure` when a session cookie must only travel over HTTPS.
+pub(super) const fn secure_attribute(secure: bool) -> &'static str {
+    if secure { "; Secure" } else { "" }
 }
 
 impl WebSecurity {
@@ -57,6 +64,7 @@ impl WebSecurity {
         Self {
             token,
             allowed_hosts,
+            cookie_secure: false,
         }
     }
 }
@@ -167,7 +175,8 @@ pub async fn guard(
         }
         if ok_query && !ok_cookie {
             set_cookie = HeaderValue::from_str(&format!(
-                "{TOKEN_COOKIE}={expected}; HttpOnly; SameSite=Strict; Path=/"
+                "{TOKEN_COOKIE}={expected}; HttpOnly; SameSite=Strict; Path=/{}",
+                secure_attribute(sec.cookie_secure)
             ))
             .ok();
         }
@@ -302,6 +311,35 @@ mod tests {
         WebSecurity {
             token: Some("s3cret".to_owned()),
             allowed_hosts: Vec::new(),
+            cookie_secure: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_token_cookie_is_secure_only_when_asked() {
+        for secure in [false, true] {
+            let sec = WebSecurity {
+                cookie_secure: secure,
+                ..with_token()
+            };
+            let query = call(
+                app(sec),
+                Request::builder()
+                    .uri("/?token=s3cret")
+                    .header(header::HOST, "h")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            let set = query
+                .headers()
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            let attributes: Vec<&str> = set.split(';').map(str::trim).collect();
+            assert_eq!(attributes.contains(&"Secure"), secure, "{set}");
+            assert!(attributes.contains(&"HttpOnly"), "{set}");
         }
     }
 

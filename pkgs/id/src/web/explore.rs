@@ -19,6 +19,7 @@ use crate::directory_view::{
 };
 use crate::world_hub::{ResolveError, WorldHub};
 
+use super::security::secure_attribute;
 use super::templates::html_escape;
 use super::world_ws::{WorldWebState, refusal_status};
 
@@ -189,10 +190,6 @@ fn clear_cookie(secure: bool) -> String {
         "{COOKIE}=; Path={COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=0{}",
         secure_attribute(secure)
     )
-}
-
-const fn secure_attribute(secure: bool) -> &'static str {
-    if secure { "; Secure" } else { "" }
 }
 
 fn with_cookie(mut response: Response, cookie: Option<String>) -> Response {
