@@ -395,6 +395,9 @@ pub async fn build_access_policy(
 #[cfg(feature = "world")]
 pub const WORLDS_DIR: &str = ".id-worlds";
 
+#[cfg(feature = "world")]
+const OUTBOX_FLUSH_SECS: u64 = 30;
+
 /// Directory of one durable world, relative to the data directory.
 #[cfg(feature = "world")]
 #[must_use]
@@ -833,6 +836,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     } else {
         None
     };
+    #[cfg(feature = "world")]
+    let outbox_flush = match &world_hub {
+        Some(hub) if !ephemeral => Some(hub.spawn_outbox_flush(
+            std::time::Duration::from_secs(OUTBOX_FLUSH_SECS),
+            crate::envelope_outbox::http_client()?,
+        )),
+        _ => None,
+    };
     #[cfg(not(feature = "world"))]
     ensure!(!world, "this build has no world support (feature `world`)");
 
@@ -1085,6 +1096,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(ssh_task) = ssh_handle {
         ssh_task.abort();
         let _ = ssh_task.await;
+    }
+    #[cfg(feature = "world")]
+    if let Some(flush) = outbox_flush {
+        flush.abort();
+        let _ = flush.await;
     }
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {

@@ -328,6 +328,11 @@ pub async fn open_world(
             .await
             .context("directory open task")??;
     *restored.core.directory_mut() = directory;
+    let outbox_path = dir.join("outbox.jsonl");
+    let outbox =
+        tokio::task::spawn_blocking(move || crate::envelope_outbox::Outbox::open(&outbox_path))
+            .await
+            .context("outbox open task")??;
     let modules = ModuleDir::new(dir.join("modules"));
     let mut report = OpenReport {
         sequence: 0,
@@ -356,7 +361,7 @@ pub async fn open_world(
     };
     report.sequence = restored.core.current_sequence();
     let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
-    let service = service(handle).with_module_dir(modules);
+    let service = service(handle).with_module_dir(modules).with_outbox(outbox);
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
     }

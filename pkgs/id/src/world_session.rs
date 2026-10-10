@@ -392,6 +392,7 @@ pub struct WorldService {
     native: bool,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
+    outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -429,6 +430,12 @@ impl WorldService {
             )
             .into());
         }
+        if action.sends_envelope() && self.outbox.is_none() {
+            return Err(crate::directory::Refusal::Forbidden(
+                "this server cannot send to other servers".to_owned(),
+            )
+            .into());
+        }
         let mut outcome = self.world.directory(caller, action).await?;
         if let (Some(sink), Some(mail)) = (&self.mail, outcome.mail.take()) {
             let sink = Arc::clone(sink);
@@ -437,7 +444,27 @@ impl WorldService {
                 .context("mail task stopped")??;
             outcome.mailed = true;
         }
+        if let Some(outbox) = &self.outbox {
+            let mut queue = outbox.lock().await;
+            if let Some(outbound) = outcome.outbound.take() {
+                queue.enqueue(&outbound.url, outbound.envelope)?;
+            }
+            outcome.view.deliveries =
+                crate::directory_view::deliveries(&queue, &outcome.view.viewer);
+        }
         Ok(outcome)
+    }
+
+    /// Attempt every due outbox envelope once. Returns how many were attempted.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the outbox file cannot be written.
+    pub async fn flush_outbox(&self, client: &reqwest::Client, now: u64) -> anyhow::Result<usize> {
+        match &self.outbox {
+            Some(outbox) => crate::envelope_outbox::flush(outbox, client, now).await,
+            None => Ok(0),
+        }
     }
 
     /// Wrap a world. `admin_token: None` disables invites.
@@ -456,6 +483,7 @@ impl WorldService {
             native: false,
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
+            outbox: None,
         }
     }
 
@@ -576,6 +604,14 @@ impl WorldService {
     #[must_use]
     pub fn with_mail(mut self, sink: Arc<dyn crate::directory_mail::MailSink>) -> Self {
         self.mail = Some(sink);
+        self
+    }
+
+    /// Queue envelopes for other servers in this outbox. Without one, remote
+    /// friend actions are refused.
+    #[must_use]
+    pub fn with_outbox(mut self, outbox: crate::envelope_outbox::Outbox) -> Self {
+        self.outbox = Some(Arc::new(Mutex::new(outbox)));
         self
     }
 
