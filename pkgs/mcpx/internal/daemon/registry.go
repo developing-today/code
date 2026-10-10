@@ -227,9 +227,11 @@ func (r *Registry) Pool(nameOrNS string) (*pool.Pool, bool) {
 	if p, ok := r.pools[nameOrNS]; ok {
 		return p, true
 	}
-	for _, p := range r.pools {
-		if p.Namespace() == nameOrNS {
-			return p, true
+	// The namespace is the view's, not the pool's: a pool outlives a reload
+	// that renames its namespace, and keeps the view it was first built with.
+	for _, name := range r.order {
+		if r.views[name].Namespace == nameOrNS {
+			return r.pools[name], true
 		}
 	}
 	return nil, false
