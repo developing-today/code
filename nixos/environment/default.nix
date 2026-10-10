@@ -248,11 +248,8 @@ let
         '';
       });
 
-  # OpenChamber CLI/server built from the route-pools fork; see pkgs/openchamber-src.
-  openchamber = pkgs.callPackage (lib.from-root "pkgs/openchamber-src") {
-    src = inputs.openchamber-src;
-    opencode = inputs.opencode-fork.packages.${system}.opencode;
-  };
+  # OpenChamber CLI/server built from the developing-today/openchamber fork.
+  openchamber = inputs.openchamber-fork.packages.${system}.openchamber;
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
   # only documented install is a `curl | sh` that self-updates; see the
