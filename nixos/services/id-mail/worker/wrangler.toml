@@ -1,0 +1,8 @@
+name = "id-mail"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Only the id sender address, on the security.cab domain onboarded to Email Sending.
+[[send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["id@security.cab"]

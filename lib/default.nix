@@ -595,6 +595,7 @@ let
         "just"
       ])
       (prefixAttr "checks" [ "default" ])
+      { inherit (idOutputs) packages; }
       # 'id' app: runs the id binary
       {
         apps = builtins.mapAttrs (system: _: {
