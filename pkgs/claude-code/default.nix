@@ -13,7 +13,7 @@
 # Claude Code CLI, pinned ahead of nixpkgs.
 #
 # nixpkgs (both the pinned channel and unstable) carries 2.1.234 while npm is on
-# 2.1.289. This packages the newer one.
+# 2.1.293. This packages the newer one.
 #
 # DISTRIBUTION SHAPE -- this is why it is not just a buildNpmPackage bump:
 #   `@anthropic-ai/claude-code` 2.x has ZERO dependencies and ships a 500-byte
@@ -37,14 +37,14 @@
 # version; the platform packages track it exactly.
 
 let
-  version = "2.1.289";
+  version = "2.1.293";
 
   throwSystem = throw "claude-code: unsupported system ${stdenvNoCC.hostPlatform.system}";
 
   sources = {
     x86_64-linux = {
       url = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${version}.tgz";
-      hash = "sha256-UKbrQzQi/rz6e3rB54unlc33nx/ljwF/sdmuuUkbM30=";
+      hash = "sha256-e21oQqnp3h+g9d/BiWdpa5GIO52CvjM6BbNbzyH31w8=";
     };
   };
 in

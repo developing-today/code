@@ -381,6 +381,13 @@ async function run() {
 
       fs.writeFileSync(OPENCODE_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
       console.log(`[sync-models] Successfully updated ${OPENCODE_CONFIG_PATH}!`);
+
+      try {
+        execSync('opencode reload', { stdio: 'ignore', timeout: 5000 });
+        console.log('[sync-models] Triggered opencode configuration reload.');
+      } catch {
+        // Ignored if OpenCode background service is not running
+      }
     }
   } else {
     console.log('[sync-models] All providers are already up-to-date!');

@@ -14,7 +14,7 @@ let
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
-  # 2.1.289; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
+  # 2.1.293; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
   # claudeAgent driver and the shell CLI are the same build.
   claude-code = pkgs.callPackage ../../pkgs/claude-code { };
   # Desktop Commander MCP: the local half of OpenAI's "Remote Desktop
@@ -647,7 +647,7 @@ in
             # pkgs.opencode, which is nixpkgs' own 1.18.18.
             inputs.opencode-2x.packages.${system}.opencode # 2.0.23, driver "opencode"
             latestCli.codex # 0.160.0   -- t3 driver "codex"
-            claude-code # 2.1.289 -- t3 driver "claudeAgent"
+            claude-code # 2.1.293 -- t3 driver "claudeAgent"
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
             pkgs.git
             pkgs.openssh
@@ -1077,6 +1077,24 @@ in
           if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
             export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
           fi
+
+          # Opportunistic background model sync (max once every 24h, detached)
+          _CACHE_DIR="$HOME/.cache"
+          [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
+          _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
+          if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
+            mkdir -p "$_CACHE_DIR"
+            touch "$_SYNC_STAMP"
+            (
+              export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+              if command -v sync-models >/dev/null 2>&1; then
+                sync-models >/dev/null 2>&1
+              elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
+                ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
+              fi
+            ) &
+          fi
+
           exec ${inputs.opencode-2x.packages.${system}.opencode}/bin/opencode "$@"
         '')
         #
