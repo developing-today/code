@@ -51,6 +51,7 @@ let
     ++ (with pkgs; [
       # Build dependencies
       pkg-config
+      cmake
       openssl
       cmake # libsql-ffi builds its bundled SQLite via cmake
 
