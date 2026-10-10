@@ -511,6 +511,7 @@ fn parse_level(text: &str) -> Result<Option<Level>> {
         "read" => Level::Read,
         "write" => Level::Write,
         "manage" => Level::Manage,
+        "moderator" => Level::Moderator,
         "admin" => Level::Admin,
         other => bail!("unknown level {other:?}"),
     }))
@@ -949,6 +950,7 @@ pub(crate) const fn level_name(level: Level) -> &'static str {
         Level::Read => "read",
         Level::Write => "write",
         Level::Manage => "manage",
+        Level::Moderator => "moderator",
         Level::Admin => "admin",
     }
 }

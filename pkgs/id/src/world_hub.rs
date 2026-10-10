@@ -30,6 +30,7 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
+use crate::world::Isolation;
 use crate::world_session::WorldService;
 
 /// Longest world name, in bytes.
@@ -222,6 +223,48 @@ impl WorldLease {
     pub fn name(&self) -> &str {
         &self.name
     }
+}
+
+impl WorldLease {
+    /// Whether this session may read `owner`'s directory. Same-world reads
+    /// always pass. Across worlds, both must be unisolated. A denial is
+    /// reported as an unknown world, like a missing one.
+    ///
+    /// # Errors
+    ///
+    /// [`ResolveError::UnknownWorld`] when denied; [`ResolveError::Unavailable`]
+    /// when either world cannot answer.
+    pub async fn authorize_read(&self, owner: &Self) -> Result<(), ResolveError> {
+        if self.name == owner.name {
+            return Ok(());
+        }
+        let reader = self
+            .service
+            .world()
+            .isolation()
+            .await
+            .map_err(|_| ResolveError::Unavailable)?;
+        let owner_isolation = owner
+            .service
+            .world()
+            .isolation()
+            .await
+            .map_err(|_| ResolveError::Unavailable)?;
+        if cross_world_read_allowed(reader, owner_isolation) {
+            Ok(())
+        } else {
+            Err(ResolveError::UnknownWorld)
+        }
+    }
+}
+
+/// The cross-world read rule: both worlds must be unisolated.
+#[must_use]
+pub const fn cross_world_read_allowed(reader: Isolation, owner: Isolation) -> bool {
+    matches!(
+        (reader, owner),
+        (Isolation::Unisolated, Isolation::Unisolated)
+    )
 }
 
 impl Drop for WorldLease {
@@ -660,11 +703,70 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::MemoryOpener;
     use super::*;
-    use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
+    use crate::world::{Authority, WorldCore, WorldHandle, WorldLimits, WorldScopes};
 
     fn new_hub(opener: &Arc<MemoryOpener>, limits: HubLimits) -> WorldHub {
         let opener: Arc<dyn WorldOpener> = opener.clone();
         WorldHub::new(opener, Some("admin".to_owned()), "lobby", limits)
+    }
+
+    #[test]
+    fn cross_world_reads_need_both_worlds_unisolated() {
+        use Isolation::{Isolated, Unisolated};
+        assert!(cross_world_read_allowed(Unisolated, Unisolated));
+        assert!(!cross_world_read_allowed(Unisolated, Isolated));
+        assert!(!cross_world_read_allowed(Isolated, Unisolated));
+        assert!(!cross_world_read_allowed(Isolated, Isolated));
+    }
+
+    #[tokio::test]
+    async fn authorize_read_follows_isolation() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(&opener, HubLimits::default());
+        let arena = hub.lease(Some("arena"), Some("admin")).await.unwrap();
+        let garden = hub.lease(Some("garden"), Some("admin")).await.unwrap();
+        assert_eq!(arena.authorize_read(&arena).await, Ok(()));
+        assert_eq!(
+            arena.authorize_read(&garden).await,
+            Err(ResolveError::UnknownWorld)
+        );
+
+        arena
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        assert_eq!(
+            arena.authorize_read(&garden).await,
+            Err(ResolveError::UnknownWorld),
+            "the owner must be unisolated too"
+        );
+        assert_eq!(
+            garden.authorize_read(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "an isolated reader sees nothing"
+        );
+
+        garden
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        assert_eq!(arena.authorize_read(&garden).await, Ok(()));
+        assert_eq!(garden.authorize_read(&arena).await, Ok(()));
+
+        arena
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Isolated)
+            .await
+            .unwrap();
+        assert_eq!(
+            garden.authorize_read(&arena).await,
+            Err(ResolveError::UnknownWorld)
+        );
     }
 
     #[test]

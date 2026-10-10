@@ -223,6 +223,39 @@ pub enum WorldEventKind {
     },
 }
 
+/// Whether a world's directory may be read from other worlds.
+///
+/// Writes never cross worlds, whatever the setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    /// No cross-world reads or writes, in either direction.
+    #[default]
+    Isolated,
+    /// Readable from other unisolated worlds, and only from them.
+    Unisolated,
+}
+
+impl Isolation {
+    /// The wire word: `isolated` or `unisolated`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::Unisolated => "unisolated",
+        }
+    }
+}
+
+/// Who asks for a change only an admin or a moderator may make.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Authority {
+    /// The process admin token, already checked by the transport.
+    Admin,
+    /// A signed request made with this public key, as lower-case hex.
+    Signed(String),
+}
+
 /// One durable fact about a world, in commit order.
 ///
 /// Capability secrets are never journaled, only their SHA-256 digests, so a
@@ -284,6 +317,12 @@ pub enum JournalEntry {
     CapsGranted {
         /// Capability names.
         granted: Vec<String>,
+    },
+    /// The world's isolation, written whole on every change. Absent means
+    /// [`Isolation::Isolated`].
+    Isolation {
+        /// The new isolation.
+        isolation: Isolation,
     },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
@@ -528,6 +567,7 @@ pub struct WorldCore {
     active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    isolation: Isolation,
     /// Events committed since the journal last started from a checkpoint.
     since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
@@ -566,6 +606,7 @@ impl WorldCore {
             active_module_hash: None,
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
+            isolation: Isolation::default(),
             since_checkpoint: 0,
             capabilities: HashMap::new(),
             events: VecDeque::new(),
@@ -686,6 +727,7 @@ impl WorldCore {
                     }
                     core.ledger.set_granted(granted.iter().cloned().collect());
                 }
+                JournalEntry::Isolation { isolation } => core.isolation = isolation,
                 JournalEntry::System { event } => {
                     ensure!(
                         event.sequence == 0 && event.participant_id == 0,
@@ -821,6 +863,11 @@ impl WorldCore {
         let granted: Vec<String> = self.ledger.granted().iter().cloned().collect();
         if !granted.is_empty() {
             entries.push(JournalEntry::CapsGranted { granted });
+        }
+        if self.isolation != Isolation::default() {
+            entries.push(JournalEntry::Isolation {
+                isolation: self.isolation,
+            });
         }
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
@@ -1155,6 +1202,12 @@ impl WorldCore {
         revoked
     }
 
+    /// The world's isolation.
+    #[must_use]
+    pub const fn isolation(&self) -> Isolation {
+        self.isolation
+    }
+
     /// The directory of accounts, groups and friends this world is held to.
     #[must_use]
     pub const fn directory(&self) -> &crate::directory::Directory {
@@ -1434,6 +1487,15 @@ enum WorldCommand {
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin or moderator: change the world's isolation.
+    SetIsolation {
+        authority: Authority,
+        isolation: Isolation,
+        reply: oneshot::Sender<Result<Isolation>>,
+    },
+    IsolationInfo {
+        reply: oneshot::Sender<Isolation>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -1853,6 +1915,25 @@ impl WorldActor {
         }
     }
 
+    fn set_isolation(&mut self, authority: &Authority, isolation: Isolation) -> Result<Isolation> {
+        let directory = self.core.directory();
+        let allowed = match authority {
+            Authority::Admin => true,
+            Authority::Signed(key) => directory
+                .account_for_key(key)
+                .is_some_and(|account| directory.is_moderator(&account)),
+        };
+        if !allowed {
+            return Err(crate::directory::Refusal::Forbidden(
+                "only an admin or a moderator changes isolation".to_owned(),
+            )
+            .into());
+        }
+        self.persist(JournalEntry::Isolation { isolation })?;
+        self.core.isolation = isolation;
+        Ok(isolation)
+    }
+
     /// The capability report an admin sees.
     fn caps_report(&mut self) -> Result<CapsReport> {
         let requested = match self.program.wants() {
@@ -2136,6 +2217,17 @@ impl WorldActor {
                 })();
                 let _ = reply.send(result);
             }
+            WorldCommand::SetIsolation {
+                authority,
+                isolation,
+                reply,
+            } => {
+                let result = self.set_isolation(&authority, isolation);
+                let _ = reply.send(result);
+            }
+            WorldCommand::IsolationInfo { reply } => {
+                let _ = reply.send(self.core.isolation());
+            }
             WorldCommand::CapsInfo { reply } => {
                 let _ = reply.send(self.caps_report());
             }
@@ -2304,6 +2396,47 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped caps response")?
+    }
+
+    /// Change the world's isolation.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a forbidden refusal unless the authority is an admin or a
+    /// moderator, or on world storage failure.
+    pub async fn set_isolation(
+        &self,
+        authority: Authority,
+        isolation: Isolation,
+    ) -> Result<Isolation> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetIsolation {
+                authority,
+                isolation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped isolation response")?
+    }
+
+    /// The world's isolation.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn isolation(&self) -> Result<Isolation> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::IsolationInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped isolation response")
     }
 
     /// The world's capability report: grants, what the program wants, and use.
@@ -4065,5 +4198,127 @@ mod account_tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod isolation_tests {
+    use super::*;
+    use crate::directory::{Actor, Level, Member, Refusal};
+
+    struct Staff {
+        core: WorldCore,
+        member: String,
+        writer: String,
+        manager: String,
+        moderator: String,
+        admin: String,
+        stranger: String,
+    }
+
+    fn account(core: &mut WorldCore, name: &str) -> String {
+        let (credential, _) = core.directory_mut().sign_up(name).unwrap();
+        core.directory().account_for(&credential).unwrap()
+    }
+
+    fn seat(core: &mut WorldCore, group: u64, name: &str, level: Level) -> String {
+        let id = account(core, name);
+        core.directory_mut()
+            .set_member(
+                Actor::Server,
+                group,
+                Member::Account { id: id.clone() },
+                Some(level),
+            )
+            .unwrap();
+        id
+    }
+
+    /// One group with a holder of each level, plus an account outside it.
+    fn staffed() -> Staff {
+        let mut core = WorldCore::new("staffed", WorldLimits::default()).unwrap();
+        let founder = account(&mut core, "Founder");
+        let (group, _) = core
+            .directory_mut()
+            .create_group(&founder, "staff", "", WorldScopes::GUEST)
+            .unwrap();
+        Staff {
+            member: seat(&mut core, group, "Member", Level::Access),
+            writer: seat(&mut core, group, "Writer", Level::Write),
+            manager: seat(&mut core, group, "Manager", Level::Manage),
+            moderator: seat(&mut core, group, "Moderator", Level::Moderator),
+            admin: seat(&mut core, group, "Admin", Level::Admin),
+            stranger: account(&mut core, "Stranger"),
+            core,
+        }
+    }
+
+    #[tokio::test]
+    async fn worlds_start_isolated() {
+        assert_eq!(Isolation::default(), Isolation::Isolated);
+        let handle = WorldHandle::spawn(WorldCore::new("w", WorldLimits::default()).unwrap());
+        assert_eq!(handle.isolation().await.unwrap(), Isolation::Isolated);
+    }
+
+    #[tokio::test]
+    async fn only_a_moderator_or_an_admin_sets_isolation() {
+        let staff = staffed();
+        let handle = WorldHandle::spawn(staff.core);
+        for who in [
+            &staff.member,
+            &staff.writer,
+            &staff.manager,
+            &staff.stranger,
+        ] {
+            let error = handle
+                .set_isolation(Authority::Signed(who.clone()), Isolation::Unisolated)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
+                "{who} must not change isolation"
+            );
+        }
+        assert_eq!(handle.isolation().await.unwrap(), Isolation::Isolated);
+
+        assert_eq!(
+            handle
+                .set_isolation(
+                    Authority::Signed(staff.moderator.clone()),
+                    Isolation::Unisolated
+                )
+                .await
+                .unwrap(),
+            Isolation::Unisolated
+        );
+        assert_eq!(
+            handle
+                .set_isolation(Authority::Signed(staff.admin.clone()), Isolation::Isolated)
+                .await
+                .unwrap(),
+            Isolation::Isolated
+        );
+        assert_eq!(
+            handle
+                .set_isolation(Authority::Admin, Isolation::Unisolated)
+                .await
+                .unwrap(),
+            Isolation::Unisolated
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_isolation() {
+        let mut core = WorldCore::new("iso", WorldLimits::default()).unwrap();
+        core.isolation = Isolation::Unisolated;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Isolation {
+                isolation: Isolation::Unisolated
+            }
+        )));
     }
 }

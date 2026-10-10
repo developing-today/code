@@ -261,6 +261,21 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
+        WorldCommand::Isolation {
+            node,
+            mode,
+            admin_token,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = client.set_isolation(&admin_token, &mode).await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", result?);
+            Ok(())
+        }
         WorldCommand::List {
             node,
             admin_token,

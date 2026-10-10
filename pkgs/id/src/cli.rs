@@ -1386,6 +1386,29 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Set whether a world's directory may be read from other unisolated
+    /// worlds (needs the host's admin token). Worlds are isolated by default;
+    /// writes never cross worlds.
+    Isolation {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// `isolated` (no cross-world reads) or `unisolated` (readable from
+        /// other unisolated worlds).
+        #[arg(value_parser = ["isolated", "unisolated"])]
+        mode: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Create a world on a host (needs the host's admin token).
     Create {
         /// The host's node ID (64 hex characters).

@@ -28,14 +28,15 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
+use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, JoinCapability, Participant, WorldEvent, WorldHandle, WorldScopes,
-    WorldSnapshot, unix_ms,
+    Authority, CapabilityBounds, Isolation, JoinCapability, Participant, WorldEvent, WorldHandle,
+    WorldScopes, WorldSnapshot, unix_ms,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
-use crate::world_hub::{WorldHub, WorldInfo};
+use crate::world_hub::{WorldHub, WorldInfo, WorldLease};
 
 /// Largest accepted or emitted frame, in bytes.
 ///
@@ -143,6 +144,14 @@ enum ClientFrame {
     /// Admin: create the world named by the frame's `world` field.
     CreateWorld {
         admin_token: String,
+    },
+    /// Admin, or a signed request from a moderator: set the world's isolation.
+    /// A signed request covers method `PUT`, path `/world/<name>/isolation`,
+    /// and the isolation word as its body.
+    SetIsolation {
+        isolation: Isolation,
+        admin_token: Option<String>,
+        signed: Option<Signed>,
     },
     /// Admin: compile Roc sources and install the result.
     Compile {
@@ -252,6 +261,10 @@ enum ServerFrame<'a> {
     WorldCreated {
         world: &'a str,
         created: bool,
+    },
+    Isolation {
+        world: &'a str,
+        isolation: Isolation,
     },
     /// The world's capability report.
     Caps {
@@ -920,7 +933,66 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             return;
         }
     };
+    if let ClientFrame::SetIsolation {
+        isolation,
+        admin_token,
+        signed,
+    } = &frame
+    {
+        match set_isolation_frame(
+            hub,
+            &lease,
+            *isolation,
+            admin_token.as_deref(),
+            signed.as_ref(),
+        )
+        .await
+        {
+            Ok(isolation) => {
+                let _ = send_json(
+                    io,
+                    &ServerFrame::Isolation {
+                        world: lease.name(),
+                        isolation,
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(io, &format!("{error:#}")).await;
+            }
+        }
+        return;
+    }
     run_world_session(lease.service(), io, frame).await;
+}
+
+/// Apply an isolation change for the admin token, or for a signed request
+/// whose account moderates the world.
+async fn set_isolation_frame(
+    hub: &WorldHub,
+    lease: &WorldLease,
+    isolation: Isolation,
+    admin_token: Option<&str>,
+    signed: Option<&Signed>,
+) -> anyhow::Result<Isolation> {
+    let is_admin = admin_token
+        .filter(|token| token.len() <= MAX_ADMIN_TOKEN_BYTES)
+        .is_some_and(|token| lease.service().authorize_admin(Some(token)).is_ok());
+    let authority = if is_admin {
+        Authority::Admin
+    } else if let Some(signed) = signed {
+        let target = format!("/world/{}/isolation", lease.name());
+        let key = hub.verify_signed(signed, "PUT", &target, isolation.as_str().as_bytes())?;
+        Authority::Signed(key)
+    } else {
+        anyhow::bail!("admin denied");
+    };
+    lease
+        .service()
+        .world()
+        .set_isolation(authority, isolation)
+        .await
 }
 
 /// Serve one session against its resolved world, starting from its first frame.
@@ -1058,6 +1130,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::InstallEnd
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
+        | ClientFrame::SetIsolation { .. }
         | ClientFrame::Chat { .. }
         | ClientFrame::Attenuate { .. }
         | ClientFrame::DelegateToFriend { .. }
@@ -1714,6 +1787,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::Info { .. }
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
+        | ClientFrame::SetIsolation { .. }
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::InstallBegin { .. }
@@ -1792,8 +1866,12 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 mod tests {
     use tokio::sync::mpsc;
 
+    use ed25519_dalek::SigningKey;
+
     use super::*;
-    use crate::world::{WorldCore, WorldLimits};
+    use crate::directory::{Actor, Level, Member};
+    use crate::directory_auth::sign_request;
+    use crate::world::{WorldCore, WorldLimits, WorldScopes, hex_encode, unix_ms};
 
     /// In-memory transport: tests push frames in and read frames out.
     struct ChannelIo {
@@ -1884,6 +1962,60 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    #[tokio::test]
+    async fn a_signed_moderator_sets_isolation_and_a_forged_request_does_not() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let moderator = hex_encode(&key.verifying_key().to_bytes());
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.directory_mut()
+            .sign_up_keyed(&moderator, "Mo")
+            .unwrap();
+        let (credential, _) = core.directory_mut().sign_up("Founder").unwrap();
+        let founder = core.directory().account_for(&credential).unwrap();
+        let (group, _) = core
+            .directory_mut()
+            .create_group(&founder, "staff", "", WorldScopes::GUEST)
+            .unwrap();
+        core.directory_mut()
+            .set_member(
+                Actor::Server,
+                group,
+                Member::Account {
+                    id: moderator.clone(),
+                },
+                Some(Level::Moderator),
+            )
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(WorldHandle::spawn(core), None));
+        let lease = hub.lease(None, None).await.unwrap();
+        let target = format!("/world/{}/isolation", lease.name());
+        let now = unix_ms();
+
+        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged");
+        let last = forged.signature.pop().unwrap();
+        forged.signature.push(if last == '0' { '1' } else { '0' });
+        let other_body = sign_request(&key, "PUT", &target, b"isolated", now, "other-body");
+        for signed in [&forged, &other_body] {
+            assert!(
+                set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(signed))
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            lease.service().world().isolation().await.unwrap(),
+            Isolation::Isolated
+        );
+
+        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good");
+        assert_eq!(
+            set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(&signed))
+                .await
+                .unwrap(),
+            Isolation::Unisolated
+        );
     }
 
     #[test]
