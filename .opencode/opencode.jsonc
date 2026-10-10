@@ -1,12 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
-  "default": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731",
+  "default": "claude-code/claude-haiku-5-5",
   "provider": {
     "claude-code": {
       "models": {
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
+          "variants": {
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            }
+          },
           "limit": {
             "context": 1000000,
             "output": 64000
