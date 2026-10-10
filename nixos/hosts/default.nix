@@ -22,6 +22,7 @@ in
       "desktop"
       # "printing"
       "services/flatpak"
+      "services/id-mail"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
