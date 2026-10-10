@@ -651,6 +651,7 @@ pub struct WorldCore {
     capabilities: HashMap<u64, CapabilityRecord>,
     events: VecDeque<WorldEvent>,
     directory: crate::directory::Directory,
+    petnames: crate::petname::Petnames,
 }
 
 impl WorldCore {
@@ -693,6 +694,7 @@ impl WorldCore {
             capabilities: HashMap::new(),
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
+            petnames: crate::petname::Petnames::new(),
         })
     }
 
@@ -1336,6 +1338,21 @@ impl WorldCore {
     /// The directory of accounts, groups and friends this world is held to.
     pub const fn directory_mut(&mut self) -> &mut crate::directory::Directory {
         &mut self.directory
+    }
+
+    /// The directory and the private petnames, borrowed together.
+    pub const fn directory_and_petnames_mut(
+        &mut self,
+    ) -> (
+        &mut crate::directory::Directory,
+        &mut crate::petname::Petnames,
+    ) {
+        (&mut self.directory, &mut self.petnames)
+    }
+
+    /// Replace the petname store, as the world's data directory is opened.
+    pub fn set_petnames(&mut self, petnames: crate::petname::Petnames) {
+        self.petnames = petnames;
     }
 
     /// Commit a chat message after validating capability and bounds.
@@ -2225,8 +2242,10 @@ impl WorldActor {
                 reply,
             } => {
                 let world = self.core.world_id().to_owned();
+                let (directory, petnames) = self.core.directory_and_petnames_mut();
                 let result = crate::directory_view::run(
-                    self.core.directory_mut(),
+                    directory,
+                    petnames,
                     &mut self.auth,
                     &caller,
                     &world,

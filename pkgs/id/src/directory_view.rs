@@ -16,6 +16,7 @@ use crate::directory::{
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
 use crate::envelope_outbox::{Entry, Finish, Outbox, check_url};
+use crate::petname::{Contact, Label, Petnames, labels};
 use crate::world::WorldScopes;
 
 /// Who is looking at the directory.
@@ -93,6 +94,8 @@ pub struct AccountView {
     pub id: String,
     /// The display name.
     pub name: String,
+    /// The viewer's private petname for the account; shown only to the account itself.
+    pub petname: Option<String>,
     /// Whether the account is verified, by an admin or a confirmed email; shown to the account and the admin.
     pub verified: Option<bool>,
     /// Public keys the account signs in with, besides its own ID; shown to the account and the admin.
@@ -197,6 +200,25 @@ pub enum DirectoryAction {
         address: String,
         /// The six-digit code.
         code: String,
+    },
+    /// Give an account a petname only the viewer sees, replacing any it had.
+    SetPetname {
+        /// The account, by its ID.
+        account: String,
+        /// The petname.
+        name: String,
+    },
+    /// Change a petname the viewer already gave an account.
+    RenamePetname {
+        /// The account, by its ID.
+        account: String,
+        /// The new petname.
+        name: String,
+    },
+    /// Forget the petname the viewer gave an account.
+    RemovePetname {
+        /// The account, by its ID.
+        account: String,
     },
     /// Create a group the viewer founds.
     CreateGroup {
@@ -391,6 +413,9 @@ commands:
   friend request ACCOUNT [at URL for WORLD]   ask an account; a remote one needs its server and world
   friend accept ACCOUNT [at URL for WORLD]    accept a request, likewise for a remote requester
   friend remove ACCOUNT
+  petname set ACCOUNT NAME            give an account a name only you see
+  petname rename ACCOUNT NAME         change that name
+  petname remove ACCOUNT              forget it
   receive ENVELOPE_JSON               apply a friend envelope from another server
   verify ACCOUNT                      admin only
   help, quit";
@@ -475,6 +500,21 @@ pub fn parse_line(line: &str) -> Result<Line> {
                 ("remove_friend", vec![("other", other)])
             }
             _ => bail!("friend takes request, accept or remove"),
+        },
+        "petname" => match split_first(rest) {
+            ("set", tail) => {
+                let (account, name) = petname_args(tail, "petname set ACCOUNT NAME")?;
+                ("set_petname", vec![("account", account), ("name", name)])
+            }
+            ("rename", tail) => {
+                let (account, name) = petname_args(tail, "petname rename ACCOUNT NAME")?;
+                ("rename_petname", vec![("account", account), ("name", name)])
+            }
+            ("remove", tail) => {
+                let [account] = words_n(&split_words(tail), "petname remove ACCOUNT")?;
+                ("remove_petname", vec![("account", account)])
+            }
+            _ => bail!("petname takes set, rename or remove"),
         },
         "group" => group_command(rest)?,
         other => bail!("unknown command {other}; type help"),
@@ -592,6 +632,14 @@ fn words_n<const N: usize>(words: &[&str], usage: &str) -> Result<[String; N]> {
 
 fn split_words(text: &str) -> Vec<&str> {
     text.split_whitespace().collect()
+}
+
+fn petname_args(tail: &str, usage: &str) -> Result<(String, String)> {
+    let (account, name) = split_first(tail);
+    if account.is_empty() {
+        bail!("usage: {usage}");
+    }
+    Ok((account.to_owned(), text_arg(name, usage)?))
 }
 
 fn split_first(text: &str) -> (&str, &str) {
@@ -722,6 +770,17 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
             address: field(fields, "address")?.to_owned(),
             code: field(fields, "code")?.to_owned(),
         },
+        "set_petname" => DirectoryAction::SetPetname {
+            account: field(fields, "account")?.to_owned(),
+            name: field(fields, "name")?.to_owned(),
+        },
+        "rename_petname" => DirectoryAction::RenamePetname {
+            account: field(fields, "account")?.to_owned(),
+            name: field(fields, "name")?.to_owned(),
+        },
+        "remove_petname" => DirectoryAction::RemovePetname {
+            account: field(fields, "account")?.to_owned(),
+        },
         "create_group" => DirectoryAction::CreateGroup {
             name: field(fields, "name")?.to_owned(),
             description: fields.get("description").cloned().unwrap_or_default(),
@@ -823,6 +882,7 @@ impl std::fmt::Debug for DirectoryOutcome {
 /// plain error for input that is malformed.
 pub fn run(
     directory: &mut Directory,
+    petnames: &mut Petnames,
     auth: &mut DirectoryAuth,
     caller: &Caller,
     world: &str,
@@ -868,6 +928,20 @@ pub fn run(
                 auth.close_session(token);
             }
             viewer = Viewer::Anonymous;
+        }
+        DirectoryAction::SetPetname { account, name } => {
+            let me = signed_in(&viewer)?;
+            let account = known_account(directory, &account)?;
+            petnames.set(me, &account, &name, alleged_names(directory))?;
+        }
+        DirectoryAction::RenamePetname { account, name } => {
+            let me = signed_in(&viewer)?;
+            let account = known_account(directory, &account)?;
+            petnames.rename(me, &account, &name, alleged_names(directory))?;
+        }
+        DirectoryAction::RemovePetname { account } => {
+            let me = signed_in(&viewer)?;
+            petnames.remove(me, &account)?;
         }
         DirectoryAction::AddKey { key } => {
             let me = signed_in(&viewer)?;
@@ -1015,7 +1089,7 @@ pub fn run(
         }
     }
     Ok(DirectoryOutcome {
-        view: view(directory, &viewer),
+        view: view(directory, petnames, &viewer),
         credential,
         session,
         mailed: false,
@@ -1083,7 +1157,22 @@ fn code_mail(address: &str, code: &str, subject: &str) -> Mail {
     }
 }
 
-fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
+fn known_account(directory: &Directory, account: &str) -> Result<String> {
+    let id = normalize_key(account)?;
+    if directory.account(&id).is_none() {
+        return Err(Refusal::NotFound("no account has that ID".to_owned()).into());
+    }
+    Ok(id)
+}
+
+fn alleged_names(directory: &Directory) -> Vec<(&str, &str)> {
+    directory
+        .accounts()
+        .map(|account| (account.id.as_str(), account.name.as_str()))
+        .collect()
+}
+
+fn view(directory: &Directory, petnames: &Petnames, viewer: &Viewer) -> DirectoryView {
     let (label, me, admin) = match viewer {
         Viewer::Anonymous => ("anonymous".to_owned(), None, false),
         Viewer::Account(id) => (id.clone(), Some(id.as_str()), false),
@@ -1097,6 +1186,10 @@ fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
             AccountView {
                 id: account.id.clone(),
                 name: account.name.clone(),
+                petname: match viewer {
+                    Viewer::Account(me) => petnames.get(me, &account.id).map(str::to_owned),
+                    Viewer::Anonymous | Viewer::Admin => None,
+                },
                 verified: own.then(|| directory.is_verified(&account.id)),
                 keys: own.then(|| account.keys.iter().cloned().collect()),
                 emails: own.then(|| account.emails.iter().cloned().collect()),
@@ -1188,6 +1281,20 @@ fn list(items: &[String]) -> String {
     }
 }
 
+/// How each account is shown: its viewer's petname, or its alleged name marked unverified.
+#[must_use]
+pub fn account_labels(accounts: &[AccountView]) -> Vec<Label> {
+    let contacts: Vec<Contact<'_>> = accounts
+        .iter()
+        .map(|account| Contact {
+            id: &account.id,
+            alleged: &account.name,
+            petname: account.petname.as_deref(),
+        })
+        .collect();
+    labels(&contacts)
+}
+
 /// The view as plain text, for the SSH explorer.
 #[must_use]
 pub fn render_text(view: &DirectoryView) -> String {
@@ -1199,8 +1306,8 @@ pub fn render_text(view: &DirectoryView) -> String {
     if view.accounts.is_empty() {
         lines.push("  (none)".to_owned());
     }
-    for account in &view.accounts {
-        lines.push(format!("  {}  {}", account.id, account.name));
+    for (account, label) in view.accounts.iter().zip(account_labels(&view.accounts)) {
+        lines.push(format!("  {}  {}", account.id, label.text()));
         let mut details = Vec::new();
         if let Some(verified) = account.verified {
             details.push(format!("verified: {}", if verified { "yes" } else { "no" }));
@@ -1331,7 +1438,7 @@ mod tests {
     }
 
     fn view_for(directory: &Directory, viewer: &Viewer) -> DirectoryView {
-        view(directory, viewer)
+        view(directory, &Petnames::new(), viewer)
     }
 
     fn act(
@@ -1341,6 +1448,7 @@ mod tests {
     ) -> Result<DirectoryOutcome> {
         run(
             directory,
+            &mut Petnames::new(),
             &mut DirectoryAuth::default(),
             caller,
             "test-world",
@@ -1572,6 +1680,7 @@ mod tests {
         let mut auth = DirectoryAuth::default();
         let outcome = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed,
             "test-world",
@@ -1592,6 +1701,7 @@ mod tests {
             crate::world::hex_encode(&SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
         let refused = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed_in,
             "test-world",
@@ -1607,6 +1717,7 @@ mod tests {
         let address = "kay@example.com";
         let asked = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed_in,
             "test-world",
@@ -1629,6 +1740,7 @@ mod tests {
 
         run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed_in,
             "test-world",
@@ -1639,13 +1751,18 @@ mod tests {
             },
         )
         .unwrap();
-        let shown = view(&s.directory, &Viewer::Account(key.clone()));
+        let shown = view(
+            &s.directory,
+            &Petnames::new(),
+            &Viewer::Account(key.clone()),
+        );
         let me = shown.accounts.iter().find(|a| a.id == key).unwrap();
         assert_eq!(me.emails.as_deref(), Some(&[address.to_owned()][..]));
         assert_eq!(me.verified, Some(true));
 
         let sign_in = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &Caller::default(),
             "test-world",
@@ -1658,6 +1775,7 @@ mod tests {
         assert_eq!(sign_in.mail.unwrap().to, address);
         let missing = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &Caller::default(),
             "test-world",
@@ -1703,7 +1821,7 @@ mod tests {
             Viewer::Account(s.bo.clone()),
         ];
         for viewer in viewers {
-            let shown = view(&s.directory, &viewer);
+            let shown = view(&s.directory, &Petnames::new(), &viewer);
             let json = serde_json::to_string(&shown).unwrap();
             let text = render_text(&shown);
             for account in &shown.accounts {
@@ -1832,5 +1950,260 @@ mod tests {
         );
         assert!(action_from_fields(&fields(&[("action", "explode")])).is_err());
         assert!(action_from_fields(&fields(&[("name", "Cy")])).is_err());
+    }
+
+    fn keyed(directory: &mut Directory, seed: u8, name: &str) -> String {
+        let key = crate::world::hex_encode(
+            &SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        directory.sign_up_keyed(&key, name).unwrap();
+        key
+    }
+
+    fn as_account(id: &str) -> Caller {
+        Caller {
+            key: Some(id.to_owned()),
+            ..Caller::default()
+        }
+    }
+
+    fn petname_act(
+        directory: &mut Directory,
+        petnames: &mut Petnames,
+        auth: &mut DirectoryAuth,
+        caller: &Caller,
+        action: DirectoryAction,
+    ) -> Result<DirectoryOutcome> {
+        run(directory, petnames, auth, caller, "lobby", 0, action)
+    }
+
+    fn shown_petname(outcome: &DirectoryOutcome, id: &str) -> Option<String> {
+        outcome
+            .view
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .and_then(|account| account.petname.clone())
+    }
+
+    #[test]
+    fn a_petname_is_set_renamed_and_removed_by_its_owner_only() {
+        let mut directory = Directory::new();
+        let ada = keyed(&mut directory, 1, "Ada");
+        let bo = keyed(&mut directory, 2, "Bo");
+        let cy = keyed(&mut directory, 3, "Cy");
+        let mut petnames = Petnames::new();
+        let mut auth = DirectoryAuth::default();
+        let me = as_account(&ada);
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: bo.clone(),
+                name: "Robert".to_owned(),
+            },
+        )
+        .unwrap();
+        let view = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&view, &bo).as_deref(), Some("Robert"));
+        assert!(render_text(&view.view).contains(&format!("  {bo}  Robert")));
+        assert!(render_text(&view.view).contains(&format!("  {cy}  Cy (unverified")));
+
+        let bo_view = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &as_account(&bo),
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&bo_view, &bo), None);
+        let anonymous = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &Caller::default(),
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&anonymous, &bo), None);
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RenamePetname {
+                account: bo.clone(),
+                name: "Bobby".to_owned(),
+            },
+        )
+        .unwrap();
+        let renamed = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&renamed, &bo).as_deref(), Some("Bobby"));
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RemovePetname {
+                account: bo.clone(),
+            },
+        )
+        .unwrap();
+        let removed = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&removed, &bo), None);
+    }
+
+    #[test]
+    fn petname_actions_refuse_what_they_must() {
+        let mut directory = Directory::new();
+        let ada = keyed(&mut directory, 1, "Ada");
+        let bo = keyed(&mut directory, 2, "Bo");
+        let cy = keyed(&mut directory, 3, "Cy");
+        let dee = keyed(&mut directory, 4, "Dee");
+        let mut petnames = Petnames::new();
+        let mut auth = DirectoryAuth::default();
+        let me = as_account(&ada);
+
+        let anonymous = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &Caller::default(),
+            DirectoryAction::SetPetname {
+                account: bo.clone(),
+                name: "Robert".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            anonymous.downcast_ref::<Refusal>(),
+            Some(Refusal::Unauthenticated(_))
+        ));
+
+        let stranger =
+            crate::world::hex_encode(&SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
+        let unknown = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: stranger,
+                name: "Nobody".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            unknown.downcast_ref::<Refusal>(),
+            Some(Refusal::NotFound(_))
+        ));
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: bo.clone(),
+                name: "Robert".to_owned(),
+            },
+        )
+        .unwrap();
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: cy.clone(),
+                name: "Carl".to_owned(),
+            },
+        )
+        .unwrap();
+        let taken = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RenamePetname {
+                account: cy.clone(),
+                name: "robert".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            taken.downcast_ref::<Refusal>(),
+            Some(Refusal::Conflict(_))
+        ));
+
+        let missing = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RenamePetname {
+                account: dee,
+                name: "Carol".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            missing.downcast_ref::<Refusal>(),
+            Some(Refusal::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn the_explorer_grammar_reads_petname_lines() {
+        let bo = "bb".repeat(32);
+        let Line::Action(DirectoryAction::SetPetname { account, name }) =
+            parse_line(&format!("petname set {bo} Robert Smith")).unwrap()
+        else {
+            panic!("petname set should read as an action");
+        };
+        assert_eq!(
+            (account.as_str(), name.as_str()),
+            (bo.as_str(), "Robert Smith")
+        );
+        assert!(matches!(
+            parse_line(&format!("petname rename {bo} Bobby")).unwrap(),
+            Line::Action(DirectoryAction::RenamePetname { .. })
+        ));
+        assert!(matches!(
+            parse_line(&format!("petname remove {bo}")).unwrap(),
+            Line::Action(DirectoryAction::RemovePetname { .. })
+        ));
+        assert!(parse_line("petname set").is_err());
+        assert!(parse_line("petname remove").is_err());
+        assert!(parse_line("petname forget x").is_err());
     }
 }

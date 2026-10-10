@@ -328,6 +328,12 @@ pub async fn open_world(
             .await
             .context("directory open task")??;
     *restored.core.directory_mut() = directory;
+    let petnames_path = dir.join("petnames.jsonl");
+    let petnames =
+        tokio::task::spawn_blocking(move || crate::petname::Petnames::open(&petnames_path))
+            .await
+            .context("petnames open task")??;
+    restored.core.set_petnames(petnames);
     let outbox_path = dir.join("outbox.jsonl");
     let outbox =
         tokio::task::spawn_blocking(move || crate::envelope_outbox::Outbox::open(&outbox_path))

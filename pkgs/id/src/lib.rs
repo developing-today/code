@@ -170,8 +170,11 @@ pub mod discovery;
 pub mod envelope_outbox;
 pub mod fileops;
 pub mod helpers;
+pub mod invite;
 pub mod local;
 pub mod meta_client;
+#[cfg(feature = "world")]
+pub mod petname;
 pub mod protocol;
 pub mod repl;
 #[cfg(feature = "sandbox")]
@@ -202,6 +205,8 @@ pub mod world_ssh;
 #[cfg(feature = "world")]
 pub mod world_store;
 
+#[cfg(feature = "web")]
+pub mod qr;
 #[cfg(feature = "web")]
 pub mod web;
 
