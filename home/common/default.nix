@@ -563,16 +563,7 @@ in
     Service = {
       Type = "notify";
       NotifyAccess = "all";
-      ExecStart = toString (
-        pkgs.writeShellScript "mcpx-daemon-start" ''
-          if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-          fi
-          exec ${mcpx}/bin/mcpx daemon \
-            --repair-provider=command \
-            --repair-command="${inputs.opencode.packages.${system}.opencode}/bin/opencode run"
-        ''
-      );
+      ExecStart = "${mcpx}/bin/mcpx daemon";
       ExecReload = "${mcpx}/bin/mcpx reload";
       Restart = "always";
       RestartSec = 3;
