@@ -17,6 +17,7 @@ use reqwest::{Client, StatusCode, Url, header::CONTENT_TYPE, redirect};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use crate::artifact::SignedArtifact;
 use crate::directory::Envelope;
 
 /// Deliveries attempted before an envelope is given up.
@@ -48,13 +49,22 @@ pub enum Outcome {
     Retry(String),
 }
 
-/// One queued envelope and what has happened to it so far.
+/// What a queued entry delivers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Payload {
+    /// A friend request or acceptance, posted to `/envelope`.
+    Envelope(Envelope),
+    /// A signed artifact, posted to `/artifact`.
+    Artifact(SignedArtifact),
+}
+
+/// One queued payload and what has happened to it so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// The `/envelope` endpoint on the recipient's server.
+    /// The endpoint the payload is posted to.
     pub url: String,
-    /// The envelope to deliver.
-    pub envelope: Envelope,
+    /// What to deliver.
+    pub payload: Payload,
     /// Attempts made so far.
     pub attempts: u32,
     /// The earliest time the next attempt may run, in Unix milliseconds.
@@ -71,6 +81,10 @@ enum Record {
     Queued {
         url: String,
         envelope: Envelope,
+    },
+    QueuedArtifact {
+        url: String,
+        artifact: SignedArtifact,
     },
     Attempted {
         id: String,
@@ -153,6 +167,26 @@ impl Outbox {
         })
     }
 
+    /// Queues `artifact` for delivery to `url`, due immediately. The same
+    /// artifact may be queued for several servers, one entry each.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the URL is not allowed, the artifact is already queued for it,
+    /// or the record cannot be written.
+    pub fn enqueue_artifact(&mut self, url: &str, artifact: SignedArtifact) -> Result<()> {
+        check_url(url)?;
+        ensure!(
+            !self.entries.contains_key(&artifact_key(url, &artifact)),
+            "artifact {} is already queued for {url}",
+            artifact.hash
+        );
+        self.commit(Record::QueuedArtifact {
+            url: url.to_owned(),
+            artifact,
+        })
+    }
+
     /// The IDs of envelopes that are queued and due at `now`.
     #[must_use]
     pub fn due(&self, now: u64) -> Vec<String> {
@@ -227,23 +261,12 @@ impl Outbox {
     fn apply(&mut self, record: Record) -> Result<()> {
         match record {
             Record::Queued { url, envelope } => {
-                ensure!(
-                    !self.entries.contains_key(&envelope.id),
-                    "envelope {} is queued twice",
-                    envelope.id
-                );
                 let id = envelope.id.clone();
-                self.entries.insert(
-                    id,
-                    Entry {
-                        url,
-                        envelope,
-                        attempts: 0,
-                        next_at: 0,
-                        last_error: None,
-                        finish: None,
-                    },
-                );
+                self.queue(id, url, Payload::Envelope(envelope))?;
+            }
+            Record::QueuedArtifact { url, artifact } => {
+                let id = artifact_key(&url, &artifact);
+                self.queue(id, url, Payload::Artifact(artifact))?;
             }
             Record::Attempted {
                 id,
@@ -271,11 +294,31 @@ impl Outbox {
         Ok(())
     }
 
+    fn queue(&mut self, id: String, url: String, payload: Payload) -> Result<()> {
+        ensure!(!self.entries.contains_key(&id), "{id} is queued twice");
+        self.entries.insert(
+            id,
+            Entry {
+                url,
+                payload,
+                attempts: 0,
+                next_at: 0,
+                last_error: None,
+                finish: None,
+            },
+        );
+        Ok(())
+    }
+
     fn entry_mut(&mut self, id: &str) -> Result<&mut Entry> {
         self.entries
             .get_mut(id)
             .with_context(|| format!("outbox record names unknown envelope {id}"))
     }
+}
+
+fn artifact_key(url: &str, artifact: &SignedArtifact) -> String {
+    format!("artifact {url} {}", artifact.hash)
 }
 
 /// Delivers every envelope due at `now`, recording each outcome as it happens.
@@ -288,19 +331,22 @@ impl Outbox {
 /// Fails if an outcome cannot be written. Envelopes already recorded stay
 /// recorded.
 pub async fn flush(outbox: &Mutex<Outbox>, client: &Client, now: u64) -> Result<usize> {
-    let due: Vec<(String, String, Envelope)> = {
+    let due: Vec<(String, String, Payload)> = {
         let queue = outbox.lock().await;
         queue
             .due(now)
             .into_iter()
             .filter_map(|id| {
                 let entry = queue.entry(&id)?;
-                Some((id.clone(), entry.url.clone(), entry.envelope.clone()))
+                Some((id.clone(), entry.url.clone(), entry.payload.clone()))
             })
             .collect()
     };
-    for (id, url, envelope) in &due {
-        let outcome = deliver(client, url, envelope).await;
+    for (id, url, payload) in &due {
+        let outcome = match payload {
+            Payload::Envelope(envelope) => deliver(client, url, envelope).await,
+            Payload::Artifact(artifact) => deliver(client, url, artifact).await,
+        };
         outbox.lock().await.record(id, now, outcome)?;
     }
     Ok(due.len())
@@ -348,11 +394,11 @@ pub fn http_client() -> Result<Client> {
         .context("building the envelope delivery client")
 }
 
-/// Posts `envelope` as JSON to the `/envelope` endpoint at `url`.
-pub async fn deliver(client: &Client, url: &str, envelope: &Envelope) -> Outcome {
-    let json = match serde_json::to_string(envelope) {
+/// Posts `body` as JSON to `url`, which names the endpoint.
+pub async fn deliver<T: Serialize>(client: &Client, url: &str, body: &T) -> Outcome {
+    let json = match serde_json::to_string(body) {
         Ok(json) => json,
-        Err(error) => return Outcome::Refused(format!("envelope does not encode: {error}")),
+        Err(error) => return Outcome::Refused(format!("payload does not encode: {error}")),
     };
     match client
         .post(url)
@@ -459,7 +505,10 @@ mod tests {
 
         let reopened = Outbox::open(path(&dir)).unwrap();
         assert_eq!(reopened.due(NOW), vec!["e1".to_owned()]);
-        assert_eq!(reopened.entry("e1").unwrap().envelope, envelope("e1"));
+        assert_eq!(
+            reopened.entry("e1").unwrap().payload,
+            Payload::Envelope(envelope("e1"))
+        );
     }
 
     #[test]

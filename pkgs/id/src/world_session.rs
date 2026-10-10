@@ -472,8 +472,15 @@ impl WorldService {
         }
         if let Some(outbox) = &self.outbox {
             let mut queue = outbox.lock().await;
-            if let Some(outbound) = outcome.outbound.take() {
-                queue.enqueue(&outbound.url, outbound.envelope)?;
+            for outbound in std::mem::take(&mut outcome.outbound) {
+                match outbound.payload {
+                    crate::envelope_outbox::Payload::Envelope(envelope) => {
+                        queue.enqueue(&outbound.url, envelope)?;
+                    }
+                    crate::envelope_outbox::Payload::Artifact(artifact) => {
+                        queue.enqueue_artifact(&outbound.url, artifact)?;
+                    }
+                }
             }
             outcome.view.deliveries =
                 crate::directory_view::deliveries(&queue, &outcome.view.viewer);

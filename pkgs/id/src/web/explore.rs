@@ -12,6 +12,7 @@ use axum::{
     routing::{get, post},
 };
 
+use crate::artifact::{SignedArtifact, Stored};
 use crate::directory::{Envelope, Member, Received, Refusal};
 use crate::directory_auth::{Caller, SESSION_TTL_MS};
 use crate::directory_view::{
@@ -47,6 +48,42 @@ pub(super) fn explore_routes() -> Router<WorldWebState> {
             "/envelope",
             post(envelope_handler).layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES)),
         )
+        .route(
+            "/artifact",
+            post(artifact_handler).layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES)),
+        )
+}
+
+async fn artifact_handler(State(state): State<WorldWebState>, body: Bytes) -> Response {
+    let Some(hub) = state.hub else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let artifact: SignedArtifact = match serde_json::from_slice(&body) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, format!("not an artifact: {error}")).into_response();
+        }
+    };
+    let Ok(lease) = hub.lease(None, None).await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is busy; try again",
+        )
+            .into_response();
+    };
+    let action = DirectoryAction::ReceiveArtifact { artifact };
+    match lease.service().directory(Caller::default(), action).await {
+        Ok(DirectoryOutcome {
+            stored: Some(Stored::New),
+            ..
+        }) => applied_json("applied"),
+        Ok(DirectoryOutcome {
+            stored: Some(Stored::Duplicate),
+            ..
+        }) => applied_json("duplicate"),
+        Ok(_) => (StatusCode::INTERNAL_SERVER_ERROR, "artifact was not stored").into_response(),
+        Err(error) => (envelope_status(&error), format!("{error:#}")).into_response(),
+    }
 }
 
 async fn envelope_handler(State(state): State<WorldWebState>, body: Bytes) -> Response {

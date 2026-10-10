@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
+use crate::artifact::{
+    self, ArtifactLog, FriendRemove, HomeDeclared, HomeServer, Kind, SignedArtifact, Stored,
+};
 use crate::world::{WorldScopes, hex_encode};
 
 const KEY_DOMAIN: &[u8] = b"id-account-v1";
@@ -262,12 +265,15 @@ pub enum DirectoryEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
-    /// A friendship ended.
+    /// A friendship ended, and the requests it covers are void.
     FriendRemoved {
         /// One side of the friendship.
         a: String,
         /// The other side.
         b: String,
+        /// Request IDs the removal voids. Empty for a removal that needs no request.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        requests: Vec<String>,
     },
 }
 
@@ -409,8 +415,11 @@ pub struct Directory {
     members: BTreeMap<(u64, Member), Level>,
     tiers: BTreeMap<Tier, WorldScopes>,
     friends: BTreeSet<(String, String)>,
+    friend_requests: BTreeMap<(String, String), String>,
     requests: BTreeMap<(String, String), Option<String>>,
+    removed_requests: BTreeSet<String>,
     seen: BTreeSet<String>,
+    artifacts: ArtifactLog,
     next_group: u64,
     journal: Option<PathBuf>,
 }
@@ -440,23 +449,51 @@ impl Directory {
             members: BTreeMap::new(),
             tiers,
             friends: BTreeSet::new(),
+            friend_requests: BTreeMap::new(),
             requests: BTreeMap::new(),
+            removed_requests: BTreeSet::new(),
             seen: BTreeSet::new(),
+            artifacts: ArtifactLog::default(),
             next_group: 1,
             journal: None,
         }
     }
 
-    /// Rebuild the directory from its journal and journal every later change
-    /// to it. A change is journaled before it becomes visible.
+    /// Rebuild the directory from its journal and its artifact log, and
+    /// journal every later change to it. A change is journaled before it
+    /// becomes visible. A removal whose artifact was stored but whose journal
+    /// entry was lost to a crash is applied again here.
     ///
     /// # Errors
     ///
-    /// Fails if the journal cannot be replayed.
+    /// Fails if the journal or the artifact log cannot be replayed.
     pub fn open(path: &Path) -> Result<Self> {
         let mut directory = Self::replay(path)?;
+        directory.artifacts = ArtifactLog::open(&artifact_path(path))?;
         directory.journal = Some(path.to_path_buf());
+        let removals: Vec<(String, String, Vec<String>)> = directory
+            .artifacts
+            .all()
+            .filter_map(|artifact| match artifact.parsed() {
+                Ok(Some(Kind::FriendRemove(removal))) => {
+                    Some((removal.a, removal.b, removal.requests))
+                }
+                _ => None,
+            })
+            .collect();
+        for (a, b, requests) in removals {
+            let formed_by = directory.friend_requests.get(&pair(&a, &b));
+            if directory.are_friends(&a, &b) && formed_by.is_some_and(|id| requests.contains(id)) {
+                directory.apply(&DirectoryEntry::FriendRemoved { a, b, requests })?;
+            }
+        }
         Ok(directory)
+    }
+
+    /// The signed artifacts this server holds.
+    #[must_use]
+    pub const fn artifacts(&self) -> &ArtifactLog {
+        &self.artifacts
     }
 
     /// Rebuild the directory from its journal, one line per entry.
@@ -731,6 +768,7 @@ impl Directory {
         let entry = DirectoryEntry::FriendRemoved {
             a: me.to_owned(),
             b: other.to_owned(),
+            requests: self.friendship_requests(me, other),
         };
         self.apply(&entry)?;
         Ok(entry)
@@ -1191,14 +1229,89 @@ impl Directory {
     /// # Errors
     ///
     /// Fails for an invalid credential or when the two are not friends.
-    pub fn remove_friend(&mut self, credential: &str, other: &str) -> Result<DirectoryEntry> {
-        let (me, _) = self.authenticate(credential)?;
+    pub fn remove_friend(&mut self, credential: &str, other: &str) -> Result<SignedArtifact> {
+        let (me, key) = self.authenticate(credential)?;
+        let removal = FriendRemove {
+            a: me.clone(),
+            b: other.to_owned(),
+            requests: self.friendship_requests(&me, other),
+        };
+        let artifact = self
+            .artifacts
+            .sign(&key, &Kind::FriendRemove(removal.clone()))?;
         let entry = DirectoryEntry::FriendRemoved {
             a: me,
             b: other.to_owned(),
+            requests: removal.requests,
         };
-        self.apply(&entry)?;
-        Ok(entry)
+        self.store_artifact(&artifact, Some(&entry))?;
+        Ok(artifact)
+    }
+
+    /// Publish the servers an account's artifacts are held on. A newer
+    /// declaration replaces an older one.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an invalid credential or a declaration that is malformed.
+    pub fn declare_home(
+        &mut self,
+        credential: &str,
+        servers: Vec<HomeServer>,
+    ) -> Result<SignedArtifact> {
+        let (account, key) = self.authenticate(credential)?;
+        let kind = Kind::HomeDeclared(HomeDeclared { account, servers });
+        let artifact = self.artifacts.sign(&key, &kind)?;
+        self.store_artifact(&artifact, None)?;
+        Ok(artifact)
+    }
+
+    /// Store an artifact another server signed, and apply what it says. A
+    /// removal is applied only where it has an effect; a removal naming no
+    /// request for a pair this server never befriended is stored alone.
+    ///
+    /// # Errors
+    ///
+    /// Fails with a [`Refusal`] for an artifact that does not verify, extends
+    /// the chain wrongly, or breaks a directory rule.
+    pub fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
+        let effect = match artifact.parsed()? {
+            Some(Kind::FriendRemove(removal))
+                if self.are_friends(&removal.a, &removal.b) || !removal.requests.is_empty() =>
+            {
+                Some(DirectoryEntry::FriendRemoved {
+                    a: removal.a,
+                    b: removal.b,
+                    requests: removal.requests,
+                })
+            }
+            _ => None,
+        };
+        self.store_artifact(artifact, effect.as_ref())
+    }
+
+    fn store_artifact(
+        &mut self,
+        artifact: &SignedArtifact,
+        effect: Option<&DirectoryEntry>,
+    ) -> Result<Stored> {
+        let mut next = self.clone();
+        let stored = next.artifacts.insert(artifact.clone())?;
+        if stored == Stored::Duplicate {
+            return Ok(stored);
+        }
+        if let Some(entry) = effect {
+            next.change(entry)?;
+            next.ensure_admins()?;
+        }
+        if let Some(path) = &self.journal {
+            artifact::append(&artifact_path(path), artifact)?;
+            if let Some(entry) = effect {
+                Self::append(path, entry)?;
+            }
+        }
+        *self = next;
+        Ok(stored)
     }
 
     fn authenticate(&self, credential: &str) -> Result<(String, SigningKey)> {
@@ -1430,6 +1543,13 @@ impl Directory {
                     Conflict,
                     "a request is already pending"
                 );
+                if let Some(id) = id {
+                    refuse_unless!(
+                        !self.removed_requests.contains(id),
+                        Conflict,
+                        "request {id} was voided by a friend removal"
+                    );
+                }
                 self.note_envelope(id.as_deref())?;
                 self.requests.insert((from.clone(), to.clone()), id.clone());
             }
@@ -1451,12 +1571,34 @@ impl Directory {
                 self.note_envelope(id.as_deref())?;
                 self.requests.remove(&(from.clone(), to.clone()));
                 self.friends.insert(pair(from, to));
+                if let Some(request) = request {
+                    self.friend_requests.insert(pair(from, to), request.clone());
+                }
             }
-            DirectoryEntry::FriendRemoved { a, b } => {
-                ensure!(self.friends.remove(&pair(a, b)), "not friends");
+            DirectoryEntry::FriendRemoved { a, b, requests } => {
+                let was_friends = self.friends.remove(&pair(a, b));
+                ensure!(was_friends || !requests.is_empty(), "not friends");
+                self.friend_requests.remove(&pair(a, b));
+                self.requests
+                    .retain(|(from, to), _| pair(from, to) != pair(a, b));
+                self.removed_requests.extend(requests.iter().cloned());
             }
         }
         Ok(())
+    }
+
+    fn friendship_requests(&self, a: &str, b: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .friend_requests
+            .get(&pair(a, b))
+            .cloned()
+            .into_iter()
+            .collect();
+        ids.extend(self.pending_id(a, b));
+        ids.extend(self.pending_id(b, a));
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     /// Whether two accounts are friends on this server.
@@ -1498,6 +1640,10 @@ impl Directory {
         }
         Ok(())
     }
+}
+
+fn artifact_path(journal: &Path) -> PathBuf {
+    journal.with_file_name(artifact::FILE)
 }
 
 fn signing_key(secret: &[u8; 32]) -> SigningKey {
@@ -1619,6 +1765,7 @@ pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn all() -> WorldScopes {
@@ -1641,6 +1788,181 @@ mod tests {
         let forged = format!("acct.{ann}.{}", "00".repeat(32));
         assert_eq!(directory.account_for(&forged), None);
         assert_eq!(directory.account_for("acct.nope"), None);
+    }
+
+    fn home_server(url: &str, seed: u8) -> HomeServer {
+        HomeServer {
+            url: url.to_owned(),
+            endpoint: iroh_base::SecretKey::from_bytes(&[seed; 32])
+                .public()
+                .to_string(),
+            world_id: "home".to_owned(),
+        }
+    }
+
+    fn friends_across_servers(
+        dir: Option<&Path>,
+    ) -> (Directory, Directory, String, String, String) {
+        let mut home = match dir {
+            Some(path) => Directory::open(path).unwrap(),
+            None => Directory::new(),
+        };
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, bo_credential) = account(&mut away, "Bo");
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        let (accept, _) = away.accept_friend(&bo_credential, &ann, "home", 2).unwrap();
+        home.receive(&accept, "home", 2).unwrap();
+        (home, away, ann, bo, ann_credential)
+    }
+
+    #[test]
+    fn a_removal_ends_the_friendship_on_both_servers_and_voids_a_request_it_never_delivered() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, bo_credential) = account(&mut away, "Bo");
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        let mut late = away.clone();
+        away.receive(&request, "away", 1).unwrap();
+        let (accept, _) = away.accept_friend(&bo_credential, &ann, "home", 2).unwrap();
+        home.receive(&accept, "home", 2).unwrap();
+        let removal = home.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!home.are_friends(&ann, &bo));
+
+        let mut tampered = removal.clone();
+        tampered.body["requests"] = json!([]);
+        assert!(away.receive_artifact(&tampered).is_err());
+
+        assert_eq!(away.receive_artifact(&removal).unwrap(), Stored::New);
+        assert!(!away.are_friends(&ann, &bo));
+        assert_eq!(away.receive_artifact(&removal).unwrap(), Stored::Duplicate);
+
+        assert_eq!(late.receive_artifact(&removal).unwrap(), Stored::New);
+        let stale = late.receive(&request, "away", 1).unwrap_err();
+        assert!(
+            matches!(stale.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
+            "{stale:#}"
+        );
+    }
+
+    #[test]
+    fn concurrent_removals_of_one_friendship_by_both_sides_both_apply_and_end_it_once() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, bo_credential) = account(&mut away, "Bo");
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        let (accept, _) = away.accept_friend(&bo_credential, &ann, "home", 2).unwrap();
+        home.receive(&accept, "home", 2).unwrap();
+
+        let by_ann = home.remove_friend(&ann_credential, &bo).unwrap();
+        let by_bo = away.remove_friend(&bo_credential, &ann).unwrap();
+
+        assert_eq!(home.receive_artifact(&by_bo).unwrap(), Stored::New);
+        assert_eq!(away.receive_artifact(&by_ann).unwrap(), Stored::New);
+        assert!(!home.are_friends(&ann, &bo));
+        assert!(!away.are_friends(&ann, &bo));
+        assert_eq!(home.receive_artifact(&by_bo).unwrap(), Stored::Duplicate);
+        assert_eq!(away.receive_artifact(&by_ann).unwrap(), Stored::Duplicate);
+    }
+
+    #[test]
+    fn an_unknown_kind_is_stored_and_changes_nothing() {
+        let mut home = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let mut away = Directory::new();
+        let future = SignedArtifact::sign(
+            &key_of(&ann_credential),
+            1,
+            "",
+            "future_kind",
+            json!({"x": 1}),
+        )
+        .unwrap();
+        assert_eq!(away.receive_artifact(&future).unwrap(), Stored::New);
+        assert_eq!(away.artifacts().head_seq(&ann), 1);
+        assert!(away.friends_of(&ann).is_empty());
+        assert_eq!(away.receive_artifact(&future).unwrap(), Stored::Duplicate);
+    }
+
+    #[test]
+    fn a_newer_home_declaration_replaces_an_older_one() {
+        let mut home = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let first = home
+            .declare_home(&ann_credential, vec![home_server("https://one.example", 1)])
+            .unwrap();
+        home.declare_home(&ann_credential, vec![home_server("https://two.example", 2)])
+            .unwrap();
+        let declared = |home: &Directory| {
+            home.artifacts().declared(&ann).unwrap().servers[0]
+                .url
+                .clone()
+        };
+        assert_eq!(declared(&home), "https://two.example");
+        assert_eq!(home.receive_artifact(&first).unwrap(), Stored::Duplicate);
+        assert_eq!(declared(&home), "https://two.example");
+    }
+
+    #[test]
+    fn a_removal_survives_a_restart_and_is_reapplied_when_its_directory_line_was_lost() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let (mut home, _away, ann, bo, ann_credential) = friends_across_servers(Some(&path));
+        home.remove_friend(&ann_credential, &bo).unwrap();
+        drop(home);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(!reopened.are_friends(&ann, &bo));
+        assert_eq!(reopened.artifacts().head_seq(&ann), 1);
+        drop(reopened);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let kept: String = text
+            .lines()
+            .rev()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+        let crashed = Directory::open(&path).unwrap();
+        assert!(!crashed.are_friends(&ann, &bo));
+        assert_eq!(crashed.artifacts().head_seq(&ann), 1);
+    }
+
+    #[test]
+    fn artifacts_hold_no_secret_digest_or_email() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let (mut home, _away, ann, bo, ann_credential) = friends_across_servers(Some(&path));
+        home.confirm_email(Actor::Server, &ann, "ann@example.com")
+            .unwrap();
+        home.remove_friend(&ann_credential, &bo).unwrap();
+        home.declare_home(
+            &ann_credential,
+            vec![home_server("https://home.example", 1)],
+        )
+        .unwrap();
+
+        let secret = ann_credential.rsplit('.').next().unwrap();
+        let digest = hex_encode(&Sha256::digest(hex_to_array::<32>(secret).unwrap()));
+        let stored = std::fs::read_to_string(dir.path().join(artifact::FILE)).unwrap();
+        assert!(!stored.contains(secret));
+        assert!(!stored.contains(&digest));
+        assert!(!stored.contains('@'));
+        assert_eq!(stored.lines().count(), 2);
     }
 
     #[test]

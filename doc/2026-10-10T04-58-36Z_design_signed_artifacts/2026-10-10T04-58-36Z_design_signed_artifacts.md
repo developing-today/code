@@ -80,3 +80,24 @@ A world verifies the signature against `author`, checks the hash chain for gaps,
 2. Isolation write, force-enable, file scope (in progress on `feat/id-isolation-write`).
 3. Signed artifacts: per-author log with `prev` links, `FriendRemove`, `HomeDeclared`, and pull from declared home servers. Depends on 1.
 4. Section 3 network sync of the directory log. Depends on 3.
+
+## Implementation: signed artifacts
+
+Built: `artifact.rs` (per-author chains with `prev`, Ed25519 over the body, `FriendRemove` and `HomeDeclared`, pure `apply_page`, iroh pull on ALPN `id/artifacts/1`), `directory.rs` (removal and home-declaration effects, `artifacts.jsonl` replayed on open, a removal whose directory line was lost is reconciled), the outbox `Payload::Artifact`, and `serve.rs` registering the pull protocol.
+
+Choices:
+- Pull runs over iroh on the existing endpoint, one page per request, at most `PAGE_LIMIT` (100). The home-server address is an `EndpointId` (`HomeServer.endpoint`). `world_id` is kept beside it because the audience of a declaration is a world. `url` is kept only for the outbox push.
+- A sequence gap or a fork at a held sequence number is refused. Unknown kinds are stored and not applied.
+
+Strong remove, ported as rules from p2panda-auth 0.7.1 (`src/group/resolver.rs`, MIT OR Apache-2.0). No code was copied, so no SPDX header.
+- Applied: concurrent removals of one friendship by both sides both apply and end it once (`concurrent_removals_of_one_friendship_by_both_sides_both_apply_and_end_it_once`).
+- Not applied, and why: the concurrent-op filter needs causal references. Artifacts have no such references, and friend requests are envelopes that carry none. Cycles and delegation or demotion do not exist in a pairwise friendship, and remove-then-re-add needs the same references on requests.
+
+Grants, from keyhive_core 0.6.0 (Apache-2.0): the attenuation and reachability rule is already in `world.rs`. `attenuate` requires a subset and `DELEGATE`, `effective_scopes` intersects every link and stops a delegation whose friendship has ended, and `revoke_tree` cascades. Nothing was ported. `HomeDeclared` is not a grant, so artifacts have no grant chain.
+
+No NOTICE file exists under `pkgs/id`, so none was added.
+
+Not built: pull scheduling; outbox push still uses HTTP `POST /artifact` to `HomeServer.url`; causal references on friend requests, which the concurrent-op filter needs.
+
+Flags:
+- Friend requests need a causal reference, and adding one changes the envelope protocol. This needs a decision before the concurrent-op filter can land.

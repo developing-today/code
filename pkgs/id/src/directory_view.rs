@@ -9,13 +9,14 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::artifact::{SignedArtifact, Stored};
 use crate::directory::{
     Actor, Directory, Envelope, EnvelopeKind, Level, Member, Received, Refusal, normalize_email,
     normalize_key,
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
-use crate::envelope_outbox::{Entry, Finish, Outbox, check_url};
+use crate::envelope_outbox::{Entry, Finish, Outbox, Payload, check_url};
 use crate::world::WorldScopes;
 
 /// Who is looking at the directory.
@@ -265,6 +266,18 @@ pub enum DirectoryAction {
         /// The envelope.
         envelope: Envelope,
     },
+    /// Store a signed artifact another server holds, and apply what it says.
+    ReceiveArtifact {
+        /// The artifact.
+        artifact: SignedArtifact,
+    },
+    /// Read an account's signed artifacts after a sequence number.
+    ReadArtifacts {
+        /// The account.
+        account: String,
+        /// Only artifacts with a sequence number after this one.
+        after: u64,
+    },
     /// Verify an account. Admin only.
     Verify {
         /// The account ID.
@@ -304,13 +317,13 @@ impl DirectoryAction {
     }
 }
 
-/// An envelope an action signed, for the caller to queue for another server.
+/// Something an action signed, for the caller to queue for another server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outbound {
-    /// The `/envelope` endpoint on the other server.
+    /// The endpoint on the other server.
     pub url: String,
-    /// The signed envelope.
-    pub envelope: Envelope,
+    /// The signed payload.
+    pub payload: Payload,
 }
 
 /// What became of one of the viewer's envelopes in the outbox.
@@ -325,21 +338,27 @@ pub struct DeliveryView {
 }
 
 /// The viewer's own envelopes in the outbox. The admin sees all of them.
+/// Artifacts are not listed: they are not anyone's message.
 #[must_use]
 pub fn deliveries(outbox: &Outbox, viewer: &str) -> Vec<DeliveryView> {
     outbox
         .entries()
-        .filter(|entry| match viewer {
-            "admin" => true,
-            "anonymous" => false,
-            account => entry.envelope.from == account,
+        .filter_map(|entry| {
+            let Payload::Envelope(envelope) = &entry.payload else {
+                return None;
+            };
+            let shown = match viewer {
+                "admin" => true,
+                "anonymous" => false,
+                account => envelope.from == account,
+            };
+            shown.then(|| delivery(entry, envelope))
         })
-        .map(delivery)
         .collect()
 }
 
-fn delivery(entry: &Entry) -> DeliveryView {
-    let kind = match entry.envelope.kind {
+fn delivery(entry: &Entry, envelope: &Envelope) -> DeliveryView {
+    let kind = match envelope.kind {
         EnvelopeKind::FriendRequest => "friend request",
         EnvelopeKind::FriendAccept => "friend acceptance",
     };
@@ -352,7 +371,7 @@ fn delivery(entry: &Entry) -> DeliveryView {
     };
     DeliveryView {
         kind: kind.to_owned(),
-        to: entry.envelope.to.clone(),
+        to: envelope.to.clone(),
         status,
     }
 }
@@ -784,12 +803,18 @@ pub struct DirectoryOutcome {
     /// A message to send. Never serialized: it carries a code.
     #[serde(skip)]
     pub mail: Option<Mail>,
-    /// An envelope to queue for another server. Never serialized.
+    /// Envelopes and artifacts to queue for other servers. Never serialized.
     #[serde(skip)]
-    pub outbound: Option<Outbound>,
+    pub outbound: Vec<Outbound>,
     /// What receiving an envelope did. Never serialized.
     #[serde(skip)]
     pub received: Option<Received>,
+    /// What receiving an artifact did. Never serialized.
+    #[serde(skip)]
+    pub stored: Option<Stored>,
+    /// The artifacts read by [`DirectoryAction::ReadArtifacts`]. Never serialized.
+    #[serde(skip)]
+    pub artifact_page: Option<Vec<SignedArtifact>>,
 }
 
 impl std::fmt::Debug for DirectoryOutcome {
@@ -827,8 +852,10 @@ pub fn run(
     let mut credential = None;
     let mut session = None;
     let mut mail = None;
-    let mut outbound = None;
+    let mut outbound = Vec::new();
     let mut received = None;
+    let mut stored = None;
+    let mut artifact_page = None;
     match action {
         DirectoryAction::View => {}
         DirectoryAction::SignUp { name } => {
@@ -973,7 +1000,7 @@ pub fn run(
                         &remote.audience,
                         now,
                     )?;
-                    outbound = Some(outbound_to(&remote, envelope));
+                    outbound.push(outbound_to(&remote, envelope));
                 }
             }
         }
@@ -990,16 +1017,30 @@ pub fn run(
                         &remote.audience,
                         now,
                     )?;
-                    outbound = Some(outbound_to(&remote, envelope));
+                    outbound.push(outbound_to(&remote, envelope));
                 }
             }
         }
         DirectoryAction::RemoveFriend { other } => {
             let me = signed_in(&viewer)?;
-            directory.remove_friend_as(me, &other)?;
+            match sender_credential(caller) {
+                Ok(credential) => {
+                    let artifact = directory.remove_friend(credential, &other)?;
+                    outbound.extend(artifact_outbound(directory, &other, &artifact));
+                }
+                Err(_) => {
+                    directory.remove_friend_as(me, &other)?;
+                }
+            }
         }
         DirectoryAction::Receive { envelope } => {
             received = Some(directory.receive(&envelope, world, now)?);
+        }
+        DirectoryAction::ReceiveArtifact { artifact } => {
+            stored = Some(directory.receive_artifact(&artifact)?);
+        }
+        DirectoryAction::ReadArtifacts { account, after } => {
+            artifact_page = Some(directory.artifacts().page(&account, after));
         }
         DirectoryAction::Verify { account } => {
             directory.verify_account(actor_of(&viewer)?, &account)?;
@@ -1013,6 +1054,8 @@ pub fn run(
         mail,
         outbound,
         received,
+        stored,
+        artifact_page,
     })
 }
 
@@ -1029,8 +1072,28 @@ fn sender_credential(caller: &Caller) -> Result<&str> {
 fn outbound_to(remote: &RemoteFriend, envelope: Envelope) -> Outbound {
     Outbound {
         url: format!("{}/envelope", remote.server.trim_end_matches('/')),
-        envelope,
+        payload: Payload::Envelope(envelope),
     }
+}
+
+fn artifact_outbound(
+    directory: &Directory,
+    other: &str,
+    artifact: &SignedArtifact,
+) -> Vec<Outbound> {
+    directory
+        .artifacts()
+        .declared(other)
+        .map_or_else(Vec::new, |declared| {
+            declared
+                .servers
+                .iter()
+                .map(|server| Outbound {
+                    url: format!("{}/artifact", server.url.trim_end_matches('/')),
+                    payload: Payload::Artifact(artifact.clone()),
+                })
+                .collect()
+        })
 }
 
 fn signed_in(viewer: &Viewer) -> Result<&str> {
@@ -1324,6 +1387,17 @@ mod tests {
         view(directory, viewer)
     }
 
+    fn first_outbound(outcome: DirectoryOutcome) -> Outbound {
+        outcome.outbound.into_iter().next().unwrap()
+    }
+
+    fn envelope_of(outbound: Outbound) -> (String, Envelope) {
+        match outbound.payload {
+            Payload::Envelope(envelope) => (outbound.url, envelope),
+            Payload::Artifact(_) => panic!("a friend request is sent as an envelope"),
+        }
+    }
+
     fn act(
         directory: &mut Directory,
         caller: &Caller,
@@ -1361,12 +1435,12 @@ mod tests {
             credential: Some(ann_credential),
             ..Caller::default()
         };
-        let outbound = act(&mut home, &caller, remote).unwrap().outbound.unwrap();
-        assert_eq!(outbound.url, "https://away.example/envelope");
-        assert_eq!(outbound.envelope.audience, "lobby");
-        assert_eq!(outbound.envelope.to, bo);
+        let (url, envelope) = envelope_of(first_outbound(act(&mut home, &caller, remote).unwrap()));
+        assert_eq!(url, "https://away.example/envelope");
+        assert_eq!(envelope.audience, "lobby");
+        assert_eq!(envelope.to, bo);
         assert!(matches!(
-            away.receive(&outbound.envelope, "lobby", 0).unwrap(),
+            away.receive(&envelope, "lobby", 0).unwrap(),
             Received::Applied(_)
         ));
         assert_eq!(away.pending_for(&bo).0, vec![ann]);
@@ -1383,23 +1457,23 @@ mod tests {
             credential: Some(ann_credential),
             ..Caller::default()
         };
-        let outbound = act(
-            &mut home,
-            &caller,
-            DirectoryAction::RequestFriend {
-                to: bo.clone(),
-                remote: Some(RemoteFriend {
-                    server: "https://away.example".to_owned(),
-                    audience: "lobby".to_owned(),
-                }),
-            },
-        )
-        .unwrap()
-        .outbound
-        .unwrap();
-        let id = outbound.envelope.id.clone();
+        let (url, envelope) = envelope_of(first_outbound(
+            act(
+                &mut home,
+                &caller,
+                DirectoryAction::RequestFriend {
+                    to: bo.clone(),
+                    remote: Some(RemoteFriend {
+                        server: "https://away.example".to_owned(),
+                        audience: "lobby".to_owned(),
+                    }),
+                },
+            )
+            .unwrap(),
+        ));
+        let id = envelope.id.clone();
         let mut outbox = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
-        outbox.enqueue(&outbound.url, outbound.envelope).unwrap();
+        outbox.enqueue(&url, envelope).unwrap();
 
         let shown = deliveries(&outbox, &ann);
         assert_eq!(shown.len(), 1);

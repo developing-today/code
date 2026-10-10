@@ -854,10 +854,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .accept(iroh_docs::net::ALPN, docs.clone());
     #[cfg(feature = "world")]
     let router_builder = match &world_hub {
-        Some(hub) => router_builder.accept(
-            crate::world_net::WORLD_ALPN,
-            crate::world_net::WorldProtocol::new(hub.clone()),
-        ),
+        Some(hub) => router_builder
+            .accept(
+                crate::world_net::WORLD_ALPN,
+                crate::world_net::WorldProtocol::new(hub.clone()),
+            )
+            .accept(
+                crate::artifact::ALPN,
+                crate::artifact::ArtifactProtocol::new(hub.clone()),
+            ),
         None => router_builder,
     };
     let router = router_builder.spawn();
