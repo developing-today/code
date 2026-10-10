@@ -369,6 +369,11 @@ func serviceSettings() []Setting {
 			Name: "Stale socket probe", Short: "how long a socket left by a crashed daemon is given to answer",
 		},
 		{
+			Path: "daemon.takeoverTimeout", Kind: KindDuration, Default: defaults.Str(defaults.TakeoverTimeout),
+			Scope: ScopeDaemon, Plumbing: true,
+			Name: "Takeover timeout", Short: "how long a handoff may take, and how long the old daemon waits for its successor to hang up",
+		},
+		{
 			Path: "daemon.inlineStartTimeout", Kind: KindDuration, Default: defaults.Str(defaults.InlineStartTimeout),
 			Scope: ScopeClient, Plumbing: true,
 			Name: "Inline start wait", Short: "how long an in-process daemon has to become reachable",

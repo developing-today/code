@@ -188,6 +188,8 @@
     "registryNameFallback": 10,
     "leaseTTL": "30m",
     "socketProbeTimeout": "500ms",
+    "takeoverTimeout": "15s",
+    "takeoverMaxFrame": "16MB",
     "warmTimeout": "3m",
     "refreshTimeout": "3m",
     "inlineStartTimeout": "5s",
