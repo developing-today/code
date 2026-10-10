@@ -2827,6 +2827,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_participant_with_chat_lets_the_program_say_what_it_asks() {
+        let core = WorldCore::new("caps", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let (_, token) = world
+            .issue(
+                "ann",
+                WorldScopes(
+                    WorldScopes::JOIN.bits() | WorldScopes::CHAT.bits() | WorldScopes::INPUT.bits(),
+                ),
+            )
+            .await
+            .unwrap();
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(token, b"3".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("chat.say")
+                .is_some_and(|use_| use_.allowed > 0)
+            {
+                assert_eq!(report.usage["chat.say"].denied, 0);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no allowed use recorded"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
     async fn grant_on_use_grants_what_the_program_actually_uses() {
         let (world, token) = caps_world_sync(true).await;
         world.input(token, b"1".to_vec()).await.unwrap();
@@ -3065,6 +3102,95 @@ mod tests {
             views.has_changed().is_ok_and(|changed| changed),
             "ticks stopped when a participant's capability expired"
         );
+        world.shutdown().await.unwrap();
+    }
+
+    #[derive(Debug, Default)]
+    struct TickSay {
+        ticks: u64,
+    }
+
+    impl WorldProgram for TickSay {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind
+                && event.contains("time.tick")
+            {
+                self.ticks += 1;
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let mut document = serde_json::json!({"v": 1, "subscribe": ["time.tick:20"]});
+            if self.ticks > 0 {
+                document["requests"] = serde_json::json!([{
+                    "id": format!("say-{}", self.ticks),
+                    "cap": "chat.say",
+                    "args": {"text": "tick"},
+                }]);
+            }
+            Ok(Some(document.to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn ticks_speak_for_the_world_not_for_a_present_participant() {
+        let core = WorldCore::new("tick-attribution", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(TickSay::default()));
+        world
+            .update_caps(
+                vec!["time.tick".to_owned(), "chat.say".to_owned()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let (spectator, _) = world
+            .issue(
+                "spectator",
+                WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits()),
+            )
+            .await
+            .unwrap();
+        world.presence(spectator.id, true).await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let usage = world
+                .caps_report()
+                .await
+                .unwrap()
+                .usage
+                .get("chat.say")
+                .copied()
+                .unwrap_or_default();
+            if usage.allowed > 0 {
+                assert_eq!(usage.denied, 0, "a tick was refused for a participant");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no tick ever spoke");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        world.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoking_a_grant_applies_to_capabilities_already_issued() {
+        let core = WorldCore::new("ceiling", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 0));
+        world
+            .update_caps(Vec::new(), vec!["chat.say".to_owned()])
+            .await
+            .unwrap();
+        world.input(token, b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 1));
         world.shutdown().await.unwrap();
     }
 

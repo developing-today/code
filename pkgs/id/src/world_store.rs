@@ -500,6 +500,98 @@ mod tests {
         assert!(!text.contains(secret));
     }
 
+    #[tokio::test]
+    async fn a_revoked_delegation_subtree_stays_revoked_after_restart() {
+        let dir = TempDir::new().unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        let (owner, owner_token) = svc.world().issue("ann", WorldScopes::ALL).await.unwrap();
+        let (_, child_token) = svc
+            .world()
+            .attenuate(
+                owner_token.clone(),
+                WorldScopes::JOIN.union(WorldScopes::DELEGATE),
+                CapabilityBounds::default(),
+                "bo",
+            )
+            .await
+            .unwrap();
+        let (_, grandchild_token) = svc
+            .world()
+            .attenuate(
+                child_token.clone(),
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "cy",
+            )
+            .await
+            .unwrap();
+        let (_, bob_token) = svc.world().issue("dee", WorldScopes::GUEST).await.unwrap();
+        assert!(svc.world().revoke(owner.id).await.unwrap());
+        svc.world().shutdown().await.unwrap();
+
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        for token in [owner_token, child_token, grandchild_token] {
+            assert!(svc.world().snapshot(token).await.is_err());
+        }
+        assert!(svc.world().snapshot(bob_token).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn attenuated_capability_secrets_never_reach_the_journal() {
+        let dir = TempDir::new().unwrap();
+        let (svc, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        let (owner, owner_token) = svc.world().issue("ann", WorldScopes::ALL).await.unwrap();
+        let (_, child_token) = svc
+            .world()
+            .attenuate(
+                owner_token.clone(),
+                WorldScopes::JOIN.union(WorldScopes::DELEGATE),
+                CapabilityBounds {
+                    expires_at: None,
+                    uses: Some(3),
+                },
+                "bo",
+            )
+            .await
+            .unwrap();
+        assert!(svc.world().revoke(owner.id).await.unwrap());
+        svc.world().shutdown().await.unwrap();
+
+        let journal = std::fs::read_to_string(dir.path().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("revoked"), "revocation is journaled");
+        for token in [&owner_token, &child_token] {
+            let secret = token.expose().split_once('.').unwrap().1;
+            assert!(
+                !journal.contains(secret),
+                "a capability secret was journaled"
+            );
+        }
+    }
+
     #[test]
     fn torn_final_entry_is_dropped_but_mid_file_corruption_is_refused() {
         let dir = TempDir::new().unwrap();
