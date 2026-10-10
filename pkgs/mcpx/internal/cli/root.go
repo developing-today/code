@@ -234,6 +234,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		}
 	}
 	srv.Address = a.Settings().String("daemon.address")
+	srv.ConfigArg = *cfgPath
 	srv.Origins = a.originPolicy()
 	if h := srv.Address; h != "" && h != "127.0.0.1" && h != "localhost" {
 		// Said once, loudly. The API is unauthenticated, so whoever can

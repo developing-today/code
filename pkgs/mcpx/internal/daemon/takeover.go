@@ -220,12 +220,16 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("takeover requested by a successor")
 	if err := s.handOver(uc); err != nil {
 		s.logger.Printf("takeover not completed, still serving: %v", err)
+		s.settleUpgrade(err)
 	}
 }
 
 // handOver is the old side of a takeover. It returns nil only after the
 // successor has committed and hung up.
 func (s *Server) handOver(c *net.UnixConn) error {
+	// A successor that stalls before committing must not hold the children
+	// and the listeners indefinitely; the deadline turns that into a restore.
+	_ = c.SetDeadline(time.Now().Add(s.set.Duration("daemon.takeoverTimeout")))
 	hello, extra, err := recvFrame(c)
 	closeFile(extra)
 	if err != nil {
@@ -309,6 +313,7 @@ func (s *Server) handOver(c *net.UnixConn) error {
 
 	ho.Commit()
 	s.committed.Store(true)
+	s.settleUpgrade(nil)
 	s.logger.Printf("takeover committed; handing over to the successor")
 	_ = c.SetReadDeadline(time.Now().Add(s.set.Duration("daemon.takeoverTimeout")))
 	_, _ = io.Copy(io.Discard, c)

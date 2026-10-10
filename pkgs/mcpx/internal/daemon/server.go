@@ -88,6 +88,13 @@ type Server struct {
 	committed     atomic.Bool
 	handedOff     chan struct{}
 	handedOffOnce sync.Once
+	// upgradeMu admits one upgrade at a time. upgrading is the upgrade whose
+	// successor is running, which the successor's takeover answers.
+	upgradeMu sync.Mutex
+	upgrading atomic.Pointer[upgradeRun]
+	// ConfigArg is the --config the daemon was started with, which an
+	// upgrade's successor is given too so that both load the same file.
+	ConfigArg string
 
 	// idleExit stops a daemon that nobody has used for this long and that
 	// holds no live MCP instances. Auto-started daemons set it so that a repo
@@ -489,6 +496,7 @@ func (s *Server) WarmAsync() {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST "+takeoverRoute, s.handleTakeover)
+	mux.HandleFunc("POST "+upgradeRoute, s.handleUpgrade)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	// Server-sent events, because they are plain HTTP: they go through every
 	// proxy that HTTP goes through, reconnect themselves in a browser, and
