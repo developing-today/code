@@ -135,6 +135,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	fs := newFlagSet("daemon")
 	cfgPath := fs.String("config", a.ConfigPath, "config file")
 	detached := fs.Bool("detached", false, "internal: started in the background by the CLI")
+	takeover := fs.Bool("takeover", false, "take over the running daemon's listeners and children instead of starting fresh")
 	format := fs.String("format", "", "log rendering: text, json, json-pretty, logfmt, compact, bare")
 	include := fs.String("include", "", "ambient blocks on lifecycle records: host, user, process, network, version, env, all, none")
 	logDir := fs.String("log-dir", "", "durable log directory (default: the state directory)")
@@ -271,11 +272,26 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		srv.PublishLifecycle(event, attrs)
 	}
 
-	if err := srv.Listen(a.Settings().Int("daemon.port")); err != nil {
-		return err
-	}
-	if err := sdnotify.Ready(); err != nil {
-		logger.Printf("systemd readiness: %v", err)
+	if *takeover {
+		ho, err := srv.TakeOver()
+		if err != nil {
+			return err
+		}
+		// systemd must learn the new main PID before the old one exits, or it
+		// treats the old process's exit as the service stopping.
+		if err := sdnotify.MainPID(os.Getpid()); err != nil {
+			logger.Printf("systemd readiness: %v", err)
+		}
+		if err := ho.Done(); err != nil {
+			logger.Printf("releasing the previous daemon: %v", err)
+		}
+	} else {
+		if err := srv.Listen(a.Settings().Int("daemon.port")); err != nil {
+			return err
+		}
+		if err := sdnotify.Ready(); err != nil {
+			logger.Printf("systemd readiness: %v", err)
+		}
 	}
 	defer func() {
 		stop := map[string]any{logging.KeyEvent: "daemon.stop"}
