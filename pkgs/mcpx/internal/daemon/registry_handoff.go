@@ -1,6 +1,12 @@
 package daemon
 
-import "github.com/dezren39/mcpx/internal/pool"
+import (
+	"errors"
+	"time"
+
+	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/pool"
+)
 
 // RegistryHandoff is the registry's pools taken out of service for a successor.
 type RegistryHandoff struct {
@@ -9,8 +15,9 @@ type RegistryHandoff struct {
 }
 
 // Detach takes every pool out of service. Names may share a pool, which is
-// detached once.
-func (r *Registry) Detach() (*RegistryHandoff, error) {
+// detached once. A pool with calls still in flight is waited for, up to wait,
+// since detaching it would fail those calls.
+func (r *Registry) Detach(wait time.Duration) (*RegistryHandoff, error) {
 	r.mu.RLock()
 	seen := map[*pool.Pool]bool{}
 	var pools []*pool.Pool
@@ -22,6 +29,17 @@ func (r *Registry) Detach() (*RegistryHandoff, error) {
 	}
 	r.mu.RUnlock()
 
+	deadline := time.Now().Add(wait)
+	for {
+		h, err := detachAll(pools)
+		if !errors.Is(err, pool.ErrBusy) || !time.Now().Before(deadline) {
+			return h, err
+		}
+		time.Sleep(defaults.HandoffRetryInterval)
+	}
+}
+
+func detachAll(pools []*pool.Pool) (*RegistryHandoff, error) {
 	h := &RegistryHandoff{}
 	for _, p := range pools {
 		ph, err := p.Detach()
@@ -75,16 +93,23 @@ func (r *Registry) Adopt(hs []pool.PoolHandoff) (*Adoption, error) {
 	a := &Adoption{byPool: map[*pool.Pool][]*pool.Adopted{}, seq: map[*pool.Pool]int{}}
 	for _, h := range hs {
 		ads, err := pool.Adopt(h.Instances)
+		a.all = append(a.all, ads...)
 		if err != nil {
 			a.Abort()
 			return nil, err
 		}
-		a.all = append(a.all, ads...)
 		p, ok := byID[h.PoolID]
 		if !ok {
 			a.orphans = append(a.orphans, ads...)
 			continue
 		}
+		sessions, err := p.AdoptSessions(h.Instances)
+		a.all = append(a.all, sessions...)
+		if err != nil {
+			a.Abort()
+			return nil, err
+		}
+		ads = append(ads, sessions...)
 		a.byPool[p] = append(a.byPool[p], ads...)
 		if h.Seq > a.seq[p] {
 			a.seq[p] = h.Seq

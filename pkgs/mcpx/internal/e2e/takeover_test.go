@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -247,5 +248,55 @@ func TestTakeoverWithNoDaemonToTakeOverFails(t *testing.T) {
 	}
 	if !strings.Contains(out, "no daemon to take over") {
 		t.Fatalf("the failure does not say why:\n%s", out)
+	}
+}
+
+// A client that keeps calling while the daemon is replaced must see no failed
+// call: each one is answered by the old daemon or by the successor.
+func TestTakeoverLosesNoCallsWhileAClientKeepsCalling(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.envVars = append(e.envVars, "MCPX_DAEMON_WATCH_CONFIG=false")
+	e.run("call", "demo.echo", `{"message":"warm"}`)
+
+	var (
+		mu       sync.Mutex
+		calls    int
+		failures []string
+		stop     = make(chan struct{})
+		loopDone = make(chan struct{})
+	)
+	go func() {
+		defer close(loopDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			out, err := e.try("call", "demo.echo", `{"message":"steady"}`)
+			mu.Lock()
+			calls++
+			if err != nil || !strings.Contains(out, "steady") {
+				failures = append(failures, fmt.Sprintf("%v: %s", err, out))
+			}
+			mu.Unlock()
+		}
+	}()
+
+	before := e.daemonState(t)
+	s := startSuccessor(t, e)
+	e.awaitSuccessor(t, s)
+	time.Sleep(time.Second)
+	close(stop)
+	<-loopDone
+	awaitExit(t, before.PID, "the previous daemon")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls < 5 {
+		t.Fatalf("the client made only %d calls around the takeover", calls)
+	}
+	if len(failures) > 0 {
+		t.Fatalf("%d of %d calls failed across the takeover; first: %s", len(failures), calls, failures[0])
 	}
 }

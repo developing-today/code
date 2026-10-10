@@ -142,6 +142,7 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		asks:   newAskTable(),
 		logf:   logf,
 	}
+	r.loadSessions()
 	if paths.State != "" {
 		dbPath := filepath.Join(paths.State, "embeddings.db")
 		if vIdx, err := catalog.NewVectorIndex(dbPath); err == nil {
