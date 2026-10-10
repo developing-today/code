@@ -242,3 +242,13 @@
 ---
 
 ---
+
+---
+
+## Long term: group encryption and authorization
+
+- Group key agreement so a world's documents and envelopes can be encrypted for its current members only. Candidates: keyhive's BeeKEM (pre-alpha, revisit when stable) or p2panda-encryption. Borrow ideas, do not depend on pre-stable crates without review.
+- Membership changes rotate keys. A removed member must not read content written after removal. Decide whether past content is re-keyed.
+- Encryption at rest for world stores and the outbox, and in transit between servers over iroh.
+- Authorization as signed, attenuable, revocable grants (keyhive-style). This builds on the removal and home-server artifacts. Strong-remove concurrency rules come from p2panda-auth.
+- Audit the crypto choices before any release. No hand-rolled ciphersuites.
