@@ -291,12 +291,12 @@ rec {
     };
     # Fork of the OpenCode v2 line carrying the model-routing work, rebased onto upstream `v2`.
     opencode-fork = {
-      url = "github:developing-today/opencode/v2-routing";
+      url = "github:developing-today/opencode/v2";
     };
     # Fork of OpenChamber carrying the route-pools work, built from source by
     # pkgs/openchamber-src.
     openchamber-src = {
-      url = "github:developing-today/openchamber/route-pools";
+      url = "github:developing-today/openchamber/main";
       flake = false;
     };
     # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
