@@ -1191,15 +1191,34 @@ func (p *Pool) startFor(ctx context.Context, key string) (string, error) {
 	return id, nil
 }
 
-// Close shuts the pool down permanently.
+// Close shuts the pool down permanently, closing instances after in-flight work completes.
 func (p *Pool) Close() {
+	p.CloseGraceful(defaults.HTTPShutdownGrace)
+}
+
+// CloseGraceful marks the pool closed so no new leases are acquired,
+// waits for active holders to finish their work up to the specified timeout,
+// and then closes the instances. Ongoing requests are preserved without cancellation.
+func (p *Pool) CloseGraceful(timeout time.Duration) {
 	p.mu.Lock()
 	p.closed = true
 	stop := p.instances
 	p.instances = nil
 	p.cond.Broadcast()
 	p.mu.Unlock()
+
+	deadline := time.Now().Add(timeout)
 	for _, in := range stop {
+		// Wait for ongoing holders to complete
+		for {
+			p.mu.Lock()
+			busy := in.holders > 0
+			p.mu.Unlock()
+			if !busy || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		_ = in.Client.Close()
 	}
 }

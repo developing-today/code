@@ -292,8 +292,8 @@ func TestEveryDeclaredRouteAnswersOverTheSocket(t *testing.T) {
 	c := e.socketClient(t)
 
 	for _, op := range api.Ops() {
-		if op.Streams || op.Name == "shutdown" || op.Name == "restart" || op.Name == "refresh" {
-			// Streaming never ends; the other three would take the daemon
+		if op.Streams || op.Name == "shutdown" || op.Name == "restart" || op.Name == "daemon_restart" || op.Name == "refresh" {
+			// Streaming never ends; the other four would take the daemon
 			// out from under the rest of this test.
 			continue
 		}
