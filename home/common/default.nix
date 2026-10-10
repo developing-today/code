@@ -23,6 +23,33 @@ let
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  mcpxStart = pkgs.writeShellScript "mcpx-daemon-start" ''
+    if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+      cf_token="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+      cf_gw="$(< "$HOME/.config/cloudflare/gateway-id")"
+      cf_acc="$(< "$HOME/.config/cloudflare/account-id")"
+      export OPENAI_BASE_URL="https://gateway.ai.cloudflare.com/v1/$cf_acc/$cf_gw/workers-ai/v1"
+      export OPENAI_API_KEY="$cf_token"
+      export OPENAI_MODEL="@cf/qwen/qwen2.5-coder-32b-instruct"
+    fi
+    exec ${mcpx}/bin/mcpx daemon
+  '';
+  openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
+    pw="$HOME/.config/openchamber/ui-password"
+    if [ -r "$pw" ]; then
+      export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
+    fi
+    if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+      export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+      export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+    fi
+    exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
+      --foreground \
+      --port 3000 --host 127.0.0.1
+  '';
+  # A unit is replaced at switch time only when its start command or binaries change.
+  deployKey = name: parts: "${name}:${builtins.concatStringsSep " " (map toString parts)}";
 in
 {
   wayland.windowManager.hyprland = {
@@ -563,19 +590,7 @@ in
     Service = {
       Type = "notify";
       NotifyAccess = "all";
-      ExecStart = toString (
-        pkgs.writeShellScript "mcpx-daemon-start" ''
-          if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            cf_token="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-            cf_gw="$(< "$HOME/.config/cloudflare/gateway-id")"
-            cf_acc="$(< "$HOME/.config/cloudflare/account-id")"
-            export OPENAI_BASE_URL="https://gateway.ai.cloudflare.com/v1/$cf_acc/$cf_gw/workers-ai/v1"
-            export OPENAI_API_KEY="$cf_token"
-            export OPENAI_MODEL="@cf/qwen/qwen2.5-coder-32b-instruct"
-          fi
-          exec ${mcpx}/bin/mcpx daemon
-        ''
-      );
+      ExecStart = "${mcpxStart}";
       ExecReload = "${mcpx}/bin/mcpx reload";
       Restart = "always";
       RestartSec = 3;
@@ -583,11 +598,21 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # A switch loads the new mcpx by handing the running daemon over to it, with
-  # the MCP children and the listener passed along. Falls back to a plain start
-  # when no daemon is running.
-  home.activation.mcpxUpgrade = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
-    run ${mcpx}/bin/mcpx upgrade || run systemctl --user start mcpx.service
+  # A switch that changes mcpx hands the running daemon over to the new binary,
+  # with the MCP children and the listener passed along. Unchanged mcpx is left
+  # alone. Falls back to a plain start when no daemon is running.
+  home.activation.mcpxDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    state="''${XDG_STATE_HOME:-$HOME/.local/state}/mcpx/deployed"
+    key='${deployKey "mcpx" [ mcpxStart mcpx ]}'
+    if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
+      if systemctl --user is-active --quiet mcpx.service; then
+        run ${mcpx}/bin/mcpx upgrade || run systemctl --user restart mcpx.service
+      else
+        run systemctl --user start mcpx.service
+      fi
+      run mkdir -p "$(dirname "$state")"
+      run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
+    fi
   '';
 
   # Watch .mcpx.json to hot-reload the standing mcpx daemon seamlessly.
@@ -611,30 +636,27 @@ in
     };
   };
 
+  # systemd holds the listener across restarts, so connections made during a
+  # restart queue for the new process instead of being refused.
+  systemd.user.sockets.openchamber = {
+    Unit.Description = "OpenChamber listener";
+    Socket.ListenStream = "127.0.0.1:3000";
+    Install.WantedBy = [ "sockets.target" ];
+  };
+
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
-      After = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      After = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" "openchamber.socket" ];
       Wants = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      Requires = [ "openchamber.socket" ];
     };
     Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "openchamber-serve" ''
-          pw="$HOME/.config/openchamber/ui-password"
-          if [ -r "$pw" ]; then
-            export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
-          fi
-          if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-            export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-          fi
-          exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
-            --foreground \
-            --port 3000 --host 127.0.0.1
-        ''
-      );
+      ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+      # Stopping OpenChamber leaves its managed OpenCode running; the next
+      # OpenChamber adopts it, so sessions survive a restart.
+      KillMode = "process";
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
@@ -651,6 +673,20 @@ in
     };
     Install.WantedBy = [ "default.target" ];
   };
+
+  # Restart OpenChamber when its start command or the OpenCode binary changes.
+  # OpenChamber then hands its OpenCode over to the new binary itself.
+  home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
+    key='${deployKey "openchamber" [ openchamberStart inputs.opencode.packages.${system}.opencode ]}'
+    if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
+      if systemctl --user is-active --quiet openchamber.service; then
+        run systemctl --user restart openchamber.service
+      fi
+      run mkdir -p "$(dirname "$state")"
+      run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
+    fi
+  '';
 
   # T3 Code's backend, run headless over the tailnet.
   #
