@@ -37,4 +37,17 @@ So the file scope is implemented as a stored, journaled, checked policy function
 
 ## Results
 
-See the results section below once implementation is complete.
+Implemented as specified in the request, with the choices above.
+
+- **Write gate.** `cross_world_allowed(access, reader, owner, owner_write)`: reads need both worlds unisolated; writes also need the target's cross-world write setting on. Truth table tested.
+- **Force.** Admin token only. Refused for moderators (actor and transport) and for Isolated worlds. Moderators cannot turn a forced setting off.
+- **File scope.** `Confined` (default) or `Unrestricted`. Isolated worlds are read-only unless the admin override is on. Scope set by moderator or admin; override admin only. Journaled, replayed on restart, kept by checkpoint.
+- **CLI.** `id world cross-world-write`, `force-cross-world-write`, `file-scope`.
+- **Tests.** `cargo test --lib --features world`: 693 passed, 3 failed. The 3 failures are the known `world_compile` tests (`examples/roc-world` lacks `targets/wasm32/host.wasm`), unchanged by this work. Added tests cover the write gate truth table, write-setting replay, force semantics, Isolated refusal, file-access truth table, a restart round trip, and the bad admin token refusal for force and override.
+- **Format.** `cargo fmt --check` clean.
+- **Clippy.** `-D warnings` already fails on the base tree (crate-wide pedantic lints). On added lines the only remaining lints are four `map_err(|_| ...)` sites that copy the existing pattern (origin/main has 17).
+
+Gaps:
+- **File scope has no consumer.** `WorldPolicy::file_allowed` is a checked function that no caller invokes yet. The native Landlock sandbox (`world_native.rs`) is unchanged; it already grants no file access beyond the worker binary.
+- **Transport coverage.** Only the admin-token refusal is tested over the session frames; there is no signed-moderator transport test for the new frames.
+- **CLI integration.** No additions to `tests/cli_integration.rs`.
