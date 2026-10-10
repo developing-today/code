@@ -1555,6 +1555,10 @@ enum WorldCommand {
         action: crate::directory_view::DirectoryAction,
         reply: oneshot::Sender<Result<crate::directory_view::DirectoryOutcome>>,
     },
+    ApplyDirectory {
+        entry: crate::directory::DirectoryEntry,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Revoke {
         participant_id: u64,
         reply: oneshot::Sender<bool>,
@@ -2231,6 +2235,9 @@ impl WorldActor {
                 );
                 let _ = reply.send(result);
             }
+            WorldCommand::ApplyDirectory { entry, reply } => {
+                let _ = reply.send(self.core.directory_mut().apply(&entry));
+            }
             WorldCommand::Revoke {
                 participant_id,
                 reply,
@@ -2889,6 +2896,21 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped directory response")?
+    }
+
+    /// Apply a change prepared by a remote friend action, once its envelope is queued.
+    pub async fn apply_directory_entry(
+        &self,
+        entry: crate::directory::DirectoryEntry,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ApplyDirectory { entry, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped directory apply response")?
     }
 
     /// Revoke an active capability and everything delegated from it.

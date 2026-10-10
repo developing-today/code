@@ -38,13 +38,15 @@ const STYLE: &str = "body{font-family:system-ui,sans-serif;max-width:52rem;margi
 
 const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 
+pub(super) const ENVELOPE_PATH: &str = "/envelope";
+
 pub(super) fn explore_routes() -> Router<WorldWebState> {
     Router::new()
         .route("/explore", get(page_handler))
         .route("/explore/login", post(login_handler))
         .route("/explore/act", post(act_handler))
         .route(
-            "/envelope",
+            ENVELOPE_PATH,
             post(envelope_handler).layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES)),
         )
 }
@@ -687,10 +689,31 @@ mod tests {
     fn push(envelope: &Envelope) -> Request<Body> {
         Request::builder()
             .method("POST")
-            .uri("/envelope")
+            .uri(ENVELOPE_PATH)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(serde_json::to_vec(envelope).unwrap()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_web_token_does_not_block_peer_envelopes_but_guards_other_routes() {
+        let (app, bo) = lobby_with_bo().await;
+        let sec = std::sync::Arc::new(crate::web::security::WebSecurity {
+            token: Some("s3cret".to_owned()),
+            ..Default::default()
+        });
+        let app = app.layer(axum::middleware::from_fn_with_state(
+            sec,
+            crate::web::security::guard,
+        ));
+
+        let envelope = sent_from_home(&bo, "lobby", crate::world::unix_ms());
+        let (status, _, body) = send(&app, push(&envelope)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("applied"), "{body}");
+
+        let (status, _, _) = send(&app, get("/explore", None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

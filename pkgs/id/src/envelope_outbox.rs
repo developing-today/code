@@ -84,6 +84,9 @@ enum Record {
         outcome: Finish,
         detail: Option<String>,
     },
+    Withdrawn {
+        id: String,
+    },
 }
 
 /// The queue, keyed by envelope ID.
@@ -167,6 +170,22 @@ impl Outbox {
     #[must_use]
     pub fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.get(id)
+    }
+
+    /// Removes an envelope that was queued but never attempted, as if it had
+    /// never been queued.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `id` is not queued, has been attempted, or the record cannot be
+    /// written.
+    pub fn withdraw(&mut self, id: &str) -> Result<()> {
+        let entry = self.entries.get(id).context("envelope is not queued")?;
+        ensure!(
+            entry.attempts == 0 && entry.finish.is_none(),
+            "envelope {id} was already attempted"
+        );
+        self.commit(Record::Withdrawn { id: id.to_owned() })
     }
 
     /// Records the outcome of an attempt made at `now`.
@@ -266,6 +285,12 @@ impl Outbox {
                 entry.attempts = attempts;
                 entry.finish = Some(outcome);
                 entry.last_error = detail;
+            }
+            Record::Withdrawn { id } => {
+                ensure!(
+                    self.entries.remove(&id).is_some(),
+                    "outbox record withdraws unknown envelope {id}"
+                );
             }
         }
         Ok(())
@@ -510,6 +535,23 @@ mod tests {
     }
 
     #[test]
+    fn a_withdrawn_envelope_is_gone_and_stays_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox
+            .enqueue("https://bo.example/envelope", envelope("e1"))
+            .unwrap();
+        outbox.withdraw("e1").unwrap();
+        assert!(outbox.entry("e1").is_none());
+        assert!(outbox.due(u64::MAX).is_empty());
+        assert!(outbox.withdraw("e1").is_err());
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert!(reopened.entry("e1").is_none());
+    }
+
+    #[test]
     fn a_torn_last_line_is_dropped_and_not_mixed_into_the_next_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
@@ -634,5 +676,36 @@ mod tests {
             Some(Finish::Delivered)
         );
         assert_eq!(reopened.due(NOW + MINUTE), vec!["e2".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn an_envelope_queued_for_a_closed_world_is_delivered_when_it_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, request) = stub("200 OK").await;
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&url, envelope("e1")).unwrap();
+        drop(outbox);
+
+        let (_service, _) = crate::world_store::open_world(
+            dir.path(),
+            "club",
+            crate::world::WorldLimits::default(),
+            crate::world_limits::RuntimeLimits::default(),
+            |handle| crate::world_session::WorldService::new(handle, None),
+        )
+        .await
+        .unwrap();
+        assert!(request.await.unwrap().starts_with("POST /envelope "));
+
+        let mut recorded = false;
+        for _ in 0..200 {
+            recorded = fs::read_to_string(path(&dir))
+                .is_ok_and(|text| text.contains("\"outcome\":\"delivered\""));
+            if recorded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(recorded, "the delivery was not recorded");
     }
 }

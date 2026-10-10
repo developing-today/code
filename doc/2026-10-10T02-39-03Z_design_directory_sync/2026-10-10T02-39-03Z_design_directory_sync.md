@@ -483,3 +483,24 @@ Verification:
 - `cargo test --lib --features "world web"`, with `web/dist` copied read-only from the main checkout and deleted afterwards: 881 pass. The same 3 fail.
 - `cargo fmt --check`: clean. No dependencies were added.
 - `cargo clippy --all-targets --features "world web" -- -D warnings`, run with the rustup 1.97.0 toolchain because the system cargo mismatches. It reports 160 lint errors across the crate, all in code this change did not touch, such as a renamed lint and wildcard `map_err`. None is on a changed line.
+
+## Implementation: envelope follow-ups
+
+Decisions:
+- **Crash window.** The remote request or accept is signed and checked in the actor (`prepare_*`), without applying. The envelope is queued under the outbox lock, then the change is applied through a new actor command. The lock is held across the apply, so a flush cannot send early. A refused apply withdraws the queued envelope (new `Record::Withdrawn`). A failed withdraw leaves a stray queued envelope, logged as an error. A torn outbox line from a partial write is still possible (pre-existing).
+- **Web token.** Only `POST /envelope` is exempt, matched by method and path in `guard`. Peer servers post signed envelopes without a session. Every other route still needs the token. The exemption is path-specific and stays so until the iroh transport replaces this route.
+- **Flush on open.** Added in `open_world`: a world that opens with undelivered entries flushes once in the background. The 30 s loop is unchanged. A flush and the loop may both send one envelope. The recipient is idempotent and refuses the second as a duplicate, so the second record is only a warning.
+- **Remote credential (item 4).** Local explorer actions take no credential field. Only remote friend forms and sign-in do. So this is not an existing pattern for local actions. Nothing changed. Still open: a signing session in place of a pasted secret.
+
+Deferred: envelope transport moves to iroh (user direction); HTTP `/envelope` is not improved further.
+
+Tests:
+- Crash window: a failing outbox write leaves no applied request and returns an error. A refused repeat request queues no second envelope.
+- Withdraw: a withdrawn envelope stays gone across replay.
+- Web token: with a token set, `POST /envelope` is accepted without it. `GET /explore` without it returns 401.
+- Idle eviction: an envelope queued for a closed world is delivered after reopen (TcpListener stub).
+
+Verification:
+- `cargo test --lib --features world`: 700 pass. The 3 failures are `world_compile`, which needs the missing `host.wasm`.
+- `cargo test --lib --features "world web"` with `web/dist` copied read-only and removed afterwards: 899 pass, the same 3 fail.
+- `cargo fmt --check`: clean. Clippy (rustup 1.97.0): no warnings on changed lines. No dependencies added.
