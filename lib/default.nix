@@ -536,9 +536,22 @@ let
       publicRecipes = pkgs.lib.filterAttrs (
         name: recipe: !(recipe.private or false) && name != "default"
       ) justRecipes.recipes;
+
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
     in
     {
-      apps = pkgs.lib.mapAttrs mkRecipeApp publicRecipes;
+      packages = {
+        inherit mcpx;
+      };
+      apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
+        mcpx = {
+          type = "app";
+          program = "${mcpx}/bin/mcpx";
+          meta = commonMeta // {
+            description = "mcpx MCP gateway and Code Mode execution runner";
+          };
+        };
+      };
     }
   );
 
@@ -887,6 +900,17 @@ let
       ))
     ];
 
+  make-mcpx-overlay = {
+    overlays = {
+      default = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+      mcpx = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+    };
+  };
+
   _self = merge [
     lib
     {
@@ -930,6 +954,7 @@ let
         make-clan
         make-root-apps
         make-id
+        make-mcpx-overlay
         ;
     }
   ];

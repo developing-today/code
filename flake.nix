@@ -21,6 +21,7 @@ rec {
       lib.make-clan
       lib.make-root-apps
       lib.make-id
+      lib.make-mcpx-overlay
     ];
   inputs = {
     nixgl = {
