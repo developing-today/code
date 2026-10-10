@@ -566,19 +566,27 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "mcpx-daemon-start" ''
           if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            cf_token="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-            cf_gw="$(< "$HOME/.config/cloudflare/gateway-id")"
-            cf_acc="$(< "$HOME/.config/cloudflare/account-id")"
-            export OPENAI_BASE_URL="https://gateway.ai.cloudflare.com/v1/$cf_acc/$cf_gw/workers-ai/v1"
-            export OPENAI_API_KEY="$cf_token"
-            export OPENAI_MODEL="@cf/qwen/qwen2.5-coder-32b-instruct"
+            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
           fi
-          exec ${mcpx}/bin/mcpx daemon
+          exec ${mcpx}/bin/mcpx daemon \
+            --repair-provider=command \
+            --repair-command="${inputs.opencode.packages.${system}.opencode}/bin/opencode run"
         ''
       );
       ExecReload = "${mcpx}/bin/mcpx reload";
       Restart = "always";
       RestartSec = 3;
+      Environment = [
+        "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+        "PATH=${
+          lib.makeBinPath [
+            inputs.opencode.packages.${system}.opencode
+            claude-code
+            pkgs.git
+            pkgs.openssh
+          ]
+        }"
+      ];
     };
     Install.WantedBy = [ "default.target" ];
   };
