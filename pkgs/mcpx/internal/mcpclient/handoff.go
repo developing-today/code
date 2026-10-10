@@ -18,36 +18,37 @@ import (
 // StdioHandoff is a stdio child's identity and pipes, enough for another
 // process to take the child over without restarting it.
 type StdioHandoff struct {
-	PID int
+	PID int `json:"pid"`
 	// StartTime is the child's start time from /proc. With the pid it names
 	// one process, so a recycled pid is not mistaken for the child.
-	StartTime uint64
-	Label     string
+	StartTime uint64 `json:"startTime"`
+	Label     string `json:"label"`
 	// Stdin, Stdout and Stderr are this process's ends of the child's pipes.
-	Stdin, Stdout, Stderr *os.File
+	// They travel as file descriptors, not in the JSON.
+	Stdin, Stdout, Stderr *os.File `json:"-"`
 	// Unread is output read from the child but not yet framed.
-	Unread []byte
+	Unread []byte `json:"unread,omitempty"`
 }
 
 // Session is what a client learned during its handshake. A successor resumes
 // the session with it rather than handshaking again, which would be a second
 // session as far as the child is concerned.
 type Session struct {
-	Era            Era
-	Negotiated     string
-	ServerInfo     ServerInfo
-	Capabilities   map[string]json.RawMessage
-	Instructions   string
-	Source         string
-	CachedEraWrong bool
-	MetaVersion    string
-	LogLevel       string
+	Era            Era                        `json:"era"`
+	Negotiated     string                     `json:"negotiated,omitempty"`
+	ServerInfo     ServerInfo                 `json:"serverInfo"`
+	Capabilities   map[string]json.RawMessage `json:"capabilities,omitempty"`
+	Instructions   string                     `json:"instructions,omitempty"`
+	Source         string                     `json:"source,omitempty"`
+	CachedEraWrong bool                       `json:"cachedEraWrong,omitempty"`
+	MetaVersion    string                     `json:"metaVersion,omitempty"`
+	LogLevel       string                     `json:"logLevel,omitempty"`
 }
 
 // Handoff is a stdio session in transit between processes.
 type Handoff struct {
-	Stdio   *StdioHandoff
-	Session Session
+	Stdio   *StdioHandoff `json:"stdio"`
+	Session Session       `json:"session"`
 }
 
 // adoptPollInterval is how often an adopted child's liveness is checked. The
@@ -205,12 +206,19 @@ func (c *Client) Detach() (*Handoff, error) {
 	return &Handoff{Stdio: stdio, Session: c.session()}, nil
 }
 
-// Reattach restarts the read loop after a Detach that was not handed on.
+// Reattach restarts the read loop after a Detach that was not handed on. The
+// listen stream, if any, never stopped: it was waiting on the loop's answer.
 func (c *Client) Reattach() {
 	c.t.(*StdioTransport).Reattach()
 	c.detaching.Store(false)
 	c.loopDone = make(chan struct{})
 	go c.recvLoop()
+}
+
+// Release answers what is in flight and marks the client closed without
+// touching the transport, for the process that handed the child on.
+func (c *Client) Release() {
+	c.fail(errors.New("session handed to a successor process"))
 }
 
 func (c *Client) session() Session {
@@ -230,7 +238,9 @@ func (c *Client) session() Session {
 }
 
 // Resume wraps a transport whose session a predecessor established, without
-// a handshake. o carries the same hooks a new session would be given.
+// a handshake. o carries the same hooks a new session would be given. Nothing
+// reads the transport until Activate, so a successor that fails before it
+// commits can hand the pipes back with no bytes consumed.
 func Resume(t Transport, s Session, o Options) *Client {
 	c := &Client{
 		t:              t,
@@ -260,9 +270,14 @@ func Resume(t Transport, s Session, o Options) *Client {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
 	c.modern.Store(s.Era == EraModern)
+	return c
+}
+
+// Activate starts the read loop of a resumed session, and its listen stream
+// when the session is modern. Call it once, after the handoff has committed.
+func (c *Client) Activate() {
 	go c.recvLoop()
-	if s.Era == EraModern {
+	if c.modern.Load() {
 		c.startListen()
 	}
-	return c
 }

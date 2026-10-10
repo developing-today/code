@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -95,4 +96,47 @@ func TestAdoptRefusesAChildThatEnded(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("adopting an ended child: %v", err)
 	}
+}
+
+func TestClientHandoffCommitsOnlyWhenActivated(t *testing.T) {
+	const responder = `sed -u 's/.*"id":\([0-9]*\).*/{"jsonrpc":"2.0","id":\1,"result":{}}/'`
+	tr, err := NewStdio(StdioOptions{Command: "sh", Args: []string{"-c", responder}, InheritEnv: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ping := json.RawMessage(`{}`)
+
+	first := Resume(tr, Session{Era: EraLegacy}, Options{})
+	first.Activate()
+	if _, err := first.Request(ctx, "ping", ping); err != nil {
+		t.Fatalf("before handoff: %v", err)
+	}
+
+	h, err := first.Detach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Reattach()
+	if _, err := first.Request(ctx, "ping", ping); err != nil {
+		t.Fatalf("after a reattach that was not handed on: %v", err)
+	}
+
+	h, err = first.Detach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	adopted, err := AdoptStdio(*h.Stdio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := Resume(adopted, h.Session, Options{})
+	second.Activate()
+	if _, err := second.Request(ctx, "ping", ping); err != nil {
+		t.Fatalf("after adoption: %v", err)
+	}
+	_ = second.Close()
+	<-adopted.exited
 }
