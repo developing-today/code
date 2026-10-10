@@ -1092,6 +1092,9 @@ func (s *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
 	}()
 }
 
+// execSelf is replaced in tests: a real exec re-runs the test binary.
+var execSelf = syscall.Exec
+
 func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
 	go func() {
@@ -1124,7 +1127,7 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 			if s.logger != nil {
 				s.logger.Printf("re-executing daemon: %s", execPath)
 			}
-			if execErr := syscall.Exec(execPath, os.Args, os.Environ()); execErr != nil && s.logger != nil {
+			if execErr := execSelf(execPath, os.Args, os.Environ()); execErr != nil && s.logger != nil {
 				s.logger.Printf("re-exec failed: %v", execErr)
 			}
 		}
