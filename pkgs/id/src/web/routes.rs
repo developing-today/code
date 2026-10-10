@@ -257,6 +257,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(
             super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
                 hub: state.world.clone(),
+                cookie_secure: state.cookie_secure,
             }),
         )
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))

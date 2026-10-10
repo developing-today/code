@@ -42,6 +42,7 @@ pub(super) fn explore_routes() -> Router<WorldWebState> {
 }
 
 async fn page_handler(State(state): State<WorldWebState>, headers: HeaderMap) -> Response {
+    let secure = state.cookie_secure;
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -51,7 +52,7 @@ async fn page_handler(State(state): State<WorldWebState>, headers: HeaderMap) ->
     };
     match run(&hub, caller, DirectoryAction::View).await {
         Ok(outcome) => page(StatusCode::OK, &outcome.view, &[], None),
-        Err(error) => failure(&error),
+        Err(error) => failure(&error, secure),
     }
 }
 
@@ -59,6 +60,7 @@ async fn login_handler(
     State(state): State<WorldWebState>,
     Form(fields): Form<BTreeMap<String, String>>,
 ) -> Response {
+    let secure = state.cookie_secure;
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -70,6 +72,7 @@ async fn login_handler(
         Some(_) => {
             return failure(
                 &Refusal::Unauthenticated("that admin token is not right".to_owned()).into(),
+                secure,
             );
         }
         None => Caller::from_secret(fields.get("credential").map_or("", String::as_str)),
@@ -78,11 +81,11 @@ async fn login_handler(
         Ok(outcome) => match outcome.session {
             Some(token) => with_cookie(
                 (StatusCode::SEE_OTHER, [(header::LOCATION, COOKIE_PATH)]).into_response(),
-                Some(session_cookie(&token)),
+                Some(session_cookie(&token, secure)),
             ),
-            None => failure(&anyhow::anyhow!("no session was opened")),
+            None => failure(&anyhow::anyhow!("no session was opened"), secure),
         },
-        Err(error) => failure(&error),
+        Err(error) => failure(&error, secure),
     }
 }
 
@@ -91,12 +94,13 @@ async fn act_handler(
     headers: HeaderMap,
     Form(fields): Form<BTreeMap<String, String>>,
 ) -> Response {
+    let secure = state.cookie_secure;
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let action = match action_from_fields(&fields) {
         Ok(action) => action,
-        Err(error) => return failure(&error),
+        Err(error) => return failure(&error, secure),
     };
     let signs_out = matches!(action, DirectoryAction::SignOut);
     let mailed_to = match &action {
@@ -111,10 +115,13 @@ async fn act_handler(
     };
     let outcome = match run(&hub, caller, action).await {
         Ok(outcome) => outcome,
-        Err(error) => return failure(&error),
+        Err(error) => return failure(&error, secure),
     };
     let mut notes = Vec::new();
-    let mut cookie = outcome.session.as_deref().map(session_cookie);
+    let mut cookie = outcome
+        .session
+        .as_deref()
+        .map(|token| session_cookie(token, secure));
     if let Some(credential) = &outcome.credential {
         notes.push(format!("Credential, shown once: {credential}"));
         if let Ok(signed_in) = run(
@@ -124,11 +131,14 @@ async fn act_handler(
         )
         .await
         {
-            cookie = signed_in.session.as_deref().map(session_cookie);
+            cookie = signed_in
+                .session
+                .as_deref()
+                .map(|token| session_cookie(token, secure));
         }
     }
     if signs_out {
-        cookie = Some(clear_cookie());
+        cookie = Some(clear_cookie(secure));
     }
     if let (true, Some(address)) = (outcome.mailed, mailed_to) {
         notes.push(format!("A code was mailed to {address}."));
@@ -166,15 +176,23 @@ fn session_of(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn session_cookie(token: &str) -> String {
+fn session_cookie(token: &str, secure: bool) -> String {
     format!(
-        "{COOKIE}={token}; Path={COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age={}",
-        SESSION_TTL_MS / 1000
+        "{COOKIE}={token}; Path={COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age={}{}",
+        SESSION_TTL_MS / 1000,
+        secure_attribute(secure)
     )
 }
 
-fn clear_cookie() -> String {
-    format!("{COOKIE}=; Path={COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=0")
+fn clear_cookie(secure: bool) -> String {
+    format!(
+        "{COOKIE}=; Path={COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=0{}",
+        secure_attribute(secure)
+    )
+}
+
+const fn secure_attribute(secure: bool) -> &'static str {
+    if secure { "; Secure" } else { "" }
 }
 
 fn with_cookie(mut response: Response, cookie: Option<String>) -> Response {
@@ -203,9 +221,9 @@ fn page(
     respond(status, &body, cookie)
 }
 
-fn failure(error: &anyhow::Error) -> Response {
+fn failure(error: &anyhow::Error, secure: bool) -> Response {
     let status = refusal_status(error);
-    let cookie = (status == StatusCode::UNAUTHORIZED).then(clear_cookie);
+    let cookie = (status == StatusCode::UNAUTHORIZED).then(|| clear_cookie(secure));
     let body = format!(
         "<h1>Directory</h1><p class=\"error\">{}</p><p><a href=\"{COOKIE_PATH}\">Back to the directory</a></p>",
         html_escape(&format!("{error:#}"))
@@ -518,9 +536,16 @@ mod tests {
     use tower::ServiceExt as _;
 
     fn app(admin: Option<&str>) -> Router {
+        app_with_cookie_secure(admin, false)
+    }
+
+    fn app_with_cookie_secure(admin: Option<&str>, cookie_secure: bool) -> Router {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let hub = WorldHub::single(WorldService::new(world, admin.map(str::to_owned)));
-        explore_routes().with_state(WorldWebState { hub: Some(hub) })
+        explore_routes().with_state(WorldWebState {
+            hub: Some(hub),
+            cookie_secure,
+        })
     }
 
     fn get(path: &str, cookie: Option<&str>) -> Request<Body> {
@@ -558,6 +583,14 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
             .map(str::to_owned)
+    }
+
+    fn full_set_cookie(headers: &HeaderMap) -> String {
+        headers[header::SET_COOKIE].to_str().unwrap().to_owned()
+    }
+
+    fn attributes(set_cookie: &str) -> Vec<&str> {
+        set_cookie.split(';').skip(1).map(str::trim).collect()
     }
 
     fn credential_in(body: &str) -> String {
@@ -613,6 +646,53 @@ mod tests {
                 .unwrap()
                 .contains("Max-Age=0")
         );
+    }
+
+    #[tokio::test]
+    async fn explorer_cookies_are_http_only_strict_and_not_secure_by_default() {
+        let app = app(None);
+        let (_, headers, _) =
+            send(&app, post("/explore/act", "action=sign_up&name=Cy", None)).await;
+        let session = set_cookie(&headers).unwrap();
+        let cookie = full_set_cookie(&headers);
+        let attrs = attributes(&cookie);
+        assert!(attrs.contains(&"HttpOnly") && attrs.contains(&"SameSite=Strict"));
+        assert!(!attrs.contains(&"Secure"), "{attrs:?}");
+
+        let (_, headers, _) = send(
+            &app,
+            post("/explore/act", "action=sign_out", Some(&session)),
+        )
+        .await;
+        let cookie = full_set_cookie(&headers);
+        let attrs = attributes(&cookie);
+        assert!(attrs.contains(&"HttpOnly") && attrs.contains(&"Max-Age=0"));
+        assert!(!attrs.contains(&"Secure"), "{attrs:?}");
+    }
+
+    #[tokio::test]
+    async fn explorer_cookies_are_secure_when_https_is_terminated_in_front() {
+        let app = app_with_cookie_secure(Some("s3cret"), true);
+        let (status, headers, _) =
+            send(&app, post("/explore/login", "admin_token=s3cret", None)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let cookie = full_set_cookie(&headers);
+        let attrs = attributes(&cookie);
+        assert!(attrs.contains(&"HttpOnly") && attrs.contains(&"SameSite=Strict"));
+        assert!(attrs.contains(&"Secure"), "{attrs:?}");
+        let session = set_cookie(&headers).unwrap();
+
+        let (_, headers, _) = send(
+            &app,
+            post("/explore/act", "action=sign_out", Some(&session)),
+        )
+        .await;
+        assert!(attributes(&full_set_cookie(&headers)).contains(&"Secure"));
+
+        let (status, headers, _) =
+            send(&app, post("/explore/login", "admin_token=wrong", None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(attributes(&full_set_cookie(&headers)).contains(&"Secure"));
     }
 
     #[tokio::test]

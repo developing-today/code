@@ -284,6 +284,8 @@ pub struct ServeOptions {
     pub bind: std::net::IpAddr,
     /// Token required by the web interface.
     pub web_token: Option<String>,
+    /// Mark the directory explorer's session cookies `Secure` (HTTPS in front).
+    pub web_cookie_secure: bool,
     /// Host a multiplayer world (durable unless `ephemeral`).
     pub world: bool,
     /// Admin secret required to mint world guest capabilities.
@@ -671,6 +673,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         iroh_port,
         bind,
         web_token,
+        web_cookie_secure,
         world,
         world_admin_token,
         world_module,
@@ -1012,6 +1015,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             identity_db_path,
             crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
             world_hub.clone(),
+            web_cookie_secure,
         )
         .await?;
         let actual_port = web_port.unwrap_or(port);
@@ -1033,6 +1037,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             status_err!(
                 "warning: the web UI is bound to {bind} without --web-token; \
                  anyone who can reach port {actual_port} can read and modify files"
+            );
+        }
+        if world_hub.is_some() && !bind.is_loopback() && !web_cookie_secure {
+            status_err!(
+                "warning: the admin sign-in form is served over plain HTTP on {bind}; \
+                 its token and session cookie travel in clear unless HTTPS is terminated \
+                 in front (then pass --web-cookie-secure) or the UI is bound to loopback"
             );
         }
         Some(tokio::spawn(async move {

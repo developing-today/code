@@ -40,6 +40,8 @@ pub(super) struct InviteRequest {
 pub struct WorldWebState {
     /// The hosted worlds, when enabled.
     pub hub: Option<WorldHub>,
+    /// Mark the directory explorer's session cookies `Secure`.
+    pub cookie_secure: bool,
 }
 
 /// Routes for the world session bridge; merge into any `Router<S>` with
@@ -336,6 +338,7 @@ mod tests {
             hub: world.map(|world| {
                 WorldHub::single(WorldService::new(world, admin_token.map(str::to_owned)))
             }),
+            cookie_secure: false,
         })
     }
 
@@ -755,6 +758,7 @@ mod tests {
         ));
         let router = world_routes().with_state(WorldWebState {
             hub: Some(WorldHub::single(service)),
+            cookie_secure: false,
         });
 
         let signed = body_json(
@@ -937,7 +941,10 @@ mod tests {
             "lobby",
             crate::world_hub::HubLimits::default(),
         );
-        let router = world_routes().with_state(WorldWebState { hub: Some(hub) });
+        let router = world_routes().with_state(WorldWebState {
+            hub: Some(hub),
+            cookie_secure: false,
+        });
 
         let invite = |world: Option<&str>, auth: &str| {
             let body = match world {
@@ -1063,6 +1070,7 @@ mod tests {
             .with_blob_store(blobs.clone());
         let addr = serve(world_routes().with_state(WorldWebState {
             hub: Some(WorldHub::single(service)),
+            cookie_secure: false,
         }))
         .await;
         let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
