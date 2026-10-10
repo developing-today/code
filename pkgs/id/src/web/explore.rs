@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use axum::{
     Form, Router,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -15,8 +15,11 @@ use crate::directory::{Member, Refusal};
 use crate::directory_auth::{Caller, SESSION_TTL_MS};
 use crate::directory_view::{
     AccountView, DeliveryView, DirectoryAction, DirectoryOutcome, DirectoryView, GroupView,
-    action_from_fields, level_name,
+    account_labels, action_from_fields, level_name,
 };
+use crate::invite::Invite;
+use crate::petname::Label;
+use crate::qr;
 use crate::world_hub::{ResolveError, WorldHub};
 
 use super::security::secure_attribute;
@@ -33,6 +36,7 @@ const STYLE: &str = "body{font-family:system-ui,sans-serif;max-width:52rem;margi
                      form{border:1px solid #888;padding:.5rem .75rem;margin:.75rem 0}\
                      label{display:block;margin:.25rem 0}\
                      .note{background:#eef;padding:.5rem}\
+                     .alleged{font-style:italic;color:#8a5a00}\
                      .error{background:#fee;padding:.5rem}";
 
 pub(super) fn explore_routes() -> Router<WorldWebState> {
@@ -40,6 +44,7 @@ pub(super) fn explore_routes() -> Router<WorldWebState> {
         .route("/explore", get(page_handler))
         .route("/explore/login", post(login_handler))
         .route("/explore/act", post(act_handler))
+        .route("/invite", get(invite_handler))
 }
 
 async fn page_handler(State(state): State<WorldWebState>, headers: HeaderMap) -> Response {
@@ -262,7 +267,12 @@ fn view_html(view: &DirectoryView) -> String {
     let accounts: String = if view.accounts.is_empty() {
         "<p>(none)</p>".to_owned()
     } else {
-        let items: String = view.accounts.iter().map(account_html).collect();
+        let items: String = view
+            .accounts
+            .iter()
+            .zip(account_labels(&view.accounts))
+            .map(|(account, label)| account_html(account, &label))
+            .collect();
         format!("<ul>{items}</ul>")
     };
     let groups: String = if view.groups.is_empty() {
@@ -297,11 +307,11 @@ fn deliveries_html(deliveries: &[DeliveryView]) -> String {
     format!("<h2>Sent to other servers</h2><ul>{items}</ul>")
 }
 
-fn account_html(account: &AccountView) -> String {
+fn account_html(account: &AccountView, label: &Label) -> String {
     let mut lines = vec![format!(
-        "<code>{}</code> <strong>{}</strong>",
+        "<code>{}</code> {}",
         html_escape(&account.id),
-        html_escape(&account.name)
+        label_html(label)
     )];
     if let Some(verified) = account.verified {
         lines.push(format!("verified: {}", if verified { "yes" } else { "no" }));
@@ -325,6 +335,60 @@ fn account_html(account: &AccountView) -> String {
         lines.push(format!("requests out: {}", codes(outgoing)));
     }
     format!("<li>{}</li>", lines.join("<br>"))
+}
+
+fn label_html(label: &Label) -> String {
+    match label {
+        Label::Petname(name) => format!("<strong>{}</strong>", html_escape(name)),
+        Label::SharedPetname { name, fingerprint } => format!(
+            "<strong>{}</strong> <code>{}</code>",
+            html_escape(name),
+            html_escape(fingerprint)
+        ),
+        Label::Alleged { name, fingerprint } => format!(
+            "<em class=\"alleged\">{}</em> <span class=\"alleged\">unverified {}</span>",
+            html_escape(name),
+            html_escape(fingerprint)
+        ),
+    }
+}
+
+async fn invite_handler(Query(fields): Query<BTreeMap<String, String>>) -> Response {
+    let field = |name: &str| fields.get(name).map_or("", String::as_str);
+    let page = Invite::new(field("key"), field("node"), field("name"))
+        .and_then(|invite| invite_page(&invite));
+    match page {
+        Ok(body) => respond(StatusCode::OK, &body, None),
+        Err(error) => respond(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "<h1>Invite</h1><p class=\"error\">{}</p>",
+                html_escape(&format!("{error:#}"))
+            ),
+            None,
+        ),
+    }
+}
+
+fn invite_page(invite: &Invite) -> anyhow::Result<String> {
+    let url = invite.url();
+    let name = html_escape(&invite.name);
+    let key = html_escape(&invite.key);
+    Ok(format!(
+        "<h1>Add {name}</h1>\
+         <p>Account: <code>{key}</code></p><p>Server: <code>{}</code></p>\
+         <div>{}</div>\
+         <p>Invite: <code>{}</code></p>\
+         <form method=\"post\" action=\"/explore/act\"><h3>Petname</h3>\
+         <input type=\"hidden\" name=\"action\" value=\"set_petname\">\
+         <input type=\"hidden\" name=\"account\" value=\"{key}\">\
+         <label>Petname <input name=\"name\" value=\"{name}\" autocomplete=\"off\"></label>\
+         <button>Add {name}</button></form>\
+         <p><a href=\"{COOKIE_PATH}\">Sign in to the directory</a> first. The petname is only yours.</p>",
+        html_escape(&invite.node),
+        qr::svg(&url)?,
+        html_escape(&url),
+    ))
 }
 
 fn group_html(group: &GroupView) -> String {
@@ -415,6 +479,21 @@ const ANONYMOUS_FORMS: &[ActionForm] = &[
 ];
 
 const ACCOUNT_FORMS: &[ActionForm] = &[
+    ActionForm {
+        title: "Set petname",
+        action: "set_petname",
+        fields: &[("account", "Account ID"), ("name", "Petname")],
+    },
+    ActionForm {
+        title: "Rename petname",
+        action: "rename_petname",
+        fields: &[("account", "Account ID"), ("name", "Petname")],
+    },
+    ActionForm {
+        title: "Remove petname",
+        action: "remove_petname",
+        fields: &[("account", "Account ID")],
+    },
     ActionForm {
         title: "Add email",
         action: "add_email",
@@ -928,5 +1007,31 @@ mod tests {
         let group = &view.groups[0];
         assert!(html.contains(&html_escape(&group.name)));
         assert!(text.contains(&group.name) && json.contains(&group.name));
+    }
+
+    #[tokio::test]
+    async fn the_invite_page_names_the_account_and_carries_its_qr_code() {
+        let app = app(None);
+        let key = "aa11".repeat(16);
+        let node = "bb22".repeat(16);
+        let uri = format!("/invite?key={key}&node={node}&name=Ann%20Lee");
+        let (status, _, body) = send(
+            &app,
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<h1>Add Ann Lee</h1>"));
+        assert!(body.contains("<svg "));
+        assert!(body.contains("value=\"Ann Lee\""));
+        let url = Invite::new(&key, &node, "Ann Lee").unwrap().url();
+        assert!(body.contains(&html_escape(&url)));
+        let bad = format!("/invite?key=zz&node={node}&name=Ann");
+        let (status, _, _) = send(
+            &app,
+            Request::builder().uri(&bad).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
