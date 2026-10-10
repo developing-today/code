@@ -84,7 +84,10 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          nativeBuildInputs = nativeBuildInputs ++ [
+            pkgs.cmake
+            bun2nixPkg.hook
+          ];
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
           inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -162,7 +165,10 @@
             name = "id-${name}";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+            nativeBuildInputs = nativeBuildInputs ++ [
+              pkgs.cmake
+              bun2nixPkg.hook
+            ];
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -324,6 +330,7 @@
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [
+              pkgs.cmake
               bun2nixPkg.hook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
               # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
