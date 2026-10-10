@@ -2170,11 +2170,11 @@
     "openchamber-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1791542440,
-        "narHash": "sha256-E8ueLBinowLUfAGO6PG4oFM8JmTzugPHJFuF49wO66Y=",
+        "lastModified": 1791596844,
+        "narHash": "sha256-UJxTPzL8hX9jsIFztizR+rRpOTzWOUms74yaMBov7jE=",
         "owner": "developing-today",
         "repo": "openchamber",
-        "rev": "357120261cf3a665108d3ebec8eb9f439fa693ef",
+        "rev": "52d1cee7b4608006eadd448150874242569ed155",
         "type": "github"
       },
       "original": {
@@ -2226,11 +2226,11 @@
         "nixpkgs": "nixpkgs_18"
       },
       "locked": {
-        "lastModified": 1791544722,
-        "narHash": "sha256-rt6XNaiaXAAqYF8MUkzaEd5Lenp4Frfl0DG7Sx3aqSE=",
+        "lastModified": 1791594716,
+        "narHash": "sha256-G3x1XFcAKiGjQA2QBrLR8/+K/eF19kSwiXCu7CynQ9I=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "ac4c4a6c153ef8c972763e878a2e3b500ae93aac",
+        "rev": "208a0c72d72a54532af5cf6648ad976af42bd8bc",
         "type": "github"
       },
       "original": {
