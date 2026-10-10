@@ -704,6 +704,17 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return err
 }
 
+// Upgrade asks the running daemon to hand over to the binary at path. The
+// answer is "current" when that is the binary it already runs.
+func (c *Client) Upgrade(ctx context.Context, binary string) (map[string]any, error) {
+	b, err := c.do(ctx, http.MethodPost, "/v1/upgrade", map[string]any{"binary": binary})
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	return out, json.Unmarshal(b, &out)
+}
+
 // RestartDaemon asks the daemon to restart itself.
 func (c *Client) RestartDaemon(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodPost, "/v1/daemon/restart", nil)
