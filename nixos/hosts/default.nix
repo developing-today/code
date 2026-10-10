@@ -46,6 +46,14 @@ in
       "us-global-1"
       "us-global-2"
     ];
+    modules = [
+      {
+        services.id-mail = {
+          transport = "worker";
+          workerUrl = "https://mail.security.cab";
+        };
+      }
+    ];
   };
   # amd-server = host {
   #   # profiles = [ "server" ];
