@@ -571,12 +571,14 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
     in
     {
       packages = {
-        inherit mcpx;
+        inherit mcpx idMailDeploy;
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
+        id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
