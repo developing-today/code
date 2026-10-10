@@ -145,3 +145,6 @@ codedb.snapshot
 !doc/hardware/**/result*
 !doc/hardware/**/test.*
 .opencode/service-prod.json
+
+/dezren39-nix/
+/justbetter-mcp/
