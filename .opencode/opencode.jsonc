@@ -3,6 +3,17 @@
   "autoupdate": true,
   "default": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731",
   "provider": {
+    "claude-code": {
+      "models": {
+        "claude-haiku-5-5": {
+          "name": "Haiku 5.5 (Claude Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        }
+      }
+    },
     "cloudflare-gateway": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Cloudflare Workers AI (via AI Gateway)",
@@ -3606,5 +3617,19 @@
     "@pieliesdie/opencode-antigravity-auth@2.0.0",
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
-  ]
+  ],
+  "experimental": {
+    "model_routes": {
+      "cheap-pool": {
+        "targets": [
+          "google/gemma-4-31b-it",
+          "google/gemma-4-26b-a4b-it",
+          "google/lyria-3-pro-preview",
+          "google/lyria-3-clip-preview"
+        ],
+        "autonomy": "rules",
+        "selection": "ordered"
+      }
+    }
+  }
 }
