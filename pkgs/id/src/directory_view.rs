@@ -15,7 +15,7 @@ use crate::directory::{
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
-use crate::envelope_outbox::{Entry, Finish, Outbox, check_url};
+use crate::envelope_outbox::{Entry, Finish, Outbox, check_target};
 use crate::world::WorldScopes;
 
 /// Who is looking at the directory.
@@ -275,8 +275,8 @@ pub enum DirectoryAction {
 /// Where an account on another server is reached.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteFriend {
-    /// The other server's base URL. Envelopes go to its `/envelope` route.
-    pub server: String,
+    /// The other server's iroh node ID. Envelopes are sent to it over iroh.
+    pub node: String,
     /// The other server's world ID, which the envelope is addressed to.
     pub audience: String,
 }
@@ -307,8 +307,8 @@ impl DirectoryAction {
 /// An envelope an action signed, for the caller to queue for another server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outbound {
-    /// The `/envelope` endpoint on the other server.
-    pub url: String,
+    /// The other server's iroh node ID.
+    pub target: String,
     /// The signed envelope.
     pub envelope: Envelope,
 }
@@ -505,8 +505,8 @@ fn friend_pairs(
     remote: Option<(String, String)>,
 ) -> Vec<(&'static str, String)> {
     let mut pairs = vec![(key, account)];
-    if let Some((server, audience)) = remote {
-        pairs.push(("server", server));
+    if let Some((node, audience)) = remote {
+        pairs.push(("node", node));
         pairs.push(("audience", audience));
     }
     pairs
@@ -659,24 +659,24 @@ fn parse_member(text: &str) -> Result<Member> {
 /// The server and world a friend action names. Absent or blank fields mean the
 /// account is on this server.
 fn remote_of(fields: &BTreeMap<String, String>) -> Result<Option<RemoteFriend>> {
-    let server = fields
-        .get("server")
+    let node = fields
+        .get("node")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let audience = fields
         .get("audience")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
-    match (server, audience) {
+    match (node, audience) {
         (None, None) => Ok(None),
-        (Some(server), Some(audience)) => {
-            check_url(server)?;
+        (Some(node), Some(audience)) => {
+            check_target(node)?;
             Ok(Some(RemoteFriend {
-                server: server.to_owned(),
+                node: node.to_owned(),
                 audience: audience.to_owned(),
             }))
         }
-        _ => bail!("a friend on another server needs both its server URL and its world ID"),
+        _ => bail!("a friend on another server needs both its node ID and its world ID"),
     }
 }
 
@@ -1038,7 +1038,7 @@ fn sender_credential(caller: &Caller) -> Result<&str> {
 
 fn outbound_to(remote: &RemoteFriend, envelope: Envelope) -> Outbound {
     Outbound {
-        url: format!("{}/envelope", remote.server.trim_end_matches('/')),
+        target: remote.node.clone(),
         envelope,
     }
 }
@@ -1277,6 +1277,10 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
 
+    fn node() -> String {
+        iroh::SecretKey::from_bytes(&[7; 32]).public().to_string()
+    }
+
     fn sign(directory: &mut Directory, name: &str) -> (String, String) {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
@@ -1358,7 +1362,7 @@ mod tests {
         let remote = DirectoryAction::RequestFriend {
             to: bo.clone(),
             remote: Some(RemoteFriend {
-                server: "https://away.example/".to_owned(),
+                node: node(),
                 audience: "lobby".to_owned(),
             }),
         };
@@ -1372,7 +1376,7 @@ mod tests {
             ..Caller::default()
         };
         let outbound = act(&mut home, &caller, remote).unwrap().outbound.unwrap();
-        assert_eq!(outbound.url, "https://away.example/envelope");
+        assert_eq!(outbound.target, node());
         assert_eq!(outbound.envelope.audience, "lobby");
         assert_eq!(outbound.envelope.to, bo);
         assert!(matches!(
@@ -1399,7 +1403,7 @@ mod tests {
             DirectoryAction::RequestFriend {
                 to: bo.clone(),
                 remote: Some(RemoteFriend {
-                    server: "https://away.example".to_owned(),
+                    node: node(),
                     audience: "lobby".to_owned(),
                 }),
             },
@@ -1409,7 +1413,7 @@ mod tests {
         .unwrap();
         let id = outbound.envelope.id.clone();
         let mut outbox = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
-        outbox.enqueue(&outbound.url, outbound.envelope).unwrap();
+        outbox.enqueue(&outbound.target, outbound.envelope).unwrap();
 
         let shown = deliveries(&outbox, &ann);
         assert_eq!(shown.len(), 1);
@@ -1777,11 +1781,11 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_line("friend accept abc at https://example.com for lobby").unwrap(),
+            parse_line(&format!("friend accept abc at {} for lobby", node())).unwrap(),
             Line::Action(DirectoryAction::AcceptFriend {
                 from: "abc".to_owned(),
                 remote: Some(RemoteFriend {
-                    server: "https://example.com".to_owned(),
+                    node: node(),
                     audience: "lobby".to_owned(),
                 }),
             })

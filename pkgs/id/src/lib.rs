@@ -167,6 +167,8 @@ pub mod directory_mail;
 pub mod directory_view;
 pub mod discovery;
 #[cfg(feature = "world")]
+pub mod envelope_net;
+#[cfg(feature = "world")]
 pub mod envelope_outbox;
 pub mod fileops;
 pub mod helpers;

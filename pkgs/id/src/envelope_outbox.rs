@@ -8,22 +8,21 @@
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::net::IpAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
-use reqwest::{Client, StatusCode, Url, header::CONTENT_TYPE, redirect};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use iroh::{Endpoint, EndpointId};
+
 use crate::directory::Envelope;
+use crate::envelope_net::deliver;
 
 /// Deliveries attempted before an envelope is given up.
 pub const MAX_ATTEMPTS: u32 = 12;
 const BASE_DELAY_MS: u64 = 60_000;
 const MAX_DELAY_MS: u64 = 6 * 60 * 60 * 1000;
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How a queued envelope ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,8 +50,8 @@ pub enum Outcome {
 /// One queued envelope and what has happened to it so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// The `/envelope` endpoint on the recipient's server.
-    pub url: String,
+    /// The recipient's iroh node ID.
+    pub target: String,
     /// The envelope to deliver.
     pub envelope: Envelope,
     /// Attempts made so far.
@@ -69,7 +68,7 @@ pub struct Entry {
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Record {
     Queued {
-        url: String,
+        target: String,
         envelope: Envelope,
     },
     Attempted {
@@ -137,21 +136,21 @@ impl Outbox {
         Ok(outbox)
     }
 
-    /// Queues `envelope` for delivery to `url`, due immediately.
+    /// Queues `envelope` for delivery to the node `target`, due immediately.
     ///
     /// # Errors
     ///
-    /// Fails if the URL is not allowed, the envelope is already queued, or the
+    /// Fails if the node ID is malformed, the envelope is already queued, or the
     /// record cannot be written.
-    pub fn enqueue(&mut self, url: &str, envelope: Envelope) -> Result<()> {
-        check_url(url)?;
+    pub fn enqueue(&mut self, target: &str, envelope: Envelope) -> Result<()> {
+        check_target(target)?;
         ensure!(
             !self.entries.contains_key(&envelope.id),
             "envelope {} is already queued",
             envelope.id
         );
         self.commit(Record::Queued {
-            url: url.to_owned(),
+            target: target.to_owned(),
             envelope,
         })
     }
@@ -245,7 +244,7 @@ impl Outbox {
 
     fn apply(&mut self, record: Record) -> Result<()> {
         match record {
-            Record::Queued { url, envelope } => {
+            Record::Queued { target, envelope } => {
                 ensure!(
                     !self.entries.contains_key(&envelope.id),
                     "envelope {} is queued twice",
@@ -255,7 +254,7 @@ impl Outbox {
                 self.entries.insert(
                     id,
                     Entry {
-                        url,
+                        target,
                         envelope,
                         attempts: 0,
                         next_at: 0,
@@ -305,14 +304,14 @@ impl Outbox {
 
 /// Delivers every envelope due at `now`, recording each outcome as it happens.
 ///
-/// The lock is released while a request is in flight, so enqueueing is not
+/// The lock is released while a delivery is in flight, so enqueueing is not
 /// held up by a slow recipient. Returns how many attempts were made.
 ///
 /// # Errors
 ///
 /// Fails if an outcome cannot be written. Envelopes already recorded stay
 /// recorded.
-pub async fn flush(outbox: &Mutex<Outbox>, client: &Client, now: u64) -> Result<usize> {
+pub async fn flush(outbox: &Mutex<Outbox>, endpoint: &Endpoint, now: u64) -> Result<usize> {
     let due: Vec<(String, String, Envelope)> = {
         let queue = outbox.lock().await;
         queue
@@ -320,85 +319,28 @@ pub async fn flush(outbox: &Mutex<Outbox>, client: &Client, now: u64) -> Result<
             .into_iter()
             .filter_map(|id| {
                 let entry = queue.entry(&id)?;
-                Some((id.clone(), entry.url.clone(), entry.envelope.clone()))
+                Some((id.clone(), entry.target.clone(), entry.envelope.clone()))
             })
             .collect()
     };
-    for (id, url, envelope) in &due {
-        let outcome = deliver(client, url, envelope).await;
+    for (id, target, envelope) in &due {
+        let outcome = match check_target(target) {
+            Ok(node) => deliver(endpoint, node, envelope).await,
+            Err(error) => Outcome::Refused(format!("{error:#}")),
+        };
         outbox.lock().await.record(id, now, outcome)?;
     }
     Ok(due.len())
 }
 
-/// Accepts `https` URLs, and `http` only for a loopback host.
+/// Parses a recipient's iroh node ID.
 ///
 /// # Errors
 ///
-/// Fails for anything else, so an envelope is never sent in the clear to
-/// another machine.
-pub fn check_url(url: &str) -> Result<()> {
-    let parsed = Url::parse(url).context("outbox URL is not a URL")?;
-    match parsed.scheme() {
-        "https" => Ok(()),
-        "http" => {
-            let host = parsed
-                .host_str()
-                .unwrap_or_default()
-                .trim_start_matches('[')
-                .trim_end_matches(']');
-            ensure!(
-                host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
-                "outbox URL must use https unless it is a loopback address"
-            );
-            Ok(())
-        }
-        other => bail!("outbox URL scheme {other:?} is not supported"),
-    }
-}
-
-/// An HTTP client for delivery: bounded in time, and no redirects followed.
-///
-/// # Errors
-///
-/// Fails if the TLS backend cannot be initialised.
-pub fn http_client() -> Result<Client> {
-    // reqwest's rustls backend needs a process-wide provider. If one is already
-    // installed this fails harmlessly, and the installed one is used.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    Client::builder()
-        .timeout(TIMEOUT)
-        .redirect(redirect::Policy::none())
-        .build()
-        .context("building the envelope delivery client")
-}
-
-/// Posts `envelope` as JSON to the `/envelope` endpoint at `url`.
-pub async fn deliver(client: &Client, url: &str, envelope: &Envelope) -> Outcome {
-    let json = match serde_json::to_string(envelope) {
-        Ok(json) => json,
-        Err(error) => return Outcome::Refused(format!("envelope does not encode: {error}")),
-    };
-    match client
-        .post(url)
-        .header(CONTENT_TYPE, "application/json")
-        .body(json)
-        .send()
-        .await
-    {
-        Ok(response) => classify(response.status()),
-        Err(error) => Outcome::Retry(format!("send failed: {error}")),
-    }
-}
-
-fn classify(status: StatusCode) -> Outcome {
-    if status.is_success() {
-        Outcome::Delivered
-    } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        Outcome::Retry(format!("server answered {status}"))
-    } else {
-        Outcome::Refused(format!("server refused with {status}"))
-    }
+/// Fails if `node` is not a node ID, so nothing is queued for it.
+pub fn check_target(node: &str) -> Result<EndpointId> {
+    node.parse()
+        .map_err(|error| anyhow::anyhow!("not an iroh node ID: {error}"))
 }
 
 fn backoff_ms(attempts: u32) -> u64 {
@@ -411,8 +353,6 @@ fn backoff_ms(attempts: u32) -> u64 {
 mod tests {
     use super::*;
     use crate::directory::EnvelopeKind;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
 
     const NOW: u64 = 1_000_000_000;
     const MINUTE: u64 = 60_000;
@@ -430,56 +370,19 @@ mod tests {
         }
     }
 
-    fn path(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path().join("outbox.jsonl")
+    fn target() -> String {
+        iroh::SecretKey::from_bytes(&[7; 32]).public().to_string()
     }
 
-    /// Accepts one connection, answers `status`, and returns what it read.
-    async fn stub(status: &'static str) -> (String, tokio::task::JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/envelope", listener.local_addr().unwrap());
-        let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            loop {
-                let read = socket.read(&mut chunk).await.unwrap();
-                if read == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..read]);
-                let text = String::from_utf8_lossy(&buf).into_owned();
-                if let Some(head) = text.find("\r\n\r\n") {
-                    let length = text[..head]
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(str::trim)
-                                .map(str::to_owned)
-                        })
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if buf.len() >= head + 4 + length {
-                        break;
-                    }
-                }
-            }
-            let response =
-                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            socket.write_all(response.as_bytes()).await.unwrap();
-            String::from_utf8_lossy(&buf).into_owned()
-        });
-        (url, handle)
+    fn path(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("outbox.jsonl")
     }
 
     #[test]
     fn queued_envelopes_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/envelope", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         drop(outbox);
 
         let reopened = Outbox::open(path(&dir)).unwrap();
@@ -491,9 +394,7 @@ mod tests {
     fn a_retry_waits_for_its_backoff_and_then_gives_up() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/envelope", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
 
         outbox
             .record("e1", NOW, Outcome::Retry("down".to_owned()))
@@ -521,9 +422,7 @@ mod tests {
     fn a_refusal_is_final() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/envelope", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         outbox
             .record("e1", NOW, Outcome::Refused("bad signature".to_owned()))
             .unwrap();
@@ -538,9 +437,7 @@ mod tests {
     fn a_withdrawn_envelope_is_gone_and_stays_gone() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/envelope", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         outbox.withdraw("e1").unwrap();
         assert!(outbox.entry("e1").is_none());
         assert!(outbox.due(u64::MAX).is_empty());
@@ -555,19 +452,15 @@ mod tests {
     fn a_torn_last_line_is_dropped_and_not_mixed_into_the_next_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/envelope", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         drop(outbox);
         let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
-        file.write_all(b"{\"op\":\"queued\",\"url\"").unwrap();
+        file.write_all(b"{\"op\":\"queued\",\"target\"").unwrap();
         drop(file);
 
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         assert!(outbox.entry("e1").is_some());
-        outbox
-            .enqueue("https://bo.example/envelope", envelope("e2"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e2")).unwrap();
         drop(outbox);
 
         let reopened = Outbox::open(path(&dir)).unwrap();
@@ -582,130 +475,9 @@ mod tests {
     }
 
     #[test]
-    fn only_https_or_loopback_http_urls_are_accepted() {
-        assert!(check_url("https://bo.example/envelope").is_ok());
-        assert!(check_url("http://127.0.0.1:9/envelope").is_ok());
-        assert!(check_url("http://localhost:9/envelope").is_ok());
-        assert!(check_url("http://[::1]:9/envelope").is_ok());
-        assert!(check_url("http://bo.example/envelope").is_err());
-        assert!(check_url("ftp://bo.example/envelope").is_err());
-        assert!(check_url("not a url").is_err());
-    }
-
-    #[tokio::test]
-    async fn delivery_posts_the_envelope_as_json_to_the_envelope_route() {
-        let client = http_client().unwrap();
-        let (url, request) = stub("200 OK").await;
-        let outcome = deliver(&client, &url, &envelope("e1")).await;
-        assert_eq!(outcome, Outcome::Delivered);
-        let received = request.await.unwrap();
-        assert!(received.starts_with("POST /envelope "));
-        assert!(received.contains("content-type: application/json"));
-        let body = &received[received.find("\r\n\r\n").unwrap() + 4..];
-        assert_eq!(
-            serde_json::from_str::<Envelope>(body).unwrap(),
-            envelope("e1")
-        );
-    }
-
-    #[tokio::test]
-    async fn delivery_classifies_responses() {
-        let client = http_client().unwrap();
-
-        let (url, request) = stub("503 Service Unavailable").await;
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Retry(_)
-        ));
-        request.await.unwrap();
-
-        let (url, request) = stub("429 Too Many Requests").await;
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Retry(_)
-        ));
-        request.await.unwrap();
-
-        let (url, request) = stub("401 Unauthorized").await;
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Refused(_)
-        ));
-        request.await.unwrap();
-
-        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/envelope", closed.local_addr().unwrap());
-        drop(closed);
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Retry(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn flush_delivers_due_envelopes_and_keeps_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
-        let client = http_client().unwrap();
-        let (ok_url, ok_request) = stub("200 OK").await;
-        let (busy_url, busy_request) = stub("503 Service Unavailable").await;
-
-        let outbox = Mutex::new(Outbox::open(path(&dir)).unwrap());
-        outbox
-            .lock()
-            .await
-            .enqueue(&ok_url, envelope("e1"))
-            .unwrap();
-        outbox
-            .lock()
-            .await
-            .enqueue(&busy_url, envelope("e2"))
-            .unwrap();
-
-        assert_eq!(flush(&outbox, &client, NOW).await.unwrap(), 2);
-        ok_request.await.unwrap();
-        busy_request.await.unwrap();
-        let queue = outbox.lock().await;
-        assert_eq!(queue.entry("e1").unwrap().finish, Some(Finish::Delivered));
-        assert_eq!(queue.entry("e2").unwrap().next_at, NOW + MINUTE);
-        assert!(queue.due(NOW).is_empty());
-        drop(queue);
-
-        let reopened = Outbox::open(path(&dir)).unwrap();
-        assert_eq!(
-            reopened.entry("e1").unwrap().finish,
-            Some(Finish::Delivered)
-        );
-        assert_eq!(reopened.due(NOW + MINUTE), vec!["e2".to_owned()]);
-    }
-
-    #[tokio::test]
-    async fn an_envelope_queued_for_a_closed_world_is_delivered_when_it_reopens() {
-        let dir = tempfile::tempdir().unwrap();
-        let (url, request) = stub("200 OK").await;
-        let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox.enqueue(&url, envelope("e1")).unwrap();
-        drop(outbox);
-
-        let (_service, _) = crate::world_store::open_world(
-            dir.path(),
-            "club",
-            crate::world::WorldLimits::default(),
-            crate::world_limits::RuntimeLimits::default(),
-            |handle| crate::world_session::WorldService::new(handle, None),
-        )
-        .await
-        .unwrap();
-        assert!(request.await.unwrap().starts_with("POST /envelope "));
-
-        let mut recorded = false;
-        for _ in 0..200 {
-            recorded = fs::read_to_string(path(&dir))
-                .is_ok_and(|text| text.contains("\"outcome\":\"delivered\""));
-            if recorded {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(recorded, "the delivery was not recorded");
+    fn a_node_id_is_required() {
+        assert!(check_target(&target()).is_ok());
+        assert!(check_target("https://bo.example/envelope").is_err());
+        assert!(check_target("not a node").is_err());
     }
 }

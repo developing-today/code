@@ -24,7 +24,7 @@ use std::sync::Arc;
 use axum::{
     body::Body,
     extract::State,
-    http::{HeaderValue, Method, Request, StatusCode, header},
+    http::{HeaderValue, Request, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -148,11 +148,9 @@ pub async fn guard(
         return forbidden("opaque origin refused", StatusCode::FORBIDDEN);
     }
 
-    // Optional token. Peer servers post signed envelopes without a session.
+    // Optional token.
     let mut set_cookie = None;
-    let peer_envelope =
-        req.method() == Method::POST && req.uri().path() == super::explore::ENVELOPE_PATH;
-    if let Some(expected) = sec.token.as_ref().filter(|_| !peer_envelope) {
+    if let Some(expected) = sec.token.as_ref() {
         let bearer = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())

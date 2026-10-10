@@ -497,7 +497,7 @@ impl WorldService {
     ) -> anyhow::Result<()> {
         let id = outbound.envelope.id.clone();
         let mut queue = outbox.lock().await;
-        queue.enqueue(&outbound.url, outbound.envelope)?;
+        queue.enqueue(&outbound.target, outbound.envelope)?;
         if let Err(error) = self.world.apply_directory_entry(entry).await {
             if let Err(withdrawn) = queue.withdraw(&id) {
                 tracing::error!(
@@ -514,9 +514,9 @@ impl WorldService {
     /// # Errors
     ///
     /// Fails when the outbox file cannot be written.
-    pub async fn flush_outbox(&self, client: &reqwest::Client, now: u64) -> anyhow::Result<usize> {
+    pub async fn flush_outbox(&self, endpoint: &iroh::Endpoint, now: u64) -> anyhow::Result<usize> {
         match &self.outbox {
-            Some(outbox) => crate::envelope_outbox::flush(outbox, client, now).await,
+            Some(outbox) => crate::envelope_outbox::flush(outbox, endpoint, now).await,
             None => Ok(0),
         }
     }

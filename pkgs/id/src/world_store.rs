@@ -361,22 +361,7 @@ pub async fn open_world(
     };
     report.sequence = restored.core.current_sequence();
     let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
-    let undelivered = outbox.entries().any(|entry| entry.finish.is_none());
     let service = service(handle).with_module_dir(modules).with_outbox(outbox);
-    if undelivered {
-        let flush = service.clone();
-        let name = world_id.to_owned();
-        tokio::spawn(async move {
-            match crate::envelope_outbox::http_client() {
-                Ok(client) => {
-                    if let Err(error) = flush.flush_outbox(&client, crate::world::unix_ms()).await {
-                        tracing::warn!("world {name}: outbox flush on open failed: {error:#}");
-                    }
-                }
-                Err(error) => tracing::warn!("world {name}: outbox client: {error:#}"),
-            }
-        });
-    }
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
     }
@@ -1150,7 +1135,7 @@ mod tests {
         crate::directory_view::DirectoryAction::RequestFriend {
             to: to.to_owned(),
             remote: Some(crate::directory_view::RemoteFriend {
-                server: "https://away.example".to_owned(),
+                node: iroh::SecretKey::from_bytes(&[7; 32]).public().to_string(),
                 audience: "lobby".to_owned(),
             }),
         }

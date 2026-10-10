@@ -675,7 +675,7 @@ impl WorldHub {
 
     /// Attempt the due outbox envelopes of every open world every `period`
     /// until the hub is dropped.
-    pub fn spawn_outbox_flush(&self, period: Duration, client: reqwest::Client) -> JoinHandle<()> {
+    pub fn spawn_outbox_flush(&self, period: Duration, endpoint: iroh::Endpoint) -> JoinHandle<()> {
         let weak: Weak<HubInner> = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);
@@ -685,12 +685,12 @@ impl WorldHub {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                Self { inner }.flush_outboxes(&client).await;
+                Self { inner }.flush_outboxes(&endpoint).await;
             }
         })
     }
 
-    async fn flush_outboxes(&self, client: &reqwest::Client) {
+    async fn flush_outboxes(&self, endpoint: &iroh::Endpoint) {
         let services: Vec<WorldService> = self
             .inner
             .slots
@@ -704,7 +704,7 @@ impl WorldHub {
             .unwrap_or_default();
         let now = crate::world::unix_ms();
         for service in services {
-            if let Err(error) = service.flush_outbox(client, now).await {
+            if let Err(error) = service.flush_outbox(endpoint, now).await {
                 tracing::warn!("world hub: outbox flush failed: {error:#}");
             }
         }
