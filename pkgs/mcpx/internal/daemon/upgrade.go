@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 const upgradeRoute = "/v1/upgrade"
@@ -22,10 +23,46 @@ const upgradeRoute = "/v1/upgrade"
 // hijacked like a takeover is, because the handover drains this daemon's HTTP
 // server, and a handler still waiting on it would hold that drain open.
 
+// An upgrade whose successor does not dial back within the takeover timeout is
+// abandoned: the child is killed, and the takeover it never began is refused.
 type upgradeRun struct {
 	conn net.Conn
 	once sync.Once
 	done chan struct{}
+
+	mu        sync.Mutex
+	dialed    bool
+	abandoned bool
+}
+
+// claim lets a successor that dialed back proceed, unless the upgrade already
+// gave up on it.
+func (u *upgradeRun) claim() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.abandoned {
+		return false
+	}
+	u.dialed = true
+	return true
+}
+
+// abandon gives up on a successor that has not dialed back. It reports false
+// when the successor got there first.
+func (u *upgradeRun) abandon() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.dialed {
+		return false
+	}
+	u.abandoned = true
+	return true
+}
+
+func (u *upgradeRun) wasAbandoned() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.abandoned
 }
 
 // settle answers the upgrade once. The handover calls it before the old
@@ -67,6 +104,10 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "an upgrade needs the path of the new binary", http.StatusBadRequest)
 		return
 	}
+	if err := checkUpgradeBinary(req.Binary); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	self, err := os.Executable()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -101,6 +142,13 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
+	timeout := s.set.Duration("daemon.takeoverTimeout")
+	dialBack := time.AfterFunc(timeout, func() {
+		if u.abandon() {
+			_ = cmd.Process.Kill()
+		}
+	})
+	defer dialBack.Stop()
 	select {
 	case <-u.done:
 	case err := <-exited:
@@ -112,8 +160,31 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			msg += ": " + err.Error()
 		}
+		if u.wasAbandoned() {
+			msg = fmt.Sprintf("the successor did not dial back within %s; the old daemon is still serving", timeout)
+		}
 		u.settle(errors.New(msg))
 	}
+}
+
+// checkUpgradeBinary accepts only an absolute path to an executable regular
+// file. The daemon runs whatever it is given, so a relative path would depend
+// on the working directory of a service.
+func checkUpgradeBinary(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("the upgrade binary %q must be an absolute path", path)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("the upgrade binary: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("the upgrade binary %s is not a regular file", path)
+	}
+	if fi.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("the upgrade binary %s is not executable", path)
+	}
+	return nil
 }
 
 // startSuccessor runs the new binary as this daemon's child. The environment

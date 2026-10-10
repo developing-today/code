@@ -204,6 +204,10 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.takeoverMu.Unlock()
+	if u := s.upgrading.Load(); u != nil && !u.claim() {
+		http.Error(w, "the upgrade that started this successor gave up on it", http.StatusGone)
+		return
+	}
 	conn, rw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
