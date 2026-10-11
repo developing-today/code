@@ -2557,6 +2557,65 @@ mod serve_tests {
         assert!(stdout.contains("no-relay"));
     }
 
+    /// `serve --help` must document the flag that turns mDNS off, and say that
+    /// mDNS is on by default.
+    #[test]
+    fn test_serve_help_documents_no_mdns() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["serve", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--no-mdns"), "{stdout}");
+        assert!(
+            stdout.contains("By default, the server uses mDNS"),
+            "{stdout}"
+        );
+    }
+
+    /// Starts `serve` with `extra_args` (and without `--no-mdns` unless passed),
+    /// returns the `mdns:` status line it prints, and stops the server.
+    fn serve_mdns_status(work_dir: &std::path::Path, extra_args: &[&str]) -> Option<String> {
+        let mut args = vec!["serve", "--ephemeral", "--no-relay", "--no-gossip"];
+        args.extend(extra_args);
+        let mut process = StdCommand::new(get_binary_path())
+            .args(&args)
+            .current_dir(work_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn server");
+        let stdout = process.stdout.take().expect("stdout not captured");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.starts_with("mdns:") {
+                    let _ = tx.send(line);
+                }
+            }
+        });
+        let line = rx.recv_timeout(SERVER_STARTUP_TIMEOUT).ok();
+        let _ = process.kill();
+        let _ = process.wait();
+        line
+    }
+
+    /// mDNS is on for `serve` unless `--no-mdns` is given.
+    #[test]
+    fn test_serve_enables_mdns_by_default_and_no_mdns_turns_it_off() {
+        let on = TempDir::new().unwrap();
+        assert_eq!(
+            serve_mdns_status(on.path(), &[]).as_deref(),
+            Some("mdns: enabled"),
+            "serve should enable mDNS by default"
+        );
+        let off = TempDir::new().unwrap();
+        assert_eq!(
+            serve_mdns_status(off.path(), &["--no-mdns"]).as_deref(),
+            Some("mdns: disabled"),
+            "--no-mdns should disable mDNS"
+        );
+    }
+
     #[test]
     fn test_serve_creates_lock_file() {
         let tmp = TempDir::new().unwrap();

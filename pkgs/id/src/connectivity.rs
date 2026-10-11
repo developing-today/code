@@ -85,6 +85,54 @@ pub async fn connect(
     .await
 }
 
+/// Dials that cannot finish, for tests of the deadlines in the modules that dial.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(crate) mod silent {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use futures_lite::stream;
+    use iroh::{
+        EndpointAddr, EndpointId, TransportAddr,
+        address_lookup::{AddressLookup, Error, Item},
+        endpoint::{Endpoint, RelayMode, presets},
+    };
+    use iroh_base::SecretKey;
+
+    /// An address nothing answers on. TEST-NET-1 (192.0.2.0/24) is never routed,
+    /// so a dial to it can only wait for its handshake to time out.
+    pub(crate) fn unanswered_addr() -> EndpointAddr {
+        let id = SecretKey::from_bytes(&[9; 32]).public();
+        let socket = SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 9);
+        EndpointAddr::from_parts(id, [TransportAddr::Ip(socket)])
+    }
+
+    /// An address lookup whose answer never comes, so a dial by node ID alone waits.
+    #[derive(Debug)]
+    pub(crate) struct NeverAnswers;
+
+    impl AddressLookup for NeverAnswers {
+        fn resolve(&self, _endpoint_id: EndpointId) -> Option<stream::Boxed<Result<Item, Error>>> {
+            Some(Box::pin(stream::pending()))
+        }
+    }
+
+    /// A loopback-only endpoint whose address lookup is [`NeverAnswers`].
+    pub(crate) async fn endpoint_with_silent_lookup() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .address_lookup(NeverAnswers)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    /// The node ID of no real endpoint, to dial by ID alone.
+    pub(crate) fn unanswered_id() -> EndpointAddr {
+        EndpointAddr::from(SecretKey::from_bytes(&[9; 32]).public())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

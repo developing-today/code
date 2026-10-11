@@ -294,7 +294,8 @@ pub enum Command {
         /// Disable mDNS local peer discovery.
         ///
         /// By default, the server uses mDNS to discover peers on the
-        /// local network. This flag disables that, which is useful in
+        /// local network, and so announces its node ID and addresses to
+        /// every host there. This flag disables that, which is useful in
         /// environments where multicast traffic is blocked or unwanted.
         #[arg(long)]
         no_mdns: bool,

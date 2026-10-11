@@ -8,8 +8,9 @@
 //!
 //! Two storage modes are supported via [`StoreType`]:
 //!
-//! - **Persistent** ([`FsStore`]): SQLite-backed storage in `.iroh-store/`.
-//!   Data survives restarts. Only one process can access at a time.
+//! - **Persistent** ([`FsStore`]): redb-backed storage in `.iroh-store/`
+//!   (iroh-blobs' file store). Data survives restarts. Only one process can
+//!   access at a time.
 //!
 //! - **Ephemeral** ([`MemStore`]): In-memory storage that is discarded on
 //!   shutdown. Useful for testing or temporary operations.
@@ -201,7 +202,7 @@ async fn restrict_key_permissions(path: &str) {
 ///
 /// # Variants
 ///
-/// * `Persistent` - File-system backed `SQLite` storage. Data survives restarts.
+/// * `Persistent` - File-system backed redb storage. Data survives restarts.
 /// * `Ephemeral` - In-memory storage. Data is lost on shutdown.
 ///
 /// # Example
@@ -222,10 +223,10 @@ async fn restrict_key_permissions(path: &str) {
 /// ```
 #[derive(Debug)]
 pub enum StoreType {
-    /// File-system backed persistent storage using `SQLite`.
+    /// File-system backed persistent storage using redb (iroh-blobs' `FsStore`).
     ///
     /// Data is stored in the `.iroh-store/` directory. Only one process
-    /// can access the database at a time due to `SQLite` locking.
+    /// can access the database at a time due to redb's file lock.
     Persistent(FsStore),
 
     /// In-memory ephemeral storage.
@@ -301,7 +302,7 @@ impl StoreType {
 /// # Arguments
 ///
 /// * `ephemeral` - If `true`, creates an in-memory store. If `false`,
-///   opens/creates a persistent SQLite-backed store.
+///   opens/creates a persistent redb-backed store.
 ///
 /// # Returns
 ///
@@ -343,6 +344,22 @@ mod tests {
     use super::*;
     use futures_lite::StreamExt;
     use tempfile::TempDir;
+
+    /// The persistent store is redb (iroh-blobs' `FsStore`), not a SQL engine. This
+    /// greps the docs of this module and of `lib.rs` so the old claim cannot return.
+    #[test]
+    fn test_docs_do_not_call_the_persistent_store_sqlite() {
+        for (name, source) in [
+            ("store.rs", include_str!("store.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+        ] {
+            let stale: Vec<&str> = source
+                .lines()
+                .filter(|line| line.trim_start().starts_with("//") && line.contains("SQLite"))
+                .collect();
+            assert!(stale.is_empty(), "{name} still says SQLite: {stale:?}");
+        }
+    }
 
     #[tokio::test]
     async fn test_ephemeral_store() {

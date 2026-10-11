@@ -113,7 +113,7 @@
 //!    immutable.
 //!
 //! Storage locations (relative to working directory):
-//! - `.iroh-store/` - `SQLite` database with blob data
+//! - `.iroh-store/` - redb database with blob data
 //! - `.iroh-key` - Server Ed25519 keypair
 //! - `.iroh-key-client` - Client keypair for remote connections
 //! - `.iroh-serve.lock` - Lock file when serve is running

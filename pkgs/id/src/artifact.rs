@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
@@ -34,6 +35,7 @@ use iroh::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::connectivity::{DIAL_TIMEOUT, connect, within};
 use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
@@ -45,8 +47,11 @@ use crate::world_net::{read_frame, write_frame};
 
 /// The file, beside `directory.jsonl`, that holds a world's artifacts.
 pub const FILE: &str = "artifacts.jsonl";
-/// Artifacts in one page, which is also the most a pull applies per request.
-pub const PAGE_LIMIT: usize = 100;
+/// Bytes one page may take on the wire, counting its JSON framing.
+///
+/// A page always carries at least one artifact, so one larger than this is sent
+/// alone. The budget keeps a page of maximum-size documents far under the frame limit.
+pub const PAGE_BYTES: usize = 256 * 1024;
 /// Home servers one declaration may name.
 pub const MAX_HOME_SERVERS: usize = 8;
 /// Hashes one artifact may name in `after`.
@@ -470,17 +475,27 @@ impl ArtifactLog {
             .map_or(0, |chain| u64::try_from(chain.len()).unwrap_or(u64::MAX))
     }
 
-    /// Up to [`PAGE_LIMIT`] of an author's artifacts with a sequence number after `after`, in order.
+    /// The author's artifacts with a sequence number after `after`, in order, up to
+    /// [`PAGE_BYTES`]. A page always holds at least one artifact if any remain.
     #[must_use]
     pub fn page(&self, author: &str, after: u64) -> Vec<SignedArtifact> {
-        self.chains
+        let mut page: Vec<SignedArtifact> = Vec::new();
+        let mut used = page_frame_bytes();
+        for artifact in self
+            .chains
             .get(author)
             .into_iter()
             .flatten()
             .filter(|artifact| artifact.seq > after)
-            .take(PAGE_LIMIT)
-            .cloned()
-            .collect()
+        {
+            let size = encoded_len(artifact).saturating_add(usize::from(!page.is_empty()));
+            if !page.is_empty() && used.saturating_add(size) > PAGE_BYTES {
+                break;
+            }
+            used = used.saturating_add(size);
+            page.push(artifact.clone());
+        }
+        page
     }
 
     /// The latest home-server declaration an account has made.
@@ -582,6 +597,36 @@ pub fn append(path: &Path, artifact: &SignedArtifact) -> Result<()> {
 pub struct Page {
     /// The account's artifacts after the sequence number asked for, in order.
     pub artifacts: Vec<SignedArtifact>,
+}
+
+/// The bytes of a page with no artifacts in it, which is `{"artifacts":[]}`.
+fn page_frame_bytes() -> usize {
+    serde_json::to_vec(&Page {
+        artifacts: Vec::new(),
+    })
+    .map_or(0, |bytes| bytes.len())
+}
+
+/// The bytes one artifact takes inside a page. An artifact that does not encode
+/// counts as unbounded, so it can only ever be sent alone.
+fn encoded_len(artifact: &SignedArtifact) -> usize {
+    serde_json::to_vec(artifact).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// The bytes a page of `artifacts` takes on the wire, with one comma between artifacts.
+fn page_bytes(artifacts: &[SignedArtifact]) -> usize {
+    artifacts
+        .iter()
+        .enumerate()
+        .fold(page_frame_bytes(), |used, (index, artifact)| {
+            used.saturating_add(encoded_len(artifact))
+                .saturating_add(usize::from(index > 0))
+        })
+}
+
+/// Whether a page is within [`PAGE_BYTES`], or holds one artifact that is larger alone.
+fn within_budget(artifacts: &[SignedArtifact]) -> bool {
+    artifacts.len() <= 1 || page_bytes(artifacts) <= PAGE_BYTES
 }
 
 /// What applying a page did.
@@ -769,47 +814,70 @@ async fn receive_pushed(hub: &WorldHub, body: &[u8]) -> Reply {
 }
 
 /// Fetch one page of `account`'s artifacts after `after` from the home server at `peer`.
+/// The dial and the answer share one [`DIAL_TIMEOUT`].
 ///
 /// # Errors
 ///
-/// Fails if the peer is unreachable, does not speak [`PULL_ALPN`], or answers with
-/// something other than a page.
+/// Fails if the deadline passes, the peer is unreachable, does not speak
+/// [`PULL_ALPN`], or answers with something other than a page.
 pub async fn fetch_page(
     endpoint: &Endpoint,
     peer: EndpointAddr,
     account: &str,
     after: u64,
 ) -> Result<Vec<SignedArtifact>> {
+    fetch_page_within(endpoint, peer, account, after, DIAL_TIMEOUT).await
+}
+
+/// [`fetch_page`] with its own deadline, which covers the address lookup, the
+/// dial and the answer.
+///
+/// # Errors
+///
+/// As [`fetch_page`], and fails if `limit` passes first.
+pub async fn fetch_page_within(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    after: u64,
+    limit: Duration,
+) -> Result<Vec<SignedArtifact>> {
     check_key(account)?;
-    let connection = endpoint
-        .connect(peer, PULL_ALPN)
-        .await
-        .context("connecting to the home server")?;
-    let (mut send, mut recv) = connection
-        .open_bi()
-        .await
-        .context("opening a pull stream")?;
-    let request = PullRequest {
-        account: account.to_owned(),
-        after,
-    };
-    write_frame(&mut send, &serde_json::to_vec(&request)?).await?;
-    send.finish().context("finishing the pull request")?;
-    let frame = read_frame(&mut recv)
-        .await?
-        .context("home server closed without a page")?;
-    let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
-    ensure!(
-        page.artifacts.len() <= PAGE_LIMIT,
-        "artifact page has too many artifacts"
-    );
-    connection.close(0_u32.into(), b"pulled");
-    Ok(page.artifacts)
+    within(limit, "pulling artifacts from the home server", async {
+        let connection = connect(endpoint, peer, PULL_ALPN)
+            .await
+            .context("connecting to the home server")?;
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .context("opening a pull stream")?;
+        let request = PullRequest {
+            account: account.to_owned(),
+            after,
+        };
+        write_frame(&mut send, &serde_json::to_vec(&request)?).await?;
+        send.finish().context("finishing the pull request")?;
+        let frame = read_frame(&mut recv)
+            .await?
+            .context("home server closed without a page")?;
+        let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
+        ensure!(
+            within_budget(&page.artifacts),
+            "artifact page is over its byte budget"
+        );
+        connection.close(0_u32.into(), b"pulled");
+        Ok(page.artifacts)
+    })
+    .await
 }
 
 /// Pull `account`'s new artifacts from the home server at `peer`, page by page,
 /// applying each page to `directory` as it arrives. Stops at the first refusal,
-/// a short page, or a page that stores nothing.
+/// an empty page, or a page that stores nothing.
+///
+/// A page is cut by bytes, so a short page does not mean the chain has ended.
+/// The pull asks again after every page that stored something, which costs one
+/// empty answer at the end. Each page fetch has [`DIAL_TIMEOUT`].
 ///
 /// # Errors
 ///
@@ -820,12 +888,26 @@ pub async fn pull(
     account: &str,
     directory: &mut Directory,
 ) -> Result<PageOutcome> {
+    pull_within(endpoint, peer, account, directory, DIAL_TIMEOUT).await
+}
+
+/// [`pull`] with `limit` on each page fetch, see [`fetch_page_within`].
+///
+/// # Errors
+///
+/// Fails if a page cannot be fetched within `limit`.
+pub async fn pull_within(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    directory: &mut Directory,
+    limit: Duration,
+) -> Result<PageOutcome> {
     check_key(account)?;
     let mut total = PageOutcome::default();
     loop {
         let after = directory.artifacts().head_seq(account);
-        let page = fetch_page(endpoint, peer.clone(), account, after).await?;
-        let full = page.len() == PAGE_LIMIT;
+        let page = fetch_page_within(endpoint, peer.clone(), account, after, limit).await?;
         let outcome = apply_page(directory, account, &page);
         total.stored += outcome.stored;
         total.duplicates += outcome.duplicates;
@@ -833,7 +915,7 @@ pub async fn pull(
             total.refused = outcome.refused;
             break;
         }
-        if !full || outcome.stored == 0 {
+        if page.is_empty() || outcome.stored == 0 {
             break;
         }
     }
@@ -851,10 +933,15 @@ mod tests {
         protocol::Router,
     };
     use iroh_base::SecretKey;
+    use proptest::prelude::*;
     use serde_json::json;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Instant;
     use tempfile::TempDir;
 
+    use crate::connectivity::silent::{
+        endpoint_with_silent_lookup, unanswered_addr, unanswered_id,
+    };
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
 
@@ -1088,21 +1175,118 @@ mod tests {
         assert_eq!(reopened.head_seq(&public(1)), 2);
     }
 
+    /// The bytes a page takes on the wire, as the server sends it.
+    fn wire_len(page: &[SignedArtifact]) -> usize {
+        serde_json::to_vec(&Page {
+            artifacts: page.to_vec(),
+        })
+        .unwrap()
+        .len()
+    }
+
+    /// Pages through `author`'s chain from the start, checking each page as it comes.
+    fn every_page(log: &ArtifactLog, author: &str) -> Vec<Vec<SignedArtifact>> {
+        let total = log.head_seq(author);
+        let mut pages = Vec::new();
+        let mut after = 0;
+        while after < total {
+            let page = log.page(author, after);
+            assert!(!page.is_empty(), "no progress after sequence {after}");
+            after = page.last().unwrap().seq;
+            pages.push(page);
+        }
+        pages
+    }
+
     #[test]
-    fn a_page_is_in_order_and_bounded() {
+    fn a_page_is_in_order_and_within_the_byte_budget() {
         let mut log = ArtifactLog::default();
-        for _ in 0..(PAGE_LIMIT + 5) {
-            let next = log.sign(&key(1), &removal(1, 2, &[])).unwrap();
+        for _ in 0..12 {
+            let next = log
+                .sign(&key(1), &document(&"x".repeat(MAX_DOCUMENT_BYTES - 32)))
+                .unwrap();
             log.insert(next).unwrap();
         }
         let first = log.page(&public(1), 0);
-        assert_eq!(first.len(), PAGE_LIMIT);
         assert_eq!(first[0].seq, 1);
-        let rest = log.page(&public(1), PAGE_LIMIT as u64);
+        assert!(first.len() > 1 && first.len() < 12, "{}", first.len());
+        assert!(wire_len(&first) <= PAGE_BYTES, "{}", wire_len(&first));
+
+        let pages = every_page(&log, &public(1));
+        assert!(pages.len() >= 3, "12 documents of 64 KiB take three pages");
+        let seqs: Vec<u64> = pages.iter().flatten().map(|a| a.seq).collect();
+        assert_eq!(seqs, (1..=12).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_lone_oversized_artifact_is_a_page_of_its_own() {
+        let mut log = ArtifactLog::default();
+        let big = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            "future_kind",
+            json!({"blob": "x".repeat(PAGE_BYTES * 2)}),
+        )
+        .unwrap();
+        log.insert(big).unwrap();
+        for _ in 0..3 {
+            let next = log.sign(&key(1), &document("small")).unwrap();
+            log.insert(next).unwrap();
+        }
+        let first = log.page(&public(1), 0);
+        assert_eq!(first.len(), 1, "the oversized artifact goes alone");
+        assert!(wire_len(&first) > PAGE_BYTES);
+        let pages = every_page(&log, &public(1));
+        assert_eq!(pages.len(), 2, "then the three small ones together");
         assert_eq!(
-            rest.iter().map(|a| a.seq).collect::<Vec<_>>(),
-            vec![101, 102, 103, 104, 105]
+            pages[1].iter().map(|a| a.seq).collect::<Vec<_>>(),
+            [2, 3, 4]
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// Random record sizes, mostly small with some near the limit: every page
+        /// fits the byte budget unless it holds one artifact, and paging returns
+        /// each artifact exactly once, in order. Debug-mode hashing is slow, so the
+        /// sizes skew small to keep the case count useful.
+        #[test]
+        fn pages_fit_the_budget_and_neither_lose_nor_repeat_an_artifact(
+            sizes in proptest::collection::vec(
+                prop_oneof![
+                    3 => 0..4096_usize,
+                    1 => 0..(MAX_DOCUMENT_BYTES - 32),
+                ],
+                1..40,
+            ),
+        ) {
+            let mut log = ArtifactLog::default();
+            for size in &sizes {
+                let next = log.sign(&key(1), &document(&"x".repeat(*size))).unwrap();
+                log.insert(next).unwrap();
+            }
+            let total = sizes.len() as u64;
+            let mut after = 0;
+            let mut paged = Vec::new();
+            while after < total {
+                let page = log.page(&public(1), after);
+                prop_assert!(!page.is_empty(), "no progress after sequence {after}");
+                prop_assert!(
+                    page.len() == 1 || wire_len(&page) <= PAGE_BYTES,
+                    "a page of {} artifacts takes {} bytes",
+                    page.len(),
+                    wire_len(&page)
+                );
+                after = page.last().map_or(after, |last| last.seq);
+                paged.extend(page);
+            }
+            prop_assert_eq!(
+                paged.iter().map(|a| a.seq).collect::<Vec<_>>(),
+                (1..=total).collect::<Vec<_>>()
+            );
+        }
     }
 
     fn account(directory: &mut Directory, name: &str) -> (String, String) {
@@ -1390,5 +1574,96 @@ mod tests {
             signature: hex_encode(&identity_forgery()),
         };
         assert!(artifact.verify().is_err());
+    }
+
+    /// A hundred documents at the size limit would be about 6.4 MB in one page,
+    /// far over the 1 MiB frame. The pull must take several pages.
+    #[tokio::test]
+    async fn a_pull_of_maximum_size_documents_takes_several_pages() {
+        let mut author = Directory::new();
+        let (ann, credential) = account(&mut author, "Ann");
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, None);
+        for _ in 0..100 {
+            let document = author
+                .publish_document(
+                    &credential,
+                    "application/json",
+                    json!({ "text": "x".repeat(MAX_DOCUMENT_BYTES - 32) }),
+                    Vec::new(),
+                )
+                .unwrap();
+            let stored = service
+                .directory(
+                    Caller::default(),
+                    DirectoryAction::ReceiveArtifact { artifact: document },
+                )
+                .await
+                .unwrap();
+            assert_eq!(stored.stored, Some(Stored::New));
+        }
+
+        let server = endpoint().await;
+        let _router = Router::builder(server.clone())
+            .accept(
+                PULL_ALPN,
+                ArtifactPullProtocol::new(WorldHub::single(service)),
+            )
+            .spawn();
+        let client = endpoint().await;
+        let mut reader = Directory::new();
+        let outcome = pull(&client, loopback(&server), &ann, &mut reader)
+            .await
+            .unwrap();
+        assert_eq!(outcome.stored, 100);
+        assert!(outcome.refused.is_none());
+        assert_eq!(reader.artifacts().head_seq(&ann), 100);
+    }
+
+    /// A pull to an address nothing answers must end at its deadline, not wait out
+    /// the handshake.
+    #[tokio::test]
+    async fn a_pull_from_an_unanswered_address_ends_at_its_deadline() {
+        let client = endpoint().await;
+        let mut directory = Directory::new();
+        let started = Instant::now();
+        let error = pull_within(
+            &client,
+            unanswered_addr(),
+            &public(1),
+            &mut directory,
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+    }
+
+    /// A pull by node ID whose address lookup never answers must end at its deadline.
+    #[tokio::test]
+    async fn a_pull_whose_lookup_never_answers_ends_at_its_deadline() {
+        let client = endpoint_with_silent_lookup().await;
+        let mut directory = Directory::new();
+        let started = Instant::now();
+        let error = pull_within(
+            &client,
+            unanswered_id(),
+            &public(1),
+            &mut directory,
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
     }
 }
