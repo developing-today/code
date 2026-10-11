@@ -71,13 +71,17 @@ type Server struct {
 
 	httpSrv *http.Server
 	// httpServing counts the serve loops of httpSrv, so a drain can wait for
-	// them to exit. See drainHTTP.
+	// them to exit. See passConns.
 	httpServing sync.WaitGroup
-	tcpLn       net.Listener
-	unixLn      net.Listener
-	endpoint    string
-	version     string
-	started     time.Time
+	// tcpLn and unixLn are *connListener once Listen has run. They are the
+	// daemon's only accept path, so a handover can see every connection.
+	tcpLn  net.Listener
+	unixLn net.Listener
+	// conns tracks every connection the HTTP server holds, for a handover.
+	conns    connTracker
+	endpoint string
+	version  string
+	started  time.Time
 
 	// httpErr carries a failure from either HTTP server to Serve. Every server
 	// the daemon starts reports here, including one restored after a takeover
@@ -266,7 +270,8 @@ func (s *Server) Listen(tcpPort int) error {
 		unixLn.Close()
 		return fmt.Errorf("listen tcp: %w", err)
 	}
-	s.unixLn, s.tcpLn = unixLn, tcpLn
+	s.unixLn = newConnListener(unixLn, &s.conns, nil)
+	s.tcpLn = newConnListener(tcpLn, &s.conns, nil)
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
 	return s.publish()
@@ -297,6 +302,7 @@ func (s *Server) startHTTP() {
 	srv := &http.Server{
 		Handler:           s.refuseBrowserPages(s.trackActivity(mux)),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
+		ConnState:         s.observeConn,
 	}
 	s.httpSrv = srv
 	for _, ln := range []net.Listener{s.unixLn, s.tcpLn} {

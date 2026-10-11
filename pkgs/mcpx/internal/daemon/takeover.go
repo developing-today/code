@@ -39,6 +39,7 @@ const (
 	kindState    = "state"
 	kindPools    = "pools"
 	kindPipe     = "pipe"
+	kindConn     = "conn"
 	kindEnd      = "end"
 	kindAck      = "ack"
 	kindNack     = "nack"
@@ -214,6 +215,9 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if hc, ok := conn.(*handoffConn); ok {
+		conn = hc.Conn
+	}
 	defer conn.Close()
 	uc, ok := conn.(*net.UnixConn)
 	if !ok || rw.Reader.Buffered() > 0 {
@@ -245,16 +249,16 @@ func (s *Server) handOver(c *net.UnixConn) error {
 		_ = sendFrame(c, takeoverFrame{Kind: kindNack, Error: "unsupported takeover protocol"}, nil)
 		return fmt.Errorf("successor speaks an unsupported takeover protocol")
 	}
-	ul, ok1 := s.unixLn.(*net.UnixListener)
-	tl, ok2 := s.tcpLn.(*net.TCPListener)
+	ul, ok1 := s.unixLn.(*connListener)
+	tl, ok2 := s.tcpLn.(*connListener)
 	if !ok1 || !ok2 {
 		return errors.New("the daemon's listeners are not sockets")
 	}
-	unixDup, err := ul.File()
+	unixDup, err := ul.file()
 	if err != nil {
 		return err
 	}
-	tcpDup, err := tl.File()
+	tcpDup, err := tl.file()
 	if err != nil {
 		unixDup.Close()
 		return err
@@ -275,16 +279,16 @@ func (s *Server) handOver(c *net.UnixConn) error {
 		return err
 	}
 
-	// From here the HTTP listeners are gone until a restore.
-	ul.SetUnlinkOnClose(false)
+	// From here the listeners are the successor's too. This process stops
+	// accepting on them, so the socket file must outlive it.
+	ul.keepSocketFile()
 	if err := s.reg.SaveCache(); err != nil {
 		s.logger.Printf("takeover: save cache: %v", err)
 	}
-	drain, cancel := context.WithTimeout(context.Background(), s.set.Duration("http.shutdownGrace"))
-	defer cancel()
-	if err := s.drainHTTP(drain); err != nil {
+	passing, err := s.passConns(ul, tl, s.set.Duration("http.shutdownGrace"))
+	if err != nil {
 		s.logger.Printf("takeover: draining http: %v", err)
-		_ = s.resumeHTTP(unixDup, tcpDup)
+		_ = s.restoreHTTP(unixDup, tcpDup, passing)
 		return fmt.Errorf("draining http: %w", err)
 	}
 	_ = c.SetDeadline(time.Now().Add(s.set.Duration("daemon.takeoverTimeout")))
@@ -293,7 +297,11 @@ func (s *Server) handOver(c *net.UnixConn) error {
 		if ho != nil {
 			ho.Restore()
 		}
-		return s.resumeHTTP(unixDup, tcpDup)
+		return s.restoreHTTP(unixDup, tcpDup, passing)
+	}
+	if err := s.sendConns(c, passing); err != nil {
+		_ = restore(nil)
+		return err
 	}
 	ho, err := s.reg.Detach(s.set.Duration("http.shutdownGrace"))
 	if err != nil {
@@ -322,6 +330,8 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	ho.Commit()
 	s.committed.Store(true)
 	s.settleUpgrade(nil)
+	// The successor has every connection and its own copy of each socket.
+	s.releasePassed(passing)
 	s.logger.Printf("takeover committed; handing over to the successor")
 	_ = c.SetReadDeadline(time.Now().Add(s.set.Duration("daemon.takeoverTimeout")))
 	_, _ = io.Copy(io.Discard, c)
@@ -329,26 +339,35 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	return nil
 }
 
-// drainHTTP stops the HTTP server without losing a request the listeners have
-// already taken. The listeners stay open in the successor's hands, so a call
-// that arrives now waits in the socket's backlog and the successor serves it.
+// passConns stops this process accepting connections and gathers every
+// connection it holds into the set the successor takes. The listeners stay open
+// in the successor's hands, so a call that arrives now waits in the socket's
+// backlog and the successor serves it.
 //
-// Keep-alives are turned off first, so a connection the old daemon holds open
-// between requests is closed after its next answer rather than left to take a
-// request it would then have to drop.
-//
-// Shutdown does not see a connection that the accept loop has taken but not
-// yet recorded. The serve loops are waited for and Shutdown is run again, which
-// covers that connection: the old daemon exits once the successor has the
-// children, and a connection it had accepted and not served would be cut off
-// there.
-func (s *Server) drainHTTP(ctx context.Context) error {
-	s.httpSrv.SetKeepAlivesEnabled(false)
-	if err := s.httpSrv.Shutdown(ctx); err != nil {
-		return err
+// A connection that is in a request is left to finish here, and it is frozen
+// when it goes idle, so a client that reuses it finds the successor reading it.
+// The set is complete when this returns: no connection stays open here, which
+// means nothing in this process can read or answer on one after the successor
+// commits. On the grace period running out it returns what it had frozen, so
+// that the caller can put it back.
+func (s *Server) passConns(ul, tl *connListener, grace time.Duration) ([]*handoffConn, error) {
+	s.conns.setHandingOver(true)
+	ul.stop()
+	tl.stop()
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	tick := time.NewTicker(defaults.TakeoverPoll)
+	defer tick.Stop()
+	for {
+		if s.conns.sweep() == 0 {
+			return s.conns.takePassing(), nil
+		}
+		select {
+		case <-ctx.Done():
+			return s.conns.takePassing(), fmt.Errorf("connections still open after %s", grace)
+		case <-tick.C:
+		}
 	}
-	s.httpServing.Wait()
-	return s.httpSrv.Shutdown(ctx)
 }
 
 func (s *Server) sendChildren(c *net.UnixConn, ho *RegistryHandoff) error {
@@ -375,20 +394,68 @@ func (s *Server) sendChildren(c *net.UnixConn, ho *RegistryHandoff) error {
 	return nil
 }
 
-// resumeHTTP serves again on the listeners a failed handoff kept.
-func (s *Server) resumeHTTP(unixF, tcpF *os.File) error {
+// sendConns passes each frozen connection to the successor, one descriptor per
+// frame, so that the successor can attach each to its own listener.
+func (s *Server) sendConns(c *net.UnixConn, passing []*handoffConn) error {
+	for _, hc := range passing {
+		f, err := hc.file()
+		if err != nil {
+			return err
+		}
+		err = exchange(c, kindConn, nil, f)
+		closeFile(f)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// releasePassed closes this process's copies of connections the successor now
+// holds. Each socket stays open for the successor.
+func (s *Server) releasePassed(passing []*handoffConn) {
+	for _, hc := range passing {
+		hc.release()
+	}
+}
+
+// restoreHTTP serves again after a handover that did not complete. Listeners
+// are put back from the duplicates kept for that purpose, and every frozen
+// connection is given back to the new server, which reads it again.
+func (s *Server) restoreHTTP(unixF, tcpF *os.File, passing []*handoffConn) error {
+	s.conns.setHandingOver(false)
+	// A connection can only have been frozen while the handover was on, so
+	// this collects everything that was.
+	passing = append(passing, s.conns.takePassing()...)
+	ctx, cancel := context.WithTimeout(context.Background(), s.set.Duration("http.shutdownGrace"))
+	defer cancel()
+	back := s.conns.waitGone(ctx, defaults.TakeoverPoll, passing)
+	for _, hc := range back {
+		hc.thaw()
+	}
 	ul, err := net.FileListener(unixF)
 	if err != nil {
 		s.logger.Printf("takeover: restoring the unix listener: %v", err)
+		s.releasePassed(back)
 		return err
 	}
 	tl, err := net.FileListener(tcpF)
 	if err != nil {
 		s.logger.Printf("takeover: restoring the tcp listener: %v", err)
 		ul.Close()
+		s.releasePassed(back)
 		return err
 	}
-	s.unixLn, s.tcpLn = ul, tl
+	var unixQ, tcpQ []*handoffConn
+	for _, hc := range back {
+		if hc.LocalAddr().Network() == "unix" {
+			unixQ = append(unixQ, hc)
+		} else {
+			tcpQ = append(tcpQ, hc)
+		}
+	}
+	s.unixLn = newConnListener(ul, &s.conns, unixQ)
+	s.tcpLn = newConnListener(tl, &s.conns, tcpQ)
 	s.startHTTP()
 	return nil
 }
@@ -410,6 +477,7 @@ type takeoverIn struct {
 	pools     []pool.PoolHandoff
 	leases    map[string]leaseRecord
 	pipes     map[takeoverPipe]*os.File
+	conns     []net.Conn
 }
 
 func (in *takeoverIn) close() {
@@ -419,6 +487,10 @@ func (in *takeoverIn) close() {
 	for _, f := range in.pipes {
 		closeFile(f)
 	}
+	for _, c := range in.conns {
+		_ = c.Close()
+	}
+	in.conns = nil
 }
 
 // TakeOver receives the daemon running on this socket and serves in its place.
@@ -508,6 +580,18 @@ func (s *Server) receive(in *takeoverIn, f takeoverFrame, fd *os.File) error {
 			return errors.New("pipe frame without a descriptor")
 		}
 		in.pipes[p] = fd
+	case kindConn:
+		if fd == nil {
+			return errors.New("connection frame without a socket")
+		}
+		// FileConn duplicates the descriptor, and the frame's copy is not kept:
+		// the connection is what this process owns from here.
+		nc, err := net.FileConn(fd)
+		if err != nil {
+			return err
+		}
+		closeFile(fd)
+		in.conns = append(in.conns, nc)
 	default:
 		return fmt.Errorf("unexpected frame %q", f.Kind)
 	}
@@ -561,12 +645,18 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 		ad.Abort()
 		ul.Close()
 		tl.Close()
+		in.close()
 		uc.Close()
 		return nil, err
 	}
 	_ = uc.SetDeadline(time.Time{})
 
-	s.unixLn, s.tcpLn = ul, tl
+	// The connections are served before any new one is accepted, so a client
+	// that was holding one is answered by this process.
+	unixQ, tcpQ := splitPassed(in.conns)
+	in.conns = nil
+	s.unixLn = newConnListener(ul, &s.conns, unixQ)
+	s.tcpLn = newConnListener(tl, &s.conns, tcpQ)
 	s.endpoint = in.state.Endpoint
 	if t, err := time.Parse(time.RFC3339Nano, in.state.Started); err == nil {
 		s.started = t

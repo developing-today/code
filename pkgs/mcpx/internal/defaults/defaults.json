@@ -191,6 +191,7 @@
     "socketProbeTimeout": "500ms",
     "takeoverTimeout": "15s",
     "takeoverMaxFrame": "16MB",
+    "takeoverPoll": "5ms",
     "execHashMax": "1MB",
     "execCheckInterval": "30s",
     "execDrainTimeout": "10s",

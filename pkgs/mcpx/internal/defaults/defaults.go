@@ -223,6 +223,7 @@ type Defaults struct {
 		SocketProbeTimeout   string `json:"socketProbeTimeout"`
 		TakeoverTimeout      string `json:"takeoverTimeout"`
 		TakeoverMaxFrame     string `json:"takeoverMaxFrame"`
+		TakeoverPoll         string `json:"takeoverPoll"`
 		ExecHashMax          string `json:"execHashMax"`
 		ExecCheckInterval    string `json:"execCheckInterval"`
 		ExecDrainTimeout     string `json:"execDrainTimeout"`
@@ -683,6 +684,7 @@ var (
 	SocketProbeTimeout   = mustDur(builtin.Limits.SocketProbeTimeout, "limits.socketProbeTimeout")
 	TakeoverTimeout      = mustDur(builtin.Limits.TakeoverTimeout, "limits.takeoverTimeout")
 	TakeoverMaxFrame     = mustBytes(builtin.Limits.TakeoverMaxFrame, "limits.takeoverMaxFrame")
+	TakeoverPoll         = mustDur(builtin.Limits.TakeoverPoll, "limits.takeoverPoll")
 	// ExecHashMax is the largest executable whose contents are hashed to
 	// tell whether a stdio server's binary changed. Larger files are told
 	// apart by device, inode, size and mtime instead.
