@@ -97,6 +97,15 @@ const resolveModelEnum = (requestedModel, requestedEffort, liveModels) => {
     };
   }
 
+  // A bare family id ("gemini-3.5-flash") with no catalog entry of its own
+  // resolves to one of its effort variants, preferring medium.
+  const variant = ['medium', 'low', 'high', 'extra-low']
+    .map(eff => liveModels[`${modelStr}-${eff}`])
+    .find(v => v?.model);
+  if (variant) {
+    return { modelEnum: variant.model, displayName: variant.displayName || modelStr, isCascade };
+  }
+
   // Direct pass-through if enum name
   if (modelStr.startsWith('model_')) {
     return { modelEnum: modelStr.toUpperCase(), displayName: modelStr, isCascade };
@@ -157,12 +166,35 @@ class LanguageServerManager {
     }
   }
 
-  detectRunningInstance() {
+  // Every running language server that might be ours to attach to, newest
+  // first. Its HTTP port is logged rather than passed as a flag, and an HTTPS
+  // listener is logged the same way, so ensureActive heartbeats each candidate
+  // and keeps the one that answers.
+  detectRunningInstances() {
     if (process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
       const parts = process.env.ANTIGRAVITY_LS_ADDRESS.split(':');
       const port = parseInt(parts[parts.length - 1], 10);
-      return { port, token: process.env.ANTIGRAVITY_CSRF_TOKEN };
+      return [{ port, token: process.env.ANTIGRAVITY_CSRF_TOKEN }];
     }
+
+    const candidates = [];
+    const seen = new Set();
+    const add = (port, token) => {
+      const key = `${port}:${token}`;
+      if (port > 0 && !seen.has(key)) {
+        seen.add(key);
+        candidates.push({ port, token });
+      }
+    };
+
+    let loggedPorts = [];
+    try {
+      const logContent = fs.readFileSync(`${process.env.HOME}/.config/Antigravity/logs/language_server.log`, 'utf-8');
+      loggedPorts = logContent.split('\n').reverse()
+        .map(l => l.match(/listening on random port at (\d+) for HTTP\b/))
+        .filter(Boolean)
+        .map(m => parseInt(m[1], 10));
+    } catch {}
 
     try {
       const psOutput = execSync('ps aux | grep language_server | grep -v grep', { encoding: 'utf-8' });
@@ -173,24 +205,12 @@ class LanguageServerManager {
         const token = csrfMatch[1];
 
         const portMatch = line.match(/--http_server_port\s+(\d+)/);
-        if (portMatch && parseInt(portMatch[1], 10) > 0) {
-          return { port: parseInt(portMatch[1], 10), token };
-        }
-
-        try {
-          const logContent = fs.readFileSync(`${process.env.HOME}/.config/Antigravity/logs/language_server.log`, 'utf-8');
-          const lines = logContent.split('\n').reverse().slice(0, 100);
-          for (const l of lines) {
-            const m = l.match(/listening on random port at (\d+) for HTTP/);
-            if (m) {
-              return { port: parseInt(m[1], 10), token };
-            }
-          }
-        } catch {}
+        if (portMatch) add(parseInt(portMatch[1], 10), token);
+        for (const port of loggedPorts) add(port, token);
       }
     } catch {}
 
-    return null;
+    return candidates;
   }
 
   async ensureActive() {
@@ -199,15 +219,13 @@ class LanguageServerManager {
       if (healthy) return { port: this.activeHttpPort, token: this.activeCsrfToken };
     }
 
-    const detected = this.detectRunningInstance();
-    if (detected) {
-      const healthy = await this.checkHeartbeat(detected.port, detected.token);
-      if (healthy) {
-        console.log(`Connected to active Antigravity Language Server on port ${detected.port}`);
-        this.activeHttpPort = detected.port;
-        this.activeCsrfToken = detected.token;
+    for (const candidate of this.detectRunningInstances()) {
+      if (await this.checkHeartbeat(candidate.port, candidate.token)) {
+        console.log(`Connected to active Antigravity Language Server on port ${candidate.port}`);
+        this.activeHttpPort = candidate.port;
+        this.activeCsrfToken = candidate.token;
         this.isManaged = false;
-        return detected;
+        return candidate;
       }
     }
 

@@ -2485,20 +2485,6 @@
             "output": 65536
           }
         },
-        "gemini-3.6-flash-tiered": {
-          "name": "gemini-3.6-flash-tiered (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.7-flash-tiered": {
-          "name": "gemini-3.7-flash-tiered (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
         "gemini-3.8-flash-tiered": {
           "name": "gemini-3.8-flash-tiered (Direct LS)",
           "limit": {

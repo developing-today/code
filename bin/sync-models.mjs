@@ -11,6 +11,7 @@ const OPENCODE_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
 const HOME_DIR = process.env.HOME || '/home/user';
 const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
+const LS_LOG_PATH = path.join(HOME_DIR, '.config/Antigravity/logs/language_server.log');
 
 console.log(`[sync-models] Mode: ${DRY_RUN ? 'DRY-RUN (no files will be changed)' : 'APPLY'}`);
 
@@ -31,6 +32,55 @@ async function fetchModelsDev() {
   }
 }
 
+// The language server listens on a random port each time it starts. Its HTTP
+// port is logged rather than passed as a flag, and an HTTPS listener is logged
+// the same way, so try each candidate port with each candidate token and keep
+// the first one that returns a catalog.
+async function fetchLiveCatalog() {
+  const tokens = [];
+  const ports = [];
+
+  if (process.env.ANTIGRAVITY_CSRF_TOKEN) tokens.push(process.env.ANTIGRAVITY_CSRF_TOKEN);
+
+  try {
+    const ps = execSync('ps aux | grep language_server | grep -v grep', { encoding: 'utf-8' });
+    for (const line of ps.split('\n')) {
+      const token = line.match(/--csrf_token\s+([a-zA-Z0-9_-]+)/);
+      if (token) tokens.push(token[1]);
+      const port = line.match(/--http_server_port\s+(\d+)/);
+      if (port && Number(port[1]) > 0) ports.push(Number(port[1]));
+    }
+  } catch {}
+
+  try {
+    const log = fs.readFileSync(LS_LOG_PATH, 'utf-8').split('\n').reverse();
+    for (const line of log) {
+      const m = line.match(/listening on random port at (\d+) for HTTP\b/);
+      if (m) ports.push(Number(m[1]));
+    }
+  } catch {}
+
+  for (const port of new Set(ports)) {
+    for (const token of new Set(tokens)) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetAvailableModels`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-codeium-csrf-token': token
+          },
+          body: '{}',
+          signal: AbortSignal.timeout(3000)
+        });
+        if (!res.ok) continue;
+        const models = (await res.json()).response?.models || {};
+        if (Object.keys(models).length > 0) return models;
+      } catch {}
+    }
+  }
+  return null;
+}
+
 // -----------------------------------------------------------------------------
 // 2. Discover Antigravity Models (via Language Server RPC or agy CLI)
 // -----------------------------------------------------------------------------
@@ -39,49 +89,24 @@ async function discoverAntigravityModels() {
   const discovered = [];
 
   // Try 1: Language Server RPC GetAvailableModels
-  try {
-    let port = 46713;
-    let token = process.env.ANTIGRAVITY_CSRF_TOKEN || null;
-
-    if (!token) {
-      try {
-        const ps = execSync('ps aux | grep language_server | grep -v grep', { encoding: 'utf-8' });
-        const m = ps.match(/--csrf_token\s+([a-zA-Z0-9_-]+)/);
-        if (m) token = m[1];
-      } catch {}
-    }
-
-    if (token) {
-      const res = await fetch(`http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetAvailableModels`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-codeium-csrf-token': token
-        },
-        body: '{}',
-        signal: AbortSignal.timeout(3000)
+  const models = await fetchLiveCatalog();
+  if (models) {
+    for (const [key, val] of Object.entries(models)) {
+      if (key.startsWith('tab_') || key.startsWith('chat_')) continue;
+      discovered.push({
+        id: key,
+        name: val.displayName || key,
+        modelEnum: val.model,
+        maxTokens: val.maxTokens || 65536,
+        supportsThinking: Boolean(val.supportsThinking),
+        source: 'language-server'
       });
-      if (res.ok) {
-        const json = await res.json();
-        const models = json.response?.models || {};
-        for (const [key, val] of Object.entries(models)) {
-          if (key.startsWith('tab_') || key.startsWith('chat_')) continue;
-          discovered.push({
-            id: key,
-            name: val.displayName || key,
-            modelEnum: val.model,
-            maxTokens: val.maxTokens || 65536,
-            supportsThinking: Boolean(val.supportsThinking),
-            source: 'language-server'
-          });
-        }
-        if (discovered.length > 0) {
-          console.log(`[sync-models] Discovered ${discovered.length} models from Antigravity Language Server`);
-          return discovered;
-        }
-      }
     }
-  } catch {}
+    if (discovered.length > 0) {
+      console.log(`[sync-models] Discovered ${discovered.length} models from Antigravity Language Server`);
+      return discovered;
+    }
+  }
 
   // Try 2: agy CLI models command
   try {
@@ -375,6 +400,12 @@ async function run() {
     if (DRY_RUN) {
       console.log('[sync-models] Dry run complete. No files written.');
     } else {
+      // The rewrite below is plain JSON, which would drop any comments in the
+      // file, so refuse rather than lose them.
+      if (origConfigText.split('\n').some(l => /^\s*\/\/|\s\/\//.test(l) || /^\s*\/\*/.test(l))) {
+        console.error(`[sync-models] Error: ${OPENCODE_CONFIG_PATH} contains comments; refusing to rewrite it and drop them.`);
+        process.exit(1);
+      }
       const backupPath = `${OPENCODE_CONFIG_PATH}.backup`;
       fs.writeFileSync(backupPath, origConfigText);
       console.log(`[sync-models] Created backup at ${backupPath}`);
