@@ -195,8 +195,7 @@ impl WorldClient {
     ///
     /// Fails if the node is unreachable or does not speak [`WORLD_ALPN`].
     pub async fn connect(endpoint: &Endpoint, addr: impl Into<EndpointAddr>) -> Result<Self> {
-        let conn = endpoint
-            .connect(addr, WORLD_ALPN)
+        let conn = crate::connectivity::connect(endpoint, addr, WORLD_ALPN)
             .await
             .context("connect to world host")?;
         let (send, recv) = conn.open_bi().await.context("open world session")?;

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,10 +36,14 @@ type StdioTransport struct {
 	stderrDone chan struct{}
 	stderrTo   io.Writer
 
+	// writeMu serialises frames on stdin. Send holds it while blocked in a
+	// write, so Close must not wait for it: closed is an atomic instead, and
+	// Close sets it and then closes stdin, which is what releases a blocked
+	// write.
 	writeMu sync.Mutex
-	closeMu sync.Mutex
-	closed  bool
+	closed  atomic.Bool
 	// detached is set while another process owns the child's pipes; see Detach.
+	// Guarded by writeMu.
 	detached bool
 	// readMu is held by Recv, so Detach can wait out a read in progress.
 	readMu sync.Mutex
@@ -172,7 +177,7 @@ func (t *StdioTransport) startStderr() {
 func (t *StdioTransport) Send(ctx context.Context, msg []byte) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	if t.closed || t.detached {
+	if t.closed.Load() || t.detached {
 		return errors.New("stdio transport closed")
 	}
 	if _, err := t.stdin.Write(append(msg, '\n')); err != nil {
@@ -283,14 +288,13 @@ func waitOrTimeout(ch <-chan struct{}, d time.Duration) <-chan struct{} {
 // children (chrome-devtools-mcp's browser) end with it.
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#stdio
 func (t *StdioTransport) Close() error {
-	t.closeMu.Lock()
-	if t.closed {
-		t.closeMu.Unlock()
+	// The flag is set before stdin is closed, so it is already visible to any
+	// Send the close wakes, and only the first Close goes on to tear down.
+	if !t.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	t.closed = true
-	t.closeMu.Unlock()
 
+	// Closing stdin is also what unblocks a Send stuck in a full pipe.
 	_ = t.stdin.Close()
 	if t.pid == 0 {
 		return nil

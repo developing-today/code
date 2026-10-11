@@ -3155,3 +3155,31 @@ func withoutMCPXVars(env []string) []string {
 	}
 	return out
 }
+
+// withoutModelCLIs makes sure no model is reachable from the daemon this test
+// starts, whatever the machine running the suite has installed.
+//
+// ResolveProvider takes the first of: OpenAI variables, then OPENCODE_BINARY,
+// then opencode on PATH, then CLAUDE_BIN, then claude on PATH. The harness
+// inherits the developer's environment, so a machine with opencode installed
+// reached a real model on every "no model" assertion, and the result depended
+// on that machine's CLIs and network. Here both CLIs point at a stub that
+// answers nothing, and the OpenAI pair is dropped so it cannot win first.
+func (e *env) withoutModelCLIs(t *testing.T) {
+	t.Helper()
+	stub := filepath.Join(t.TempDir(), "no-model")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\necho 'no model in this test' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dropped := map[string]bool{
+		"OPENCODE_BINARY": true, "OPENCODE_V2_BIN": true, "CLAUDE_BIN": true,
+		"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true, "OPENAI_MODEL": true,
+	}
+	out := make([]string, 0, len(e.envVars)+2)
+	for _, kv := range e.envVars {
+		if key, _, _ := strings.Cut(kv, "="); !dropped[key] {
+			out = append(out, kv)
+		}
+	}
+	e.envVars = append(out, "OPENCODE_BINARY="+stub, "CLAUDE_BIN="+stub)
+}

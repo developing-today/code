@@ -78,7 +78,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use futures_lite::StreamExt;
-use iroh::endpoint::{Connection, Endpoint, presets};
+use iroh::endpoint::{Connection, Endpoint};
 use iroh_base::EndpointId;
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, Hash,
@@ -213,10 +213,11 @@ impl ReplContext {
             let node_id: EndpointId = node_str.parse()?;
 
             let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-            let endpoint = Endpoint::builder(presets::N0)
-                .secret_key(client_key)
-                .bind()
-                .await?;
+            let endpoint =
+                crate::connectivity::public_builder(crate::connectivity::RelayPolicy::N0)
+                    .secret_key(client_key)
+                    .bind()
+                    .await?;
 
             let store = open_store(true).await?;
             return Ok(Self {
@@ -323,7 +324,8 @@ impl ReplContext {
                 {
                     return Ok(meta_conn.as_ref().unwrap());
                 }
-                let conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
+                let conn = crate::connectivity::connect(endpoint, endpoint_addr.clone(), META_ALPN)
+                    .await?;
                 *meta_conn = Some(conn);
                 Ok(meta_conn.as_ref().unwrap())
             }
@@ -338,7 +340,7 @@ impl ReplContext {
                 {
                     return Ok(meta_conn.as_ref().unwrap());
                 }
-                let conn = endpoint.connect(*node_id, META_ALPN).await?;
+                let conn = crate::connectivity::connect(endpoint, *node_id, META_ALPN).await?;
                 *meta_conn = Some(conn);
                 Ok(meta_conn.as_ref().unwrap())
             }
@@ -370,7 +372,9 @@ impl ReplContext {
                 {
                     return Ok(blobs_conn.as_ref().unwrap());
                 }
-                let conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+                let conn =
+                    crate::connectivity::connect(endpoint, endpoint_addr.clone(), BLOBS_ALPN)
+                        .await?;
                 *blobs_conn = Some(conn);
                 Ok(blobs_conn.as_ref().unwrap())
             }
@@ -385,7 +389,7 @@ impl ReplContext {
                 {
                     return Ok(blobs_conn.as_ref().unwrap());
                 }
-                let conn = endpoint.connect(*node_id, BLOBS_ALPN).await?;
+                let conn = crate::connectivity::connect(endpoint, *node_id, BLOBS_ALPN).await?;
                 *blobs_conn = Some(conn);
                 Ok(blobs_conn.as_ref().unwrap())
             }
@@ -849,7 +853,7 @@ impl ReplContext {
             anyhow!("@NODE_ID requires a connected mode (use 'id repl' with a running serve)")
         })?;
 
-        let conn = endpoint.connect(node_id, META_ALPN).await?;
+        let conn = crate::connectivity::connect(endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::List)?;
         send.write_all(&req).await?;
@@ -961,7 +965,7 @@ impl ReplContext {
         })?;
         let output = output.unwrap_or(name);
 
-        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Get {
             filename: name.to_owned(),
@@ -973,7 +977,8 @@ impl ReplContext {
 
         match resp {
             MetaResponse::Get { hash: Some(hash) } => {
-                let blobs_conn = endpoint.connect(node_id, BLOBS_ALPN).await?;
+                let blobs_conn =
+                    crate::connectivity::connect(endpoint, node_id, BLOBS_ALPN).await?;
                 let store_handle = self.store_handle();
                 store_handle.remote().fetch(blobs_conn, hash).await?;
                 export_blob(&store_handle, hash, output).await?;
@@ -1004,7 +1009,7 @@ impl ReplContext {
             anyhow!("@NODE_ID requires a connected mode (use 'id repl' with a running serve)")
         })?;
 
-        let conn = endpoint.connect(node_id, META_ALPN).await?;
+        let conn = crate::connectivity::connect(endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Delete {
             filename: name.to_owned(),
@@ -1092,7 +1097,7 @@ impl ReplContext {
             anyhow!("@NODE_ID requires a connected mode (use 'id repl' with a running serve)")
         })?;
 
-        let conn = endpoint.connect(node_id, META_ALPN).await?;
+        let conn = crate::connectivity::connect(endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;

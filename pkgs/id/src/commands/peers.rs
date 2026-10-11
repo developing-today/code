@@ -55,7 +55,6 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
-use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
@@ -208,7 +207,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
 
     let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
     let result = async {
-        let meta_conn = endpoint.connect(endpoint_addr, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(&endpoint, endpoint_addr, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
@@ -238,17 +237,17 @@ async fn query_remote_peers(
     }
     let node_id: EndpointId = node_str.parse()?;
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-    if no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
+    let mut builder = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+    )
+    .secret_key(client_key);
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }
     let endpoint = builder.bind().await?;
 
     let result = async {
-        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(&endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
@@ -356,10 +355,10 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     use iroh_gossip::net::Gossip;
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key.clone());
-    if options.no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
+    let mut builder = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(options.no_relay),
+    )
+    .secret_key(client_key.clone());
     if !options.no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }

@@ -406,7 +406,11 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prov := s.resolveProvider()
-	if (pol.PromptSample != "ask" || s.reg.broker == nil) && prov == nil {
+	// prompt.sample is whether mcpx may ask a model at all. A CLI found on
+	// this machine is not permission to ask one, so only "ask" lifts the
+	// default; without it a host with opencode installed paid the full
+	// sampling deadline on every unmatched prompt.
+	if pol.PromptSample != "ask" || (s.reg.broker == nil && prov == nil) {
 		out.Model = "none"
 		out.Message = "no recipe matched, and generating one is off " +
 			"(prompt.sample is " + pol.PromptSample + "). " +

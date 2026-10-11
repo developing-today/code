@@ -16,7 +16,7 @@ use std::future::Future;
 use anyhow::{Context, Result, bail};
 use iroh::{
     EndpointAddr,
-    endpoint::{Connection, Endpoint, RelayMode, presets},
+    endpoint::{Connection, Endpoint},
 };
 use iroh_base::EndpointId;
 
@@ -75,7 +75,7 @@ impl MetaClient {
     pub async fn open() -> Result<Self> {
         if let Some(info) = get_serve_info().await {
             let (endpoint, addr) = create_local_client_endpoint(&info).await?;
-            let conn = endpoint.connect(addr, META_ALPN).await?;
+            let conn = crate::connectivity::connect(&endpoint, addr, META_ALPN).await?;
             Ok(Self::Remote { endpoint, conn })
         } else {
             Ok(Self::Local(Box::new(LocalNode::open(false).await?)))
@@ -85,14 +85,14 @@ impl MetaClient {
     /// Connect to a specific peer by node ID.
     pub async fn connect_node(node: EndpointId, no_relay: bool) -> Result<Self> {
         let key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-        let mut builder = Endpoint::builder(presets::N0).secret_key(key);
-        if no_relay {
-            builder = builder.relay_mode(RelayMode::Disabled);
-        }
-        let endpoint = builder.bind().await?;
-        let conn = endpoint
-            .connect(EndpointAddr::from(node), META_ALPN)
-            .await?;
+        let endpoint = crate::connectivity::public_builder(
+            crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+        )
+        .secret_key(key)
+        .bind()
+        .await?;
+        let conn =
+            crate::connectivity::connect(&endpoint, EndpointAddr::from(node), META_ALPN).await?;
         Ok(Self::Remote { endpoint, conn })
     }
 

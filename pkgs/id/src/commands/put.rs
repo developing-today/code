@@ -52,10 +52,7 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use iroh::{
-    EndpointAddr,
-    endpoint::{Endpoint, RelayMode, presets},
-};
+use iroh::{EndpointAddr, endpoint::Endpoint};
 use iroh_base::EndpointId;
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobFormat, Hash,
@@ -112,7 +109,7 @@ pub async fn push_and_name(
     name: &str,
     hash: Hash,
 ) -> Result<()> {
-    let blobs_conn = endpoint.connect(target.clone(), BLOBS_ALPN).await?;
+    let blobs_conn = crate::connectivity::connect(endpoint, target.clone(), BLOBS_ALPN).await?;
     let push_request = PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
     store
         .remote()
@@ -124,7 +121,7 @@ pub async fn push_and_name(
              server's `--allow-node` or `.iroh-allowed`)",
         )?;
 
-    let meta_conn = endpoint.connect(target, META_ALPN).await?;
+    let meta_conn = crate::connectivity::connect(endpoint, target, META_ALPN).await?;
     let req = MetaRequest::Put {
         filename: name.to_owned(),
         hash,
@@ -216,7 +213,8 @@ pub async fn cmd_put_hash(source: &str) -> Result<()> {
 
         let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-        let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+        let blobs_conn =
+            crate::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN).await?;
         let push_request =
             PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
         store_handle
@@ -333,11 +331,12 @@ pub async fn cmd_put_one_remote(
     let (hash, _guard) = add_raw(&store_handle, afs::read(&path_buf).await?).await?;
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-    if no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
-    let endpoint = builder.bind().await?;
+    let endpoint = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+    )
+    .secret_key(client_key)
+    .bind()
+    .await?;
 
     let result = push_and_name(
         &store_handle,

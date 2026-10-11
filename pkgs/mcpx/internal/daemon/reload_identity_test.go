@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/config"
+	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/testsupport"
 )
 
@@ -148,6 +149,15 @@ func TestReloadRestartsAPoolWhoseBinaryChangedAtTheSamePath(t *testing.T) {
 // reload keeps the pool and its child. Identity is by content for a small
 // file, not by the path it was reached by. A link re-pointed at a file with
 // different bytes is a different program and gets a new pool.
+//
+// Caveat: identity is the bytes of the file and nothing else. A program that
+// finds its own files relative to its real location, such as a node script
+// beside its node_modules, is kept when the link points at an identical copy
+// in another directory, and its child keeps the dependencies of the old
+// location. An operator who wants the new location in use restarts the server
+// (mcpx restart). Above limits.execHashMax the identity is the inode instead,
+// so an oversized copy is restarted; see
+// TestReloadRestartsAnOversizedProgramRePointedAtACopy.
 func TestReloadFollowsAForRePointedCommandByWhatItRuns(t *testing.T) {
 	fake := testsupport.FakeMCPBinary(t)
 	dir := t.TempDir()
@@ -199,6 +209,59 @@ func TestReloadFollowsAForRePointedCommandByWhatItRuns(t *testing.T) {
 	}
 	if pb2, _ := r.Pool("b"); pb2 == pb || childPID(t, pb2) == pid {
 		t.Fatal("a command re-pointed at different bytes kept its old child")
+	}
+	waitGone(t, pid)
+}
+
+// The inverse boundary. A full-size program is identified by its inode, so a
+// link re-pointed at a byte-identical copy of it is a different program and
+// the pool is replaced. This is the behaviour the re-pointed-command test
+// used to pin before identity was by content; it still holds above
+// limits.execHashMax, and the test keeps it so that the size rule is checked
+// and not just assumed.
+func TestReloadRestartsAnOversizedProgramRePointedAtACopy(t *testing.T) {
+	fake := testsupport.FakeMCPBinary(t)
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	link := filepath.Join(dir, "mcp-server")
+	copyProgram(t, fake, first, nil)
+	copyProgram(t, fake, second, nil)
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() <= defaults.ExecHashMax {
+		t.Fatalf("the test program is %d bytes, not over limits.execHashMax (%d)", st.Size(), defaults.ExecHashMax)
+	}
+
+	cfg := func() *config.Config {
+		return &config.Config{MCPServers: map[string]*config.Server{
+			"b": {Name: "b", Command: link},
+		}}
+	}
+	r, err := NewRegistry(cfg(), Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	pb, _ := r.Pool("b")
+	pid := childPID(t, pb)
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Reload(cfg()); err != nil {
+		t.Fatal(err)
+	}
+	if pb2, _ := r.Pool("b"); pb2 == pb || childPID(t, pb2) == pid {
+		t.Fatal("a re-pointed command over the hash limit kept its old child")
 	}
 	waitGone(t, pid)
 }

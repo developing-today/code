@@ -171,6 +171,7 @@ func TestPromptSaysPlainlyThatThereIsNoModel(t *testing.T) {
 	// The default. mcpx has no model, most callers cannot answer sampling,
 	// and pretending otherwise costs the whole deadline to discover.
 	e := newEnv(t, oneServer)
+	e.withoutModelCLIs(t)
 	writeRecipe(t, e, "say", sayRecipe)
 	e.run("ls")
 	out := e.run("prompt", "rotate the database credentials")

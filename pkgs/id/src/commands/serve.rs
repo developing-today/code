@@ -58,10 +58,7 @@ use anyhow::Result;
 use anyhow::ensure;
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
 use futures_lite::StreamExt;
-use iroh::{
-    endpoint::{Endpoint, RelayMode, presets},
-    protocol::Router,
-};
+use iroh::{endpoint::Endpoint, protocol::Router};
 use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
@@ -720,10 +717,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let store = open_store(ephemeral).await?;
     let store_handle = store.as_store();
 
-    let mut builder = Endpoint::builder(presets::N0).secret_key(key.clone());
-    if no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
+    let mut builder = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+    )
+    .secret_key(key.clone());
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }
@@ -1244,7 +1241,7 @@ async fn run_gossip_loop(
 
                 // Try to connect and send ListPeers RPC
                 let probe_result = tokio::time::timeout(PROBE_TIMEOUT, async {
-                    let conn = endpoint.connect(peer_id, META_ALPN).await?;
+                    let conn = crate::connectivity::connect(&endpoint, peer_id, META_ALPN).await?;
                     let (mut send, mut recv) = conn.open_bi().await?;
                     let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
                     send.write_all(&req).await?;

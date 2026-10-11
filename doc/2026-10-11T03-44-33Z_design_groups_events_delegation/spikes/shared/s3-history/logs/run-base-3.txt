@@ -1,0 +1,70 @@
+# base: unmodified p2panda-encryption
+## (a) full history (plain add) and post-compromise security
+m1 read by Bob: [Plain("m1: sent before Dan joins")]
+m1 read by Carol: [Plain("m1: sent before Dan joins")]
+m1 read by Dan (not welcomed yet): []
+Dan processes the welcome and reads: [Plain("m1: sent before Dan joins")]
+  member 3: is_welcomed=true members=[0, 1, 2, 3] secrets=1
+  welcome direct message: 750 bytes
+Carol processes the remove: [Removed]
+m2 read by Bob: [Plain("m2: sent after Carol is removed")]
+m2 read by Dan: [Plain("m2: sent after Carol is removed")]
+Carol cannot read m2: UnknownGroupSecret("8eeb4a12e2cdd5a77a5bb1948f0bd4dd92d47abbfd842d2e449a81bcc6b9c77f")
+attacker with pre-removal state cannot read m2: UnknownGroupSecret("8eeb4a12e2cdd5a77a5bb1948f0bd4dd92d47abbfd842d2e449a81bcc6b9c77f")
+
+## (a2) rotation after a compromise, with the compromised member still in the group
+Carol processes the update: []
+m3 read by Carol (still a member): [Plain("m3: sent after the rotation")]
+attacker with the copied state reads m3: [Application { plaintext: [109, 51, 58, 32, 115, 101, 110, 116, 32, 97, 102, 116, 101, 114, 32, 116, 104, 101, 32, 114, 111, 116, 97, 116, 105, 111, 110] }]
+
+## (b) welcome size against the number of past epochs (full history)
+  adder's bundle before add: 1, after add: 1; welcome bytes: 747; joiner's bundle after welcome: 1
+  adder's bundle before add: 4, after add: 4; welcome bytes: 1192; joiner's bundle after welcome: 4
+  adder's bundle before add: 8, after add: 8; welcome bytes: 1762; joiner's bundle after welcome: 8
+  adder's bundle before add: 16, after add: 16; welcome bytes: 2933; joiner's bundle after welcome: 16
+
+## (c) from_join: the welcome carries no earlier secret; one update rotates
+after the welcome:
+  member 3: is_welcomed=true members=[0, 1, 2, 3] secrets=0
+  Dan cannot read m1: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+  Dan cannot read a message sent between add and update: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+Dan processes the update: []
+after the update:
+  member 3: is_welcomed=true members=[0, 1, 2, 3] secrets=1
+  Dan holds Alice's pre-add secret: false
+m2 read by Bob: [Plain("m2: sent after the rotation")]
+m2 read by Dan: [Plain("m2: sent after the rotation")]
+  Dan still cannot read m1: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+
+## (c1) hazard: a pre-join application message reaches the joiner
+  welcome fails for Dan: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+
+## (d) ordering: dependencies named by control and application messages, 40 members
+ d1: 8 concurrent updates, then one merging update
+    create         author  0  named  0  heads  0
+    update         author  1  named  1  heads  1
+    update         author  2  named  1  heads  1
+    update         author  3  named  1  heads  1
+    update         author  4  named  1  heads  1
+    update         author  5  named  1  heads  1
+    update         author  6  named  1  heads  1
+    update         author  7  named  1  heads  1
+    update         author  8  named  1  heads  1
+    update         author  9  named  9  heads  8
+  d1: 10 control messages; named max 9 (over 32: 0); heads max 8
+ d2: 40 concurrent updates, then one merging update
+    merge by member 0: named 40, heads 40
+  d2 updates: 42 control messages; named max 40 (over 32: 1); heads max 40
+ d3: 40 sequential updates, then 40 application messages
+  d3: 41 control messages; named max 39 (over 32: 7); heads max 1
+  d3: 40 app messages; named max 40 (over 32: 40); heads max 1
+    member 1's update (in sequence): named 1, heads 1
+
+## (e) pre-key lifetime: expired bundles at registry and first contact
+  Bob's and Dan's bundles expire in about 2 seconds; waiting 4
+  E1 update with Bob's session after his bundle expired: ok. Bob's secrets: 2 ([])
+  E2 add Dan, first contact: blocked: Dcgka(PreKeyRegistry(KeyBundlesExpired))
+  E3 registry rejects an expired bundle on insert: KeyBundle(Lifetime(InvalidLifetime))
+  default lifetime: 7257600 s from now (84.00 days)
+
+EXIT=0
