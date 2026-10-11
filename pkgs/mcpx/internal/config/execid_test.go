@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dezren39/mcpx/internal/defaults"
 )
 
 func writeExec(t *testing.T, path, body string) {
@@ -24,8 +26,11 @@ func TestExecIdentityFollowsTheExecutableNotTheCommandName(t *testing.T) {
 	r := &Resolved{Server: &Server{Command: "tool", Env: map[string]string{"PATH": filepath.Join(dir, "bin")}}}
 
 	first := r.ExecIdentity()
-	if !strings.HasPrefix(first, bin+"|") {
-		t.Fatalf("identity %q does not name the resolved file %s", first, bin)
+	if !strings.HasPrefix(first, "sha256:") {
+		t.Fatalf("identity %q of a small file is not its content hash", first)
+	}
+	if st, ok := r.ExecStamp(); !ok || st.Path != bin {
+		t.Fatalf("stamp %+v does not name the resolved file %s", st, bin)
 	}
 	if again := r.ExecIdentity(); again != first {
 		t.Fatalf("identity moved with nothing changed: %q then %q", first, again)
@@ -40,8 +45,79 @@ func TestExecIdentityResolvesAgainstTheServersOwnPath(t *testing.T) {
 	dir := t.TempDir()
 	writeExec(t, filepath.Join(dir, "elsewhere", "tool"), "#!/bin/sh\n")
 	r := &Resolved{Server: &Server{Command: "tool", Env: map[string]string{"PATH": filepath.Join(dir, "elsewhere")}}}
-	if id := r.ExecIdentity(); !strings.Contains(id, filepath.Join(dir, "elsewhere", "tool")) {
-		t.Fatalf("identity %q ignores the PATH the server is given", id)
+	if st, ok := r.ExecStamp(); !ok || st.Path != filepath.Join(dir, "elsewhere", "tool") {
+		t.Fatalf("stamp %+v ignores the PATH the server is given", st)
+	}
+}
+
+// A symlink re-pointed at a byte-identical file runs the same program, so it
+// keeps its identity; the stamp still moves, which is what makes the check
+// look again.
+func TestExecIdentityOfASmallFileIsItsContentNotItsPath(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	third := filepath.Join(dir, "third")
+	writeExec(t, first, "#!/bin/sh\necho same\n")
+	writeExec(t, second, "#!/bin/sh\necho same\n")
+	writeExec(t, third, "#!/bin/sh\necho other\n")
+	link := filepath.Join(dir, "tool")
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolved{Server: &Server{Command: link}}
+	before, _ := r.ExecStamp()
+	id := r.ExecIdentity()
+
+	repoint := func(to string) {
+		t.Helper()
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repoint(second)
+	if after, _ := r.ExecStamp(); after == before {
+		t.Fatal("re-pointing the link did not move the stamp")
+	}
+	if got := r.ExecIdentity(); got != id {
+		t.Fatalf("a link re-pointed at identical bytes changed identity: %q -> %q", id, got)
+	}
+	repoint(third)
+	if got := r.ExecIdentity(); got == id {
+		t.Fatal("a link re-pointed at different bytes kept its identity")
+	}
+}
+
+// A file above the hashing limit is told apart by its inode, not its bytes:
+// two files with the same content are still different programs to the pool.
+func TestExecIdentityOfALargeFileIsItsInode(t *testing.T) {
+	old := defaults.ExecHashMax
+	defaults.ExecHashMax = 4
+	t.Cleanup(func() { defaults.ExecHashMax = old })
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool")
+	writeExec(t, bin, "#!/bin/sh\necho same\n")
+	r := &Resolved{Server: &Server{Command: bin}}
+	id := r.ExecIdentity()
+	if !strings.HasPrefix(id, "stat:") {
+		t.Fatalf("identity %q of a file over the hash limit is not a stat identity", id)
+	}
+	if again := r.ExecIdentity(); again != id {
+		t.Fatalf("stat identity moved with nothing changed: %q then %q", id, again)
+	}
+
+	// A replacement at the same path with the same bytes is a new inode.
+	tmp := filepath.Join(dir, "tool.new")
+	writeExec(t, tmp, "#!/bin/sh\necho same\n")
+	if err := os.Rename(tmp, bin); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ExecIdentity(); got == id {
+		t.Fatal("a replaced large file kept its identity")
 	}
 }
 

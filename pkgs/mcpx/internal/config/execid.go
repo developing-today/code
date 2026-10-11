@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"github.com/dezren39/mcpx/internal/defaults"
 )
 
-// ExecIdentity says which file a stdio server's command runs, as of now.
+// ExecIdentity says which program a stdio server's command runs, as of now.
 //
 // PoolID describes the configuration; it cannot see a binary that changed
 // underneath an unchanged command. `npx`, `uvx` and a nix profile that
@@ -20,51 +21,105 @@ import (
 // while the program behind them moves, so a pool keyed by PoolID alone kept
 // running the old program until somebody restarted the daemon.
 //
-// The identity is the resolved real path together with what that file holds:
-// its content hash when it is small, and its device, inode, size and mtime
-// when it is not. The path matters on its own, because a re-pointed symlink
-// can reach a byte-identical file. The stat fallback keeps a large program,
-// such as a node binary, from being read whole on every reload. An in-place
-// rewrite changes size or mtime in practice; a replacement changes the inode.
+// The identity is what the file holds, not where it is: its content hash when
+// it is small, and its device, inode, size, mtime and mode when it is not. A
+// symlink re-pointed at a byte-identical file is the same program and keeps
+// its child. A re-pointed link to a different file is a different program,
+// whatever its path, because its bytes or its inode differ. The stat fallback
+// keeps a large program, such as a node binary, from being read whole on every
+// check. An in-place rewrite changes size or mtime in practice; a replacement
+// changes the inode.
 //
 // The identity is "" for a server that is not a child process, and begins
 // with "missing:" when the command does not resolve. A missing command is
 // its own identity, so the pool still starts and fails the way it always did,
 // and it is replaced when the command appears.
 func (r *Resolved) ExecIdentity() string {
+	_, id, _ := r.ExecState()
+	return id
+}
+
+// ExecState is the stamp of the executable a command resolves to, and its
+// identity. ok is false when the command does not resolve or the file cannot
+// be read, in which case identity is the "missing:" form ExecIdentity gives.
+//
+// The stamp is taken before the identity is worked out, so a rewrite that
+// lands in between leaves a stamp that differs from the file and the next
+// check sees it.
+func (r *Resolved) ExecState() (st ExecStamp, identity string, ok bool) {
 	if !r.Stdio() {
-		return ""
+		return ExecStamp{}, "", false
+	}
+	st, found := r.ExecStamp()
+	if found {
+		if id, err := st.Identity(); err == nil {
+			return st, id, true
+		}
+	}
+	return ExecStamp{}, "missing:" + r.Command, false
+}
+
+// ExecStamp is the cheap part of an executable's identity: what a stat says
+// about the file the command resolves to. A periodic check compares stamps and
+// only works out an identity when one moved.
+type ExecStamp struct {
+	// Path is the resolved real path, after symlinks.
+	Path  string
+	Inode string
+	Size  int64
+	MTime int64
+	Mode  fs.FileMode
+}
+
+// ExecStamp stats the file the command resolves to. It reports false for a
+// server that is not a child process, and for a command that does not
+// resolve to a file it can stat.
+func (r *Resolved) ExecStamp() (ExecStamp, bool) {
+	if !r.Stdio() {
+		return ExecStamp{}, false
 	}
 	path := r.resolveExec()
 	if path == "" {
-		return "missing:" + r.Command
+		return ExecStamp{}, false
 	}
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return "missing:" + path
+		return ExecStamp{}, false
 	}
 	fi, err := os.Stat(real)
 	if err != nil {
-		return "missing:" + real
+		return ExecStamp{}, false
 	}
+	// Not Sys(): its atime moves every time the program runs, which would
+	// count as a change on every check.
+	return ExecStamp{
+		Path:  real,
+		Inode: fileInode(fi),
+		Size:  fi.Size(),
+		MTime: fi.ModTime().UnixNano(),
+		Mode:  fi.Mode(),
+	}, true
+}
+
+// Identity works out what the stamped file holds. It reads the whole file only
+// when the file is small enough to hash, and an error means it could not be
+// read, so the caller treats it as missing.
+func (s ExecStamp) Identity() (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00", real)
-	if fi.Mode().IsRegular() && fi.Size() <= defaults.ExecHashMax {
-		f, err := os.Open(real)
+	if s.Mode.IsRegular() && s.Size <= defaults.ExecHashMax {
+		f, err := os.Open(s.Path)
 		if err != nil {
-			return "missing:" + real
+			return "", err
 		}
 		_, err = io.Copy(h, f)
 		f.Close()
 		if err != nil {
-			return "missing:" + real
+			return "", err
 		}
-	} else {
-		// Not Sys(): its atime moves every time the program runs, which
-		// would restart the pool on each reload.
-		fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", fileInode(fi), fi.Size(), fi.ModTime().UnixNano(), fi.Mode())
+		return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 	}
-	return real + "|" + hex.EncodeToString(h.Sum(nil))[:16]
+	fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", s.Inode, s.Size, s.MTime, s.Mode)
+	return "stat:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 }
 
 // ProcessID is the identity two servers must share to share a pool: the

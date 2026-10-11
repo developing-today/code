@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -143,16 +144,20 @@ func TestReloadRestartsAPoolWhoseBinaryChangedAtTheSamePath(t *testing.T) {
 	}
 }
 
-// A symlink re-pointed at a byte-identical file is still a different program
-// to the pool: the resolved path is part of the identity.
-func TestReloadRestartsAPoolWhoseCommandWasRePointed(t *testing.T) {
+// A symlink re-pointed at a byte-identical file runs the same program, so a
+// reload keeps the pool and its child. Identity is by content for a small
+// file, not by the path it was reached by. A link re-pointed at a file with
+// different bytes is a different program and gets a new pool.
+func TestReloadFollowsAForRePointedCommandByWhatItRuns(t *testing.T) {
 	fake := testsupport.FakeMCPBinary(t)
 	dir := t.TempDir()
 	first := filepath.Join(dir, "first")
 	second := filepath.Join(dir, "second")
+	other := filepath.Join(dir, "other")
 	link := filepath.Join(dir, "mcp-server")
-	copyProgram(t, fake, first, nil)
-	copyProgram(t, fake, second, nil)
+	writeWrapper(t, fake, first, "same program")
+	writeWrapper(t, fake, second, "same program")
+	writeWrapper(t, fake, other, "a different program")
 	if err := os.Symlink(first, link); err != nil {
 		t.Fatal(err)
 	}
@@ -170,17 +175,30 @@ func TestReloadRestartsAPoolWhoseCommandWasRePointed(t *testing.T) {
 	pb, _ := r.Pool("b")
 	pid := childPID(t, pb)
 
-	if err := os.Remove(link); err != nil {
+	repoint := func(to string) {
+		t.Helper()
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repoint(second)
+	if _, _, err := r.Reload(cfg()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(second, link); err != nil {
-		t.Fatal(err)
+	if pb2, _ := r.Pool("b"); pb2 != pb || childPID(t, pb2) != pid {
+		t.Fatal("a command re-pointed at byte-identical bytes was restarted")
 	}
+
+	repoint(other)
 	if _, _, err := r.Reload(cfg()); err != nil {
 		t.Fatal(err)
 	}
 	if pb2, _ := r.Pool("b"); pb2 == pb || childPID(t, pb2) == pid {
-		t.Fatal("a re-pointed command kept its old child")
+		t.Fatal("a command re-pointed at different bytes kept its old child")
 	}
 	waitGone(t, pid)
 }
@@ -232,5 +250,22 @@ func TestHandoffRecordsTheIdentityAPoolWasMadeWith(t *testing.T) {
 	}
 	if got := childPID(t, pn); got == 0 || syscall.Kill(got, 0) != nil {
 		t.Fatal("the successor could not start a child for the new binary")
+	}
+}
+
+// writeWrapper writes a small executable that runs the fake MCP server. It
+// execs the fake, so the child process is the fake and keeps its pid. The tag
+// is a comment: two wrappers with the same tag are byte-identical, and under the
+// hash limit, which is when identity is by content. The fake itself is over
+// that limit and is identified by its inode, which the first test covers.
+func writeWrapper(t *testing.T, fake, path, tag string) {
+	t.Helper()
+	body := fmt.Sprintf("#!/bin/sh\n# %s\nexec '%s' \"$@\"\n", tag, fake)
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
 	}
 }
