@@ -1,5 +1,7 @@
 package settings
 
+import "github.com/dezren39/mcpx/internal/defaults"
+
 // Registry is every setting mcpx has.
 //
 // One entry here makes a knob readable from a configuration file, an
@@ -64,13 +66,24 @@ func presetSettings() []Setting {
 func poolSettings() []Setting {
 	return []Setting{
 		{
-			Path: "pool.max", Kind: KindInt, Default: "4",
+			// The default is read from defaults.json, the one place it is
+			// written. A literal here would drift the moment that file changed,
+			// and `settings get` would report a number the pools do not use.
+			Path: "pool.max", Kind: KindInt, Default: defaults.Num(defaults.Max),
+			Floor: 1,
 			Scope: ScopeDaemon, Hot: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Maximum instances",
 			Short:    "how many copies of one server may run at once",
 			Long: "A shared server is reused by every caller, so the ceiling only " +
-				"matters for exclusive ones. Raising it trades memory for parallelism.",
+				"matters for exclusive ones. Raising it trades memory for parallelism. " +
+				"This is the ceiling every server inherits, highest first: the " +
+				"server's own mcpx.max in its mcpServers entry; a runtime change " +
+				"through `mcpx settings set`; --pool-max or MCPX_POOL_MAX; the " +
+				"nearest configuration file that sets pool.max; the built-in default. " +
+				"A global-scope server is held at one whatever this says, because one " +
+				"key needs one process. Zero and negative values are refused: a zero " +
+				"would read as unset and quietly mean the default.",
 		},
 		{
 			Path: "pool.min", Kind: KindInt, Default: "0",
