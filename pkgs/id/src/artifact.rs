@@ -927,6 +927,7 @@ pub async fn pull_within(
 mod tests {
     use super::*;
     use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use crate::world_session::MAX_FRAME_BYTES;
     use iroh::{
         TransportAddr,
         endpoint::{RelayMode, presets},
@@ -1243,6 +1244,39 @@ mod tests {
             pages[1].iter().map(|a| a.seq).collect::<Vec<_>>(),
             [2, 3, 4]
         );
+    }
+
+    /// An artifact whose JSON is `bytes` long. Its kind is unknown, so no parser
+    /// limits its size, and its body is padding.
+    fn unknown_kind_of_size(bytes: usize) -> SignedArtifact {
+        let signed = |pad: usize| {
+            SignedArtifact::sign(
+                &key(1),
+                1,
+                "",
+                "future_kind",
+                json!({ "pad": "x".repeat(pad) }),
+            )
+            .unwrap()
+        };
+        let base = serde_json::to_vec(&signed(0)).unwrap().len();
+        signed(bytes.saturating_sub(base))
+    }
+
+    /// An artifact is stored exactly when one page can carry it in a frame. A
+    /// pull then never meets an artifact that the server cannot send.
+    #[test]
+    fn an_artifact_is_stored_exactly_when_one_frame_can_carry_it() {
+        let mut wrong = Vec::new();
+        for slack in [0_usize, 1, 15, 16, 17, 40, 4096] {
+            let artifact = unknown_kind_of_size(MAX_FRAME_BYTES - slack);
+            let fits = wire_len(std::slice::from_ref(&artifact)) <= MAX_FRAME_BYTES;
+            let stored = ArtifactLog::default().insert(artifact).is_ok();
+            if stored != fits {
+                wrong.push(format!("{slack} bytes under the cap: stored {stored}, fits {fits}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     proptest! {
