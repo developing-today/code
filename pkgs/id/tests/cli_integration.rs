@@ -117,6 +117,62 @@ fn test_output_within_kills_a_hung_process() {
     assert_eq!(quick.stderr, b"err");
 }
 
+/// A child that a streaming test keeps open, such as `world join`. Dropping it
+/// kills and reaps the child, so a test that panics before it waits cannot leave
+/// the child running.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_streaming_child_dies_with_its_guard_even_when_the_test_panics() {
+    fn sleeper() -> KillOnDrop {
+        KillOnDrop(
+            Command::new("sleep")
+                .arg("60")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+    // SAFETY: signal 0 sends nothing; it only asks whether the pid still names a process.
+    let exists = |pid: u32| unsafe { libc::kill(pid as i32, 0) } == 0;
+
+    let dropped = sleeper();
+    let pid = dropped.id();
+    drop(dropped);
+    assert!(!exists(pid), "the child outlived its guard");
+
+    let mut panicked = 0;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let streaming = sleeper();
+        panicked = streaming.id();
+        panic!("the test fails while the child is still streaming");
+    }));
+    assert!(outcome.is_err());
+    assert!(!exists(panicked), "the child outlived a panicking test");
+}
+
 /// Run a CLI command and return output
 fn run_cmd(args: &[&str], work_dir: &std::path::Path) -> std::process::Output {
     Command::new(get_binary_path())
@@ -1524,6 +1580,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1621,6 +1678,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1693,6 +1751,7 @@ mod serve_tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
+                .map(KillOnDrop)
                 .unwrap();
             let mut stdin = joined.stdin.take().unwrap();
             let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1814,6 +1873,7 @@ mod serve_tests {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
+                    .map(KillOnDrop)
                     .unwrap();
                 let mut stdin = joined.stdin.take().unwrap();
                 let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2047,6 +2107,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2162,6 +2223,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2244,6 +2306,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2268,6 +2331,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
         let _snapshot = lines.next().unwrap().unwrap();
@@ -2341,6 +2405,7 @@ mod serve_tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
+                .map(KillOnDrop)
                 .unwrap();
             let mut stdin = joined.stdin.take().unwrap();
             let stdout = joined.stdout.take().unwrap();
@@ -2471,6 +2536,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2548,6 +2614,7 @@ mod serve_tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
+                .map(KillOnDrop)
                 .unwrap();
             let mut stdin = joined.stdin.take().unwrap();
             let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
