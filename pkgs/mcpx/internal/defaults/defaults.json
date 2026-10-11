@@ -192,6 +192,8 @@
     "takeoverTimeout": "15s",
     "takeoverMaxFrame": "16MB",
     "execHashMax": "1MB",
+    "execCheckInterval": "30s",
+    "execDrainTimeout": "10s",
     "warmTimeout": "3m",
     "refreshTimeout": "3m",
     "inlineStartTimeout": "5s",

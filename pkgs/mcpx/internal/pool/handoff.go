@@ -351,7 +351,13 @@ func (p *Pool) attachSession(a *Adopted) {
 // is the one recorded when the pool was made, not the one on disk now, so a
 // binary replaced since then makes a successor or a reload start a new pool
 // rather than adopt children running the old program.
-func (p *Pool) PoolID() string { return p.cfg.PoolID() + "/" + p.exec }
+func (p *Pool) PoolID() string { return p.cfg.PoolID() + "/" + p.ExecIdentity() }
 
-// ExecIdentity is the executable identity recorded when the pool was made.
-func (p *Pool) ExecIdentity() string { return p.exec }
+// ExecIdentity is the executable identity the pool's children are running: the
+// one recorded when the pool was made, or the one a restart for a changed
+// executable moved it to.
+func (p *Pool) ExecIdentity() string {
+	p.execMu.Lock()
+	defer p.execMu.Unlock()
+	return p.exec
+}

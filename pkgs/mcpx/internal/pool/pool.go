@@ -86,6 +86,13 @@ type Instance struct {
 	subMu      sync.Mutex
 	subscribed map[string]bool
 	monitored  bool
+	// retiring marks a child being replaced for a changed executable: no new
+	// caller may take it, and it leaves the list once it is closed. Guarded
+	// by Pool.mu. See execwatch.go.
+	retiring bool
+	// swapped is set just before such a child is closed, so a call that
+	// fails on it can say why.
+	swapped atomic.Bool
 }
 
 // Trace is this instance's identifier, carried by every record about it.
@@ -127,8 +134,20 @@ type Pool struct {
 	Hooks *Hooks
 
 	cfg *config.Resolved
-	// exec is cfg.ExecIdentity() as of New. See PoolID.
-	exec string
+	// exec is the identity of the program the children run: cfg.ExecIdentity()
+	// as of New, then whatever the exec watch last found. execStamp is the
+	// stat it was worked out from, and execMissing is set while the file is
+	// gone. execMu guards all three. See PoolID and execwatch.go.
+	execMu      sync.Mutex
+	exec        string
+	execStamp   config.ExecStamp
+	execMissing bool
+	// watching says the exec watch goroutine is running; it starts with the
+	// pool's first live child. execEvery is the interval it was made with and
+	// execStop ends it when the pool closes.
+	watching  bool
+	execEvery time.Duration
+	execStop  chan struct{}
 
 	mu        sync.Mutex
 	cond      *sync.Cond
@@ -171,7 +190,10 @@ type Pool struct {
 
 // New creates an empty pool. No process is started until first use.
 func New(cfg *config.Resolved) *Pool {
-	p := &Pool{cfg: cfg, exec: cfg.ExecIdentity()}
+	// The stamp is taken with the identity, before either is used, so a change
+	// that lands after this is seen by the first check.
+	st, id, _ := cfg.ExecState()
+	p := &Pool{cfg: cfg, exec: id, execStamp: st, execEvery: ExecCheckInterval, execStop: make(chan struct{})}
 	p.cond = sync.NewCond(&p.mu)
 	return p
 }
@@ -278,6 +300,7 @@ func (p *Pool) Acquire(ctx context.Context, key string) (*Lease, error) {
 			in.holders = 1
 			in.lastUsed = time.Now()
 			p.instances = append(p.instances, in)
+			p.watchExecLocked()
 			p.cond.Broadcast()
 			p.mu.Unlock()
 			return &Lease{inst: in, pool: p}, nil
@@ -319,7 +342,7 @@ func (p *Pool) followLegacy(ctx context.Context) bool {
 // started legacy-only for somebody else.
 func (p *Pool) findLaneLocked(key string, legacy bool) *Instance {
 	for _, in := range p.instances {
-		if in.key != key {
+		if in.key != key || in.retiring {
 			continue
 		}
 		if legacy && (in.legacyLane || in.Client.Era == mcpclient.EraLegacy) || !legacy && !in.legacyLane {
@@ -332,7 +355,7 @@ func (p *Pool) findLaneLocked(key string, legacy bool) *Instance {
 // findLocked returns the instance serving key, if any.
 func (p *Pool) findLocked(key string) *Instance {
 	for _, in := range p.instances {
-		if in.key == key {
+		if in.key == key && !in.retiring {
 			return in
 		}
 	}
@@ -363,7 +386,7 @@ func (p *Pool) laneSizeLocked(legacy bool) int {
 func (p *Pool) evictableLocked(legacy bool) *Instance {
 	var best *Instance
 	for _, in := range p.instances {
-		if in.holders > 0 || in.legacyLane != legacy {
+		if in.holders > 0 || in.legacyLane != legacy || in.retiring {
 			continue
 		}
 		if best == nil || in.lastUsed.Before(best.lastUsed) {
@@ -978,7 +1001,7 @@ func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (jso
 	cctx, finish := p.upstream(ctx, sessionKey, lease)
 	started := time.Now()
 	res, err := lease.Client().CallTool(cctx, tool, args)
-	err = finish(err)
+	err = p.replacedErr(lease.inst, finish(err))
 	// Reported from here rather than from the daemon's HTTP handler because
 	// this is the only place that knows which instance served the call. The
 	// handler sees a namespace; the log wants the process, so that a slow call
@@ -1007,7 +1030,7 @@ func (p *Pool) ReadResource(ctx context.Context, sessionKey, uri string) (json.R
 
 	cctx, finish := p.upstream(ctx, sessionKey, lease)
 	res, err := lease.Client().ReadResource(cctx, uri)
-	return res, finish(err)
+	return res, p.replacedErr(lease.inst, finish(err))
 }
 
 // ReapIdle stops instances that nobody holds and that have gone quiet, plus
@@ -1017,6 +1040,11 @@ func (p *Pool) ReapIdle(now time.Time) int {
 	var stop []*Instance
 	kept := p.instances[:0]
 	for _, in := range p.instances {
+		// A child being replaced is closed by the replacement, not reaped.
+		if in.retiring {
+			kept = append(kept, in)
+			continue
+		}
 		// An instance carrying resource subscriptions is not idle: it is
 		// the only thing that will ever report those resources changing.
 		expired := in.holders == 0 && now.Sub(in.lastUsed) > p.cfg.IdleTimeout &&
@@ -1226,7 +1254,10 @@ func (p *Pool) Close() {
 // and then closes the instances. Ongoing requests are preserved without cancellation.
 func (p *Pool) CloseGraceful(timeout time.Duration) {
 	p.mu.Lock()
-	p.closed = true
+	if !p.closed {
+		p.closed = true
+		close(p.execStop)
+	}
 	stop := p.instances
 	p.instances = nil
 	p.cond.Broadcast()
