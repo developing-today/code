@@ -806,3 +806,15 @@ Consequences for implementation, from the research:
 - §7.5: our client endpoints use the N0 preset, so resolving a bare node ID queries n0. The trade-off is in the research note.
 - §6.1: tags are proposed to follow the content policy, not strong-remove voidness.
 - §3 and §9: "pulls are unauthenticated" is still accurate as written. Decision 5 changes the default, not the fact.
+
+---
+
+## 2026-10-11T07-31-07Z Decision: third size warning tier at 1,000
+
+Owner decision, added to decision 3 of the 2026-10-11T04-20-17Z decision.
+
+- Above 96 recipient devices: warning.
+- At 128 or more: stronger warning. The 128 figure is p2panda's own: its blog calls DCGKA "performant for small- to mid-size groups of ca. 128 members".
+- At 1,000 or more: strongest warning. The research estimates the first large rekeying cost near this size, about 0.3 MB and 0.5 s of CPU per removal (extrapolated).
+
+All three tiers apply to end-to-end groups only, count recipient devices, never block an action, and impose no cap.
