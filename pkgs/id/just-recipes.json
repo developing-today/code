@@ -1365,6 +1365,22 @@
       "namepath": "coverage-summary",
       "shebang": false
     },
+    "crash-gate": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --test crash -- --skip write_corpus --include-ignored"],
+        ["@echo \"✓ Crash gate passed\""]
+      ],
+      "dependencies": [],
+      "doc": "Crash-safety gate for redb: every storage call under every survival policy, and the lying-sync control, in release",
+      "name": "crash-gate",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate",
+      "shebang": false
+    },
     "default": {
       "attributes": [],
       "body": [],
