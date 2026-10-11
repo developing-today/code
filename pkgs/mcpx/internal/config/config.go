@@ -358,6 +358,62 @@ type Resolved struct {
 	RequiresSecrets []string
 	RequiresServers []string
 	Preconditions   map[string]Precondition
+
+	// Runtime, when set, returns the value the daemon holds in memory for a
+	// secret: see internal/secrets. It is consulted before this server's own
+	// environment and the daemon's, and nothing here keeps what it returns.
+	Runtime func(name string) (string, bool)
+}
+
+// SecretNames are the secrets this server requires: its own list and every
+// tool's requiresSecret, sorted, without repeats.
+func (r *Resolved) SecretNames() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, name := range r.RequiresSecrets {
+		add(name)
+	}
+	for _, pre := range r.Preconditions {
+		add(pre.RequiresSecret)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SecretValue is the value a child process of this server would see for name:
+// the runtime value if one is held, else the server's own environment, else
+// the daemon's. Empty is no value.
+func (r *Resolved) SecretValue(name string) (string, bool) {
+	if r.Runtime != nil {
+		if v, ok := r.Runtime(name); ok && v != "" {
+			return v, true
+		}
+	}
+	if v := r.Env[name]; v != "" {
+		return v, true
+	}
+	if v := os.Getenv(name); v != "" {
+		return v, true
+	}
+	return "", false
+}
+
+// MissingSecrets are the secrets this server requires that have no value,
+// sorted. A server with any of them cannot start.
+func (r *Resolved) MissingSecrets() []string {
+	var out []string
+	for _, name := range r.SecretNames() {
+		if _, ok := r.SecretValue(name); !ok {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // PassesPreconditions checks whether the server or specific tool meets all declared preconditions.
@@ -366,11 +422,7 @@ func (r *Resolved) PassesPreconditions(tool string, isServerActive func(string) 
 		return true, ""
 	}
 	for _, sec := range r.RequiresSecrets {
-		val := os.Getenv(sec)
-		if val == "" && r.Env != nil {
-			val = r.Env[sec]
-		}
-		if val == "" {
+		if _, ok := r.SecretValue(sec); !ok {
 			return false, fmt.Sprintf("missing required environment secret %q", sec)
 		}
 	}
@@ -382,11 +434,7 @@ func (r *Resolved) PassesPreconditions(tool string, isServerActive func(string) 
 	if tool != "" && len(r.Preconditions) > 0 {
 		if pre, ok := r.Preconditions[tool]; ok {
 			if pre.RequiresSecret != "" {
-				val := os.Getenv(pre.RequiresSecret)
-				if val == "" && r.Env != nil {
-					val = r.Env[pre.RequiresSecret]
-				}
-				if val == "" {
+				if _, ok := r.SecretValue(pre.RequiresSecret); !ok {
 					return false, fmt.Sprintf("missing required secret %q for tool %q", pre.RequiresSecret, tool)
 				}
 			}

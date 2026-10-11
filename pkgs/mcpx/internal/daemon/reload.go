@@ -53,6 +53,7 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 				prev, s.Name, s.Namespace)
 		}
 		seen[s.Namespace] = s.Name
+		r.bindSecrets(s)
 
 		id := s.ProcessID()
 		p, kept := byPoolID[id]

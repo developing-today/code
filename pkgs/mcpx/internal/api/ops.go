@@ -89,6 +89,12 @@ type Op struct {
 	// CoveredBy names a hand-written MCP tool that already exposes this
 	// operation. Empty means a proxy tool is generated as mcpx_<Name>.
 	CoveredBy string
+	// NoTool says why this operation has no MCP tool at all. Empty means it
+	// has one. It is set only where a tool would carry something MCP must
+	// not: the arguments of a tool call are in the model's context, so a
+	// secret's value sent that way would be read by the model and kept in its
+	// transcript. Every other operation is a tool, privileged or not.
+	NoTool string
 	// Text marks a response that is text/plain rather than JSON.
 	Text bool
 
@@ -138,7 +144,7 @@ func (o Op) ToolName() string {
 }
 
 // Generated reports whether this operation needs a proxy tool built for it.
-func (o Op) Generated() bool { return !o.Streams && o.CoveredBy == "" }
+func (o Op) Generated() bool { return !o.Streams && o.CoveredBy == "" && o.NoTool == "" }
 
 // Route is the "METHOD /path" key a Go 1.22 mux registers under.
 func (o Op) Route() string { return o.Method + " " + o.Path }
@@ -689,6 +695,7 @@ func Ops() []Op {
 	ops = append(ops, execOps()...)
 	ops = append(ops, settingsOps()...)
 	ops = append(ops, resolveOps()...)
+	ops = append(ops, secretsOps()...)
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].Path == ops[j].Path {
 			return ops[i].Method < ops[j].Method

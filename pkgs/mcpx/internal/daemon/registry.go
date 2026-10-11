@@ -23,6 +23,7 @@ import (
 	"github.com/dezren39/mcpx/internal/logstore"
 	"github.com/dezren39/mcpx/internal/mcpclient"
 	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/dezren39/mcpx/internal/secrets"
 	"github.com/dezren39/mcpx/internal/settings"
 )
 
@@ -84,6 +85,11 @@ type Registry struct {
 	// later reload gets the same wiring. Without it, a server added at
 	// runtime would be the one server whose events nobody hears.
 	hooks *pool.Hooks
+
+	// secrets holds the values given at runtime and board the requests that
+	// wait for them. Both are memory only; see internal/secrets.
+	secrets *secrets.Store
+	board   *secrets.Board
 }
 
 // leaseState remembers which pool keys a caller created, so releasing a
@@ -133,14 +139,16 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 	raw, _ := json.Marshal(cfg.MCPServers)
 
 	r := &Registry{
-		cfg:    cfg,
-		paths:  paths,
-		hash:   HashConfig(raw),
-		pools:  make(map[string]*pool.Pool, len(servers)),
-		views:  make(map[string]*config.Resolved, len(servers)),
-		leases: map[string]*leaseState{},
-		asks:   newAskTable(),
-		logf:   logf,
+		cfg:     cfg,
+		paths:   paths,
+		hash:    HashConfig(raw),
+		pools:   make(map[string]*pool.Pool, len(servers)),
+		views:   make(map[string]*config.Resolved, len(servers)),
+		leases:  map[string]*leaseState{},
+		asks:    newAskTable(),
+		logf:    logf,
+		secrets: secrets.NewStore(),
+		board:   secrets.NewBoard(defaults.SecretRequestRetention),
 	}
 	r.loadSessions()
 	if paths.State != "" {
@@ -165,6 +173,7 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 				prev, s.Name, s.Namespace)
 		}
 		seen[s.Namespace] = s.Name
+		r.bindSecrets(s)
 
 		id := s.ProcessID()
 		p, shared := byPoolID[id]
@@ -304,6 +313,12 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 		if !force && !at.IsZero() {
 			continue
 		}
+		// A server waiting for a secret would fail to start, and the failure
+		// would be recorded as its error. It is started once it has its
+		// secrets, by the first call or refresh that finds it ready.
+		if blocker, _ := r.blocked(p.Config()); blocker != nil {
+			continue
+		}
 		wg.Add(1)
 		go func(p *pool.Pool) {
 			defer wg.Done()
@@ -379,10 +394,16 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 
 // ToolInfo describes one tool for search results.
 type ToolInfo struct {
-	Namespace   string          `json:"namespace"`
-	Server      string          `json:"server"`
-	Tool        string          `json:"tool"`
-	Function    string          `json:"function"`
+	Namespace string `json:"namespace"`
+	Server    string `json:"server"`
+	Tool      string `json:"tool"`
+	Function  string `json:"function"`
+	// Call is the form a script uses, tools.<namespace>.<tool>(args), and
+	// Native is the name a projected tool takes as a native tool,
+	// <namespace>_<tool>. Both are spelled with the function name, so the two
+	// are the same identifier at either end.
+	Call        string          `json:"call"`
+	Native      string          `json:"native"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 	// Execution is the upstream's tool.execution, verbatim.
@@ -419,11 +440,14 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 		}
 		all, _, _ := p.CachedSchemas()
 		for _, t := range visibleTools(view, all) {
+			fn := codegen.ToolFuncName(t.Name)
 			out = append(out, ToolInfo{
 				Namespace:    view.Namespace,
 				Server:       name,
 				Tool:         t.Name,
-				Function:     view.Namespace + "." + codegen.ToolFuncName(t.Name),
+				Function:     view.Namespace + "." + fn,
+				Call:         "tools." + view.Namespace + "." + fn + "(args)",
+				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
 				InputSchema:  t.InputSchema,
 				Execution:    t.Execution,
@@ -746,7 +770,13 @@ func (e HiddenTool) Error() string {
 func failureStatus(err error) int {
 	var unknown UnknownServer
 	var hidden HiddenTool
-	if errors.As(err, &unknown) || errors.As(err, &hidden) {
+	var secret SecretRequired
+	switch {
+	case errors.As(err, &secret):
+		// A conflict with the state of the daemon, not a fault in the request
+		// and not a failure of the server: it can succeed once a value exists.
+		return http.StatusConflict
+	case errors.As(err, &unknown), errors.As(err, &hidden):
 		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
@@ -817,6 +847,11 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext) (string, error) {
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
+		// Before the child is touched: a server waiting for a secret is not
+		// started just to fail.
+		if err := r.refuseBlocked(server); err != nil {
+			return "", err
+		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
 				return "", fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
@@ -839,6 +874,9 @@ func (r *Registry) ReadResource(ctx context.Context, server, uri string, cc conf
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, UnknownServer{Name: server}
+	}
+	if err := r.refuseBlocked(server); err != nil {
+		return nil, err
 	}
 	key := r.keyFor(p, cc)
 	// The listing drops a leading '/', so mcpx://ns/abs/doc names /abs/doc;
@@ -979,6 +1017,9 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, UnknownServer{Name: server}
+	}
+	if err := r.refuseBlocked(server); err != nil {
+		return nil, err
 	}
 	return p.GetPrompt(ctx, r.keyFor(p, cc), name, args)
 }

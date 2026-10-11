@@ -50,6 +50,9 @@ type Defaults struct {
 		ReapInterval string `json:"reapInterval"`
 		SaveInterval string `json:"saveInterval"`
 	} `json:"daemon"`
+	Secrets struct {
+		RequestRetention string `json:"requestRetention"`
+	} `json:"secrets"`
 	// Plumbing are internals. They are here rather than inline so that a
 	// number nobody expected to matter can still be changed without a
 	// rebuild, and so that every constant in the program has one home.
@@ -472,8 +475,9 @@ var (
 	LogIncludes = builtin.Logging.Include
 	LogTrace    = builtin.Logging.Trace
 
-	ReapInterval = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
-	SaveInterval = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	ReapInterval           = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
+	SaveInterval           = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 
 	ShutdownGrace        = mustDur(builtin.Plumbing.ShutdownGrace, "plumbing.shutdownGrace")
 	StdioExitGrace       = mustDur(builtin.Plumbing.StdioExitGrace, "plumbing.stdioExitGrace")

@@ -692,7 +692,7 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
 			Command:    p.cfg.Command,
 			Args:       p.cfg.Args,
-			Env:        overlay(p.cfg.Env, auth.Env),
+			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        p.cfg.Cwd,
 			InheritEnv: true,
 		})
@@ -704,11 +704,45 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 	return mcpclient.NewHTTP(ho)
 }
 
+// variable is the value this server's configuration reads for name: the value
+// the daemon holds in memory for it, else the daemon's environment. Credentials
+// declared with auth are read this way, so an HTTP server gets the same secret
+// a stdio child does.
+func (p *Pool) variable(name string) string {
+	if p.cfg.Runtime != nil {
+		if v, ok := p.cfg.Runtime(name); ok && v != "" {
+			return v
+		}
+	}
+	return os.Getenv(name)
+}
+
+// runtimeEnv is the values the daemon holds in memory for the secrets this
+// server requires, for the environment of the child it is about to start. Only
+// the names the server asks for are passed: a child is not handed every secret
+// the daemon has, and a value is never written into the configuration, which
+// is shown to people.
+func (p *Pool) runtimeEnv() map[string]string {
+	if p.cfg.Runtime == nil {
+		return nil
+	}
+	var out map[string]string
+	for _, name := range p.cfg.SecretNames() {
+		if v, ok := p.cfg.Runtime(name); ok && v != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[name] = v
+		}
+	}
+	return out
+}
+
 // resolveAuth turns the server's `auth` block into the headers, query
 // parameters and environment a connection carries. A credential that names an
 // unset variable fails here, before a request, rather than as a 401 later.
 func (p *Pool) resolveAuth() (*mcpauth.Resolved, error) {
-	r, err := p.cfg.Auth.Resolve()
+	r, err := p.cfg.Auth.ResolveWith(p.variable)
 	if err != nil {
 		return nil, fmt.Errorf("%s: auth: %w", p.cfg.Name, err)
 	}

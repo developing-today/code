@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (73)
+## /v1 operations (81)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -75,6 +75,7 @@ carry instead is a description that says so and MCP annotations
 | `metrics_tools` | `GET /v1/metrics/tools` | `mcpx metrics tools` *generated* | `mcpx_metrics_tools` | `ops.metricsTools()` |  |
 | `namespaces` | `GET /v1/namespaces` | `mcpx ls` | `mcpx_namespaces` | `ops.namespaces()`, `namespaces()` |  |
 | `openapi` | `GET /v1/openapi.json` | `mcpx openapi` | `mcpx_openapi` | `ops.openapi()` |  |
+| `preflight` | `POST /v1/preflight` | `mcpx preflight` *generated* | `mcpx_preflight` | `ops.preflight()` |  |
 | `prompt_get` | `POST /v1/prompt` | `mcpx prompts` | `mcpx_prompt_get` | `ops.promptGet()` |  |
 | `prompts` | `GET /v1/prompts` | `mcpx prompts` | `mcpx_prompts` | `ops.prompts()` |  |
 | `protocol` | `GET /v1/protocol` | `mcpx protocol` *generated* | `mcpx_protocol` | `ops.protocol()` |  |
@@ -91,9 +92,16 @@ carry instead is a description that says so and MCP annotations
 | `resources` | `GET /v1/resources` | `mcpx resources` | `mcpx_resources` | `ops.resources()` |  |
 | `restart` | `POST /v1/restart` | `mcpx restart` | `mcpx_restart` | `ops.restart()` | Privileged. Destructive. |
 | `search` | `GET /v1/search` | `mcpx search` | `mcpx_search` | `ops.search()` |  |
+| `secret_requests_list` | `GET /v1/secret-requests` | `mcpx secrets requests` | `mcpx_secret_requests_list` | `ops.secretRequestsList()` |  |
+| `secret_request_decline` | `DELETE /v1/secret-requests/{id}` | `mcpx secrets decline` | `mcpx_secret_request_decline` | `ops.secretRequestDecline()` | Privileged. |
+| `secret_request_get` | `GET /v1/secret-requests/{id}` | `mcpx secrets request` | `mcpx_secret_request_get` | `ops.secretRequestGet()` |  |
+| `secrets_list` | `GET /v1/secrets` | `mcpx secrets list` | `mcpx_secrets_list` | `ops.secretsList()` |  |
+| `secrets_unset` | `DELETE /v1/secrets/{name}` | `mcpx secrets unset` | `mcpx_secrets_unset` | `ops.secretsUnset()` | Privileged. Destructive. |
+| `secrets_set` | `PUT /v1/secrets/{name}` | `mcpx secrets set` | none: a value sent as a tool argument would sit in the model's context and transcript; the CLI reads it from standard input and OpenChamber from a password field | `ops.secretsSet()` | Privileged. |
 | `servers_list` | `GET /v1/servers` | `mcpx servers list` | `mcpx_servers_list` | `ops.serversList()` |  |
 | `servers_add` | `POST /v1/servers` | `mcpx servers add` | `mcpx_servers_add` | `ops.serversAdd()` | Privileged. |
 | `servers_remove` | `DELETE /v1/servers/{name}` | `mcpx servers remove` | `mcpx_servers_remove` | `ops.serversRemove()` | Privileged. Destructive. |
+| `servers_get` | `GET /v1/servers/{name}` | `mcpx servers show` | `mcpx_servers_get` | `ops.serversGet()` |  |
 | `session_release` | `POST /v1/session/release` | `mcpx session release` *generated* | `mcpx_session_release` | `ops.sessionRelease()` | Privileged. |
 | `settings_list` | `GET /v1/settings` | `mcpx settings list` | `mcpx_settings_list` | `ops.settingsList()` |  |
 | `settings_unset` | `DELETE /v1/settings/{path}` | `mcpx settings unset` | `mcpx_settings_unset` | `ops.settingsUnset()` | Privileged. |
@@ -110,7 +118,7 @@ carry instead is a description that says so and MCP annotations
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 
-## CLI commands (62)
+## CLI commands (64)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -150,6 +158,7 @@ that reaches none says why: those are decisions, not gaps.
 | `man` | – | Text about the binary, produced by the binary. |
 | `metrics` | `metrics_tokens`, `metrics_tools` | Generated from the operation table. |
 | `openapi` | `openapi` |  |
+| `preflight` | `preflight` | Generated from the operation table. |
 | `prompt` | `intent` |  |
 | `prompts` | `prompt_get`, `prompts` |  |
 | `protocol` | `protocol` | Generated from the operation table. |
@@ -165,8 +174,9 @@ that reaches none says why: those are decisions, not gaps.
 | `schema` | – | Reshapes what `tools` and `types` return into JSON Schema, OpenAPI or MCP form; the data is those operations', the conversion is local. |
 | `scripts` | – | Lists the caller's script search path. |
 | `search` | `search` |  |
+| `secrets` | `secret_requests_list`, `secret_request_decline`, `secret_request_get`, `secrets_list`, `secrets_unset`, `secrets_set` |  |
 | `serve` | – | It is the MCP surface: a stdio shim over the daemon, which serves the same tools at `/mcp` itself. |
-| `servers` | `servers_list`, `servers_add`, `servers_remove` |  |
+| `servers` | `servers_list`, `servers_add`, `servers_remove`, `servers_get` |  |
 | `session` | `session_release` | Generated from the operation table. |
 | `settings` | `settings_list`, `settings_unset`, `settings_get`, `settings_set` |  |
 | `skills` | – | Manages embedded agent skills. |
