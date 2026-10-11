@@ -44,6 +44,7 @@ use crate::envelope_outbox::{Outcome, check_target};
 use crate::world::hex_encode;
 use crate::world_hub::WorldHub;
 use crate::world_net::{read_frame, write_frame};
+use crate::world_session::MAX_FRAME_BYTES;
 
 /// The file, beside `directory.jsonl`, that holds a world's artifacts.
 pub const FILE: &str = "artifacts.jsonl";
@@ -411,10 +412,17 @@ impl ArtifactLog {
     ///
     /// Fails with [`Refusal::Unauthenticated`] for a bad signature or hash, and
     /// with [`Refusal::Conflict`] for a gap, a fork, or a `prev` that does not
-    /// match. The log is unchanged on error.
+    /// match. An artifact that one frame cannot carry is [`Refusal::Forbidden`],
+    /// since no page could ever send it. The log is unchanged on error.
     pub fn insert(&mut self, artifact: SignedArtifact) -> Result<Stored> {
         artifact.verify()?;
         artifact.parsed()?;
+        let size = encoded_len(&artifact);
+        if page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
+            return Err(forbidden(format!(
+                "an artifact of {size} bytes cannot be sent in one frame of {MAX_FRAME_BYTES} bytes"
+            )));
+        }
         if artifact.seq < 1 {
             return Err(forbidden("sequence numbers start at 1"));
         }
@@ -927,7 +935,6 @@ pub async fn pull_within(
 mod tests {
     use super::*;
     use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
-    use crate::world_session::MAX_FRAME_BYTES;
     use iroh::{
         TransportAddr,
         endpoint::{RelayMode, presets},
