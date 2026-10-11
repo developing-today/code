@@ -1409,10 +1409,10 @@ func (a *App) CmdReload(ctx context.Context, args []string) error {
 }
 
 // CmdRestart restarts running instances and waits for the replacements, or
-// with --lazy only stops them.
+// with --lazy starts nothing and does not wait for calls in flight.
 func (a *App) CmdRestart(ctx context.Context, args []string) error {
 	fs := newFlagSet("restart")
-	lazy := fs.Bool("lazy", false, "stop only; the next call starts a fresh instance")
+	lazy := fs.Bool("lazy", false, "do not wait: the next call starts a fresh instance; calls in flight finish on the old one")
 	daemon := fs.Bool("daemon", false, "restart the mcpx daemon itself")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
@@ -1459,6 +1459,11 @@ func (a *App) CmdRestart(ctx context.Context, args []string) error {
 	}
 	if *lazy {
 		fmt.Printf("stopped %d instance(s) for %s\n", res.Stopped, label)
+		for _, s := range res.Servers {
+			if s.Note != "" {
+				fmt.Printf("  %s: %s\n", s.Server, s.Note)
+			}
+		}
 		return nil
 	}
 	fmt.Printf("restarted %d instance(s) for %s (stopped %d)\n", res.Started, label, res.Stopped)

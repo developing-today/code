@@ -694,7 +694,7 @@ type RestartReply struct {
 	} `json:"servers"`
 }
 
-// Restart restarts a server (or all when empty); lazy only stops.
+// Restart restarts a server (or all when empty); lazy does not wait for calls in flight.
 func (c *Client) Restart(ctx context.Context, server string, lazy bool) (RestartReply, error) {
 	var out RestartReply
 	b, err := c.do(ctx, http.MethodPost, "/v1/restart", map[string]any{"server": server, "lazy": lazy})

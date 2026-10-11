@@ -56,13 +56,23 @@ const MODEL_MAP = {
   'gemini-2.5-pro': { enum: 'MODEL_GOOGLE_GEMINI_2_5_PRO', name: 'Gemini 2.5 Pro' }
 };
 
-const resolveModelEnum = (requestedModel, requestedEffort) => {
+const resolveModelEnum = (requestedModel, requestedEffort, liveModels) => {
   let modelStr = (requestedModel || 'gemini-3.8-flash').toLowerCase().trim();
   let isCascade = false;
 
   if (modelStr.endsWith('-cascade')) {
     isCascade = true;
     modelStr = modelStr.slice(0, -'-cascade'.length);
+  }
+
+  // The language server's own catalog wins: each id it lists carries the enum
+  // it expects, including ids this file's MODEL_MAP does not know about.
+  if (liveModels[modelStr]?.model) {
+    return {
+      modelEnum: liveModels[modelStr].model,
+      displayName: liveModels[modelStr].displayName || modelStr,
+      isCascade
+    };
   }
 
   // Exact match
@@ -87,20 +97,31 @@ const resolveModelEnum = (requestedModel, requestedEffort) => {
     };
   }
 
-  // Direct pass-through if enum name or fallback
+  // A bare family id ("gemini-3.5-flash") with no catalog entry of its own
+  // resolves to one of its effort variants, preferring medium.
+  const variant = ['medium', 'low', 'high', 'extra-low']
+    .map(eff => liveModels[`${modelStr}-${eff}`])
+    .find(v => v?.model);
+  if (variant) {
+    return { modelEnum: variant.model, displayName: variant.displayName || modelStr, isCascade };
+  }
+
+  // Direct pass-through if enum name
   if (modelStr.startsWith('model_')) {
     return { modelEnum: modelStr.toUpperCase(), displayName: modelStr, isCascade };
   }
 
-  // Default to Gemini 3.8 Flash Medium
-  return {
-    modelEnum: 'MODEL_PLACEHOLDER_M319',
-    displayName: 'Gemini 3.8 Flash (Medium)',
-    isCascade
-  };
+  // Refuse rather than quietly run a different model than the one asked for.
+  const err = new Error(`Unknown model "${requestedModel}": not in the language server catalog or the proxy's model map`);
+  err.status = 400;
+  throw err;
 };
 
 const findLanguageServerBinary = () => {
+  // Set by the Nix unit to the exact hub build, so nothing here goes stale
+  // when the flake bumps antigravity-hub.
+  if (process.env.ANTIGRAVITY_LS_BIN) return process.env.ANTIGRAVITY_LS_BIN;
+
   const candidates = [
     '/nix/store/rpgwxqadiscnsm9zmb4j4brb3yp2ayqg-antigravity-hub-2.12.2/share/antigravity/resources/bin/language_server',
     '/nix/store/4lcvb3j5418q7nlfx156b3rmf0vhv8qk-antigravity-ide-2.5.5/lib/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64'
@@ -108,9 +129,14 @@ const findLanguageServerBinary = () => {
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
+  // Scan store entry names rather than `find /nix/store`, which walks the whole
+  // store synchronously and would freeze the proxy while it runs.
   try {
-    const found = execSync('find /nix/store -name "language_server" -type f -executable 2>/dev/null | head -n 1', { encoding: 'utf-8' }).trim();
-    if (found && fs.existsSync(found)) return found;
+    for (const entry of fs.readdirSync('/nix/store')) {
+      if (!entry.includes('-antigravity-hub-')) continue;
+      const c = `/nix/store/${entry}/share/antigravity/resources/bin/language_server`;
+      if (fs.existsSync(c)) return c;
+    }
   } catch {}
   return candidates[0];
 };
@@ -140,12 +166,35 @@ class LanguageServerManager {
     }
   }
 
-  detectRunningInstance() {
+  // Every running language server that might be ours to attach to, newest
+  // first. Its HTTP port is logged rather than passed as a flag, and an HTTPS
+  // listener is logged the same way, so ensureActive heartbeats each candidate
+  // and keeps the one that answers.
+  detectRunningInstances() {
     if (process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
       const parts = process.env.ANTIGRAVITY_LS_ADDRESS.split(':');
       const port = parseInt(parts[parts.length - 1], 10);
-      return { port, token: process.env.ANTIGRAVITY_CSRF_TOKEN };
+      return [{ port, token: process.env.ANTIGRAVITY_CSRF_TOKEN }];
     }
+
+    const candidates = [];
+    const seen = new Set();
+    const add = (port, token) => {
+      const key = `${port}:${token}`;
+      if (port > 0 && !seen.has(key)) {
+        seen.add(key);
+        candidates.push({ port, token });
+      }
+    };
+
+    let loggedPorts = [];
+    try {
+      const logContent = fs.readFileSync(`${process.env.HOME}/.config/Antigravity/logs/language_server.log`, 'utf-8');
+      loggedPorts = logContent.split('\n').reverse()
+        .map(l => l.match(/listening on random port at (\d+) for HTTP\b/))
+        .filter(Boolean)
+        .map(m => parseInt(m[1], 10));
+    } catch {}
 
     try {
       const psOutput = execSync('ps aux | grep language_server | grep -v grep', { encoding: 'utf-8' });
@@ -156,24 +205,12 @@ class LanguageServerManager {
         const token = csrfMatch[1];
 
         const portMatch = line.match(/--http_server_port\s+(\d+)/);
-        if (portMatch && parseInt(portMatch[1], 10) > 0) {
-          return { port: parseInt(portMatch[1], 10), token };
-        }
-
-        try {
-          const logContent = fs.readFileSync(`${process.env.HOME}/.config/Antigravity/logs/language_server.log`, 'utf-8');
-          const lines = logContent.split('\n').reverse().slice(0, 100);
-          for (const l of lines) {
-            const m = l.match(/listening on random port at (\d+) for HTTP/);
-            if (m) {
-              return { port: parseInt(m[1], 10), token };
-            }
-          }
-        } catch {}
+        if (portMatch) add(parseInt(portMatch[1], 10), token);
+        for (const port of loggedPorts) add(port, token);
       }
     } catch {}
 
-    return null;
+    return candidates;
   }
 
   async ensureActive() {
@@ -182,15 +219,13 @@ class LanguageServerManager {
       if (healthy) return { port: this.activeHttpPort, token: this.activeCsrfToken };
     }
 
-    const detected = this.detectRunningInstance();
-    if (detected) {
-      const healthy = await this.checkHeartbeat(detected.port, detected.token);
-      if (healthy) {
-        console.log(`Connected to active Antigravity Language Server on port ${detected.port}`);
-        this.activeHttpPort = detected.port;
-        this.activeCsrfToken = detected.token;
+    for (const candidate of this.detectRunningInstances()) {
+      if (await this.checkHeartbeat(candidate.port, candidate.token)) {
+        console.log(`Connected to active Antigravity Language Server on port ${candidate.port}`);
+        this.activeHttpPort = candidate.port;
+        this.activeCsrfToken = candidate.token;
         this.isManaged = false;
-        return detected;
+        return candidate;
       }
     }
 
@@ -284,6 +319,21 @@ const lsManager = new LanguageServerManager();
 
 process.on('SIGINT', () => { lsManager.cleanup(); process.exit(0); });
 process.on('SIGTERM', () => { lsManager.cleanup(); process.exit(0); });
+
+// The language server's model catalog (id -> { model enum, displayName }), cached
+// briefly so each chat request doesn't re-fetch it. Empty when the server is
+// unreachable, in which case only the static MODEL_MAP can resolve.
+let liveCatalogCache = { at: 0, models: {} };
+const getLiveCatalog = async () => {
+  if (Date.now() - liveCatalogCache.at < 60_000) return liveCatalogCache.models;
+  try {
+    const live = await lsManager.callRpc('GetAvailableModels', {});
+    liveCatalogCache = { at: Date.now(), models: live?.response?.models || {} };
+  } catch {
+    return {};
+  }
+  return liveCatalogCache.models;
+};
 
 // Session store for multi-turn conversations
 const sessionStore = new Map();
@@ -481,7 +531,15 @@ const server = http.createServer(async (req, res) => {
 
       const stream = Boolean(body.stream);
       const requestedEffort = body.reasoning_effort || body.effort || (body.options && (body.options.reasoning_effort || body.options.effort));
-      const { modelEnum, displayName, isCascade } = resolveModelEnum(body.model, requestedEffort);
+      let resolved;
+      try {
+        resolved = resolveModelEnum(body.model, requestedEffort, await getLiveCatalog());
+      } catch (err) {
+        res.writeHead(err.status || 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+        return;
+      }
+      const { modelEnum, displayName, isCascade } = resolved;
 
       const sessionInfo = getSessionKey(req, body);
       const useCascade = isCascade || Boolean(sessionInfo.cascadeId) || body.mode === 'cascade';

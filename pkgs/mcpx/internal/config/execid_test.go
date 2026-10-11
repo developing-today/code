@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,8 +28,9 @@ func TestExecIdentityFollowsTheExecutableNotTheCommandName(t *testing.T) {
 	r := &Resolved{Server: &Server{Command: "tool", Env: map[string]string{"PATH": filepath.Join(dir, "bin")}}}
 
 	first := r.ExecIdentity()
-	if !strings.HasPrefix(first, "sha256:") {
-		t.Fatalf("identity %q of a small file is not its content hash", first)
+	sum := sha256.Sum256([]byte("#!/bin/sh\necho one\n"))
+	if want := "sha256:" + hex.EncodeToString(sum[:])[:16]; first != want {
+		t.Fatalf("identity %q of a small file is not its content hash %q", first, want)
 	}
 	if st, ok := r.ExecStamp(); !ok || st.Path != bin {
 		t.Fatalf("stamp %+v does not name the resolved file %s", st, bin)
@@ -108,6 +111,14 @@ func TestExecIdentityOfALargeFileIsItsInode(t *testing.T) {
 	}
 	if again := r.ExecIdentity(); again != id {
 		t.Fatalf("stat identity moved with nothing changed: %q then %q", id, again)
+	}
+
+	// A second file with the same bytes is a different program: the identity
+	// is the file, not what it holds, above the limit.
+	twin := filepath.Join(dir, "twin")
+	writeExec(t, twin, "#!/bin/sh\necho same\n")
+	if got := (&Resolved{Server: &Server{Command: twin}}).ExecIdentity(); got == id {
+		t.Fatal("a large file with the same bytes as another kept its identity")
 	}
 
 	// A replacement at the same path with the same bytes is a new inode.

@@ -3165,10 +3165,17 @@ func withoutMCPXVars(env []string) []string {
 // reached a real model on every "no model" assertion, and the result depended
 // on that machine's CLIs and network. Here both CLIs point at a stub that
 // answers nothing, and the OpenAI pair is dropped so it cannot win first.
-func (e *env) withoutModelCLIs(t *testing.T) {
+//
+// The stub is a provider, so a CLI is "installed" as far as the daemon can
+// tell. It touches the returned path when it runs, so a test can assert that
+// no model CLI was called at all, not only that the answer reads as no-model.
+func (e *env) withoutModelCLIs(t *testing.T) (called string) {
 	t.Helper()
-	stub := filepath.Join(t.TempDir(), "no-model")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\necho 'no model in this test' >&2\nexit 1\n"), 0o755); err != nil {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "no-model")
+	called = filepath.Join(dir, "called")
+	body := "#!/bin/sh\ntouch '" + called + "'\necho 'no model in this test' >&2\nexit 1\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	dropped := map[string]bool{
@@ -3182,4 +3189,5 @@ func (e *env) withoutModelCLIs(t *testing.T) {
 		}
 	}
 	e.envVars = append(out, "OPENCODE_BINARY="+stub, "CLAUDE_BIN="+stub)
+	return called
 }

@@ -159,13 +159,14 @@ func (p *Pool) replaceChildren() {
 }
 
 // retire takes a child out of service with no replacement: no new call reaches
-// it, the calls running on it have ExecDrainTimeout to finish, and then it is
+// it, the calls running on it have the drain window to finish, and then it is
 // closed and removed. The caller holds the child's slot while this runs, so a
-// caller that arrives meanwhile waits rather than starting a rival. stopReason
-// goes to the lifecycle log; callErr is how a call cut off by the drain window
-// is described (see replacedErr).
-func (p *Pool) retire(in *Instance, stopReason, callErr string) {
-	if !p.drain(in, ExecDrainTimeout) {
+// caller that arrives meanwhile waits rather than starting a rival. drain is
+// passed in, not read here, because a lazy restart runs this in the background.
+// stopReason goes to the lifecycle log; callErr is how a call cut off by the
+// drain window is described (see replacedErr).
+func (p *Pool) retire(in *Instance, drain time.Duration, stopReason, callErr string) {
+	if !p.drain(in, drain) {
 		lifecycle("server.warning", map[string]any{
 			"server": p.cfg.Name, "instance": in.ID,
 			"reason": "calls still running at the drain timeout are cut off by the restart",
@@ -182,7 +183,7 @@ func (p *Pool) retire(in *Instance, stopReason, callErr string) {
 
 func (p *Pool) replaceChild(in *Instance) {
 	replace := p.replaceable(in)
-	p.retire(in, "executable changed", "restarted for a changed executable")
+	p.retire(in, ExecDrainTimeout, "executable changed", "restarted for a changed executable")
 
 	if !replace {
 		p.mu.Lock()

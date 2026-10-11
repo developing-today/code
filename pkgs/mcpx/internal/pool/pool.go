@@ -86,9 +86,9 @@ type Instance struct {
 	subMu      sync.Mutex
 	subscribed map[string]bool
 	monitored  bool
-	// retiring marks a child being replaced for a changed executable: no new
-	// caller may take it, and it leaves the list once it is closed. Guarded
-	// by Pool.mu. See execwatch.go.
+	// retiring marks a child being taken out of service, for a changed
+	// executable or a restart: no new caller may take it, and it leaves the
+	// list once it is closed. Guarded by Pool.mu. See execwatch.go.
 	retiring bool
 	// swapped is set, to how the child is being taken down, just before it is
 	// closed, so a call that fails on it can say why.
@@ -148,6 +148,10 @@ type Pool struct {
 	watching  bool
 	execEvery time.Duration
 	execStop  chan struct{}
+
+	// draining counts the children a lazy restart is closing in the
+	// background. See WaitDrained.
+	draining sync.WaitGroup
 
 	mu        sync.Mutex
 	cond      *sync.Cond
@@ -1179,8 +1183,15 @@ type RestartResult struct {
 //
 // Unless lazy, each child is taken out of service the way an executable change
 // takes one out (see retire): calls in flight on it have ExecDrainTimeout to
-// finish. Lazy is the stop-now behaviour: calls in flight on the stopped
-// children are cut off, and the next call starts on demand.
+// finish, and the replacement is started before this returns.
+//
+// Lazy is a fast restart, not a cut-off. The children leave the list at once,
+// so the next call starts a fresh child without waiting for them, and this
+// returns without waiting either. Each child is retired in the background: its
+// calls in flight finish on it, and it is closed when the last one ends or
+// ExecDrainTimeout passes, whichever is first. A lazy child does not count
+// toward Max while it drains, so for that window a lane can hold more than Max
+// processes. That is the price of not making the new call wait.
 func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 	p.mu.Lock()
 	// A copy: retire removes children from p.instances in place.
@@ -1188,46 +1199,59 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 	p.failCount = 0
 	p.lastErr = nil
 	p.cooldownUntil = time.Time{}
+	// Taken now, not when each is reached, so no new caller takes a child that
+	// is about to go. An instance already retiring for an executable change is
+	// closed by that replacement, and is not retired twice.
 	var retiring []*Instance
+	busy := 0
+	for _, in := range stop {
+		if in.holders > 0 {
+			busy++
+		}
+		if !in.retiring {
+			in.retiring = true
+			if !lazy {
+				p.reserveSlotLocked(in)
+			}
+			retiring = append(retiring, in)
+		}
+	}
 	if lazy {
 		p.instances = nil
-	} else {
-		// Taken now, not when each is reached, so no new caller takes a child
-		// that is about to go. An instance already retiring for an executable
-		// change is closed by that replacement, and is not retired twice.
-		for _, in := range stop {
-			if !in.retiring {
-				in.retiring = true
-				p.reserveSlotLocked(in)
-				retiring = append(retiring, in)
-			}
-		}
 	}
 	p.cond.Broadcast()
 	p.mu.Unlock()
+	if lazy {
+		drain := ExecDrainTimeout
+		for _, in := range retiring {
+			p.draining.Add(1)
+			go func() {
+				defer p.draining.Done()
+				p.retire(in, drain, "restart", "restarted on request")
+			}()
+		}
+		res := RestartResult{Stopped: len(stop)}
+		if busy > 0 {
+			res.Note = fmt.Sprintf("%d instance(s) still serving calls: they finish on the old process, which is closed after them or after limits.execDrainTimeout", busy)
+		}
+		return res
+	}
 	var keys []string
 	seen := map[string]bool{}
 	for _, in := range stop {
-		if lazy {
-			p.stopped(in, "restart")
-			_ = in.Client.Close()
-		}
 		if !seen[in.key] {
 			seen[in.key] = true
 			keys = append(keys, in.key)
 		}
 	}
 	for _, in := range retiring {
-		p.retire(in, "restart", "restarted on request")
+		p.retire(in, ExecDrainTimeout, "restart", "restarted on request")
 		p.mu.Lock()
 		p.releaseSlotLocked(in)
 		p.cond.Broadcast()
 		p.mu.Unlock()
 	}
 	res := RestartResult{Stopped: len(stop)}
-	if lazy {
-		return res
-	}
 	if len(keys) == 0 {
 		if p.cfg.Scope != config.ScopeGlobal {
 			res.Note = fmt.Sprintf("no instance running; scope %q starts one per caller on its next call", p.cfg.Scope)
@@ -1272,6 +1296,12 @@ func (p *Pool) startFor(ctx context.Context, key string) (string, error) {
 	lease.Release()
 	return id, nil
 }
+
+// WaitDrained blocks until every child a lazy restart took out of service is
+// closed: its calls have ended, or the drain window has passed. A lazy restart
+// returns before this, so a caller that needs the old children gone (a test
+// that restores a global hook, say) waits here.
+func (p *Pool) WaitDrained() { p.draining.Wait() }
 
 // Close shuts the pool down permanently, closing instances after in-flight work completes.
 func (p *Pool) Close() {

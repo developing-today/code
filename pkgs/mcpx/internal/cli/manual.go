@@ -267,8 +267,9 @@ func handCommands() []Command {
 				"exited, and a per-call instance, are reported and not replaced. " +
 				"A call already running on an instance has limits.execDrainTimeout to " +
 				"finish before the instance is closed and a call still running fails. " +
-				"--lazy only stops, at once, cutting such calls off: the next call starts " +
-				"a fresh instance. " +
+				"--lazy does not wait: the next call starts a fresh instance at once, and " +
+				"a call already running finishes on the old one, which is closed after it " +
+				"(or after limits.execDrainTimeout). " +
 				"--daemon restarts the mcpx daemon process itself.",
 		},
 		{
@@ -609,7 +610,10 @@ func ManPage(version string) string {
 		b.WriteString("Every setting below is readable from a configuration file at its\n" +
 			"dotted path, from the environment variable shown, and from the flag\n" +
 			"shown. Precedence runs defaults, then configuration files with the\n" +
-			"nearest winning, then the environment, then the command line.\n")
+			"nearest winning, then the environment, then presets, then the command\n" +
+			"line; a runtime change made with `mcpx settings set` on the running\n" +
+			"daemon is above all of them. The pool settings are the defaults every\n" +
+			"server inherits, so a server's own mcpx block still wins over them.\n")
 		section := ""
 		for _, set := range sch.All() {
 			if set.Plumbing {
