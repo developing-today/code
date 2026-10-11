@@ -42,7 +42,7 @@ let
       #   in merge "" a b;
 
     in
-    array |> flattenDeep |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { };
+    builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { } (flattenDeep array);
 
   matrix =
     spec: f:

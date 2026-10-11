@@ -8,9 +8,7 @@
 # This derivation builds the release binary and runs the full test suite
 # during the check phase.
 
-{
-  pkgs ? import <nixpkgs> { },
-}:
+{ pkgs ? import <nixpkgs> { }, }:
 
 let
   # Read Cargo.toml for package metadata
@@ -19,8 +17,7 @@ let
   pname = cargoToml.package.name;
   inherit (cargoToml.package) version;
 
-in
-{
+in {
   # Main package build
   default = pkgs.rustPlatform.buildRustPackage {
     inherit pname version;
@@ -35,13 +32,9 @@ in
       # hash here via `outputHashes`.
     };
 
-    nativeBuildInputs = with pkgs; [
-      pkg-config
-    ];
+    nativeBuildInputs = with pkgs; [ pkg-config ];
 
-    buildInputs = with pkgs; [
-      openssl
-    ];
+    buildInputs = with pkgs; [ openssl ];
 
     # Run tests during build
     doCheck = true;
@@ -56,10 +49,7 @@ in
     meta = with pkgs.lib; {
       description = "A peer-to-peer file sharing CLI built with Iroh";
       homepage = "https://github.com/example/id";
-      license = with licenses; [
-        mit
-        asl20
-      ];
+      license = with licenses; [ mit asl20 ];
       maintainers = [ ];
     };
   };
@@ -69,15 +59,9 @@ in
     name = "${pname}-check-${version}";
     src = ./.;
 
-    nativeBuildInputs = with pkgs; [
-      rustup
-      pkg-config
-      openssl
-    ];
+    nativeBuildInputs = with pkgs; [ rustup pkg-config openssl ];
 
-    buildInputs = with pkgs; [
-      openssl
-    ];
+    buildInputs = with pkgs; [ openssl ];
 
     # Environment
     OPENSSL_DIR = "${pkgs.openssl.dev}";

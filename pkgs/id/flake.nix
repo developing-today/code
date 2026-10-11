@@ -4,9 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs";
     # nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    systems = {
-      url = "github:nix-systems/default";
-    };
+    systems = { url = "github:nix-systems/default"; };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -31,18 +29,10 @@
     };
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      rust-overlay,
-      flake-utils,
-      bun2nix,
-      # TODO: consider use systems here?
-      ...
-    }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, bun2nix,
+    # TODO: consider use systems here?
+    ... }:
+    flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
@@ -54,27 +44,17 @@
         };
 
         # Inherit from shared config
-        inherit (nixCommon)
-          buildInputs
-          opensslEnv
-          rustToolchain
-          fmtBins
-          ;
+        inherit (nixCommon) buildInputs opensslEnv rustToolchain fmtBins;
         inherit (nixCommon) nativeBuildInputs;
 
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
-        cargoDeps = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./Cargo.lock;
-        };
+        cargoDeps =
+          pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
 
         # Pre-fetch bun dependencies for sandbox builds (no network access)
         bun2nixPkg = bun2nix.packages.${system}.default;
-        bunDeps = bun2nixPkg.fetchBunDeps {
-          bunNix = ./web/bun.nix;
-        };
-        e2eBunDeps = bun2nixPkg.fetchBunDeps {
-          bunNix = ./e2e/bun.nix;
-        };
+        bunDeps = bun2nixPkg.fetchBunDeps { bunNix = ./web/bun.nix; };
+        e2eBunDeps = bun2nixPkg.fetchBunDeps { bunNix = ./e2e/bun.nix; };
 
         # Pre-built integration test binary for NixOS VM tests.
         # Compiles `cargo test --test cli_integration --no-run` in the sandbox,
@@ -156,8 +136,7 @@
         };
 
         # Helper to create a check that runs a just command
-        mkCheck =
-          name: justCmd:
+        mkCheck = name: justCmd:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
             src = ./.;
@@ -206,8 +185,7 @@
           };
 
         # Helper to create a script that runs in the project directory
-        mkScript =
-          name: script:
+        mkScript = name: script:
           pkgs.writeShellScriptBin name ''
             cd ${self}
             export OPENSSL_DIR="${opensslEnv.OPENSSL_DIR}"
@@ -218,26 +196,17 @@
           '';
 
         # Helper to create a runnable app with metadata
-        mkApp =
-          drv:
-          {
-            description ? drv.name,
-          }:
-          {
+        mkApp = drv:
+          { description ? drv.name, }: {
             type = "app";
             program = "${drv}/bin/${drv.name}";
-            meta = commonMeta // {
-              inherit description;
-            };
+            meta = commonMeta // { inherit description; };
           };
 
         # Common metadata for all apps and packages
         commonMeta = {
           homepage = "https://github.com/developing-today/code";
-          license = with pkgs.lib.licenses; [
-            mit
-            asl20
-          ];
+          license = with pkgs.lib.licenses; [ mit asl20 ];
         };
 
         # ─── Dynamic app generation from justfile ──────────────────────────
@@ -249,30 +218,25 @@
         justRecipes = builtins.fromJSON (builtins.readFile ./just-recipes.json);
 
         # Build a nix app from a just recipe
-        mkRecipeApp =
-          name: recipe:
+        mkRecipeApp = name: recipe:
           let
             hasParams = (builtins.length (recipe.parameters or [ ])) > 0;
-            script = if hasParams then ''just ${name} "$@"'' else "just ${name}";
+            script =
+              if hasParams then ''just ${name} "$@"'' else "just ${name}";
             description = recipe.doc or name;
-          in
-          mkApp (mkScript name script) { inherit description; };
+          in mkApp (mkScript name script) { inherit description; };
 
         # Build a nix app from a just alias (uses target recipe's doc and params)
-        mkAliasApp =
-          name: alias:
-          let
-            targetRecipe = justRecipes.recipes.${alias.target};
-          in
-          mkRecipeApp name targetRecipe;
+        mkAliasApp = name: alias:
+          let targetRecipe = justRecipes.recipes.${alias.target};
+          in mkRecipeApp name targetRecipe;
 
         # Filter: exclude private recipes and 'default' (handled separately)
-        publicRecipes = pkgs.lib.filterAttrs (
-          name: recipe: !(recipe.private or false) && name != "default"
-        ) justRecipes.recipes;
+        publicRecipes = pkgs.lib.filterAttrs
+          (name: recipe: !(recipe.private or false) && name != "default")
+          justRecipes.recipes;
 
-      in
-      {
+      in {
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
@@ -314,7 +278,8 @@
           test-int = mkCheck "test-int" "test-int-sandbox";
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
-          test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
+          test-web-typecheck =
+            mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
 
@@ -512,7 +477,8 @@
           prettier-check = pkgs.stdenv.mkDerivation {
             name = "id-prettier-check";
             src = ./.;
-            nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remove 2026-04-03
+            nativeBuildInputs =
+              [ pkgs.prettier ]; # nodepackages remove 2026-04-03
             buildPhase = ''
               find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
                 -o -name '*.scss' -o -name '*.yaml' \) \
@@ -526,31 +492,29 @@
               echo "prettier-check passed at $(date)" > $out/result.txt
             '';
           };
-        }
-        // (
+        } // (
           # NixOS VM integration tests (Linux only — VMs require KVM)
           pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            nixos-serve = pkgs.testers.runNixOSTest (
-              import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
-            );
-            nixos-e2e = pkgs.testers.runNixOSTest (
-              import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }
-            );
-            nixos-playwright-e2e = pkgs.testers.runNixOSTest (
-              import ./nix/tests/playwright-e2e-test.nix {
+            nixos-serve = pkgs.testers.runNixOSTest
+              (import ./nix/tests/serve-test.nix {
+                idPackage = self.packages.${system}.id-web;
+              });
+            nixos-e2e = pkgs.testers.runNixOSTest
+              (import ./nix/tests/e2e-test.nix {
+                idPackage = self.packages.${system}.id-web;
+              });
+            nixos-playwright-e2e = pkgs.testers.runNixOSTest
+              (import ./nix/tests/playwright-e2e-test.nix {
                 idPackage = self.packages.${system}.id-web;
                 inherit e2eTestRunner;
                 playwrightBrowsers = pkgs.playwright-driver.browsers;
-              }
-            );
-            nixos-integration = pkgs.testers.runNixOSTest (
-              import ./nix/tests/integration-test.nix {
+              });
+            nixos-integration = pkgs.testers.runNixOSTest
+              (import ./nix/tests/integration-test.nix {
                 idPackage = self.packages.${system}.id-web;
                 inherit integrationTestRunner;
-              }
-            );
-          }
-        );
+              });
+          });
 
         # =======================================================================
         # Packages: nix build
@@ -565,9 +529,7 @@
             # Enable the web feature (default features are empty in Cargo.toml)
             buildFeatures = [ "web" "sandbox" "world" ];
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
+            cargoLock = { lockFile = ./Cargo.lock; };
 
             inherit buildInputs;
             nativeBuildInputs = [
@@ -602,13 +564,11 @@
 
             doCheck = true;
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
-            checkFlags = [
-              "--skip"
-              "serve_tests"
-            ];
+            checkFlags = [ "--skip" "serve_tests" ];
 
             meta = commonMeta // {
-              description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
+              description =
+                "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
             };
           };
 
@@ -618,9 +578,7 @@
             version = "0.1.0";
             src = ./.;
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
+            cargoLock = { lockFile = ./Cargo.lock; };
 
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
@@ -628,11 +586,7 @@
             dontUseCmakeConfigure = true;
 
             inherit buildInputs;
-            nativeBuildInputs = [
-              pkgs.pkg-config
-              pkgs.cmake
-              rustToolchain
-            ];
+            nativeBuildInputs = [ pkgs.pkg-config pkgs.cmake rustToolchain ];
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -640,10 +594,7 @@
 
             doCheck = true;
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
-            checkFlags = [
-              "--skip"
-              "serve_tests"
-            ];
+            checkFlags = [ "--skip" "serve_tests" ];
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";
@@ -659,10 +610,8 @@
         # Dynamically generated from just-recipes.json (recipes + aliases).
         # Only 'default' and 'just' are manually defined.
         # =======================================================================
-        apps =
-          pkgs.lib.mapAttrs mkRecipeApp publicRecipes
-          // pkgs.lib.mapAttrs mkAliasApp (justRecipes.aliases or { })
-          // {
+        apps = pkgs.lib.mapAttrs mkRecipeApp publicRecipes
+          // pkgs.lib.mapAttrs mkAliasApp (justRecipes.aliases or { }) // {
             # Default: run the web-enabled CLI binary
             default = {
               type = "app";
@@ -677,6 +626,5 @@
               exec ${pkgs.just}/bin/just "$@"
             '') { description = "Run just with any arguments"; };
           };
-      }
-    );
+      });
 }
