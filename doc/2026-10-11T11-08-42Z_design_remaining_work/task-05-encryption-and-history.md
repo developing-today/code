@@ -23,7 +23,7 @@ Every group is end-to-end encrypted by default, using p2panda-encryption's DataS
 
 ## Decisions
 
-- Joiner history default: `full` (decided). Whether to add `recent:N` for large groups.
+- Joiner history default: `full` (decided). `recent:N` is added per world (decided).
 - Large-group gate: end-to-end groups above 1,000 devices wait for a BeeKEM spike (recommended).
 - `scheme: none` notice wording.
 
@@ -55,7 +55,7 @@ p2panda-encryption (git, pinned), with the `data_scheme` feature. Do not enable 
 
 - Rotation triggers in the crate: create mints a secret; removal rotates (required); explicit update rotates; add does not rotate, because the welcome carries the existing secrets. Our from_join adds an update per join.
 - Welcome size: about 146 B per epoch today. My estimate with serde_bytes is about 40 B; S12 measures it. Growth is linear in epochs.
-- History (#7, N16): preferred default `recent:N` with N = 32, to be confirmed by S12. `full` on request through a lazy history protocol, a new item. Alternatives: `full` always; forward-only.
+- History (#7, N16): superseded by the decision in the update below. `full` is the default, and `recent:N` is an option per world, with presets 32 and 128. `full` on request through a lazy history protocol, a new item. Alternatives: `full` always; forward-only.
 - Large groups (#9): no gate. Servers emit local warnings. Preferred tiers 96, 128, 1,000 (N11). BeeKEM migration (N12): preferred is new groups above 1,000 on BeeKEM, with a transition window. Pending the BeeKEM spike.
 - from_join (N9): fork in developing-today, not pushed upstream (owner decision). Alternative: our DGM's `from_welcome` inserts the joiner, with no fork.
 - serde_bytes (N10): local patch only. Upstream: #770 (closed; proposed for `Body`) and #1059 (closed; a `Topic` fix in PR #1058). No issue covers the two DataScheme `Vec<u8>` fields.
@@ -95,3 +95,20 @@ BeeKEM (beekem 0.4.0, MSRV 1.90):
 - The crate checks neither signatures nor authority, and an add accepts any key. In 11 of 300 random trials no original member was left, and the crate allowed it.
 - Migration: converting DataScheme state in place is not possible. Options: a new group with re-invites; a scheme switch at a barrier inside the same group (recommended if continuity matters); a dual run; seeding the root from the old secret, rejected because the crate has no seed API.
 - Recommendation: do not adopt BeeKEM now. Keep DataScheme for all groups, with the warnings from #9. Revisit when the crate has a join API and authority checks.
+
+## 2026-10-11T16-08-10Z Decision: history, storms, merges, rotations, BeeKEM
+
+- **Joiner history (decision 7, decided).** `full` by default. `recent:N` is an option per world, with presets 32 and 128. Lazy full-history requests are a Phase 4 item. The explainers, section 4, cover what 32 means and why not 128 or only `full`.
+- **Heads and merges (N22, decided).** Cap 32; always name the author's latest event; merge when the heads would exceed the cap. Explainers, section 3.
+- **Warnings (N11, N34, decided).** Thresholds 96, 128 and 1,000 members, and warnings on re-add churn as well as size. Warnings are local to the server. No group is blocked.
+- **Rotations (N7, N8, decided).** No periodic rotation. Explicit updates rotate. Recovery from a compromised device is a manual remove and re-add.
+- **from_join (N9, decided).** The fork stays in our developing-today fork (decision 18). Revisit moving the fix into our DGM later.
+- **Scheme versions (N10, N20).** The serde_bytes encoding becomes a new scheme version, since it is wire-incompatible. Round 2 scheme-serde decides between the options; the explainers will give the full comparison.
+- **BeeKEM (N12, N26, decided).** Not adopted now. The [assessment](./beekem-assessment.md) lists the difficulties and the conditions for reconsidering it.
+- **DataScheme costs (new, P4.10).** Measure update cost at 100, 1,000 and 5,000 members with our adapter, for the BeeKEM comparison.
+- Steps: [plan](./plan-phases.md), Phase 4.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

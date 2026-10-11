@@ -47,7 +47,7 @@
 
 - **A. p2panda source.** Stay on the git rev (preferred: we need fixes that are not in 0.7.1), or move to crates.io 0.7.x and carry patches (alternative).
 - **B. Toolchain step.** Jump to 1.99.0 in one step (preferred), or stay at 1.97.0 until the next dependency pass (alternative).
-- **C. ed25519-dalek.** Align with p2panda-core's 2.2 (preferred, one copy in the tree), or keep 3.0 and shim at the boundary (alternative). Index decision 19.
+- **C. ed25519-dalek.** Superseded by round 2: stay on 3.0.0 with a conversion shim at the p2panda boundary, and switch to `verify_strict`. Moving to 2.x is blocked by iroh 1.3.0. Index decision 19.
 - **D. libsql.** Keep for web identity (alternative: remove it when storage moves to redb), decided together with the storage question in task 02.
 
 ## Risks
@@ -56,3 +56,16 @@
 - redb 4.x format and API changes. Any store opened by an older version needs a rebuild, which is acceptable because the data can be discarded.
 - libsql builds C code. Check it on the new toolchain.
 - Feature unification could pull in dependencies we don't want. Check `cargo tree -e features` after each group.
+
+## 2026-10-11T16-08-10Z Decision: newest toolchain, git rev, pending items
+
+- **Toolchain (N15, decided).** The newest stable, a patch of 1.99 or later. Round 2 toolchain gives the exact version and the flake steps.
+- **p2panda (decision A, decided).** The git rev, as N14 says.
+- **ed25519 (decision C, pending).** Round 2 ed25519 answers the versions and the compatibility question. The owner is not against moving to 2.x across the tree.
+- **libsql (decision D, decided).** Replaced by redb, or by Turso if round 2 says so (N1, N2).
+- Steps: [plan](./plan-phases.md), Phase 0 (P0.2, P0.3, P0.5).
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

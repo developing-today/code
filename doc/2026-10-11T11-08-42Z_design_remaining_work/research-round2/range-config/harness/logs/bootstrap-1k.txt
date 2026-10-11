@@ -1,0 +1,7 @@
+## bootstrap: chains=1000, 50000 events on the full side, one run each
+| case | flights A+B | control B | data B | control / data | wall ms | checks |
+|---|---|---|---|---|---|---|
+| full dials empty, both K16 T16 | 4 (2+2) | 1600051 | 24442016 | 0.065 | 8133.6 | exact; wire = in-memory |
+| empty dials full, both K16 T16 | 5 (3+2) | 1601465 | 24442016 | 0.066 | 13370.3 | exact; wire = in-memory |
+| full (K4 T8) dials empty (K16 T16) | 4 (2+2) | 1600051 | 24442016 | 0.065 | 12645.3 | exact; wire = in-memory |
+| empty (K16 T16) dials full (K4 T8) | 5 (3+2) | 1600166 | 24442016 | 0.065 | 12715.6 | exact; wire = in-memory |

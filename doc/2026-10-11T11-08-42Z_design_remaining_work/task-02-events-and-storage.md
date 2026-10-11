@@ -75,3 +75,18 @@ p2panda-core (git, pinned), `cbor-core =0.10.1`, `unicode-normalization` (NFC). 
 - Metadata stays flat under churn: 117 B to 121 B across 20,001 operations. Tombstones would cost about 3 B per removal.
 - Compaction: take a snapshot at a causal cut, then serve the tail. Dropping stable clear bodies without a snapshot brings back removed adds for a new device. That is a tested counterexample. Do not drop clear bodies without a snapshot.
 - With the real `tuple.rs` before the fix, `"a"` matched `"a\0b"` in name and value prefixes. The `00 00` terminator fixes it. Subject-only prefixes are exact for 32-byte subjects.
+
+## 2026-10-11T16-08-10Z Decision: storage, ChainExt, waiting caps, crash tests
+
+- **Storage (N1, decided).** redb for everything. The Turso spike runs in round 2 and only changes the decision if Turso wins on correctness, durability, disk, speed, build time, or maintenance. libsql is replaced either way (N2).
+- **p2panda-store (N3, decided).** Implement its traits over redb, because the owner prefers traits. A fork is acceptable, since we would own it and replace its SQLite implementation with redb. Round 2 store-fit decides which route is simpler.
+- **ChainExt (N4, decided).** One extension struct on every event. See the explainers, section 1.
+- **Waiting caps (decision 6, decided).** 256 waiting events per author and 7 days, configurable per world. See the explainers, section 2.
+- **Compaction (N33, decided).** Snapshot at a causal cut, then the tail. See the explainers, section 6.
+- **Crash testing (N13).** A portable in-process fault-injecting backend for redb first. LazyFS is an optional Linux job. Round 2 crash-tests decides the harness.
+- Steps and tests for all of this are in the [plan](./plan-phases.md), Phase 1.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

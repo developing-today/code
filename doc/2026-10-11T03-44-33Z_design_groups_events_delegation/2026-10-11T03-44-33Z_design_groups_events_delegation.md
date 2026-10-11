@@ -863,3 +863,20 @@ Owner decision, 2026-10-11. Connectivity uses n0's relays and lookups by default
 - QAD is what gives a peer its public candidate. A QAD relay other than home must be in the map, and n0 is the default source (N29). This should be checked on real networks.
 - Connected peers learn our addresses even when tickets hold none (N30).
 - Details: `spikes/c2-holepunch/RESULTS.md`, and the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).
+
+## 2026-10-11T16-08-10Z Decision: owner decisions recorded, phased plan proposed
+
+- Accepted: joiner history `full` by default; mDNS on for `serve`; fork recovery by removal and re-enrolment; storage on redb; p2panda-store traits over redb; the git rev for p2panda; the newest toolchain; the freshness window configurable; tickets that work as regular tickets with optional signatures; the n0 relay now; BeeKEM not adopted.
+- The [phased plan](../2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md) has eight phases, with parallel tracks and the true blockers marked. It is proposed, not started.
+- The [explainers](../2026-10-11T11-08-42Z_design_remaining_work/explainers.md) define ChainExt, waiting caps, storms and merges, epochs and history modes, range versus LogSync, and compaction.
+- The [BeeKEM assessment](../2026-10-11T11-08-42Z_design_remaining_work/beekem-assessment.md) records the difficulties and the conditions for reconsidering it.
+
+## 2026-10-11T17-58-40Z Update: round 2 research and the revised plan
+
+- Storage: redb everywhere. The Turso spike was slower in every configuration measured. libsql is replaced by redb (N1, N2).
+- Ed25519: stay on 3.0.0 with a conversion shim, and use `verify_strict`. Moving to 2.x is blocked by iroh 1.3.0 (decision 19).
+- Scheme v1 (serde_bytes) is the first release. It is 3.66 times smaller per epoch than stock (N10).
+- Range: K and T are local, validated, and never on the wire. LogSync is used below a 3.5% difference, and range above it (N5, N6).
+- Access control, not privacy: iroh identifies a peer only after the TLS handshake, so "authorize before connecting" does not hide addresses (N30).
+- QAD: iroh probes only the first five relays in the map. QAD-capable relays come first (N43).
+- Revised: [plan](../2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md), [index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md), [explainers](../2026-10-11T11-08-42Z_design_remaining_work/explainers.md).

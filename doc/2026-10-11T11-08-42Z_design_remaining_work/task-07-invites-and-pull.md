@@ -68,3 +68,16 @@ New module, for example `pkgs/id/src/invite/`. `invite.rs` stays for petnames un
 - Gotcha: `seitan.go` still has the V1 invite-ID payload (no version) and the V1 `+` position. Implementing from it alone gives the wrong V2 ID.
 - The research note says scrypt is transitive. It is absent from the spike's lock.
 - Deviation: the spike used ed25519-dalek 3, to match `pkgs/id`.
+
+## 2026-10-11T16-08-10Z Decision: freshness, invite style, pull
+
+- **Freshness window (N23, decided).** Configurable per server, per world, or per inviter. Default 5 minutes. The rule is `created - W <= ctime <= min(now + W, expires)`. Explainers, section 7.
+- **Invite style (decision 10, decided).** Bearer link (Seitan V2) with expiry and single use. A typed key is optional, with owner approval.
+- **Pull default (decision 11, decided).** Open pull, with an authorized option.
+- **Tickets (N24, N30).** The owner accepts tickets that carry addresses when needed. Signed tickets are optional, and a standard client must still accept them. Pending round 2 ticket-signing for the format.
+- **Seitan gaps (from S9).** Verify the accept-message bytes and the Keybase admin handler before shipping. Steps: [plan](./plan-phases.md), Phase 6.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

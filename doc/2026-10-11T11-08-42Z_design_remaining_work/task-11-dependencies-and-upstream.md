@@ -64,3 +64,16 @@ Each crate in the table has a line in `Cargo.toml` with its pin, a reporting ent
 - serde_bytes: local only. Upstream: #770 (closed) and #1059 (closed, fixed by PR #1058 for `Topic`). None covers the DataScheme `Vec<u8>` fields.
 - The membership bug is in upstream code (see task 05). It is not reported upstream.
 - The toolchain and dependency update moved to task 12.
+
+## 2026-10-11T16-08-10Z Decision: p2panda source and forks
+
+- **p2panda source (N14, decided).** The git rev, unless there is a strong reason not to. Round 2 store-fit and the toolchain result do not change this.
+- **Forks (N3, decided).** A fork of p2panda-store is acceptable, since we would own it. The from_join fork stays in developing-today (decision 18). Nothing goes upstream.
+- **serde_bytes (N10, N20).** A new scheme version, not a silent patch. Round 2 scheme-serde decides the mechanism.
+- **ed25519 (decision 19).** Pending round 2 ed25519. The owner wants the facts first, and is not against moving to 2.x.
+- Steps: [plan](./plan-phases.md), Phase 0 (P0.3).
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

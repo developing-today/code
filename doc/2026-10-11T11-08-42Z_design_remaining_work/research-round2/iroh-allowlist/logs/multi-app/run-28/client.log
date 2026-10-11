@@ -1,0 +1,15 @@
+2026-10-11T17:24:10.570804Z  INFO harness: dialing with one loopback hint role="client" event="start" me=ed4928c628 kind=stream ticket=[127.0.0.1:33428]
+2026-10-11T17:24:10.571636Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:24:10.571781Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=ResolveRemote(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state::path_state: added addressing information
+2026-10-11T17:24:10.571924Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: local addrs updated, triggering holepunching
+2026-10-11T17:24:10.571959Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: not holepunching: no connections
+2026-10-11T17:24:10.571993Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: Address Lookup not configured
+2026-10-11T17:24:10.574798Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=SendDatagram(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: sending datagram to all known paths paths=[Ip(127.0.0.1:33428)]
+2026-10-11T17:24:10.619616Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=AddConnection(108874135253824) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:58306, 10.200.0.2:58306, 127.0.0.1:58306}
+2026-10-11T17:24:10.620374Z  INFO harness: connect() returned a Connection role="client" event="connect_ok" elapsed_ms=49.424346 remote_info=["Ip(127.0.0.1:33428)/Active"]
+2026-10-11T17:24:10.642019Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:24:10.642634Z  INFO harness: reading reply failed role="client" event="stream_error" elapsed_ms=71.680614 error=read error: connection lost dbg=Read(ConnectionLost(ApplicationClosed(ApplicationClose { error_code: 4098, reason: b"not on allowlist" })))
+2026-10-11T17:24:10.643168Z  INFO harness: peer closed role="client" event="closed_by_peer" elapsed_ms=72.218673 why=closed by peer: not on allowlist (code 4098) dbg=ApplicationClosed(ApplicationClose { error_code: 4098, reason: b"not on allowlist" }) remote_info=["Ip(127.0.0.1:33428)/Active"]
+2026-10-11T17:24:10.844168Z  INFO harness: final snapshot role="client" event="remote_info_final" remote_info=["Ip(127.0.0.1:33428)/Active"]
+2026-10-11T17:24:10.844332Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor cancelled
+2026-10-11T17:24:10.844380Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor terminating

@@ -83,3 +83,19 @@ n0 is the default for relays and lookup. Our own relay is added as a fallback an
 - A dead relay entry costs about 3 s at startup, from iroh's net-report probe timeout. A lost first holepunch round costs up to 5 s.
 - Not tested: n0's own relays (no uplink from the lab), real NAT devices, double NAT, WAN latency, NAT timeouts beyond 60 s, TLS on the public relay, real Cloudflare Tunnel.
 - Next: a real-network test with two separate networks, with n0's QAD in the map (N29).
+
+## 2026-10-11T16-08-10Z Decision: relay now, mDNS, tickets, later servers
+
+- **Relay now (N19, changed).** No Tunnel account. We use the n0 relay now, and all users see the server's public IP. This is accepted.
+- **Later servers (owner).** A local server behind a Cloudflare Tunnel, and several VPS for testing. The owner has a Cloudflare Workers paid plan. Round 2 cloudflare-workers gives the options. Nothing is deployed or created without the owner's go.
+- **mDNS (decision 14, changed).** On for `serve`, as the code does today, and `--no-mdns` turns it off. The library default is off. The design said off for everything; that is changed here.
+- **DHT (decision 15, decided).** Opt-in per world.
+- **Access control (decision 13, decided).** None now. Revisit at implementation.
+- **Tickets (decision 16, decided).** Regular tickets work. They carry addresses when needed. A signature is optional (round 2 ticket-signing).
+- **Authorize before connecting (N30).** Round 2 iroh-allowlist decides what iroh 1.3.0 can do.
+- Steps: [plan](./plan-phases.md), Phases 3 and 7.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

@@ -51,3 +51,8 @@ Signed data is checked only from its encoded bytes, with `verify_strict`. Never 
 - Tests: `test_full_field_prefix_matches_only_equal_values`, `test_prefix_full_field_ignores_longer_value_with_nul`, `test_sort_strings_with_nul`, `test_decode_single_nul_is_not_a_terminator`, and three exact-byte tests updated. `cargo test --lib tuple` 46 passed. Tags 71 passed. Full lib 748 passed, with the three known failures skipped. Doc tests and rustfmt pass.
 - Clippy: pending a clean run in a fresh target directory. An earlier run mixed rustc builds and failed with E0514, which is an environment problem, not a lint.
 - Still open in task 01: pull pages by bytes, MSRV (1.91 declared, 1.96 needed), dial deadlines in the remaining modules.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

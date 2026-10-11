@@ -58,3 +58,15 @@ No new crates expected. iroh-blobs is already in the lock file.
 - Equal stores still cost about 21.6 KB on the wire, from the handshake and two small messages. That dominates small syncs.
 - S1's split code would panic when K exceeds a range starting at key 0 (read, not run). The S7 port uses min(K, n).
 - Not tested: LogSync over iroh, real round-trip time, bootstrap from an empty store, power loss.
+
+## 2026-10-11T16-08-10Z Decision: sync method and observe
+
+- **Range above the crossover, LogSync below it (decided).** Both must be supported, and each side can answer either. Tradeoffs and the selection rule are in the explainers, section 5.
+- **K and T (N6).** Pending round 2 (range-config). The answer decides whether K and T are configurable per node without a compatibility cost.
+- **observe (decision 5, decided).** Each request is gated by the world's fetch rules. Observe is off by default. Gating is per server by default, and can be narrowed per world.
+- Steps: [plan](./plan-phases.md), Phase 3.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.
