@@ -263,6 +263,7 @@ impl std::ops::DerefMut for KillOnDrop {
 
 #[cfg(unix)]
 #[test]
+#[allow(unsafe_code)]
 fn test_streaming_child_dies_with_its_guard_even_when_the_test_panics() {
     fn sleeper() -> KillOnDrop {
         KillOnDrop(
@@ -1408,11 +1409,9 @@ mod serve_tests {
             self.work_dir.join(SERVE_LOCK)
         }
 
-        /// Sends SIGINT (Ctrl+C) to gracefully stop the server and waits for exit.
-        #[cfg(unix)]
-        #[allow(unsafe_code, clippy::cast_possible_wrap)]
         /// Waits for the child to exit. After `grace` it is killed, so a server
         /// that ignores SIGINT cannot hang the suite.
+        #[cfg(unix)]
         fn wait_or_kill(&mut self, grace: Duration) -> std::io::Result<std::process::ExitStatus> {
             let started = Instant::now();
             loop {
@@ -1427,6 +1426,9 @@ mod serve_tests {
             }
         }
 
+        /// Sends SIGINT (Ctrl+C) to gracefully stop the server and waits for exit.
+        #[cfg(unix)]
+        #[allow(unsafe_code, clippy::cast_possible_wrap)]
         fn stop(&mut self) {
             let pid = self.process.id();
             // Send SIGINT for graceful shutdown
