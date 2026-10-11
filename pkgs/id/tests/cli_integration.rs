@@ -117,6 +117,36 @@ fn test_output_within_kills_a_hung_process() {
     assert_eq!(quick.stderr, b"err");
 }
 
+/// A grandchild that outlives its child and keeps the pipes open must not hold
+/// `output_within` past its deadline, whether the child was killed or exited.
+#[cfg(unix)]
+#[test]
+fn test_output_within_ends_when_a_grandchild_keeps_the_pipes() {
+    let mut held = Vec::new();
+    for script in ["sleep 60 & wait", "sleep 60 &"] {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        // The call runs on its own thread, so a hang fails this test instead of blocking it.
+        std::thread::spawn(move || {
+            let outcome = Command::new("sh")
+                .args(["-c", script])
+                .output_within(std::time::Duration::from_millis(200));
+            let _ = done_tx.send(outcome.is_ok());
+        });
+        if done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_err()
+        {
+            held.push(format!("`{script}` after {:?}", started.elapsed()));
+        }
+    }
+    assert!(
+        held.is_empty(),
+        "output_within outlived its deadline: {}",
+        held.join(", ")
+    );
+}
+
 /// A child that a streaming test keeps open, such as `world join`. Dropping it
 /// kills and reaps the child, so a test that panics before it waits cannot leave
 /// the child running.
