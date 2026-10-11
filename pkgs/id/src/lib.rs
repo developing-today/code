@@ -189,6 +189,7 @@ pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
 pub mod tuple;
+pub mod waiting;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]
