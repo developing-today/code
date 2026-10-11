@@ -844,3 +844,15 @@ Owner decision, 2026-10-11. Connectivity uses n0's relays and lookups by default
 
 - The owner's answers this session are recorded in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md): connectivity, groups above 1,000, the from_join fork, serde_bytes kept local, and the tuple fix.
 - Open decisions, and new questions with a preferred answer and alternatives, are listed in the same index.
+
+## 2026-10-11T12-49-10Z Update: spike results S7 to S12, BeeKEM, C1 re-run
+
+- S7: range sync works on real stores and matches S1. Keep K=16, T=16 (task 04).
+- S8: observed-remove tags hold. The clock must cover the whole causal past. No tombstones are needed. Compaction needs a snapshot (task 06, task 02).
+- S9: Seitan V2 derivations match Keybase's vectors. A ticket cannot carry the token, and tickets are unsigned address hints (task 07).
+- S10: cap 32 needs the merge rule and the author's own latest event named every time (task 05).
+- S11: restart and reconnect behaviour measured. The kit's systemd unit needs `KillSignal=SIGINT`, and metrics must not be public (task 08).
+- S12: welcome 146.6 B per epoch stock, 40.0 B with serde_bytes. The serde_bytes change needs a new scheme version (task 05).
+- BeeKEM: not adoptable now (no welcome API, no authority checks, large state). DataScheme stays for all groups, with warnings (task 05).
+- C1 t2 and t4 re-run: both pass.
+- Details and the open questions are in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).

@@ -1,0 +1,3 @@
+[2m2026-10-11T12:19:40.274026Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19211
+[2m2026-10-11T12:19:40.275398Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTP/WS] relay: serving on 127.0.0.1:19111
+[2m2026-10-11T12:21:50.738551Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:59172[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0m045a6c201d [3mconnection_id[0m[2m=[0m1[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored Stream terminated, exiting

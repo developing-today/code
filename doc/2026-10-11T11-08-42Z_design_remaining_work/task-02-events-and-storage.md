@@ -67,3 +67,11 @@ p2panda-core (git, pinned), `cbor-core =0.10.1`, `unicode-normalization` (NFC). 
 - Power-loss tests (N13): S6 used SIGKILL only. Run LazyFS or a VM power cut before the engine is final.
 - Waiting caps (#6): unchanged, pending the owner.
 - Doc error (N17): `src/store.rs` says FsStore is SQLite. It is redb.
+
+## 2026-10-11T12-49-09Z Update: tags spike and compaction (S8)
+
+- S8 ran the observed-remove tag model with 300 random cases, and 3,000 in a soak. Every replica matched an independent oracle after every step.
+- The clock must cover the whole causal past. A frontier-only clock leaves an add that the clearer had seen. The spec must say so.
+- Metadata stays flat under churn: 117 B to 121 B across 20,001 operations. Tombstones would cost about 3 B per removal.
+- Compaction: take a snapshot at a causal cut, then serve the tail. Dropping stable clear bodies without a snapshot brings back removed adds for a new device. That is a tested counterexample. Do not drop clear bodies without a snapshot.
+- With the real `tuple.rs` before the fix, `"a"` matched `"a\0b"` in name and value prefixes. The `00 00` terminator fixes it. Subject-only prefixes are exact for 32-byte subjects.

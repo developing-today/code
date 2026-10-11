@@ -62,3 +62,36 @@ p2panda-encryption (git, pinned), with the `data_scheme` feature. Do not enable 
 - Membership bug: `data_scheme/dcgka.rs` `process_welcome` calls `DGM::from_welcome` after the add. With the stock `TestDgm`, the welcome's copy overwrites the joiner's membership. The crate's tests do not catch it. Our production DGM's `from_welcome` appears to return its input unchanged. That is from reading the source, not tested. Not retested, per the owner.
 - PCS, narrow form: an update or removal heals a leaked group secret. It does not heal a member device whose own keys were copied. Recovery is remove and re-add (N8).
 - Pending: S10 (heads orderer), S12 (welcome sizes), BeeKEM.
+
+## 2026-10-11T12-49-09Z Update: welcome size (S12), heads orderer (S10), BeeKEM spike
+
+Welcome size (S12):
+- Stock: 146.6 B per epoch, 147.4 KB at 1,000 epochs (mean of five runs). Encoded with `p2panda_core::cbor::encode_cbor`, which is cbor-core 0.10.1.
+- serde_bytes variant: 40.0 B per epoch, 40.5 KB at 1,000 epochs. This is S12's own annotated copy. The S3 "patched" copy has no serde_bytes change, and S3's RESULTS say it was never built. Correct the earlier claim: the patch does not exist yet.
+- The serde_bytes fix is wire-incompatible. A PreKey welcome fails to decode across the two builds in both directions. Ship it as a new scheme version, not a silent patch (N10 changes accordingly).
+- Re-adding a member is cheaper: about 78 B per epoch, because it reuses the existing HPKE session. A new joiner costs 147 B per epoch.
+- Churn traffic is quadratic: removing and re-adding members at K=1,000 sends 19.5 MB (stock) and 10.2 MB (serde_bytes) of welcomes in total.
+- `recent:N` works through the public API, but only through `Dcgka::add` directly. `EncryptionGroup::add` always sends the full bundle. Sizes at K=1,000, stock / serde_bytes: N=1 747 B / 489 B; N=8 1,775 B / 771 B; N=32 5,323 B / 1,732 B. The joiner learns exactly those N secrets (60 of 60 checks).
+- Stock welcome bytes vary by 120 to 170 B between runs with the same seed, because of wall-clock timestamps and `HashMap` order. Never re-encode a stored welcome to check it.
+- Time at K=1,000: about 1.8 ms to build and 2.0 ms to encode. Size is the constraint, not time.
+- Not tested: receiving across the group (Bob and Carol never process messages); joiner decryption of application messages; groups above three members; K above 1,000.
+
+Heads orderer (S10):
+- The per-event cap of 32 holds with the merge rule. No event named more than 32 heads.
+- The frontier does not stay at 32. At 40 members a burst gives 40 heads (one per member). The merge rule is needed at a cap of 32, and not needed at 40 or more.
+- Concurrent merges cannot name each other. A member's view grows by 8 per storm round (40, 48, 56). A designated merger keeps the view at 40, but skips about a quarter of storm events.
+- Adversarial delivery order: caps 2 to 24 fail with HPKE `OpenError`, unless each event also names the author's own latest event. With that rule every cap converges. Cap 32 without it converged in two orders only.
+- Recommended: cap 32, the merge rule, and always naming the author's own latest event. Cap 2 converges too, but costs 3,159 merges and about 1,150 waiting messages for three storms. Cap 16 costs 162 merges. Cap 32 costs the storm's own 81 merges.
+- The crate's orderer keeps one dependency per author and never prunes. Messages with missing dependencies wait indefinitely; in one lost-update run a member stalled for the rest of the run.
+- Not tested: membership changes, real transport, byte sizes, group sizes other than 40.
+
+BeeKEM (beekem 0.4.0, MSRV 1.90):
+- Steady-state update: 2.8 KB at 100 members, 3.9 KB at 1,000, about 5.0 KB at 5,000 (extrapolated). A remove plus the root-restoring update is about 5.3 KB at 1,000. Committer CPU is 0.6 to 0.8 ms per update.
+- The first commit after a bulk build is O(n): 122 KB at 1,000 members. Per-member state is mostly operation history: 64 MB at 1,000 after a full fill, and nothing prunes it.
+- Concurrency converges only with causal buffering. Dropping out-of-order operations converged in 1 of 300 trials. A concurrent commit leaves no root key until the next commit. A concurrent removal applies lazily, so membership reads are stale.
+- Join: there is no welcome API. The only route is a replica copy: 0.74 MB at 1,000 right after creation, 64 MB after history. The copy carries the sender's secrets and every epoch key, so it must be stripped first. A fresh replica cannot start from the latest update.
+- Forward secrecy: none. A later copy derives earlier roots. Post-compromise security after an in-group compromise holds only once the compromised member commits. A removed member cannot derive the new root.
+- Bytes against DataScheme: one BeeKEM operation is 7 to 16 times DataScheme's bytes under unicast. BeeKEM wins only under fan-out, from about 11 to 17 members.
+- The crate checks neither signatures nor authority, and an add accepts any key. In 11 of 300 random trials no original member was left, and the crate allowed it.
+- Migration: converting DataScheme state in place is not possible. Options: a new group with re-invites; a scheme switch at a barrier inside the same group (recommended if continuity matters); a dual run; seeding the root from the old secret, rejected because the crate has no seed API.
+- Recommendation: do not adopt BeeKEM now. Keep DataScheme for all groups, with the warnings from #9. Revisit when the crate has a join API and authority checks.

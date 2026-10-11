@@ -1,0 +1,89 @@
+   Compiling s8-tags v0.0.0 (/home/user/work/spikes-next/s8-tags/mutants/m5_join_one_sided)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.89s
+     Running tests/props.rs (/home/user/work/spikes-next/s8-tags/mutants/target/debug/deps/props-2044cf6e193bf094)
+
+running 5 tests
+test late_duplicate_of_a_removed_add_is_dropped ... ok
+test convergence_under_partitions_and_any_delivery_order ... FAILED
+test clear_naming_unseen_dots_does_not_remove_them ... ok
+test concurrent_adds_survive_a_clear_that_did_not_see_them ... ok
+test join_is_commutative_associative_and_idempotent ... FAILED
+
+failures:
+
+---- convergence_under_partitions_and_any_delivery_order stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m5_join_one_sided/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
+cc 60032b4636dad5ed2d301436abc9b9fa64a14d7b46b9cc155a887c8058e53544
+
+thread 'convergence_under_partitions_and_any_delivery_order' (3412167) panicked at tests/props.rs:185:1:
+Test failed: state-based join differs from the reference over the union of applied ops.
+minimal failing input: (n, acts, seed) = (
+    3,
+    [
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+    ],
+    0,
+)
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- join_is_commutative_associative_and_idempotent stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m5_join_one_sided/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file.
+cc 5d5b0e034095bb7ab53b2756b4b6bbb341d1203dcf166ce56c44a660bb80f045
+
+thread 'join_is_commutative_associative_and_idempotent' (3412168) panicked at tests/props.rs:185:1:
+Test failed: assertion failed: `(left == right)` 
+  left: `State { live: {}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1} }`,
+ right: `State { live: {Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1} }` at tests/props.rs:284.
+minimal failing input: (n, acts, seed, picks) = (
+    3,
+    [
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+    ],
+    0,
+    [
+        1759542485473404340,
+        8354283602877716526,
+        0,
+    ],
+)
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+
+failures:
+    convergence_under_partitions_and_any_delivery_order
+    join_is_commutative_associative_and_idempotent
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--test props`
+error: 1 target failed:
+    `--test props`

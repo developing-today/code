@@ -1,0 +1,14 @@
+## matrix: chains=1000 K=16 T=16 batch=256 repeats=1
+| N | flights (A+B) | control B | data B | transport B (QUIC) | wall ms, median | of which commit ms, median | index ms, median | checks |
+|---|---|---|---|---|---|---|---|---|
+run N=30 r=1 flights=7 (A 4 B 3) control=69314 data=14716 wall=17.6 ms commit=10.6 ms index=37.2 ms transport=108307 ok=true
+| 30 | 7 | 69314 | 14716 | 108307 | 17.6 | 10.6 | 37.2 | all ok, identical across runs |
+run N=40 r=1 flights=7 (A 4 B 3) control=90654 data=19616 wall=12.1 ms commit=5.0 ms index=25.3 ms transport=135715 ok=true
+| 40 | 7 | 90654 | 19616 | 135715 | 12.1 | 5.0 | 25.3 | all ok, identical across runs |
+run N=50 r=1 flights=7 (A 4 B 3) control=107390 data=24516 wall=17.2 ms commit=5.6 ms index=22.8 ms transport=156868 ok=true
+| 50 | 7 | 107390 | 24516 | 156868 | 17.2 | 5.6 | 22.8 | all ok, identical across runs |
+run N=75 r=1 flights=7 (A 4 B 3) control=153315 data=36766 wall=21.9 ms commit=12.0 ms index=23.6 ms transport=218053 ok=true
+| 75 | 7 | 153315 | 36766 | 218053 | 21.9 | 12.0 | 23.6 | all ok, identical across runs |
+run N=100 r=1 flights=7 (A 4 B 3) control=200969 data=49016 wall=22.9 ms commit=11.0 ms index=22.0 ms transport=278831 ok=true
+| 100 | 7 | 200969 | 49016 | 278831 | 22.9 | 11.0 | 22.0 | all ok, identical across runs |
+LogSync control for this chain count (S1, CBOR, not re-run): 76071 B, 2 flights before data.

@@ -59,3 +59,16 @@ n0 is the default for relays and lookup. Our own relay is added as a fallback an
 - Bare node-ID lookup stays on. The owner decided this over my privacy recommendation.
 - t2 and t4 re-run, both pass. t2: re-home in 22.5 s, earlier runs 20.5 s and 21.6 s, so the range is 20–23 s. Fresh handshake over n0: 547 ms. t4: dial by ID through n0, handshake 216 ms, two throwaway IDs published. Raw output is in `spikes/c1-rerun`.
 - Pending: S11 (relay operation runbook) and C2 (holepunching across namespaces). Open: mDNS default (#14), DHT default (#15).
+
+## 2026-10-11T12-49-09Z Update: relay operation (S11)
+
+- Restart: the QUIC connection survived every SIGTERM, SIGKILL and SIGINT run with a 1 s outage (3 of 3 each). With 3 s down, the 3 s SIGKILL runs also survived (3 of 3). No in-flight frame was lost in a surviving run.
+- Home relays were back 1.2 to 1.7 s after the kill, and echoes resumed at 1.7 to 1.9 s. With 3 s down, echoes took 5.6 s.
+- A 35 s outage (one run) timed the connection out at 35 s. The peers returned at +45 s and +61 s, and 1,058 of 1,062 in-flight frames were lost.
+- SIGTERM behaves like SIGKILL, because the relay does not handle SIGTERM. The kit's systemd unit uses `KillSignal=SIGTERM`, so systemd hard-kills it. SIGINT exits cleanly with code 0. Recommend `KillSignal=SIGINT`; not run under systemd.
+- Relay key: iroh-relay 1.3.0 has no relay key. Trust is TLS against the CA roots you configure, matched to the URL host. Nothing is pinned. A new key under the same CA is invisible to clients (back online in 268 ms). A CA change breaks CA-pinned clients, and the endpoint shows no error; only the relay logs `UnknownCA`.
+- Certificates: manual mode needs a restart (verified). Reload mode uses a fixed 24 h timer, not measured; it ignored a file change for 5 s.
+- Idle: a non-home connection closed exactly 60.0 s after its last datagram, and stayed open while QUIC keep-alives ran. The home relay never idled out over 3 min 40 s.
+- Operations hazards: a missing `--config-path` file silently starts the relay on `[::]:80`, with metrics on `[::]:9090`. Unknown keys, including the old `secret_key`, are ignored without a warning. Metrics on port 9090 answer on any path, so keep it off the public interface. `/ping`, `/healthz` and `/generate_204` work. With `RUST_LOG` unset the relay is silent.
+- Peers' reconnect backoff reached 27 s after a long outage, and the application cannot reset it.
+- Not tested: real networks, systemd, the 3 to 35 s outage boundary, the 24 h reload, the home relay's ping cadence, real tickets.

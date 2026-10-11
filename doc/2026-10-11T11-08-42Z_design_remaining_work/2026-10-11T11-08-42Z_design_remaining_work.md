@@ -25,11 +25,11 @@
 | [01](./task-01-phase0-fixes.md) | Phase 0: tuple (done), pull page bytes, MSRV, dial deadlines in the remaining modules | Partly done | nothing | MSRV value (N15 with task 12) |
 | [02](./task-02-events-and-storage.md) | ChainExt, canonical CBOR, redb store, fork freeze, bounded waiting | Designed, Spiked | 01, 12 | #6; N1–N4; N13 |
 | [03](./task-03-membership-and-delegation.md) | Auth-frontier shim, admission gate, friendship, delegation modes, world capabilities | Designed, Spiked | 02 | #1–#4 |
-| [04](./task-04-sync-blobs-transport.md) | Range sync over iroh, blob gating, `observe` | Designed; S7 running | 02; S7 | #5; N5, N6 |
-| [05](./task-05-encryption-and-history.md) | DataScheme adapter, our DGM, heads orderer, from_join, welcome growth, warnings, BeeKEM | Designed; S10, S12, BeeKEM running | 02, 12 | #7, #8, #9; N7–N12, N18 |
-| [06](./task-06-tags-documents-search.md) | Observed-remove tags, index, documents, search | Designed; S8 running | 02 | tag precedence against the content policy |
-| [07](./task-07-invites-and-pull.md) | Seitan V2, invite events, links, pull policy, metadata | Designed; S9 running | 02 | #10, #11 |
-| [08](./task-08-connectivity-extensions.md) | Our relay (Tunnel), QUIC flag, DHT, Worker pkarr relay, mDNS, tickets, access control | Designed; kit ready; S11 and C2 running | owner's Tunnel account (N19) | #13, #14, #15, #16 |
+| [04](./task-04-sync-blobs-transport.md) | Range sync over iroh, blob gating, `observe` | Designed; S7 done | 02; S7 | #5; N5, N6 |
+| [05](./task-05-encryption-and-history.md) | DataScheme adapter, our DGM, heads orderer, from_join, welcome growth, warnings, BeeKEM | Designed; S10, S12, BeeKEM done (BeeKEM not adopted) | 02, 12 | #7, #8, #9; N7–N12, N18 |
+| [06](./task-06-tags-documents-search.md) | Observed-remove tags, index, documents, search | Designed; S8 done | 02 | tag precedence against the content policy |
+| [07](./task-07-invites-and-pull.md) | Seitan V2, invite events, links, pull policy, metadata | Designed; S9 done | 02 | #10, #11 |
+| [08](./task-08-connectivity-extensions.md) | Our relay (Tunnel), QUIC flag, DHT, Worker pkarr relay, mDNS, tickets, access control | Designed; kit ready; S11 done, C2 running | owner's Tunnel account (N19) | #13, #14, #15, #16 |
 | [09](./task-09-time-and-witnesses.md) | Witness events, cosigning, anchors | Deferred | 02 | who runs witnesses; which anchors |
 | [10](./task-10-open-design-items.md) | Retention, multi-device, fork recovery, live editing, views | Open | 02 | #17 and the rest listed in the task |
 | [11](./task-11-dependencies-and-upstream.md) | Crate adoption, upstream reports (none opened) | Open; in part superseded by 12 | 01 | #18 (decided), N9, N10 |
@@ -41,14 +41,14 @@
 | --- | --- | --- | --- |
 | S1–S6, C1 | Earlier spikes (see above) | Done | [spikes](../2026-10-11T03-44-33Z_design_groups_events_delegation/spikes/README.md) |
 | C1 t2, t4 | Connectivity re-run on current infrastructure | Done, both pass | `spikes/c1-rerun` |
-| S7 | Range sync on real stores over iroh, 1,000 and 10,000 chains with real events | Running | `spikes/s7-range-real` |
-| S8 | Observed-remove tags: property tests over random orders | Running | `spikes/s8-tags` |
-| S9 | Seitan V2 against vectors, freshness check, admin path | Running | `spikes/s9-seitan` |
-| S10 | Heads orderer in a 40-member group, merge at 32 | Running | `spikes/s10-heads` |
-| S11 | Relay operation: restart, reconnect, key and certificate rotation | Running | `spikes/s11-relay` |
-| S12 | Welcome size at 1, 10, 100, 1,000 epochs, with and without serde_bytes | Running | `spikes/s12-welcome` |
+| S7 | Range sync on real stores over iroh, 1,000 and 10,000 chains with real events | Done: range works on real stores; K=16 and T=16 kept | `spikes/s7-range-real` |
+| S8 | Observed-remove tags: property tests over random orders | Done: tags hold; the clock must cover the causal past; compaction needs a snapshot | `spikes/s8-tags` |
+| S9 | Seitan V2 against vectors, freshness check, admin path | Done: derivations match Keybase's vectors; freshness window proposed; a ticket cannot carry the token | `spikes/s9-seitan` |
+| S10 | Heads orderer in a 40-member group, merge at 32 | Done: cap 32 needs the merge rule and the author's own latest event named every time | `spikes/s10-heads` |
+| S11 | Relay operation: restart, reconnect, key and certificate rotation | Done: restart and reconnect measured; systemd `KillSignal` and metrics exposure need fixing | `spikes/s11-relay` |
+| S12 | Welcome size at 1, 10, 100, 1,000 epochs, with and without serde_bytes | Done: 146.6 B per epoch stock, 40.0 B with serde_bytes (a new scheme version) | `spikes/s12-welcome` |
 | C2 | Holepunching between separate networks, using namespaces | Running | `spikes/c2-holepunch` |
-| BeeKEM | Costs at 100, 1,000, 5,000; concurrency; join; migration | Running | `spikes/beekem` |
+| BeeKEM | Costs at 100, 1,000, 5,000; concurrency; join; migration | Done: not adoptable now (no welcome API, no authority checks); DataScheme stays | `spikes/beekem` |
 
 ## Owner decisions (the original 19, with this session's answers)
 
@@ -71,7 +71,7 @@
 | 15 | DHT default | Open | Off; opt in per world | On for public worlds | 08 |
 | 16 | Ticket policy | **Answered:** tickets yes, with relays, not direct addresses only | Relay list and no IPs by default; direct addresses opt-in | Include direct addresses (LAN setups) | 08 |
 | 17 | Fork recovery | Open | Removal and re-enrolment | Automatic quarantine with owner approval | 10 |
-| 18 | Upstream patch policy for p2panda-encryption | **Answered:** the from_join fix stays in our fork in developing-today; nothing goes upstream; no upstream issues or PRs; serde_bytes stays local | Keep the fork; later move from_join into our DGM if that proves simpler (N9) | Push upstream (rejected) | 11 |
+| 18 | Upstream patch policy for p2panda-encryption | **Answered:** the from_join fix stays in our fork in developing-today; nothing goes upstream; no upstream issues or PRs; serde_bytes goes in as a new scheme version, not a silent patch (N10) | Keep the fork; later move from_join into our DGM if that proves simpler (N9) | Push upstream (rejected) | 11 |
 | 19 | ed25519-dalek version | Open | 2.x, to match p2panda-core, one copy in the tree | 3.0 with a shim at the boundary | 12 |
 
 Other answers this session, recorded here so they are not lost:
@@ -95,7 +95,7 @@ Each has a preferred answer and alternatives. These are my recommendations, not 
 | N7 | Periodic key rotation | Off; rotate on removal and on explicit update | Rotate every N events, or weekly | 05 |
 | N8 | Recovery after a device key compromise | Manual remove and re-add, as a CLI command | Automatic on a detected key change | 05 |
 | N9 | from_join membership fix | Keep the fork (decided); revisit moving the fix into our DGM later | Our DGM's `from_welcome` inserts the joiner, no fork | 05, 11 |
-| N10 | serde_bytes on the two DataScheme fields | Local patch in developing-today until upstream changes | Our own encoding adapter, no patch | 05, 11 |
+| N10 | serde_bytes on the two DataScheme fields | A new scheme version, since it is wire-incompatible (S12): 40.0 B vs 146.6 B per epoch | Stay on stock encoding until a migration window exists | 05, 11 |
 | N11 | Warning thresholds | 96, 128, 1,000 | Other values, set from S12 costs | 05 |
 | N12 | BeeKEM scope and migration | New groups above 1,000 use BeeKEM; existing groups stay on DataScheme until migrated; both supported in a transition window | All new groups on BeeKEM; in-place conversion, if the BeeKEM spike finds one | 05 |
 | N13 | Power-loss testing for storage | Run LazyFS or a VM power cut before choosing the production engine | SIGKILL only (what S6 did) | 02 |
@@ -105,14 +105,23 @@ Each has a preferred answer and alternatives. These are my recommendations, not 
 | N17 | `store.rs` doc comment | Fix it: FsStore is redb, not SQLite | none | code |
 | N18 | Observe mode default | Covered by #5 | none | 04 |
 | N19 | Accounts for our Tunnel relay | You create and provide them; nothing is created on your behalf | Use n0's relays only until then | 08 |
+| N20 | Scheme version for serde_bytes | A new DataScheme scheme version with negotiation, since the change is wire-incompatible | Stay on stock encoding and accept 3.7 times larger welcomes | 05 |
+| N21 | `recent:N` implementation path | Call `Dcgka::add` directly from our adapter (`EncryptionGroup::add` always sends the full bundle) | Patch the high-level add to take a history bound | 05 |
+| N22 | Heads orderer rule | Cap 32, always name the author's own latest event, merge rule on overflow | Cap 16 (162 merges per storm) or cap 2 (3,159 merges); a designated merger skips about a quarter of storm events | 05 |
+| N23 | Seitan freshness window | `created − 5 min ≤ ctime ≤ min(now + 5 min, expires)` | A wall-clock window only; or accept any `ctime` up to expiry | 07 |
+| N24 | Trust in tickets | Tickets are unsigned address hints. Identity comes from signed events and the invite event | Sign tickets in a new format | 07, 08 |
+| N25 | Relay operation defaults | `KillSignal=SIGINT`; metrics bound to localhost; fail closed when the config file is missing | Keep SIGTERM (a hard kill) and rely on restart policy; not recommended | 08 |
+| N26 | BeeKEM for groups above 1,000 | Do not adopt now. DataScheme for all groups, with warnings. Revisit when the crate has a join API and authority checks | Fix and extend BeeKEM ourselves (large); a scheme switch at a barrier later if continuity matters | 05 |
+| N27 | Range sync parameters for bulk catch-up | K=16, T=16 normally; K=4, T=8 for bulk catch-up (saves 28 to 33% of control at 200 new events) | K=16 for everything | 04 |
+| N28 | Migrating existing DataScheme groups to a new scheme | A scheme switch at a barrier inside the same group | A new group with re-invites | 05 |
 
 ## Phases (draft; I will revise them after the spikes report)
 
 - **Phase 0. Fixes and dependencies.** Tuple fix (done). Task 01's remaining items. Task 12 (toolchain and dependencies), before storage work so the storage code starts on current crates.
 - **Phase 1. Events and storage.** ChainExt, canonical CBOR, the redb event store (N1–N4), fork freeze and proof, waiting caps (#6). Gate: S7's correctness checks pass on the redb store.
 - **Phase 2. Membership and delegation.** Auth-frontier shim, admission gate, friendship, delegation modes, world capabilities (#1–#4). Gate: S2's scenarios pass on the real store.
-- **Phase 3. Sync and blobs.** Range sync over iroh (N5, N6), blob gating and observe (#5). Gate: S7 cost and correctness; S4 gating tests.
-- **Phase 4. Group encryption and history.** DataScheme adapter, our DGM, from_join (N9), serde_bytes (N10), `recent:N` and lazy `full` (#7), warnings (N11), rotation policy (N7, N8), BeeKEM scope (N12). Gates: S10, S12, BeeKEM.
+- **Phase 3. Sync and blobs.** Range sync over iroh (N5, N6; S7 done, K=16 and T=16 kept), blob gating and observe (#5). Gate: S4 gating tests, still to write.
+- **Phase 4. Group encryption and history.** DataScheme adapter, our DGM, from_join (N9), serde_bytes as a new scheme version (N20), `recent:N` through `Dcgka::add` (N21) and lazy `full` (#7), the heads rule (N22), warnings (N11), rotation policy (N7, N8). BeeKEM is not adopted now (N26). Gates: S10 and S12 are done; their rules are in task 05.
 - **Phase 5. Tags, documents, search.** Task 06. Gate: S8.
 - **Phase 6. Invites and pull.** Task 07. Gate: S9.
 - **Phase 7. Connectivity extensions.** Our Tunnel relay (N19), tickets, access control at implementation (#13), mDNS and DHT defaults (#14, #15). Gates: S11 runbook; C2 results.
@@ -127,7 +136,10 @@ Each has a preferred answer and alternatives. These are my recommendations, not 
 - The connectivity design says peers re-home in 20–22 s. Three runs measured 20.5, 21.6 and 22.5 s, so it should read 20–23 s.
 - `spikes/shared/c1-connect/RESULTS.md` lines 141 and 144 are stale. t2 and t4 were re-run; see `spikes/c1-rerun`.
 - The Roc test, the world-module hang, and three `world_compile` tests are pre-existing failures. The last three need `host.wasm`.
-- Clippy: a target dir must use one rustc. Mixing the Nix rustc with the rustup clippy driver gave E0514 errors on 2026-10-11.
+- Clippy: a target dir must use one rustc. Mixing the Nix rustc with the rustup clippy driver gave E0514 errors on 2026-10-11. Run clippy through the 1.97.0 toolchain with `RUSTC` pinned. With `-D warnings` it reports 141 pre-existing lints crate-wide. None fall on lines changed for the tuple fix.
+- The S3 "patched" copy has no serde_bytes change. The serde_bytes patch does not exist yet (N10).
+- The kit's systemd unit uses `KillSignal=SIGTERM`, which hard-kills the relay. Use `SIGINT` (N25).
+- A missing relay config file makes the relay silently start on `[::]:80`, with metrics on `[::]:9090` (N25).
 
 ## Evidence
 
