@@ -118,6 +118,8 @@ Each has a preferred answer and alternatives. These are my recommendations, not 
 | N30 | Address privacy from connected peers | Document that a connected peer learns our addresses (C2). Tickets stay address-free for lookups | Authorize peers before connecting (invite first), so only trusted peers connect | 07, 08 |
 | N31 | Relay capacity for fallback pairs | Plan relay capacity for symmetric-to-symmetric and symmetric-to-restricted pairs, which fall back (C2) | Accept lower direct-path rates and tune relay limits | 08 |
 | N32 | Startup wait on relays | Wait only for the home relay, with a deadline. Do not wait on every map entry (dead entries cost about 3 s) | Wait for every entry | 08 |
+| N33 | Snapshot and compaction for tags (S8) | Snapshot at a causal cut, then serve the tail. Snapshot when metadata grows past a set size | No compaction (state stays flat, but the log grows); drop clear bodies without a snapshot (rejected: resurrects removed adds) | 06, 02 |
+| N34 | Warnings for re-add churn (S12) | Warn on re-add churn as well as group size, since cumulative welcome traffic is quadratic (19.5 MB stock at 1,000 churns) | Warn on size only, as decided | 05 |
 
 ## Phases (draft; I will revise them after the spikes report)
 
