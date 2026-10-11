@@ -23,6 +23,36 @@ let
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  # The environment the mcpx daemon runs with. It is set by the start wrapper
+  # below rather than by the unit, because `mcpx upgrade` starts the successor
+  # through that same wrapper, so the successor gets what a fresh start gets.
+  mcpxEnvironment = {
+    OPENCODE_BINARY = "${inputs.opencode.packages.${system}.opencode}/bin/opencode";
+    OPENCODE_V2_BIN = "${inputs.opencode.packages.${system}.opencode}/bin/opencode";
+    CLAUDE_BIN = "${claude-code}/bin/claude";
+    CODEX_BIN = "${latestCli.codex}/bin/codex";
+    ANTIGRAVITY_BIN = "${pkgs.antigravity-cli}/bin/agy";
+    PATH = lib.makeBinPath [
+      inputs.opencode.packages.${system}.opencode
+      claude-code
+      latestCli.codex
+      pkgs.antigravity-cli
+      pkgs.git
+      pkgs.openssh
+    ];
+  };
+  # The unit's start command, ahead of the binary. Its store path changes when
+  # the environment or the wrapper does, and the activation keys on that.
+  mcpxStart = pkgs.writeShellScript "mcpx-start" ''
+    ${lib.concatStrings (
+      lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}\n") mcpxEnvironment
+    )}
+    exec "$@"
+  '';
+  mcpxKey = deployKey "mcpx" [
+    mcpx
+    mcpxStart
+  ];
   openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
     pw="$HOME/.config/openchamber/ui-password"
     if [ -r "$pw" ]; then
@@ -580,41 +610,29 @@ in
       Description = "mcpx standing MCP gateway daemon";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
+      # A switch must not restart the daemon: that would end every child.
+      # mcpxDeploy below hands a changed daemon over instead.
+      "X-RestartIfChanged" = false;
     };
     Service = {
       Type = "notify";
       NotifyAccess = "all";
-      ExecStart = "${mcpx}/bin/mcpx daemon";
+      ExecStart = "${mcpxStart} ${mcpx}/bin/mcpx daemon";
       ExecReload = "${mcpx}/bin/mcpx reload";
       Restart = "always";
       RestartSec = 3;
-      Environment = [
-        "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
-        "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
-        "CLAUDE_BIN=${claude-code}/bin/claude"
-        "CODEX_BIN=${latestCli.codex}/bin/codex"
-        "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
-        "PATH=${
-          lib.makeBinPath [
-            inputs.opencode.packages.${system}.opencode
-            claude-code
-            latestCli.codex
-            pkgs.antigravity-cli
-            pkgs.git
-            pkgs.openssh
-          ]
-        }"
-      ];
     };
     Install.WantedBy = [ "default.target" ];
   };
 
-  # A switch that changes mcpx hands the running daemon over to the new binary,
-  # with the MCP children and the listener passed along. Unchanged mcpx is left
-  # alone. Falls back to a plain start when no daemon is running.
+  # A switch that changes mcpx, its start command or its environment hands the
+  # running daemon over, with the MCP children and the listener passed along.
+  # The successor is started through the unit's start command, so it runs with
+  # the new environment. Unchanged mcpx is left alone. Falls back to a plain
+  # start when no daemon is running.
   home.activation.mcpxDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/mcpx/deployed"
-    key='${deployKey "mcpx" [ mcpx ]}'
+    key='${mcpxKey}'
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
       if systemctl --user is-active --quiet mcpx.service; then
         run ${mcpx}/bin/mcpx upgrade || run systemctl --user restart mcpx.service
