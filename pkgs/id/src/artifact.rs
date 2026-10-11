@@ -47,9 +47,10 @@ use crate::world_net::{read_frame, write_frame};
 
 /// The file, beside `directory.jsonl`, that holds a world's artifacts.
 pub const FILE: &str = "artifacts.jsonl";
-/// Bytes one page may take on the wire, counting its JSON framing, so that a
-/// page of maximum-size documents stays far under the frame limit. A page always
-/// carries at least one artifact, so one larger than this is sent alone.
+/// Bytes one page may take on the wire, counting its JSON framing.
+///
+/// A page always carries at least one artifact, so one larger than this is sent
+/// alone. The budget keeps a page of maximum-size documents far under the frame limit.
 pub const PAGE_BYTES: usize = 256 * 1024;
 /// Home servers one declaration may name.
 pub const MAX_HOME_SERVERS: usize = 8;
