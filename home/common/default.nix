@@ -680,8 +680,23 @@ in
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
-      After = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" "openchamber.socket" ];
-      Wants = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      After = [
+        "network-online.target"
+        "mcpx.service"
+        "clef-proxy.service"
+        "agy-proxy.service"
+        "codex-proxy.service"
+        "antigravity-ls-proxy.service"
+        "openchamber.socket"
+      ];
+      Wants = [
+        "network-online.target"
+        "mcpx.service"
+        "clef-proxy.service"
+        "agy-proxy.service"
+        "codex-proxy.service"
+        "antigravity-ls-proxy.service"
+      ];
       Requires = [ "openchamber.socket" ];
     };
     Service = {
