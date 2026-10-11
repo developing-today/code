@@ -29,7 +29,8 @@ web = [
   "dep:rmp-serde",
   "dep:comrak",
   "dep:urlencoding",
-  "dep:libsql",
+  "dep:redb",
+  "dep:aes-gcm",
   "dep:base64",
   "dep:hkdf",
   "dep:sha2",
@@ -75,7 +76,8 @@ futures = { version = "0.3.32", optional = true }
 rmp-serde = { version = "1", optional = true }
 comrak = { version = "0.56", default-features = false, optional = true }
 urlencoding = { version = "2", optional = true }
-libsql = { version = "0.9", features = ["encryption"], optional = true }
+redb = { version = "4.3", optional = true }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"], optional = true }
 base64 = { version = "0.22", optional = true }
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
