@@ -276,7 +276,7 @@ fn test_streaming_child_dies_with_its_guard_even_when_the_test_panics() {
         )
     }
     // SAFETY: signal 0 sends nothing; it only asks whether the pid still names a process.
-    let exists = |pid: u32| unsafe { libc::kill(pid as i32, 0) } == 0;
+    let exists = |pid: u32| i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0);
 
     let dropped = sleeper();
     let pid = dropped.id();

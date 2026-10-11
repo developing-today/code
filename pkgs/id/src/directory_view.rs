@@ -1294,9 +1294,11 @@ fn artifact_outbound(
 }
 
 /// Whether an action would send an artifact to another server, so it needs an
-/// outbox. Only a removal signed with the caller's credential sends one, and
-/// only when the other account declared home servers. A removal of a local
-/// friend, or one the session makes, sends nothing.
+/// outbox.
+///
+/// Only a removal signed with the caller's credential sends one, and only when
+/// the other account declared home servers. A removal of a local friend, or one
+/// the session makes, sends nothing.
 #[must_use]
 pub fn removal_needs_outbox(
     directory: &Directory,
