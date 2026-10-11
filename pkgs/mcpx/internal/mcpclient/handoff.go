@@ -69,7 +69,7 @@ func (t *StdioTransport) Detach() (*StdioHandoff, error) {
 		return nil, fmt.Errorf("child %d: %w", t.pid, err)
 	}
 	t.writeMu.Lock()
-	if t.closed || t.detached {
+	if t.closed.Load() || t.detached {
 		t.writeMu.Unlock()
 		return nil, errors.New("stdio transport is not attached")
 	}

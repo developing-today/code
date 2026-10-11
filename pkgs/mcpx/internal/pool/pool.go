@@ -90,9 +90,9 @@ type Instance struct {
 	// caller may take it, and it leaves the list once it is closed. Guarded
 	// by Pool.mu. See execwatch.go.
 	retiring bool
-	// swapped is set just before such a child is closed, so a call that
-	// fails on it can say why.
-	swapped atomic.Bool
+	// swapped is set, to how the child is being taken down, just before it is
+	// closed, so a call that fails on it can say why.
+	swapped atomic.Pointer[string]
 }
 
 // Trace is this instance's identifier, carried by every record about it.
@@ -1170,30 +1170,59 @@ type RestartResult struct {
 }
 
 // Restart stops every instance and, unless lazy, starts a replacement for
-// each under the same scope key and waits for it to initialize. With nothing
-// running, a global-scope pool starts one instance so a restart verifies the
-// server comes up. A scoped pool with nothing running has no caller identity
-// to start one for, so it starts nothing and says so in Note.
+// each under the same scope key and waits for it to initialize. Whatever the
+// executable holds, the children are replaced: this is the operator's forced
+// restart, and an identical binary gets a new process all the same. With
+// nothing running, a global-scope pool starts one instance so a restart
+// verifies the server comes up. A scoped pool with nothing running has no
+// caller identity to start one for, so it starts nothing and says so in Note.
 //
-// Lazy is the old behaviour: drop everything now, start on demand.
+// Unless lazy, each child is taken out of service the way an executable change
+// takes one out (see retire): calls in flight on it have ExecDrainTimeout to
+// finish. Lazy is the stop-now behaviour: calls in flight on the stopped
+// children are cut off, and the next call starts on demand.
 func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 	p.mu.Lock()
-	stop := p.instances
-	p.instances = nil
+	// A copy: retire removes children from p.instances in place.
+	stop := append([]*Instance(nil), p.instances...)
 	p.failCount = 0
 	p.lastErr = nil
 	p.cooldownUntil = time.Time{}
+	var retiring []*Instance
+	if lazy {
+		p.instances = nil
+	} else {
+		// Taken now, not when each is reached, so no new caller takes a child
+		// that is about to go. An instance already retiring for an executable
+		// change is closed by that replacement, and is not retired twice.
+		for _, in := range stop {
+			if !in.retiring {
+				in.retiring = true
+				p.reserveSlotLocked(in)
+				retiring = append(retiring, in)
+			}
+		}
+	}
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	var keys []string
 	seen := map[string]bool{}
 	for _, in := range stop {
-		p.stopped(in, "restart")
-		_ = in.Client.Close()
+		if lazy {
+			p.stopped(in, "restart")
+			_ = in.Client.Close()
+		}
 		if !seen[in.key] {
 			seen[in.key] = true
 			keys = append(keys, in.key)
 		}
+	}
+	for _, in := range retiring {
+		p.retire(in, "restart", "restarted on request")
+		p.mu.Lock()
+		p.releaseSlotLocked(in)
+		p.cond.Broadcast()
+		p.mu.Unlock()
 	}
 	res := RestartResult{Stopped: len(stop)}
 	if lazy {

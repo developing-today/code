@@ -194,3 +194,61 @@ func TestCallInFlightPastTheDrainFailsWithAClearError(t *testing.T) {
 		t.Fatalf("after the restart the call was served by pid %d (old child %d)", got, oldPID)
 	}
 }
+
+// writeExecWrapper writes a small shell script that execs the fake server. Its
+// identity is its content, so two wrappers with the same tag are the same
+// program, and a different tag is a different one.
+func writeExecWrapper(t *testing.T, fake, path, tag string) {
+	t.Helper()
+	body := fmt.Sprintf("#!/bin/sh\n# %s\nexec '%s' \"$@\"\n", tag, fake)
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The periodic check does not restart a child when its link is re-pointed at a
+// byte-identical program: the identity is the content, and the content did not
+// change. The check is shown to be running by the second half: a link
+// re-pointed at different bytes is replaced within the same window.
+func TestExecCheckKeepsAChildWhenALinkIsRePointedAtIdenticalBytes(t *testing.T) {
+	setExecWatch(t, execTick, 10*time.Second)
+	fake := testsupport.FakeMCPBinary(t)
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	other := filepath.Join(dir, "other")
+	link := filepath.Join(dir, "mcp-server")
+	writeExecWrapper(t, fake, first, "same program")
+	writeExecWrapper(t, fake, second, "same program")
+	writeExecWrapper(t, fake, other, "a different program")
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := pool.New(resolved(t, link, &config.Extras{Sharing: config.SharingShared, Scope: config.ScopeGlobal}))
+	defer p.Close()
+	pid := servedPID(t, p)
+
+	repoint := func(to string) {
+		t.Helper()
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repoint(second)
+	// Many checks go by with the stamp moved.
+	time.Sleep(20 * execTick)
+	if got := servedPID(t, p); got != pid {
+		t.Fatalf("a link re-pointed at identical bytes restarted its child: pid %d -> %d", pid, got)
+	}
+
+	repoint(other)
+	awaitReplacement(t, p, pid)
+}

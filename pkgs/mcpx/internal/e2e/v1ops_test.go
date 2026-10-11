@@ -288,6 +288,7 @@ func TestEveryDeclaredRouteAnswersOverTheSocket(t *testing.T) {
 	// The parity test proves a route is declared; this proves it is served.
 	// A declaration matching a route that 404s is a specification that lies.
 	e := newEnv(t, oneServer)
+	e.withoutModelCLIs(t)
 	e.run("ls")
 	c := e.socketClient(t)
 

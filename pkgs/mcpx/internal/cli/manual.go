@@ -265,7 +265,10 @@ func handCommands() []Command {
 				"(session, pid, cwd, ...) with nothing running has no caller to start " +
 				"one for and starts nothing. A pid-scoped instance whose owner has " +
 				"exited, and a per-call instance, are reported and not replaced. " +
-				"--lazy only stops: the next call starts a fresh instance. " +
+				"A call already running on an instance has limits.execDrainTimeout to " +
+				"finish before the instance is closed and a call still running fails. " +
+				"--lazy only stops, at once, cutting such calls off: the next call starts " +
+				"a fresh instance. " +
 				"--daemon restarts the mcpx daemon process itself.",
 		},
 		{

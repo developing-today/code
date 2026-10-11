@@ -30,6 +30,13 @@ import (
 // check. An in-place rewrite changes size or mtime in practice; a replacement
 // changes the inode.
 //
+// Caveat: the bytes of the file are the whole identity, so a program that finds
+// its own files relative to its real location is not. A node script beside its
+// node_modules, re-pointed at an identical copy in another directory, keeps its
+// child, which still runs with the dependencies of the old location. A restart
+// (mcpx restart) is what moves it. Above the hash limit the identity is the
+// inode, so such a copy is restarted instead.
+//
 // The identity is "" for a server that is not a child process, and begins
 // with "missing:" when the command does not resolve. A missing command is
 // its own identity, so the pool still starts and fails the way it always did,
