@@ -3,9 +3,11 @@
 //! Each file under `tests/regressions/` is named for its area and holds one
 //! case per line: `area<TAB>input<TAB>expected`. Blank lines and lines starting
 //! with `#` are skipped. The input uses the area's own syntax; for `tuple` it is
-//! two elements separated by a space (see `common::parse_value`). The only
-//! expected result is `ok`: the property must hold for that input. See
-//! `tests/regressions/README.md` for how a fuzz failure becomes a case.
+//! two elements separated by a space (see `common::parse_value`), and for
+//! `chainext` it is one `b:` element holding the event bytes (see
+//! `common::chain`). The only expected result is `ok`: the property must hold
+//! for that input. See `tests/regressions/README.md` for how a fuzz failure
+//! becomes a case.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -13,7 +15,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{check_pair, parse_value};
+use common::chain::check_event_bytes;
+use common::{Value, check_pair, parse_value};
 
 /// Split one line into its three fields.
 fn parse_line(line: &str) -> Result<(&str, &str, &str), String> {
@@ -41,6 +44,12 @@ fn replay_case(area: &str, input: &str, expected: &str) -> Result<(), String> {
             })?;
             check_pair(&parse_value(left)?, &parse_value(right)?)
         }
+        "chainext" => match parse_value(input)? {
+            Value::Bytes(bytes) => check_event_bytes(&bytes),
+            Value::Text(_) => Err(format!(
+                "chainext input {input:?} must be one b:<escaped> element"
+            )),
+        },
         other => Err(format!("unknown area {other:?}")),
     }
 }
@@ -111,6 +120,10 @@ fn test_replay_rejects_malformed_cases() {
     assert!(
         replay_case("nope", "s:a s:a", "ok").is_err(),
         "unknown area"
+    );
+    assert!(
+        replay_case("chainext", "s:a", "ok").is_err(),
+        "chainext takes bytes, not a string"
     );
 }
 
