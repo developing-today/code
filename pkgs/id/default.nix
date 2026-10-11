@@ -16,6 +16,10 @@ let
   # Read Cargo.toml for package metadata
   cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
+  # The Rust version the check installs, from the pin in rust-toolchain.toml
+  toolchainToml = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
+  rustVersion = toolchainToml.toolchain.channel;
+
   pname = cargoToml.package.name;
   inherit (cargoToml.package) version;
 
@@ -91,7 +95,7 @@ in
       export RUSTUP_HOME=$HOME/.rustup
 
       # Install Rust toolchain
-      rustup default 1.89.0
+      rustup default ${rustVersion}
       rustup component add clippy rustfmt
 
       echo "══════════════════════════════════════════════════════"
@@ -109,6 +113,9 @@ in
 
       echo "→ Running integration tests..."
       cargo test --test cli_integration
+
+      echo "→ Checking the toolchain pin..."
+      cargo test --test toolchain_pin
 
       echo "→ Running doc tests..."
       cargo test --doc
