@@ -174,6 +174,68 @@ fn test_output_within_ends_when_a_grandchild_keeps_the_pipes() {
     );
 }
 
+/// The unix `stop` calls `libc::kill`, so it stays gated to unix. Its `unsafe`
+/// block is allowed on the function itself. An attribute once landed on a helper
+/// inserted above `stop`, which left `stop` ungated.
+#[test]
+fn test_unix_stop_keeps_its_gate_and_its_allow() {
+    let lines: Vec<&str> = include_str!("cli_integration.rs")
+        .lines()
+        .map(str::trim)
+        .collect();
+    let stop = lines
+        .iter()
+        .position(|line| *line == "fn stop(&mut self) {")
+        .expect("serve_tests has a unix stop");
+    assert_eq!(
+        &lines[stop - 2..stop],
+        &[
+            "#[cfg(unix)]",
+            "#[allow(unsafe_code, clippy::cast_possible_wrap)]"
+        ],
+        "the unix stop must sit directly under its gate and its allow"
+    );
+}
+
+/// Every `unsafe` block in this file is in a function that allows `unsafe_code`
+/// on its own attributes. The crate warns on `unsafe_code`, so a missing allow
+/// is a warning that no other check reports.
+#[test]
+fn test_every_unsafe_block_is_allowed_on_its_function() {
+    // Split so that this line does not match the search it performs.
+    let block = concat!("uns", "afe {");
+    let raw: Vec<&str> = include_str!("cli_integration.rs").lines().collect();
+    let indent = |text: &str| text.len() - text.trim_start().len();
+    let mut unallowed = Vec::new();
+    for (index, line) in raw.iter().enumerate() {
+        if line.trim().starts_with("//") || !line.contains(block) {
+            continue;
+        }
+        // The enclosing function is the nearest `fn` indented less than this line.
+        let Some(function) = (0..index).rev().find(|&above| {
+            raw[above].trim_start().starts_with("fn ") && indent(raw[above]) < indent(line)
+        }) else {
+            unallowed.push(format!("line {}: no function above it", index + 1));
+            continue;
+        };
+        let allowed = (0..function)
+            .rev()
+            .map(|above| raw[above].trim())
+            .take_while(|above| {
+                above.starts_with('#') || above.starts_with("///") || above.is_empty()
+            })
+            .any(|above| above.starts_with("#[allow(") && above.contains("unsafe_code"));
+        if !allowed {
+            unallowed.push(format!("line {}: {}", index + 1, raw[function].trim()));
+        }
+    }
+    assert!(
+        unallowed.is_empty(),
+        "unsafe blocks without an unsafe_code allow on their function:\n{}",
+        unallowed.join("\n")
+    );
+}
+
 /// A child that a streaming test keeps open, such as `world join`. Dropping it
 /// kills and reaps the child, so a test that panics before it waits cannot leave
 /// the child running.
