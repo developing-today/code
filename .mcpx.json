@@ -75,5 +75,10 @@
       "command": "go",
       "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"]
     }
+  },
+  "repair": {
+    "provider": "opencode",
+    "model": "claude-code/claude-haiku-5-5"
   }
 }
+

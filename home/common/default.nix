@@ -590,10 +590,16 @@ in
       RestartSec = 3;
       Environment = [
         "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+        "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+        "CLAUDE_BIN=${claude-code}/bin/claude"
+        "CODEX_BIN=${latestCli.codex}/bin/codex"
+        "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
         "PATH=${
           lib.makeBinPath [
             inputs.opencode.packages.${system}.opencode
             claude-code
+            latestCli.codex
+            pkgs.antigravity-cli
             pkgs.git
             pkgs.openssh
           ]

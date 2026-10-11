@@ -179,3 +179,49 @@ console.log(data);
 		t.Fatalf("expected readFile in synthesized script, got: %s", res)
 	}
 }
+
+func TestResolveProviderNamedDrivers(t *testing.T) {
+	// 1. opencode with custom model
+	pOpenCode := scripting.ResolveProvider(scripting.ProviderConfig{
+		Type:  "opencode",
+		Model: "claude-code/claude-haiku-5-5",
+	}, nil)
+	if pOpenCode == nil || pOpenCode.Name() != "opencode" {
+		t.Fatalf("expected opencode provider, got: %v", pOpenCode)
+	}
+
+	// 2. claude
+	pClaude := scripting.ResolveProvider(scripting.ProviderConfig{
+		Type:  "claude",
+		Model: "claude-haiku-5-5",
+	}, nil)
+	if pClaude == nil || pClaude.Name() != "claude" {
+		t.Fatalf("expected claude provider, got: %v", pClaude)
+	}
+
+	// 3. codex
+	pCodex := scripting.ResolveProvider(scripting.ProviderConfig{
+		Type: "codex",
+	}, nil)
+	if pCodex == nil || pCodex.Name() != "codex" {
+		t.Fatalf("expected codex provider, got: %v", pCodex)
+	}
+
+	// 4. antigravity / agy
+	pAgy := scripting.ResolveProvider(scripting.ProviderConfig{
+		Type: "agy",
+	}, nil)
+	if pAgy == nil || pAgy.Name() != "antigravity" {
+		t.Fatalf("expected antigravity provider, got: %v", pAgy)
+	}
+
+	// 5. auto-detection default (no config, LookPath finds opencode on this host)
+	pAuto := scripting.ResolveProvider(scripting.ProviderConfig{}, nil)
+	if pAuto == nil {
+		t.Fatalf("expected auto-detected provider, got nil")
+	}
+	if pAuto.Name() != "opencode" && pAuto.Name() != "claude" {
+		t.Fatalf("expected auto provider to be opencode or claude, got %s", pAuto.Name())
+	}
+}
+
