@@ -54,4 +54,25 @@ Our own relay, the mainline DHT, the Worker pkarr relay, mDNS defaults, ticket p
 
 ## Update: results
 
-Pending. This section is filled in after the change is built and tested.
+Code commit `07f144c9` on `feat/id-n0-relay-default`, after the plan commit `f44c81a1`.
+
+What changed:
+
+- New `pkgs/id/src/connectivity.rs`: `RelayPolicy` (N0 by default, Disabled for `--no-relay`), `public_builder`, `DIAL_TIMEOUT` (45 s), `within`, and `connect`.
+- The ten N0 builders now call `public_builder`. The duplicated `relay_mode` blocks are gone.
+- About 25 production dials now go through `connectivity::connect`. The sites are in `meta_client.rs`, `commands/{find,get,list,peers,put,repl,serve,world}.rs`, and `world_net.rs` (`WorldClient::connect`).
+- Left unchanged, as planned: `envelope_net.rs` (it has its own 30 s timeout), `artifact.rs` (pull, a follow-up), `local.rs`, the `Minimal` loopback endpoints, and all test code.
+- mDNS is unchanged. `serve` still enables it by default, which the connectivity design disagrees with. See the remaining-work index.
+
+Checks:
+
+- `cargo test --lib --features world connectivity`: six unit tests pass. The network test is ignored.
+- The ignored network test, run once by hand: two N0 endpoints, the second dials the first by node ID. It passed in 4.1 s.
+- `cargo test --lib --features world`: 751 passed, 3 failed, 1 ignored. The three failures are the known `world_compile` tests that need `host.wasm`, the same as the baseline.
+- `cargo test --features world --test cli_integration`, skipping the known hang and the Roc test: 102 passed, 0 failed.
+- `cargo test --features world --test remote_write_access`: 5 passed.
+- The Roc test fails as it did before the change.
+- `rustfmt --check` is clean on every changed file.
+- Clippy reports five warnings in changed files. None of them sit on lines this change touched.
+
+Process note: the implementation subagent stopped before its build and tests finished. The lead finished the build, the tests, and the commit, and checked the diff.
