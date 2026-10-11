@@ -9,8 +9,8 @@
 //! ```text
 //! Tag(s)      Type         Payload
 //! 0x00        Null         none (0x00 0xFF inside nested tuples)
-//! 0x01        Bytes        escaped data + 0x00 terminator
-//! 0x02        String       escaped UTF-8 + 0x00 terminator
+//! 0x01        Bytes        escaped data + 0x00 0x00 terminator
+//! 0x02        String       escaped UTF-8 + 0x00 0x00 terminator
 //! 0x05        Tuple/Array  recursive elements + 0x00 end
 //! 0x06        False        none
 //! 0x07        True         none
@@ -21,6 +21,10 @@
 //! ```
 //!
 //! Sort: `null < bytes < string < tuple < false < true < -big…-small < 0 < small…big < float`
+//!
+//! Inside bytes and strings, each `0x00` is escaped as `0x00 0xFF`, and the
+//! field ends with `0x00 0x00`. A single `0x00` never ends a field: it would
+//! be a prefix of an escaped NUL, so a full field could match a longer value.
 //!
 //! # Examples
 //!
@@ -63,6 +67,9 @@ const POS_INT_1: u8 = 0x15;
 const POS_INT_8: u8 = 0x1C;
 const FLOAT64: u8 = 0x21;
 const ESC: u8 = 0xFF;
+/// Terminator for bytes and strings. Escaped data never contains `0x00 0x00`,
+/// so it cannot be confused with an escaped NUL (`0x00 0xFF`).
+const TERM: [u8; 2] = [NULL, NULL];
 
 // ============================================================================
 // Value type
@@ -211,7 +218,7 @@ impl TupleEncoder {
     pub fn bytes(&mut self, b: &[u8]) -> &mut Self {
         self.buf.push(BYTES);
         push_esc(&mut self.buf, b);
-        self.buf.push(NULL);
+        self.buf.extend_from_slice(&TERM);
         self
     }
 
@@ -226,7 +233,7 @@ impl TupleEncoder {
     pub fn string(&mut self, s: &str) -> &mut Self {
         self.buf.push(STRING);
         push_esc(&mut self.buf, s.as_bytes());
-        self.buf.push(NULL);
+        self.buf.extend_from_slice(&TERM);
         self
     }
 
@@ -298,7 +305,7 @@ impl Default for TupleEncoder {
 // Encoding internals
 // ============================================================================
 
-/// Push bytes with `0x00` → `0x00 0xFF` escaping (caller adds terminator).
+/// Push bytes with `0x00` → `0x00 0xFF` escaping (caller adds the `0x00 0x00` terminator).
 fn push_esc(buf: &mut Vec<u8>, data: &[u8]) {
     for &b in data {
         buf.push(b);
@@ -494,26 +501,28 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
     }
 }
 
-/// Decode escaped bytes until bare `0x00` terminator.
+/// Decode escaped bytes up to the `0x00 0x00` terminator.
 fn decode_esc(data: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     loop {
         ensure!(*pos < data.len(), "unterminated escaped sequence");
         let b = data[*pos];
         *pos += 1;
-        if b == NULL {
-            // 0x00 0xFF = escaped null byte; bare 0x00 = terminator
-            if *pos < data.len() && data[*pos] == ESC {
-                out.push(NULL);
-                *pos += 1;
-            } else {
-                break;
-            }
-        } else {
+        if b != NULL {
             out.push(b);
+            continue;
+        }
+        ensure!(*pos < data.len(), "unterminated escaped sequence");
+        let next = data[*pos];
+        *pos += 1;
+        match next {
+            // 0x00 0xFF: escaped NUL byte
+            ESC => out.push(NULL),
+            // 0x00 0x00: end of field
+            NULL => return Ok(out),
+            _ => bail!("invalid escape 0x00 0x{next:02X} in bytes or string"),
         }
     }
-    Ok(out)
 }
 
 // ============================================================================
@@ -596,8 +605,11 @@ mod tests {
     fn test_roundtrip_string_with_null() {
         let s = "he\0lo";
         let key = TupleEncoder::new().string(s).build();
-        // Verify the null is escaped: STRING, h, e, 0x00, 0xFF, l, o, 0x00
-        assert_eq!(key, vec![STRING, b'h', b'e', 0x00, ESC, b'l', b'o', 0x00]);
+        // Verify the null is escaped: STRING, h, e, 0x00, 0xFF, l, o, 0x00, 0x00
+        assert_eq!(
+            key,
+            vec![STRING, b'h', b'e', 0x00, ESC, b'l', b'o', 0x00, 0x00]
+        );
         let vals = decode(&key).unwrap();
         assert_eq!(vals[0].as_str(), Some(s));
     }
@@ -606,7 +618,7 @@ mod tests {
     fn test_roundtrip_string_only_null() {
         let s = "\0";
         let key = TupleEncoder::new().string(s).build();
-        assert_eq!(key, vec![STRING, 0x00, ESC, 0x00]);
+        assert_eq!(key, vec![STRING, 0x00, ESC, 0x00, 0x00]);
         let vals = decode(&key).unwrap();
         assert_eq!(vals[0].as_str(), Some(s));
     }
@@ -630,7 +642,7 @@ mod tests {
     #[test]
     fn test_roundtrip_bytes_empty() {
         let key = TupleEncoder::new().bytes(&[]).build();
-        assert_eq!(key, vec![BYTES, 0x00]);
+        assert_eq!(key, vec![BYTES, 0x00, 0x00]);
         let vals = decode(&key).unwrap();
         assert_eq!(vals[0].as_bytes(), Some(&[] as &[u8]));
     }
@@ -1021,6 +1033,50 @@ mod tests {
         assert!(!full.starts_with(&p3));
     }
 
+    // --- Terminator ambiguity: a NUL inside a value must not end the field early ---
+
+    #[test]
+    fn test_prefix_full_field_ignores_longer_value_with_nul() {
+        // "a" is not a prefix of "a\0b": the NUL escape also starts with 0x00.
+        let short = TupleEncoder::new().string("a").build();
+        let longer = TupleEncoder::new().string("a\0b").build();
+        assert!(!longer.starts_with(&short));
+
+        let short = TupleEncoder::new().bytes(b"a").build();
+        let longer = TupleEncoder::new().bytes(b"a\0b").build();
+        assert!(!longer.starts_with(&short));
+    }
+
+    #[test]
+    fn test_full_field_prefix_matches_only_equal_values() {
+        let values = [
+            "", "\0", "\0\0", "a", "a\0", "a\0\0", "a\0b", "a\u{1}", "ab",
+        ];
+        for a in values {
+            for b in values {
+                let short = TupleEncoder::new().string(a).build();
+                let full = TupleEncoder::new().string(b).build();
+                assert_eq!(full.starts_with(&short), a == b, "string {a:?} vs {b:?}");
+
+                let short = TupleEncoder::new().bytes(a.as_bytes()).build();
+                let full = TupleEncoder::new().bytes(b.as_bytes()).build();
+                assert_eq!(full.starts_with(&short), a == b, "bytes {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_sort_strings_with_nul() {
+        let values = ["", "\0", "\0\0", "a", "a\0", "a\u{1}", "ab"];
+        let mut encoded: Vec<Vec<u8>> = values
+            .iter()
+            .map(|s| TupleEncoder::new().string(s).build())
+            .collect();
+        let original = encoded.clone();
+        encoded.sort();
+        assert_eq!(encoded, original, "string sort order with NUL mismatch");
+    }
+
     // --- Integer encoding details ---
 
     #[test]
@@ -1088,6 +1144,14 @@ mod tests {
         // Nested tuple start but no end marker
         let result = decode(&[NESTED, POS_INT_1, 0x01]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_single_nul_is_not_a_terminator() {
+        // 0x00 must be followed by 0x00 (end of field) or 0xFF (escaped NUL)
+        assert!(decode(&[STRING, b'a', 0x00]).is_err());
+        assert!(decode(&[STRING, b'a', 0x00, 0x01]).is_err());
+        assert!(decode(&[BYTES, 0x00, 0x01, 0x00, 0x00]).is_err());
     }
 
     // --- Accessor tests ---
