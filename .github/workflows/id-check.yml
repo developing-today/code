@@ -40,7 +40,7 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+
 
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM
