@@ -8,6 +8,7 @@ C1 (connectivity) was named `s7-connect` in the workspace. It is renamed `c1-con
 
 - `shared/`: one Cargo workspace, members `s1-transport`, `s2-auth`, `s3-history`, `s4-blobs`, `s5-cbor`. Each member has `src/`, `Cargo.toml`, `RESULTS.md`, and small text outputs (`run-output.txt`, `logs/`). `Cargo.lock` is included so the exact graph can be rebuilt.
 - `s6-index/`: its own workspace, because rusqlite 0.40 conflicts with p2panda-store's libsqlite3-sys. Same layout.
+  | c1-connect | Connectivity: lookups (n0, mainline testnet, tickets), relay fallback, and a Tunnel-style relay with QAD off (t1–t8) |
 
 ## Pins
 
@@ -20,10 +21,13 @@ C1 (connectivity) was named `s7-connect` in the workspace. It is renamed `c1-con
     cd shared && "$CARGO" build --workspace --locked
     cd ../s6-index && "$CARGO" build --locked
 
+| c1-connect | Connectivity: lookups (n0, mainline testnet, tickets), relay fallback, and a Tunnel-style relay with QAD off (t1–t8) |
+
 ## Not included
 
 - `s3-history/patched/`: the copied p2panda-encryption source. The change is kept as `s3-history/logs/patch.diff`.
 - `target/` directories, and the SQLite run databases in `s6-index/run/`.
+  | c1-connect | Connectivity: lookups (n0, mainline testnet, tickets), relay fallback, and a Tunnel-style relay with QAD off (t1–t8) |
 - The large logs (over 40 KB). Each RESULTS.md cites the run that produced its numbers.
 
 ## What each member establishes
@@ -36,3 +40,4 @@ C1 (connectivity) was named `s7-connect` in the workspace. It is renamed `c1-con
 | s4-blobs     | Body hash equals blob hash, fetch without a ticket, EventMask gating, verified streaming, yanks                            |
 | s5-cbor      | cbor-core choice, decode-then-re-encode canonicality, four value rules, golden vectors, dcbor interop                      |
 | s6-index     | redb versus SQLite load, durability under SIGKILL, concurrency, unique (author, seq), the prefix bug                       |
+| c1-connect   | Connectivity: lookups (n0, mainline testnet, tickets), relay fallback, and a Tunnel-style relay with QAD off (t1–t8)       |
