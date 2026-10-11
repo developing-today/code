@@ -1,0 +1,216 @@
+//! Endpoint policy for the wider network: which relay servers an endpoint
+//! uses, how it finds peers, and how long a dial may take.
+//!
+//! Every endpoint that talks to the wider network is built with
+//! [`public_builder`] and dials with [`connect`], so the relay and lookup
+//! policy lives in this one module. Loopback endpoints (to a running
+//! `id serve`) and test endpoints do not use it.
+
+use std::{future::Future, time::Duration};
+
+use iroh::{
+    EndpointAddr,
+    endpoint::{Builder, Connection, Endpoint, RelayMode, presets},
+};
+
+/// Which relay servers an endpoint may use.
+///
+/// `N0` is the default: n0's public relays, which also carry traffic when two
+/// peers cannot reach each other directly. `Disabled` uses direct addresses
+/// only, as the `--no-relay` flag does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RelayPolicy {
+    /// n0's public relay servers.
+    #[default]
+    N0,
+    /// No relay servers: direct addresses only.
+    Disabled,
+}
+
+impl RelayPolicy {
+    /// Maps the `--no-relay` flag to a policy.
+    pub const fn from_no_relay(no_relay: bool) -> Self {
+        if no_relay { Self::Disabled } else { Self::N0 }
+    }
+}
+
+/// Starts an endpoint builder with n0's address lookup, then applies `relays`.
+///
+/// The N0 preset publishes to and resolves from n0's pkarr and DNS services.
+/// `N0` keeps the preset's own relay mode. `Disabled` turns relays off.
+pub fn public_builder(relays: RelayPolicy) -> Builder {
+    let builder = Endpoint::builder(presets::N0);
+    match relays {
+        RelayPolicy::N0 => builder,
+        RelayPolicy::Disabled => builder.relay_mode(RelayMode::Disabled),
+    }
+}
+
+/// How long one dial may take, covering the address lookup and the handshake.
+///
+/// The pkarr lookup over HTTP has no timeout of its own, and a single dead
+/// address was measured holding a dial for about 30 s, so [`connect`] runs
+/// every dial under this deadline.
+pub const DIAL_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Runs `fut` for at most `limit`. On expiry the error says what was in
+/// progress. An error from `fut` itself passes through unchanged.
+pub async fn within<T>(
+    limit: Duration,
+    what: &str,
+    fut: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(limit, fut).await {
+        Ok(result) => result,
+        Err(_elapsed) => anyhow::bail!("timed out after {limit:?} while {what}"),
+    }
+}
+
+/// Dials `target` for `alpn`, failing after [`DIAL_TIMEOUT`].
+///
+/// `target` is a node ID or a full [`EndpointAddr`]. A bare node ID is
+/// resolved through the endpoint's address lookup, which is the step that
+/// can hang.
+pub async fn connect(
+    endpoint: &Endpoint,
+    target: impl Into<EndpointAddr>,
+    alpn: &[u8],
+) -> anyhow::Result<Connection> {
+    within(DIAL_TIMEOUT, "connecting to a peer", async move {
+        endpoint
+            .connect(target, alpn)
+            .await
+            .map_err(anyhow::Error::from)
+    })
+    .await
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use anyhow::Context as _;
+    use iroh::TransportAddr;
+
+    use super::*;
+
+    const TEST_ALPN: &[u8] = b"/id-connectivity-test/1";
+
+    #[test]
+    fn test_from_no_relay_maps_the_flag() {
+        assert_eq!(RelayPolicy::from_no_relay(false), RelayPolicy::N0);
+        assert_eq!(RelayPolicy::from_no_relay(true), RelayPolicy::Disabled);
+    }
+
+    #[test]
+    fn test_default_relay_policy_is_n0() {
+        assert_eq!(RelayPolicy::default(), RelayPolicy::N0);
+    }
+
+    #[tokio::test]
+    async fn test_within_returns_the_value() {
+        let value = within(Duration::from_secs(5), "testing", async { anyhow::Ok(7) })
+            .await
+            .unwrap();
+        assert_eq!(value, 7);
+    }
+
+    #[tokio::test]
+    async fn test_within_passes_the_inner_error_through() {
+        let err = within::<()>(Duration::from_secs(5), "testing", async {
+            anyhow::bail!("inner failure")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "inner failure");
+    }
+
+    #[tokio::test]
+    async fn test_within_times_out_and_names_the_step() {
+        let err = within::<()>(
+            Duration::from_millis(10),
+            "waiting for a peer",
+            std::future::pending(),
+        )
+        .await
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("timed out"), "{message}");
+        assert!(message.contains("waiting for a peer"), "{message}");
+    }
+
+    /// Address lookup is cleared so this test stays offline. The N0 preset
+    /// would otherwise publish the endpoint to n0's pkarr service on bind.
+    #[tokio::test]
+    async fn test_disabled_endpoint_has_no_relay_address() {
+        let endpoint = public_builder(RelayPolicy::Disabled)
+            .clear_address_lookup()
+            .bind()
+            .await
+            .unwrap();
+        let addrs = endpoint.addr().addrs;
+        endpoint.close().await;
+        assert!(
+            !addrs
+                .iter()
+                .any(|addr| matches!(addr, TransportAddr::Relay(_))),
+            "{addrs:?}"
+        );
+    }
+
+    /// The second endpoint dials the first by node ID alone, over n0's
+    /// relays and lookup. Needs internet access, so it is ignored by default.
+    /// Run it by hand with `cargo test --lib --features world connectivity -- --ignored`.
+    #[ignore = "needs internet, run by hand"]
+    #[tokio::test]
+    async fn test_n0_endpoints_dial_by_id() {
+        within(
+            Duration::from_secs(240),
+            "running the N0 dial test",
+            async {
+                let server = public_builder(RelayPolicy::N0)
+                    .alpns(vec![TEST_ALPN.to_vec()])
+                    .bind()
+                    .await?;
+                let client = public_builder(RelayPolicy::N0).bind().await?;
+                // Wait for a home relay on both sides. The server publishes its
+                // address once the relay is known, so an early lookup can miss it.
+                server.online().await;
+                client.online().await;
+                let server_id = server.id();
+
+                let accepting = tokio::spawn({
+                    let server = server.clone();
+                    async move {
+                        let incoming = server.accept().await.context("server closed")?;
+                        anyhow::Ok(incoming.await?)
+                    }
+                });
+                let mut attempt = 1;
+                let conn = loop {
+                    match connect(&client, server_id, TEST_ALPN).await {
+                        Ok(conn) => break conn,
+                        Err(err) if attempt < 3 => {
+                            eprintln!("dial attempt {attempt} failed, retrying: {err:#}");
+                            attempt += 1;
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                };
+                anyhow::ensure!(conn.remote_id() == server_id, "dialed a different endpoint");
+                let accepted = accepting.await??;
+                anyhow::ensure!(
+                    accepted.remote_id() == client.id(),
+                    "accepted from a different endpoint"
+                );
+
+                conn.close(0u32.into(), b"done");
+                client.close().await;
+                server.close().await;
+                anyhow::Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    }
+}

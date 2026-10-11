@@ -36,11 +36,12 @@ async fn connect(
     // Direct addresses need neither relay nor discovery, so keep the client
     // off the public network entirely in that case.
     let endpoint = if addrs.is_empty() {
-        let mut builder = Endpoint::builder(presets::N0).secret_key(key);
-        if no_relay {
-            builder = builder.relay_mode(RelayMode::Disabled);
-        }
-        builder.bind().await?
+        crate::connectivity::public_builder(crate::connectivity::RelayPolicy::from_no_relay(
+            no_relay,
+        ))
+        .secret_key(key)
+        .bind()
+        .await?
     } else {
         Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
@@ -434,10 +435,12 @@ impl Replica {
                 .bind()
                 .await?
         } else {
-            Endpoint::builder(presets::N0)
-                .secret_key(key)
-                .bind()
-                .await?
+            crate::connectivity::public_builder(crate::connectivity::RelayPolicy::from_no_relay(
+                no_relay,
+            ))
+            .secret_key(key)
+            .bind()
+            .await?
         };
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let docs = docs

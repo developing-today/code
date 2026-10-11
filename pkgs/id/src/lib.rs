@@ -157,6 +157,7 @@ pub mod access;
 pub mod artifact;
 pub mod cli;
 pub mod commands;
+pub mod connectivity;
 #[cfg(feature = "world")]
 pub mod directory;
 #[cfg(feature = "world")]
