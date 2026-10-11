@@ -1200,10 +1200,29 @@ mod tests {
         while after < total {
             let page = log.page(author, after);
             assert!(!page.is_empty(), "no progress after sequence {after}");
+            assert!(
+                fills_the_budget(log, author, &page),
+                "a page of {} artifacts leaves room for the next",
+                page.len()
+            );
             after = page.last().unwrap().seq;
             pages.push(page);
         }
         pages
+    }
+
+    /// Whether `page` is as full as the budget allows: the artifact after its last
+    /// one would not fit in it. A page cut short by a count, not by bytes, fails.
+    fn fills_the_budget(log: &ArtifactLog, author: &str, page: &[SignedArtifact]) -> bool {
+        let Some(last) = page.last() else {
+            return true;
+        };
+        let Some(next) = log.page(author, last.seq).into_iter().next() else {
+            return true;
+        };
+        let mut bigger = page.to_vec();
+        bigger.push(next);
+        wire_len(&bigger) > PAGE_BYTES
     }
 
     #[test]
@@ -1319,6 +1338,11 @@ mod tests {
                     "a page of {} artifacts takes {} bytes",
                     page.len(),
                     wire_len(&page)
+                );
+                prop_assert!(
+                    fills_the_budget(&log, &public(1), &page),
+                    "a page of {} artifacts leaves room for the next",
+                    page.len()
                 );
                 after = page.last().map_or(after, |last| last.seq);
                 paged.extend(page);
