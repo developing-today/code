@@ -174,6 +174,15 @@ func (s *Set) ClearRuntime(path string) bool {
 	return had
 }
 
+// RuntimeOverride reports the runtime override for path, if one is in force.
+// A caller that changes it and may have to undo the change reads it first.
+func (s *Set) RuntimeOverride(path string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.override[path]
+	return v, ok
+}
+
 // RuntimeOverrides returns the overrides currently in force.
 func (s *Set) RuntimeOverrides() map[string]string {
 	s.mu.RLock()

@@ -128,3 +128,20 @@ Generic signed data:
 `sends_envelope` now covers friend removal and publishing too, so a server without an outbox refuses them before anything changes.
 
 Not done: a CLI or explorer grammar for publishing documents and tags (only the directory action exists), and tickets in invite links (`node=` still takes a node ID).
+
+---
+
+## 2026-10-11T17-20-56Z Deviation: the outbox gate follows what a change queues
+
+The gate above refused friend removal and publishing on any server without an outbox, whatever the change. That refused a removal between two local accounts on `id serve --ephemeral`, which has no outbox. It also failed `web::world_ws::tests::friend_requests_are_sent_accepted_and_ended_over_http` with 403 where 200 was expected.
+
+The directory actor now decides, before it applies the change. `DirectoryAction::queues_for_other_servers` asks whether the change would queue an envelope or artifact for another server, judged from the directory as it is:
+
+- A friend request or accept with a remote server queues one, when the caller signs with a credential.
+- A removal or a publish queues one only when the account concerned has declared a home server: the removed friend's, or the publisher's own. The caller must also sign with a credential.
+
+A server without an outbox refuses only those changes, with the same message, and nothing changes. Everything else works on a server without one.
+
+`sends_envelope` keeps its meaning, "may queue", because the explorer uses it to decide whether a form credential is forwarded for signing.
+
+Not changed: a server with an outbox behaves as before, and a removal or publish for an account with declared homes still needs an outbox.

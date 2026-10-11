@@ -230,12 +230,14 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 	// the old value until a restart, which reads as the write having failed.
 	switch {
 	case decl.Hot || decl.Scope == settings.ScopeCall:
+		prev, had := s.set.RuntimeOverride(decl.Path)
 		if err := s.set.SetRuntime(decl.Path, req.Value); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
 		if err := s.applyPoolRuntime(decl.Path); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			s.restoreRuntime(decl.Path, prev, had)
+			writeErr(w, http.StatusInternalServerError, reloadFailed(decl.Path, err))
 			return
 		}
 		out["applied"] = true
@@ -271,16 +273,37 @@ func (s *Server) applyPoolRuntime(path string) error {
 	return err
 }
 
+// restoreRuntime undoes a runtime change that could not be reloaded: the
+// override it replaced comes back, or the one it added is removed. Without
+// this the refused value would stay in force and be applied by whichever
+// later reload happened to run next.
+func (s *Server) restoreRuntime(path, prev string, had bool) {
+	if !had {
+		s.set.ClearRuntime(path)
+		return
+	}
+	if err := s.set.SetRuntime(path, prev); err != nil {
+		s.logger.Printf("restoring %s after a failed reload: %v", path, err)
+	}
+}
+
+// reloadFailed is the error a caller sees when a runtime change was refused.
+func reloadFailed(path string, err error) error {
+	return fmt.Errorf("%s: the configuration could not be reloaded, so the runtime value was rolled back: %w", path, err)
+}
+
 func (s *Server) handleSettingsUnset(w http.ResponseWriter, r *http.Request) {
 	decl, _, err := s.lookupSetting(r.PathValue("path"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	had := s.set.ClearRuntime(decl.Path)
+	prev, had := s.set.RuntimeOverride(decl.Path)
 	if had {
+		s.set.ClearRuntime(decl.Path)
 		if err := s.applyPoolRuntime(decl.Path); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			s.restoreRuntime(decl.Path, prev, true)
+			writeErr(w, http.StatusInternalServerError, reloadFailed(decl.Path, err))
 			return
 		}
 	}

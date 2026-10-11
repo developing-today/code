@@ -1570,7 +1570,8 @@ enum WorldCommand {
     Directory {
         caller: crate::directory_auth::Caller,
         action: crate::directory_view::DirectoryAction,
-        can_send: bool,
+        /// Whether this server has an outbox to queue what the action sends.
+        outbox: bool,
         reply: oneshot::Sender<Result<crate::directory_view::DirectoryOutcome>>,
     },
     ApplyDirectory {
@@ -2240,18 +2241,18 @@ impl WorldActor {
             WorldCommand::Directory {
                 caller,
                 action,
-                can_send,
+                outbox,
                 reply,
             } => {
                 let world = self.core.world_id().to_owned();
+                let now = unix_ms();
                 let (directory, petnames) = self.core.directory_and_petnames_mut();
-                // Checked here, before the change, so a refused removal changes nothing.
-                let result = if !can_send
-                    && crate::directory_view::removal_needs_outbox(directory, &caller, &action)
+                // Refused before the directory changes, so a refused change leaves nothing half-applied.
+                let result = if !outbox
+                    && action.queues_for_other_servers(directory, &mut self.auth, &caller, now)
                 {
                     Err(crate::directory::Refusal::Forbidden(
-                        "this server cannot send to other servers, so it cannot end a friendship with one on another server"
-                            .to_owned(),
+                        "this server cannot send to other servers".to_owned(),
                     )
                     .into())
                 } else {
@@ -2261,7 +2262,7 @@ impl WorldActor {
                         &mut self.auth,
                         &caller,
                         &world,
-                        unix_ms(),
+                        now,
                         action,
                     )
                 };
@@ -2910,20 +2911,20 @@ impl WorldHandle {
     }
 
     /// Read or change the directory as the caller. The caller's proof must
-    /// already be checked by the transport. `can_send` says whether this server
-    /// has an outbox to queue envelopes for other servers in.
+    /// already be checked by the transport. `outbox` says whether this server
+    /// can queue what the change sends to other servers.
     pub async fn directory(
         &self,
         caller: crate::directory_auth::Caller,
         action: crate::directory_view::DirectoryAction,
-        can_send: bool,
+        outbox: bool,
     ) -> Result<crate::directory_view::DirectoryOutcome> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Directory {
                 caller,
                 action,
-                can_send,
+                outbox,
                 reply,
             })
             .await

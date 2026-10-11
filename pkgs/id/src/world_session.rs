@@ -456,22 +456,10 @@ impl WorldService {
             )
             .into());
         }
-        // A removal is checked by the world, which knows whether the other
-        // account is on another server; every other sender needs the outbox here.
-        let removal = matches!(
-            action,
-            crate::directory_view::DirectoryAction::RemoveFriend { .. }
-        );
-        let can_send = self.outbox.is_some();
-        if action.sends_envelope() && !removal && !can_send {
-            return Err(crate::directory::Refusal::Forbidden(
-                "this server cannot send to other servers".to_owned(),
-            )
-            .into());
-        }
+        // The actor refuses an outbox-less server only when the change would queue for another server.
         let mut outcome = self
             .world
-            .directory(caller.clone(), action, can_send)
+            .directory(caller.clone(), action, self.outbox.is_some())
             .await?;
         if let (Some(sink), Some(mail)) = (&self.mail, outcome.mail.take()) {
             let sink = Arc::clone(sink);
@@ -487,11 +475,7 @@ impl WorldService {
                     self.queue_then_apply(outbox, outbound, entry).await?;
                     outcome = self
                         .world
-                        .directory(
-                            caller,
-                            crate::directory_view::DirectoryAction::View,
-                            can_send,
-                        )
+                        .directory(caller, crate::directory_view::DirectoryAction::View, true)
                         .await?;
                 }
                 None => {

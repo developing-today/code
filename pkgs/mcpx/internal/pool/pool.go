@@ -1372,6 +1372,37 @@ func (p *Pool) CloseGraceful(timeout time.Duration) {
 	}
 }
 
+// CloseDrained shuts a pool down the way a lazy restart retires its children,
+// for a pool that a configuration change has replaced or removed. Each child
+// is taken out of service at once, and is closed when the calls on it end or
+// ExecDrainTimeout passes, whichever is first.
+//
+// CloseGraceful, which Close uses, waits only its own shorter grace and then
+// closes the connection, failing whatever call is still reading from it. A
+// tuning change or a removed server cut a call that ran past that grace.
+// WaitDrained covers this as well as a lazy restart.
+func (p *Pool) CloseDrained() {
+	p.mu.Lock()
+	if !p.closed {
+		p.closed = true
+		close(p.execStop)
+	}
+	stop := p.instances
+	p.instances = nil
+	for _, in := range stop {
+		in.retiring = true
+	}
+	p.cond.Broadcast()
+	p.mu.Unlock()
+	for _, in := range stop {
+		p.draining.Add(1)
+		go func(in *Instance) {
+			defer p.draining.Done()
+			p.retire(in, ExecDrainTimeout, "reconfigured", "replaced by a configuration change")
+		}(in)
+	}
+}
+
 // newTraceID mints an identifier. Kept here rather than imported so the pool
 // does not depend on the logging package.
 func newTraceID(prefix string) string {

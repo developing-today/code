@@ -64,12 +64,15 @@ func presetSettings() []Setting {
 }
 
 func poolSettings() []Setting {
+	// Every pool default is read from defaults.json, the one place it is
+	// written. A literal here would drift the moment that file changed, and
+	// `settings get` would report a value the pools do not use. Builtin is
+	// read rather than the parsed durations, so "5m" stays "5m" in the
+	// registry instead of being re-rendered as "5m0s".
+	pool := defaults.Builtin().Pool
 	return []Setting{
 		{
-			// The default is read from defaults.json, the one place it is
-			// written. A literal here would drift the moment that file changed,
-			// and `settings get` would report a number the pools do not use.
-			Path: "pool.max", Kind: KindInt, Default: defaults.Num(defaults.Max),
+			Path: "pool.max", Kind: KindInt, Default: defaults.Num(pool.Max),
 			Floor: 1,
 			Scope: ScopeDaemon, Hot: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
@@ -86,7 +89,7 @@ func poolSettings() []Setting {
 				"would read as unset and quietly mean the default.",
 		},
 		{
-			Path: "pool.min", Kind: KindInt, Default: "0",
+			Path: "pool.min", Kind: KindInt, Default: defaults.Num(pool.Min),
 			Scope: ScopeDaemon, Hot: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Warm instances",
@@ -95,32 +98,32 @@ func poolSettings() []Setting {
 				"the knob for a server whose startup is slow enough to notice.",
 		},
 		{
-			Path: "pool.idleTimeout", Kind: KindDuration, Default: "5m",
+			Path: "pool.idleTimeout", Kind: KindDuration, Default: pool.IdleTimeout,
 			Scope: ScopeDaemon, Hot: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Idle timeout", Short: "how long an unused server lingers before it is stopped",
 		},
 		{
-			Path: "pool.callTimeout", Kind: KindDuration, Default: "120s",
+			Path: "pool.callTimeout", Kind: KindDuration, Default: pool.CallTimeout,
 			Scope: ScopeDaemon, Hot: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Call timeout", Short: "how long one tool call may take",
 		},
 		{
-			Path: "pool.startTimeout", Kind: KindDuration, Default: "60s",
+			Path: "pool.startTimeout", Kind: KindDuration, Default: pool.StartTimeout,
 			Scope: ScopeDaemon, Hot: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Start timeout", Short: "how long a server has to become ready",
 		},
 		{
-			Path: "pool.sharing", Kind: KindEnum, Default: "shared",
+			Path: "pool.sharing", Kind: KindEnum, Default: pool.Sharing,
 			Scope:    ScopeDaemon,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Enum:     []string{"shared", "exclusive"},
 			Name:     "Sharing", Short: "whether callers reuse one instance or each get their own",
 		},
 		{
-			Path: "pool.scope", Kind: KindEnum, Default: "global",
+			Path: "pool.scope", Kind: KindEnum, Default: pool.Scope,
 			Scope:    ScopeDaemon,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Enum:     []string{"global", "repo", "worktree", "cwd", "session", "parent-session", "pid", "call"},
