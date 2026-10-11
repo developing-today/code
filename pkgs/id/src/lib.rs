@@ -186,6 +186,8 @@ pub mod repl;
 pub mod sandbox;
 pub mod store;
 pub mod tags;
+#[cfg(test)]
+mod test_forgeries;
 pub mod tuple;
 #[cfg(feature = "world")]
 pub mod world;
