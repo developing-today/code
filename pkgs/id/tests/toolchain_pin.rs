@@ -130,3 +130,42 @@ fn a_binding_that_only_mentions_the_channel_in_a_comment_is_refused() {
         assert!(refused, "accepted as bound to the pin: {binding:?}");
     }
 }
+
+/// The Rust version a line of prose names, such as `Rust 1.89.0`.
+fn named_rust_version(line: &str) -> Option<&str> {
+    let rest = line.split("Rust ").nth(1)?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(rest.len());
+    let version = rest[..end].trim_end_matches('.');
+    let dots = version.matches('.').count();
+    (dots == 2 && version.starts_with(|c: char| c.is_ascii_digit())).then_some(version)
+}
+
+/// The root docs describe the dev shell, so each Rust version they name must be
+/// the pinned one. A doc written before the pin moved would otherwise go stale.
+#[test]
+fn the_root_docs_name_the_pinned_rust_version() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let pinned = pinned_channel(&fs::read_to_string(root.join("rust-toolchain.toml")).unwrap());
+    let mut stale = Vec::new();
+    for entry in fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        for (index, line) in text.lines().enumerate() {
+            if let Some(version) = named_rust_version(line)
+                && version != pinned
+            {
+                stale.push(format!("{}:{}: Rust {version}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "docs name a Rust version other than the pin {pinned}:\n{}",
+        stale.join("\n")
+    );
+}
