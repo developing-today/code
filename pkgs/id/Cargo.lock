@@ -2934,6 +2934,7 @@ dependencies = [
  "proptest",
  "qrcode",
  "rand 0.10.3",
+ "redb 4.3.0",
  "rmp-serde",
  "rqrr",
  "russh",
