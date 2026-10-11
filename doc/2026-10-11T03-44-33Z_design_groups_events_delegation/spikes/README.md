@@ -37,3 +37,19 @@ C1 (connectivity) was named `s7-connect` in the workspace. It is renamed `c1-con
 | s5-cbor      | cbor-core choice, decode-then-re-encode canonicality, four value rules, golden vectors, dcbor interop                      |
 | s6-index     | redb versus SQLite load, durability under SIGKILL, concurrency, unique (author, seq), the prefix bug                       |
 | c1-connect   | Connectivity: lookups (n0, mainline testnet, tickets), relay fallback, and a Tunnel-style relay with QAD off (t1–t8)       |
+
+## 2026-10-11T12-53-32Z Spike results from the 2026-10-11 round
+
+Each folder has a `RESULTS.md` with the commands, raw numbers, and what was not tested. Build output is not committed. Shared brief: `BRIEF.md` in this folder.
+
+| Folder | Question | Verdict |
+| --- | --- | --- |
+| `s7-range-real/` | Range sync on real redb stores over iroh | Works and matches S1. Keep K=16, T=16. Crossover: range wins control bytes up to about 33 new events at 1,000 chains |
+| `s8-tags/` | Observed-remove tags | Hold. The clock must cover the causal past. Compaction needs a snapshot |
+| `s9-seitan/` | Seitan V2 derivations, freshness, admin path | Derivations match Keybase's V2 vectors. A ticket cannot carry the token |
+| `s10-heads/` | Heads orderer in a 40-member group | Cap 32 needs the merge rule and the author's own latest event named every time |
+| `s11-relay/` | Relay restart, keys, certificates, idle | Restart survives a short outage. A 35 s outage loses frames. Use `KillSignal=SIGINT` |
+| `s12-welcome/` | Welcome size per epoch | 146.6 B stock, 40.0 B with serde_bytes. The serde_bytes change needs a new scheme version. `variants/*.patch` hold the diffs |
+| `c2-holepunch/` | Holepunching through NAT in namespaces | Full cone and port-restricted hold-punch. Symmetric against symmetric falls back. QAD is required |
+| `beekem/` | BeeKEM costs, concurrency, join, migration | Not adoptable now. DataScheme stays. See task 05 |
+| `c1-rerun/` | C1 t2 and t4 on current infrastructure | Both pass |

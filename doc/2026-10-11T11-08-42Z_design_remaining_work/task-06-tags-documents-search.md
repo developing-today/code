@@ -41,3 +41,12 @@ New module, for example `pkgs/id/src/tags/` (events and index). Retired: `pkgs/i
 ## Dependencies
 
 None beyond those already in task 02.
+
+## 2026-10-11T12-49-09Z Update: observed-remove tags (S8)
+
+- Convergence over 3 to 5 replicas, partitions, any order and duplicates: pass (300 cases, 3,000 in a soak).
+- Add-wins: pass. Concurrent adds survive a clear that did not see them.
+- A clear removes a dot only if the dot is named and covered by the clock. A planted bug that ignored the clock failed with `seen=0, unseen=1`.
+- Merge laws (commutative, associative, idempotent) pass on reachable states. A wrong but symmetric join passes the laws, so only the oracle check catches it.
+- Metadata: state stays flat. The log costs about 131 B per operation, excluding signatures.
+- Not tested: strong-remove precedence, real headers and signatures, persistence and the index, network behaviour.

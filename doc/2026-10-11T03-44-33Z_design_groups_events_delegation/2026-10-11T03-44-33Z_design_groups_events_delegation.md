@@ -839,3 +839,44 @@ Where the review differs from this document, the review is current. The main dif
 ## 2026-10-11T10-46-58Z Decision: connectivity is n0 by default, plus our relay, tickets, and alternates
 
 Owner decision, 2026-10-11. Connectivity uses n0's relays and lookups by default. It adds our own relay, starting with a Cloudflare Tunnel in front of `iroh-relay`. Invite tickets carry addresses, and alternate lookups such as the mainline DHT are opt-in. mDNS stays off. This supersedes review §6 items 2 and 3, which recommended Minimal. The layers, the setup options, and the tests are in the [connectivity design](./2026-10-11T10-46-58Z_design_connectivity.md).
+
+## 2026-10-11T12-20-38Z Update: owner answers and open items
+
+- The owner's answers this session are recorded in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md): connectivity, groups above 1,000, the from_join fork, serde_bytes kept local, and the tuple fix.
+- Open decisions, and new questions with a preferred answer and alternatives, are listed in the same index.
+
+## 2026-10-11T12-49-10Z Update: spike results S7 to S12, BeeKEM, C1 re-run
+
+- S7: range sync works on real stores and matches S1. Keep K=16, T=16 (task 04).
+- S8: observed-remove tags hold. The clock must cover the whole causal past. No tombstones are needed. Compaction needs a snapshot (task 06, task 02).
+- S9: Seitan V2 derivations match Keybase's vectors. A ticket cannot carry the token, and tickets are unsigned address hints (task 07).
+- S10: cap 32 needs the merge rule and the author's own latest event named every time (task 05).
+- S11: restart and reconnect behaviour measured. The kit's systemd unit needs `KillSignal=SIGINT`, and metrics must not be public (task 08).
+- S12: welcome 146.6 B per epoch stock, 40.0 B with serde_bytes. The serde_bytes change needs a new scheme version (task 05).
+- BeeKEM: not adoptable now (no welcome API, no authority checks, large state). DataScheme stays for all groups, with warnings (task 05).
+- C1 t2 and t4 re-run: both pass.
+- Details and the open questions are in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).
+
+## 2026-10-11T12-52-41Z Update: holepunching across namespaces (C2)
+
+- Full cone and port-restricted NATs holepunch, 3 of 3 runs each. Symmetric against symmetric falls back to the relay.
+- QAD is what gives a peer its public candidate. A QAD relay other than home must be in the map, and n0 is the default source (N29). This should be checked on real networks.
+- Connected peers learn our addresses even when tickets hold none (N30).
+- Details: `spikes/c2-holepunch/RESULTS.md`, and the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).
+
+## 2026-10-11T16-08-10Z Decision: owner decisions recorded, phased plan proposed
+
+- Accepted: joiner history `full` by default; mDNS on for `serve`; fork recovery by removal and re-enrolment; storage on redb; p2panda-store traits over redb; the git rev for p2panda; the newest toolchain; the freshness window configurable; tickets that work as regular tickets with optional signatures; the n0 relay now; BeeKEM not adopted.
+- The [phased plan](../2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md) has eight phases, with parallel tracks and the true blockers marked. It is proposed, not started.
+- The [explainers](../2026-10-11T11-08-42Z_design_remaining_work/explainers.md) define ChainExt, waiting caps, storms and merges, epochs and history modes, range versus LogSync, and compaction.
+- The [BeeKEM assessment](../2026-10-11T11-08-42Z_design_remaining_work/beekem-assessment.md) records the difficulties and the conditions for reconsidering it.
+
+## 2026-10-11T17-58-40Z Update: round 2 research and the revised plan
+
+- Storage: redb everywhere. The Turso spike was slower in every configuration measured. libsql is replaced by redb (N1, N2).
+- Ed25519: stay on 3.0.0 with a conversion shim, and use `verify_strict`. Moving to 2.x is blocked by iroh 1.3.0 (decision 19).
+- Scheme v1 (serde_bytes) is the first release. It is 3.66 times smaller per epoch than stock (N10).
+- Range: K and T are local, validated, and never on the wire. LogSync is used below a 3.5% difference, and range above it (N5, N6).
+- Access control, not privacy: iroh identifies a peer only after the TLS handshake, so "authorize before connecting" does not hide addresses (N30).
+- QAD: iroh probes only the first five relays in the map. QAD-capable relays come first (N43).
+- Revised: [plan](../2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md), [index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md), [explainers](../2026-10-11T11-08-42Z_design_remaining_work/explainers.md).

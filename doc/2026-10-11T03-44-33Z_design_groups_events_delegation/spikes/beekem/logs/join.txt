@@ -1,0 +1,10 @@
+## Welcome as a replica copy
+  serialized size: 6868 B
+  adder's leaf secret key present: false
+  epoch-0 root key present: true
+  joiner derives the current root: true
+  joiner derives the epoch-0 root (it was not a member then): true
+  joiner merges the next update (true) and derives the new root: true
+## Fresh replica, no history
+  merging the latest update: Some(OutOfOrderOperation)
+  merging the add: Some(OutOfOrderOperation)

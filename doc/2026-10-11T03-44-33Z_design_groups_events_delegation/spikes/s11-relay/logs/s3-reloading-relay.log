@@ -1,0 +1,8 @@
+[2m2026-10-11T12:28:44.461529Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19221
+[2m2026-10-11T12:28:44.462282Z[0m [32m INFO[0m [1mhttp-service[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:19122[1m}[0m[2m:[0m [2miroh_relay::server[0m[2m:[0m serving
+[2m2026-10-11T12:28:44.462480Z[0m [32m INFO[0m [2miroh_relay::server::resolver[0m[2m:[0m Reloaded the certificate
+[2m2026-10-11T12:28:44.463005Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTPS/WSS] relay: serving on 127.0.0.1:19121
+[2m2026-10-11T12:28:49.815617Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19221
+[2m2026-10-11T12:28:49.815948Z[0m [32m INFO[0m [1mhttp-service[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:19122[1m}[0m[2m:[0m [2miroh_relay::server[0m[2m:[0m serving
+[2m2026-10-11T12:28:49.817190Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTPS/WSS] relay: serving on 127.0.0.1:19121
+[2m2026-10-11T12:28:49.818000Z[0m [32m INFO[0m [2miroh_relay::server::resolver[0m[2m:[0m Reloaded the certificate

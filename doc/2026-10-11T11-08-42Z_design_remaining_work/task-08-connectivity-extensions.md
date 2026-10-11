@@ -51,3 +51,51 @@ n0 is the default for relays and lookup. Our own relay is added as a fallback an
 ## Dependencies
 
 `iroh-relay` 1.3.0 with `server` (for hosting only, not for clients). `iroh-mainline-address-lookup` 0.6.0 (opt-in, behind a feature if possible). Report both per AGENTS.md.
+
+## 2026-10-11T12-20-38Z Update: connectivity answers and re-runs
+
+- n0 stays the default. Tickets: yes, carrying relays, not direct addresses only. Tunnel first for our own relay.
+- Relay access control (#13): no shared token now, since the relay is public. A non-secret token embedded in the binary is an option to revisit at implementation.
+- Bare node-ID lookup stays on. The owner decided this over my privacy recommendation.
+- t2 and t4 re-run, both pass. t2: re-home in 22.5 s, earlier runs 20.5 s and 21.6 s, so the range is 20–23 s. Fresh handshake over n0: 547 ms. t4: dial by ID through n0, handshake 216 ms, two throwaway IDs published. Raw output is in `spikes/c1-rerun`.
+- Pending: S11 (relay operation runbook) and C2 (holepunching across namespaces). Open: mDNS default (#14), DHT default (#15).
+
+## 2026-10-11T12-49-09Z Update: relay operation (S11)
+
+- Restart: the QUIC connection survived every SIGTERM, SIGKILL and SIGINT run with a 1 s outage (3 of 3 each). With 3 s down, the 3 s SIGKILL runs also survived (3 of 3). No in-flight frame was lost in a surviving run.
+- Home relays were back 1.2 to 1.7 s after the kill, and echoes resumed at 1.7 to 1.9 s. With 3 s down, echoes took 5.6 s.
+- A 35 s outage (one run) timed the connection out at 35 s. The peers returned at +45 s and +61 s, and 1,058 of 1,062 in-flight frames were lost.
+- SIGTERM behaves like SIGKILL, because the relay does not handle SIGTERM. The kit's systemd unit uses `KillSignal=SIGTERM`, so systemd hard-kills it. SIGINT exits cleanly with code 0. Recommend `KillSignal=SIGINT`; not run under systemd.
+- Relay key: iroh-relay 1.3.0 has no relay key. Trust is TLS against the CA roots you configure, matched to the URL host. Nothing is pinned. A new key under the same CA is invisible to clients (back online in 268 ms). A CA change breaks CA-pinned clients, and the endpoint shows no error; only the relay logs `UnknownCA`.
+- Certificates: manual mode needs a restart (verified). Reload mode uses a fixed 24 h timer, not measured; it ignored a file change for 5 s.
+- Idle: a non-home connection closed exactly 60.0 s after its last datagram, and stayed open while QUIC keep-alives ran. The home relay never idled out over 3 min 40 s.
+- Operations hazards: a missing `--config-path` file silently starts the relay on `[::]:80`, with metrics on `[::]:9090`. Unknown keys, including the old `secret_key`, are ignored without a warning. Metrics on port 9090 answer on any path, so keep it off the public interface. `/ping`, `/healthz` and `/generate_204` work. With `RUST_LOG` unset the relay is silent.
+- Peers' reconnect backoff reached 27 s after a long outage, and the application cannot reset it.
+- Not tested: real networks, systemd, the 3 to 35 s outage boundary, the 24 h reload, the home relay's ping cadence, real tickets.
+
+## 2026-10-11T12-52-41Z Update: holepunching across namespaces (C2)
+
+- Full cone and port-restricted NATs: holepunch succeeds, 3 of 3 runs each. The direct path forms 40 to 321 ms after dial, and holds for the whole 60 s window.
+- Symmetric against full cone works in both orders. Symmetric against port-restricted falls back in both orders. Symmetric against symmetric falls back (3 of 3). Fallback carried every echo, with none failed.
+- QAD provides the public candidate. With no QAD relay in the map, no direct path forms, even behind a restricted NAT. A QAD-only stand-in on the same host gives a direct path in 39 ms. n0 could not be reached from the lab, so the n0 part is untested.
+- Relay-only tickets hold no IP addresses, but candidates travel inside the QUIC connection. A connected peer therefore learns our LAN and public addresses. `addr_filter` applies only to address-lookup publishing (N30).
+- A symmetric NAT gives a QAD address that is valid only toward the relay, so it is useless for holepunching.
+- A dead relay entry costs about 3 s at startup, from iroh's net-report probe timeout. A lost first holepunch round costs up to 5 s.
+- Not tested: n0's own relays (no uplink from the lab), real NAT devices, double NAT, WAN latency, NAT timeouts beyond 60 s, TLS on the public relay, real Cloudflare Tunnel.
+- Next: a real-network test with two separate networks, with n0's QAD in the map (N29).
+
+## 2026-10-11T16-08-10Z Decision: relay now, mDNS, tickets, later servers
+
+- **Relay now (N19, changed).** No Tunnel account. We use the n0 relay now, and all users see the server's public IP. This is accepted.
+- **Later servers (owner).** A local server behind a Cloudflare Tunnel, and several VPS for testing. The owner has a Cloudflare Workers paid plan. Round 2 cloudflare-workers gives the options. Nothing is deployed or created without the owner's go.
+- **mDNS (decision 14, changed).** On for `serve`, as the code does today, and `--no-mdns` turns it off. The library default is off. The design said off for everything; that is changed here.
+- **DHT (decision 15, decided).** Opt-in per world.
+- **Access control (decision 13, decided).** None now. Revisit at implementation.
+- **Tickets (decision 16, decided).** Regular tickets work. They carry addresses when needed. A signature is optional (round 2 ticket-signing).
+- **Authorize before connecting (N30).** Round 2 iroh-allowlist decides what iroh 1.3.0 can do.
+- Steps: [plan](./plan-phases.md), Phases 3 and 7.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

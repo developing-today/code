@@ -1,0 +1,14 @@
+2026-10-11T17:22:42.781652Z  INFO harness: dialing with one loopback hint role="client" event="start" me=ed4928c628 kind=connect ticket=[127.0.0.1:58418]
+2026-10-11T17:22:42.782632Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:22:42.782820Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=ResolveRemote(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state::path_state: added addressing information
+2026-10-11T17:22:42.784417Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: local addrs updated, triggering holepunching
+2026-10-11T17:22:42.784496Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: not holepunching: no connections
+2026-10-11T17:22:42.784539Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: Address Lookup not configured
+2026-10-11T17:22:42.785181Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=SendDatagram(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: sending datagram to all known paths paths=[Ip(127.0.0.1:58418)]
+2026-10-11T17:22:42.822925Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=AddConnection(94865094983904) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:55305, 10.200.0.2:55305, 127.0.0.1:55305}
+2026-10-11T17:22:42.828540Z  INFO harness: connect() returned a Connection role="client" event="connect_ok" elapsed_ms=46.774875 remote_info=["Ip(127.0.0.1:58418)/Active"]
+2026-10-11T17:22:42.856223Z  INFO harness: peer closed role="client" event="closed_by_peer" elapsed_ms=74.45689499999999 why=closed by peer: not on allowlist (code 4097) dbg=ApplicationClosed(ApplicationClose { error_code: 4097, reason: b"not on allowlist" }) remote_info=["Ip(127.0.0.1:58418)/Active"]
+2026-10-11T17:22:42.856504Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:22:43.058303Z  INFO harness: final snapshot role="client" event="remote_info_final" remote_info=["Ip(127.0.0.1:58418)/Active"]
+2026-10-11T17:22:43.058790Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor cancelled
+2026-10-11T17:22:43.058834Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor terminating

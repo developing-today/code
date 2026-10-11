@@ -55,3 +55,38 @@ New module, for example `pkgs/id/src/events/` (header, canonical, store). Retire
 ## Dependencies
 
 p2panda-core (git, pinned), `cbor-core =0.10.1`, `unicode-normalization` (NFC). Report each one per `pkgs/id/AGENTS.md`. See [task 11](./task-11-dependencies-and-upstream.md).
+
+## 2026-10-11T12-20-38Z Update: storage answers and open items
+
+- Event store engine (N1): redb preferred. S6 measured redb against rusqlite: writes 93 µs vs 187 µs, subject lookup 24 µs vs 57 µs, name=value 5.7 µs vs 11.9 µs. Files 269 MB (135 MB compacted) vs 97 MB. RSS 193 MB vs 104 MB.
+- redb downsides: one process per file (a second opener is refused, even read-only), larger files, no SQL, a younger project. iroh-blobs already uses redb, so it adds no dependency.
+- Turso (crate `turso` 0.8.2, a Rust rewrite of SQLite) is not measured. It needs the S6 harness before any decision.
+- Identity database (N2): libsql is the only SQLite-family dependency. It is optional behind the `web` feature and used in `src/web/identity.rs`. Keep it until N1 is settled.
+- p2panda-store (N3): the traits are `LogStore`, `OperationStore`, `GroupsStore`, `OrdererStore`, `TopicStore`, `CursorStore`, `KeySecretsStore`. It also ships `SqliteStore` (sqlx), which conflicts with rusqlite 0.40 on libsqlite3-sys. Preferred: implement the traits over redb if they fit our schema. S7 tests this on real stores.
+- Chain identity (N4): there is no `LogExt` in p2panda-core 0.7.1. ChainExt goes on every event.
+- Power-loss tests (N13): S6 used SIGKILL only. Run LazyFS or a VM power cut before the engine is final.
+- Waiting caps (#6): unchanged, pending the owner.
+- Doc error (N17): `src/store.rs` says FsStore is SQLite. It is redb.
+
+## 2026-10-11T12-49-09Z Update: tags spike and compaction (S8)
+
+- S8 ran the observed-remove tag model with 300 random cases, and 3,000 in a soak. Every replica matched an independent oracle after every step.
+- The clock must cover the whole causal past. A frontier-only clock leaves an add that the clearer had seen. The spec must say so.
+- Metadata stays flat under churn: 117 B to 121 B across 20,001 operations. Tombstones would cost about 3 B per removal.
+- Compaction: take a snapshot at a causal cut, then serve the tail. Dropping stable clear bodies without a snapshot brings back removed adds for a new device. That is a tested counterexample. Do not drop clear bodies without a snapshot.
+- With the real `tuple.rs` before the fix, `"a"` matched `"a\0b"` in name and value prefixes. The `00 00` terminator fixes it. Subject-only prefixes are exact for 32-byte subjects.
+
+## 2026-10-11T16-08-10Z Decision: storage, ChainExt, waiting caps, crash tests
+
+- **Storage (N1, decided).** redb for everything. The Turso spike runs in round 2 and only changes the decision if Turso wins on correctness, durability, disk, speed, build time, or maintenance. libsql is replaced either way (N2).
+- **p2panda-store (N3, decided).** Implement its traits over redb, because the owner prefers traits. A fork is acceptable, since we would own it and replace its SQLite implementation with redb. Round 2 store-fit decides which route is simpler.
+- **ChainExt (N4, decided).** One extension struct on every event. See the explainers, section 1.
+- **Waiting caps (decision 6, decided).** 256 waiting events per author and 7 days, configurable per world. See the explainers, section 2.
+- **Compaction (N33, decided).** Snapshot at a causal cut, then the tail. See the explainers, section 6.
+- **Crash testing (N13).** A portable in-process fault-injecting backend for redb first. LazyFS is an optional Linux job. Round 2 crash-tests decides the harness.
+- Steps and tests for all of this are in the [plan](./plan-phases.md), Phase 1.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

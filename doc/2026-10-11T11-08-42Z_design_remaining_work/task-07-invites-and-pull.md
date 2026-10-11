@@ -49,3 +49,35 @@ New module, for example `pkgs/id/src/invite/`. `invite.rs` stays for petnames un
 ## Dependencies
 
 `ed25519-dalek` (already present), `sha2` (already present), `hmac`, `scrypt` (transitive), `rmp-serde` (already present). Report each new one.
+
+## 2026-10-11T12-20-38Z Update: invites and pull (S9 running)
+
+- S9 is running in `spikes-next/s9-seitan`: Seitan V2 derivations against the reference code, the freshness check, and the admin path.
+- Open from this session: can a Seitan token ride inside an `EndpointTicket`? That depends on what the ticket leaks and whether tickets expire. S9 reports it.
+- Invite style (#10): preferred is a bearer link with expiry and single use. A typed key stays optional, with owner approval.
+- Pull default (#11): open pull, as decided, with an authorized option. Not yet confirmed by the owner.
+
+## 2026-10-11T12-49-09Z Update: Seitan V2 (S9)
+
+- Derivations match Keybase's own V2 vectors (`go/teams/seitan_v2_test.go`): the scrypt stretch, the invite ID, and the Ed25519 public key. The public key check opened the vector's key, so it is end to end.
+- Not verified: the accept-message bytes (no vector covers them), the Keybase admin handler and V3 (guessed paths returned 404), and kbcrypto's signing call.
+- Admin path: 38 of 38 tests pass, and clippy is clean at `-D warnings` for that crate. Single use, expiry, revocation, replay and forgery are tested. All 10 deliberate mutations are caught.
+- Freshness, a decision: bound the accept time `ctime` to the invite's lifetime: `created − 5 min ≤ ctime ≤ min(now + 5 min, expires)`. A wall-clock window would reject accepts that a home server holds, which the design allows.
+- A Seitan token cannot ride inside an `EndpointTicket`: the format has no field for it. Bytes appended to the payload do parse, because postcard ignores trailing data, and iroh then drops them without an error.
+- What a ticket carries: the EndpointId, the home relay URL, and any IP:port. A ticket has no expiry and no signature. Expiry and single use belong to the admin's invite event.
+- Gotcha: `seitan.go` still has the V1 invite-ID payload (no version) and the V1 `+` position. Implementing from it alone gives the wrong V2 ID.
+- The research note says scrypt is transitive. It is absent from the spike's lock.
+- Deviation: the spike used ed25519-dalek 3, to match `pkgs/id`.
+
+## 2026-10-11T16-08-10Z Decision: freshness, invite style, pull
+
+- **Freshness window (N23, decided).** Configurable per server, per world, or per inviter. Default 5 minutes. The rule is `created - W <= ctime <= min(now + W, expires)`. Explainers, section 7.
+- **Invite style (decision 10, decided).** Bearer link (Seitan V2) with expiry and single use. A typed key is optional, with owner approval.
+- **Pull default (decision 11, decided).** Open pull, with an authorized option.
+- **Tickets (N24, N30).** The owner accepts tickets that carry addresses when needed. Signed tickets are optional, and a standard client must still accept them. Pending round 2 ticket-signing for the format.
+- **Seitan gaps (from S9).** Verify the accept-message bytes and the Keybase admin handler before shipping. Steps: [plan](./plan-phases.md), Phase 6.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.

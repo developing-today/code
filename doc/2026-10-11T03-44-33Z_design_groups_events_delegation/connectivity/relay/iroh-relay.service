@@ -5,9 +5,13 @@
 Description=iroh relay
 After=network-online.target
 Wants=network-online.target
+# Refuse to start without the config. The relay otherwise starts silently on [::]:80 (S11).
+ConditionPathExists=/etc/iroh-relay/relay.toml
 
 [Service]
 ExecStart=/usr/local/bin/iroh-relay --config-path /etc/iroh-relay/relay.toml
+# The relay ignores SIGTERM and is hard-killed by it. SIGINT exits cleanly (S11).
+KillSignal=SIGINT
 User=iroh-relay
 Group=iroh-relay
 # Lets a non-root user bind ports 80 and 443 without running as root.
