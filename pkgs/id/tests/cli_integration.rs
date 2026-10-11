@@ -1507,6 +1507,53 @@ mod serve_tests {
         );
     }
 
+    /// A server that prints lines faster than the wait reads them must still fail
+    /// at its startup deadline. The deadline is checked as well as the wait for
+    /// the next line, since a queued line returns at once even after the deadline.
+    #[allow(unsafe_code)]
+    #[test]
+    fn test_a_chatty_server_still_fails_at_the_startup_deadline() {
+        let child = StdCommand::new("sh")
+            .args(["-c", "yes"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut server = ServerHandle {
+            process: child,
+            work_dir: std::env::temp_dir(),
+            node_id: None,
+            web_port: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            _stderr_thread: None,
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                server.wait_ready_within(false, Duration::from_millis(200))
+            }));
+            let _ = done_tx.send((outcome.is_err(), started.elapsed()));
+        });
+        match done_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok((failed, elapsed)) => {
+                assert!(failed, "a chatty server counted as ready");
+                assert!(
+                    elapsed < Duration::from_secs(5),
+                    "the wait ran {elapsed:?} past a 200 ms deadline"
+                );
+            }
+            Err(_) => {
+                // Stop the child so the wait ends, then fail the test.
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+                panic!("the wait for a chatty server did not end within 10 s");
+            }
+        }
+    }
+
     /// First IPv4 socket address recorded in a serve lock file.
     fn lock_ipv4_addr(lock: &std::path::Path) -> String {
         let info: serde_json::Value =
