@@ -72,3 +72,14 @@ n0 is the default for relays and lookup. Our own relay is added as a fallback an
 - Operations hazards: a missing `--config-path` file silently starts the relay on `[::]:80`, with metrics on `[::]:9090`. Unknown keys, including the old `secret_key`, are ignored without a warning. Metrics on port 9090 answer on any path, so keep it off the public interface. `/ping`, `/healthz` and `/generate_204` work. With `RUST_LOG` unset the relay is silent.
 - Peers' reconnect backoff reached 27 s after a long outage, and the application cannot reset it.
 - Not tested: real networks, systemd, the 3 to 35 s outage boundary, the 24 h reload, the home relay's ping cadence, real tickets.
+
+## 2026-10-11T12-52-41Z Update: holepunching across namespaces (C2)
+
+- Full cone and port-restricted NATs: holepunch succeeds, 3 of 3 runs each. The direct path forms 40 to 321 ms after dial, and holds for the whole 60 s window.
+- Symmetric against full cone works in both orders. Symmetric against port-restricted falls back in both orders. Symmetric against symmetric falls back (3 of 3). Fallback carried every echo, with none failed.
+- QAD provides the public candidate. With no QAD relay in the map, no direct path forms, even behind a restricted NAT. A QAD-only stand-in on the same host gives a direct path in 39 ms. n0 could not be reached from the lab, so the n0 part is untested.
+- Relay-only tickets hold no IP addresses, but candidates travel inside the QUIC connection. A connected peer therefore learns our LAN and public addresses. `addr_filter` applies only to address-lookup publishing (N30).
+- A symmetric NAT gives a QAD address that is valid only toward the relay, so it is useless for holepunching.
+- A dead relay entry costs about 3 s at startup, from iroh's net-report probe timeout. A lost first holepunch round costs up to 5 s.
+- Not tested: n0's own relays (no uplink from the lab), real NAT devices, double NAT, WAN latency, NAT timeouts beyond 60 s, TLS on the public relay, real Cloudflare Tunnel.
+- Next: a real-network test with two separate networks, with n0's QAD in the map (N29).

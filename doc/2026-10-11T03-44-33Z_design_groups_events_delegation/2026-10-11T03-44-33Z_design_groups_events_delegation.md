@@ -856,3 +856,10 @@ Owner decision, 2026-10-11. Connectivity uses n0's relays and lookups by default
 - BeeKEM: not adoptable now (no welcome API, no authority checks, large state). DataScheme stays for all groups, with warnings (task 05).
 - C1 t2 and t4 re-run: both pass.
 - Details and the open questions are in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).
+
+## 2026-10-11T12-52-41Z Update: holepunching across namespaces (C2)
+
+- Full cone and port-restricted NATs holepunch, 3 of 3 runs each. Symmetric against symmetric falls back to the relay.
+- QAD is what gives a peer its public candidate. A QAD relay other than home must be in the map, and n0 is the default source (N29). This should be checked on real networks.
+- Connected peers learn our addresses even when tickets hold none (N30).
+- Details: `spikes/c2-holepunch/RESULTS.md`, and the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).

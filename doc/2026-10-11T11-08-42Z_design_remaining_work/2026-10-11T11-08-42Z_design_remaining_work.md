@@ -29,7 +29,7 @@
 | [05](./task-05-encryption-and-history.md) | DataScheme adapter, our DGM, heads orderer, from_join, welcome growth, warnings, BeeKEM | Designed; S10, S12, BeeKEM done (BeeKEM not adopted) | 02, 12 | #7, #8, #9; N7–N12, N18 |
 | [06](./task-06-tags-documents-search.md) | Observed-remove tags, index, documents, search | Designed; S8 done | 02 | tag precedence against the content policy |
 | [07](./task-07-invites-and-pull.md) | Seitan V2, invite events, links, pull policy, metadata | Designed; S9 done | 02 | #10, #11 |
-| [08](./task-08-connectivity-extensions.md) | Our relay (Tunnel), QUIC flag, DHT, Worker pkarr relay, mDNS, tickets, access control | Designed; kit ready; S11 done, C2 running | owner's Tunnel account (N19) | #13, #14, #15, #16 |
+| [08](./task-08-connectivity-extensions.md) | Our relay (Tunnel), QUIC flag, DHT, Worker pkarr relay, mDNS, tickets, access control | Designed; kit ready; S11 and C2 done | owner's Tunnel account (N19) | #13, #14, #15, #16 |
 | [09](./task-09-time-and-witnesses.md) | Witness events, cosigning, anchors | Deferred | 02 | who runs witnesses; which anchors |
 | [10](./task-10-open-design-items.md) | Retention, multi-device, fork recovery, live editing, views | Open | 02 | #17 and the rest listed in the task |
 | [11](./task-11-dependencies-and-upstream.md) | Crate adoption, upstream reports (none opened) | Open; in part superseded by 12 | 01 | #18 (decided), N9, N10 |
@@ -47,7 +47,7 @@
 | S10 | Heads orderer in a 40-member group, merge at 32 | Done: cap 32 needs the merge rule and the author's own latest event named every time | `spikes/s10-heads` |
 | S11 | Relay operation: restart, reconnect, key and certificate rotation | Done: restart and reconnect measured; systemd `KillSignal` and metrics exposure need fixing | `spikes/s11-relay` |
 | S12 | Welcome size at 1, 10, 100, 1,000 epochs, with and without serde_bytes | Done: 146.6 B per epoch stock, 40.0 B with serde_bytes (a new scheme version) | `spikes/s12-welcome` |
-| C2 | Holepunching between separate networks, using namespaces | Running | `spikes/c2-holepunch` |
+| C2 | Holepunching between separate networks, using namespaces | Done: full cone and port-restricted holepunch succeed (3 of 3 each); symmetric against symmetric falls back; QAD is required for a direct path | `spikes/c2-holepunch` |
 | BeeKEM | Costs at 100, 1,000, 5,000; concurrency; join; migration | Done: not adoptable now (no welcome API, no authority checks); DataScheme stays | `spikes/beekem` |
 
 ## Owner decisions (the original 19, with this session's answers)
@@ -114,6 +114,10 @@ Each has a preferred answer and alternatives. These are my recommendations, not 
 | N26 | BeeKEM for groups above 1,000 | Do not adopt now. DataScheme for all groups, with warnings. Revisit when the crate has a join API and authority checks | Fix and extend BeeKEM ourselves (large); a scheme switch at a barrier later if continuity matters | 05 |
 | N27 | Range sync parameters for bulk catch-up | K=16, T=16 normally; K=4, T=8 for bulk catch-up (saves 28 to 33% of control at 200 new events) | K=16 for everything | 04 |
 | N28 | Migrating existing DataScheme groups to a new scheme | A scheme switch at a barrier inside the same group | A new group with re-invites | 05 |
+| N29 | Source of QAD for direct paths | Keep n0 in the default map for QAD, and verify direct paths on real networks (C2 could not reach n0). Add our own QAD relay (option B) later if capacity or privacy needs it | Tunnel only, which gives no QAD and so no direct paths beyond n0; a VPS with QAD first | 08 |
+| N30 | Address privacy from connected peers | Document that a connected peer learns our addresses (C2). Tickets stay address-free for lookups | Authorize peers before connecting (invite first), so only trusted peers connect | 07, 08 |
+| N31 | Relay capacity for fallback pairs | Plan relay capacity for symmetric-to-symmetric and symmetric-to-restricted pairs, which fall back (C2) | Accept lower direct-path rates and tune relay limits | 08 |
+| N32 | Startup wait on relays | Wait only for the home relay, with a deadline. Do not wait on every map entry (dead entries cost about 3 s) | Wait for every entry | 08 |
 
 ## Phases (draft; I will revise them after the spikes report)
 
@@ -124,7 +128,7 @@ Each has a preferred answer and alternatives. These are my recommendations, not 
 - **Phase 4. Group encryption and history.** DataScheme adapter, our DGM, from_join (N9), serde_bytes as a new scheme version (N20), `recent:N` through `Dcgka::add` (N21) and lazy `full` (#7), the heads rule (N22), warnings (N11), rotation policy (N7, N8). BeeKEM is not adopted now (N26). Gates: S10 and S12 are done; their rules are in task 05.
 - **Phase 5. Tags, documents, search.** Task 06. Gate: S8.
 - **Phase 6. Invites and pull.** Task 07. Gate: S9.
-- **Phase 7. Connectivity extensions.** Our Tunnel relay (N19), tickets, access control at implementation (#13), mDNS and DHT defaults (#14, #15). Gates: S11 runbook; C2 results.
+- **Phase 7. Connectivity extensions.** Our Tunnel relay (N19), tickets, access control at implementation (#13), mDNS and DHT defaults (#14, #15), QAD source (N29), startup waits (N32). Gates: S11 runbook (done); C2 (done in namespaces). Still needed: a real-network test with two separate networks and n0's QAD.
 - **Phase 8. Later.** Time and witnesses (task 09), retention, multi-device, fork recovery (task 10).
 
 ## Known discrepancies in the current code
