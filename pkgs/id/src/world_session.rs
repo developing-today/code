@@ -2301,7 +2301,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            format!("{refused:#}").contains("another server"),
+            format!("{refused:#}").contains("cannot send to other servers"),
             "{refused:#}"
         );
         assert_eq!(friends_of_ann(&svc, &ann).await, Some(vec![bo]));
