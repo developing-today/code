@@ -267,11 +267,21 @@ func (c *Client) readReply(resp *http.Response) ([]byte, int, error) {
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var e struct {
-			Error string `json:"error"`
+			Error     string `json:"error"`
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"requestId"`
 		}
 		msg := fmt.Sprintf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-		if json.Unmarshal(b, &e) == nil && e.Error != "" {
-			msg = e.Error
+		if json.Unmarshal(b, &e) == nil {
+			switch {
+			case e.Error != "":
+				msg = e.Error
+			case e.Code == "secret_required" && e.Message != "":
+				// A refusal for a missing secret says what is missing and
+				// which request answers it; the raw body says the same in JSON.
+				msg = e.Message + " (request " + e.RequestID + ")"
+			}
 		}
 		return nil, resp.StatusCode, &HTTPError{Status: resp.StatusCode, Body: b, Msg: msg}
 	}

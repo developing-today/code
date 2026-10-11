@@ -600,6 +600,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	s.routesExec(mux)
 	s.routesSettings(mux)
+	s.routesSecrets(mux)
 	// Everything declared in internal/api that is not above. A parity test
 	// fails if the two ever disagree.
 	s.routesV1Ops(mux)
@@ -876,7 +877,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		s.logger.Printf("call %s.%s failed in %s: %v", req.Server, req.Tool, dur, err)
-		reply(w, failureStatus(err), callErrorBody(err))
+		reply(w, failureStatus(err), failureBody(err))
 		return
 	}
 	reply(w, 200, map[string]any{"result": res, "durationMs": dur.Milliseconds(), "traceId": cc.CallID})

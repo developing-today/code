@@ -333,9 +333,16 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "FUNCTION\tDESCRIPTION")
+	fmt.Fprintln(tw, "CALL\tNATIVE\tDESCRIPTION")
 	for _, h := range hits {
-		fmt.Fprintf(tw, "%s\t%s\n", h.Function, truncate(oneLine(h.Description), 90))
+		call, native := h.Call, h.Native
+		if call == "" {
+			// A daemon older than the call form still answers with the
+			// function alone, which spells the same identifier.
+			call = "tools." + h.Function + "(args)"
+			native = strings.Replace(h.Function, ".", "_", 1)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
 	}
 	tw.Flush()
 	return nil
@@ -790,6 +797,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
 				export: *export, session: sessionKey, shape: shape})
+	}
+	// This process is about to start the script, so it checks first. The
+	// daemon would refuse a script it was asked to run; this one is not asked.
+	if err := a.refuseIfUnready(ctx, c, inline, shape, fs.Args()); err != nil {
+		return err
 	}
 
 	// The session is deliberately not baked into the generated module: several

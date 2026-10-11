@@ -34,6 +34,7 @@ func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/settings/{path}", s.handleSettingsSet)
 	mux.HandleFunc("DELETE /v1/settings/{path}", s.handleSettingsUnset)
 	mux.HandleFunc("GET /v1/servers", s.handleServersList)
+	mux.HandleFunc("GET /v1/servers/{name}", s.handleServerGet)
 	mux.HandleFunc("POST /v1/servers", s.handleServersAdd)
 	mux.HandleFunc("DELETE /v1/servers/{name}", s.handleServersRemove)
 }
@@ -306,37 +307,84 @@ type serverRecord struct {
 	Disabled  bool              `json:"disabled,omitempty"`
 	From      string            `json:"from,omitempty"`
 	Extra     map[string]string `json:"-"`
+	// RequiresSecrets is what the configuration says this server needs.
+	// MissingSecrets is the part of it with no value. Active is false while
+	// either holds, or while a server it requires cannot run.
+	RequiresSecrets []string `json:"requiresSecrets"`
+	MissingSecrets  []string `json:"missingSecrets"`
+	Active          bool     `json:"active"`
+}
+
+// serverRecords is every configured server, as the configuration writes it,
+// with what it needs and whether it can run now.
+func (s *Server) serverRecords() ([]serverRecord, error) {
+	out := []serverRecord{}
+	cfg := s.reg.Config()
+	if cfg == nil {
+		return out, nil
+	}
+	resolved, err := cfg.ResolveAll()
+	if err != nil {
+		return nil, err
+	}
+	for _, sv := range resolved {
+		// These are fresh views, so they need the daemon's values bound in
+		// before they can say whether anything is missing.
+		s.reg.bindSecrets(sv)
+		rec := serverRecord{
+			Name: sv.Name, Namespace: sv.Namespace,
+			Sharing: string(sv.Sharing), Scope: string(sv.Scope), Max: sv.Max,
+			From: cfg.Origin[sv.Name],
+		}
+		if sv.Stdio() {
+			rec.Transport, rec.Command, rec.Args = "stdio", sv.Command, sv.Args
+		} else {
+			rec.Transport, rec.URL = sv.Transport, sv.URL
+		}
+		// Keys, never values. A server's environment is where its API
+		// tokens are, and an endpoint that lists configured servers is
+		// not a place to leak one.
+		rec.EnvKeys = sortedKeys(sv.Env)
+		rec.Headers = sortedKeys(sv.Headers)
+		rec.RequiresSecrets = nonNil(sv.SecretNames())
+		rec.MissingSecrets = nonNil(sv.MissingSecrets())
+		blocker, _ := s.reg.blocked(sv)
+		rec.Active = blocker == nil
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func nonNil(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
 }
 
 func (s *Server) handleServersList(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.reg.Config()
-	out := []serverRecord{}
-	if cfg != nil {
-		resolved, err := cfg.ResolveAll()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		for _, sv := range resolved {
-			rec := serverRecord{
-				Name: sv.Name, Namespace: sv.Namespace,
-				Sharing: string(sv.Sharing), Scope: string(sv.Scope), Max: sv.Max,
-				From: cfg.Origin[sv.Name],
-			}
-			if sv.Stdio() {
-				rec.Transport, rec.Command, rec.Args = "stdio", sv.Command, sv.Args
-			} else {
-				rec.Transport, rec.URL = sv.Transport, sv.URL
-			}
-			// Keys, never values. A server's environment is where its API
-			// tokens are, and an endpoint that lists configured servers is
-			// not a place to leak one.
-			rec.EnvKeys = sortedKeys(sv.Env)
-			rec.Headers = sortedKeys(sv.Headers)
-			out = append(out, rec)
-		}
+	out, err := s.serverRecords()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out})
+}
+
+func (s *Server) handleServerGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	out, err := s.serverRecords()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, rec := range out {
+		if rec.Name == name {
+			writeJSON(w, http.StatusOK, rec)
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, fmt.Errorf("no configured server named %q", name))
 }
 
 func sortedKeys(m map[string]string) []string {

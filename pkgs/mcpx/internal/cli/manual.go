@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/codegen"
 	"github.com/dezren39/mcpx/internal/settings"
 )
 
@@ -200,16 +201,21 @@ func handCommands() []Command {
 			Detail: "Round-robins across servers so a large server cannot crowd out a " +
 				"small one, and lists every namespace even when the budget runs " +
 				"out mid-way, because knowing a server exists is worth more than " +
-				"knowing three more of another server's tools.",
+				"knowing three more of another server's tools. " + codegen.CanonicalSentence,
 		},
 		{
 			Name: "types", Group: "discovery",
 			Usage:   "<namespace>[.<tool>]",
 			Summary: "print the TypeScript signature of a namespace or tool",
+			Detail: "Prints each tool's signature as a script declares it, with the form " +
+				"a script calls it in and its native name. " + codegen.CanonicalSentence,
 		},
 		{
 			Name: "search", Group: "discovery",
-			Usage: "[--semantic] <words>", Summary: "find tools by name and description (keyword or semantic)",
+			Usage:   "[--semantic] <words>",
+			Summary: "find tools by name and description (keyword or semantic)",
+			Detail: "Ranks tools by their names and descriptions, and shows each one's call " +
+				"form and native name. " + codegen.CanonicalSentence,
 		},
 		{
 			Name: "call", Group: "discovery",
@@ -319,19 +325,41 @@ func handCommands() []Command {
 		},
 		{
 			Name: "servers", Group: "configuration",
-			Usage:   "list|add|remove [<name>] [-- <command> ...]",
+			Usage:   "list|show|add|remove [<name>] [-- <command> ...]",
 			Summary: "add or remove an MCP server without restarting anything",
 			Detail: "The entry is written to a configuration file and the daemon " +
 				"reloads, so a server added here is callable immediately and is " +
 				"still there tomorrow. Servers whose definition did not change keep " +
 				"their running process, so adding one does not restart the rest. " +
-				"`mcpx registry add` is the same operation for a server a public " +
-				"registry already describes.",
+				"show prints one entry with the secrets it requires and whether it " +
+				"can run now. `mcpx registry add` is the same operation for a server " +
+				"a public registry already describes.",
 			Examples: []string{
 				"mcpx servers list",
+				"mcpx servers show fs",
 				"mcpx servers add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp",
 				"mcpx servers add remote --url https://example.com/mcp --header AUTHORIZATION",
 				"mcpx servers remove fs",
+			},
+		},
+		{
+			Name: "secrets", Group: "configuration",
+			Usage:   "list|set|unset|requests|request|decline [<NAME>|<id>]",
+			Summary: "give servers the secrets they need, in memory only",
+			Detail: "A server whose required secret has no value does not start, and a " +
+				"script that reaches it is refused before anything runs. set reads " +
+				"the value from standard input, never from the command line, and " +
+				"keeps it in the running daemon only: it is not written to disk, " +
+				"logged or shown again. A server waiting for that name can run at " +
+				"once, without a restart. On a terminal the value is typed without " +
+				"echo. requests lists what is waiting for an answer; OpenChamber " +
+				"can show the same requests as password prompts. The environment is " +
+				"never changed by any of these: unset drops only the value given here.",
+			Examples: []string{
+				"printf '%s' \"$GITHUB_TOKEN\" | mcpx secrets set GITHUB_TOKEN",
+				"mcpx secrets list",
+				"mcpx secrets requests",
+				"mcpx secrets unset GITHUB_TOKEN",
 			},
 		},
 		{

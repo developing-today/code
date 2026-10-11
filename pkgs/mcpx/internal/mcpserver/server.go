@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/catalog"
+	"github.com/dezren39/mcpx/internal/codegen"
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/spec"
 )
@@ -488,7 +489,8 @@ func (s *Server) Tools() []Tool {
 			Name: "mcpx_catalog",
 			Description: "Every namespace with as many tool signatures as fit a token " +
 				"budget. Round-robins across servers so a large one cannot crowd out " +
-				"a small one. Use this when you do not yet know which server you want.",
+				"a small one. Use this when you do not yet know which server you want. " +
+				codegen.CanonicalSentence,
 			InputSchema: schema(`{"type":"object","properties":{
 				"budget":{"type":"integer","description":"approximate token ceiling (default 2000)"},
 				"bias":{"type":"string","description":"words that pull matching tools toward the front"}
@@ -498,7 +500,8 @@ func (s *Server) Tools() []Tool {
 			Name: "mcpx_types",
 			Description: "Full TypeScript signatures for named namespaces, including each " +
 				"server's own guidance. Ask for this once you know which server you " +
-				"want; it is large, which is why it is not the default.",
+				"want; it is large, which is why it is not the default. " +
+				codegen.CanonicalSentence,
 			InputSchema: schema(`{"type":"object","properties":{
 				"namespaces":{"type":"array","items":{"type":"string"},
 					"description":"namespace names, or namespace.tool for one tool"}
@@ -507,7 +510,8 @@ func (s *Server) Tools() []Tool {
 		{
 			Name: "mcpx_search",
 			Description: "Find tools by name and description across every server. " +
-				"Cheaper than the catalog when you already know roughly what you want.",
+				"Cheaper than the catalog when you already know roughly what you want. " +
+				codegen.CanonicalSentence,
 			InputSchema: schema(`{"type":"object","properties":{
 				"query":{"type":"string"},
 				"limit":{"type":"integer","description":"default 20"}

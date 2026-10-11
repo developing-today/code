@@ -64,6 +64,7 @@ func (a *App) handWritten() map[string]Handler {
 		"prompt":     a.CmdPrompt,
 		"settings":   a.CmdSettings,
 		"servers":    a.CmdServers,
+		"secrets":      a.CmdSecrets,
 		"dashboard":    a.CmdDashboard,
 		"proxy":        a.CmdProxy,
 		"embeddings":   a.CmdEmbeddings,
