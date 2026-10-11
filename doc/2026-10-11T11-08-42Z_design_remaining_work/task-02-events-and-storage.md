@@ -55,3 +55,15 @@ New module, for example `pkgs/id/src/events/` (header, canonical, store). Retire
 ## Dependencies
 
 p2panda-core (git, pinned), `cbor-core =0.10.1`, `unicode-normalization` (NFC). Report each one per `pkgs/id/AGENTS.md`. See [task 11](./task-11-dependencies-and-upstream.md).
+
+## 2026-10-11T12-20-38Z Update: storage answers and open items
+
+- Event store engine (N1): redb preferred. S6 measured redb against rusqlite: writes 93 µs vs 187 µs, subject lookup 24 µs vs 57 µs, name=value 5.7 µs vs 11.9 µs. Files 269 MB (135 MB compacted) vs 97 MB. RSS 193 MB vs 104 MB.
+- redb downsides: one process per file (a second opener is refused, even read-only), larger files, no SQL, a younger project. iroh-blobs already uses redb, so it adds no dependency.
+- Turso (crate `turso` 0.8.2, a Rust rewrite of SQLite) is not measured. It needs the S6 harness before any decision.
+- Identity database (N2): libsql is the only SQLite-family dependency. It is optional behind the `web` feature and used in `src/web/identity.rs`. Keep it until N1 is settled.
+- p2panda-store (N3): the traits are `LogStore`, `OperationStore`, `GroupsStore`, `OrdererStore`, `TopicStore`, `CursorStore`, `KeySecretsStore`. It also ships `SqliteStore` (sqlx), which conflicts with rusqlite 0.40 on libsqlite3-sys. Preferred: implement the traits over redb if they fit our schema. S7 tests this on real stores.
+- Chain identity (N4): there is no `LogExt` in p2panda-core 0.7.1. ChainExt goes on every event.
+- Power-loss tests (N13): S6 used SIGKILL only. Run LazyFS or a VM power cut before the engine is final.
+- Waiting caps (#6): unchanged, pending the owner.
+- Doc error (N17): `src/store.rs` says FsStore is SQLite. It is redb.

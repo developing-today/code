@@ -839,3 +839,8 @@ Where the review differs from this document, the review is current. The main dif
 ## 2026-10-11T10-46-58Z Decision: connectivity is n0 by default, plus our relay, tickets, and alternates
 
 Owner decision, 2026-10-11. Connectivity uses n0's relays and lookups by default. It adds our own relay, starting with a Cloudflare Tunnel in front of `iroh-relay`. Invite tickets carry addresses, and alternate lookups such as the mainline DHT are opt-in. mDNS stays off. This supersedes review §6 items 2 and 3, which recommended Minimal. The layers, the setup options, and the tests are in the [connectivity design](./2026-10-11T10-46-58Z_design_connectivity.md).
+
+## 2026-10-11T12-20-38Z Update: owner answers and open items
+
+- The owner's answers this session are recorded in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md): connectivity, groups above 1,000, the from_join fork, serde_bytes kept local, and the tuple fix.
+- Open decisions, and new questions with a preferred answer and alternatives, are listed in the same index.

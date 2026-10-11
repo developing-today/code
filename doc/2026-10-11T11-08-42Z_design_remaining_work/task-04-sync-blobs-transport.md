@@ -38,3 +38,10 @@ Events move between nodes by range reconciliation. Large payloads move as iroh-b
 ## Dependencies
 
 No new crates expected. iroh-blobs is already in the lock file.
+
+## 2026-10-11T12-20-38Z Update: observe and sync
+
+- `observe` is the iroh-blobs ObserveRequest. It returns the raw bitfield for a hash: which bytes the provider holds, and the size. Default mode `None` answers any requester, so existence and size leak.
+- Gating: `EventMask` `Intercept` decides each request. Preferred (#5): serve observe only to peers who could fetch the blob under the world's rules, with observe off by default. Alternative: disable observe and take the size from the event that references the blob.
+- Range sync (N5, N6): S1 was an in-memory simulation. At 1,000 chains with 2 new events, range control is 6,198 B in 7 flights. LogSync control is 76,071 B in 2 flights. At 10,000 chains: 6,978 B in 8 flights, against LogSync 760,071 B. S1 also found LogSync cheaper at 200 new events on 1,000 chains.
+- S1 could not test sequence gaps, XOR cancellation, bounds at 0x00 bytes, or interrupted sessions. S7 checks each on real stores.

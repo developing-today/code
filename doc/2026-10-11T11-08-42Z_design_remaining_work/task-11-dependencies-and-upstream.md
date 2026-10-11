@@ -57,3 +57,10 @@ These are risks to record, not blockers for the design.
 ## Acceptance
 
 Each crate in the table has a line in `Cargo.toml` with its pin, a reporting entry, and a build in CI or in the local check. The upstream reports are filed, with links recorded here.
+
+## 2026-10-11T12-20-38Z Update: upstream decisions
+
+- Patches stay in our fork (developing-today). Nothing goes upstream, and no upstream issues or PRs are opened, per the owner.
+- serde_bytes: local only. Upstream: #770 (closed) and #1059 (closed, fixed by PR #1058 for `Topic`). None covers the DataScheme `Vec<u8>` fields.
+- The membership bug is in upstream code (see task 05). It is not reported upstream.
+- The toolchain and dependency update moved to task 12.

@@ -49,3 +49,10 @@ New module, for example `pkgs/id/src/invite/`. `invite.rs` stays for petnames un
 ## Dependencies
 
 `ed25519-dalek` (already present), `sha2` (already present), `hmac`, `scrypt` (transitive), `rmp-serde` (already present). Report each new one.
+
+## 2026-10-11T12-20-38Z Update: invites and pull (S9 running)
+
+- S9 is running in `spikes-next/s9-seitan`: Seitan V2 derivations against the reference code, the freshness check, and the admin path.
+- Open from this session: can a Seitan token ride inside an `EndpointTicket`? That depends on what the ticket leaks and whether tickets expire. S9 reports it.
+- Invite style (#10): preferred is a bearer link with expiry and single use. A typed key stays optional, with owner approval.
+- Pull default (#11): open pull, as decided, with an authorized option. Not yet confirmed by the owner.

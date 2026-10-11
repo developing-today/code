@@ -51,3 +51,11 @@ n0 is the default for relays and lookup. Our own relay is added as a fallback an
 ## Dependencies
 
 `iroh-relay` 1.3.0 with `server` (for hosting only, not for clients). `iroh-mainline-address-lookup` 0.6.0 (opt-in, behind a feature if possible). Report both per AGENTS.md.
+
+## 2026-10-11T12-20-38Z Update: connectivity answers and re-runs
+
+- n0 stays the default. Tickets: yes, carrying relays, not direct addresses only. Tunnel first for our own relay.
+- Relay access control (#13): no shared token now, since the relay is public. A non-secret token embedded in the binary is an option to revisit at implementation.
+- Bare node-ID lookup stays on. The owner decided this over my privacy recommendation.
+- t2 and t4 re-run, both pass. t2: re-home in 22.5 s, earlier runs 20.5 s and 21.6 s, so the range is 20–23 s. Fresh handshake over n0: 547 ms. t4: dial by ID through n0, handshake 216 ms, two throwaway IDs published. Raw output is in `spikes/c1-rerun`.
+- Pending: S11 (relay operation runbook) and C2 (holepunching across namespaces). Open: mDNS default (#14), DHT default (#15).

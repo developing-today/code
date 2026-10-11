@@ -50,3 +50,15 @@ New module, for example `pkgs/id/src/encryption/`. Group state lives with the ev
 ## Dependencies
 
 p2panda-encryption (git, pinned), with the `data_scheme` feature. Do not enable `test_utils` in product code. See [task 11](./task-11-dependencies-and-upstream.md).
+
+## 2026-10-11T12-20-38Z Update: rotations, welcome, warnings, membership bug
+
+- Rotation triggers in the crate: create mints a secret; removal rotates (required); explicit update rotates; add does not rotate, because the welcome carries the existing secrets. Our from_join adds an update per join.
+- Welcome size: about 146 B per epoch today. My estimate with serde_bytes is about 40 B; S12 measures it. Growth is linear in epochs.
+- History (#7, N16): preferred default `recent:N` with N = 32, to be confirmed by S12. `full` on request through a lazy history protocol, a new item. Alternatives: `full` always; forward-only.
+- Large groups (#9): no gate. Servers emit local warnings. Preferred tiers 96, 128, 1,000 (N11). BeeKEM migration (N12): preferred is new groups above 1,000 on BeeKEM, with a transition window. Pending the BeeKEM spike.
+- from_join (N9): fork in developing-today, not pushed upstream (owner decision). Alternative: our DGM's `from_welcome` inserts the joiner, with no fork.
+- serde_bytes (N10): local patch only. Upstream: #770 (closed; proposed for `Body`) and #1059 (closed; a `Topic` fix in PR #1058). No issue covers the two DataScheme `Vec<u8>` fields.
+- Membership bug: `data_scheme/dcgka.rs` `process_welcome` calls `DGM::from_welcome` after the add. With the stock `TestDgm`, the welcome's copy overwrites the joiner's membership. The crate's tests do not catch it. Our production DGM's `from_welcome` appears to return its input unchanged. That is from reading the source, not tested. Not retested, per the owner.
+- PCS, narrow form: an update or removal heals a leaked group secret. It does not heal a member device whose own keys were copied. Recovery is remove and re-add (N8).
+- Pending: S10 (heads orderer), S12 (welcome sizes), BeeKEM.

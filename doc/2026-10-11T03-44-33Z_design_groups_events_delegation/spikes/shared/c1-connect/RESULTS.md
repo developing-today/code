@@ -146,3 +146,7 @@ Helpers: `AddressPolicy::filter()`, `AddressPolicy::apply(&EndpointAddr)` for ti
 **Deviations.** Binary is `c1` (was `s7`); usage string updated. `rustfmt` on the three touched files also fixed an import order. clippy is clean after one fix. The file is now about 2,100 words, over the README's 1,500, because this section was added as asked.
 
 **Recommendation.** Use `quic: false` for every relay without UDP. Set the local test relays to `quic: false` too; that removes the 3 s wait and should not change verdicts. Before enabling `shared_token` (the commented key is correct, `main.rs:158-200`), give `RelayEntry` a token and call `RelayConfig::with_auth_token` (`relay_map.rs:266`).
+
+## 2026-10-11T12-20-38Z Re-run: t2 and t4
+
+Lines 141 and 144 above are stale. t2 and t4 were re-run on the current build, and both pass. See `../../c1-rerun/RESULTS.md`.
