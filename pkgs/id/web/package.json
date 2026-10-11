@@ -36,7 +36,7 @@
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^20.19.43",
     "daisyui": "^5.7.47",
-    "happy-dom": "^17.6.3",
+    "happy-dom": "^20.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
   }
