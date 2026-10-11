@@ -1,16 +1,14 @@
 rec {
-  outputs =
-    inputs: # flake-parts.lib.mkFlake
-    let
-      lib = import ./lib inputs;
-    in
-    lib.merge [
+  outputs = inputs: # flake-parts.lib.mkFlake
+    let lib = import ./lib inputs;
+    in lib.merge [
       rec {
         inherit lib nixConfig description;
         hosts = import ./nixos/hosts inputs; # inputs.host?
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
-        unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
+        unattended-installer-configurations =
+          lib.make-unattended-installer-configurations configurations;
         nixosConfigurations = lib.merge [
           configurations
           vm-configurations
@@ -54,23 +52,29 @@ rec {
     #url = "github:Svenum/Solaar-Flake/main"; # Uncomment line for latest unstable version
     # TODO: ?? use git instead of github ?? "git+https://github.com/NixOS/nixpkgs"; #?shallow=1&ref=nixpkgs-unstable";
     #rose-pine-hyprcursor.url = "github:ndom91/rose-pine-hyprcursor"; #?shallow=1";
-    nixos-facter-modules.url = "github:numtide/nixos-facter-modules"; # ?shallow=1";
-    affinity-nix.url = "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f"; # ?shallow=1"; # need 2.5.7 before can update
+    nixos-facter-modules.url =
+      "github:numtide/nixos-facter-modules"; # ?shallow=1";
+    affinity-nix.url =
+      "github:mrshmllow/affinity-nix/c17bda86504d6f8ded13e0520910b067d6eee50f"; # ?shallow=1"; # need 2.5.7 before can update
     nix-output-monitor = {
       url = "github:maralorn/nix-output-monitor"; # ?shallow=1";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
-    clan-core.url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz"; # shallow=1
+    clan-core.url =
+      "https://git.clan.lol/clan/clan-core/archive/main.tar.gz"; # shallow=1
     # TODO: update! way out of date even as of 2026-03
-    server.url = "github:developing-today-forks/server.nix/master"; # ?shallow=1";
+    server.url =
+      "github:developing-today-forks/server.nix/master"; # ?shallow=1";
     microvm.url = "github:astro/microvm.nix"; # ?shallow=1";
     zen-browser.url = "github:0xc000022070/zen-browser-flake"; # ?shallow=1";
     nix-search.url = "github:diamondburned/nix-search"; # ?shallow=1";
-    esp-dev.url = "github:mirrexagon/nixpkgs-esp-dev/5287d6e1ca9e15ebd5113c41b9590c468e1e001b";
+    esp-dev.url =
+      "github:mirrexagon/nixpkgs-esp-dev/5287d6e1ca9e15ebd5113c41b9590c468e1e001b";
     # ESP-IDF 6.0.1 packaging candidate; kept separate from the supported 5.5 toolchain.
-    esp-dev-6.url = "github:dvdvgt/nixpkgs-esp-dev/f9b1e211262a4cc9c1a265b227def56ef01c2d56";
+    esp-dev-6.url =
+      "github:dvdvgt/nixpkgs-esp-dev/f9b1e211262a4cc9c1a265b227def56ef01c2d56";
     nix-flatpak.url = "github:gmodena/nix-flatpak"; # ?shallow=1";
     # determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/0.1"; # "; #?shallow=1
     ssh-to-age.url = "github:Mic92/ssh-to-age"; # ?shallow=1";
@@ -83,7 +87,8 @@ rec {
     };
     #arunoruto.url = "github:arunoruto/flake"; #?shallow=1";
     # # TODO: update! way out of date even as of 2026-03
-    unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
+    unattended-installer.url =
+      "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
 
     # 2026-08-21: rebased fork patch (neededForBoot) onto latest master
     # neededForBoot patch applied via patches/nixpkgs/neededforboot-nixos-unstable.patch (see lib/default.nix)
@@ -94,7 +99,8 @@ rec {
     nixpkgs.follows = "nixpkgs-unstable";
     nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
     nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # channel branch: fully cached on cache.nixos.org (master is not)
+    nixpkgs-unstable.url =
+      "github:NixOS/nixpkgs/nixos-unstable"; # channel branch: fully cached on cache.nixos.org (master is not)
     nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
 
     sops-nix = {
@@ -269,9 +275,7 @@ rec {
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
     # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
-    opencode = {
-      url = "github:developing-today/opencode";
-    };
+    opencode = { url = "github:developing-today/opencode"; };
     # OpenChamber, built from its own flake against the opencode input above.
     openchamber = {
       url = "github:developing-today/openchamber";
@@ -282,9 +286,7 @@ rec {
     # closed unmerged and the one still open (#498572) has been stalled since
     # 2026-08. This flake tracks upstream AppImage releases and ships NixOS and
     # home-manager modules plus browser policy support.
-    helium = {
-      url = "github:oxcl/nix-flake-helium-browser";
-    };
+    helium = { url = "github:oxcl/nix-flake-helium-browser"; };
     # ChatGPT desktop for Linux. OpenAI shipped an official Linux build (preview)
     # distributed from their own APT/RPM repos under persistent.oaistatic.com
     # (`Maintainer: OpenAI <support@openai.com>`). The nixpkgs `chatgpt` attr is
@@ -292,9 +294,7 @@ rec {
     # This flake verifies and repackages OpenAI's signed upstream Linux payload
     # rather than reimplementing it, is MIT-licensed, and is namespaced as
     # `codex-desktop` to avoid colliding with the official package name.
-    chatgpt-desktop = {
-      url = "github:ilysenko/codex-desktop-linux";
-    };
+    chatgpt-desktop = { url = "github:ilysenko/codex-desktop-linux"; };
     # Claude Desktop. Anthropic ships an official Linux build (beta, 2026-06-30)
     # but ONLY as a .deb from their own APT repo -- no AppImage/tar/rpm, and no
     # nixpkgs attr (verified: pkgs/by-name/cl/claude-desktop absent, zero code
@@ -304,9 +304,7 @@ rec {
     # predates the official Linux release entirely).
     # Use the -fhs output: MCP servers are near-universally npx/uvx invocations
     # that break against a pure store path.
-    claude-desktop = {
-      url = "github:aaddrick/claude-desktop-debian";
-    };
+    claude-desktop = { url = "github:aaddrick/claude-desktop-debian"; };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
     id-nixpkgs.follows = "nixpkgs-master";
     id-systems.follows = "systems";
@@ -442,13 +440,12 @@ rec {
     trace-verbose = true;
     # use-xdg-base-directories = true;
     allow-dirty = true;
-    /*
-      buildMachines = [ ];
-      distributedBuilds = true;
-      # optional, useful when the builder has a faster internet connection than yours
-      extraOptions = ''
-        builders-use-substitutes = true
-      '';
+    /* buildMachines = [ ];
+       distributedBuilds = true;
+       # optional, useful when the builder has a faster internet connection than yours
+       extraOptions = ''
+         builders-use-substitutes = true
+       '';
     */
     # extraOptions = ''
     #   flake-registry = ""
@@ -467,8 +464,10 @@ rec {
     #   sudo rm -rf /nix/store/.links && sudo mkdir -p /nix/store/.links
     auto-optimise-store = false;
     #pure-eval = true;
-    pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
-    restrict-eval = false; # could i even make a conclusive list of domains to allow access to?
+    pure-eval =
+      false; # sometimes home-manager needs to change manifest.nix ? idk i just code here
+    restrict-eval =
+      false; # could i even make a conclusive list of domains to allow access to?
     use-registries = true; # clan and others rely on flake registry
     use-cgroups = true;
   };
