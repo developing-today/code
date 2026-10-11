@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{Value, check_order_and_prefix, check_pair, check_roundtrip, encode_tuple, tuple_order};
+use common::{
+    Value, check_order_and_prefix, check_pair, check_roundtrip, encode_tuple, tuple_order,
+};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 

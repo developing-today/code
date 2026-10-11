@@ -92,7 +92,8 @@ impl OutputWithin for Command {
         // get a short grace period, and whatever they have read is returned.
         let grace = std::time::Instant::now() + std::time::Duration::from_secs(2);
         for _ in 0..2 {
-            let _ = done_rx.recv_timeout(grace.saturating_duration_since(std::time::Instant::now()));
+            let _ =
+                done_rx.recv_timeout(grace.saturating_duration_since(std::time::Instant::now()));
         }
         Ok(std::process::Output {
             status,

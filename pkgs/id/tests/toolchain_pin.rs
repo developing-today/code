@@ -102,13 +102,17 @@ fn quoted_and_commented_rustup_lines_are_read_as_the_version_they_name() {
     let cases = [
         ("    rustup default 1.99.0\n", "1.99.0"),
         ("    rustup default \"1.99.0\"\n", "1.99.0"),
-        ("    # rustup default 1.89.0\n    rustup default 1.99.0\n", "1.99.0"),
+        (
+            "    # rustup default 1.89.0\n    rustup default 1.99.0\n",
+            "1.99.0",
+        ),
     ];
     let wrong: Vec<String> = cases
         .into_iter()
         .filter_map(|(nix, version)| {
             let got = nix_version(nix);
-            (got != NixVersion::Literal(version.to_owned())).then(|| format!("{nix:?} gave {got:?}"))
+            (got != NixVersion::Literal(version.to_owned()))
+                .then(|| format!("{nix:?} gave {got:?}"))
         })
         .collect();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));

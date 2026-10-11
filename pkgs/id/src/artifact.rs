@@ -1306,7 +1306,9 @@ mod tests {
             let fits = wire_len(std::slice::from_ref(&artifact)) <= MAX_FRAME_BYTES;
             let stored = ArtifactLog::default().insert(artifact).is_ok();
             if stored != fits {
-                wrong.push(format!("{slack} bytes under the cap: stored {stored}, fits {fits}"));
+                wrong.push(format!(
+                    "{slack} bytes under the cap: stored {stored}, fits {fits}"
+                ));
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -1751,7 +1753,10 @@ mod tests {
             documents.push(next);
         }
         let error = pulled_from_overfull(documents).await.unwrap_err();
-        assert!(format!("{error:#}").contains("over its byte budget"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("over its byte budget"),
+            "{error:#}"
+        );
 
         let lone = unknown_kind_of_size(PAGE_BYTES + 1024);
         let pulled = pulled_from_overfull(vec![lone]).await.unwrap();
