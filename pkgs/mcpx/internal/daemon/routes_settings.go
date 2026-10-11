@@ -234,6 +234,10 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := s.applyPoolRuntime(decl.Path); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		out["applied"] = true
 	default:
 		out["applied"] = false
@@ -250,6 +254,23 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// applyPoolRuntime makes a runtime change to a pool setting reach the pools
+// that are already running.
+//
+// ApplyPoolSettings folds the pool knobs into the configuration, and that runs
+// only when a configuration is loaded. Without a reload the change was stored
+// and reported as applied while every running pool kept the value it started
+// with. A reload treats these knobs like an edit to the file: each pool's
+// identity includes them, so the affected servers are replaced. A change to
+// any pool.* setting therefore restarts the servers that inherit it.
+func (s *Server) applyPoolRuntime(path string) error {
+	if !strings.HasPrefix(path, "pool.") {
+		return nil
+	}
+	_, _, err := s.reloadConfig()
+	return err
+}
+
 func (s *Server) handleSettingsUnset(w http.ResponseWriter, r *http.Request) {
 	decl, _, err := s.lookupSetting(r.PathValue("path"))
 	if err != nil {
@@ -257,6 +278,12 @@ func (s *Server) handleSettingsUnset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	had := s.set.ClearRuntime(decl.Path)
+	if had {
+		if err := s.applyPoolRuntime(decl.Path); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	v, _ := s.set.Value(decl.Path)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path": decl.Path, "removed": had, "value": v.Raw, "source": v.Origin.String(),

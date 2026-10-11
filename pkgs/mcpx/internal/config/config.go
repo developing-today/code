@@ -609,6 +609,10 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 			name, scope, scopeList())
 	}
 
+	// The server's own max, then the daemon-wide pool.max that
+	// ApplyPoolSettings folded into d, then the built-in default. A zero in
+	// either of the first two means unset, which is why pool.max refuses zero
+	// before it can get here (settings.Setting.Floor).
 	max := pick(ex.Max, d.Max, DefaultMax)
 	// A single-key scope can never need more than one process.
 	if scope == ScopeGlobal {

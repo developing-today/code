@@ -638,7 +638,10 @@ func ManPage(version string) string {
 		b.WriteString("Every setting below is readable from a configuration file at its\n" +
 			"dotted path, from the environment variable shown, and from the flag\n" +
 			"shown. Precedence runs defaults, then configuration files with the\n" +
-			"nearest winning, then the environment, then the command line.\n")
+			"nearest winning, then the environment, then presets, then the command\n" +
+			"line; a runtime change made with `mcpx settings set` on the running\n" +
+			"daemon is above all of them. The pool settings are the defaults every\n" +
+			"server inherits, so a server's own mcpx block still wins over them.\n")
 		section := ""
 		for _, set := range sch.All() {
 			if set.Plumbing {

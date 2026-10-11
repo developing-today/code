@@ -480,8 +480,12 @@ func Validate(set Setting, raw string) error {
 			return fmt.Errorf("want true or false, got %q", raw)
 		}
 	case KindInt:
-		if _, err := strconv.Atoi(raw); err != nil {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
 			return fmt.Errorf("want a whole number, got %q", raw)
+		}
+		if set.Floor > 0 && n < set.Floor {
+			return fmt.Errorf("want a whole number of at least %d, got %q", set.Floor, raw)
 		}
 	case KindDuration:
 		if _, err := time.ParseDuration(raw); err != nil {
