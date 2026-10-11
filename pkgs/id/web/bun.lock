@@ -5,7 +5,7 @@
     "": {
       "name": "id-web",
       "dependencies": {
-        "@chenglou/pretext": "^0.0.3",
+        "@chenglou/pretext": "^0.0.9",
         "@starfederation/datastar": "^1.0.0-beta.11",
         "msgpackr": "^1.12.1",
         "prosemirror-collab": "^1.3.1",
@@ -33,7 +33,7 @@
     },
   },
   "packages": {
-    "@chenglou/pretext": ["@chenglou/pretext@0.0.3", "", {}, "sha512-RQmqMqUAPRCyv4R3LlRi/ao6KbNWYclqLA+V1HS7sWgyUUbjn3JmmlfXZSY/BjM4rbmIaMSyIVisYocYGYftiQ=="],
+    "@chenglou/pretext": ["@chenglou/pretext@0.0.9", "", {}, "sha512-vInlpC//3vjRfWTs78k2BBIq/0bUdpjIp8TIn9fXe0NvnChhTQZfjioVzERQQbkQvCVpPpw7PDOrTWMHpq27VA=="],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.28.2", "", { "os": "aix", "cpu": "ppc64" }, "sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ=="],
 
