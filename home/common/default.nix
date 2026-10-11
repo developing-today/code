@@ -705,6 +705,9 @@ in
       # Stopping OpenChamber leaves its managed OpenCode running; the next
       # OpenChamber adopts it, so sessions survive a restart.
       KillMode = "process";
+      # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
+      # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
+      NotifyAccess = "all";
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
