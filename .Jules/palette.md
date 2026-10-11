@@ -1,0 +1,3 @@
+## 2023-10-11 - Search Panel Accessibility
+**Learning:** Dynamic UI components like search panels often update text content (like "1 of 5 matches") without focus shifting. Screen readers miss these updates unless `aria-live="polite"` and `aria-atomic="true"` are used on the indicator element. Additionally, icon-only buttons (`▲`, `▼`, `×`) often lack accessible names, requiring `aria-label` since `title` alone isn't always reliable across all assistive tech.
+**Action:** Always verify that dynamic status text has appropriate `aria-live` regions and that all icon-only buttons include an `aria-label` attribute in addition to a `title` tooltip.
