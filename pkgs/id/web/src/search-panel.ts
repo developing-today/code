@@ -52,7 +52,7 @@ const panelState: PanelState = {
 /** Count total matches for display. */
 function countMatches(view: EditorView): number {
   const ss = getSearchState(view.state);
-  if (!ss || !ss.query.valid) return 0;
+  if (!ss?.query.valid) return 0;
 
   let count = 0;
   let result = ss.query.findNext(view.state, 0);
@@ -69,7 +69,7 @@ function countMatches(view: EditorView): number {
 function updateMatchCount(view: EditorView): void {
   if (!panelState.matchCountEl) return;
   const ss = getSearchState(view.state);
-  if (!ss || !ss.query.valid || !ss.query.search) {
+  if (!ss?.query.valid || !ss.query.search) {
     panelState.matchCountEl.textContent = "";
     return;
   }

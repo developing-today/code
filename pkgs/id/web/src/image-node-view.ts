@@ -26,7 +26,6 @@ export class ImageNodeView implements NodeView {
   // Resize state
   private resizing = false;
   private startX = 0;
-  private startY = 0;
   private startWidth = 0;
   private startHeight = 0;
   private aspectRatio = 1;
