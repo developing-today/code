@@ -557,15 +557,15 @@ func Ops() []Op {
 				"nothing running, a global-scope server starts one instance, so a " +
 				"restart verifies the server comes up; a scoped server with nothing " +
 				"running has no caller to start one for and starts nothing. In-flight " +
-				"calls get limits.execDrainTimeout to finish, then fail if still running; " +
-				"lazy fails them at once. Omit the server to restart all " +
-				"of them. lazy stops without starting anything: the next call starts " +
-				"a fresh instance.",
+				"calls get limits.execDrainTimeout to finish, then fail if still running. " +
+				"Omit the server to restart all of them. lazy does not wait and starts " +
+				"nothing now: the next call starts a fresh instance, and calls already " +
+				"running finish on the old one, which is closed after them.",
 			Admin: true, Mutating: true, Destructive: true,
 			Params: []Param{
 				{Name: "server", In: InBody, Type: "string", Desc: "empty means every server"},
 				{Name: "lazy", In: InBody, Type: "boolean",
-					Desc: "stop only; start on the next call instead of now"},
+					Desc: "do not wait: new calls start a fresh instance, in-flight calls finish on the old one"},
 			},
 		},
 		{

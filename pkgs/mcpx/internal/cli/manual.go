@@ -267,8 +267,9 @@ func handCommands() []Command {
 				"exited, and a per-call instance, are reported and not replaced. " +
 				"A call already running on an instance has limits.execDrainTimeout to " +
 				"finish before the instance is closed and a call still running fails. " +
-				"--lazy only stops, at once, cutting such calls off: the next call starts " +
-				"a fresh instance. " +
+				"--lazy does not wait: the next call starts a fresh instance at once, and " +
+				"a call already running finishes on the old one, which is closed after it " +
+				"(or after limits.execDrainTimeout). " +
 				"--daemon restarts the mcpx daemon process itself.",
 		},
 		{
