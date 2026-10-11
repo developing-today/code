@@ -8,6 +8,7 @@ const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v'
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 const OPENCODE_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
+const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
 const HOME_DIR = process.env.HOME || '/home/user';
 const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
@@ -162,7 +163,53 @@ function discoverCodexModels() {
 }
 
 // -----------------------------------------------------------------------------
-// Helper: Clean JSONC parser & formatter
+// Model policy (bin/sync-models.policy.json). Per provider, keep only the newest
+// model in each listed family and drop everything else. Exclusions are applied
+// before picking the newest, so excluding the newest promotes the one before it.
+// -----------------------------------------------------------------------------
+function loadPolicy() {
+  if (!fs.existsSync(POLICY_PATH)) return { families: {}, providers: {} };
+  const policy = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf-8'));
+  for (const [name, provider] of Object.entries(policy.providers || {})) {
+    for (const family of provider.keep || []) {
+      if (!policy.families?.[family]) {
+        throw new Error(`sync-models.policy.json: ${name} keeps unknown family "${family}"`);
+      }
+    }
+  }
+  return policy;
+}
+
+const compareVersions = (a, b) => {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+};
+
+// The model ids one provider should carry, given its policy.
+function allowedModelIds(policy, providerPolicy, ids) {
+  const excluded = new Set(providerPolicy.exclude || []);
+  const newest = new Map();
+  for (const id of ids) {
+    if (excluded.has(id)) continue;
+    for (const family of providerPolicy.keep || []) {
+      const match = id.match(new RegExp(policy.families[family]));
+      if (!match) continue;
+      const version = match[1].replace(/-/g, '.').split('.').map(Number);
+      const current = newest.get(family);
+      if (!current || compareVersions(version, current.version) > 0) {
+        newest.set(family, { id, version });
+      }
+      break;
+    }
+  }
+  return new Set([...newest.values()].map(n => n.id));
+}
+
+// -----------------------------------------------------------------------------
+// Helper: Clean JSONC parser (for reading only; it drops comments)
 // -----------------------------------------------------------------------------
 function parseJsonc(text) {
   const cleanLines = text.split('\n').filter(l => {
@@ -174,12 +221,156 @@ function parseJsonc(text) {
 }
 
 // -----------------------------------------------------------------------------
+// Helper: comment-preserving JSONC edits. The file is edited as text, one member
+// at a time, so every byte outside the edited span (comments included) is kept.
+// parseJsoncTree records where each value sits in the source.
+// -----------------------------------------------------------------------------
+function parseJsoncTree(text) {
+  let i = 0;
+  const fail = () => {
+    throw new Error(`malformed JSONC at offset ${i}`);
+  };
+  const skip = () => {
+    for (;;) {
+      while (i < text.length && /\s/.test(text[i])) i++;
+      if (text.startsWith('//', i)) {
+        while (i < text.length && text[i] !== '\n') i++;
+      } else if (text.startsWith('/*', i)) {
+        const end = text.indexOf('*/', i + 2);
+        i = end < 0 ? text.length : end + 2;
+      } else {
+        return;
+      }
+    }
+  };
+  const readString = () => {
+    if (text[i] !== '"') fail();
+    const start = i;
+    i++;
+    while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    if (i >= text.length) fail();
+    i++;
+    return { start, end: i, value: JSON.parse(text.slice(start, i)) };
+  };
+  const readValue = () => {
+    skip();
+    if (i >= text.length) fail();
+    const start = i;
+    if (text[i] === '{') {
+      i++;
+      const members = [];
+      skip();
+      while (text[i] !== '}') {
+        if (i >= text.length) fail();
+        const keyStart = i;
+        const key = readString().value;
+        skip();
+        if (text[i] !== ':') fail();
+        i++;
+        const value = readValue();
+        members.push({ key, keyStart, value });
+        skip();
+        if (text[i] === ',') {
+          i++;
+          skip();
+        }
+      }
+      i++;
+      return { type: 'object', start, end: i, members };
+    }
+    if (text[i] === '[') {
+      i++;
+      skip();
+      while (text[i] !== ']') {
+        if (i >= text.length) fail();
+        readValue();
+        skip();
+        if (text[i] === ',') {
+          i++;
+          skip();
+        }
+      }
+      i++;
+      return { type: 'array', start, end: i };
+    }
+    if (text[i] === '"') return { type: 'scalar', start, end: readString().end };
+    while (i < text.length && !/[\s,\]}\/]/.test(text[i])) i++;
+    return { type: 'scalar', start, end: i };
+  };
+  const root = readValue();
+  if (root.type !== 'object') fail();
+  return root;
+}
+
+// The line's leading whitespace, used so inserted text matches its neighbours.
+const lineIndent = (text, pos) => {
+  const lineStart = text.lastIndexOf('\n', pos - 1) + 1;
+  return text.slice(lineStart).match(/^[ \t]*/)[0];
+};
+
+const jsoncText = (value, indent) => JSON.stringify(value, null, 2).split('\n').join(`\n${indent}`);
+
+function setJsoncMember(text, object, key, value) {
+  const member = object.members.find(m => m.key === key);
+  if (member) {
+    const indent = lineIndent(text, member.value.start);
+    return text.slice(0, member.value.start) + jsoncText(value, indent) + text.slice(member.value.end);
+  }
+  const objectIndent = lineIndent(text, object.start);
+  const memberIndent = `${objectIndent}  `;
+  const entry = `${JSON.stringify(key)}: ${jsoncText(value, memberIndent)}`;
+  if (object.members.length === 0) {
+    return `${text.slice(0, object.start + 1)}\n${memberIndent}${entry}\n${objectIndent}${text.slice(object.start + 1)}`;
+  }
+  // After the last value, so any comma or comment that followed it stays put.
+  const at = object.members.at(-1).value.end;
+  return `${text.slice(0, at)},\n${memberIndent}${entry}${text.slice(at)}`;
+}
+
+// Sets the value at `keys`, creating missing parents, leaving comments alone.
+function setJsoncPath(text, keys, value) {
+  let object = parseJsoncTree(text);
+  for (let depth = 0; depth < keys.length - 1; depth++) {
+    const member = object.members.find(m => m.key === keys[depth]);
+    if (!member) {
+      let nested = value;
+      for (let d = keys.length - 1; d > depth + 1; d--) nested = { [keys[d]]: nested };
+      return setJsoncMember(text, object, keys[depth], { [keys[depth + 1]]: nested });
+    }
+    object = member.value;
+  }
+  return setJsoncMember(text, object, keys.at(-1), value);
+}
+
+// Removes the member at `keys` by deleting its lines (and its comma). Comments
+// on other lines are kept.
+function removeJsoncPath(text, keys) {
+  let object = parseJsoncTree(text);
+  for (const key of keys.slice(0, -1)) {
+    object = object.members.find(m => m.key === key)?.value;
+    if (!object) return text;
+  }
+  const member = object.members.find(m => m.key === keys.at(-1));
+  if (!member) return text;
+  const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
+  if (text.slice(lineStart, member.keyStart).trim() !== '') {
+    throw new Error(`cannot remove ${keys.join('/')}: it shares a line with other JSON`);
+  }
+  let end = member.value.end;
+  while (text[end] === ' ' || text[end] === '\t') end++;
+  if (text[end] === ',') end++;
+  const newline = text.indexOf('\n', end);
+  return text.slice(0, lineStart) + text.slice(newline < 0 ? text.length : newline + 1);
+}
+
+// -----------------------------------------------------------------------------
 // Main Sync Runner
 // -----------------------------------------------------------------------------
 async function run() {
   const modelsDev = await fetchModelsDev();
   const agyModels = await discoverAntigravityModels();
   const codexModels = discoverCodexModels();
+  const policy = loadPolicy();
 
   if (!fs.existsSync(OPENCODE_CONFIG_PATH)) {
     console.error(`[sync-models] Error: ${OPENCODE_CONFIG_PATH} does not exist!`);
@@ -197,6 +388,10 @@ async function run() {
 
   let totalAdded = 0;
   let totalUpdated = 0;
+  let totalRemoved = 0;
+  // Every change is recorded here and applied to the text at the end, so the
+  // file keeps its comments and formatting.
+  const edits = [];
 
   // 1. Sync antigravity-agy & antigravity-ls
   if (agyModels.length > 0) {
@@ -249,8 +444,25 @@ async function run() {
       if (!config.provider[targetProvider]) continue;
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
+      const modelsPath = ['provider', targetProvider, 'models'];
+
+      // A provider with a policy carries only what the policy allows.
+      const providerPolicy = policy.providers?.[targetProvider];
+      const allowed = providerPolicy
+        ? allowedModelIds(policy, providerPolicy, [...new Set([...Object.keys(grouped), ...Object.keys(prov.models)])])
+        : null;
+      if (allowed) {
+        for (const id of Object.keys(prov.models)) {
+          if (allowed.has(id)) continue;
+          console.log(`[sync-models] - Removing ${targetProvider}/${id} (not in its policy)`);
+          delete prov.models[id];
+          edits.push({ remove: [...modelsPath, id] });
+          totalRemoved++;
+        }
+      }
 
       for (const [baseId, info] of Object.entries(grouped)) {
+        if (allowed && !allowed.has(baseId)) continue;
         const limits = defaultLimits(baseId);
         const variants = {};
         for (const eff of Array.from(info.efforts).sort()) {
@@ -268,15 +480,18 @@ async function run() {
         if (!prov.models[baseId]) {
           console.log(`[sync-models] + Adding ${targetProvider}/${baseId}`);
           prov.models[baseId] = modelEntry;
+          edits.push({ set: [...modelsPath, baseId], value: modelEntry });
           totalAdded++;
         } else {
           let changed = false;
           if (Object.keys(variants).length > 0 && !prov.models[baseId].variants) {
             prov.models[baseId].variants = variants;
+            edits.push({ set: [...modelsPath, baseId, 'variants'], value: variants });
             changed = true;
           }
           if (prov.models[baseId].limit?.context !== limits.context) {
             prov.models[baseId].limit = limits;
+            edits.push({ set: [...modelsPath, baseId, 'limit'], value: limits });
             changed = true;
           }
           if (changed) {
@@ -292,6 +507,7 @@ async function run() {
   if (codexModels.length > 0 && config.provider['openai-codex']) {
     const codexProv = config.provider['openai-codex'];
     codexProv.models = codexProv.models || {};
+    const modelsPath = ['provider', 'openai-codex', 'models'];
 
     const codexEfforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
     const codexVariants = {};
@@ -310,10 +526,12 @@ async function run() {
       if (!codexProv.models[m.slug]) {
         console.log(`[sync-models] + Adding openai-codex/${m.slug}`);
         codexProv.models[m.slug] = entry;
+        edits.push({ set: [...modelsPath, m.slug], value: entry });
         totalAdded++;
       } else {
         if (codexProv.models[m.slug].limit?.context !== 1000000) {
           codexProv.models[m.slug].limit = { context: 1000000, output: 128000 };
+          edits.push({ set: [...modelsPath, m.slug, 'limit'], value: { context: 1000000, output: 128000 } });
           totalUpdated++;
         }
       }
@@ -340,6 +558,7 @@ async function run() {
           }
           console.log(`[sync-models] + Adding google/${mId}`);
           gProv.models[mId] = entry;
+          edits.push({ set: ['provider', 'google', 'models', mId], value: entry });
           totalAdded++;
         }
       }
@@ -364,6 +583,7 @@ async function run() {
           }
           if (VERBOSE) console.log(`[sync-models] + Adding openai/${mId}`);
           oProv.models[mId] = entry;
+          edits.push({ set: ['provider', 'openai', 'models', mId], value: entry });
           totalAdded++;
         }
       }
@@ -388,40 +608,47 @@ async function run() {
           }
           if (VERBOSE) console.log(`[sync-models] + Adding cloudflare-gateway/${mId}`);
           cfProv.models[mId] = entry;
+          edits.push({ set: ['provider', 'cloudflare-gateway', 'models', mId], value: entry });
           totalAdded++;
         }
       }
     }
   }
 
-  console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated.`);
+  console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);
 
-  if (totalAdded > 0 || totalUpdated > 0) {
-    if (DRY_RUN) {
-      console.log('[sync-models] Dry run complete. No files written.');
-    } else {
-      // The rewrite below is plain JSON, which would drop any comments in the
-      // file, so refuse rather than lose them.
-      if (origConfigText.split('\n').some(l => /^\s*\/\/|\s\/\//.test(l) || /^\s*\/\*/.test(l))) {
-        console.error(`[sync-models] Error: ${OPENCODE_CONFIG_PATH} contains comments; refusing to rewrite it and drop them.`);
-        process.exit(1);
-      }
-      const backupPath = `${OPENCODE_CONFIG_PATH}.backup`;
-      fs.writeFileSync(backupPath, origConfigText);
-      console.log(`[sync-models] Created backup at ${backupPath}`);
-
-      fs.writeFileSync(OPENCODE_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
-      console.log(`[sync-models] Successfully updated ${OPENCODE_CONFIG_PATH}!`);
-
-      try {
-        execSync('opencode reload', { stdio: 'ignore', timeout: 5000 });
-        console.log('[sync-models] Triggered opencode configuration reload.');
-      } catch {
-        // Ignored if OpenCode background service is not running
-      }
-    }
-  } else {
+  if (totalAdded === 0 && totalUpdated === 0 && totalRemoved === 0) {
     console.log('[sync-models] All providers are already up-to-date!');
+    return;
+  }
+
+  let newText = origConfigText;
+  for (const edit of edits) {
+    newText = edit.remove
+      ? removeJsoncPath(newText, edit.remove)
+      : setJsoncPath(newText, edit.set, edit.value);
+  }
+  // Refuse to write anything that no longer parses.
+  parseJsoncTree(newText);
+  parseJsonc(newText);
+
+  if (DRY_RUN) {
+    console.log('[sync-models] Dry run complete. No files written.');
+    return;
+  }
+
+  const backupPath = `${OPENCODE_CONFIG_PATH}.backup`;
+  fs.writeFileSync(backupPath, origConfigText);
+  console.log(`[sync-models] Created backup at ${backupPath}`);
+
+  fs.writeFileSync(OPENCODE_CONFIG_PATH, newText);
+  console.log(`[sync-models] Successfully updated ${OPENCODE_CONFIG_PATH}!`);
+
+  try {
+    execSync('opencode reload', { stdio: 'ignore', timeout: 5000 });
+    console.log('[sync-models] Triggered opencode configuration reload.');
+  } catch {
+    // Ignored if OpenCode background service is not running
   }
 }
 
