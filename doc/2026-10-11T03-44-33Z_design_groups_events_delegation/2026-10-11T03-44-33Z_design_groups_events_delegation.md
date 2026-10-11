@@ -818,3 +818,18 @@ Owner decision, added to decision 3 of the 2026-10-11T04-20-17Z decision.
 - At 1,000 or more: strongest warning. The research estimates the first large rekeying cost near this size, about 0.3 MB and 0.5 s of CPU per removal (extrapolated).
 
 All three tiers apply to end-to-end groups only, count recipient devices, never block an action, and impose no cap.
+
+---
+
+## 2026-10-11T08-08-56Z Update: spikes run and design reviewed
+
+Six Phase 1 spikes ran against p2panda main (3e84cac) and iroh 1.3.0. Results and corrections are in the [design review](./2026-10-11T08-08-56Z_design_review.md). The spike code and per-spike results are in [spikes/](./spikes/README.md).
+
+Where the review differs from this document, the review is current. The main differences:
+
+- §6.2 rule 3: dependents are voided by loss of authority, not by closure over all dependents.
+- §8.1 and §8.4: PCS holds for removed members and for a leaked group secret. It does not hold for a compromised member device, which needs remove and re-add.
+- §4.1: the sequence base is 0.
+- §11.2: sync is range reconciliation, not LogSync.
+- §11.5: Minimal with our own relays is recommended over N0. This is an owner decision, still open.
+- §13: p2panda-store, p2panda-sync, and p2panda-stream are not used.

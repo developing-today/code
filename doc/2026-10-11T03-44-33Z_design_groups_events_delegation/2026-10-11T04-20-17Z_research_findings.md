@@ -718,3 +718,12 @@ Group sizes and MLS deployments:
 - Signal group size: Signal support page (group limits)
 - Discord DAVE protocol: https://raw.githubusercontent.com/discord/dave-protocol/main/protocol.md
 - openmls: https://github.com/openmls/openmls; SRLabs audit via https://blog.phnx.im/openmls-independent-security-audit/; Wire core-crypto: https://github.com/wireapp/core-crypto
+
+---
+
+## 2026-10-11T08-08-56Z Correction: after the spikes
+
+- §2.1 and the S2 summary: an unknown dependency is an error in p2panda-auth 0.7.1 at the pinned rev, not a panic. The real panic is "group absent at dependencies" (S2).
+- §7.1: the yanked iroh-blobs releases are 0.97.0, 0.99.0, 0.100.0, 0.101.0, 0.102.0, 0.103.0, and 0.28.0. The pin `=0.103.1` is not yanked (S4). The earlier "0.99.0 to 0.103.0 are yanked" overstated the range.
+- §3.3: LogSync is cheaper in bytes only below about 35–40 chains with two new events, or when the diff is large. Range reconciliation wins at scale (S1).
+- §6.4: the S6 result is redb 4.3.0, which was faster and simpler to deploy in its tests. The p2panda-store conflict with rusqlite 0.40 is confirmed.
