@@ -1382,6 +1382,18 @@ func (p *Pool) CloseGraceful(timeout time.Duration) {
 // tuning change or a removed server cut a call that ran past that grace.
 // WaitDrained covers this as well as a lazy restart.
 func (p *Pool) CloseDrained() {
+	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change")
+}
+
+// CloseDrainedWithin is CloseDrained for a daemon that is shutting down. drain
+// is the time calls in flight have, which the daemon passes as what is left of
+// its drain window once the HTTP server has stopped taking calls. The window
+// is ExecDrainTimeout, the same as a reload's, so a stop is bounded by it.
+func (p *Pool) CloseDrainedWithin(drain time.Duration) {
+	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down")
+}
+
+func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -1398,7 +1410,7 @@ func (p *Pool) CloseDrained() {
 		p.draining.Add(1)
 		go func(in *Instance) {
 			defer p.draining.Done()
-			p.retire(in, ExecDrainTimeout, "reconfigured", "replaced by a configuration change")
+			p.retire(in, drain, stopReason, callErr)
 		}(in)
 	}
 }

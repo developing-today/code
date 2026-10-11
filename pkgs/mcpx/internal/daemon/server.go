@@ -356,11 +356,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
 	go func() {
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(),
-			s.set.Duration("http.shutdownGrace"))
-		defer cancel()
-		_ = s.httpSrv.Shutdown(shutdown)
-		s.reg.Close()
+		s.stopServing()
 		_ = os.Remove(socket)
 	}()
 	go func() { _ = s.httpSrv.Serve(ln) }()
@@ -484,13 +480,7 @@ func (s *Server) shutdown() error {
 		s.logger.Printf("save sessions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(),
-		s.set.Duration("http.shutdownGrace"))
-	defer cancel()
-	if s.httpSrv != nil {
-		_ = s.httpSrv.Shutdown(ctx)
-	}
-	s.reg.Close()
+	s.stopServing()
 	if s.tokenStore != nil {
 		_ = s.tokenStore.Close()
 	}
@@ -498,6 +488,29 @@ func (s *Server) shutdown() error {
 	_ = os.Remove(s.paths.Info)
 	s.logger.Printf("stopped")
 	return nil
+}
+
+// stopServing stops the front door and then the pools. The HTTP server goes
+// first, so calls already running can finish and take the leases they still
+// need. The pools are then drained with what is left of the drain window, so
+// the whole stop is bounded by pool.ExecDrainTimeout, the same window a reload
+// gives a replaced pool. The HTTP grace is capped to that window too, so a
+// long http.shutdownGrace cannot stretch the stop past it.
+func (s *Server) stopServing() {
+	window := pool.ExecDrainTimeout
+	start := time.Now()
+	if s.httpSrv != nil {
+		grace := defaults.HTTPShutdownGrace
+		if s.set != nil {
+			grace = s.set.Duration("http.shutdownGrace")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), min(grace, window))
+		_ = s.httpSrv.Shutdown(ctx)
+		cancel()
+	}
+	if s.reg != nil {
+		s.reg.CloseWithin(window - time.Since(start))
+	}
 }
 
 // WarmAsync fetches schemas in the background so the first real call is fast
@@ -1137,18 +1150,7 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 		}
 		execPath, err := os.Executable()
 		if err == nil {
-			if s.httpSrv != nil {
-				grace := defaults.HTTPShutdownGrace
-				if s.set != nil {
-					grace = s.set.Duration("http.shutdownGrace")
-				}
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
-				_ = s.httpSrv.Shutdown(shutdownCtx)
-				cancel()
-			}
-			if s.reg != nil {
-				s.reg.Close()
-			}
+			s.stopServing()
 			if s.paths.Socket != "" {
 				_ = os.Remove(s.paths.Socket)
 			}
