@@ -215,7 +215,11 @@ func TestResolveProviderNamedDrivers(t *testing.T) {
 		t.Fatalf("expected antigravity provider, got: %v", pAgy)
 	}
 
-	// 5. auto-detection default (no config, LookPath finds opencode on this host)
+	// 5. auto-detection default (no config). Which harness is installed is a
+	// fact of the host, so the test names one rather than asking LookPath: a
+	// machine with neither opencode nor claude, such as the nix build sandbox,
+	// otherwise gets no provider at all.
+	t.Setenv("OPENCODE_BINARY", "opencode")
 	pAuto := scripting.ResolveProvider(scripting.ProviderConfig{}, nil)
 	if pAuto == nil {
 		t.Fatalf("expected auto-detected provider, got nil")
