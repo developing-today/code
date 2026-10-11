@@ -53,6 +53,21 @@ fn value() -> impl Strategy<Value = Value> {
     prop_oneof![text().prop_map(Value::Text), bytes().prop_map(Value::Bytes),]
 }
 
+/// Pairs where the second value extends the first. A field that ends early shows
+/// on these, since one value's encoding is then a prefix of the other's.
+fn sharing_prefix() -> impl Strategy<Value = (Value, Value)> {
+    prop_oneof![
+        (text(), text()).prop_map(|(base, tail)| {
+            (Value::Text(base.clone()), Value::Text(base + &tail))
+        }),
+        (bytes(), bytes()).prop_map(|(base, tail)| {
+            let mut longer = base.clone();
+            longer.extend(tail);
+            (Value::Bytes(base), Value::Bytes(longer))
+        }),
+    ]
+}
+
 fn config() -> ProptestConfig {
     ProptestConfig {
         failure_persistence: None,
@@ -76,6 +91,11 @@ proptest! {
     #[test]
     fn test_mixed_elements_keep_order_prefix_and_roundtrip(a in value(), b in value()) {
         check_pair(&a, &b).map_err(TestCaseError::fail)?;
+    }
+
+    #[test]
+    fn test_values_sharing_a_prefix_keep_order_prefix_and_roundtrip(pair in sharing_prefix()) {
+        check_pair(&pair.0, &pair.1).map_err(TestCaseError::fail)?;
     }
 
     #[test]
@@ -206,7 +226,8 @@ fn caught_within(
 fn test_each_known_bad_encoder_is_caught_within_the_default_case_count() {
     let mut wrong = Vec::new();
     for (name, encode, bad) in known_encoders() {
-        let caught = caught_within(encode, value_pairs(), 256);
+        let caught = caught_within(encode, value_pairs(), 256)
+            || caught_within(encode, sharing_prefix(), 256);
         if caught != bad {
             wrong.push(format!("{name}: caught {caught}, expected {bad}"));
         }
@@ -236,7 +257,7 @@ fn test_fixed_seed_fuzz_finds_no_violation() {
     };
     let rng = TestRng::from_seed(RngAlgorithm::ChaCha, FUZZ_SEED);
     let mut runner = TestRunner::new_with_rng(config, rng);
-    let pairs = (value(), value());
+    let pairs = prop_oneof![value_pairs(), sharing_prefix()];
     runner
         .run(&pairs, |(a, b)| {
             check_pair(&a, &b).map_err(TestCaseError::fail)
