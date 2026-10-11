@@ -1661,6 +1661,56 @@ mod tests {
         assert_eq!(reader.artifacts().head_seq(&ann), 100);
     }
 
+    /// A home server that answers every pull with `0` as one page, whatever the budget.
+    #[derive(Debug)]
+    struct OverfullPage(Vec<SignedArtifact>);
+
+    impl ProtocolHandler for OverfullPage {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let (mut send, mut recv) = conn.accept_bi().await?;
+            let _request = read_frame(&mut recv).await.map_err(refused)?;
+            let bytes = serde_json::to_vec(&Page {
+                artifacts: self.0.clone(),
+            })
+            .map_err(|error| refused(error.into()))?;
+            write_frame(&mut send, &bytes).await.map_err(refused)?;
+            send.finish()?;
+            conn.closed().await;
+            Ok(())
+        }
+    }
+
+    /// What a pull of `public(1)` gets from a server that sends `artifacts` as one page.
+    async fn pulled_from_overfull(artifacts: Vec<SignedArtifact>) -> Result<Vec<SignedArtifact>> {
+        let server = endpoint().await;
+        let _router = Router::builder(server.clone())
+            .accept(PULL_ALPN, OverfullPage(artifacts))
+            .spawn();
+        let client = endpoint().await;
+        fetch_page(&client, loopback(&server), &public(1), 0).await
+    }
+
+    /// The client checks the budget of each page it is sent. A page of several
+    /// artifacts over the budget is refused, and one oversized artifact alone is not.
+    #[tokio::test]
+    async fn a_page_over_the_byte_budget_is_refused_and_a_lone_oversized_artifact_is_not() {
+        let mut log = ArtifactLog::default();
+        let mut documents = Vec::new();
+        for _ in 0..5 {
+            let next = log
+                .sign(&key(1), &document(&"x".repeat(MAX_DOCUMENT_BYTES - 32)))
+                .unwrap();
+            log.insert(next.clone()).unwrap();
+            documents.push(next);
+        }
+        let error = pulled_from_overfull(documents).await.unwrap_err();
+        assert!(format!("{error:#}").contains("over its byte budget"), "{error:#}");
+
+        let lone = unknown_kind_of_size(PAGE_BYTES + 1024);
+        let pulled = pulled_from_overfull(vec![lone]).await.unwrap();
+        assert_eq!(pulled.len(), 1);
+    }
+
     /// A pull to an address nothing answers must end at its deadline, not wait out
     /// the handshake.
     #[tokio::test]
