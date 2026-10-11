@@ -2177,7 +2177,7 @@ mod tests {
         async fn next(&mut self) -> Option<serde_json::Value> {
             // An upload takes several seconds in a debug build, so 5 s was too
             // tight. The deadline still bounds a real hang.
-            let frame = tokio::time::timeout(Duration::from_secs(60), self.from_server.recv())
+            let frame = tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
                 .await
                 .expect("timed out waiting for a server frame")?;
             Some(serde_json::from_str(&frame).unwrap())

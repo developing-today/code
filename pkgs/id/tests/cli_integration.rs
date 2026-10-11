@@ -39,7 +39,7 @@ fn get_binary_path() -> PathBuf {
 
 /// How long one CLI invocation may run before its test fails. A client stuck
 /// on a silent server must not block the suite.
-const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
 
 /// [`Command::output`] with a deadline. Once `timeout` passes the child is
 /// killed and its status reports the kill, so a hung process fails the test.

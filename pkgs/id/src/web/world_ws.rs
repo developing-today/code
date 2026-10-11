@@ -913,7 +913,7 @@ mod tests {
     async fn next_frame(client: &mut Client) -> Option<serde_json::Value> {
         // An upload takes several seconds in a debug build, so 5 s was too
         // tight. The deadline still bounds a real hang.
-        let next = tokio::time::timeout(std::time::Duration::from_secs(60), client.next())
+        let next = tokio::time::timeout(std::time::Duration::from_mins(1), client.next())
             .await
             .expect("timed out waiting for a world frame");
         match next? {
