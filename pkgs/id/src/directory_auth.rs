@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
@@ -346,7 +346,7 @@ pub fn verify_signed(
     let raw_signature: [u8; 64] = hex_bytes(&signed.signature).ok_or_else(refused)?;
     let message = signed_message(method, target, signed.at, &signed.nonce, body);
     verifying
-        .verify(message.as_bytes(), &Signature::from_bytes(&raw_signature))
+        .verify_strict(message.as_bytes(), &Signature::from_bytes(&raw_signature))
         .ok()
         .ok_or_else(refused)?;
     replays.accept(&key, &signed.nonce, signed.at, now)?;
@@ -369,6 +369,7 @@ fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     fn now() -> u64 {
         1_000_000_000_000
@@ -542,5 +543,27 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
         let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn a_signed_request_with_a_non_canonical_s_is_refused() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2");
+        let raw = hex_bytes::<64>(&signed.signature).unwrap();
+        signed.signature = hex_encode(&with_non_canonical_s(raw));
+        let mut replays = ReplayGuard::default();
+        assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_err());
+    }
+
+    #[test]
+    fn a_signed_request_under_a_small_order_key_is_refused() {
+        let signed = Signed {
+            key: hex_encode(&IDENTITY_KEY),
+            at: now(),
+            nonce: "z3".to_owned(),
+            signature: hex_encode(&identity_forgery()),
+        };
+        let mut replays = ReplayGuard::default();
+        assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_err());
     }
 }

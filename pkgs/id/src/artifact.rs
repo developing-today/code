@@ -25,7 +25,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use iroh::{
     Endpoint, EndpointAddr,
     endpoint::Connection,
@@ -297,7 +297,7 @@ impl SignedArtifact {
         let signature = Signature::from_bytes(
             &hex_to_array::<64>(&self.signature).context("malformed artifact signature")?,
         );
-        key.verify(&bytes, &signature)
+        key.verify_strict(&bytes, &signature)
             .context("signature does not verify against the author key")
     }
 
@@ -844,6 +844,7 @@ pub async fn pull(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
     use iroh::{
         TransportAddr,
         endpoint::{RelayMode, presets},
@@ -1360,5 +1361,34 @@ mod tests {
             Some(Kind::Tag(read)) => assert_eq!(read.subject, document.hash),
             other => panic!("expected a tag, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_artifact_with_a_non_canonical_s_is_refused() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let mut artifact =
+            SignedArtifact::sign(&key, 1, "", "note", serde_json::json!({})).unwrap();
+        assert!(artifact.verify().is_ok());
+        let raw = hex_to_array::<64>(&artifact.signature).unwrap();
+        artifact.signature = hex_encode(&with_non_canonical_s(raw));
+        assert!(artifact.verify().is_err());
+    }
+
+    #[test]
+    fn an_artifact_under_a_small_order_key_is_refused() {
+        let author = hex_encode(&IDENTITY_KEY);
+        let body = serde_json::json!({});
+        let bytes = signed_bytes(&author, 1, "", "note", &body, &[]).unwrap();
+        let artifact = SignedArtifact {
+            author,
+            seq: 1,
+            prev: String::new(),
+            kind: "note".to_owned(),
+            body,
+            after: Vec::new(),
+            hash: hex_encode(&Sha256::digest(&bytes)),
+            signature: hex_encode(&identity_forgery()),
+        };
+        assert!(artifact.verify().is_err());
     }
 }
