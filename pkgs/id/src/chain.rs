@@ -605,3 +605,316 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod golden {
+    //! Golden vectors and the dcbor cross-check. The S5 values are the ones the spike
+    //! recorded (`spikes/shared/s5-cbor/RESULTS.md` and `run-output.md`). dcbor's encoder is
+    //! independent of cbor-core, so agreement between them is evidence that the canonical
+    //! bytes are right, not only that they are stable.
+
+    use std::collections::BTreeMap;
+
+    use cbor_core::Value;
+    use dcbor::{ByteString, CBOR};
+    use p2panda_core::{AnyHeader, Hash, Header, SigningKey};
+
+    use super::{ChainExt, DOMAIN_TAG, Event, decode, sign};
+
+    /// The test key: the 32 bytes 00 through 1f. It is not a real key.
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&std::array::from_fn(|i| u8::try_from(i).unwrap()))
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        bytes.iter().fold(String::new(), |mut text, byte| {
+            write!(text, "{byte:02x}").unwrap();
+            text
+        })
+    }
+
+    fn unhex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// `{"kind": "group.policy", "group": "g1", "level": 3}`, the S5 golden body.
+    fn plain_body_map() -> Value<'static> {
+        Value::from(BTreeMap::from([
+            (Value::from("kind"), Value::from("group.policy")),
+            (Value::from("group"), Value::from("g1")),
+            (Value::from("level"), Value::Unsigned(3)),
+        ]))
+    }
+
+    /// `{"blob": h'00ff10', "empty": h'', "hash": blake3("x")}`
+    fn body_with_byte_strings() -> Value<'static> {
+        Value::from(BTreeMap::from([
+            (Value::from("blob"), Value::from(vec![0x00u8, 0xff, 0x10])),
+            (Value::from("empty"), Value::from(Vec::<u8>::new())),
+            (
+                Value::from("hash"),
+                Value::from(Hash::digest(b"x").as_bytes().to_vec()),
+            ),
+        ]))
+    }
+
+    /// `[blake3("a"), blake3("b"), blake3("c")]`, the shape of an `after` frontier.
+    fn hash_array() -> Value<'static> {
+        let hashes: Vec<Value<'_>> = [b"a", b"b", b"c"]
+            .iter()
+            .map(|s| Value::from(Hash::digest(s).as_bytes().to_vec()))
+            .collect();
+        Value::from(hashes)
+    }
+
+    /// `{"a": null, "outer": {"inner": [1, -2, {"deep": true}], "tag": h'ab'}, "z": "last"}`
+    fn nested() -> Value<'static> {
+        let deep = Value::from(BTreeMap::from([(Value::from("deep"), Value::from(true))]));
+        let inner = Value::from(vec![Value::Unsigned(1), Value::Negative(1), deep]);
+        let outer = Value::from(BTreeMap::from([
+            (Value::from("inner"), inner),
+            (Value::from("tag"), Value::from(vec![0xabu8])),
+        ]));
+        Value::from(BTreeMap::from([
+            (Value::from("a"), Value::null()),
+            (Value::from("outer"), outer),
+            (Value::from("z"), Value::from("last")),
+        ]))
+    }
+
+    #[test]
+    fn test_s5_canonical_vectors_match_the_recorded_bytes() {
+        let cases = [
+            (
+                plain_body_map(),
+                "a3646b696e646c67726f75702e706f6c6963796567726f7570626731656c6576656c03",
+            ),
+            (
+                body_with_byte_strings(),
+                "a364626c6f624300ff10646861736858203ae7d805f6789a6402acb70ad4096a85a56bf6804eaf25c0493ac697548d30b565656d70747940",
+            ),
+            (
+                hash_array(),
+                "83582017762fddd969a453925d65717ac3eea21320b66b54342fde15128d6caf21215f582010e5cf3d3c8a4f9f3468c8cc58eea84892a22fdadbc1acb22410190044c1d5535820ea7aa1fc9efdbe106dbb70369a75e9671fa29d52bd55536711bf197477b8f021",
+            ),
+            (
+                nested(),
+                "a36161f6617a646c617374656f75746572a26374616741ab65696e6e6572830121a16464656570f5",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(hex(&value.encode()), expected);
+        }
+    }
+
+    #[test]
+    fn test_dcbor_agrees_with_cbor_core_on_the_s5_values() {
+        let mut plain = dcbor::Map::new();
+        plain.insert("kind", "group.policy");
+        plain.insert("group", "g1");
+        plain.insert("level", 3u64);
+        assert_eq!(CBOR::from(plain).to_cbor_data(), plain_body_map().encode());
+
+        let mut bytes = dcbor::Map::new();
+        bytes.insert("blob", ByteString::from(vec![0x00u8, 0xff, 0x10]));
+        bytes.insert("empty", ByteString::from(Vec::<u8>::new()));
+        bytes.insert(
+            "hash",
+            ByteString::from(Hash::digest(b"x").as_bytes().to_vec()),
+        );
+        assert_eq!(
+            CBOR::from(bytes).to_cbor_data(),
+            body_with_byte_strings().encode()
+        );
+
+        let hashes: Vec<CBOR> = [b"a", b"b", b"c"]
+            .iter()
+            .map(|s| ByteString::from(Hash::digest(s).as_bytes().to_vec()).into())
+            .collect();
+        assert_eq!(CBOR::from(hashes).to_cbor_data(), hash_array().encode());
+
+        let mut deep = dcbor::Map::new();
+        deep.insert("deep", true);
+        let inner = CBOR::from(vec![CBOR::from(1u64), CBOR::from(-2i64), CBOR::from(deep)]);
+        let mut outer = dcbor::Map::new();
+        outer.insert("inner", inner);
+        outer.insert("tag", ByteString::from(vec![0xabu8]));
+        let mut root = dcbor::Map::new();
+        root.insert("a", CBOR::null());
+        root.insert("outer", outer);
+        root.insert("z", "last");
+        assert_eq!(CBOR::from(root).to_cbor_data(), nested().encode());
+    }
+
+    /// The S5 golden header: `Header<()>` with the plain body map as its body, seq 0,
+    /// and the test key. It has no extension, so it pins p2panda's header layout and its
+    /// signature. It does not pin `ChainExt`, which has its own vectors below.
+    #[test]
+    fn test_s5_golden_header_keeps_its_operation_id_and_signature() {
+        const HEADER: &str = "8601582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b85840be31be241b5a9915194cafabb3d0ffb8f7a2be7a7a91a9a638449cebfcd7d96f9bde95d6782eb70606f2e85b95760a90d77dab845fdb1ecda843defa7e4ecf0f182358209f9175fb55f67e7673c1613e4ba07360afb584a26407f3ffc6dfe5ae52fddf4d00";
+        const OPERATION_ID: &str =
+            "90acd5f7c498ccb93dc33ce41f49d166140bef38c1f85cb95940f311b6e7f212";
+        const SIGNATURE: &str = "be31be241b5a9915194cafabb3d0ffb8f7a2be7a7a91a9a638449cebfcd7d96f9bde95d6782eb70606f2e85b95760a90d77dab845fdb1ecda843defa7e4ecf0f";
+
+        let body = plain_body_map().encode();
+        let header = Header::<()>::builder()
+            .body(&body)
+            .seq_num(0)
+            .build(&key(), ());
+        let bytes = header.encode();
+
+        assert_eq!(hex(&bytes), HEADER);
+        assert_eq!(Hash::digest(&bytes).to_hex(), OPERATION_ID);
+        assert_eq!(header.signature.to_hex(), SIGNATURE);
+        // The receive path accepts the same bytes and reads the same operation ID.
+        assert_eq!(
+            AnyHeader::decode(&bytes).unwrap().hash().to_hex(),
+            OPERATION_ID
+        );
+    }
+
+    /// The two `ChainExt` events the golden tests pin. The second one has a body, a
+    /// sequence number above 0, a backlink, and a group.
+    fn golden_events() -> (Event, Event) {
+        let first = sign(
+            &key(),
+            0,
+            None,
+            None,
+            ChainExt {
+                kind: "group.policy".to_owned(),
+                group: None,
+                after: vec![Hash::digest(b"a"), Hash::digest(b"b")],
+            },
+        )
+        .unwrap();
+        let body = plain_body_map().encode();
+        let second = sign(
+            &key(),
+            1,
+            Some(first.id),
+            Some(body.as_slice()),
+            ChainExt {
+                kind: "message".to_owned(),
+                group: Some(Hash::digest(b"g")),
+                after: vec![first.id],
+            },
+        )
+        .unwrap();
+        (first, second)
+    }
+
+    #[test]
+    fn test_chain_ext_golden_vectors_are_pinned() {
+        const FIRST: &str = "8601582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8584029353dc14afda7aced2938ade60cdee76fbe9eea7adb77765a8e6dc52a6d532d1ed83d4a54d329389048e32f9106dd658dd721abae9b2a95ef56f104684f06060000a4646b696e646c67726f75702e706f6c69637965616674657282582017762fddd969a453925d65717ac3eea21320b66b54342fde15128d6caf21215f582010e5cf3d3c8a4f9f3468c8cc58eea84892a22fdadbc1acb22410190044c1d5536567726f7570f666646f6d61696e6c69642e6576656e74732e7631";
+        const FIRST_ID: &str = "58035ddebae67c7e3424eff97938d84e176bf6df4dc90cfb625b2c0d8d2e4c40";
+        const FIRST_SIGNATURE: &str = "29353dc14afda7aced2938ade60cdee76fbe9eea7adb77765a8e6dc52a6d532d1ed83d4a54d329389048e32f9106dd658dd721abae9b2a95ef56f104684f0606";
+        const SECOND: &str = "8801582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b858401026e903a382f1589cc4a8ea70ff13b54aba5fb5c2144b0afdba7c79dc09e42c6e29930ef099d0dc5a741bad4b984b110766c5e4e3dacfa627a1ed4b2a7fc405182358209f9175fb55f67e7673c1613e4ba07360afb584a26407f3ffc6dfe5ae52fddf4d01582058035ddebae67c7e3424eff97938d84e176bf6df4dc90cfb625b2c0d8d2e4c40a4646b696e64676d65737361676565616674657281582058035ddebae67c7e3424eff97938d84e176bf6df4dc90cfb625b2c0d8d2e4c406567726f75705820805a31dee1a2a0d3fbe08c612de4fe6be78166a3c4d3a4db7805ad839ed47d4d66646f6d61696e6c69642e6576656e74732e7631";
+        const SECOND_ID: &str = "847ec6fba8b5eb1ee230bf9068590f502b6c2d40a14689b30e5fa8d6353c0064";
+        const SECOND_SIGNATURE: &str = "1026e903a382f1589cc4a8ea70ff13b54aba5fb5c2144b0afdba7c79dc09e42c6e29930ef099d0dc5a741bad4b984b110766c5e4e3dacfa627a1ed4b2a7fc405";
+
+        let (first, second) = golden_events();
+        assert_eq!(hex(&first.bytes), FIRST);
+        assert_eq!(first.id.to_hex(), FIRST_ID);
+        assert_eq!(first.header.signature.to_hex(), FIRST_SIGNATURE);
+        assert_eq!(hex(&second.bytes), SECOND);
+        assert_eq!(second.id.to_hex(), SECOND_ID);
+        assert_eq!(second.header.signature.to_hex(), SECOND_SIGNATURE);
+        assert_eq!(decode(&unhex(FIRST)).unwrap(), first);
+        assert_eq!(decode(&unhex(SECOND)).unwrap(), second);
+    }
+
+    /// dcbor builds the same two headers from its own encoder. Each header must match
+    /// cbor-core's bytes, and each signature must verify over dcbor's signed bytes.
+    #[test]
+    fn test_dcbor_builds_the_same_chain_ext_headers() {
+        let (first, second) = golden_events();
+        let public = key().verifying_key();
+        let author = ByteString::from(public.as_bytes().to_vec());
+        let body = plain_body_map().encode();
+        let group = Hash::digest(b"g");
+
+        // The extension as dcbor writes it. dcbor sorts the keys, as RFC 8949 requires.
+        let wire = |kind: &str, group: Option<&Hash>, after: &[Hash]| {
+            let mut map = dcbor::Map::new();
+            map.insert("domain", DOMAIN_TAG);
+            map.insert("kind", kind);
+            map.insert(
+                "group",
+                group.map_or_else(CBOR::null, |g| {
+                    ByteString::from(g.as_bytes().to_vec()).into()
+                }),
+            );
+            let hashes: Vec<CBOR> = after
+                .iter()
+                .map(|h| ByteString::from(h.as_bytes().to_vec()).into())
+                .collect();
+            map.insert("after", CBOR::from(hashes));
+            CBOR::from(map)
+        };
+        let signature = |event: &Event| -> CBOR {
+            ByteString::from(event.header.signature.to_bytes().to_vec()).into()
+        };
+
+        // First event: no body, so no payload size or hash. Sequence 0, so no backlink.
+        let signed = CBOR::from(vec![
+            CBOR::from(1u64),
+            author.clone().into(),
+            CBOR::from(0u64),
+            CBOR::from(0u64),
+            wire(
+                "group.policy",
+                None,
+                &[Hash::digest(b"a"), Hash::digest(b"b")],
+            ),
+        ])
+        .to_cbor_data();
+        let full = CBOR::from(vec![
+            CBOR::from(1u64),
+            author.clone().into(),
+            signature(&first),
+            CBOR::from(0u64),
+            CBOR::from(0u64),
+            wire(
+                "group.policy",
+                None,
+                &[Hash::digest(b"a"), Hash::digest(b"b")],
+            ),
+        ])
+        .to_cbor_data();
+        assert_eq!(full, first.bytes);
+        assert!(public.verify(&signed, &first.header.signature));
+
+        // Second event: the body's size and hash, sequence 1, and the first event's ID as
+        // the backlink.
+        let body_len = u64::try_from(body.len()).unwrap();
+        let signed = CBOR::from(vec![
+            CBOR::from(1u64),
+            author.clone().into(),
+            CBOR::from(body_len),
+            ByteString::from(Hash::digest(&body).as_bytes().to_vec()).into(),
+            CBOR::from(1u64),
+            ByteString::from(first.id.as_bytes().to_vec()).into(),
+            wire("message", Some(&group), &[first.id]),
+        ])
+        .to_cbor_data();
+        let full = CBOR::from(vec![
+            CBOR::from(1u64),
+            author.into(),
+            signature(&second),
+            CBOR::from(body_len),
+            ByteString::from(Hash::digest(&body).as_bytes().to_vec()).into(),
+            CBOR::from(1u64),
+            ByteString::from(first.id.as_bytes().to_vec()).into(),
+            wire("message", Some(&group), &[first.id]),
+        ])
+        .to_cbor_data();
+        assert_eq!(full, second.bytes);
+        assert!(public.verify(&signed, &second.header.signature));
+    }
+}
