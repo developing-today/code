@@ -1322,7 +1322,15 @@ mod serve_tests {
 
             // Read lines until we see "node: <id>" which indicates server is ready
             loop {
-                let line = match lines_rx.recv_timeout(timeout.saturating_sub(start.elapsed())) {
+                // Past the deadline the wait is over even if lines are queued, so a
+                // server that keeps printing cannot hold it.
+                let remaining = timeout.saturating_sub(start.elapsed());
+                let next = if remaining.is_zero() {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                } else {
+                    lines_rx.recv_timeout(remaining)
+                };
+                let line = match next {
                     Ok(line) => line,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
                         "Server startup timed out after {timeout:?}\n\
