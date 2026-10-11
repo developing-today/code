@@ -14,6 +14,9 @@ let
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
+  # The hub build ships the language_server binary the LS proxy drives. Same
+  # derivation as the system one, so the store path is shared, not rebuilt.
+  antigravity-hub = pkgs.callPackage ../../pkgs/antigravity-hub { };
   # 2.1.293; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
   # claudeAgent driver and the shell CLI are the same build.
   claude-code = pkgs.callPackage ../../pkgs/claude-code { };
@@ -525,6 +528,7 @@ in
       Environment = [
         "ANTIGRAVITY_LS_PROXY_PORT=18745"
         "ANTIGRAVITY_LS_PROXY_HOST=127.0.0.1"
+        "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
       ];
     };
     Install.WantedBy = [ "default.target" ];

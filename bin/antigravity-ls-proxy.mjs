@@ -56,13 +56,23 @@ const MODEL_MAP = {
   'gemini-2.5-pro': { enum: 'MODEL_GOOGLE_GEMINI_2_5_PRO', name: 'Gemini 2.5 Pro' }
 };
 
-const resolveModelEnum = (requestedModel, requestedEffort) => {
+const resolveModelEnum = (requestedModel, requestedEffort, liveModels) => {
   let modelStr = (requestedModel || 'gemini-3.8-flash').toLowerCase().trim();
   let isCascade = false;
 
   if (modelStr.endsWith('-cascade')) {
     isCascade = true;
     modelStr = modelStr.slice(0, -'-cascade'.length);
+  }
+
+  // The language server's own catalog wins: each id it lists carries the enum
+  // it expects, including ids this file's MODEL_MAP does not know about.
+  if (liveModels[modelStr]?.model) {
+    return {
+      modelEnum: liveModels[modelStr].model,
+      displayName: liveModels[modelStr].displayName || modelStr,
+      isCascade
+    };
   }
 
   // Exact match
@@ -87,20 +97,22 @@ const resolveModelEnum = (requestedModel, requestedEffort) => {
     };
   }
 
-  // Direct pass-through if enum name or fallback
+  // Direct pass-through if enum name
   if (modelStr.startsWith('model_')) {
     return { modelEnum: modelStr.toUpperCase(), displayName: modelStr, isCascade };
   }
 
-  // Default to Gemini 3.8 Flash Medium
-  return {
-    modelEnum: 'MODEL_PLACEHOLDER_M319',
-    displayName: 'Gemini 3.8 Flash (Medium)',
-    isCascade
-  };
+  // Refuse rather than quietly run a different model than the one asked for.
+  const err = new Error(`Unknown model "${requestedModel}": not in the language server catalog or the proxy's model map`);
+  err.status = 400;
+  throw err;
 };
 
 const findLanguageServerBinary = () => {
+  // Set by the Nix unit to the exact hub build, so nothing here goes stale
+  // when the flake bumps antigravity-hub.
+  if (process.env.ANTIGRAVITY_LS_BIN) return process.env.ANTIGRAVITY_LS_BIN;
+
   const candidates = [
     '/nix/store/rpgwxqadiscnsm9zmb4j4brb3yp2ayqg-antigravity-hub-2.12.2/share/antigravity/resources/bin/language_server',
     '/nix/store/4lcvb3j5418q7nlfx156b3rmf0vhv8qk-antigravity-ide-2.5.5/lib/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64'
@@ -108,9 +120,14 @@ const findLanguageServerBinary = () => {
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
+  // Scan store entry names rather than `find /nix/store`, which walks the whole
+  // store synchronously and would freeze the proxy while it runs.
   try {
-    const found = execSync('find /nix/store -name "language_server" -type f -executable 2>/dev/null | head -n 1', { encoding: 'utf-8' }).trim();
-    if (found && fs.existsSync(found)) return found;
+    for (const entry of fs.readdirSync('/nix/store')) {
+      if (!entry.includes('-antigravity-hub-')) continue;
+      const c = `/nix/store/${entry}/share/antigravity/resources/bin/language_server`;
+      if (fs.existsSync(c)) return c;
+    }
   } catch {}
   return candidates[0];
 };
@@ -284,6 +301,21 @@ const lsManager = new LanguageServerManager();
 
 process.on('SIGINT', () => { lsManager.cleanup(); process.exit(0); });
 process.on('SIGTERM', () => { lsManager.cleanup(); process.exit(0); });
+
+// The language server's model catalog (id -> { model enum, displayName }), cached
+// briefly so each chat request doesn't re-fetch it. Empty when the server is
+// unreachable, in which case only the static MODEL_MAP can resolve.
+let liveCatalogCache = { at: 0, models: {} };
+const getLiveCatalog = async () => {
+  if (Date.now() - liveCatalogCache.at < 60_000) return liveCatalogCache.models;
+  try {
+    const live = await lsManager.callRpc('GetAvailableModels', {});
+    liveCatalogCache = { at: Date.now(), models: live?.response?.models || {} };
+  } catch {
+    return {};
+  }
+  return liveCatalogCache.models;
+};
 
 // Session store for multi-turn conversations
 const sessionStore = new Map();
@@ -481,7 +513,15 @@ const server = http.createServer(async (req, res) => {
 
       const stream = Boolean(body.stream);
       const requestedEffort = body.reasoning_effort || body.effort || (body.options && (body.options.reasoning_effort || body.options.effort));
-      const { modelEnum, displayName, isCascade } = resolveModelEnum(body.model, requestedEffort);
+      let resolved;
+      try {
+        resolved = resolveModelEnum(body.model, requestedEffort, await getLiveCatalog());
+      } catch (err) {
+        res.writeHead(err.status || 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+        return;
+      }
+      const { modelEnum, displayName, isCascade } = resolved;
 
       const sessionInfo = getSessionKey(req, body);
       const useCascade = isCascade || Boolean(sessionInfo.cascadeId) || body.mode === 'cascade';
