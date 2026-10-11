@@ -223,6 +223,7 @@ type Defaults struct {
 		SocketProbeTimeout   string `json:"socketProbeTimeout"`
 		TakeoverTimeout      string `json:"takeoverTimeout"`
 		TakeoverMaxFrame     string `json:"takeoverMaxFrame"`
+		ExecHashMax          string `json:"execHashMax"`
 		WarmTimeout          string `json:"warmTimeout"`
 		RefreshTimeout       string `json:"refreshTimeout"`
 		InlineStartTimeout   string `json:"inlineStartTimeout"`
@@ -680,14 +681,18 @@ var (
 	SocketProbeTimeout   = mustDur(builtin.Limits.SocketProbeTimeout, "limits.socketProbeTimeout")
 	TakeoverTimeout      = mustDur(builtin.Limits.TakeoverTimeout, "limits.takeoverTimeout")
 	TakeoverMaxFrame     = mustBytes(builtin.Limits.TakeoverMaxFrame, "limits.takeoverMaxFrame")
-	WarmTimeout          = mustDur(builtin.Limits.WarmTimeout, "limits.warmTimeout")
-	RefreshTimeout       = mustDur(builtin.Limits.RefreshTimeout, "limits.refreshTimeout")
-	InlineStartTimeout   = mustDur(builtin.Limits.InlineStartTimeout, "limits.inlineStartTimeout")
-	InlineStartPoll      = mustDur(builtin.Limits.InlineStartPoll, "limits.inlineStartPoll")
-	InlineProbeTimeout   = mustDur(builtin.Limits.InlineProbeTimeout, "limits.inlineProbeTimeout")
-	DoctorTimeout        = mustDur(builtin.Limits.DoctorTimeout, "limits.doctorTimeout")
-	ReleaseTimeout       = mustDur(builtin.Limits.ReleaseTimeout, "limits.releaseTimeout")
-	FollowBacklog        = builtin.Limits.FollowBacklog
+	// ExecHashMax is the largest executable whose contents are hashed to
+	// tell whether a stdio server's binary changed. Larger files are told
+	// apart by device, inode, size and mtime instead.
+	ExecHashMax        = mustBytes(builtin.Limits.ExecHashMax, "limits.execHashMax")
+	WarmTimeout        = mustDur(builtin.Limits.WarmTimeout, "limits.warmTimeout")
+	RefreshTimeout     = mustDur(builtin.Limits.RefreshTimeout, "limits.refreshTimeout")
+	InlineStartTimeout = mustDur(builtin.Limits.InlineStartTimeout, "limits.inlineStartTimeout")
+	InlineStartPoll    = mustDur(builtin.Limits.InlineStartPoll, "limits.inlineStartPoll")
+	InlineProbeTimeout = mustDur(builtin.Limits.InlineProbeTimeout, "limits.inlineProbeTimeout")
+	DoctorTimeout      = mustDur(builtin.Limits.DoctorTimeout, "limits.doctorTimeout")
+	ReleaseTimeout     = mustDur(builtin.Limits.ReleaseTimeout, "limits.releaseTimeout")
+	FollowBacklog      = builtin.Limits.FollowBacklog
 
 	DirMode       = mustMode(builtin.Files.DirMode, "files.dirMode")
 	PublicDirMode = mustMode(builtin.Files.PublicDirMode, "files.publicDirMode")

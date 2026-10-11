@@ -69,12 +69,15 @@ type Server struct {
 	// refuseBrowserPages. The zero value allows loopback origins only.
 	Origins mcpserver.OriginPolicy
 
-	httpSrv  *http.Server
-	tcpLn    net.Listener
-	unixLn   net.Listener
-	endpoint string
-	version  string
-	started  time.Time
+	httpSrv *http.Server
+	// httpServing counts the serve loops of httpSrv, so a drain can wait for
+	// them to exit. See drainHTTP.
+	httpServing sync.WaitGroup
+	tcpLn       net.Listener
+	unixLn      net.Listener
+	endpoint    string
+	version     string
+	started     time.Time
 
 	// httpErr carries a failure from either HTTP server to Serve. Every server
 	// the daemon starts reports here, including one restored after a takeover
@@ -297,7 +300,14 @@ func (s *Server) startHTTP() {
 	}
 	s.httpSrv = srv
 	for _, ln := range []net.Listener{s.unixLn, s.tcpLn} {
-		go func() { s.httpErr <- srv.Serve(ln) }()
+		s.httpServing.Add(1)
+		go func() {
+			err := srv.Serve(ln)
+			// Done before the send: a test or a handoff that is not reading
+			// httpErr must not leave the wait in drainHTTP hanging.
+			s.httpServing.Done()
+			s.httpErr <- err
+		}()
 	}
 }
 

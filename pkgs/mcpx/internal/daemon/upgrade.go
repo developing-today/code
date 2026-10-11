@@ -98,11 +98,21 @@ func (s *Server) settleUpgrade(err error) {
 func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Binary string `json:"binary"`
+		// Start is the unit's start command ahead of the binary, when there
+		// is one: the wrapper that sets the environment the service runs
+		// with. See startSuccessor.
+		Start []string `json:"start,omitempty"`
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil || json.Unmarshal(body, &req) != nil || req.Binary == "" {
 		http.Error(w, "an upgrade needs the path of the new binary", http.StatusBadRequest)
 		return
+	}
+	for _, a := range req.Start {
+		if a == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the start command has an empty argument"})
+			return
+		}
 	}
 	if err := checkUpgradeBinary(req.Binary); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -135,7 +145,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	s.upgrading.Store(u)
 	defer s.upgrading.Store(nil)
 	s.logger.Printf("upgrade requested: starting %s as a child", req.Binary)
-	cmd, err := s.startSuccessor(req.Binary)
+	cmd, err := s.startSuccessor(req.Binary, req.Start)
 	if err != nil {
 		u.settle(err)
 		return
@@ -187,14 +197,24 @@ func checkUpgradeBinary(path string) error {
 	return nil
 }
 
-// startSuccessor runs the new binary as this daemon's child. The environment
-// is inherited because the successor needs NOTIFY_SOCKET.
-func (s *Server) startSuccessor(binary string) (*exec.Cmd, error) {
-	args := []string{"daemon", "--takeover"}
+// startSuccessor runs the new binary as this daemon's child.
+//
+// The successor is started through start, the unit's ExecStart ahead of the
+// binary, so that the wrapper gives it the environment the unit gives a fresh
+// start: a new token or variable reaches the successor, which an inherited
+// environment would not. The wrapper execs the binary with the arguments it
+// is given. With no start command the binary runs directly, under this
+// daemon's environment, as before.
+//
+// The environment is still inherited because the successor needs
+// NOTIFY_SOCKET, and the wrapper only adds to it. A variable the unit used to
+// set and no longer does is therefore still present in the successor.
+func (s *Server) startSuccessor(binary string, start []string) (*exec.Cmd, error) {
+	args := append(append([]string{}, start...), binary, "daemon", "--takeover")
 	if s.ConfigArg != "" {
 		args = append(args, "--config", s.ConfigArg)
 	}
-	cmd := exec.Command(binary, args...)
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", binary, err)

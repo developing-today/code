@@ -127,6 +127,8 @@ type Pool struct {
 	Hooks *Hooks
 
 	cfg *config.Resolved
+	// exec is cfg.ExecIdentity() as of New. See PoolID.
+	exec string
 
 	mu        sync.Mutex
 	cond      *sync.Cond
@@ -169,7 +171,7 @@ type Pool struct {
 
 // New creates an empty pool. No process is started until first use.
 func New(cfg *config.Resolved) *Pool {
-	p := &Pool{cfg: cfg}
+	p := &Pool{cfg: cfg, exec: cfg.ExecIdentity()}
 	p.cond = sync.NewCond(&p.mu)
 	return p
 }

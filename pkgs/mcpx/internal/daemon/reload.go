@@ -32,11 +32,12 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 
 	// Index the pools in use by their process identity, not by name, so a
 	// rename that changes nothing about the child process keeps the child.
+	// The identity a pool was made with is what it is matched on: a binary
+	// that has since been replaced no longer matches, and its pool is
+	// replaced, which is a restart of that one server and nothing else.
 	byPoolID := map[string]*pool.Pool{}
-	for name, p := range r.pools {
-		if view, ok := r.views[name]; ok {
-			byPoolID[view.PoolID()] = p
-		}
+	for _, p := range r.pools {
+		byPoolID[p.PoolID()] = p
 	}
 
 	pools := make(map[string]*pool.Pool, len(servers))
@@ -53,7 +54,7 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 		}
 		seen[s.Namespace] = s.Name
 
-		id := s.PoolID()
+		id := s.ProcessID()
 		p, kept := byPoolID[id]
 		if !kept {
 			p, kept = fresh[id]

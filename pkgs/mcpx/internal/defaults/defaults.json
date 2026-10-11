@@ -191,6 +191,7 @@
     "socketProbeTimeout": "500ms",
     "takeoverTimeout": "15s",
     "takeoverMaxFrame": "16MB",
+    "execHashMax": "1MB",
     "warmTimeout": "3m",
     "refreshTimeout": "3m",
     "inlineStartTimeout": "5s",

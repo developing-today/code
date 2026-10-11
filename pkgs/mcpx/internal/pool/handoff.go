@@ -108,7 +108,7 @@ func (p *Pool) Detach() (*PoolHandoff, error) {
 	p.mu.Lock()
 	p.handed = handed
 	p.mu.Unlock()
-	return &PoolHandoff{PoolID: p.cfg.PoolID(), Seq: seq, Instances: out}, nil
+	return &PoolHandoff{PoolID: p.PoolID(), Seq: seq, Instances: out}, nil
 }
 
 // Commit finishes a detach the successor accepted: handed children now belong
@@ -346,5 +346,12 @@ func (p *Pool) attachSession(a *Adopted) {
 	p.cond.Broadcast()
 }
 
-// PoolID is the identity this pool's process definition shares with others.
-func (p *Pool) PoolID() string { return p.cfg.PoolID() }
+// PoolID is the identity this pool's process definition shares with others:
+// its configuration and the executable it was created to run. The executable
+// is the one recorded when the pool was made, not the one on disk now, so a
+// binary replaced since then makes a successor or a reload start a new pool
+// rather than adopt children running the old program.
+func (p *Pool) PoolID() string { return p.cfg.PoolID() + "/" + p.exec }
+
+// ExecIdentity is the executable identity recorded when the pool was made.
+func (p *Pool) ExecIdentity() string { return p.exec }

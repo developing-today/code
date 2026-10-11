@@ -282,7 +282,7 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	}
 	drain, cancel := context.WithTimeout(context.Background(), s.set.Duration("http.shutdownGrace"))
 	defer cancel()
-	if err := s.httpSrv.Shutdown(drain); err != nil {
+	if err := s.drainHTTP(drain); err != nil {
 		s.logger.Printf("takeover: draining http: %v", err)
 		_ = s.resumeHTTP(unixDup, tcpDup)
 		return fmt.Errorf("draining http: %w", err)
@@ -327,6 +327,28 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	_, _ = io.Copy(io.Discard, c)
 	s.handedOffOnce.Do(func() { close(s.handedOff) })
 	return nil
+}
+
+// drainHTTP stops the HTTP server without losing a request the listeners have
+// already taken. The listeners stay open in the successor's hands, so a call
+// that arrives now waits in the socket's backlog and the successor serves it.
+//
+// Keep-alives are turned off first, so a connection the old daemon holds open
+// between requests is closed after its next answer rather than left to take a
+// request it would then have to drop.
+//
+// Shutdown does not see a connection that the accept loop has taken but not
+// yet recorded. The serve loops are waited for and Shutdown is run again, which
+// covers that connection: the old daemon exits once the successor has the
+// children, and a connection it had accepted and not served would be cut off
+// there.
+func (s *Server) drainHTTP(ctx context.Context) error {
+	s.httpSrv.SetKeepAlivesEnabled(false)
+	if err := s.httpSrv.Shutdown(ctx); err != nil {
+		return err
+	}
+	s.httpServing.Wait()
+	return s.httpSrv.Shutdown(ctx)
 }
 
 func (s *Server) sendChildren(c *net.UnixConn, ho *RegistryHandoff) error {
