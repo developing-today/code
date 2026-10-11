@@ -74,6 +74,20 @@ impl Compiler {
     }
 }
 
+/// Where a compiler program runs from. A name with no slash is looked up on this
+/// process's `PATH`, as a shell would. The compiler runs with a cleared environment,
+/// so exec alone would search only the default path. A name that is not found is
+/// kept as it is, and the spawn reports it.
+fn resolve_program(program: &str) -> PathBuf {
+    if program.contains('/') {
+        return PathBuf::from(program);
+    }
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from(program))
+}
+
 /// The platform's modules, by name: every `.roc` file but `platform.roc`.
 fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
     let mut modules = Vec::new();
@@ -209,7 +223,7 @@ pub async fn compile(
     tokio::fs::write(&main_path, rewritten).await?;
 
     let output_path = job.path().join("out");
-    let roc_bin = compiler.roc_bin.clone();
+    let roc_bin = resolve_program(&compiler.roc_bin);
     let job_dir = job.path().to_owned();
     let output = PathBuf::from(&output_path);
     // The compiler is a whole LLVM process; run it on a blocking thread and
@@ -729,5 +743,22 @@ mod tests {
             PathBuf::from("../examples/roc-world"),
         ];
         candidates.into_iter().find(|dir| dir.is_dir())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_compiler_name_resolves_to_its_file_on_this_path() {
+        // `sh` is on the PATH the tests run with, wherever that PATH points.
+        let shell = resolve_program("sh");
+        assert!(
+            shell.is_absolute() && shell.is_file(),
+            "{}",
+            shell.display()
+        );
+        assert_eq!(resolve_program("/opt/roc"), PathBuf::from("/opt/roc"));
+        assert_eq!(
+            resolve_program("no-such-compiler"),
+            PathBuf::from("no-such-compiler")
+        );
     }
 }
