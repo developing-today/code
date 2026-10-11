@@ -174,8 +174,8 @@ impl std::fmt::Debug for AppState {
 impl AppState {
     /// Create a new application state with persistent identity storage.
     ///
-    /// Opens an encrypted `SQLite` database for identity persistence using
-    /// a key derived from the node's iroh secret key.
+    /// Opens the encrypted identity store (a redb file) for identity persistence
+    /// using a key derived from the node's iroh secret key.
     pub async fn new(
         store: Store,
         peers: Option<PeerDiscovery>,
