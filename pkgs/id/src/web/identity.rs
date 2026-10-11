@@ -42,12 +42,14 @@
 //! internally. Clone it freely across handlers.
 
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit};
+use anyhow::Context as _;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable, TableDefinition};
@@ -481,16 +483,39 @@ struct IdentityDb {
 }
 
 impl IdentityDb {
-    /// Open or create the file at `path`, then [`load`](Self::load) it.
+    /// Open the file at `path`, or create it if it does not exist, then [`load`](Self::load) it.
+    ///
+    /// A new file is built under a temporary name, so `path` only ever names a file that redb can
+    /// open. The first commit makes the file a valid, empty store. It is then renamed into place,
+    /// and the directory is synced before the store is returned, so no acknowledged write can
+    /// depend on a rename that has not reached the disk. A crash during creation leaves at most a
+    /// stale temporary file, which the next creation overwrites.
     fn open(path: &Path, key: &[u8; 32]) -> anyhow::Result<(Self, Vec<ClientIdentity>)> {
-        let db = Database::create(path).map_err(|e| match e {
-            DatabaseError::DatabaseAlreadyOpen => anyhow::anyhow!(
-                "identity store {} is already open in another process or handle",
-                path.display()
-            ),
-            other => anyhow::anyhow!("failed to open identity store {}: {other}", path.display()),
+        if path.exists() {
+            let db = Database::create(path).map_err(|e| store_error(path, e))?;
+            return Self::load(db, key);
+        }
+        let temp = creating_path(path);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .with_context(|| format!("failed to create identity store {}", temp.display()))?;
+        let db = Database::builder()
+            .create_file(file)
+            .map_err(|e| store_error(&temp, e))?;
+        let created = Self::load(db, key)?;
+        std::fs::rename(&temp, path).with_context(|| {
+            format!(
+                "failed to move identity store {} into place",
+                temp.display()
+            )
         })?;
-        Self::load(db, key)
+        sync_dir(parent_dir(path))
+            .with_context(|| format!("failed to sync the directory of {}", path.display()))?;
+        Ok(created)
     }
 
     /// Create the table if the file is new, then authenticate every record.
@@ -601,6 +626,45 @@ impl IdentityDb {
                 )
             })?;
         Ok(serde_json::from_slice(&plaintext)?)
+    }
+}
+
+/// The name a new store file is built under: the store's file name with `.creating` appended.
+fn creating_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map_or_else(OsString::new, OsStr::to_os_string);
+    name.push(".creating");
+    path.with_file_name(name)
+}
+
+/// The directory that holds `path`. A bare file name lives in the current directory.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    }
+}
+
+/// Makes the renames in `dir` durable. Only Unix can open a directory to sync it, so elsewhere
+/// this does nothing.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn store_error(path: &Path, error: DatabaseError) -> anyhow::Error {
+    match error {
+        DatabaseError::DatabaseAlreadyOpen => anyhow::anyhow!(
+            "identity store {} is already open in another process or handle",
+            path.display()
+        ),
+        other => anyhow::anyhow!("failed to open identity store {}: {other}", path.display()),
     }
 }
 
@@ -1176,6 +1240,47 @@ mod tests {
         }
         let err = IdentityStore::new([8u8; 32], path).await.unwrap_err();
         assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_creation_leaves_only_the_store_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let store = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        assert!(path.exists());
+        assert!(!creating_path(&path).exists());
+        drop(store);
+    }
+
+    #[tokio::test]
+    async fn test_stale_creating_file_is_replaced() {
+        // What an interrupted creation leaves: bytes under the temporary name, no valid header.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        std::fs::write(creating_path(&path), [0xAB; 4096]).unwrap();
+
+        let store = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        assert_eq!(store.len().await, 0);
+        assert!(!creating_path(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn test_torn_store_file_is_refused() {
+        // Creation never leaves a file at the store's name, so a torn one is not a state the store
+        // makes. It is refused with an error, not replaced.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        std::fs::write(&path, [0xAB; 4096]).unwrap();
+
+        let err = IdentityStore::new(STORE_SECRET, path).await.unwrap_err();
+        assert!(
+            err.to_string().contains("failed to open identity store"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
