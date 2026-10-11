@@ -30,10 +30,17 @@ fn pinned_channel(toml: &str) -> String {
     value.trim_matches('"').to_owned()
 }
 
-/// The argument `default.nix` passes to `rustup default`.
+/// A line of Nix without its `#` comment, trimmed.
+fn code_of(line: &str) -> &str {
+    line.split('#').next().unwrap_or_default().trim()
+}
+
+/// The argument `default.nix` passes to `rustup default`. Only code counts, so
+/// a commented-out line or binding is ignored.
 fn nix_version(nix: &str) -> NixVersion {
-    let line = nix
-        .lines()
+    let code: Vec<&str> = nix.lines().map(code_of).collect();
+    let line = code
+        .iter()
         .find(|line| line.contains("rustup default"))
         .expect("default.nix runs `rustup default`");
     let arg = line.split("rustup default").nth(1).unwrap().trim();
@@ -41,12 +48,12 @@ fn nix_version(nix: &str) -> NixVersion {
         .strip_prefix("${")
         .and_then(|rest| rest.strip_suffix('}'))
     else {
-        return NixVersion::Literal(arg.to_owned());
+        return NixVersion::Literal(arg.trim_matches('"').to_owned());
     };
-    let bound_from_file = nix
-        .contains("builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)")
-        && nix.lines().any(|line| {
-            let line = line.trim();
+    let bound_from_file = code
+        .iter()
+        .any(|line| line.contains("builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)"))
+        && code.iter().any(|line| {
             line.starts_with(&format!("{name} =")) && line.contains(".toolchain.channel")
         });
     assert!(
