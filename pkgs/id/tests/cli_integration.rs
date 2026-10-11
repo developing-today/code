@@ -1823,9 +1823,15 @@ mod serve_tests {
             eprintln!("skipping: no roc binary available");
             return;
         };
+        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
         let source =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/main.roc");
         let serve_args = [
