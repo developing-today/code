@@ -87,3 +87,39 @@ fn literal_rustup_version_is_reported_as_a_literal() {
     let nix = "    rustup default 1.89.0\n    rustup component add clippy rustfmt\n";
     assert_eq!(nix_version(nix), NixVersion::Literal("1.89.0".to_owned()));
 }
+
+/// Each shape of `rustup default` line is read as the version it names. A
+/// quoted version is the same version, and a commented-out line is not a line.
+#[test]
+fn quoted_and_commented_rustup_lines_are_read_as_the_version_they_name() {
+    let cases = [
+        ("    rustup default 1.99.0\n", "1.99.0"),
+        ("    rustup default \"1.99.0\"\n", "1.99.0"),
+        ("    # rustup default 1.89.0\n    rustup default 1.99.0\n", "1.99.0"),
+    ];
+    let wrong: Vec<String> = cases
+        .into_iter()
+        .filter_map(|(nix, version)| {
+            let got = nix_version(nix);
+            (got != NixVersion::Literal(version.to_owned())).then(|| format!("{nix:?} gave {got:?}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A binding counts only when its code names the channel. A comment that
+/// mentions the channel binds nothing, so the check must refuse it.
+#[test]
+fn a_binding_that_only_mentions_the_channel_in_a_comment_is_refused() {
+    let bindings = [
+        "rustVersion = \"1.89.0\"; # toolchainToml.toolchain.channel",
+        "rustVersion = \"1.89.0\"; # builtins.readFile ./rust-toolchain.toml",
+    ];
+    for binding in bindings {
+        let nix = format!(
+            "  toolchainToml = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);\n  {binding}\n    rustup default ${{rustVersion}}\n"
+        );
+        let refused = std::panic::catch_unwind(|| nix_version(&nix)).is_err();
+        assert!(refused, "accepted as bound to the pin: {binding:?}");
+    }
+}
