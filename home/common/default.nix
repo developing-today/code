@@ -23,6 +23,27 @@ let
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
+    pw="$HOME/.config/openchamber/ui-password"
+    if [ -r "$pw" ]; then
+      export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
+    fi
+    if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+      export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+      export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+    fi
+    export OPENCODE_BINARY="${openchamberBinDir}/opencode"
+    export PATH="${openchamberBinDir}:$PATH"
+    exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
+      --foreground \
+      --port 3000 --host 127.0.0.1
+  '';
+  # A unit is replaced at switch time only when its start command or binaries change.
+  deployKey = name: parts: "${name}:${builtins.concatStringsSep " " (map toString parts)}";
+  # OpenChamber runs the OpenCode behind this link. A switch re-points it and
+  # reloads OpenChamber, so a new OpenCode takes over without a restart.
+  openchamberBinDir = "$HOME/.local/state/openchamber/bin";
 in
 {
   wayland.windowManager.hyprland = {
@@ -561,13 +582,43 @@ in
       Wants = [ "network-online.target" ];
     };
     Service = {
+      Type = "notify";
+      NotifyAccess = "all";
       ExecStart = "${mcpx}/bin/mcpx daemon";
       ExecReload = "${mcpx}/bin/mcpx reload";
       Restart = "always";
       RestartSec = 3;
+      Environment = [
+        "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+        "PATH=${
+          lib.makeBinPath [
+            inputs.opencode.packages.${system}.opencode
+            claude-code
+            pkgs.git
+            pkgs.openssh
+          ]
+        }"
+      ];
     };
     Install.WantedBy = [ "default.target" ];
   };
+
+  # A switch that changes mcpx hands the running daemon over to the new binary,
+  # with the MCP children and the listener passed along. Unchanged mcpx is left
+  # alone. Falls back to a plain start when no daemon is running.
+  home.activation.mcpxDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    state="''${XDG_STATE_HOME:-$HOME/.local/state}/mcpx/deployed"
+    key='${deployKey "mcpx" [ mcpx ]}'
+    if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
+      if systemctl --user is-active --quiet mcpx.service; then
+        run ${mcpx}/bin/mcpx upgrade || run systemctl --user restart mcpx.service
+      else
+        run systemctl --user start mcpx.service
+      fi
+      run mkdir -p "$(dirname "$state")"
+      run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
+    fi
+  '';
 
   # Watch .mcpx.json to hot-reload the standing mcpx daemon seamlessly.
   systemd.user.paths.mcpx-config = {
@@ -590,37 +641,32 @@ in
     };
   };
 
+  # systemd holds the listener across restarts, so connections made during a
+  # restart queue for the new process instead of being refused.
+  systemd.user.sockets.openchamber = {
+    Unit.Description = "OpenChamber listener";
+    Socket.ListenStream = "127.0.0.1:3000";
+    Install.WantedBy = [ "sockets.target" ];
+  };
+
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
-      After = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      After = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" "openchamber.socket" ];
       Wants = [ "network-online.target" "mcpx.service" "clef-proxy.service" "agy-proxy.service" "codex-proxy.service" "antigravity-ls-proxy.service" ];
+      Requires = [ "openchamber.socket" ];
     };
     Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "openchamber-serve" ''
-          pw="$HOME/.config/openchamber/ui-password"
-          if [ -r "$pw" ]; then
-            export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
-          fi
-          if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-            export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-          fi
-          exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
-            --foreground \
-            --port 3000 --host 127.0.0.1
-        ''
-      );
+      ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+      # Stopping OpenChamber leaves its managed OpenCode running; the next
+      # OpenChamber adopts it, so sessions survive a restart.
+      KillMode = "process";
       Restart = "on-failure";
       RestartSec = 5;
       Environment = [
-        "OPENCODE_BINARY=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "PATH=${
           lib.makeBinPath [
-            inputs.opencode.packages.${system}.opencode # OpenChamber needs >= 2.0.20
             mcpx
             pkgs.git
             pkgs.openssh
@@ -630,6 +676,29 @@ in
     };
     Install.WantedBy = [ "default.target" ];
   };
+
+  # A new OpenChamber start command restarts the unit. A new OpenCode only moves
+  # the link and reloads OpenChamber, which hands its OpenCode over in place.
+  home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
+    key='${deployKey "openchamber" [ openchamberStart ]}'
+    link="$HOME/.local/state/openchamber/bin/opencode"
+    target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
+    previous="$(readlink "$link" 2>/dev/null)"
+    active=0
+    systemctl --user is-active --quiet openchamber.service && active=1
+    run mkdir -p "$HOME/.local/state/openchamber/bin"
+    run ln -sfn "$target" "$link"
+    if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
+      if [ "$active" = 1 ]; then
+        run systemctl --user restart openchamber.service
+      fi
+      run mkdir -p "$(dirname "$state")"
+      run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
+    elif [ "$active" = 1 ] && [ "$previous" != "$target" ]; then
+      run systemctl --user reload openchamber.service
+    fi
+  '';
 
   # T3 Code's backend, run headless over the tailnet.
   #

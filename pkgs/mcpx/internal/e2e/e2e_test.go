@@ -142,9 +142,13 @@ func repoRoot(t *testing.T) string {
 }
 
 func (e *env) try(args ...string) (string, error) {
+	return e.tryWith(e.mcpx, args...)
+}
+
+func (e *env) tryWith(bin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.mcpx, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	out, err := cmd.CombinedOutput()

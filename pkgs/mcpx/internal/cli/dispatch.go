@@ -32,6 +32,7 @@ func (a *App) handWritten() map[string]Handler {
 		"status":     a.CmdStatus,
 		"refresh":    a.CmdRefresh,
 		"reload":     a.CmdReload,
+		"upgrade":    a.CmdUpgrade,
 		"restart":    a.CmdRestart,
 		"stop":       a.CmdStop,
 		"daemons":    a.CmdDaemons,

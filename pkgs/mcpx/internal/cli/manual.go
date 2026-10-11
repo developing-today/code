@@ -243,6 +243,18 @@ func handCommands() []Command {
 			Summary: "re-read configuration and reload daemon without restarting unchanged servers",
 		},
 		{
+			Name: "upgrade", Group: "daemon",
+			Local:   "Replaces the running daemon with another binary, a decision for whoever runs the CLI rather than a tool a model can call.",
+			Summary: "hand the running daemon over to this binary",
+			Detail: "Run from the new build. The running daemon starts this binary as its " +
+				"own child with --takeover, so the successor inherits the service's notify " +
+				"socket and stays in the unit's cgroup. The old daemon hands its listeners " +
+				"and stdio children across and exits once the successor has committed. " +
+				"With no daemon running this exits non-zero and changes nothing, so a " +
+				"start is the fallback. A daemon already running this binary answers " +
+				"\"already current\".",
+		},
+		{
 			Name: "restart", Group: "daemon",
 			Usage: "[--lazy] [--daemon] [server]", Summary: "restart servers, or the daemon itself",
 			Detail: "Stops every running instance and starts a replacement under the " +

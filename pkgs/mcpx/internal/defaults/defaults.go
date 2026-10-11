@@ -75,6 +75,7 @@ type Defaults struct {
 		TaskResultWait       string `json:"taskResultWait"`
 		StatsTop             int    `json:"statsTop"`
 		RegistryLimit        int    `json:"registryLimit"`
+		HandoffRetryInterval string `json:"handoffRetryInterval"`
 	} `json:"plumbing"`
 	// Resolve governs GET /v1/resolve, which answers "which daemon serves
 	// this directory" for a caller that has no mcpx binary.
@@ -220,6 +221,8 @@ type Defaults struct {
 		RegistryNameFallback int    `json:"registryNameFallback"`
 		LeaseTTL             string `json:"leaseTTL"`
 		SocketProbeTimeout   string `json:"socketProbeTimeout"`
+		TakeoverTimeout      string `json:"takeoverTimeout"`
+		TakeoverMaxFrame     string `json:"takeoverMaxFrame"`
 		WarmTimeout          string `json:"warmTimeout"`
 		RefreshTimeout       string `json:"refreshTimeout"`
 		InlineStartTimeout   string `json:"inlineStartTimeout"`
@@ -491,6 +494,9 @@ var (
 	TaskResultWait     = mustDur(builtin.Plumbing.TaskResultWait, "plumbing.taskResultWait")
 	StatsTop           = builtin.Plumbing.StatsTop
 	RegistryLimit      = builtin.Plumbing.RegistryLimit
+	// HandoffRetryInterval is how often a takeover re-checks pools that were
+	// busy with in-flight calls.
+	HandoffRetryInterval = mustDur(builtin.Plumbing.HandoffRetryInterval, "plumbing.handoffRetryInterval")
 
 	// ResolveDialTimeout bounds the liveness check /v1/resolve makes against
 	// the socket it is about to name. It is a local connect on a unix
@@ -672,6 +678,8 @@ var (
 	RegistryNameFallback = builtin.Limits.RegistryNameFallback
 	LeaseTTL             = mustDur(builtin.Limits.LeaseTTL, "limits.leaseTTL")
 	SocketProbeTimeout   = mustDur(builtin.Limits.SocketProbeTimeout, "limits.socketProbeTimeout")
+	TakeoverTimeout      = mustDur(builtin.Limits.TakeoverTimeout, "limits.takeoverTimeout")
+	TakeoverMaxFrame     = mustBytes(builtin.Limits.TakeoverMaxFrame, "limits.takeoverMaxFrame")
 	WarmTimeout          = mustDur(builtin.Limits.WarmTimeout, "limits.warmTimeout")
 	RefreshTimeout       = mustDur(builtin.Limits.RefreshTimeout, "limits.refreshTimeout")
 	InlineStartTimeout   = mustDur(builtin.Limits.InlineStartTimeout, "limits.inlineStartTimeout")

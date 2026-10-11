@@ -136,6 +136,8 @@ type Pool struct {
 	startingLegacy int
 	seq            int
 	closed         bool
+	// parked and handed hold what a handoff took out of service; see Detach.
+	parked, handed []*Instance
 
 	flightMu sync.Mutex
 	inflight map[string]int
@@ -452,6 +454,36 @@ func (p *Pool) reapDeadLocked() {
 
 func (p *Pool) start(ctx context.Context) (*Instance, error) { return p.startLane(ctx, false) }
 
+// installServerHooks wires what a server may ask of mcpx into the options its
+// session is opened with. It must run before the handshake, where a server
+// learns what mcpx can answer.
+func (p *Pool) installServerHooks(opts *mcpclient.Options, ref *instanceRef) {
+	h := p.Hooks
+	if h == nil {
+		return
+	}
+	if h.Elicit != nil {
+		opts.OnServerRequest = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+			// While a person or agent answers, the call that provoked the
+			// question is not using its budget. See budget.go.
+			if in := ref.ptr.Load(); in != nil {
+				defer in.questions.asking()()
+			}
+			return h.Elicit(ctx, p.cfg.Name, ref.key(), method, params)
+		}
+	}
+	opts.Roots = h.Roots
+	opts.ProbeTimeout = h.ProbeTimeout
+}
+
+// subscribeServerEvents routes what a session volunteers to the pool's hooks.
+// A session is a client-side object, so a successor subscribes its own.
+func (p *Pool) subscribeServerEvents(cl *mcpclient.Client) {
+	if h := p.Hooks; h != nil {
+		cl.Subscribe(h.notifications(p.cfg.Name))
+	}
+}
+
 // startLane starts an instance; legacy starts it legacy-only, for a legacy
 // caller under protocol: follow.
 func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
@@ -479,22 +511,11 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	}
 	opts := mcpclient.Options{ClientName: "mcpx", ClientVersion: Version, Preference: pref}
 	ref := &instanceRef{p: p}
+	p.installServerHooks(&opts, ref)
 	eraKey := Identity(p.cfg)
 	var cached EraRecord
 	var eras EraStore
 	if h := p.Hooks; h != nil {
-		if h.Elicit != nil {
-			opts.OnServerRequest = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
-				// While a person or agent answers, the call that provoked the
-				// question is not using its budget. See budget.go.
-				if in := ref.ptr.Load(); in != nil {
-					defer in.questions.asking()()
-				}
-				return h.Elicit(ctx, p.cfg.Name, ref.key(), method, params)
-			}
-		}
-		opts.Roots = h.Roots
-		opts.ProbeTimeout = h.ProbeTimeout
 		eras = h.Eras
 	}
 	forced := pref == mcpclient.ForceLegacy || pref == mcpclient.ForceModern
@@ -572,13 +593,11 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	// lines, progress, list changes, resource updates. Installed before the
 	// instance is handed out, so nothing a server says in its first moments
 	// is lost.
-	if h := p.Hooks; h != nil {
-		cl.Subscribe(h.notifications(p.cfg.Name))
-		// Servers send nothing until asked, so a client that never sets a
-		// level concludes a server emits no logs at all.
-		if h.LogLevel != "" {
-			_ = cl.SetLogLevel(sctx, h.LogLevel)
-		}
+	p.subscribeServerEvents(cl)
+	// Servers send nothing until asked, so a client that never sets a level
+	// concludes a server emits no logs at all.
+	if h := p.Hooks; h != nil && h.LogLevel != "" {
+		_ = cl.SetLogLevel(sctx, h.LogLevel)
 	}
 
 	p.mu.Lock()
