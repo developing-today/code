@@ -154,3 +154,9 @@ I will not create accounts, deploy, or change DNS without an explicit go-ahead, 
 - The README gives the QAD port as 7824. The code uses 7842.
 
 This document uses the code's values.
+
+## 2026-10-11T12-20-38Z Update: re-run of t2 and t4
+
+- t2 re-home measured 22.5 s on this run (earlier runs 20.5 s and 21.6 s). The "20–22 s" in §3 and gotcha 3 should read 20–23 s.
+- t2 and t4 both pass on the current build. Raw output is in `spikes/c1-rerun`.
+- Not tested: real NAT. Both endpoints share one host.

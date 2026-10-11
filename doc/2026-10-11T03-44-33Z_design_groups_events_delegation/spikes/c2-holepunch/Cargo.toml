@@ -1,0 +1,22 @@
+[package]
+name = "c2-holepunch"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# C2: holepunching between two iroh endpoints behind NAT, both homed on a local relay (see
+# RESULTS.md). Standalone: the empty [workspace] keeps cargo from joining the spikes workspace.
+[workspace]
+
+[dependencies]
+# Connectivity profile types and the n0 relay list (c1-connect, path dependency, read only).
+c1-connect = { path = "/home/user/work/spikes/c1-connect" }
+iroh = "1.3.0"
+iroh-tickets = "1.0.0"
+iroh-relay = "1.3.0"
+n0-future = "0.3"
+rustls-pki-types = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

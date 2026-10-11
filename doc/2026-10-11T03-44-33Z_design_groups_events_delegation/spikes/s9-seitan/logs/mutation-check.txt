@@ -1,0 +1,40 @@
+baseline (unmutated copy):
+  passed=38 failed=0 compile_error=False
+M1 eddsa stage label: passed=37 failed=1 compile_error=False
+    FAILED ed25519_public_key_is_the_one_boxed_in_the_vector_pkey
+M2 invite-ID tag byte: passed=35 failed=3 compile_error=False
+    FAILED a_signed_proof_verifies_under_the_invite_public_key
+    FAILED derive::tests::v1_vector_checks_the_steps_v1_and_v2_share
+    FAILED invite_id_matches_the_vector
+M3 scrypt r: passed=33 failed=5 compile_error=False
+    FAILED a_signed_proof_verifies_under_the_invite_public_key
+    FAILED derive::tests::v1_vector_checks_the_steps_v1_and_v2_share
+    FAILED ed25519_public_key_is_the_one_boxed_in_the_vector_pkey
+    FAILED invite_id_matches_the_vector
+    FAILED stretch_matches_the_vector_sikey
+M4 no stale check: passed=35 failed=3 compile_error=False
+    FAILED a_ctime_is_admitted_exactly_inside_the_window
+    FAILED an_accept_for_an_earlier_invite_with_the_same_token_is_stale
+    FAILED an_accept_from_before_the_invite_existed_is_stale
+M5 no use limit: passed=36 failed=2 compile_error=False
+    FAILED a_valid_accept_admits_once_and_the_invite_is_then_used_up
+    FAILED multi_use_invites_still_block_the_same_joiner_twice
+M6 no expiry check: passed=36 failed=2 compile_error=False
+    FAILED an_accept_signed_after_expiry_is_expired_even_if_processed_in_time
+    FAILED an_expired_invite_rejects_at_processing_time
+M7 signature not checked: passed=30 failed=8 compile_error=False
+    FAILED a_flipped_signature_bit_is_rejected
+    FAILED a_forged_message_signed_with_another_key_fails
+    FAILED a_forged_message_with_the_public_invite_id_fails_the_signature
+    FAILED a_proof_from_another_token_fails_under_this_key
+    FAILED a_rejected_attempt_does_not_use_up_the_invite
+    FAILED changing_any_signed_field_breaks_the_signature
+    FAILED flipping_any_message_bit_breaks_the_signature
+    FAILED the_signature_covers_the_exact_bytes_sent
+M8 ctime before eldest_seqno: passed=37 failed=1 compile_error=False
+    FAILED accept_message_is_the_keybase_map_in_declaration_order
+M9 use not recorded: passed=36 failed=2 compile_error=False
+    FAILED a_valid_accept_admits_once_and_the_invite_is_then_used_up
+    FAILED multi_use_invites_still_block_the_same_joiner_twice
+M10 no revocation check: passed=37 failed=1 compile_error=False
+    FAILED a_revoked_invite_admits_no_one

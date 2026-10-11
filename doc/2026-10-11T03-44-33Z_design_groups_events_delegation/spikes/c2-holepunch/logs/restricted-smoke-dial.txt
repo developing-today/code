@@ -1,0 +1,19 @@
+   3052 ms online home_relays=["http://10.0.0.1:3340/"]
+ticket relays=["http://10.0.0.1:3340/"] direct=0
+     36 ms handshake done, selected=relay http://10.0.0.1:3340/
+     54 ms first reply (27 bytes), selected=relay http://10.0.0.1:3340/
+     63 ms dial path opened: direct 10.0.0.2:4444
+     67 ms dial path selected: direct 10.0.0.2:4444
+--- summary (dial)
+connected_ms=36 handshake_path=relay http://10.0.0.1:3340/
+first_data_ms=54 first_data_path=relay http://10.0.0.1:3340/
+first_direct_selected_ms=67 (direct 10.0.0.2:4444)
+selections=[(67, "direct 10.0.0.2:4444")]
+window_s=8 echoes_ok=32 echoes_failed=0 echoes_on_direct=31 echoes_on_relay=1
+rtt_ms_median_relay=Some(9.1)
+rtt_ms_median_direct=Some(1.5)
+selected_at_end=direct 10.0.0.2:4444
+holepunch_attempts=3
+own_ip_candidates=["10.0.0.3:4444", "192.168.2.2:4444"]
+   8196 ms dial path closed: relay http://10.0.0.1:3340/
+   8196 ms dial path closed: direct 10.0.0.2:4444

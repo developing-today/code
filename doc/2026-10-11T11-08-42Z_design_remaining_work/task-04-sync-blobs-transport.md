@@ -38,3 +38,35 @@ Events move between nodes by range reconciliation. Large payloads move as iroh-b
 ## Dependencies
 
 No new crates expected. iroh-blobs is already in the lock file.
+
+## 2026-10-11T12-20-38Z Update: observe and sync
+
+- `observe` is the iroh-blobs ObserveRequest. It returns the raw bitfield for a hash: which bytes the provider holds, and the size. Default mode `None` answers any requester, so existence and size leak.
+- Gating: `EventMask` `Intercept` decides each request. Preferred (#5): serve observe only to peers who could fetch the blob under the world's rules, with observe off by default. Alternative: disable observe and take the size from the event that references the blob.
+- Range sync (N5, N6): S1 was an in-memory simulation. At 1,000 chains with 2 new events, range control is 6,198 B in 7 flights. LogSync control is 76,071 B in 2 flights. At 10,000 chains: 6,978 B in 8 flights, against LogSync 760,071 B. S1 also found LogSync cheaper at 200 new events on 1,000 chains.
+- S1 could not test sequence gaps, XOR cancellation, bounds at 0x00 bytes, or interrupted sessions. S7 checks each on real stores.
+
+## 2026-10-11T12-49-09Z Update: range sync on real stores (S7)
+
+- Range sync over iroh on real redb stores works, and it matches the S1 simulation. Every run ended with equal stores, no duplicate inserts, and the true difference learned.
+- 1,000 chains, 2 new events: 7 flights, 6,554 B control, 996 B data. S1 simulated 6,198 B. The gap is probably the 40-byte keys. 10,000 chains: 8 flights, 7,422 B control.
+- Crossover (K=16, T=16): range wins control bytes up to about 33 new events at 1,000 chains, and about 360 at 10,000. LogSync wins flights everywhere (2 against 7 to 8). LogSync was not run on the real stores; those numbers are S1's.
+- Parameters: keep K=16, T=16. For bulk catch-up, K=4 and T=8 save 28 to 33% of control at 200 new events, for 4 more flights. Avoid K=2 and K=32.
+- Gap case: a height-only comparison would miss a sequence gap. Range catches it.
+- XOR cancellation: the count check catches unequal sizes. Equal-size collisions can slip through; shown with crafted IDs. With real BLAKE3 IDs the chance is about 2^-128 per range.
+- Interrupted session: the cut left whole batches (96 of 180). The restart sent only the 84 missing events, with no duplicates.
+- Equal stores still cost about 21.6 KB on the wire, from the handshake and two small messages. That dominates small syncs.
+- S1's split code would panic when K exceeds a range starting at key 0 (read, not run). The S7 port uses min(K, n).
+- Not tested: LogSync over iroh, real round-trip time, bootstrap from an empty store, power loss.
+
+## 2026-10-11T16-08-10Z Decision: sync method and observe
+
+- **Range above the crossover, LogSync below it (decided).** Both must be supported, and each side can answer either. Tradeoffs and the selection rule are in the explainers, section 5.
+- **K and T (N6).** Pending round 2 (range-config). The answer decides whether K and T are configurable per node without a compatibility cost.
+- **observe (decision 5, decided).** Each request is gated by the world's fetch rules. Observe is off by default. Gating is per server by default, and can be narrowed per world.
+- Steps: [plan](./plan-phases.md), Phase 3.
+
+## 2026-10-11T17-58-40Z Update: round 2 results
+
+- The round 2 answers are in the [explainers](./explainers.md), the [index](./2026-10-11T11-08-42Z_design_remaining_work.md), and the [round 2 results](./research-round2/README.md).
+- The steps this task feeds are in the [phased plan](./plan-phases.md). Each step names its blocker and its tests.
