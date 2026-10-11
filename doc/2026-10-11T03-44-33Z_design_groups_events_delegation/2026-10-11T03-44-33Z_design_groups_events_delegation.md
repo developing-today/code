@@ -751,3 +751,58 @@ Local code and docs:
 - Research note outside `main`: `/home/user/work/docs-artifacts/doc/2026-10-10T06-00-00Z_research_identity_capabilities/`.
 
 Related, not re-read for this document: `2026-03-20T05-30-00Z_feature_collaborative_cursor_enhancements`, `2026-03-21T05-47-48Z_feature_content_modes`, `2026-03-22T00-00-00Z_feature_peer-discovery`.
+
+---
+
+## 2026-10-11T04-20-17Z Decision: owner review of delegation, encryption, size warnings, pull, and joiner history
+
+Context: owner review after the research pass. Full findings, with sources and the verification status of each claim, are in the [research findings](./2026-10-11T04-20-17Z_research_findings.md).
+
+1. Delegation removal default is `cascade`. The definition is tightened to UCAN's rule: a delegation's authority is cut only where no other intact chain carries it. The mutual-removal carve-out from p2panda-auth's StrongRemove stays. This settles §7.3 and §18 item 1.
+2. Every group is end-to-end encrypted by default (DataScheme). A non-end-to-end option, `scheme: none`, is required. It must be chosen explicitly at creation, is recorded in the signed group policy, and is shown to members as server-readable. This supersedes §8.6 item 4 and settles §18 item 2.
+3. Size warnings apply to end-to-end groups only, counted in recipient devices:
+   - above 96: a warning;
+   - at 128 or more: a stronger warning.
+
+   Warnings never block an add, a removal, or a device add. There are no caps. They appear in group status (CLI, web, and explorer) and whenever an action crosses a threshold. Groups without end-to-end encryption have no rekeying cost, so they get no size warning. Account counts are shown alongside device counts for display.
+
+   Research §3.7–3.8: no published breakpoint exists at 96. 128 matches the DCGKA paper's one data point. The first large cost jump is probably near 1,000, which is extrapolated. The owner may add a third tier at 1,000. That tier is not implemented.
+
+4. Joiner history default is `full`. This matches Matrix's default, `shared`. It settles §18 item 3.
+5. Pulling a chain is open by default. It can be set to `authorized` per server or per group. Limits that must be documented:
+   - Authorized pull is advisory. It stops honest nodes from serving unauthorised peers. It does not stop an authorised node from re-serving, does not recall copies after revocation, and does not hide metadata.
+   - Any node that stores a chain can read its metadata: author key, sequence number, kind, group ID, `after` hashes, payload size, and arrival time.
+   - In end-to-end groups the bodies are encrypted. In `scheme: none` groups, every storing node can read the bodies.
+
+   This settles §18 item 13.
+
+6. This branch, `docs/id-groups-events-delegation`, is pushed to origin. It is not merged to main.
+
+Consequences for implementation, from the research:
+
+- Warnings count recipient devices (research §2.4).
+- Never call `Header::verify`. Verify from the encoded bytes (research §1.1).
+- Raise `pkgs/id`'s `rust-version` to 1.96 before adopting the p2panda crates (research §0).
+- The `after` cap of 32 is smaller than DataScheme's ordering can need in busy groups. Merge and checkpoint events are needed for encryption as well as for the DAG (research §3.1).
+- Waiting queues need per-author caps and expiry (research §1.4).
+- The pull documentation must state the metadata limit plainly (decision 5).
+
+---
+
+## 2026-10-11T04-20-17Z Discovery: corrections from the research pass
+
+- §8.2 and §8.6: "a new epoch on each membership change" is wrong for adds. DataScheme's `add` mints no secret. `create`, `update`, and `remove` do. Joiners receive the whole secret bundle, which is why `full` works natively.
+- §8.5: MessageScheme is not a Double Ratchet per member pair. Each member has a sending chain, and each receiver keeps one ratchet per other member. Acks are required on each membership change.
+- §12: "exist at or after that time" is wrong. A witness proves that an event existed at or before the signed time.
+- §4.5: CBOR candidates. cbor-core is the choice, because p2panda-core signs over its encoding. dcbor is the stricter profile to borrow rules from. ciborium and minicbor do not sort keys as RFC 8949 §4.2 requires.
+- §11.2: iroh-docs read access is possession of the namespace ID. Any node already syncing the namespace serves any peer that presents it. Writing needs the namespace secret plus an author key.
+- §13: beekem is on crates.io as a standalone Apache-2.0 crate. The BeeKEM path is adopt or wrap, not port later. It is still research code.
+- §2 and §13: `Header::verify` returns `true` in non-test builds of p2panda-core. Never call it.
+- §2 and §13: p2panda-core, p2panda-auth, p2panda-encryption, and p2panda-spaces need Rust 1.96. `pkgs/id` declares 1.91.0.
+- §7.3: "cascade" needs the precise definition of no alternate valid path.
+- §10.4: the Seitan V2 derivations are now checked against keybase/client source (`go/teams/seitan.go`). That covers the scrypt parameters and the HMAC-SHA512 invite-ID truncation, and a test vector is available. The accept-message bytes and the admin path are still unverified at runtime.
+- §4.2: waiting events need per-author caps and expiry. p2panda-stream holds pending items forever.
+- §6.4: redb is already in the tree through iroh-blobs and iroh-docs. Disabling iroh-docs' default `redb-v2-migration` drops redb 3.x. That is affordable because existing data may be discarded.
+- §7.5: our client endpoints use the N0 preset, so resolving a bare node ID queries n0. The trade-off is in the research note.
+- §6.1: tags are proposed to follow the content policy, not strong-remove voidness.
+- §3 and §9: "pulls are unauthenticated" is still accurate as written. Decision 5 changes the default, not the fact.
