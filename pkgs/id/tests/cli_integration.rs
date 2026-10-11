@@ -55,26 +55,27 @@ impl OutputWithin for Command {
         &mut self,
         timeout: std::time::Duration,
     ) -> std::io::Result<std::process::Output> {
-        use std::io::Read;
+        use std::sync::{Arc, Mutex, mpsc};
         let mut child = self
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
         // Drain both pipes on their own threads so a chatty child cannot block
-        // on a full pipe while we wait for it.
-        let mut stdout = child.stdout.take().expect("stdout is piped");
-        let mut stderr = child.stderr.take().expect("stderr is piped");
-        let out = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        });
-        let err = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        });
+        // on a full pipe while we wait for it. Each reader reports when it ends.
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let err = Arc::new(Mutex::new(Vec::new()));
+        let (done_tx, done_rx) = mpsc::channel();
+        drain(
+            child.stdout.take().expect("stdout is piped"),
+            Arc::clone(&out),
+            done_tx.clone(),
+        );
+        drain(
+            child.stderr.take().expect("stderr is piped"),
+            Arc::clone(&err),
+            done_tx,
+        );
 
         let started = std::time::Instant::now();
         let status = loop {
@@ -87,12 +88,38 @@ impl OutputWithin for Command {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
+        // A grandchild can outlive the child and keep the pipes open. The readers
+        // get a short grace period, and whatever they have read is returned.
+        let grace = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        for _ in 0..2 {
+            let _ = done_rx.recv_timeout(grace.saturating_duration_since(std::time::Instant::now()));
+        }
         Ok(std::process::Output {
             status,
-            stdout: out.join().unwrap_or_default(),
-            stderr: err.join().unwrap_or_default(),
+            stdout: out.lock().map(|bytes| bytes.to_vec()).unwrap_or_default(),
+            stderr: err.lock().map(|bytes| bytes.to_vec()).unwrap_or_default(),
         })
     }
+}
+
+/// Copies `pipe` into `sink` until it closes, then reports on `done`.
+fn drain<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+    sink: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0_u8; 8192];
+        while let Ok(read) = pipe.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            if let Ok(mut bytes) = sink.lock() {
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+        }
+        let _ = done.send(());
+    });
 }
 
 #[test]
