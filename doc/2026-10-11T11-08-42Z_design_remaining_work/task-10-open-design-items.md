@@ -52,3 +52,17 @@ The size tiers (task 05) need a UI in every surface that shows group status.
 ## Acceptance
 
 Each item gets a short design note, linked from the design, before any implementation starts. Each note records the decision and the test that would show it is right.
+
+## 2026-10-11T12-53-32Z Update: preferred answers for each item
+
+Each item below gives my recommendation first, then the alternatives. The owner decides; the design note and test are still required before implementation.
+
+1. **Retention.** Preferred: keep every event back to the causal past of each open removal and each open frontier. Prune only behind a snapshot at a causal cut (S8). Test: a replica that joins after pruning reaches the same state. Alternative: no pruning, simplest and growing. Alternative: time-based retention with a snapshot.
+2. **Multi-device.** Preferred: each device has its own chain. The account authorises devices with signed `device.add` and `device.revoke` delegations, and the warnings count devices. Alternative: one device per account at launch. Note that p2panda-spaces is not production-ready, so the group-encryption plan must not depend on it (task 05).
+3. **Fork recovery.** Preferred: removal and re-enrolment under a new device key (decision 17). Alternative: automatic quarantine, with owner approval. Test: after a fork, the frozen chain is no longer accepted, and the re-enrolled device reaches the same state.
+4. **Content on removal.** Preferred: keep content (decision 4). Hide concurrent content only with an explicit flag. Alternative: hide concurrent content for a window. Test: as in task 03.
+5. **Use-count bounds.** Preferred: drop them from the protocol and keep local enforcement at the hosting node. Counts do not converge across partitions, so they cannot be authoritative. Alternative: keep signed bounds. Test: a partition test shows no divergence in state.
+6. **Live editing.** Preferred: the collab server stays the live authority. Write a document event on explicit save and on idle close. Alternative: timer only. Alternative: every change, which is large. Decide before task 06's document work.
+7. **Views.** Preferred: CLI first, then web. Keep the rejection reasons: "voided", "waiting", "frozen". Alternative: web first.
+8. **Cross-world rules.** Not changed here. Still to be reconciled with delegation (task 03, item 7).
+9. **Warnings UI.** Preferred: show the size tier in group status in both the CLI and the web view. Alternative: CLI only at first.
