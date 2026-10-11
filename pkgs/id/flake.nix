@@ -59,6 +59,8 @@
           opensslEnv
           rustToolchain
           fmtBins
+          rocCompiler
+          buildWasmHost
           ;
         inherit (nixCommon) nativeBuildInputs;
 
@@ -196,6 +198,8 @@
 
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)
+
+              ${buildWasmHost}
 
               just ${justCmd}
             '';
@@ -576,6 +580,9 @@
               rustToolchain
               pkgs.bun
               bun2nixPkg.hook
+              # The tests compile roc worlds. zig is not listed: its setup hook would
+              # replace this derivation's build phase (buildWasmHost finds it by path).
+              rocCompiler
             ];
 
             # bun2nix: offline web dependency installation
@@ -598,6 +605,8 @@
               cd web
               bun run build
               cd ..
+
+              ${buildWasmHost}
             '';
 
             doCheck = true;
@@ -632,11 +641,14 @@
               pkgs.pkg-config
               pkgs.cmake
               rustToolchain
+              rocCompiler
             ];
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+            preBuild = buildWasmHost;
 
             doCheck = true;
             # serve_tests require networking (bind/listen), unavailable in nix sandbox

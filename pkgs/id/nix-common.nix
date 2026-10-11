@@ -19,6 +19,21 @@ let
   # Works because both shell.nix and flake.nix apply rust-overlay before importing
   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
+  # Roc at the nightly the tests and examples/roc-world are pinned to (nix/roc.nix),
+  # and zig 0.16, the minimum examples/roc-world/host/build.zig.zon asks for.
+  rocCompiler = pkgs.callPackage ./nix/roc.nix { };
+  zig = pkgs.zig_0_16;
+
+  # Builds examples/roc-world/targets/wasm32/host.wasm in the current build
+  # directory. The file is git-ignored, and the roc-world platform refuses to load
+  # without it (src/world_compile.rs), so every derivation that runs the tests
+  # builds it first. Expects to run from the crate root. zig is named by path, not
+  # put in nativeBuildInputs, because its setup hook replaces any default build phase.
+  buildWasmHost = ''
+    export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
+    ROC=${rocCompiler}/bin/roc ZIG=${zig}/bin/zig ./examples/roc-world/build-host.sh
+  '';
+
   # Formatter binaries (keep in sync with treefmt.toml)
   # Used by formatter wrapper (nix fmt), nix flake checks, and devShell PATH
   fmtBins = [
@@ -53,6 +68,8 @@ let
       pkg-config
       openssl
       cmake # libsql-ffi builds its bundled SQLite via cmake
+      zig # builds the roc-world wasm host (buildWasmHost)
+      rocCompiler # compiles roc worlds in the tests (world_compile)
 
       # Cargo plugins
       cargo-watch
@@ -86,7 +103,13 @@ let
     ]);
 in
 {
-  inherit rustToolchain fmtBins nativeBuildInputs;
+  inherit
+    rustToolchain
+    fmtBins
+    nativeBuildInputs
+    rocCompiler
+    buildWasmHost
+    ;
 
   # Build inputs (libraries for Rust compilation)
   buildInputs = with pkgs; [ openssl ];
