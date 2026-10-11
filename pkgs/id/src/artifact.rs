@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
@@ -34,6 +35,7 @@ use iroh::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::connectivity::{DIAL_TIMEOUT, connect, within};
 use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
@@ -811,42 +813,61 @@ async fn receive_pushed(hub: &WorldHub, body: &[u8]) -> Reply {
 }
 
 /// Fetch one page of `account`'s artifacts after `after` from the home server at `peer`.
+/// The dial and the answer share one [`DIAL_TIMEOUT`].
 ///
 /// # Errors
 ///
-/// Fails if the peer is unreachable, does not speak [`PULL_ALPN`], or answers with
-/// something other than a page.
+/// Fails if the deadline passes, the peer is unreachable, does not speak
+/// [`PULL_ALPN`], or answers with something other than a page.
 pub async fn fetch_page(
     endpoint: &Endpoint,
     peer: EndpointAddr,
     account: &str,
     after: u64,
 ) -> Result<Vec<SignedArtifact>> {
+    fetch_page_within(endpoint, peer, account, after, DIAL_TIMEOUT).await
+}
+
+/// [`fetch_page`] with its own deadline, which covers the address lookup, the
+/// dial and the answer.
+///
+/// # Errors
+///
+/// As [`fetch_page`], and fails if `limit` passes first.
+pub async fn fetch_page_within(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    after: u64,
+    limit: Duration,
+) -> Result<Vec<SignedArtifact>> {
     check_key(account)?;
-    let connection = endpoint
-        .connect(peer, PULL_ALPN)
-        .await
-        .context("connecting to the home server")?;
-    let (mut send, mut recv) = connection
-        .open_bi()
-        .await
-        .context("opening a pull stream")?;
-    let request = PullRequest {
-        account: account.to_owned(),
-        after,
-    };
-    write_frame(&mut send, &serde_json::to_vec(&request)?).await?;
-    send.finish().context("finishing the pull request")?;
-    let frame = read_frame(&mut recv)
-        .await?
-        .context("home server closed without a page")?;
-    let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
-    ensure!(
-        within_budget(&page.artifacts),
-        "artifact page is over its byte budget"
-    );
-    connection.close(0_u32.into(), b"pulled");
-    Ok(page.artifacts)
+    within(limit, "pulling artifacts from the home server", async {
+        let connection = connect(endpoint, peer, PULL_ALPN)
+            .await
+            .context("connecting to the home server")?;
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .context("opening a pull stream")?;
+        let request = PullRequest {
+            account: account.to_owned(),
+            after,
+        };
+        write_frame(&mut send, &serde_json::to_vec(&request)?).await?;
+        send.finish().context("finishing the pull request")?;
+        let frame = read_frame(&mut recv)
+            .await?
+            .context("home server closed without a page")?;
+        let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
+        ensure!(
+            within_budget(&page.artifacts),
+            "artifact page is over its byte budget"
+        );
+        connection.close(0_u32.into(), b"pulled");
+        Ok(page.artifacts)
+    })
+    .await
 }
 
 /// Pull `account`'s new artifacts from the home server at `peer`, page by page,
@@ -855,7 +876,7 @@ pub async fn fetch_page(
 ///
 /// A page is cut by bytes, so a short page does not mean the chain has ended.
 /// The pull asks again after every page that stored something, which costs one
-/// empty answer at the end.
+/// empty answer at the end. Each page fetch has [`DIAL_TIMEOUT`].
 ///
 /// # Errors
 ///
@@ -866,11 +887,26 @@ pub async fn pull(
     account: &str,
     directory: &mut Directory,
 ) -> Result<PageOutcome> {
+    pull_within(endpoint, peer, account, directory, DIAL_TIMEOUT).await
+}
+
+/// [`pull`] with `limit` on each page fetch, see [`fetch_page_within`].
+///
+/// # Errors
+///
+/// Fails if a page cannot be fetched within `limit`.
+pub async fn pull_within(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    directory: &mut Directory,
+    limit: Duration,
+) -> Result<PageOutcome> {
     check_key(account)?;
     let mut total = PageOutcome::default();
     loop {
         let after = directory.artifacts().head_seq(account);
-        let page = fetch_page(endpoint, peer.clone(), account, after).await?;
+        let page = fetch_page_within(endpoint, peer.clone(), account, after, limit).await?;
         let outcome = apply_page(directory, account, &page);
         total.stored += outcome.stored;
         total.duplicates += outcome.duplicates;
@@ -898,8 +934,12 @@ mod tests {
     use proptest::prelude::*;
     use serde_json::json;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Instant;
     use tempfile::TempDir;
 
+    use crate::connectivity::silent::{
+        endpoint_with_silent_lookup, unanswered_addr, unanswered_id,
+    };
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
 
@@ -1547,5 +1587,52 @@ mod tests {
         assert_eq!(outcome.stored, 100);
         assert!(outcome.refused.is_none());
         assert_eq!(reader.artifacts().head_seq(&ann), 100);
+    }
+
+    /// A pull to an address nothing answers must end at its deadline, not wait out
+    /// the handshake.
+    #[tokio::test]
+    async fn a_pull_from_an_unanswered_address_ends_at_its_deadline() {
+        let client = endpoint().await;
+        let mut directory = Directory::new();
+        let started = Instant::now();
+        let error = pull_within(
+            &client,
+            unanswered_addr(),
+            &public(1),
+            &mut directory,
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+    }
+
+    /// A pull by node ID whose address lookup never answers must end at its deadline.
+    #[tokio::test]
+    async fn a_pull_whose_lookup_never_answers_ends_at_its_deadline() {
+        let client = endpoint_with_silent_lookup().await;
+        let mut directory = Directory::new();
+        let started = Instant::now();
+        let error = pull_within(
+            &client,
+            unanswered_id(),
+            &public(1),
+            &mut directory,
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
     }
 }
