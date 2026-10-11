@@ -680,7 +680,6 @@
     "nix-check": { "attributes": [], "name": "nix-check", "target": "test-nix" },
     "release-force": { "attributes": [], "name": "release-force", "target": "release-web-force" },
     "test-cargo": { "attributes": [], "name": "test-cargo", "target": "test-rust" },
-    "test-full": { "attributes": [], "name": "test-full", "target": "test-nix" },
     "test-int": { "attributes": [], "name": "test-int", "target": "test-integration" },
     "test-lib": { "attributes": [], "name": "test-lib", "target": "test-unit" },
     "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
@@ -2199,6 +2198,26 @@
       "private": false,
       "quiet": false,
       "namepath": "test-e2e-report",
+      "shebang": false
+    },
+    "test-full": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --all-features --no-fail-fast"],
+        ["cargo test --all-features --test regression_replay"],
+        [
+          "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo test --all-features --test tuple_properties"
+        ],
+        ["@echo \"✓ Full Rust test run passed\""]
+      ],
+      "dependencies": [],
+      "doc": "Full Rust run: the complete suite, then the regression replay and the tuple property tests at a higher case count",
+      "name": "test-full",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-full",
       "shebang": false
     },
     "test-int-sandbox": {

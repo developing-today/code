@@ -37,12 +37,92 @@ fn get_binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_id"))
 }
 
+/// How long one CLI invocation may run before its test fails. A client stuck
+/// on a silent server must not block the suite.
+const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+
+/// [`Command::output`] with a deadline. Once `timeout` passes the child is
+/// killed and its status reports the kill, so a hung process fails the test.
+trait OutputWithin {
+    fn output_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output>;
+}
+
+impl OutputWithin for Command {
+    fn output_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        let mut child = self
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // Drain both pipes on their own threads so a chatty child cannot block
+        // on a full pipe while we wait for it.
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let out = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        });
+        let err = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                child.kill()?;
+                break child.wait()?;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: out.join().unwrap_or_default(),
+            stderr: err.join().unwrap_or_default(),
+        })
+    }
+}
+
+#[test]
+fn test_output_within_kills_a_hung_process() {
+    let started = std::time::Instant::now();
+    let output = Command::new("sleep")
+        .arg("60")
+        .output_within(std::time::Duration::from_millis(200))
+        .unwrap();
+    assert!(!output.status.success(), "a killed child is not a success");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the deadline, not the child, ends the wait"
+    );
+
+    let quick = Command::new("sh")
+        .args(["-c", "printf out; printf err >&2"])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+    assert!(quick.status.success());
+    assert_eq!(quick.stdout, b"out");
+    assert_eq!(quick.stderr, b"err");
+}
+
 /// Run a CLI command and return output
 fn run_cmd(args: &[&str], work_dir: &std::path::Path) -> std::process::Output {
     Command::new(get_binary_path())
         .args(args)
         .current_dir(work_dir)
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .expect("Failed to execute command")
 }
 
@@ -1033,6 +1113,11 @@ mod serve_tests {
         ///
         /// Returns the node ID on success.
         fn wait_ready_with_web(&mut self, wait_for_web: bool) -> String {
+            self.wait_ready_within(wait_for_web, SERVER_STARTUP_TIMEOUT)
+        }
+
+        /// Like [`wait_ready_with_web`](Self::wait_ready_with_web), with an explicit deadline.
+        fn wait_ready_within(&mut self, wait_for_web: bool, timeout: Duration) -> String {
             let start = Instant::now();
             let stdout = self.process.stdout.take().expect("stdout not captured");
             let reader = BufReader::new(stdout);
@@ -1048,14 +1133,29 @@ mod serve_tests {
                 );
             }
 
+            // The reader runs on its own thread so the deadline holds while the
+            // server is silent: a blocking read on stdout never returns by itself.
+            let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in reader.lines() {
+                    if lines_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+
             // Read lines until we see "node: <id>" which indicates server is ready
-            for line in reader.lines() {
-                assert!(
-                    (start.elapsed() <= SERVER_STARTUP_TIMEOUT),
-                    "Server startup timed out after {SERVER_STARTUP_TIMEOUT:?}\n\
+            loop {
+                let line = match lines_rx.recv_timeout(timeout.saturating_sub(start.elapsed())) {
+                    Ok(line) => line,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                        "Server startup timed out after {timeout:?}\n\
                          --- stderr ---\n{}\n--- end stderr ---",
-                    self.captured_stderr()
-                );
+                        self.captured_stderr()
+                    ),
+                    // stdout closed: the server exited, and the EOF path below reports it
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
 
                 // Check if process exited between lines
                 if let Some(status) = self.process.try_wait().expect("try_wait failed") {
@@ -1136,6 +1236,22 @@ mod serve_tests {
         /// Sends SIGINT (Ctrl+C) to gracefully stop the server and waits for exit.
         #[cfg(unix)]
         #[allow(unsafe_code, clippy::cast_possible_wrap)]
+        /// Waits for the child to exit. After `grace` it is killed, so a server
+        /// that ignores SIGINT cannot hang the suite.
+        fn wait_or_kill(&mut self, grace: Duration) -> std::io::Result<std::process::ExitStatus> {
+            let started = Instant::now();
+            loop {
+                if let Some(status) = self.process.try_wait()? {
+                    return Ok(status);
+                }
+                if started.elapsed() >= grace {
+                    self.process.kill()?;
+                    return self.process.wait();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         fn stop(&mut self) {
             let pid = self.process.id();
             // Send SIGINT for graceful shutdown
@@ -1144,9 +1260,7 @@ mod serve_tests {
             unsafe {
                 libc::kill(pid as i32, libc::SIGINT);
             }
-            // Wait for process to exit with timeout
-            // The wait() call blocks until the child exits
-            match self.process.wait() {
+            match self.wait_or_kill(Duration::from_secs(10)) {
                 Ok(status) => {
                     // Process exited, now give a brief moment for any final cleanup
                     // (lock file removal happens in the tokio shutdown path)
@@ -1185,6 +1299,35 @@ mod serve_tests {
                 );
             }
         }
+    }
+
+    /// A server that never prints its node line must fail at the deadline. A
+    /// silent `sleep` stands in for the server, which used to block the suite.
+    #[test]
+    fn test_silent_server_fails_at_the_startup_deadline() {
+        let child = StdCommand::new("sleep")
+            .arg("60")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut server = ServerHandle {
+            process: child,
+            work_dir: std::env::temp_dir(),
+            node_id: None,
+            web_port: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            _stderr_thread: None,
+        };
+        let started = Instant::now();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            server.wait_ready_within(false, Duration::from_millis(200))
+        }));
+        assert!(outcome.is_err(), "a silent server must not count as ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the wait must end at its deadline, not when the child exits"
+        );
     }
 
     /// First IPv4 socket address recorded in a serve lock file.
@@ -1239,7 +1382,7 @@ mod serve_tests {
             ]
             .to_vec();
             full.extend_from_slice(args);
-            let refused = world(&full).output().unwrap();
+            let refused = world(&full).output_within(PROCESS_TIMEOUT).unwrap();
             assert!(!refused.status.success(), "{args:?} should be refused");
             assert!(
                 String::from_utf8_lossy(&refused.stderr).contains(reason),
@@ -1264,7 +1407,7 @@ mod serve_tests {
             "--uses",
             "2",
         ])
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -1324,7 +1467,7 @@ mod serve_tests {
 
         // A wrong admin secret is refused with the host's reason.
         let denied = world(&["invite", &node, "--admin-token", "nope", "--name", "eve"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!denied.status.success());
         assert!(String::from_utf8_lossy(&denied.stderr).contains("invite denied"));
@@ -1335,7 +1478,7 @@ mod serve_tests {
 
         // The right one prints only the capability.
         let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             invited.status.success(),
@@ -1349,7 +1492,7 @@ mod serve_tests {
         // pins it in the blob store, and atomically switches the lobby.
         let module = module.to_str().unwrap();
         let rejected = world(&["install", &node, module, "--admin-token", "wrong"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!rejected.status.success());
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("module install denied"));
@@ -1362,7 +1505,7 @@ mod serve_tests {
             "--seed",
             "7",
         ])
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             installed.status.success(),
@@ -1412,7 +1555,7 @@ mod serve_tests {
         // A forged capability is told "join denied".
         let forged = world(&["join", &node, "--capability", &"0".repeat(64)])
             .stdin(Stdio::null())
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(String::from_utf8_lossy(&forged.stdout).contains("join denied"));
 
@@ -1444,7 +1587,7 @@ mod serve_tests {
         };
 
         let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             invited.status.success(),
@@ -1464,7 +1607,7 @@ mod serve_tests {
             "--seed",
             "7",
         ])
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             installed.status.success(),
@@ -1503,7 +1646,7 @@ mod serve_tests {
 
         // The final board is in the world's structured records.
         let records = world(&["records", &node, "--capability", &capability])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             records.status.success(),
@@ -1575,7 +1718,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -1614,7 +1757,7 @@ mod serve_tests {
             "the restored game continues: {view}"
         );
         let records = world(&addr, &["records", &node, "--capability", &capability])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         let records = String::from_utf8(records.stdout).unwrap();
         assert!(records.contains("\"board\": \"XXXOO----\""), "{records}");
@@ -1652,7 +1795,7 @@ mod serve_tests {
             cmd
         };
         let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
-            let output = world(addr, args).output().unwrap();
+            let output = world(addr, args).output_within(PROCESS_TIMEOUT).unwrap();
             (
                 output.status.success(),
                 String::from_utf8(output.stdout).unwrap(),
@@ -1823,9 +1966,15 @@ mod serve_tests {
             eprintln!("skipping: no roc binary available");
             return;
         };
+        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
         let source =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/main.roc");
         let serve_args = [
@@ -1856,7 +2005,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -1879,7 +2028,7 @@ mod serve_tests {
                 "7",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             compiled.status.success(),
@@ -1923,7 +2072,7 @@ mod serve_tests {
                 "wrong",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(!bad.status.success());
         assert!(
@@ -1978,7 +2127,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -2000,7 +2149,7 @@ mod serve_tests {
                 "--native",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             compiled.status.success(),
@@ -2056,7 +2205,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -2078,7 +2227,7 @@ mod serve_tests {
                 "7",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             installed.status.success(),
@@ -2134,7 +2283,7 @@ mod serve_tests {
         let node = server.wait_ready();
         let addr = lock_ipv4_addr(&server.lock_file_path());
         let refused = world(&addr, &["install", &node, module, "--admin-token", "adm"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!refused.status.success());
         assert!(
@@ -2176,7 +2325,7 @@ mod serve_tests {
             cmd
         };
         let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
-            let output = world(addr, args).output().unwrap();
+            let output = world(addr, args).output_within(PROCESS_TIMEOUT).unwrap();
             (
                 output.status.success(),
                 String::from_utf8(output.stdout).unwrap(),
@@ -2307,7 +2456,7 @@ mod serve_tests {
             cmd
         };
         let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             invited.status.success(),
@@ -2356,7 +2505,7 @@ mod serve_tests {
                 "--ephemeral",
             ])
             .current_dir(client_dir.path())
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!refused.status.success());
         assert!(
@@ -2428,7 +2577,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -2463,7 +2612,7 @@ mod serve_tests {
             &addr,
             &["records", &node, "--capability", &capability],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             records.status.success(),
@@ -2488,7 +2637,7 @@ mod serve_tests {
                 "60",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             mirror.status.success(),
@@ -2517,7 +2666,7 @@ mod serve_tests {
                     &replica_dir_str,
                 ],
             )
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
             assert!(
                 stored.status.success(),
