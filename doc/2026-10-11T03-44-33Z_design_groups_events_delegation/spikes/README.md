@@ -2,6 +2,8 @@
 
 Copied from `/home/user/work/spikes` (shared workspace) and `/home/user/work/spikes-s6` (storage workspace). Review: [design review](../2026-10-11T08-08-56Z_design_review.md).
 
+C1 (connectivity) was named `s7-connect` in the workspace. It is renamed `c1-connect`, to avoid confusion with review S7 (range sync).
+
 ## Layout
 
 - `shared/`: one Cargo workspace, members `s1-transport`, `s2-auth`, `s3-history`, `s4-blobs`, `s5-cbor`. Each member has `src/`, `Cargo.toml`, `RESULTS.md`, and small text outputs (`run-output.txt`, `logs/`). `Cargo.lock` is included so the exact graph can be rebuilt.

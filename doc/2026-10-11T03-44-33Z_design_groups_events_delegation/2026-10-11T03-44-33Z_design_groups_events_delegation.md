@@ -833,3 +833,9 @@ Where the review differs from this document, the review is current. The main dif
 - §11.2: sync is range reconciliation, not LogSync.
 - §11.5: Minimal with our own relays is recommended over N0. This is an owner decision, still open.
 - §13: p2panda-store, p2panda-sync, and p2panda-stream are not used.
+
+---
+
+## 2026-10-11T10-46-58Z Decision: connectivity is n0 by default, plus our relay, tickets, and alternates
+
+Owner decision, 2026-10-11. Connectivity uses n0's relays and lookups by default. It adds our own relay, starting with a Cloudflare Tunnel in front of `iroh-relay`. Invite tickets carry addresses, and alternate lookups such as the mainline DHT are opt-in. mDNS stays off. This supersedes review §6 items 2 and 3, which recommended Minimal. The layers, the setup options, and the tests are in the [connectivity design](./2026-10-11T10-46-58Z_design_connectivity.md).

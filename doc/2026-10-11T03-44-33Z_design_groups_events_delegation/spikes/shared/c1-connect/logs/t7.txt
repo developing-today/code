@@ -1,0 +1,24 @@
+relay: http://127.0.0.1:3340 answers /ping, log /home/user/work/spikes/c1-connect/logs/t7-relay.txt
+profile: 1 relay(s) (1 with QAD off), policy RelayOnly, no lookups
+server bound, endpoint started
+2026-10-11T10:43:55.036866Z DEBUG endpoint{id=6d0d7cd563}:actor: iroh::net_report: net_report starting do_full=true
+2026-10-11T10:43:55.037214Z DEBUG endpoint{id=6d0d7cd563}:actor:QADv4: iroh::net_report: probe failed: Failed to resolve relay address: No port available for this protocol
+2026-10-11T10:43:55.037279Z DEBUG endpoint{id=6d0d7cd563}:actor:QADv6: iroh::net_report: probe failed: Failed to resolve relay address: No port available for this protocol
+client bound, endpoint started
+2026-10-11T10:43:55.039691Z DEBUG endpoint{id=5bf36dab91}:actor: iroh::net_report: net_report starting do_full=true
+2026-10-11T10:43:55.039906Z DEBUG endpoint{id=5bf36dab91}:actor:QADv4: iroh::net_report: probe failed: Failed to resolve relay address: No port available for this protocol
+2026-10-11T10:43:55.039960Z DEBUG endpoint{id=5bf36dab91}:actor:QADv6: iroh::net_report: probe failed: Failed to resolve relay address: No port available for this protocol
+2026-10-11T10:43:55.238862Z DEBUG endpoint{id=6d0d7cd563}:actor:reportgen-actor:captive-portal: iroh::net_report::reportgen: check_captive_portal failed: error sending request for url (http://127.0.0.1/generate_204)
+2026-10-11T10:43:55.239238Z DEBUG endpoint{id=6d0d7cd563}:actor:reportgen-actor:run-probe{proto=Https delay=200ms relay=http://127.0.0.1:3340/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:3340/"), latency: 919.133µs }))
+2026-10-11T10:43:55.239412Z DEBUG endpoint{id=6d0d7cd563}:actor: iroh::net_report: net_report generated report=Report { udp_v4: false, udp_v6: false, mapping_varies_by_dest_ipv4: None, mapping_varies_by_dest_ipv6: None, preferred_relay: Some(RelayUrl("http://127.0.0.1:3340/")), relay_latency: RelayLatencies { ipv4: {}, ipv6: {}, https: {RelayUrl("http://127.0.0.1:3340/"): 919.133µs} }, global_v4: None, global_v6: None, captive_portal: None } duration=202.552485ms
+2026-10-11T10:43:55.239734Z  INFO endpoint{id=6d0d7cd563}:relay-actor: iroh::socket::transports::relay::actor: home is now relay http://127.0.0.1:3340/, was None
+2026-10-11T10:43:55.240800Z DEBUG endpoint{id=5bf36dab91}:actor:reportgen-actor:captive-portal: iroh::net_report::reportgen: check_captive_portal failed: error sending request for url (http://127.0.0.1/generate_204)
+2026-10-11T10:43:55.241389Z DEBUG endpoint{id=5bf36dab91}:actor:reportgen-actor:run-probe{proto=Https delay=200ms relay=http://127.0.0.1:3340/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:3340/"), latency: 838.993µs }))
+2026-10-11T10:43:55.241526Z DEBUG endpoint{id=5bf36dab91}:actor: iroh::net_report: net_report generated report=Report { udp_v4: false, udp_v6: false, mapping_varies_by_dest_ipv4: None, mapping_varies_by_dest_ipv6: None, preferred_relay: Some(RelayUrl("http://127.0.0.1:3340/")), relay_latency: RelayLatencies { ipv4: {}, ipv6: {}, https: {RelayUrl("http://127.0.0.1:3340/"): 838.993µs} }, global_v4: None, global_v6: None, captive_portal: None } duration=201.838296ms
+2026-10-11T10:43:55.241729Z  INFO endpoint{id=5bf36dab91}:relay-actor: iroh::socket::transports::relay::actor: home is now relay http://127.0.0.1:3340/, was None
+online: server 201.762003ms, client 203.340272ms
+ticket: 101 chars, 1 relay, 0 direct
+dial start
+dial by ticket: connected 17.225643ms, replied 29.686685ms, echoed true, handshake over relay http://127.0.0.1:3340/
+  path after reply: * relay http://127.0.0.1:3340/
+RESULT t7: PASS

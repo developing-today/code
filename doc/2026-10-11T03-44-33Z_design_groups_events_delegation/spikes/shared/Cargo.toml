@@ -7,6 +7,7 @@ members = [
   "s4-blobs",
   "s5-cbor",
   "s6-index",
+  "c1-connect",
 ]
 
 [workspace.package]

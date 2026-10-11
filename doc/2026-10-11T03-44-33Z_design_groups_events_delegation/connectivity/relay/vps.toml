@@ -1,0 +1,28 @@
+# iroh-relay, VPS mode (setup B in the connectivity design).
+#
+# Needs a public IPv4 address and these open ports:
+#   80/tcp   ACME challenge and captive-portal check
+#   443/tcp  relay (WebSocket over TLS) and /ping
+#   7842/udp QUIC address discovery, which lets peers find their public addresses for direct paths
+#
+# Replace relay.example.org and ops@example.org before use. Keep cert_dir on persistent storage:
+# Let's Encrypt allows 5 certificates per identical name set per week.
+http_bind_addr = "[::]:80"
+enable_quic_addr_discovery = true
+
+# Keep metrics off the public interface.
+metrics_bind_addr = "127.0.0.1:9090"
+
+[tls]
+https_bind_addr = "[::]:443"
+hostname = "relay.example.org"
+cert_mode = "LetsEncrypt"
+cert_dir = "/var/lib/iroh-relay/certs"
+contact = "ops@example.org"
+
+# Keep false while testing, so Let's Encrypt staging issues the certificate. Set true for production.
+prod_tls = false
+
+# Optional abuse control, as in tunnel.toml.
+# [access]
+# shared_token = ["replace-with-a-long-random-token"]
