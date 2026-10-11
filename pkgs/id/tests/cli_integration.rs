@@ -1527,7 +1527,7 @@ mod serve_tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let pid = child.id();
+        let pid = i32::try_from(child.id()).expect("a pid fits in i32");
         let mut server = ServerHandle {
             process: child,
             work_dir: std::env::temp_dir(),
@@ -1544,21 +1544,19 @@ mod serve_tests {
             }));
             let _ = done_tx.send((outcome.is_err(), started.elapsed()));
         });
-        match done_rx.recv_timeout(Duration::from_secs(10)) {
-            Ok((failed, elapsed)) => {
-                assert!(failed, "a chatty server counted as ready");
-                assert!(
-                    elapsed < Duration::from_secs(5),
-                    "the wait ran {elapsed:?} past a 200 ms deadline"
-                );
+        if let Ok((failed, elapsed)) = done_rx.recv_timeout(Duration::from_secs(10)) {
+            assert!(failed, "a chatty server counted as ready");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "the wait ran {elapsed:?} past a 200 ms deadline"
+            );
+        } else {
+            // SAFETY: `pid` is the `yes` child this test spawned. SIGKILL ends it,
+            // so the blocked wait returns, and then the test fails.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
             }
-            Err(_) => {
-                // Stop the child so the wait ends, then fail the test.
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
-                panic!("the wait for a chatty server did not end within 10 s");
-            }
+            panic!("the wait for a chatty server did not end within 10 s");
         }
     }
 

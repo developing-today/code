@@ -58,7 +58,8 @@ fn value() -> impl Strategy<Value = Value> {
 fn sharing_prefix() -> impl Strategy<Value = (Value, Value)> {
     prop_oneof![
         (text(), text()).prop_map(|(base, tail)| {
-            (Value::Text(base.clone()), Value::Text(base + &tail))
+            let joined = format!("{base}{tail}");
+            (Value::Text(base), Value::Text(joined))
         }),
         (bytes(), bytes()).prop_map(|(base, tail)| {
             let mut longer = base.clone();
@@ -184,9 +185,12 @@ fn real_encoding(value: &Value) -> Vec<u8> {
     encode_tuple(std::slice::from_ref(value))
 }
 
+/// The shape of a tuple encoder under test.
+type Encoder = fn(&Value) -> Vec<u8>;
+
 /// Known-bad encoders, one per class, and the controls that must pass. The
 /// flag says whether the encoder is bad.
-fn known_encoders() -> [(&'static str, fn(&Value) -> Vec<u8>, bool); 7] {
+fn known_encoders() -> [(&'static str, Encoder, bool); 7] {
     [
         ("single NUL terminator", single_nul, true),
         ("no escaping", no_escape, true),
@@ -201,7 +205,7 @@ fn known_encoders() -> [(&'static str, fn(&Value) -> Vec<u8>, bool); 7] {
 /// Whether `encode` fails the pair checks for a pair that `strategy` draws
 /// within `cases`, over the fixed seed.
 fn caught_within(
-    encode: fn(&Value) -> Vec<u8>,
+    encode: Encoder,
     strategy: impl Strategy<Value = (Value, Value)>,
     cases: u32,
 ) -> bool {
