@@ -1305,6 +1305,22 @@ mod tests {
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
+    /// A log file written before the frame check can hold an artifact that one
+    /// frame cannot carry. Opening the file must keep it: the directory loads its
+    /// log at start-up, so refusing the line would stop the server from starting.
+    #[test]
+    fn a_stored_artifact_too_large_for_one_frame_still_opens() {
+        for bytes in [MAX_FRAME_BYTES - 5, MAX_FRAME_BYTES + 1024] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(FILE);
+            let line = serde_json::to_string(&unknown_kind_of_size(bytes)).unwrap();
+            std::fs::write(&path, format!("{line}\n")).unwrap();
+            let log = ArtifactLog::open(&path)
+                .unwrap_or_else(|error| panic!("a {bytes}-byte line: {error:#}"));
+            assert_eq!(log.head_seq(&public(1)), 1, "a {bytes}-byte line");
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(24))]
 
