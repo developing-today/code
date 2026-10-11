@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -236,6 +237,12 @@ func TestReloadRestartsAnOversizedProgramRePointedAtACopy(t *testing.T) {
 	}
 	if st.Size() <= defaults.ExecHashMax {
 		t.Fatalf("the test program is %d bytes, not over limits.execHashMax (%d)", st.Size(), defaults.ExecHashMax)
+	}
+	// The copy is byte-identical, so the restart can only come from the size rule.
+	a, errA := os.ReadFile(first)
+	b, errB := os.ReadFile(second)
+	if errA != nil || errB != nil || !bytes.Equal(a, b) {
+		t.Fatal("the oversized copy is not byte-identical to the program it replaces")
 	}
 
 	cfg := func() *config.Config {
