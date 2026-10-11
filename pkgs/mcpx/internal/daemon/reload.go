@@ -94,9 +94,11 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 	r.pools, r.views, r.order = pools, views, order
 	r.hash = HashConfig(mustJSON(cfg.MCPServers))
 
+	// Drained, not closed: a call running on an orphan finishes on it, as it
+	// does on a lazy restart. Close would cut one that ran past its grace.
 	go func() {
 		for _, p := range orphans {
-			p.Close()
+			p.CloseDrained()
 		}
 	}()
 	return added, removed, nil
