@@ -557,7 +557,8 @@ func Ops() []Op {
 				"nothing running, a global-scope server starts one instance, so a " +
 				"restart verifies the server comes up; a scoped server with nothing " +
 				"running has no caller to start one for and starts nothing. In-flight " +
-				"calls on the stopped instances fail. Omit the server to restart all " +
+				"calls get limits.execDrainTimeout to finish, then fail if still running; " +
+				"lazy fails them at once. Omit the server to restart all " +
 				"of them. lazy stops without starting anything: the next call starts " +
 				"a fresh instance.",
 			Admin: true, Mutating: true, Destructive: true,

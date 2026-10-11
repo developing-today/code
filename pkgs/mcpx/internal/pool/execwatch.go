@@ -158,21 +158,31 @@ func (p *Pool) replaceChildren() {
 	}
 }
 
-func (p *Pool) replaceChild(in *Instance) {
-	replace := p.replaceable(in)
+// retire takes a child out of service with no replacement: no new call reaches
+// it, the calls running on it have ExecDrainTimeout to finish, and then it is
+// closed and removed. The caller holds the child's slot while this runs, so a
+// caller that arrives meanwhile waits rather than starting a rival. stopReason
+// goes to the lifecycle log; callErr is how a call cut off by the drain window
+// is described (see replacedErr).
+func (p *Pool) retire(in *Instance, stopReason, callErr string) {
 	if !p.drain(in, ExecDrainTimeout) {
 		lifecycle("server.warning", map[string]any{
 			"server": p.cfg.Name, "instance": in.ID,
 			"reason": "calls still running at the drain timeout are cut off by the restart",
 		})
 	}
-	in.swapped.Store(true)
-	p.stopped(in, "executable changed")
+	in.swapped.Store(&callErr)
+	p.stopped(in, stopReason)
 	_ = in.Client.Close()
 
 	p.mu.Lock()
 	p.removeLocked(in)
 	p.mu.Unlock()
+}
+
+func (p *Pool) replaceChild(in *Instance) {
+	replace := p.replaceable(in)
+	p.retire(in, "executable changed", "restarted for a changed executable")
 
 	if !replace {
 		p.mu.Lock()
@@ -263,11 +273,12 @@ func (p *Pool) drain(in *Instance, d time.Duration) bool {
 	return in.holders == 0
 }
 
-// replacedErr says what a call that failed on a child taken down for a changed
-// executable reports. The tool did not fail; its server was replaced under it.
+// replacedErr says what a call that failed on a child taken down by a restart
+// reports. The tool did not fail; its server was replaced under it.
 func (p *Pool) replacedErr(in *Instance, err error) error {
-	if err == nil || !in.swapped.Load() {
+	why := in.swapped.Load()
+	if err == nil || why == nil {
 		return err
 	}
-	return fmt.Errorf("server %q was restarted for a changed executable while this call was running: %w", p.cfg.Name, err)
+	return fmt.Errorf("server %q was %s while this call was running: %w", p.cfg.Name, *why, err)
 }
