@@ -3,21 +3,21 @@
  * These test the pure functions used in collaborative cursor management.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  FADE_START_MS,
+  CURSOR_COLORS,
+  type CursorForMerge,
+  clusterOverlappingGroups,
+  doGroupsOverlap,
+  estimateTooltipWidth,
   FADE_END_MS,
-  HIDE_MS,
+  FADE_START_MS,
+  getColorForClient,
   getOpacityForAge,
   getStrobeDurationMs,
-  isLightColor,
-  getColorForClient,
-  CURSOR_COLORS,
-  estimateTooltipWidth,
   groupCursorsByPosition,
-  doGroupsOverlap,
-  clusterOverlappingGroups,
-  type CursorForMerge,
+  HIDE_MS,
+  isLightColor,
   type PositionGroup,
 } from "./cursor-utils";
 

@@ -15,7 +15,7 @@ import { buildMenuItems, exampleSetup } from "prosemirror-example-setup";
 import { gapCursor } from "prosemirror-gapcursor";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
-import { MenuItem, blockTypeItem, liftItem, redoItem, selectParentNodeItem, undoItem } from "prosemirror-menu";
+import { blockTypeItem, liftItem, MenuItem, redoItem, selectParentNodeItem, undoItem } from "prosemirror-menu";
 import { type MarkType, Node, Schema } from "prosemirror-model";
 import { schema as basicSchema } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
@@ -372,7 +372,7 @@ export function initEditor(
     const browseImages = new MenuItem({
       title: "Browse uploaded images",
       label: "🖼",
-      run(state, _dispatch, edView) {
+      run(_state, _dispatch, edView) {
         openImageBrowser(edView, editorSchema);
       },
     });
