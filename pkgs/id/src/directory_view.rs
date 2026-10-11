@@ -344,7 +344,8 @@ impl DirectoryAction {
         matches!(self, Self::AddEmail { .. } | Self::SignInEmail { .. })
     }
 
-    /// Whether the action queues envelopes or artifacts for other servers.
+    /// Whether the action may queue envelopes or artifacts for other servers. A
+    /// removal is listed but only sends sometimes: see [`removal_needs_outbox`].
     #[must_use]
     pub const fn sends_envelope(&self) -> bool {
         matches!(
@@ -1290,6 +1291,28 @@ fn artifact_outbound(
                 })
                 .collect()
         })
+}
+
+/// Whether an action would send an artifact to another server, so it needs an
+/// outbox. Only a removal signed with the caller's credential sends one, and
+/// only when the other account declared home servers. A removal of a local
+/// friend, or one the session makes, sends nothing.
+#[must_use]
+pub fn removal_needs_outbox(
+    directory: &Directory,
+    caller: &Caller,
+    action: &DirectoryAction,
+) -> bool {
+    match action {
+        DirectoryAction::RemoveFriend { other } => {
+            sender_credential(caller).is_ok()
+                && directory
+                    .artifacts()
+                    .declared(other)
+                    .is_some_and(|declared| !declared.servers.is_empty())
+        }
+        _ => false,
+    }
 }
 
 fn signed_in(viewer: &Viewer) -> Result<&str> {

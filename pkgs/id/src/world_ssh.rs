@@ -758,6 +758,7 @@ mod tests {
                 DirectoryAction::SignUp {
                     name: "Ada".to_owned(),
                 },
+                false,
             )
             .await
             .unwrap();

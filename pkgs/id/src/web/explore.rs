@@ -960,6 +960,7 @@ mod tests {
                 DirectoryAction::SignUp {
                     name: "Ada & <Co>".to_owned(),
                 },
+                false,
             )
             .await
             .unwrap();
@@ -970,6 +971,7 @@ mod tests {
                 DirectoryAction::SignUp {
                     name: "<b>Bo</b>".to_owned(),
                 },
+                false,
             )
             .await
             .unwrap();
@@ -981,11 +983,12 @@ mod tests {
                     description: "members \"only\"".to_owned(),
                     scopes: Vec::new(),
                 },
+                false,
             )
             .await
             .unwrap();
         let view = world
-            .directory(ada_caller, DirectoryAction::View)
+            .directory(ada_caller, DirectoryAction::View, false)
             .await
             .unwrap()
             .view;
