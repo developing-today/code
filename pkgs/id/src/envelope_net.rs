@@ -16,6 +16,7 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::connectivity::connect;
 use crate::directory::{Envelope, Received, Refusal};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
@@ -63,8 +64,20 @@ pub async fn deliver(
 }
 
 /// Sends one frame on `alpn` to `target`, and says whether the peer took it.
+/// The whole delivery, address lookup included, must finish within [`TIMEOUT`].
 pub async fn send(endpoint: &Endpoint, alpn: &[u8], target: EndpointAddr, json: &[u8]) -> Outcome {
-    match tokio::time::timeout(TIMEOUT, exchange(endpoint, alpn, target, json)).await {
+    send_within(endpoint, alpn, target, json, TIMEOUT).await
+}
+
+/// [`send`] with `limit` on the whole delivery.
+pub async fn send_within(
+    endpoint: &Endpoint,
+    alpn: &[u8],
+    target: EndpointAddr,
+    json: &[u8],
+    limit: Duration,
+) -> Outcome {
+    match tokio::time::timeout(limit, exchange(endpoint, alpn, target, json)).await {
         Ok(Ok(Reply::Applied | Reply::Duplicate)) => Outcome::Delivered,
         Ok(Ok(Reply::Refused { message })) => Outcome::Refused(message),
         Ok(Ok(Reply::Retry { message })) => Outcome::Retry(message),
@@ -79,8 +92,7 @@ async fn exchange(
     target: EndpointAddr,
     json: &[u8],
 ) -> Result<Reply> {
-    let conn = endpoint
-        .connect(target, alpn)
+    let conn = connect(endpoint, target, alpn)
         .await
         .context("connecting to the recipient's server")?;
     let reply = async {
@@ -194,10 +206,14 @@ mod tests {
     };
 
     use super::*;
+    use crate::connectivity::silent::{
+        endpoint_with_silent_lookup, unanswered_addr, unanswered_id,
+    };
     use crate::directory::Directory;
     use crate::envelope_outbox::{Finish, Outbox, flush};
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
+    use std::time::Instant;
     use tokio::sync::Mutex;
 
     const NOW: u64 = 1_000_000_000;
@@ -344,5 +360,48 @@ mod tests {
             .filter(|e| e.finish == Some(Finish::Refused))
             .count();
         assert_eq!((delivered, refused), (1, 1));
+    }
+
+    /// A delivery to an address nothing answers must give up at its deadline.
+    #[tokio::test]
+    async fn a_delivery_to_an_unanswered_address_gives_up_at_its_deadline() {
+        let client = endpoint().await;
+        let started = Instant::now();
+        let outcome = send_within(
+            &client,
+            ENVELOPE_ALPN,
+            unanswered_addr(),
+            b"{}",
+            Duration::from_millis(500),
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(outcome, Outcome::Retry("delivery timed out".to_owned()));
+    }
+
+    /// A delivery by node ID whose address lookup never answers gives up at its
+    /// deadline. The lookup is inside the deadline, so this is the step that hung.
+    #[tokio::test]
+    async fn a_delivery_whose_lookup_never_answers_gives_up_at_its_deadline() {
+        let client = endpoint_with_silent_lookup().await;
+        let started = Instant::now();
+        let outcome = send_within(
+            &client,
+            ENVELOPE_ALPN,
+            unanswered_id(),
+            b"{}",
+            Duration::from_millis(500),
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(outcome, Outcome::Retry("delivery timed out".to_owned()));
     }
 }

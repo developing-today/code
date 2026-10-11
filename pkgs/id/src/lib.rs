@@ -113,7 +113,7 @@
 //!    immutable.
 //!
 //! Storage locations (relative to working directory):
-//! - `.iroh-store/` - `SQLite` database with blob data
+//! - `.iroh-store/` - redb database with blob data
 //! - `.iroh-key` - Server Ed25519 keypair
 //! - `.iroh-key-client` - Client keypair for remote connections
 //! - `.iroh-serve.lock` - Lock file when serve is running
@@ -186,6 +186,8 @@ pub mod repl;
 pub mod sandbox;
 pub mod store;
 pub mod tags;
+#[cfg(test)]
+mod test_forgeries;
 pub mod tuple;
 #[cfg(feature = "world")]
 pub mod world;

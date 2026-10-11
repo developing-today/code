@@ -2173,7 +2173,9 @@ mod tests {
         }
 
         async fn next(&mut self) -> Option<serde_json::Value> {
-            let frame = tokio::time::timeout(Duration::from_secs(5), self.from_server.recv())
+            // An upload takes several seconds in a debug build, so 5 s was too
+            // tight. The deadline still bounds a real hang.
+            let frame = tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
                 .await
                 .expect("timed out waiting for a server frame")?;
             Some(serde_json::from_str(&frame).unwrap())
@@ -2214,6 +2216,95 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    /// A server with Ann and Bo as friends and no outbox. When `bo_home_is_remote`,
+    /// Bo's artifacts are held on another server, so removing Bo must be sent.
+    async fn friends_without_outbox(
+        bo_home_is_remote: bool,
+    ) -> (WorldService, crate::directory_auth::Caller, String) {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (ann_secret, _) = core.directory_mut().sign_up("Ann").unwrap();
+        let (bo_secret, _) = core.directory_mut().sign_up("Bo").unwrap();
+        let ann_id = core.directory().account_for(&ann_secret).unwrap();
+        let bo_id = core.directory().account_for(&bo_secret).unwrap();
+        if bo_home_is_remote {
+            let home = crate::artifact::HomeServer {
+                endpoint: iroh::SecretKey::from_bytes(&[5; 32]).public().to_string(),
+                world_id: "home".to_owned(),
+            };
+            core.directory_mut()
+                .declare_home(&bo_secret, vec![home])
+                .unwrap();
+        }
+        let svc = WorldService::new(WorldHandle::spawn(core), None);
+        let ann = crate::directory_auth::Caller::from_secret(&ann_secret);
+        let bo = crate::directory_auth::Caller::from_secret(&bo_secret);
+        svc.directory(
+            ann.clone(),
+            crate::directory_view::DirectoryAction::RequestFriend {
+                to: bo_id.clone(),
+                remote: None,
+            },
+        )
+        .await
+        .unwrap();
+        svc.directory(
+            bo,
+            crate::directory_view::DirectoryAction::AcceptFriend {
+                from: ann_id,
+                remote: None,
+            },
+        )
+        .await
+        .unwrap();
+        (svc, ann, bo_id)
+    }
+
+    async fn friends_of_ann(
+        svc: &WorldService,
+        ann: &crate::directory_auth::Caller,
+    ) -> Option<Vec<String>> {
+        let view = svc
+            .directory(ann.clone(), crate::directory_view::DirectoryAction::View)
+            .await
+            .unwrap()
+            .view;
+        view.accounts
+            .iter()
+            .find(|a| a.name == "Ann")
+            .unwrap()
+            .friends
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_local_friend_removal_needs_no_outbox() {
+        let (svc, ann, bo) = friends_without_outbox(false).await;
+        svc.directory(
+            ann.clone(),
+            crate::directory_view::DirectoryAction::RemoveFriend { other: bo },
+        )
+        .await
+        .unwrap();
+        assert_eq!(friends_of_ann(&svc, &ann).await, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_removal_of_a_friend_on_another_server_is_refused_without_an_outbox() {
+        let (svc, ann, bo) = friends_without_outbox(true).await;
+        let refused = svc
+            .directory(
+                ann.clone(),
+                crate::directory_view::DirectoryAction::RemoveFriend { other: bo.clone() },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("cannot send to other servers"),
+            "{refused:#}"
+        );
+        assert_eq!(friends_of_ann(&svc, &ann).await, Some(vec![bo]));
     }
 
     #[tokio::test]

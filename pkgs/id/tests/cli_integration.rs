@@ -37,12 +37,269 @@ fn get_binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_id"))
 }
 
+/// How long one CLI invocation may run before its test fails. A client stuck
+/// on a silent server must not block the suite.
+const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+
+/// [`Command::output`] with a deadline. Once `timeout` passes the child is
+/// killed and its status reports the kill, so a hung process fails the test.
+trait OutputWithin {
+    fn output_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output>;
+}
+
+impl OutputWithin for Command {
+    fn output_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output> {
+        use std::sync::{Arc, Mutex, mpsc};
+        let mut child = self
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // Drain both pipes on their own threads so a chatty child cannot block
+        // on a full pipe while we wait for it. Each reader reports when it ends.
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let err = Arc::new(Mutex::new(Vec::new()));
+        let (done_tx, done_rx) = mpsc::channel();
+        drain(
+            child.stdout.take().expect("stdout is piped"),
+            Arc::clone(&out),
+            done_tx.clone(),
+        );
+        drain(
+            child.stderr.take().expect("stderr is piped"),
+            Arc::clone(&err),
+            done_tx,
+        );
+
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                child.kill()?;
+                break child.wait()?;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        // A grandchild can outlive the child and keep the pipes open. The readers
+        // get a short grace period, and whatever they have read is returned.
+        let grace = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        for _ in 0..2 {
+            let _ =
+                done_rx.recv_timeout(grace.saturating_duration_since(std::time::Instant::now()));
+        }
+        Ok(std::process::Output {
+            status,
+            stdout: out.lock().map(|bytes| bytes.to_vec()).unwrap_or_default(),
+            stderr: err.lock().map(|bytes| bytes.to_vec()).unwrap_or_default(),
+        })
+    }
+}
+
+/// Copies `pipe` into `sink` until it closes, then reports on `done`.
+fn drain<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+    sink: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0_u8; 8192];
+        while let Ok(read) = pipe.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            if let Ok(mut bytes) = sink.lock() {
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+        }
+        let _ = done.send(());
+    });
+}
+
+#[test]
+fn test_output_within_kills_a_hung_process() {
+    let started = std::time::Instant::now();
+    let output = Command::new("sleep")
+        .arg("60")
+        .output_within(std::time::Duration::from_millis(200))
+        .unwrap();
+    assert!(!output.status.success(), "a killed child is not a success");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the deadline, not the child, ends the wait"
+    );
+
+    let quick = Command::new("sh")
+        .args(["-c", "printf out; printf err >&2"])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+    assert!(quick.status.success());
+    assert_eq!(quick.stdout, b"out");
+    assert_eq!(quick.stderr, b"err");
+}
+
+/// A grandchild that outlives its child and keeps the pipes open must not hold
+/// `output_within` past its deadline, whether the child was killed or exited.
+#[cfg(unix)]
+#[test]
+fn test_output_within_ends_when_a_grandchild_keeps_the_pipes() {
+    let mut held = Vec::new();
+    for script in ["sleep 60 & wait", "sleep 60 &"] {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        // The call runs on its own thread, so a hang fails this test instead of blocking it.
+        std::thread::spawn(move || {
+            let outcome = Command::new("sh")
+                .args(["-c", script])
+                .output_within(std::time::Duration::from_millis(200));
+            let _ = done_tx.send(outcome.is_ok());
+        });
+        if done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_err()
+        {
+            held.push(format!("`{script}` after {:?}", started.elapsed()));
+        }
+    }
+    assert!(
+        held.is_empty(),
+        "output_within outlived its deadline: {}",
+        held.join(", ")
+    );
+}
+
+/// The unix `stop` calls `libc::kill`, so it stays gated to unix. Its `unsafe`
+/// block is allowed on the function itself. An attribute once landed on a helper
+/// inserted above `stop`, which left `stop` ungated.
+#[test]
+fn test_unix_stop_keeps_its_gate_and_its_allow() {
+    let lines: Vec<&str> = include_str!("cli_integration.rs")
+        .lines()
+        .map(str::trim)
+        .collect();
+    let stop = lines
+        .iter()
+        .position(|line| *line == "fn stop(&mut self) {")
+        .expect("serve_tests has a unix stop");
+    assert_eq!(
+        &lines[stop - 2..stop],
+        &[
+            "#[cfg(unix)]",
+            "#[allow(unsafe_code, clippy::cast_possible_wrap)]"
+        ],
+        "the unix stop must sit directly under its gate and its allow"
+    );
+}
+
+/// Every `unsafe` block in this file is in a function that allows `unsafe_code`
+/// on its own attributes. The crate warns on `unsafe_code`, so a missing allow
+/// is a warning that no other check reports.
+#[test]
+fn test_every_unsafe_block_is_allowed_on_its_function() {
+    // Split so that this line does not match the search it performs.
+    let block = concat!("uns", "afe {");
+    let raw: Vec<&str> = include_str!("cli_integration.rs").lines().collect();
+    let indent = |text: &str| text.len() - text.trim_start().len();
+    let mut unallowed = Vec::new();
+    for (index, line) in raw.iter().enumerate() {
+        if line.trim().starts_with("//") || !line.contains(block) {
+            continue;
+        }
+        // The enclosing function is the nearest `fn` indented less than this line.
+        let Some(function) = (0..index).rev().find(|&above| {
+            raw[above].trim_start().starts_with("fn ") && indent(raw[above]) < indent(line)
+        }) else {
+            unallowed.push(format!("line {}: no function above it", index + 1));
+            continue;
+        };
+        let allowed = (0..function)
+            .rev()
+            .map(|above| raw[above].trim())
+            .take_while(|above| {
+                above.starts_with('#') || above.starts_with("///") || above.is_empty()
+            })
+            .any(|above| above.starts_with("#[allow(") && above.contains("unsafe_code"));
+        if !allowed {
+            unallowed.push(format!("line {}: {}", index + 1, raw[function].trim()));
+        }
+    }
+    assert!(
+        unallowed.is_empty(),
+        "unsafe blocks without an unsafe_code allow on their function:\n{}",
+        unallowed.join("\n")
+    );
+}
+
+/// A child that a streaming test keeps open, such as `world join`. Dropping it
+/// kills and reaps the child, so a test that panics before it waits cannot leave
+/// the child running.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(unsafe_code)]
+fn test_streaming_child_dies_with_its_guard_even_when_the_test_panics() {
+    fn sleeper() -> KillOnDrop {
+        KillOnDrop(
+            Command::new("sleep")
+                .arg("60")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+    // SAFETY: signal 0 sends nothing; it only asks whether the pid still names a process.
+    let exists = |pid: u32| i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0);
+
+    let dropped = sleeper();
+    let pid = dropped.id();
+    drop(dropped);
+    assert!(!exists(pid), "the child outlived its guard");
+
+    let mut panicked = 0;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let streaming = sleeper();
+        panicked = streaming.id();
+        panic!("the test fails while the child is still streaming");
+    }));
+    assert!(outcome.is_err());
+    assert!(!exists(panicked), "the child outlived a panicking test");
+}
+
 /// Run a CLI command and return output
 fn run_cmd(args: &[&str], work_dir: &std::path::Path) -> std::process::Output {
     Command::new(get_binary_path())
         .args(args)
         .current_dir(work_dir)
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .expect("Failed to execute command")
 }
 
@@ -1033,6 +1290,11 @@ mod serve_tests {
         ///
         /// Returns the node ID on success.
         fn wait_ready_with_web(&mut self, wait_for_web: bool) -> String {
+            self.wait_ready_within(wait_for_web, SERVER_STARTUP_TIMEOUT)
+        }
+
+        /// Like [`wait_ready_with_web`](Self::wait_ready_with_web), with an explicit deadline.
+        fn wait_ready_within(&mut self, wait_for_web: bool, timeout: Duration) -> String {
             let start = Instant::now();
             let stdout = self.process.stdout.take().expect("stdout not captured");
             let reader = BufReader::new(stdout);
@@ -1048,14 +1310,37 @@ mod serve_tests {
                 );
             }
 
+            // The reader runs on its own thread so the deadline holds while the
+            // server is silent: a blocking read on stdout never returns by itself.
+            let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in reader.lines() {
+                    if lines_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+
             // Read lines until we see "node: <id>" which indicates server is ready
-            for line in reader.lines() {
-                assert!(
-                    (start.elapsed() <= SERVER_STARTUP_TIMEOUT),
-                    "Server startup timed out after {SERVER_STARTUP_TIMEOUT:?}\n\
+            loop {
+                // Past the deadline the wait is over even if lines are queued, so a
+                // server that keeps printing cannot hold it.
+                let remaining = timeout.saturating_sub(start.elapsed());
+                let next = if remaining.is_zero() {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                } else {
+                    lines_rx.recv_timeout(remaining)
+                };
+                let line = match next {
+                    Ok(line) => line,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                        "Server startup timed out after {timeout:?}\n\
                          --- stderr ---\n{}\n--- end stderr ---",
-                    self.captured_stderr()
-                );
+                        self.captured_stderr()
+                    ),
+                    // stdout closed: the server exited, and the EOF path below reports it
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
 
                 // Check if process exited between lines
                 if let Some(status) = self.process.try_wait().expect("try_wait failed") {
@@ -1133,6 +1418,23 @@ mod serve_tests {
             self.work_dir.join(SERVE_LOCK)
         }
 
+        /// Waits for the child to exit. After `grace` it is killed, so a server
+        /// that ignores SIGINT cannot hang the suite.
+        #[cfg(unix)]
+        fn wait_or_kill(&mut self, grace: Duration) -> std::io::Result<std::process::ExitStatus> {
+            let started = Instant::now();
+            loop {
+                if let Some(status) = self.process.try_wait()? {
+                    return Ok(status);
+                }
+                if started.elapsed() >= grace {
+                    self.process.kill()?;
+                    return self.process.wait();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         /// Sends SIGINT (Ctrl+C) to gracefully stop the server and waits for exit.
         #[cfg(unix)]
         #[allow(unsafe_code, clippy::cast_possible_wrap)]
@@ -1144,9 +1446,7 @@ mod serve_tests {
             unsafe {
                 libc::kill(pid as i32, libc::SIGINT);
             }
-            // Wait for process to exit with timeout
-            // The wait() call blocks until the child exits
-            match self.process.wait() {
+            match self.wait_or_kill(Duration::from_secs(10)) {
                 Ok(status) => {
                     // Process exited, now give a brief moment for any final cleanup
                     // (lock file removal happens in the tokio shutdown path)
@@ -1184,6 +1484,80 @@ mod serve_tests {
                     self.captured_stderr()
                 );
             }
+        }
+    }
+
+    /// A server that never prints its node line must fail at the deadline. A
+    /// silent `sleep` stands in for the server, which used to block the suite.
+    #[test]
+    fn test_silent_server_fails_at_the_startup_deadline() {
+        let child = StdCommand::new("sleep")
+            .arg("60")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut server = ServerHandle {
+            process: child,
+            work_dir: std::env::temp_dir(),
+            node_id: None,
+            web_port: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            _stderr_thread: None,
+        };
+        let started = Instant::now();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            server.wait_ready_within(false, Duration::from_millis(200))
+        }));
+        assert!(outcome.is_err(), "a silent server must not count as ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the wait must end at its deadline, not when the child exits"
+        );
+    }
+
+    /// A server that prints lines faster than the wait reads them must still fail
+    /// at its startup deadline. The deadline is checked as well as the wait for
+    /// the next line, since a queued line returns at once even after the deadline.
+    #[allow(unsafe_code)]
+    #[test]
+    fn test_a_chatty_server_still_fails_at_the_startup_deadline() {
+        let child = StdCommand::new("sh")
+            .args(["-c", "yes"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).expect("a pid fits in i32");
+        let mut server = ServerHandle {
+            process: child,
+            work_dir: std::env::temp_dir(),
+            node_id: None,
+            web_port: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            _stderr_thread: None,
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                server.wait_ready_within(false, Duration::from_millis(200))
+            }));
+            let _ = done_tx.send((outcome.is_err(), started.elapsed()));
+        });
+        if let Ok((failed, elapsed)) = done_rx.recv_timeout(Duration::from_secs(10)) {
+            assert!(failed, "a chatty server counted as ready");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "the wait ran {elapsed:?} past a 200 ms deadline"
+            );
+        } else {
+            // SAFETY: `pid` is the `yes` child this test spawned. SIGKILL ends it,
+            // so the blocked wait returns, and then the test fails.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            panic!("the wait for a chatty server did not end within 10 s");
         }
     }
 
@@ -1239,7 +1613,7 @@ mod serve_tests {
             ]
             .to_vec();
             full.extend_from_slice(args);
-            let refused = world(&full).output().unwrap();
+            let refused = world(&full).output_within(PROCESS_TIMEOUT).unwrap();
             assert!(!refused.status.success(), "{args:?} should be refused");
             assert!(
                 String::from_utf8_lossy(&refused.stderr).contains(reason),
@@ -1264,7 +1638,7 @@ mod serve_tests {
             "--uses",
             "2",
         ])
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -1324,7 +1698,7 @@ mod serve_tests {
 
         // A wrong admin secret is refused with the host's reason.
         let denied = world(&["invite", &node, "--admin-token", "nope", "--name", "eve"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!denied.status.success());
         assert!(String::from_utf8_lossy(&denied.stderr).contains("invite denied"));
@@ -1335,7 +1709,7 @@ mod serve_tests {
 
         // The right one prints only the capability.
         let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             invited.status.success(),
@@ -1349,7 +1723,7 @@ mod serve_tests {
         // pins it in the blob store, and atomically switches the lobby.
         let module = module.to_str().unwrap();
         let rejected = world(&["install", &node, module, "--admin-token", "wrong"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!rejected.status.success());
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("module install denied"));
@@ -1362,7 +1736,7 @@ mod serve_tests {
             "--seed",
             "7",
         ])
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             installed.status.success(),
@@ -1381,6 +1755,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1412,7 +1787,7 @@ mod serve_tests {
         // A forged capability is told "join denied".
         let forged = world(&["join", &node, "--capability", &"0".repeat(64)])
             .stdin(Stdio::null())
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(String::from_utf8_lossy(&forged.stdout).contains("join denied"));
 
@@ -1444,7 +1819,7 @@ mod serve_tests {
         };
 
         let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             invited.status.success(),
@@ -1464,7 +1839,7 @@ mod serve_tests {
             "--seed",
             "7",
         ])
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             installed.status.success(),
@@ -1478,6 +1853,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1503,7 +1879,7 @@ mod serve_tests {
 
         // The final board is in the world's structured records.
         let records = world(&["records", &node, "--capability", &capability])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             records.status.success(),
@@ -1550,6 +1926,7 @@ mod serve_tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
+                .map(KillOnDrop)
                 .unwrap();
             let mut stdin = joined.stdin.take().unwrap();
             let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1575,7 +1952,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -1614,7 +1991,7 @@ mod serve_tests {
             "the restored game continues: {view}"
         );
         let records = world(&addr, &["records", &node, "--capability", &capability])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         let records = String::from_utf8(records.stdout).unwrap();
         assert!(records.contains("\"board\": \"XXXOO----\""), "{records}");
@@ -1652,7 +2029,7 @@ mod serve_tests {
             cmd
         };
         let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
-            let output = world(addr, args).output().unwrap();
+            let output = world(addr, args).output_within(PROCESS_TIMEOUT).unwrap();
             (
                 output.status.success(),
                 String::from_utf8(output.stdout).unwrap(),
@@ -1671,6 +2048,7 @@ mod serve_tests {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
+                    .map(KillOnDrop)
                     .unwrap();
                 let mut stdin = joined.stdin.take().unwrap();
                 let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1823,9 +2201,15 @@ mod serve_tests {
             eprintln!("skipping: no roc binary available");
             return;
         };
+        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
         let source =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/main.roc");
         let serve_args = [
@@ -1856,7 +2240,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -1879,7 +2263,7 @@ mod serve_tests {
                 "7",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             compiled.status.success(),
@@ -1898,6 +2282,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -1923,7 +2308,7 @@ mod serve_tests {
                 "wrong",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(!bad.status.success());
         assert!(
@@ -1978,7 +2363,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -2000,7 +2385,7 @@ mod serve_tests {
                 "--native",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             compiled.status.success(),
@@ -2013,6 +2398,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2056,7 +2442,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -2078,7 +2464,7 @@ mod serve_tests {
                 "7",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             installed.status.success(),
@@ -2095,6 +2481,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2119,6 +2506,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
         let _snapshot = lines.next().unwrap().unwrap();
@@ -2134,7 +2522,7 @@ mod serve_tests {
         let node = server.wait_ready();
         let addr = lock_ipv4_addr(&server.lock_file_path());
         let refused = world(&addr, &["install", &node, module, "--admin-token", "adm"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!refused.status.success());
         assert!(
@@ -2176,7 +2564,7 @@ mod serve_tests {
             cmd
         };
         let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
-            let output = world(addr, args).output().unwrap();
+            let output = world(addr, args).output_within(PROCESS_TIMEOUT).unwrap();
             (
                 output.status.success(),
                 String::from_utf8(output.stdout).unwrap(),
@@ -2192,6 +2580,7 @@ mod serve_tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
+                .map(KillOnDrop)
                 .unwrap();
             let mut stdin = joined.stdin.take().unwrap();
             let stdout = joined.stdout.take().unwrap();
@@ -2307,7 +2696,7 @@ mod serve_tests {
             cmd
         };
         let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(
             invited.status.success(),
@@ -2322,6 +2711,7 @@ mod serve_tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(KillOnDrop)
             .unwrap();
         let mut stdin = joined.stdin.take().unwrap();
         let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2356,7 +2746,7 @@ mod serve_tests {
                 "--ephemeral",
             ])
             .current_dir(client_dir.path())
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
         assert!(!refused.status.success());
         assert!(
@@ -2399,6 +2789,7 @@ mod serve_tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
+                .map(KillOnDrop)
                 .unwrap();
             let mut stdin = joined.stdin.take().unwrap();
             let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
@@ -2428,7 +2819,7 @@ mod serve_tests {
             &addr,
             &["invite", &node, "--admin-token", "adm", "--name", "ann"],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             invited.status.success(),
@@ -2463,7 +2854,7 @@ mod serve_tests {
             &addr,
             &["records", &node, "--capability", &capability],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             records.status.success(),
@@ -2488,7 +2879,7 @@ mod serve_tests {
                 "60",
             ],
         )
-        .output()
+        .output_within(PROCESS_TIMEOUT)
         .unwrap();
         assert!(
             mirror.status.success(),
@@ -2517,7 +2908,7 @@ mod serve_tests {
                     &replica_dir_str,
                 ],
             )
-            .output()
+            .output_within(PROCESS_TIMEOUT)
             .unwrap();
             assert!(
                 stored.status.success(),
@@ -2555,6 +2946,65 @@ mod serve_tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("ephemeral"));
         assert!(stdout.contains("no-relay"));
+    }
+
+    /// `serve --help` must document the flag that turns mDNS off, and say that
+    /// mDNS is on by default.
+    #[test]
+    fn test_serve_help_documents_no_mdns() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["serve", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--no-mdns"), "{stdout}");
+        assert!(
+            stdout.contains("By default, the server uses mDNS"),
+            "{stdout}"
+        );
+    }
+
+    /// Starts `serve` with `extra_args` (and without `--no-mdns` unless passed),
+    /// returns the `mdns:` status line it prints, and stops the server.
+    fn serve_mdns_status(work_dir: &std::path::Path, extra_args: &[&str]) -> Option<String> {
+        let mut args = vec!["serve", "--ephemeral", "--no-relay", "--no-gossip"];
+        args.extend(extra_args);
+        let mut process = StdCommand::new(get_binary_path())
+            .args(&args)
+            .current_dir(work_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn server");
+        let stdout = process.stdout.take().expect("stdout not captured");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.starts_with("mdns:") {
+                    let _ = tx.send(line);
+                }
+            }
+        });
+        let line = rx.recv_timeout(SERVER_STARTUP_TIMEOUT).ok();
+        let _ = process.kill();
+        let _ = process.wait();
+        line
+    }
+
+    /// mDNS is on for `serve` unless `--no-mdns` is given.
+    #[test]
+    fn test_serve_enables_mdns_by_default_and_no_mdns_turns_it_off() {
+        let on = TempDir::new().unwrap();
+        assert_eq!(
+            serve_mdns_status(on.path(), &[]).as_deref(),
+            Some("mdns: enabled"),
+            "serve should enable mDNS by default"
+        );
+        let off = TempDir::new().unwrap();
+        assert_eq!(
+            serve_mdns_status(off.path(), &["--no-mdns"]).as_deref(),
+            Some("mdns: disabled"),
+            "--no-mdns should disable mDNS"
+        );
     }
 
     #[test]

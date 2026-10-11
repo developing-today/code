@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -393,7 +393,7 @@ impl Envelope {
             &hex_to_array::<64>(&self.signature).context("malformed envelope signature")?,
         );
         let body = serde_json::to_vec(&self.body())?;
-        key.verify(&body, &signature)
+        key.verify_strict(&body, &signature)
             .context("envelope signature does not verify")
     }
 }
@@ -1866,6 +1866,8 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+
     fn all() -> WorldScopes {
         WorldScopes::GUEST.union(WorldScopes::DELEGATE)
     }
@@ -2807,5 +2809,39 @@ mod tests {
         assert!(normalize_email("two@@example.com").is_err());
         assert!(normalize_email("a@nodot").is_err());
         assert!(normalize_email("ok@example.com").is_ok());
+    }
+
+    #[test]
+    fn an_envelope_with_a_non_canonical_s_is_refused() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let mut envelope = Envelope::signed(
+            &key,
+            EnvelopeKind::FriendRequest,
+            &public_key(7),
+            &public_key(8),
+            "home",
+            None,
+            1,
+        )
+        .unwrap();
+        assert!(envelope.verify().is_ok());
+        let raw = hex_to_array::<64>(&envelope.signature).unwrap();
+        envelope.signature = hex_encode(&with_non_canonical_s(raw));
+        assert!(envelope.verify().is_err());
+    }
+
+    #[test]
+    fn an_envelope_under_a_small_order_key_is_refused() {
+        let envelope = Envelope {
+            kind: EnvelopeKind::FriendRequest,
+            from: hex_encode(&IDENTITY_KEY),
+            to: public_key(8),
+            audience: "home".to_owned(),
+            id: "e1".to_owned(),
+            request: None,
+            at: 1,
+            signature: hex_encode(&identity_forgery()),
+        };
+        assert!(envelope.verify().is_err());
     }
 }

@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -429,7 +429,9 @@ impl IdentityStore {
 
         // Verify signature
         let signature = ed25519_dalek::Signature::from_bytes(signature_bytes.try_into().ok()?);
-        self.verifying_key.verify(payload_bytes, &signature).ok()?;
+        self.verifying_key
+            .verify_strict(payload_bytes, &signature)
+            .ok()?;
 
         // Deserialize payload
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
@@ -646,6 +648,7 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     #[test]
     fn test_generate_client_id() {
@@ -884,5 +887,40 @@ mod tests {
         // Expired token should be rejected
         assert!(store.verify_token(&expired_token).await.is_none());
         assert!(store.verify_token_client_id(&expired_token).is_none());
+    }
+
+    /// A token with the given payload and 64 signature bytes, in the wire format.
+    fn token_of(payload: &[u8], signature: &[u8; 64]) -> String {
+        let mut bytes = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(signature);
+        base64url_encode(&bytes)
+    }
+
+    #[test]
+    fn a_token_with_a_non_canonical_s_is_refused() {
+        let store = IdentityStore::new_ephemeral();
+        let token = store.create_token("abc", unix_timestamp()).unwrap();
+        assert!(store.decode_token(&token).is_some());
+        let mut bytes = base64url_decode(&token).unwrap();
+        let split = bytes.len() - 64;
+        let raw: [u8; 64] = bytes[split..].try_into().unwrap();
+        bytes[split..].copy_from_slice(&with_non_canonical_s(raw));
+        assert!(store.decode_token(&base64url_encode(&bytes)).is_none());
+    }
+
+    #[test]
+    fn a_token_under_a_small_order_key_is_refused() {
+        // The key is derived from the server's secret, so a small-order key
+        // cannot arrive through the API. Set it directly to test the check.
+        let mut store = IdentityStore::new_ephemeral();
+        store.verifying_key = VerifyingKey::from_bytes(&IDENTITY_KEY).unwrap();
+        let payload = serde_json::to_vec(&TokenPayload {
+            client_id: "abc".to_owned(),
+            created_at: unix_timestamp(),
+        })
+        .unwrap();
+        let token = token_of(&payload, &identity_forgery());
+        assert!(store.decode_token(&token).is_none());
     }
 }

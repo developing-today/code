@@ -160,3 +160,10 @@ This document uses the code's values.
 - t2 re-home measured 22.5 s on this run (earlier runs 20.5 s and 21.6 s). The "20–22 s" in §3 and gotcha 3 should read 20–23 s.
 - t2 and t4 both pass on the current build. Raw output is in `spikes/c1-rerun`.
 - Not tested: real NAT. Both endpoints share one host.
+
+## 2026-10-11T19-55-00Z Correction: mDNS on for serve
+
+- `serve` enables mDNS by default, as the code did before this design. `--no-mdns` turns it off. This corrects "mDNS is off" in §1 and §5 for `serve`. It is decision 14 in the [remaining-work index](../2026-10-11T11-08-42Z_design_remaining_work/2026-10-11T11-08-42Z_design_remaining_work.md).
+- The library default is still off. `connectivity::public_builder` adds no mDNS. A library caller opts in by adding `MdnsAddressLookup`, as `serve` does.
+- The cost is the same as the table in §5 describes: every host on the local network learns the node ID and all IPs. The `serve --help` text says so.
+- Tests: `test_serve_enables_mdns_by_default_and_no_mdns_turns_it_off` and `test_serve_help_documents_no_mdns` in `pkgs/id/tests/cli_integration.rs`.

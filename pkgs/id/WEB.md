@@ -66,7 +66,7 @@ Open http://localhost:3000 in your browser (default port).
 
 The Nix dev shell provides all required tools:
 
-- Rust 1.89.0
+- Rust 1.99.0
 - Bun (for TypeScript bundling)
 - TypeScript
 - Chromium and Firefox (for E2E tests)

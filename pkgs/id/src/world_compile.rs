@@ -499,7 +499,9 @@ mod tests {
             return;
         };
         let Some(platform_dir) = default_platform_dir() else {
-            eprintln!("skipping: no platform directory found");
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
             return;
         };
         let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
@@ -545,7 +547,9 @@ mod tests {
             return;
         };
         let Some(platform_dir) = default_platform_dir() else {
-            eprintln!("skipping: no platform directory found");
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
             return;
         };
         let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
@@ -595,7 +599,9 @@ mod tests {
             return;
         };
         let Some(platform_dir) = default_platform_dir() else {
-            eprintln!("skipping: no platform directory found");
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
             return;
         };
         if !platform_dir.join("targets/x64musl/libhost.a").is_file() {
@@ -690,7 +696,9 @@ mod tests {
     #[tokio::test]
     async fn an_ungranted_import_is_refused_before_the_compiler_runs() {
         let Some(platform_dir) = default_platform_dir() else {
-            eprintln!("skipping: no platform directory found");
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
             return;
         };
         let compiler = Compiler::new(platform_dir, "/nonexistent/roc".to_owned()).unwrap();
@@ -736,13 +744,41 @@ mod tests {
         }
     }
 
+    /// The first candidate that is a complete world platform. The built
+    /// `host.wasm` is required too, so the compile tests skip on a checkout
+    /// where `examples/roc-world/build-host.sh` has not run.
+    fn first_platform_with_host(candidates: &[PathBuf]) -> Option<PathBuf> {
+        candidates
+            .iter()
+            .find(|dir| dir.join("targets/wasm32/host.wasm").is_file())
+            .cloned()
+    }
+
     fn default_platform_dir() -> Option<PathBuf> {
         let candidates = [
             PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world")),
             PathBuf::from("examples/roc-world"),
             PathBuf::from("../examples/roc-world"),
         ];
-        candidates.into_iter().find(|dir| dir.is_dir())
+        first_platform_with_host(&candidates)
+    }
+
+    #[test]
+    fn the_default_platform_needs_a_built_host_wasm() {
+        let root = tempfile::tempdir().unwrap();
+        let bare = root.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::write(bare.join("platform.roc"), "x").unwrap();
+        let built = root.path().join("built");
+        std::fs::create_dir_all(built.join("targets/wasm32")).unwrap();
+        std::fs::write(built.join("platform.roc"), "x").unwrap();
+        std::fs::write(built.join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+
+        assert_eq!(
+            first_platform_with_host(&[bare.clone(), built.clone()]),
+            Some(built)
+        );
+        assert_eq!(first_platform_with_host(&[bare]), None);
     }
 
     #[cfg(unix)]
