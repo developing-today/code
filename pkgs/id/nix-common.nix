@@ -29,9 +29,11 @@ let
   # without it (src/world_compile.rs), so every derivation that runs the tests
   # builds it first. Expects to run from the crate root. zig is named by path, not
   # put in nativeBuildInputs, because its setup hook replaces any default build phase.
+  # bash is named explicitly: the script's #!/usr/bin/env line only works where
+  # some earlier hook has patched shebangs, and the sandbox has no /usr/bin/env.
   buildWasmHost = ''
     export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
-    ROC=${rocCompiler}/bin/roc ZIG=${zig}/bin/zig ./examples/roc-world/build-host.sh
+    ROC=${rocCompiler}/bin/roc ZIG=${zig}/bin/zig bash ./examples/roc-world/build-host.sh
   '';
 
   # Formatter binaries (keep in sync with treefmt.toml)
