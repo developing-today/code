@@ -344,7 +344,8 @@ impl DirectoryAction {
         matches!(self, Self::AddEmail { .. } | Self::SignInEmail { .. })
     }
 
-    /// Whether the action queues envelopes or artifacts for other servers.
+    /// Whether the action may queue envelopes or artifacts for other servers.
+    /// Whether it does depends on the directory: see [`Self::queues_for_other_servers`].
     #[must_use]
     pub const fn sends_envelope(&self) -> bool {
         matches!(
@@ -359,6 +360,41 @@ impl DirectoryAction {
                 | Self::PublishDocument { .. }
                 | Self::PublishTag { .. }
         )
+    }
+
+    /// Whether the action queues something for another server, judged from the
+    /// directory as it is now. Only such an action needs an outbox. A removal or
+    /// a publish that no home server is declared for queues nothing, so it works
+    /// on a server without one.
+    #[must_use]
+    pub fn queues_for_other_servers(
+        &self,
+        directory: &Directory,
+        auth: &mut DirectoryAuth,
+        caller: &Caller,
+        now: u64,
+    ) -> bool {
+        let signed = caller.credential.is_some();
+        let declared = |account: &str| {
+            directory
+                .artifacts()
+                .declared(account)
+                .is_some_and(|declared| !declared.servers.is_empty())
+        };
+        match self {
+            Self::RequestFriend { remote, .. } | Self::AcceptFriend { remote, .. } => {
+                signed && remote.is_some()
+            }
+            Self::RemoveFriend { other } => signed && declared(other.as_str()),
+            Self::PublishDocument { .. } | Self::PublishTag { .. } => {
+                signed
+                    && matches!(
+                        Viewer::resolve(directory, auth, caller, now),
+                        Ok(Viewer::Account(me)) if declared(&me)
+                    )
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1557,6 +1593,7 @@ pub fn render_text(view: &DirectoryView) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::artifact::HomeServer;
     use ed25519_dalek::SigningKey;
 
     fn node() -> String {
@@ -2431,5 +2468,68 @@ mod tests {
         assert!(parse_line("petname set").is_err());
         assert!(parse_line("petname remove").is_err());
         assert!(parse_line("petname forget x").is_err());
+    }
+
+    #[test]
+    fn only_a_change_for_another_server_needs_an_outbox() {
+        let mut directory = Directory::new();
+        let (ada_credential, _) = sign(&mut directory, "Ada");
+        let (bo_credential, bo) = sign(&mut directory, "Bo");
+        let mut auth = DirectoryAuth::default();
+        let as_ada = Caller {
+            credential: Some(ada_credential.clone()),
+            ..Caller::default()
+        };
+        let home = || HomeServer {
+            endpoint: node(),
+            world_id: "lobby".to_owned(),
+        };
+        let remove = DirectoryAction::RemoveFriend { other: bo.clone() };
+        let publish = DirectoryAction::PublishTag {
+            subject: node(),
+            name: "author".to_owned(),
+            value: None,
+            after: Vec::new(),
+        };
+
+        // No home server is declared, so neither a removal nor a publish leaves this server.
+        assert!(!remove.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        assert!(!publish.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+
+        // Bo's home is elsewhere, so ending the friendship must be sent there.
+        directory
+            .declare_home(&bo_credential, vec![home()])
+            .unwrap();
+        assert!(remove.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        // The removal artifact is signed with the caller's credential, so there is none to send.
+        assert!(!remove.queues_for_other_servers(&directory, &mut auth, &Caller::default(), 0));
+
+        // Ada publishes to her own home servers, which she has not declared yet.
+        assert!(!publish.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        directory
+            .declare_home(&ada_credential, vec![home()])
+            .unwrap();
+        assert!(publish.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+
+        // A remote friend request is always sent to its server, and needs the sender's credential.
+        let remote_request = DirectoryAction::RequestFriend {
+            to: bo.clone(),
+            remote: Some(RemoteFriend {
+                node: node(),
+                audience: "lobby".to_owned(),
+            }),
+        };
+        assert!(remote_request.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        assert!(!remote_request.queues_for_other_servers(
+            &directory,
+            &mut auth,
+            &Caller::default(),
+            0
+        ));
+        let local = DirectoryAction::RequestFriend {
+            to: bo,
+            remote: None,
+        };
+        assert!(!local.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
     }
 }

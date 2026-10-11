@@ -456,13 +456,11 @@ impl WorldService {
             )
             .into());
         }
-        if action.sends_envelope() && self.outbox.is_none() {
-            return Err(crate::directory::Refusal::Forbidden(
-                "this server cannot send to other servers".to_owned(),
-            )
-            .into());
-        }
-        let mut outcome = self.world.directory(caller.clone(), action).await?;
+        // The actor refuses an outbox-less server only when the change would queue for another server.
+        let mut outcome = self
+            .world
+            .directory(caller.clone(), action, self.outbox.is_some())
+            .await?;
         if let (Some(sink), Some(mail)) = (&self.mail, outcome.mail.take()) {
             let sink = Arc::clone(sink);
             tokio::task::spawn_blocking(move || sink.send(&mail))
@@ -477,7 +475,7 @@ impl WorldService {
                     self.queue_then_apply(outbox, outbound, entry).await?;
                     outcome = self
                         .world
-                        .directory(caller, crate::directory_view::DirectoryAction::View)
+                        .directory(caller, crate::directory_view::DirectoryAction::View, true)
                         .await?;
                 }
                 None => {
