@@ -21,7 +21,9 @@ in the
 - `crash/`: the crash-safety gate for redb (plan P1.4). A fault model behind
   `redb::StorageBackend` cuts the power at a storage call of a 50-transaction
   workload, and the oracle checks the reopened state. `corpus.tsv` is the static
-  replay list. See `crash/main.rs`.
+  replay list. See `crash/main.rs`. `crash/store.rs` is the event store's first
+  creation (plan P1.3): a simulated directory with its directory steps as crash
+  points, and the in-place control that must fail.
 - `common/mod.rs`: the tuple checker shared by the property tests and the replay.
 - `common/chain.rs`: the event decoder's contract, shared the same way.
 - `regressions/`: checked-in failing cases. See its [README](regressions/README.md).

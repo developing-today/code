@@ -23,6 +23,7 @@
 mod corpus;
 mod faultfs;
 mod harness;
+mod store;
 mod sweep;
 mod workload;
 

@@ -156,6 +156,11 @@ impl FaultFs {
             st.live.clone()
         }
     }
+
+    /// What a power cut now would leave if it dropped every unsynced operation: the durable bytes.
+    pub fn synced_image(&self) -> Vec<u8> {
+        self.lock().durable.clone()
+    }
 }
 
 /// `SplitMix64`. Every random choice in the model is derived from a seed through this function.

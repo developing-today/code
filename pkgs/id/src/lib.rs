@@ -174,6 +174,7 @@ pub mod discovery;
 pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
+pub mod event_store;
 pub mod fileops;
 pub mod helpers;
 pub mod invite;
