@@ -415,10 +415,17 @@ impl ArtifactLog {
     /// match. An artifact that one frame cannot carry is [`Refusal::Forbidden`],
     /// since no page could ever send it. The log is unchanged on error.
     pub fn insert(&mut self, artifact: SignedArtifact) -> Result<Stored> {
+        self.store(artifact, true)
+    }
+
+    /// [`ArtifactLog::insert`], with the frame check only when `frame_check` is set.
+    /// Opening a file replays its lines without the check, so a line the file held
+    /// before the check still loads.
+    fn store(&mut self, artifact: SignedArtifact, frame_check: bool) -> Result<Stored> {
         artifact.verify()?;
         artifact.parsed()?;
         let size = encoded_len(&artifact);
-        if page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
+        if frame_check && page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
             return Err(forbidden(format!(
                 "an artifact of {size} bytes cannot be sent in one frame of {MAX_FRAME_BYTES} bytes"
             )));
@@ -579,7 +586,7 @@ impl ArtifactLog {
         for (number, line) in text[..kept].lines().enumerate() {
             let artifact: SignedArtifact = serde_json::from_str(line)
                 .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
-            log.insert(artifact)
+            log.store(artifact, false)
                 .with_context(|| format!("artifact line {} is refused", number + 1))?;
         }
         Ok(log)
