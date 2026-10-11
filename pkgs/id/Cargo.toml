@@ -181,6 +181,11 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
+# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
+# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
+# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
+assert_is_empty = "allow"
+chunks_exact_to_as_chunks = "allow"
 
 # =============================================================================
 # Profile Configuration
