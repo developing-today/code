@@ -35,9 +35,22 @@ type daemonDoc struct {
 	Servers []struct {
 		Namespace string `json:"namespace"`
 		Instances []struct {
-			PID int `json:"pid"`
+			PID int    `json:"pid"`
+			Key string `json:"key"`
 		} `json:"instances"`
 	} `json:"servers"`
+}
+
+// instanceFor is the pid of the child held for a lease key, zero if none.
+func (d daemonDoc) instanceFor(key string) int {
+	for _, s := range d.Servers {
+		for _, in := range s.Instances {
+			if in.Key == key && in.PID > 0 {
+				return in.PID
+			}
+		}
+	}
+	return 0
 }
 
 func (d daemonDoc) childOf(namespace string) int {
@@ -299,4 +312,124 @@ func TestTakeoverLosesNoCallsWhileAClientKeepsCalling(t *testing.T) {
 	if len(failures) > 0 {
 		t.Fatalf("%d of %d calls failed across the takeover; first: %s", len(failures), calls, failures[0])
 	}
+}
+
+// A session's lease is the child it was given and the record that names it.
+// Both survive a `daemon --takeover` process, and the record is on disk too, so
+// a daemon started from the state directory keeps the session.
+const sessionServer = `{
+  "mcpServers": {
+    "demo": { "command": "FAKE", "mcpx": { "sharing": "exclusive", "scope": "session", "max": 4 } }
+  }
+}`
+
+func TestClientLeaseSurvivesDaemonTakeover(t *testing.T) {
+	e := newEnv(t, sessionServer)
+	e.envVars = append(e.envVars, "MCPX_DAEMON_WATCH_CONFIG=false")
+	e.run("call", "--session", "lease-x", "demo.echo", `{"message":"before"}`)
+	before := e.daemonState(t)
+	child := before.instanceFor("session:lease-x")
+	if child == 0 {
+		t.Fatalf("the session has no child before the takeover: %+v", before)
+	}
+
+	s := startSuccessor(t, e)
+	after := e.awaitSuccessor(t, s)
+	if got := after.instanceFor("session:lease-x"); got != child {
+		t.Fatalf("the session's child changed across the takeover: pid %d -> %d", child, got)
+	}
+	if out := e.run("call", "--session", "lease-x", "demo.echo", `{"message":"after"}`); !strings.Contains(out, "after") {
+		t.Fatalf("the session did not get a result after the takeover:\n%s", out)
+	}
+	if got := e.daemonState(t).instanceFor("session:lease-x"); got != child {
+		t.Fatalf("the session was given a new child after the takeover: pid %d -> %d", child, got)
+	}
+
+	b, err := os.ReadFile(filepath.Join(e.dir, "state", "sessions.json"))
+	if err != nil {
+		t.Fatalf("no sessions.json after the takeover: %v", err)
+	}
+	if !strings.Contains(string(b), `"lease-x"`) {
+		t.Fatalf("sessions.json does not hold the session:\n%s", b)
+	}
+}
+
+// writeUnitScript writes an executable /bin/sh script for a fake unit command.
+func writeUnitScript(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The unit's start command sets the environment the daemon runs with. An
+// upgrade starts the successor through it, so the successor has the variable
+// the unit sets now, which the daemon it replaces was never started with.
+func TestUpgradeStartsTheSuccessorThroughTheUnitsStartCommand(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("reads the successor's environment from /proc")
+	}
+	e := newEnv(t, oneServer)
+	e.envVars = append(e.envVars, "MCPX_DAEMON_WATCH_CONFIG=false")
+	e.run("call", "demo.echo", `{"message":"warm"}`)
+	before := e.daemonState(t)
+	if strings.Contains(procEnv(t, before.PID), "MCPX_UNIT_TOKEN") {
+		t.Fatal("the daemon before the upgrade already has the variable; the test proves nothing")
+	}
+
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "mcpx-start")
+	writeUnitScript(t, wrapper, "MCPX_UNIT_TOKEN=rotated\nexport MCPX_UNIT_TOKEN\nexec \"$@\"\n")
+	next := filepath.Join(bin, "mcpx")
+	src, err := os.ReadFile(e.mcpx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(next, src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// systemd reports the wrapper and the binary as the unit's ExecStart.
+	writeUnitScript(t, filepath.Join(bin, "systemctl"),
+		fmt.Sprintf("echo '{ path=%s ; argv[]=%s %s daemon ; ignore_errors=no ; pid=0 ; status=0/0 }'\n", wrapper, wrapper, next))
+	e.envVars = append(e.envVars, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cmd := exec.Command(next, "upgrade")
+	cmd.Dir = e.dir
+	cmd.Env = e.envVars
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("upgrade: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "started through "+wrapper) {
+		t.Fatalf("upgrade did not say it used the unit's start command:\n%s", out)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	var after daemonDoc
+	for {
+		after = e.daemonState(t)
+		if after.PID != before.PID && after.PID != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the successor never took over")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	awaitExit(t, before.PID, "the previous daemon")
+
+	seen := procEnv(t, after.PID)
+	if !strings.Contains(seen, "MCPX_UNIT_TOKEN=rotated") {
+		t.Fatal("the successor was not given the environment the unit's start command sets")
+	}
+}
+
+// procEnv is the environment a running process was started with.
+func procEnv(t *testing.T, pid int) string {
+	t.Helper()
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		t.Fatalf("reading the environment of pid %d: %v", pid, err)
+	}
+	return strings.ReplaceAll(string(b), "\x00", "\n")
 }

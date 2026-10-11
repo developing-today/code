@@ -121,8 +121,14 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 					var d net.Dialer
 					return d.DialContext(ctx, "unix", paths.Socket)
 				},
-				MaxIdleConns:    set.Int("http.idleConns"),
-				IdleConnTimeout: idle,
+				// No connection is kept between calls. A takeover closes
+				// the old daemon's idle connections; a client that reused
+				// one could send into it just as it closed, and a POST is
+				// not retried by the transport once its bytes are written.
+				// A fresh connection is queued for the successor instead.
+				DisableKeepAlives: true,
+				MaxIdleConns:      set.Int("http.idleConns"),
+				IdleConnTimeout:   idle,
 			},
 		}
 		return c
@@ -704,10 +710,11 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Upgrade asks the running daemon to hand over to the binary at path. The
-// answer is "current" when that is the binary it already runs.
-func (c *Client) Upgrade(ctx context.Context, binary string) (map[string]any, error) {
-	b, err := c.do(ctx, http.MethodPost, "/v1/upgrade", map[string]any{"binary": binary})
+// Upgrade asks the running daemon to hand over to the binary at path, started
+// through start (the unit's start command ahead of it, or none). The answer is
+// "current" when that is the binary it already runs.
+func (c *Client) Upgrade(ctx context.Context, binary string, start []string) (map[string]any, error) {
+	b, err := c.do(ctx, http.MethodPost, "/v1/upgrade", map[string]any{"binary": binary, "start": start})
 	if err != nil {
 		return nil, err
 	}

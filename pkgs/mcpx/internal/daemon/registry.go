@@ -166,7 +166,7 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		}
 		seen[s.Namespace] = s.Name
 
-		id := s.PoolID()
+		id := s.ProcessID()
 		p, shared := byPoolID[id]
 		if !shared {
 			p = pool.New(s)
