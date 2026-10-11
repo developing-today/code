@@ -10,6 +10,9 @@
 //! control, and the corpus replay. `just crash-gate` runs the two full tests in release mode,
 //! where every storage call is a crash point. A failure found by a sweep goes into `corpus.tsv`
 //! with its fix (see `corpus.rs`).
+//!
+//! `identity` is the same gate for the identity store (plan step P1.10), with first creation
+//! tested on its own. It needs the `web` feature, so it runs under `--features web`.
 
 // Offsets and lengths index in-memory disk images, which stay far below 4 GiB, so the u64 to usize
 // casts cannot truncate on any target this runs on.
@@ -23,6 +26,8 @@
 mod corpus;
 mod faultfs;
 mod harness;
+#[cfg(feature = "web")]
+mod identity;
 mod sweep;
 mod workload;
 

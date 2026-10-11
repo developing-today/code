@@ -129,18 +129,8 @@ impl IdentityStore {
     /// * `secret_key` - 32-byte secret key (from iroh `SecretKey::to_bytes()`)
     /// * `db_path` - Path for the redb file (e.g., `.identity.redb`)
     pub async fn new(secret_key: [u8; 32], db_path: PathBuf) -> anyhow::Result<Self> {
-        // Derive signing key via HKDF-SHA256
-        let hk = Hkdf::<Sha256>::new(None, &secret_key);
-        let mut signing_bytes = [0u8; 32];
-        hk.expand(b"id-identity-signing", &mut signing_bytes)
-            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
-        let signing_key = SigningKey::from_bytes(&signing_bytes);
+        let (signing_key, enc_bytes) = derive_keys(&secret_key)?;
         let verifying_key = signing_key.verifying_key();
-
-        // Derive the record encryption key via HKDF-SHA256
-        let mut enc_bytes = [0u8; 32];
-        hk.expand(b"id-identity-encryption", &mut enc_bytes)
-            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
 
         // Open the file and load every record. redb is synchronous, so this runs
         // on the blocking pool.
@@ -629,6 +619,19 @@ impl IdentityDb {
     }
 }
 
+/// The signing key for tokens, and the AES-256-GCM key for records, both derived from the secret
+/// key with HKDF-SHA256.
+fn derive_keys(secret_key: &[u8; 32]) -> anyhow::Result<(SigningKey, [u8; 32])> {
+    let hk = Hkdf::<Sha256>::new(None, secret_key);
+    let mut signing_bytes = [0u8; 32];
+    hk.expand(b"id-identity-signing", &mut signing_bytes)
+        .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
+    let mut enc_bytes = [0u8; 32];
+    hk.expand(b"id-identity-encryption", &mut enc_bytes)
+        .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
+    Ok((SigningKey::from_bytes(&signing_bytes), enc_bytes))
+}
+
 /// The name a new store file is built under: the store's file name with `.creating` appended.
 fn creating_path(path: &Path) -> PathBuf {
     let mut name = path
@@ -665,6 +668,66 @@ fn store_error(path: &Path, error: DatabaseError) -> anyhow::Error {
             path.display()
         ),
         other => anyhow::anyhow!("failed to open identity store {}: {other}", path.display()),
+    }
+}
+
+/// The crash gate's view of the store (`tests/crash/identity.rs`). Not part of the public API.
+///
+/// The gate runs the store's own redb operations over a database it opened on its fault model, so
+/// a power cut can land inside them. It reopens each disk image through [`open_path`], the file
+/// path that [`IdentityStore::new`](super::IdentityStore::new) takes.
+#[doc(hidden)]
+pub mod crash_gate {
+    pub use super::ClientIdentity;
+    use super::{IdentityDb, derive_keys};
+    use redb::Database;
+    use std::path::{Path, PathBuf};
+
+    /// A store opened by the gate.
+    pub struct Store(IdentityDb);
+
+    impl std::fmt::Debug for Store {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Store").finish_non_exhaustive()
+        }
+    }
+
+    impl Store {
+        /// Inserts an identity. A client ID that is already stored is an error.
+        pub fn create(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+            self.0.create(identity)
+        }
+
+        /// Overwrites the identity stored under its client ID.
+        pub fn update(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+            self.0.update(identity)
+        }
+
+        /// Every stored identity, decrypted and authenticated.
+        pub fn records(&self) -> anyhow::Result<Vec<ClientIdentity>> {
+            self.0.read_all()
+        }
+    }
+
+    /// Loads a store from `db`, which the caller opened. A new file gets its table in the first
+    /// commit, which this makes.
+    pub fn open_database(db: Database, secret_key: &[u8; 32]) -> anyhow::Result<Store> {
+        let (_, enc_key) = derive_keys(secret_key)?;
+        let (store, _) = IdentityDb::load(db, &enc_key)?;
+        Ok(Store(store))
+    }
+
+    /// Opens the store file at `path`, or creates it, as
+    /// [`IdentityStore::new`](super::IdentityStore::new) does.
+    pub fn open_path(path: &Path, secret_key: &[u8; 32]) -> anyhow::Result<Store> {
+        let (_, enc_key) = derive_keys(secret_key)?;
+        let (store, _) = IdentityDb::open(path, &enc_key)?;
+        Ok(Store(store))
+    }
+
+    /// The name that a new store file is built under.
+    pub fn creating_path(path: &Path) -> PathBuf {
+        super::creating_path(path)
     }
 }
 

@@ -85,8 +85,17 @@ pub fn sample_events(total: u64, stride: u64) -> Vec<u64> {
         .collect()
 }
 
-/// Runs the jobs on all available threads. The result is in the same order as `jobs`.
+/// Runs the jobs of the event workload on all available threads.
 pub fn run_jobs(jobs: &[Job], models: &[Model]) -> Vec<Outcome> {
+    run_jobs_with(jobs, |job| run_one(Some(job.plan), job.lying, models).0)
+}
+
+/// Runs the jobs on all available threads, each one with `run`. The result is in the same order as
+/// `jobs`.
+pub fn run_jobs_with<F>(jobs: &[Job], run: F) -> Vec<Outcome>
+where
+    F: Fn(&Job) -> Outcome + Sync,
+{
     let next = AtomicUsize::new(0);
     let threads = std::thread::available_parallelism()
         .map_or(4, usize::from)
@@ -100,7 +109,7 @@ pub fn run_jobs(jobs: &[Job], models: &[Model]) -> Vec<Outcome> {
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(job) = jobs.get(i) else { break };
-                        done.push((i, run_one(Some(job.plan), job.lying, models).0));
+                        done.push((i, run(job)));
                     }
                     done
                 })

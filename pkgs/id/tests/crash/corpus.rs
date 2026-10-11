@@ -193,7 +193,12 @@ fn parse_expect(s: &str) -> Result<Expect, String> {
 
 /// The corpus text for a header and rows, in the order given.
 pub fn format(header: &Header, rows: &[Row]) -> String {
-    let mut out = String::from(PREAMBLE);
+    format_with(PREAMBLE, header, rows)
+}
+
+/// The corpus text for a header and rows, under the given preamble comment lines.
+pub fn format_with(preamble: &str, header: &Header, rows: &[Row]) -> String {
+    let mut out = String::from(preamble);
     writeln!(out, "{STORAGE_CALLS}{}", header.storage_calls).expect("write to a String");
     writeln!(out, "{TRACE_HASH}{:016x}", header.trace_fnv1a).expect("write to a String");
     writeln!(out, "{COLUMNS}").expect("write to a String");
