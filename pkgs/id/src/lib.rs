@@ -181,6 +181,7 @@ pub mod fileops;
 pub mod groups;
 pub mod helpers;
 pub mod invite;
+pub mod invites;
 pub mod local;
 pub mod log_sync;
 pub mod membership;
