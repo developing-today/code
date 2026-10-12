@@ -124,7 +124,7 @@
             cargo test --all-features --test cli_integration --no-run 2>&1
           '';
           installPhase = ''
-            mkdir -p $out/bin
+            mkdir -p $out/bin $out/share/id-test
             # The test binary is in target/debug/deps/cli_integration-<hash>
             TEST_BIN=$(find target/debug/deps -name 'cli_integration-*' -executable -type f | head -1)
             if [ -z "$TEST_BIN" ]; then
@@ -132,6 +132,7 @@
               exit 1
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
+            cp -r examples $out/share/id-test/examples
           '';
         };
 
