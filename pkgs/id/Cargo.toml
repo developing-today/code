@@ -54,6 +54,10 @@ iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+# Group membership and the auth DAG (P2.1). The `serde` feature (P2.3) serializes group actions,
+# which the event store keeps with each group operation. `test_utils` is not enabled: it turns on
+# test-only behaviour in p2panda-core, so the test types come from our own tests.
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["serde"] }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 redb = "=4.3.0"
@@ -62,6 +66,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+# TOML parser for the server config (P2.9).
+toml = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
