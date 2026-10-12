@@ -3,8 +3,15 @@ name: Go Mod Tidy and Commit
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md" # Ignore markdown files changes
+    paths:
+      - "src/graph/**"
+      - "pkgs/graph/**"
+      - ".github/workflows/mod-tidy.yml"
+  pull_request:
+    paths:
+      - "src/graph/**"
+      - "pkgs/graph/**"
+      - ".github/workflows/mod-tidy.yml"
 
 jobs:
   dump_contexts_to_log:

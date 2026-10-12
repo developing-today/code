@@ -16,12 +16,12 @@
 //! reason, rather than a guess. Auth state, fork proofs and waiting events are not part of these
 //! traits, and stay in the event store's own tables.
 //!
-//! # Known limit: LogSync is not wired in
+//! # Known limit: `LogSync` is not wired in
 //!
 //! p2panda-sync is not a dependency yet. Its p2panda-store dependency uses the default features,
 //! and those include SQLite, so adding it would bring SQLite back into the build. Until P3.2
-//! removes that default (a fork of the one dependency line, or a LogSync of our own), nothing
-//! here runs LogSync. `test_logsync_is_not_wired_and_the_lock_has_no_sqlite` pins this: it fails
+//! removes that default (a fork of the one dependency line, or a `LogSync` of our own), nothing
+//! here runs `LogSync`. `test_logsync_is_not_wired_and_the_lock_has_no_sqlite` pins this: it fails
 //! when the lock names SQLite or p2panda-sync, so that change is made on purpose.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -476,7 +476,7 @@ mod tests {
     use crate::chain::{ChainExt, sign};
     use crate::waiting::WaitingLimits;
 
-    /// The LogSync limit, pinned. The lock has no SQLite and no p2panda-sync, so LogSync is not
+    /// The `LogSync` limit, pinned. The lock has no SQLite and no p2panda-sync, so `LogSync` is not
     /// wired in. Adding p2panda-sync brings SQLite back through its store dependency, which is
     /// the P3.2 item. This test fails on either, so the change is made on purpose.
     #[test]

@@ -85,7 +85,7 @@ pub enum TupleValue {
     /// UTF-8 string.
     String(String),
     /// Nested tuple (also used for arrays).
-    Tuple(Vec<TupleValue>),
+    Tuple(Vec<Self>),
     /// Boolean.
     Bool(bool),
     /// Signed 64-bit integer.

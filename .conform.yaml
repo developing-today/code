@@ -11,9 +11,27 @@ policies:
           - nix
           - rust
           - id
+          - id-mail
+          - mcpx
           - nvim
           - vim
           - vi
+          - flake
+          - web
+          - e2e
+          - opencode
+          - openchamber
+          - collab
+          - inventory
+          - amd
+          - config
+          - directory
+          - home
+          - graph
+          - tailscale
+          - wireless
+          - antigravity
+          - claude-code
         types:
           - build
           - chore
@@ -27,10 +45,10 @@ policies:
           - style
           - test
           - bug
-          - fix
           - bugfix
           - todo
           - minor
+          - merge
       header:
         length: 89
     type: commit

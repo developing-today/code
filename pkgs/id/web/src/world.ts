@@ -1,15 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
 type WorldFrame = {
-  type:
-    | "snapshot"
-    | "event"
-    | "view"
-    | "records"
-    | "invite"
-    | "upload_ready"
-    | "module_installed"
-    | "error";
+  type: "snapshot" | "event" | "view" | "records" | "invite" | "upload_ready" | "module_installed" | "error";
   snapshot?: {
     world_id: string;
     current_sequence: number;
@@ -72,10 +64,29 @@ function initWorld(): void {
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
   if (
-    !name || !admin || !capability || !worldInput || !inviteButton || !moduleInput || !moduleSeed || !installButton || !joinButton || !chatForm || !chatInput ||
-    !inputForm || !gameInput || !log || !view || !recordsView || !recordsRefresh || !participants ||
-    !status || !copyButton || !inviteOutput
-  ) return;
+    !name ||
+    !admin ||
+    !capability ||
+    !worldInput ||
+    !inviteButton ||
+    !moduleInput ||
+    !moduleSeed ||
+    !installButton ||
+    !joinButton ||
+    !chatForm ||
+    !chatInput ||
+    !inputForm ||
+    !gameInput ||
+    !log ||
+    !view ||
+    !recordsView ||
+    !recordsRefresh ||
+    !participants ||
+    !status ||
+    !copyButton ||
+    !inviteOutput
+  )
+    return;
 
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
@@ -152,11 +163,13 @@ function initWorld(): void {
           recordsPending = false;
           recordsView.textContent = JSON.stringify(records, null, 2);
         } else {
-          socket?.send(JSON.stringify({
-            type: "records",
-            capability: capability.value.trim(),
-            after: recordsAfter,
-          }));
+          socket?.send(
+            JSON.stringify({
+              type: "records",
+              capability: capability.value.trim(),
+              after: recordsAfter,
+            }),
+          );
         }
         break;
       }
@@ -185,10 +198,12 @@ function initWorld(): void {
     recordsAfter = null;
     recordsPending = true;
     // This session is joined, so it can also ask for records.
-    socket.send(JSON.stringify({
-      type: "records",
-      capability: capability.value.trim(),
-    }));
+    socket.send(
+      JSON.stringify({
+        type: "records",
+        capability: capability.value.trim(),
+      }),
+    );
   };
 
   recordsRefresh.addEventListener("click", requestRecords);
@@ -276,15 +291,17 @@ function initWorld(): void {
     const upload = new WebSocket(`${scheme}//${location.host}/ws/world`);
     let uploadStarted = false;
     upload.addEventListener("open", () => {
-      upload.send(JSON.stringify({
-        type: "install_begin",
-        admin_token: secret,
-        total_bytes: file.size,
-        // The host computes the canonical Iroh BLAKE3 hash and returns it.
-        module_hash: null,
-        seed,
-        world: selectedWorld(),
-      }));
+      upload.send(
+        JSON.stringify({
+          type: "install_begin",
+          admin_token: secret,
+          total_bytes: file.size,
+          // The host computes the canonical Iroh BLAKE3 hash and returns it.
+          module_hash: null,
+          seed,
+          world: selectedWorld(),
+        }),
+      );
     });
     upload.addEventListener("message", async (message) => {
       let frame: WorldFrame;

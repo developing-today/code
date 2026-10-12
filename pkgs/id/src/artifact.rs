@@ -1323,7 +1323,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let path = dir.path().join(FILE);
             let line = serde_json::to_string(&unknown_kind_of_size(bytes)).unwrap();
-            std::fs::write(&path, format!("{line}\n")).unwrap();
+            fs::write(&path, format!("{line}\n")).unwrap();
             let log = ArtifactLog::open(&path)
                 .unwrap_or_else(|error| panic!("a {bytes}-byte line: {error:#}"));
             assert_eq!(log.head_seq(&public(1)), 1, "a {bytes}-byte line");

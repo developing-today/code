@@ -626,13 +626,13 @@ impl crate::world::WorldProgram for WorldInstance {
         match &event.kind {
             crate::world::WorldEventKind::Input(bytes) => {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
-                WorldInstance::update(self, event.participant_id, bytes)
+                Self::update(self, event.participant_id, bytes)
             }
             // Host events (capability results, ticks, presence) are JSON
             // text delivered as participant 0; the program updates on them
             // like any other event.
             crate::world::WorldEventKind::System { event } => {
-                WorldInstance::update(self, 0, event.as_bytes())
+                Self::update(self, 0, event.as_bytes())
             }
             crate::world::WorldEventKind::Chat(_)
             | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
@@ -640,20 +640,20 @@ impl crate::world::WorldProgram for WorldInstance {
     }
 
     fn view(&mut self, _viewer: &crate::world::Participant) -> Result<Option<String>> {
-        let output = WorldInstance::view(self)?;
+        let output = Self::view(self)?;
         String::from_utf8(output)
             .map(Some)
             .context("Roc world view must return valid UTF-8")
     }
 
     fn records(&mut self) -> Result<Option<String>> {
-        WorldInstance::records(self)?
+        Self::records(self)?
             .map(|bytes| String::from_utf8(bytes).context("Roc world records must be valid UTF-8"))
             .transpose()
     }
 
     fn wants(&mut self) -> Result<Option<String>> {
-        WorldInstance::wants(self)?
+        Self::wants(self)?
             .map(|bytes| String::from_utf8(bytes).context("Roc world wants must be valid UTF-8"))
             .transpose()
     }
@@ -663,10 +663,10 @@ impl crate::world::WorldProgram for WorldInstance {
     /// the same records. A journal trimmed on an unfaithful snapshot would
     /// silently change the world's state on restart.
     fn snapshot(&mut self) -> Result<Option<String>> {
-        let Some(bytes) = WorldInstance::snapshot(self)? else {
+        let Some(bytes) = Self::snapshot(self)? else {
             return Ok(None);
         };
-        let live_records = WorldInstance::records(self)?;
+        let live_records = Self::records(self)?;
         let mut probe = self.runner.instantiate(self.seed)?;
         probe.restore(&bytes).context("verify snapshot: restore")?;
         let again = probe
@@ -1035,7 +1035,7 @@ mod tests {
         let document = wants_of(&mut lounge);
         assert!(document.contains("chat.say"), "{document}");
         assert!(
-            document.contains("Welcome, ann script!") && !document.contains("<"),
+            document.contains("Welcome, ann script!") && !document.contains('<'),
             "the name is sanitized into the JSON: {document}"
         );
 
