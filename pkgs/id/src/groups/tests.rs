@@ -724,16 +724,17 @@ fn with_mode(mode: Option<Delegation>) -> Policy {
     }
 }
 
-/// A group by 1 with 2 and 3 as managers added by 1, and 2 granted Manage by 1 and 3 by 2. Joe
-/// (2) is the grantor the removal tests take away.
+/// A group by 1, with 2 and 3 as Write members and a chain 1 -> 2 -> 3 of grants that may be
+/// passed on. A Write member is not a manager, so its own grants need the chain. The mode tests
+/// probe with a grant from 3 to 4, and the grants from 2 are the ones a removal of 2 touches.
 fn chain_base(mode: Option<Delegation>) -> Vec<Event> {
     let g = id("g");
     vec![
         custom("g", 1, &[], with_mode(mode)),
-        add("a0", 1, g, 2, Role::Manage, &["g"]),
-        add("a1", 1, g, 3, Role::Manage, &["a0"]),
-        delegate("d0", 1, g, 2, Role::Manage, true, &["a1"]),
-        delegate("d1", 2, g, 3, Role::Manage, true, &["d0"]),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
     ]
 }
 
@@ -755,10 +756,10 @@ fn test_keep_prior_lets_a_grant_made_before_the_removal_stand() {
     let g = id("g");
     let mut events = chain_base(Some(Delegation::KeepPrior));
     events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
-    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    events.push(delegate("d2", 3, g, 4, Role::Read, false, &["x0"]));
     let p = project(&events);
     assert_eq!(outcome(&p, "x0"), Outcome::Applied);
-    assert_eq!(outcome(&p, "a2"), Outcome::Applied, "d1 was made before x0");
+    assert_eq!(outcome(&p, "d2"), Outcome::Applied, "d1 was made before x0");
     assert!(p.grant_in_force(&id("d1")));
 }
 
@@ -767,35 +768,35 @@ fn test_cascade_removes_the_grants_the_removed_member_made() {
     let g = id("g");
     let mut events = chain_base(None);
     events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
-    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    events.push(delegate("d2", 3, g, 4, Role::Read, false, &["x0"]));
     let p = project(&events);
     assert_eq!(outcome(&p, "x0"), Outcome::Applied);
-    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
     assert!(!p.grant_in_force(&id("d1")));
     assert!(p.grant_in_force(&id("d0")), "the owner's grant to 2 stands");
 }
 
 #[test]
 fn test_cascade_keeps_a_grant_for_an_action_concurrent_with_the_removal() {
-    // a2 names only d1, so it is concurrent with x0. At its position 2 still holds Manage.
+    // d2 names only d1, so it is concurrent with x0. At its position 2 still holds Write.
     let g = id("g");
     let mut events = chain_base(None);
     events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
-    events.push(add("a2", 3, g, 4, Role::Read, &["d1"]));
+    events.push(delegate("d2", 3, g, 4, Role::Read, false, &["d1"]));
     let p = project(&events);
-    assert_eq!(outcome(&p, "a2"), Outcome::Applied);
+    assert_eq!(outcome(&p, "d2"), Outcome::Applied);
 }
 
 #[test]
 fn test_transfer_hands_the_removed_members_grants_to_the_successor() {
     let g = id("g");
     let mut events = chain_base(Some(Delegation::Transfer));
-    events.push(add("a3", 1, g, 5, Role::Manage, &["a1"]));
-    events.push(delegate("d2", 1, g, 5, Role::Manage, true, &["a3"]));
+    events.push(add("a2", 1, g, 5, Role::Write, &["a1"]));
+    events.push(delegate("d2", 1, g, 5, Role::Write, true, &["a2"]));
     events.push(remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]));
-    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    events.push(delegate("d3", 3, g, 4, Role::Read, false, &["x0"]));
     let p = project(&events);
-    assert_eq!(outcome(&p, "a2"), Outcome::Applied, "5 reissues d1");
+    assert_eq!(outcome(&p, "d3"), Outcome::Applied, "5 reissues d1");
     assert!(
         !p.grant_in_force(&id("d1")),
         "the original grant is superseded"
@@ -807,22 +808,22 @@ fn test_transfer_without_a_successor_ends_the_grants() {
     let g = id("g");
     let mut events = chain_base(Some(Delegation::Transfer));
     events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
-    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    events.push(delegate("d2", 3, g, 4, Role::Read, false, &["x0"]));
     let p = project(&events);
-    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
 }
 
 #[test]
 fn test_a_successor_must_hold_the_scope_to_take_over() {
-    // 5 is granted Manage by the owner, but its membership is Read, so it cannot hold Manage.
+    // 5 is granted Write by the owner, but its membership is Read, so it cannot hold Write.
     let g = id("g");
     let mut events = chain_base(Some(Delegation::Transfer));
-    events.push(add("a3", 1, g, 5, Role::Read, &["a1"]));
-    events.push(delegate("d2", 1, g, 5, Role::Manage, true, &["a3"]));
+    events.push(add("a2", 1, g, 5, Role::Read, &["a1"]));
+    events.push(delegate("d2", 1, g, 5, Role::Write, true, &["a2"]));
     events.push(remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]));
-    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    events.push(delegate("d3", 3, g, 4, Role::Read, false, &["x0"]));
     let p = project(&events);
-    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "d3"), Outcome::Refused(Refusal::NoChain));
 }
 
 #[test]
@@ -855,69 +856,67 @@ fn test_a_grant_that_cannot_be_redelegated_ends_the_chain() {
     let g = id("g");
     let p = project(&[
         custom("g", 1, &[], Policy::default()),
-        add("a0", 1, g, 2, Role::Manage, &["g"]),
-        delegate("d0", 1, g, 2, Role::Manage, false, &["a0"]),
-        add("a1", 2, g, 4, Role::Read, &["d0"]),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        delegate("d0", 1, g, 2, Role::Write, false, &["a0"]),
         delegate("d1", 2, g, 3, Role::Read, false, &["d0"]),
     ]);
-    assert_eq!(
-        outcome(&p, "a1"),
-        Outcome::Applied,
-        "a grantee acts without redelegating"
-    );
     assert_eq!(outcome(&p, "d1"), Outcome::Refused(Refusal::NoChain));
+    assert!(p.grant_in_force(&id("d0")));
 }
 
 #[test]
 fn test_chain_search_accepts_a_valid_chain_and_refuses_a_broken_one() {
     let g = id("g");
-    // 1 -> 2 -> 3 -> 4. Every link may be passed on except the last.
-    let valid = project(&[
-        custom("g", 1, &[], Policy::default()),
-        add("a0", 1, g, 2, Role::Manage, &["g"]),
-        add("a1", 1, g, 3, Role::Manage, &["a0"]),
-        add("a2", 1, g, 4, Role::Manage, &["a1"]),
-        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
-        delegate("d1", 2, g, 3, Role::Manage, true, &["d0"]),
-        delegate("d2", 3, g, 4, Role::Manage, false, &["d1"]),
-        add("a3", 4, g, 5, Role::Read, &["d2"]),
-        delegate("d3", 4, g, 5, Role::Read, false, &["d2"]),
-    ]);
-    assert_eq!(outcome(&valid, "a3"), Outcome::Applied, "the chain holds");
-    assert_eq!(outcome(&valid, "d3"), Outcome::Refused(Refusal::NoChain));
+    let members = |events: &mut Vec<Event>| {
+        events.push(custom("g", 1, &[], Policy::default()));
+        events.push(add("a0", 1, g, 2, Role::Write, &["g"]));
+        events.push(add("a1", 1, g, 3, Role::Write, &["a0"]));
+        events.push(add("a2", 1, g, 4, Role::Write, &["a1"]));
+    };
+    // 1 -> 2 -> 3 -> 4 -> 5. Every link may be passed on, so 4 can grant to 5.
+    let mut valid = Vec::new();
+    members(&mut valid);
+    valid.push(delegate("d0", 1, g, 2, Role::Write, true, &["a2"]));
+    valid.push(delegate("d1", 2, g, 3, Role::Write, true, &["d0"]));
+    valid.push(delegate("d2", 3, g, 4, Role::Write, true, &["d1"]));
+    valid.push(delegate("d3", 4, g, 5, Role::Read, false, &["d2"]));
+    let p = project(&valid);
+    assert_eq!(outcome(&p, "d3"), Outcome::Applied, "the chain holds");
 
-    // The same chain with 2 -> 3 not redelegatable: 3 cannot grant on, and 4 has no chain.
-    let broken = project(&[
-        custom("g", 1, &[], Policy::default()),
-        add("a0", 1, g, 2, Role::Manage, &["g"]),
-        add("a1", 1, g, 3, Role::Manage, &["a0"]),
-        add("a2", 1, g, 4, Role::Manage, &["a1"]),
-        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
-        delegate("d1", 2, g, 3, Role::Manage, false, &["d0"]),
-        delegate("d2", 3, g, 4, Role::Manage, false, &["d1"]),
-        add("a3", 4, g, 5, Role::Read, &["d2"]),
-    ]);
-    assert_eq!(outcome(&broken, "d2"), Outcome::Refused(Refusal::NoChain));
-    assert_eq!(outcome(&broken, "a3"), Outcome::Refused(Refusal::NoChain));
+    // The last link cannot be passed on, so 4 cannot grant.
+    let mut last = Vec::new();
+    members(&mut last);
+    last.push(delegate("d0", 1, g, 2, Role::Write, true, &["a2"]));
+    last.push(delegate("d1", 2, g, 3, Role::Write, true, &["d0"]));
+    last.push(delegate("d2", 3, g, 4, Role::Write, false, &["d1"]));
+    last.push(delegate("d3", 4, g, 5, Role::Read, false, &["d2"]));
+    let p = project(&last);
+    assert_eq!(outcome(&p, "d3"), Outcome::Refused(Refusal::NoChain));
+
+    // The middle link cannot be passed on: 3 cannot grant, so 4 has no chain.
+    let mut middle = Vec::new();
+    members(&mut middle);
+    middle.push(delegate("d0", 1, g, 2, Role::Write, true, &["a2"]));
+    middle.push(delegate("d1", 2, g, 3, Role::Write, false, &["d0"]));
+    middle.push(delegate("d2", 3, g, 4, Role::Write, true, &["d1"]));
+    let p = project(&middle);
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
 }
 
 #[test]
-fn test_a_manager_acts_only_through_a_grant_from_an_owner() {
-    // 3 is a Manage member added by the owner, but no grant reaches it, so it cannot add.
+fn test_a_manager_added_by_another_member_is_a_root_and_its_grants_are_valid() {
+    // Design §7.2: roots are the owners or managers at the action's position. 2 is a manager
+    // added by 1, so it is a root there: it may manage, and its grant is valid.
     let g = id("g");
     let p = project(&[
         custom("g", 1, &[], Policy::default()),
         add("a0", 1, g, 2, Role::Manage, &["g"]),
-        add("a1", 2, g, 3, Role::Manage, &["a0"]),
-        add("a2", 2, g, 4, Role::Read, &["a1"]),
+        add("a1", 2, g, 4, Role::Read, &["a0"]),
+        delegate("d0", 2, g, 3, Role::Write, true, &["a1"]),
     ]);
-    assert_eq!(
-        outcome(&p, "a0"),
-        Outcome::Applied,
-        "the owner adds directly"
-    );
-    assert_eq!(outcome(&p, "a1"), Outcome::Refused(Refusal::NoChain));
-    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "a1"), Outcome::Applied);
+    assert_eq!(outcome(&p, "d0"), Outcome::Applied);
+    assert!(p.grant_in_force(&id("d0")));
 }
 
 #[test]
@@ -925,60 +924,55 @@ fn test_a_manager_may_veto_a_grant_and_the_grants_below_it_fall() {
     let g = id("g");
     let mut events = chain_base(None);
     events.push(add("a2", 1, g, 4, Role::Manage, &["a1"]));
-    events.push(delegate("d2", 1, g, 4, Role::Manage, true, &["a2"]));
-    events.push(veto("v0", 4, g, "d0", &["d2", "d0"]));
-    events.push(add("a3", 3, g, 5, Role::Read, &["v0"]));
-    events.push(add("a4", 3, g, 6, Role::Read, &["d1"]));
+    events.push(veto("v0", 4, g, "d0", &["d1", "a2"]));
+    events.push(delegate("d2", 3, g, 5, Role::Read, false, &["v0"]));
+    events.push(delegate("d3", 3, g, 6, Role::Read, false, &["d1"]));
+    events.push(delegate("d4", 4, g, 7, Role::Read, false, &["v0"]));
     let p = project(&events);
     assert_eq!(outcome(&p, "v0"), Outcome::Applied);
     assert_eq!(
-        outcome(&p, "a3"),
+        outcome(&p, "d2"),
         Outcome::Refused(Refusal::NoChain),
         "3 reaches the owner only through d0"
     );
     assert_eq!(
-        outcome(&p, "a4"),
+        outcome(&p, "d3"),
         Outcome::Applied,
         "before the veto, d0 stood"
     );
+    assert_eq!(
+        outcome(&p, "d4"),
+        Outcome::Applied,
+        "4 is a manager, a root at its position"
+    );
     assert!(!p.grant_in_force(&id("d0")));
-    assert!(p.grant_in_force(&id("d2")));
 }
 
 #[test]
-fn test_a_veto_needs_manage_access_a_chain_and_a_grant_it_has_seen() {
+fn test_a_veto_needs_manage_a_grant_it_has_seen() {
     let g = id("g");
     let p = project(&[
         custom("g", 1, &[], Policy::default()),
-        add("a0", 1, g, 2, Role::Manage, &["g"]),
-        add("a1", 1, g, 3, Role::Read, &["a0"]),
-        add("a2", 1, g, 4, Role::Manage, &["a1"]),
-        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
-        veto("v0", 3, g, "d0", &["d0"]),
-        veto("v1", 4, g, "d0", &["d0"]),
-        veto("v2", 2, g, "d0", &["d0"]),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Manage, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        delegate("d5", 3, g, 4, Role::Read, false, &["a1"]),
+        veto("v0", 2, g, "d0", &["d0"]),
+        veto("v1", 3, g, "d0", &["d0"]),
+        veto("v2", 3, g, "d5", &["d0"]),
+        veto("v3", 3, g, "d9", &["d0"]),
     ]);
     assert_eq!(outcome(&p, "v0"), Outcome::Refused(Refusal::NotManager));
-    assert_eq!(
-        outcome(&p, "v1"),
-        Outcome::Refused(Refusal::NoChain),
-        "4 manages without a chain"
-    );
+    assert_eq!(outcome(&p, "v1"), Outcome::Applied);
     assert_eq!(
         outcome(&p, "v2"),
-        Outcome::Applied,
-        "2 manages through the owner's grant"
-    );
-    let unseen = project(&[
-        custom("g", 1, &[], Policy::default()),
-        add("a0", 1, g, 2, Role::Manage, &["g"]),
-        delegate("d0", 1, g, 2, Role::Manage, true, &["a0"]),
-        veto("v0", 2, g, "d1", &["d0"]),
-    ]);
-    assert_eq!(
-        outcome(&unseen, "v0"),
         Outcome::Refused(Refusal::UnknownGrant),
-        "d1 does not exist"
+        "d5 is concurrent with d0, so the veto has not seen it"
+    );
+    assert_eq!(
+        outcome(&p, "v3"),
+        Outcome::Refused(Refusal::UnknownGrant),
+        "d9 does not exist"
     );
 }
 
@@ -1015,29 +1009,27 @@ fn s2_events(alt: bool, mode: Option<Delegation>, successor: Option<u8>) -> Vec<
 
 #[test]
 fn test_s2_delegation_scenarios_keep_their_results() {
+    // (alt chain, mode, successor, Joe to Jim stands at the head). Jim (4) and Quinn (7) are
+    // managers, so they are roots at their positions (design §7.2). Their later actions apply in
+    // every mode. S2 had them vetoed, because it made only the owner a root. The mode still
+    // decides the grant from Joe, which is the table's last column.
     let g = id("s0");
-    // (alt chain, mode, successor, Jim's later action applies, the grant Joe to Jim stands).
     let runs = [
-        (false, None, None, false, false),
-        (true, None, None, true, false),
-        (false, Some(Delegation::KeepPrior), None, true, true),
-        (false, Some(Delegation::Transfer), Some(3), true, false),
+        (false, None, None, false),
+        (true, None, None, false),
+        (false, Some(Delegation::KeepPrior), None, true),
+        (false, Some(Delegation::Transfer), Some(3), false),
     ];
-    for (alt, mode, successor, jim_later, joe_to_jim_stands) in runs {
+    for (alt, mode, successor, joe_to_jim_stands) in runs {
         let name = format!("alt {alt}, mode {mode:?}, successor {successor:?}");
         let p = project(&s2_events(alt, mode, successor));
-        let expected = if jim_later {
-            Outcome::Applied
-        } else {
-            Outcome::Refused(Refusal::NoChain)
-        };
-        assert_eq!(outcome(&p, "s10"), expected, "{name}: Jim's later add");
-        assert_eq!(outcome(&p, "s11"), Outcome::Applied, "{name}: concurrent");
         assert_eq!(
-            outcome(&p, "s12"),
-            Outcome::Refused(Refusal::NoChain),
-            "{name}: Quinn's only chain is void"
+            outcome(&p, "s10"),
+            Outcome::Applied,
+            "{name}: Jim's later add"
         );
+        assert_eq!(outcome(&p, "s11"), Outcome::Applied, "{name}: concurrent");
+        assert_eq!(outcome(&p, "s12"), Outcome::Applied, "{name}: Quinn's add");
         assert!(!p.grant_in_force(&id("s8")), "{name}: void");
         assert_eq!(
             p.grant_in_force(&id("s6")),
@@ -1046,7 +1038,7 @@ fn test_s2_delegation_scenarios_keep_their_results() {
         );
         let members = &p.group(&g).unwrap().members;
         assert!(!members.contains_key(&key(2)), "{name}: Joe is removed");
-        assert_eq!(members.contains_key(&key(5)), jim_later, "{name}: Zed");
+        assert!(members.contains_key(&key(5)), "{name}: Zed");
     }
     let p = project(&s2_events(false, None, None));
     assert_eq!(outcome(&p, "s14"), Outcome::Refused(Refusal::Attenuated));

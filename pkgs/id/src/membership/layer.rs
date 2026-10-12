@@ -354,6 +354,30 @@ impl Membership {
         Ok(self.access_at(&deps, AuthId::Group(group), AuthId::Key(member)))
     }
 
+    /// The accounts that hold manage access in `group` at the causal position that `after` names.
+    /// Empty when the group does not exist there. Delegation takes these as its roots (design
+    /// §7.2).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MembershipError`] when an `after` hash is not indexed.
+    pub fn managers_at_position(
+        &mut self,
+        after: &[Hash],
+        group: Hash,
+    ) -> Result<Vec<[u8; 32]>, MembershipError> {
+        let heads: HashSet<Hash> = self.index.frontier(after, group)?.into_iter().collect();
+        let managers = Graph::members_at(&self.state, heads, AuthId::Group(group))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, access)| match id {
+                AuthId::Key(key) if access.is_manage() => Some(key),
+                _ => None,
+            })
+            .collect();
+        Ok(managers)
+    }
+
     /// Whether a create has been decided for `group`.
     pub fn has_group(&self, group: Hash) -> bool {
         self.state.has_group(AuthId::Group(group))

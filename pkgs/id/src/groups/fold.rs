@@ -341,9 +341,6 @@ pub(super) struct Record {
     pub(super) present: BTreeSet<Key>,
     pub(super) friendship: Option<Pair>,
     pub(super) dissolved_by: Option<Hash>,
-    /// The accounts the create named, its author included. They are the owners: the roots of
-    /// every delegation chain (design §7.2, as S2 chose it).
-    pub(super) roots: BTreeSet<Key>,
 }
 
 /// The state change an accepted event makes. It is committed once the membership layer accepts
@@ -608,7 +605,6 @@ impl Engine {
             present: BTreeSet::from([author]),
             friendship: Some(pair),
             dissolved_by: None,
-            roots: BTreeSet::from([author, other]),
         };
         let initial = vec![
             (
@@ -928,13 +924,11 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
         Access::manage(),
     )];
     let mut admins = BTreeSet::from([author]);
-    let mut roots = BTreeSet::from([author]);
     for (member, role) in &create.members {
         initial.push((
             GroupMember::Individual(AuthId::Key(*member)),
             access_for(*role),
         ));
-        roots.insert(*member);
         if *role == Role::Admin {
             admins.insert(*member);
         }
@@ -945,7 +939,6 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
         present: BTreeSet::new(),
         friendship: None,
         dissolved_by: None,
-        roots,
     };
     Ok(Decision {
         group: event.id,

@@ -2,9 +2,9 @@
 //! decides whether an account may act at a causal position, the three removal modes, and vetoes.
 //!
 //! A grant is an event by a grantor who holds the scope there. An account may exercise a scope
-//! only through a chain of grants that starts at a root. The roots are the accounts a group's
-//! create named, its creator included. A manager added by someone else has membership, but no
-//! authority until a grant reaches it. This is S2's choice: the owner is the only root.
+//! through a chain of grants that starts at a root. The roots are the owners and managers at the
+//! action's position (design §7.2): a member holding Manage there is a root, so a manager's own
+//! grants and actions are valid without a grant reaching it. A grant reaches the others.
 //!
 //! Each link attenuates: a grantor passes on no more than it holds. A link carries authority at a
 //! position when its grantor was valid where it was made, the grant is not voided by a concurrent
@@ -196,10 +196,11 @@ impl Engine {
     }
 
     /// Whether `actor` may exercise `scope` in `group` at the causal position `after` (design
-    /// §7.2). A root that holds the scope there is authorized. Otherwise a chain of links leads
-    /// from a root holding the scope to the actor, every link attenuating. With `need_redelegate`,
-    /// the last link into the actor must allow the actor to grant on. The actor's own membership
-    /// is not checked here: a grant may reach an account that is not a member.
+    /// §7.2). The roots are the owners and managers at that position: a root holds Manage there,
+    /// so it holds every scope. An actor that is a root is authorized. Otherwise a chain of links
+    /// leads from a root to the actor, every link attenuating. With `need_redelegate`, the last
+    /// link into the actor must allow the actor to grant on. The actor's own membership is not
+    /// checked here: a grant may reach an account that is not a member.
     pub(super) fn authorized(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
@@ -209,20 +210,15 @@ impl Engine {
         after: &[Hash],
         need_redelegate: bool,
     ) -> Result<bool, FoldError> {
-        let Some(record) = self.groups.get(&group) else {
+        if !self.groups.contains_key(&group) {
             return Ok(false);
-        };
-        let roots = record.roots.clone();
-        if roots.contains(&actor) && self.holds(group, actor, scope, after)? {
+        }
+        let roots = self.membership.managers_at_position(after, group)?;
+        if roots.contains(&actor) {
             return Ok(true);
         }
         let links = self.links(by_id, group, after)?;
-        let mut reached = BTreeSet::new();
-        for root in roots {
-            if self.holds(group, root, scope, after)? {
-                reached.insert(root);
-            }
-        }
+        let mut reached: BTreeSet<Key> = roots.iter().copied().collect();
         let mut stack: Vec<Key> = reached.iter().copied().collect();
         while let Some(holder) = stack.pop() {
             for link in links
