@@ -49,7 +49,7 @@ struct Mode {
 }
 
 impl Mode {
-    /// Whether the mode binds a port below 1024, which needs CAP_NET_BIND_SERVICE.
+    /// Whether the mode binds a port below 1024, which needs `CAP_NET_BIND_SERVICE`.
     fn binds_privileged_port(&self) -> bool {
         [Some(&self.http_bind_addr), self.https_bind_addr.as_ref()]
             .into_iter()
@@ -177,8 +177,8 @@ fn check_unit(unit: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks a mode's rendered unit: the shared checks, the exact ExecStart, and the
-/// capability. The unit grants CAP_NET_BIND_SERVICE if and only if the mode binds
+/// Checks a mode's rendered unit: the shared checks, the exact `ExecStart`, and the
+/// capability. The unit grants `CAP_NET_BIND_SERVICE` if and only if the mode binds
 /// a port below 1024, so tunnel mode (no privileged port) grants nothing.
 fn check_mode_unit(unit: &str, mode: &Mode) -> Result<(), String> {
     check_unit(unit)?;

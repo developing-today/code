@@ -1,4 +1,5 @@
-# iroh-relay, Cloudflare Tunnel mode (setup A in the connectivity design).
+# iroh-relay, Cloudflare Tunnel mode (setup A in the connectivity design). Its values are in
+# relay.kit.toml under [modes.tunnel].
 #
 # Plain HTTP on loopback. cloudflared terminates TLS at Cloudflare's edge and forwards to
 # this address, so the relay needs no certificate and no open inbound port.
