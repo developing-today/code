@@ -95,3 +95,15 @@ Base: `b6f1a1d5` (phase-5). Track: `p5-bodies`. Commits, in order:
 ### Next
 
 P5.4 to P5.7 are not started. P5.4 needs the document content events on the same header pattern, if it uses the same extension. #185 and #160 wait on the owner.
+
+---
+
+## 2026-10-12T20-04-02Z Discovery: the tag property failures were in the test history generator
+
+Both properties failed at `37a8344b`, and the cause was in the oracle side, not the fold or the store. `history()` in `tests/tag_claims.rs` shadowed the writer count with a clear's claim count, so a clear's `after` named only the first 1 to 3 writers. A writer could have seen events its clear did not name. The oracle counts everything the author had seen, but the causal past read from the parent links did not include them. The fold and the causal walk agreed on every history, including the failing ones.
+
+- Sweep over 5000 histories: with the shadow, the walk and the fold agree on all, and the fold differs from the oracle on 148. With the rename, there are no mismatches.
+- Red, then green: `a1304850` adds the regressions and fails on both properties and both named tests. `0f3b7eaa` renames the variable, and everything passes.
+- The regression file keeps `cc 0759f56f…`. It replays under both properties. `test_the_regression_histories_reach_the_oracle_through_every_path` runs the two histories from the task in every test run. `test_each_event_names_every_event_its_author_had_seen` checks each event's causal past against its author's record.
+- `PROPTEST_RNG_SEED` selects the runner's RNG, not the input. The `(seed, steps, writers)` triples in the task are the inputs to `history()`, and the named tests use them directly.
+- Suites after the fix: `cargo test --lib tag` 115 passed, `--test tag_claims` 12 passed (the 10 existing plus 2), `--test tag_index` 4 passed, `cargo test --lib` 1104 passed, 3 ignored. The 256-case runs of both properties pass, using a scratch copy with the case count set to 256, since the explicit `cases` in the config overrides `PROPTEST_CASES`.
