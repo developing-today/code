@@ -5,6 +5,7 @@
 //! to the members who may read them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use p2panda_core::{SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
@@ -15,6 +16,7 @@ use p2panda_encryption::key_manager::KeyManagerState;
 use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
+use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
 use super::*;
 use crate::groups::Key;
 
@@ -35,6 +37,8 @@ fn text(message: &str) -> Received {
 struct Cast {
     rng: Rng,
     sessions: BTreeMap<Key, Session>,
+    /// Each person's identity secret, to open the answers sealed to them.
+    identities: BTreeMap<Key, IdentitySecret>,
     /// The member set the group model holds after the last operation.
     model: BTreeSet<Key>,
 }
@@ -44,12 +48,14 @@ impl Cast {
         let rng = Rng::default();
         let mut bundles = Vec::new();
         let mut keys: BTreeMap<Key, (VerifyingKey, KeyManagerState)> = BTreeMap::new();
+        let mut identities = BTreeMap::new();
         for seed in seeds {
             let (key, verifying) = person(*seed);
             let identity = IdentitySecret::from_rng(&rng).expect("identity");
             let state = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
             bundles.push((verifying, key_bundle(&state).expect("bundle")));
             keys.insert(key, (verifying, state));
+            identities.insert(key, identity);
         }
         let registry = registry(&bundles).expect("registry");
         let sessions = keys
@@ -62,12 +68,21 @@ impl Cast {
         Self {
             rng,
             sessions,
+            identities,
             model: BTreeSet::new(),
         }
     }
 
     fn session(&self, who: u8) -> &Session {
         self.sessions.get(&id(who)).expect("session")
+    }
+
+    fn session_mut(&mut self, who: u8) -> &mut Session {
+        self.sessions.get_mut(&id(who)).expect("session")
+    }
+
+    fn identity(&self, who: u8) -> &IdentitySecret {
+        self.identities.get(&id(who)).expect("identity")
     }
 
     fn create(&mut self, by: u8, members: &[u8]) -> Envelope {
@@ -417,6 +432,137 @@ fn test_recent_joiner_reads_its_window_of_history_handed_over_before_the_welcome
             }
         }
     }
+}
+
+// --- lazy history ---------------------------------------------------------------------------------
+
+/// A joiner with a `recent:N` welcome asks a member for the older epochs it was handed and cannot
+/// read. The member answers, and the joiner reads them. A key sealed to someone else does not open.
+#[test]
+fn test_joiner_gets_its_older_epochs_from_a_member() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let (all, _) = history(&mut cast, 10);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(4));
+    cast.deliver(&add, &[4]);
+    assert_eq!(cast.session(4).epoch_count(), 4, "the window");
+
+    let request = cast.session(4).request_history().expect("older epochs");
+    assert_eq!(request.wanted.len(), 7, "epochs 0 to 6, outside the window");
+
+    let answer = cast
+        .session(1)
+        .answer_history(&request)
+        .expect("answer")
+        .expect("a member answers");
+    let outsider = cast.identity(5).clone();
+    assert!(
+        cast.session_mut(4)
+            .open_history(&request, &answer, &outsider)
+            .is_err(),
+        "an answer does not open with another identity"
+    );
+
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    let expected: Vec<Received> = (0..=6)
+        .map(|epoch| text(&format!("epoch {epoch}")))
+        .collect();
+    assert_eq!(read, expected, "the older messages, in send order");
+    assert_eq!(cast.session(4).epoch_count(), 11, "every epoch now");
+    assert!(
+        cast.session(4).request_history().is_none(),
+        "nothing left to ask for"
+    );
+}
+
+/// Only a member answers, and only a member may ask. A device outside the group gets nothing, and a
+/// member refuses a request from outside its roster.
+#[test]
+fn test_a_non_member_gets_no_history_and_a_non_member_answers_nothing() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let (all, _) = history(&mut cast, 6);
+    for message in &all {
+        cast.deliver(message, &[4, 5]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(2));
+    cast.deliver(&add, &[4]);
+
+    let outsider_request = cast
+        .session(5)
+        .request_history()
+        .expect("5 holds messages it cannot read");
+    assert!(
+        cast.session(1)
+            .answer_history(&outsider_request)
+            .expect("answer")
+            .is_none(),
+        "a member refuses a request from outside its roster"
+    );
+
+    let joiner_request = cast.session(4).request_history().expect("4 asks");
+    assert!(
+        cast.session(5)
+            .answer_history(&joiner_request)
+            .expect("answer")
+            .is_none(),
+        "a device outside the group answers nothing"
+    );
+}
+
+/// The answer comes back through the transport, within the wait.
+#[tokio::test]
+async fn test_a_member_answers_through_the_transport() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (all, _) = history(&mut cast, 3);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(1));
+    cast.deliver(&add, &[4]);
+    let request = cast.session(4).request_history().expect("older epochs");
+
+    let member = cast.session(1);
+    let answer = ask_member(
+        request.clone(),
+        |asked| std::future::ready(member.answer_history(&asked).expect("answer")),
+        HISTORY_WAIT,
+    )
+    .await
+    .expect("answered");
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    assert_eq!(read.len(), 3, "the three older epochs");
+}
+
+/// A member that is offline never answers, and the wait ends in a timeout rather than a hang.
+#[tokio::test]
+async fn test_a_request_with_no_answer_times_out_cleanly() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (all, _) = history(&mut cast, 2);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let request = cast.session(4).request_history().expect("older epochs");
+
+    let outcome = ask_member(
+        request,
+        |_| std::future::pending::<Option<HistoryAnswer>>(),
+        Duration::from_millis(20),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        Err(HistoryError::Timeout(Duration::from_millis(20)))
+    );
 }
 
 // --- update ---------------------------------------------------------------------------------------

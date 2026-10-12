@@ -19,21 +19,25 @@
 
 use std::collections::BTreeSet;
 
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{Hash, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
+use p2panda_encryption::crypto::hpke::{hpke_open, hpke_seal};
 use p2panda_encryption::crypto::x25519::SecretKey;
 use p2panda_encryption::data_scheme::dcgka::{Dcgka, OperationOutput, ProcessInput};
 use p2panda_encryption::data_scheme::group::{
     EncryptionGroup, GroupError, GroupOutput, GroupResult, GroupState,
 };
-use p2panda_encryption::data_scheme::group_secret::{GroupSecret, GroupSecretId};
+use p2panda_encryption::data_scheme::group_secret::{GroupSecret, GroupSecretId, SecretBundle};
 use p2panda_encryption::key_bundle::{Lifetime, LongTermKeyBundle};
 use p2panda_encryption::key_manager::{KeyManager, KeyManagerState};
 use p2panda_encryption::key_registry::{KeyRegistry, KeyRegistryState};
-use p2panda_encryption::traits::{GroupMessage, GroupMessageContent, Ordering as _, PreKeyManager};
+use p2panda_encryption::traits::{
+    GroupMessage, GroupMessageContent, IdentityRegistry, Ordering as _, PreKeyManager,
+};
 use thiserror::Error;
 
-use super::history::HistoryMode;
+use super::history::{HistoryAnswer, HistoryMode, HistoryRequest};
 use super::ordering::{Envelope, Orderer};
 use super::roster::Roster;
 use crate::groups::Key;
@@ -74,6 +78,9 @@ pub enum SchemeError {
     /// The key is not a member in the group model, so it cannot be added.
     #[error("{0} is not in the group model, so it cannot be added")]
     NotInModel(String),
+    /// An answer carried a secret the request did not ask for, so it is refused.
+    #[error("the history answer carries a secret the request did not ask for")]
+    UnaskedSecret,
     /// The key is still a member in the group model, so it cannot be removed.
     #[error("{0} is still in the group model, so it cannot be removed")]
     StillInModel(String),
@@ -257,6 +264,91 @@ impl Session {
         Ok(read)
     }
 
+    /// The secrets this device holds messages for but cannot read, as a request to a member (P4.6).
+    /// `None` when nothing held is unreadable for want of a secret.
+    pub fn request_history(&self) -> Option<HistoryRequest> {
+        let y = self.state.as_ref()?;
+        let mut wanted = BTreeSet::new();
+        for message in &self.held {
+            if let GroupMessageContent::Application {
+                group_secret_id, ..
+            } = message.content()
+                && !y.secrets.contains(&group_secret_id)
+            {
+                wanted.insert(group_secret_id);
+            }
+        }
+        (!wanted.is_empty()).then(|| HistoryRequest::new(self.me, wanted.into_iter().collect()))
+    }
+
+    /// Answers a joiner's request with the secrets this device holds among those asked for, sealed
+    /// to the requester's identity key (P4.6).
+    ///
+    /// Only a member answers, and only for a member: a device outside the group, or a request from
+    /// outside the roster, gets `None`. So does a request for no secret this device holds.
+    pub fn answer_history(
+        &self,
+        request: &HistoryRequest,
+    ) -> Result<Option<HistoryAnswer>, SchemeError> {
+        let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
+        let roster = self.members()?;
+        if !roster.contains(&key_of(self.me)) || !roster.contains(&key_of(request.requester)) {
+            return Ok(None);
+        }
+        let Some(identity) = <Pki as IdentityRegistry<VerifyingKey, _>>::identity_key(
+            &y.dcgka.pki,
+            &request.requester,
+        )
+        .map_err(crate_error)?
+        else {
+            return Ok(None);
+        };
+        let secrets: Vec<GroupSecret> = request
+            .wanted
+            .iter()
+            .filter_map(|id| y.secrets.get(id).cloned())
+            .collect();
+        if secrets.is_empty() {
+            return Ok(None);
+        }
+        let plaintext = encode_cbor(&secrets).map_err(crate_error)?;
+        let aad = encode_cbor(request).map_err(crate_error)?;
+        let sealed = hpke_seal(&identity, Some(HISTORY_INFO), Some(&aad), &plaintext)
+            .map_err(crate_error)?;
+        Ok(Some(HistoryAnswer::new(sealed)))
+    }
+
+    /// Opens a member's answer to `request` with this device's identity key, and holds the secrets it
+    /// carries (P4.6). Returns what the held messages now read.
+    ///
+    /// An answer for another request does not open, and a secret the request did not name is
+    /// refused before anything is held.
+    pub fn open_history(
+        &mut self,
+        request: &HistoryRequest,
+        answer: &HistoryAnswer,
+        identity: &SecretKey,
+    ) -> Result<Vec<Received>, SchemeError> {
+        self.ensure_welcomed()?;
+        let aad = encode_cbor(request).map_err(crate_error)?;
+        let plaintext = hpke_open(answer.sealed(), identity, Some(HISTORY_INFO), Some(&aad))
+            .map_err(crate_error)?;
+        let secrets: Vec<GroupSecret> = decode_cbor(plaintext.as_slice()).map_err(crate_error)?;
+        if secrets
+            .iter()
+            .any(|secret| !request.wanted.contains(&secret.id()))
+        {
+            return Err(SchemeError::UnaskedSecret);
+        }
+        self.step(|y| {
+            let y = EncryptionGroup::update_secrets(y, |bundle| {
+                secrets.into_iter().fold(bundle, SecretBundle::insert)
+            });
+            Ok((y, ()))
+        })?;
+        self.release()
+    }
+
     /// Whether the crate may take `message` now: a control message always, an application message
     /// once the device holds its group secret.
     fn can_read(y: &Group, message: &Envelope) -> bool {
@@ -357,6 +449,9 @@ fn publish(mut y: Group, output: OperationOutput<VerifyingKey, Hash, Roster>) ->
     y.dcgka = dcgka;
     Ok((y, message))
 }
+
+/// The associated text of every history answer, so an answer opens only as one (P4.6).
+const HISTORY_INFO: &[u8] = b"id/history-answer/v1";
 
 /// A device's long-term keys: its identity and one pre-key.
 pub fn new_keys(

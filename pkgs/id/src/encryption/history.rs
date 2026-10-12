@@ -11,12 +11,88 @@
 
 use std::cmp::Reverse;
 use std::fmt;
+use std::future::Future;
 use std::str::FromStr;
+use std::time::Duration;
 
-use p2panda_encryption::data_scheme::group_secret::{GroupSecret, SecretBundle, SecretBundleState};
+use p2panda_core::VerifyingKey;
+use p2panda_encryption::crypto::hpke::HpkeCiphertext;
+use p2panda_encryption::data_scheme::group_secret::{
+    GroupSecret, GroupSecretId, SecretBundle, SecretBundleState,
+};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::groups::policy::History;
+
+/// How long a joiner waits for a member to answer a history request before it gives up (P4.6).
+pub const HISTORY_WAIT: Duration = Duration::from_secs(30);
+
+/// A joiner's request for group secrets. It names the secrets its held messages need and no key
+/// it does not need, and it names the requester, whose identity key the answer is sealed to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryRequest {
+    pub(super) requester: VerifyingKey,
+    /// The secrets asked for, by ID, sorted.
+    pub(super) wanted: Vec<GroupSecretId>,
+}
+
+impl HistoryRequest {
+    pub(super) const fn new(requester: VerifyingKey, wanted: Vec<GroupSecretId>) -> Self {
+        Self { requester, wanted }
+    }
+}
+
+/// A member's answer: the secrets it holds among those asked for, sealed to the requester's
+/// identity key. Only the requester can open it, and only for the request it answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryAnswer {
+    sealed: HpkeCiphertext,
+}
+
+impl HistoryAnswer {
+    pub(super) const fn new(sealed: HpkeCiphertext) -> Self {
+        Self { sealed }
+    }
+
+    pub(super) const fn sealed(&self) -> &HpkeCiphertext {
+        &self.sealed
+    }
+}
+
+/// A history request that got no usable answer.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum HistoryError {
+    /// No member answered in time. A member that is offline never answers.
+    #[error("no member answered the history request within {0:?}")]
+    Timeout(Duration),
+    /// The member that answered holds none of the secrets, or is not in the group, or the requester
+    /// is not in the group.
+    #[error(
+        "no member would answer: the requester is not in the group, or no member holds the secrets asked for"
+    )]
+    Refused,
+}
+
+/// Sends `request` through `ask`, and waits up to `wait` for the answer.
+///
+/// `ask` is the transport: it reaches a member and returns that member's answer, or `None` when the
+/// member refuses. A member that never answers ends the wait in [`HistoryError::Timeout`] (P4.6).
+pub async fn ask_member<F, Fut>(
+    request: HistoryRequest,
+    ask: F,
+    wait: Duration,
+) -> Result<HistoryAnswer, HistoryError>
+where
+    F: FnOnce(HistoryRequest) -> Fut,
+    Fut: Future<Output = Option<HistoryAnswer>>,
+{
+    match tokio::time::timeout(wait, ask(request)).await {
+        Ok(Some(answer)) => Ok(answer),
+        Ok(None) => Err(HistoryError::Refused),
+        Err(_) => Err(HistoryError::Timeout(wait)),
+    }
+}
 
 /// The window of a preset that keeps a join small: 32 epochs (5.3 KB per join with the stock
 /// encoding, 1.7 KB with `serde_bytes`, at 1,000 rotations; round 2 `welcome-recent`).
