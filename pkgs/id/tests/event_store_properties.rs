@@ -20,10 +20,10 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::ingest::{deliver_within, Canonical, DELIVERY_LIMIT};
-use id::chain::{sign, ChainExt, Event};
-use id::event_store::Chain;
-use id::waiting::AuthorKey;
+use common::ingest::{Canonical, DELIVERY_LIMIT, MemStorage, canonical, deliver_within};
+use id::chain::{ChainExt, Event, sign};
+use id::event_store::{Chain, EventStore, Ingest};
+use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -259,6 +259,11 @@ fn model(events: &[Event], authors: &[AuthorKey]) -> Canonical {
     expected
 }
 
+/// An index in `0..n`, drawn from `rng`.
+fn index(rng: &mut Rng, n: usize) -> usize {
+    usize::try_from(rng.below(n as u64)).unwrap()
+}
+
 fn shuffle<T>(items: &mut [T], rng: &mut Rng) {
     for i in (1..items.len()).rev() {
         let j = rng.below(i as u64 + 1) as usize;
@@ -301,6 +306,101 @@ proptest! {
                 .map_err(TestCaseError::fail)?;
             prop_assert_eq!(&state, &scenario.expected);
         }
+    }
+
+    /// A restart changes nothing. One delivery order, run with the store closed and reopened at
+    /// random points, gives every delivery the same outcome, and leaves the same applied state and
+    /// held events, as the same order run without restarts. The caps are small and the clock runs
+    /// past the age limit, so restarts also land on refusals and on expiries.
+    #[test]
+    fn test_restarts_at_random_points_change_no_outcome(seed in any::<u64>()) {
+        let scenario = scenario(seed);
+        let mut rng = Rng(seed ^ 0x5851_F42D_4C95_7F2D);
+        let mut all_orders = orders(&scenario.events, &mut rng);
+        let order = all_orders.swap_remove(index(&mut rng, 4));
+        let mut clock = 0_u64;
+        let times: Vec<u64> = order
+            .iter()
+            .map(|_| {
+                clock += rng.below(1_000);
+                clock
+            })
+            .collect();
+        let max_age_ms = [1_500, 6_000, u64::MAX / 2][index(&mut rng, 3)];
+        let per_author = [1, 2, 3, 256][index(&mut rng, 4)];
+        let limits = WaitingLimits::new(per_author, max_age_ms);
+        // Half the cases restart before every delivery. The rest restart before about one in three,
+        // so events are often held across a restart.
+        let every_delivery = rng.chance(2);
+        let restarts: Vec<usize> = (0..order.len())
+            .filter(|_| every_delivery || rng.chance(3))
+            .collect();
+
+        let plain = {
+            let (order, times, authors) = (order.clone(), times.clone(), scenario.authors.clone());
+            within_limit(move || deliver_with_restarts(&order, &times, &[], limits, &authors))
+        };
+        let restarted = within_limit(move || {
+            deliver_with_restarts(&order, &times, &restarts, limits, &scenario.authors)
+        });
+        let (plain_outcomes, plain_state, plain_held) = plain.map_err(TestCaseError::fail)?;
+        let (outcomes, state, held) = restarted.map_err(TestCaseError::fail)?;
+        prop_assert_eq!(outcomes, plain_outcomes);
+        prop_assert_eq!(state, plain_state);
+        prop_assert_eq!(held, plain_held);
+    }
+}
+
+/// Delivers `order` to one store, which is closed and reopened before each delivery whose
+/// position is in `restarts`. Delivery `i` runs at clock `times[i]`, and a reopen runs at the
+/// clock of the delivery it precedes. Returns each delivery's outcome, the applied state of
+/// `authors`, and the IDs the store holds at the end. The invariants must hold after the last
+/// delivery.
+fn deliver_with_restarts(
+    order: &[Vec<u8>],
+    times: &[u64],
+    restarts: &[usize],
+    limits: WaitingLimits,
+    authors: &[AuthorKey],
+) -> Result<(Vec<Ingest>, Canonical, Vec<Hash>), String> {
+    let storage = MemStorage::default();
+    let open = |at: u64| EventStore::open_with(&storage, limits, at).map_err(|err| err.to_string());
+    let first = times.first().copied().unwrap_or(0);
+    let mut store = open(first)?;
+    let mut outcomes = Vec::new();
+    for (i, bytes) in order.iter().enumerate() {
+        if restarts.contains(&i) {
+            drop(store);
+            store = open(times[i])?;
+        }
+        let outcome = store
+            .ingest(bytes, times[i])
+            .map_err(|err| format!("ingest failed: {err}"))?;
+        outcomes.push(outcome);
+    }
+    store
+        .check_invariants()
+        .map_err(|err| format!("invariants after the deliveries: {err}"))?;
+    let state = canonical(&store, authors)?;
+    let held = store.waiting_ids().map_err(|err| err.to_string())?;
+    Ok((outcomes, state, held))
+}
+
+/// Runs `run` on a helper thread. Fails if it has not returned within [`DELIVERY_LIMIT`], so a
+/// store that spins fails the test instead of hanging it.
+fn within_limit<T: Send + 'static>(
+    run: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // The receiver is gone only once the wait below has given up.
+        let _ = sent.send(run());
+    });
+    match received.recv_timeout(DELIVERY_LIMIT) {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "the deliveries did not finish within {DELIVERY_LIMIT:?}: an event made the store spin"
+        )),
     }
 }
 

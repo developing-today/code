@@ -8,9 +8,10 @@
 //! is not acknowledged, and sync sends it again once its dependency exists.
 //!
 //! The pool does no I/O and takes the clock as an explicit `now_ms`, so tests
-//! use a fake clock. It is not connected to storage yet: the event store (P1.3)
-//! will supply the arrivals. Until then the pool keeps its own set of arrived
-//! keys.
+//! use a fake clock. The event store holds one pool and mirrors it into the
+//! `waiting` table (P1.11). [`WaitingPool::restore`] rebuilds the pool from those
+//! rows on open. The pool keeps its own set of arrived keys, for the filter in
+//! [`WaitingPool::insert`].
 //!
 //! The caller's loop:
 //!
@@ -69,6 +70,17 @@ impl WaitingLimits {
     /// How long an event may wait before it expires, in milliseconds.
     pub const fn max_age_ms(self) -> u64 {
         self.max_age_ms
+    }
+
+    /// Whether an event that arrived at `arrived_at_ms` is due at `now_ms`, that is, it has
+    /// waited [`max_age_ms`](Self::max_age_ms) or longer. This is the rule
+    /// [`WaitingPool::expire`] applies, for a store that filters its rows on open. A clock
+    /// that is behind the arrival time has not made the event due.
+    pub const fn is_due(self, arrived_at_ms: u64, now_ms: u64) -> bool {
+        match now_ms.checked_sub(arrived_at_ms) {
+            Some(waited) => waited >= self.max_age_ms,
+            None => false,
+        }
     }
 }
 
@@ -222,6 +234,36 @@ where
             return Ok(());
         }
         self.hold(author, key, HashSet::new(), event, now_ms)
+    }
+
+    /// Whether an event with this key is held: waiting, or parked.
+    pub fn contains(&self, key: &K) -> bool {
+        self.by_key.contains_key(key)
+    }
+
+    /// Holds an event that arrived at `arrived_at`, as a store restores its rows on open.
+    ///
+    /// Unlike [`insert`](Self::insert) and [`park`](Self::park), nothing expires first, and an
+    /// empty `missing` does not release the event: it is held for good, as a parked event is.
+    /// The caller restores the events in the order they arrived, so they are released in that
+    /// order. An event whose key is already held is ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author cap.
+    pub fn restore(
+        &mut self,
+        author: AuthorKey,
+        key: K,
+        missing: impl IntoIterator<Item = K>,
+        event: E,
+        arrived_at: u64,
+    ) -> Result<(), WaitRefusal> {
+        if self.by_key.contains_key(&key) {
+            return Ok(());
+        }
+        let missing: HashSet<K> = missing.into_iter().collect();
+        self.hold(author, key, missing, event, arrived_at)
     }
 
     /// The held events of `author`, in sequence order of arrival. Parked events are
@@ -593,5 +635,52 @@ mod tests {
         assert_eq!(pool.waiting_count(author(1)), 0);
         assert_eq!(pool.waiting_count(author(2)), 0);
         assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_restore_holds_a_parked_event_and_counts_its_age_from_arrival() {
+        let mut pool = pool();
+        pool.restore(author(1), 1, [], "parked", 500).unwrap();
+        assert!(
+            pool.take_ready().is_empty(),
+            "an empty missing set does not release the event"
+        );
+        assert!(pool.contains(&1));
+        assert_eq!(pool.waiting_count(author(1)), 1);
+        assert!(pool.expire(500 + WEEK_MS - 1).is_empty());
+        assert_eq!(pool.expire(500 + WEEK_MS), vec![(author(1), "parked")]);
+    }
+
+    #[test]
+    fn test_restore_keeps_the_cap_and_ignores_a_key_already_held() {
+        let mut pool = WaitingPool::new(WaitingLimits::new(1, WEEK_MS));
+        pool.restore(author(1), 1, [10], "first", 0).unwrap();
+        pool.restore(author(1), 1, [10], "again", 0).unwrap();
+        assert_eq!(pool.waiting_count(author(1)), 1);
+        assert_eq!(
+            pool.restore(author(1), 2, [11], "refused", 0),
+            Err(WaitRefusal::AuthorFull)
+        );
+        assert!(!pool.contains(&2));
+        assert_eq!(pool.arrived(10, 0), vec!["first"]);
+    }
+
+    #[test]
+    fn test_is_due_agrees_with_expire_at_every_boundary() {
+        for max_age_ms in [0, 5, 10] {
+            for arrived_at in [0, 3, 10] {
+                for now_ms in [0, 4, 9, 10, 11, 15, 20] {
+                    let limits = WaitingLimits::new(8, max_age_ms);
+                    let mut pool = WaitingPool::new(limits);
+                    pool.insert(author(1), 1, [9], "e", arrived_at).unwrap();
+                    let dropped = !pool.expire(now_ms).is_empty();
+                    assert_eq!(
+                        dropped,
+                        limits.is_due(arrived_at, now_ms),
+                        "max age {max_age_ms}, arrived {arrived_at}, now {now_ms}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use id::chain::{self, ChainExt, sign};
 use id::event_store::{EventStore, FILE_NAME, Ingest, Refusal, Storage};
+use id::waiting::WaitingLimits;
 use p2panda_core::{Hash, SigningKey};
 use redb::{Database, DatabaseError, StorageBackend, StorageError, TableDefinition};
 
@@ -349,7 +350,7 @@ const SAMPLED: [(Survive, Tear); 2] = [POLICIES[0], POLICIES[2]];
 
 /// The creation this sweep runs: the store's own open, which creates the file when it is absent.
 fn creation(sim: &SimDir) {
-    let _ = EventStore::open_with(sim);
+    let _ = EventStore::open_with(sim, WaitingLimits::default(), 0);
 }
 
 /// The control: a file built in place, with one committed write. It has no temporary name and no
@@ -370,7 +371,7 @@ fn in_place(sim: &SimDir) {
 
 /// Reopens one crash state with the store and checks what it holds.
 fn reopens(disk: &Disk) -> Result<(), String> {
-    let store = EventStore::open_with(&SimDir::from_disk(disk))
+    let store = EventStore::open_with(&SimDir::from_disk(disk), WaitingLimits::default(), 0)
         .map_err(|err| format!("does not open: {err}"))?;
     store
         .check_invariants()
@@ -419,10 +420,13 @@ fn creation_in_place_control_fails_at_some_crash_point() {
 }
 
 /// The deliveries the ingest sweep makes after creation: a wait that a later event releases, an
-/// after hash on another author's event, a fork, an event refused as frozen, and two repeats.
+/// after hash on another author's event, a fork, an event refused as frozen, two repeats, and the
+/// waiting events that stay held to the end: a fork between two held events, and a parked event.
 fn workload() -> Vec<Vec<u8>> {
     let author = SigningKey::from_bytes(&[21; 32]);
     let other = SigningKey::from_bytes(&[22; 32]);
+    let held = SigningKey::from_bytes(&[23; 32]);
+    let parked = SigningKey::from_bytes(&[24; 32]);
     let ext = |kind: &str, after: Vec<Hash>| ChainExt {
         kind: kind.to_owned(),
         group: None,
@@ -434,6 +438,21 @@ fn workload() -> Vec<Vec<u8>> {
     let a2_rival = sign(&author, 2, Some(a1.id), None, ext("rival", Vec::new())).unwrap();
     let a3 = sign(&author, 3, Some(a2.id), None, ext("message", Vec::new())).unwrap();
     let b0 = sign(&other, 0, None, None, ext("message", vec![a1.id])).unwrap();
+    // `held` never delivers seq 0, so seq 1 and its rival wait, and the fork is between two
+    // held events.
+    let held0 = sign(&held, 0, None, None, ext("message", Vec::new())).unwrap();
+    let held1 = sign(&held, 1, Some(held0.id), None, ext("message", Vec::new())).unwrap();
+    let held1_rival = sign(&held, 1, Some(held0.id), None, ext("rival", Vec::new())).unwrap();
+    // `parked` applies seq 0. Its seq 1 names a backlink that is not the head, so it is parked.
+    let parked0 = sign(&parked, 0, None, None, ext("message", Vec::new())).unwrap();
+    let stray = sign(
+        &parked,
+        1,
+        Some(Hash::digest(b"not the head")),
+        None,
+        ext("stray", Vec::new()),
+    )
+    .unwrap();
     vec![
         a1.bytes,
         a0.bytes.clone(),
@@ -443,6 +462,10 @@ fn workload() -> Vec<Vec<u8>> {
         a3.bytes,
         a2.bytes,
         a0.bytes,
+        held1.bytes,
+        held1_rival.bytes,
+        parked0.bytes,
+        stray.bytes,
     ]
 }
 
@@ -450,7 +473,7 @@ fn workload() -> Vec<Vec<u8>> {
 /// acknowledged: one that returned before the power cut, with its outcome.
 fn ingest_run(sim: &SimDir) -> Vec<(Vec<u8>, Ingest)> {
     let mut acked = Vec::new();
-    let Ok(mut store) = EventStore::open_with(sim) else {
+    let Ok(mut store) = EventStore::open_with(sim, WaitingLimits::default(), 0) else {
         return acked;
     };
     for bytes in workload() {
@@ -473,7 +496,7 @@ fn ingest_run(sim: &SimDir) -> Vec<(Vec<u8>, Ingest)> {
 /// must leave a proof no later than its own sequence number. The store must open, and its
 /// invariants must hold.
 fn acknowledged_survive(disk: &Disk, acked: &[(Vec<u8>, Ingest)]) -> Result<(), String> {
-    let store = EventStore::open_with(&SimDir::from_disk(disk))
+    let store = EventStore::open_with(&SimDir::from_disk(disk), WaitingLimits::default(), 0)
         .map_err(|err| format!("does not open: {err}"))?;
     store
         .check_invariants()
@@ -483,6 +506,7 @@ fn acknowledged_survive(disk: &Disk, acked: &[(Vec<u8>, Ingest)]) -> Result<(), 
         .filter_map(|bytes| chain::decode(&bytes).ok().map(|event| (event.id, bytes)))
         .collect();
     let mut applied_ids = Vec::new();
+    let mut held_ids = Vec::new();
     for (_, outcome) in acked {
         match outcome {
             Ingest::Accepted { id, released } => {
@@ -502,7 +526,19 @@ fn acknowledged_survive(disk: &Disk, acked: &[(Vec<u8>, Ingest)]) -> Result<(), 
                     ));
                 }
             }
-            Ingest::Waiting { .. } | Ingest::Refused(_) => {}
+            Ingest::Waiting { id } => held_ids.push(*id),
+            Ingest::Refused(_) => {}
+        }
+    }
+    // A held event must survive the reopen as held. If a later delivery applied it, or a fork
+    // voided it, it is stored instead. It must never be neither.
+    for id in held_ids {
+        let stored = store
+            .event_by_id(&id)
+            .map_err(|err| err.to_string())?
+            .is_some();
+        if !store.is_waiting(&id) && !stored {
+            return Err("an acknowledged waiting event is neither held nor stored".to_owned());
         }
     }
     for id in applied_ids {
@@ -574,6 +610,22 @@ fn clean_ingest_run_has_every_outcome_and_survives_its_reopen() {
     assert!(
         matches!(outcomes[7], Ingest::Duplicate { .. }),
         "a0 again is a repeat"
+    );
+    assert!(
+        matches!(outcomes[8], Ingest::Waiting { .. }),
+        "held1 waits for seq 0, which is never delivered"
+    );
+    assert!(
+        matches!(outcomes[9], Ingest::Fork { seq: 1, .. }),
+        "held1_rival forks the held event"
+    );
+    assert!(
+        matches!(outcomes[10], Ingest::Accepted { .. }),
+        "parked0 applies"
+    );
+    assert!(
+        matches!(outcomes[11], Ingest::Waiting { .. }),
+        "stray is parked"
     );
     for disk in sim.crash_states() {
         acknowledged_survive(&disk, &acked).unwrap();

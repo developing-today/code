@@ -453,6 +453,7 @@ mod tests {
 
     use super::*;
     use crate::chain::{ChainExt, sign};
+    use crate::waiting::WaitingLimits;
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
@@ -495,7 +496,7 @@ mod tests {
 
     fn open() -> (tempfile::TempDir, SharedEventStore) {
         let dir = tempfile::tempdir().unwrap();
-        let store = EventStore::open(dir.path()).unwrap();
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         (dir, SharedEventStore::new(store))
     }
 

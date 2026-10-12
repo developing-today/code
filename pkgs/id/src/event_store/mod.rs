@@ -14,6 +14,9 @@
 //! - `groups`: a group hash to the positions of the events in that group.
 //! - `dependents`: an event's ID to the positions of the stored events that name it in
 //!   their `after` hashes. A fork uses it to find what rests on the events it voids.
+//! - `waiting` and `waiting_by_dep`: the events held waiting or parked, and an index from each
+//!   dependency to the rows that wait for it. The `waiting_rows` module describes them, and
+//!   the waiting pool in memory mirrors them.
 //! - `meta`: the store's format.
 //!
 //! A position key is the author's 32 bytes followed by the sequence number in
@@ -28,12 +31,19 @@
 //! commit leave a file that redb refuses to open, so the store could never start.
 //! The crash model in `tests/crash/store.rs` checks every step of this sequence.
 //!
+//! # Restarts
+//!
+//! The held events are rows, so a restart keeps them. [`EventStore::open`] rebuilds the waiting
+//! pool from the rows. It drops the events due at the clock it is given, and any past an author's
+//! cap, counting in arrival order.
+//!
 //! # Where the files are
 //!
 //! [`EventStore::open`] takes a directory. [`Storage`] is the seam between the
 //! store and its files: [`FileStorage`] is the disk, and the crash model in tests
 //! implements the same trait over a simulated directory.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -47,9 +57,12 @@ use redb::{
 use crate::chain::{self, Event};
 
 mod ingest;
+mod waiting_rows;
 
-use crate::waiting::{AuthorKey, WaitingLimits, WaitingPool};
+use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use ingest::{Ingest, Refusal};
+use ingest::{applied_in, is_applied};
+use waiting_rows::{Mirror, Row};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";
@@ -59,7 +72,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v2";
+const FORMAT: &[u8] = b"id.events.store.v3";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -73,6 +86,10 @@ const GROUPS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("groups");
 const DEPENDENTS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("dependents");
+const WAITING: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("waiting");
+const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
+    MultimapTableDefinition::new("waiting_by_dep");
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
 
 /// Bytes in a position key: the author, then the sequence number.
@@ -118,6 +135,10 @@ pub enum StoreError {
         /// The sequence number that is taken.
         seq: SeqNum,
     },
+    /// A write failed, and the waiting events could not be rebuilt from disk. The store
+    /// refuses further calls. Reopening it rebuilds them.
+    #[error("event store is unusable after a failed write: reopen it")]
+    Unusable,
 }
 
 fn corrupt(message: impl Into<String>) -> StoreError {
@@ -296,20 +317,27 @@ pub struct ForkProof {
 #[derive(Debug)]
 pub struct EventStore {
     db: Database,
-    /// Events that wait for a dependency. They are held in memory, not stored.
+    /// The caps the pool enforces. Kept, so the pool can be rebuilt from its rows.
+    limits: WaitingLimits,
+    /// The events held waiting or parked. The `waiting` rows mirror them.
     waiting: WaitingPool<Hash, Event>,
+    /// The arrival number the next held event takes.
+    next_arrival: u64,
+    /// Set when a write failed and the pool could not be rebuilt. Calls fail until reopen.
+    unusable: bool,
 }
 
 impl EventStore {
-    /// Opens the store in `dir`, creating it if the directory has none.
+    /// Opens the store in `dir`, creating it if the directory has none. `limits` are the caps
+    /// on waiting events, and `now_ms` is the clock: the waiting events due at it are dropped.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::InUse`] if another process has it open, and
     /// [`StoreError::NotAStore`] if the file is not an event store. Neither
     /// deletes or changes the file.
-    pub fn open(dir: &Path) -> Result<Self, StoreError> {
-        Self::open_with(&FileStorage::new(dir))
+    pub fn open(dir: &Path, limits: WaitingLimits, now_ms: u64) -> Result<Self, StoreError> {
+        Self::open_with(&FileStorage::new(dir), limits, now_ms)
     }
 
     /// Opens the store on `storage`, creating it if the storage has none. The crash model
@@ -318,25 +346,26 @@ impl EventStore {
     /// # Errors
     ///
     /// The same errors as [`EventStore::open`].
-    pub fn open_with<S: Storage>(storage: &S) -> Result<Self, StoreError> {
+    pub fn open_with<S: Storage>(
+        storage: &S,
+        limits: WaitingLimits,
+        now_ms: u64,
+    ) -> Result<Self, StoreError> {
         let db = if storage.exists(FILE_NAME)? {
             storage.open_database(FILE_NAME).map_err(open_error)?
         } else {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        Ok(Self {
+        let mut store = Self {
             db,
-            waiting: WaitingPool::new(WaitingLimits::default()),
-        })
-    }
-
-    /// Sets the caps on waiting events: how many one author may hold, and how long
-    /// one may wait. The pool starts empty, so set the caps before ingesting.
-    #[must_use]
-    pub fn with_waiting_limits(mut self, limits: WaitingLimits) -> Self {
-        self.waiting = WaitingPool::new(limits);
-        self
+            limits,
+            waiting: WaitingPool::new(limits),
+            next_arrival: 0,
+            unusable: false,
+        };
+        store.reload(now_ms)?;
+        Ok(store)
     }
 
     /// Runs `op` in one write transaction. The transaction commits if `op`
@@ -425,7 +454,8 @@ impl EventStore {
 
     /// Checks the store's own rows against each other: every applied sequence is
     /// stored, every head matches its event, every index points at a stored
-    /// event, and each frozen chain has a matching fork proof.
+    /// event, and each frozen chain has a matching fork proof. The waiting rows
+    /// agree with the pool, the dependency index, and the applied state.
     ///
     /// # Errors
     ///
@@ -572,6 +602,179 @@ impl EventStore {
                 ));
             }
         }
+        self.check_waiting()
+    }
+
+    /// Checks the waiting rows against the pool and the applied state. Each row decodes and names
+    /// its event, is held by the pool, and is not stored. Each dependency it waits for is not
+    /// applied, and the dependency index lists exactly those. The pool's counts match the rows,
+    /// and no author is over the cap.
+    fn check_waiting(&self) -> Result<(), StoreError> {
+        let txn = self.db.begin_read()?;
+        let rows = txn.open_table(WAITING)?;
+        let by_dep = txn.open_multimap_table(WAITING_BY_DEP)?;
+        let hashes = txn.open_table(HASHES)?;
+        let chains = txn.open_table(CHAINS)?;
+        let mut per_author: BTreeMap<AuthorKey, usize> = BTreeMap::new();
+        let mut total = 0;
+        for entry in rows.iter()? {
+            let (key, value) = entry?;
+            let row = Row::decode(hash_of(key.value())?, value.value())?;
+            row_event(&row)?;
+            if hashes.get(row.id.as_bytes().as_slice())?.is_some() {
+                return Err(corrupt("a waiting event is also stored"));
+            }
+            if !self.waiting.contains(&row.id) {
+                return Err(corrupt("a waiting row is not held by the pool"));
+            }
+            for dep in &row.deps {
+                if applied_in(&hashes, &chains, dep)? {
+                    return Err(corrupt(
+                        "a waiting event waits for a dependency that is applied",
+                    ));
+                }
+                let mut indexed = false;
+                for waiter in by_dep.get(dep.as_bytes().as_slice())? {
+                    indexed |= hash_of(waiter?.value())? == row.id;
+                }
+                if !indexed {
+                    return Err(corrupt(
+                        "a waiting event is missing from the dependency index",
+                    ));
+                }
+            }
+            *per_author.entry(row.author).or_default() += 1;
+            total += 1;
+        }
+        for entry in by_dep.iter()? {
+            let (dep, waiters) = entry?;
+            for waiter in waiters {
+                let waiter = hash_of(waiter?.value())?;
+                let found = rows.get(waiter.as_bytes().as_slice())?.ok_or_else(|| {
+                    corrupt("the dependency index names a waiting event with no row")
+                })?;
+                let row = Row::decode(waiter, found.value())?;
+                if !row
+                    .deps
+                    .iter()
+                    .any(|d| d.as_bytes().as_slice() == dep.value())
+                {
+                    return Err(corrupt(
+                        "the dependency index names a row that does not wait for it",
+                    ));
+                }
+            }
+        }
+        if total != self.waiting.len() {
+            return Err(corrupt(
+                "the pool holds a different number of events than the rows",
+            ));
+        }
+        for (author, count) in per_author {
+            if count > self.limits.per_author() || self.waiting.waiting_count(author) != count {
+                return Err(corrupt(
+                    "the pool's count for an author differs from the rows",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The IDs of the held events, as their rows on disk name them, in ID order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn waiting_ids(&self) -> Result<Vec<Hash>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let rows = txn.open_table(WAITING)?;
+        let mut ids = Vec::new();
+        for entry in rows.iter()? {
+            let (key, _value) = entry?;
+            ids.push(hash_of(key.value())?);
+        }
+        Ok(ids)
+    }
+
+    /// Runs `op` in one write transaction against the waiting pool and its rows. The transaction
+    /// commits if `op` reports a change, and is aborted otherwise. If the call fails, the pool may
+    /// have moved on from the rows, so it is rebuilt from them. If that fails too, the store
+    /// refuses further calls.
+    fn transact<T>(
+        &mut self,
+        now_ms: u64,
+        op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
+    ) -> Result<T, StoreError> {
+        if self.unusable {
+            return Err(StoreError::Unusable);
+        }
+        let result = self.attempt(op);
+        if result.is_err() && self.reload(now_ms).is_err() {
+            self.unusable = true;
+        }
+        result
+    }
+
+    fn attempt<T>(
+        &mut self,
+        op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
+    ) -> Result<T, StoreError> {
+        let txn = self.db.begin_write()?;
+        let (value, changed) = {
+            let mut mirror = Mirror {
+                txn: &txn,
+                pool: &mut self.waiting,
+                arrivals: &mut self.next_arrival,
+            };
+            op(&mut mirror)?
+        };
+        if changed {
+            txn.commit()?;
+        } else {
+            txn.abort()?;
+        }
+        Ok(value)
+    }
+
+    /// Rebuilds the waiting pool from the rows, in arrival order. A row due at `now_ms` is
+    /// dropped, and so is a row past its author's cap. The drops commit with the rebuild. A row
+    /// that waits for an applied event means the rows and the applied state disagree, so the
+    /// rebuild fails as corruption and the pool is left as it was.
+    fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
+        let txn = self.db.begin_write()?;
+        let mut pool = WaitingPool::new(self.limits);
+        let mut next_arrival = 0;
+        let mut dropped = false;
+        for row in waiting_rows::all(&txn)? {
+            next_arrival = next_arrival.max(row.arrival.saturating_add(1));
+            if self.limits.is_due(row.arrived_at, now_ms) {
+                waiting_rows::delete(&txn, &row.id)?;
+                dropped = true;
+                continue;
+            }
+            for dep in &row.deps {
+                if is_applied(&txn, dep)? {
+                    return Err(corrupt(
+                        "a waiting event waits for a dependency that is applied",
+                    ));
+                }
+            }
+            let event = row_event(&row)?;
+            match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
+                Ok(()) => {}
+                Err(WaitRefusal::AuthorFull) => {
+                    waiting_rows::delete(&txn, &row.id)?;
+                    dropped = true;
+                }
+            }
+        }
+        if dropped {
+            txn.commit()?;
+        } else {
+            txn.abort()?;
+        }
+        self.waiting = pool;
+        self.next_arrival = next_arrival;
         Ok(())
     }
 
@@ -607,6 +810,8 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(FORKS)?;
     txn.open_multimap_table(GROUPS)?;
     txn.open_multimap_table(DEPENDENTS)?;
+    txn.open_table(WAITING)?;
+    txn.open_multimap_table(WAITING_BY_DEP)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     drop(meta);
@@ -624,6 +829,8 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_table(FORKS).map_err(missing)?;
     txn.open_multimap_table(GROUPS).map_err(missing)?;
     txn.open_multimap_table(DEPENDENTS).map_err(missing)?;
+    txn.open_table(WAITING).map_err(missing)?;
+    txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -690,6 +897,18 @@ fn hash_of(bytes: &[u8]) -> Result<Hash, StoreError> {
 /// failure here means the file changed underneath the store.
 fn decode_stored(bytes: &[u8]) -> Result<Event, StoreError> {
     chain::decode(bytes).map_err(|err| corrupt(format!("a stored event does not decode: {err}")))
+}
+
+/// Decodes a row's event, and checks that the row names it: its ID, its author, and its sequence
+/// number.
+fn row_event(row: &Row) -> Result<Event, StoreError> {
+    let event = chain::decode(&row.bytes)
+        .map_err(|err| corrupt(format!("a waiting event does not decode: {err}")))?;
+    let author = *event.header.verifying_key.as_bytes();
+    if event.id != row.id || author != row.author || event.header.seq_num != row.seq {
+        return Err(corrupt("a waiting row does not match its event"));
+    }
+    Ok(event)
 }
 
 /// Encodes a fork proof: the sequence number, the length of the first header,
@@ -825,7 +1044,7 @@ impl EventStore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::chain::{sign, ChainExt};
+    use crate::chain::{ChainExt, sign};
     use p2panda_core::SigningKey;
 
     fn key(n: u8) -> SigningKey {
@@ -857,20 +1076,20 @@ mod tests {
 
     fn open_temp() -> (tempfile::TempDir, EventStore) {
         let dir = tempfile::tempdir().unwrap();
-        let store = EventStore::open(dir.path()).unwrap();
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         (dir, store)
     }
 
     #[test]
     fn test_a_new_store_is_created_empty_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
-        let store = EventStore::open(dir.path()).unwrap();
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         assert!(store.chain(&author(&key(1))).unwrap().is_none());
         store.check_invariants().unwrap();
         assert!(dir.path().join(FILE_NAME).exists());
         assert!(!dir.path().join(TEMP_NAME).exists(), "no temp file is left");
         drop(store);
-        let reopened = EventStore::open(dir.path()).unwrap();
+        let reopened = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         reopened.check_invariants().unwrap();
     }
 
@@ -878,7 +1097,7 @@ mod tests {
     fn test_a_stale_temp_file_is_replaced_not_trusted() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(TEMP_NAME), b"half a store from a crash").unwrap();
-        let store = EventStore::open(dir.path()).unwrap();
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         store.check_invariants().unwrap();
         assert!(!dir.path().join(TEMP_NAME).exists());
     }
@@ -888,7 +1107,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let garbage = b"this is not a redb database at all".to_vec();
         fs::write(dir.path().join(FILE_NAME), &garbage).unwrap();
-        let err = EventStore::open(dir.path()).unwrap_err();
+        let err = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap_err();
         assert!(
             matches!(err, StoreError::NotAStore(_)),
             "unexpected error: {err}"
@@ -900,10 +1119,10 @@ mod tests {
     #[test]
     fn test_a_second_opener_is_refused_while_the_first_is_open() {
         let (dir, store) = open_temp();
-        let err = EventStore::open(dir.path()).unwrap_err();
+        let err = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap_err();
         assert!(matches!(err, StoreError::InUse), "unexpected error: {err}");
         drop(store);
-        EventStore::open(dir.path()).unwrap();
+        EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
     }
 
     #[test]
@@ -933,10 +1152,12 @@ mod tests {
         assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
         assert_eq!(store.event_by_id(&event.id).unwrap(), Some(event.clone()));
         assert_eq!(store.group_members(&group).unwrap(), vec![(who, 0)]);
-        assert!(store
-            .group_members(&Hash::digest(b"other"))
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .group_members(&Hash::digest(b"other"))
+                .unwrap()
+                .is_empty()
+        );
         store.check_invariants().unwrap();
     }
 
@@ -1075,5 +1296,42 @@ mod tests {
             vec![0, 1]
         );
         assert!(store.event(&who, 3).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_a_store_of_the_previous_format_is_refused_and_keeps_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        // The tables of format v2, which had no waiting rows.
+        let db = Database::builder()
+            .create(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(EVENTS).unwrap();
+        txn.open_table(HASHES).unwrap();
+        txn.open_table(CHAINS).unwrap();
+        txn.open_table(FORKS).unwrap();
+        txn.open_multimap_table(GROUPS).unwrap();
+        txn.open_multimap_table(DEPENDENTS).unwrap();
+        {
+            let mut meta = txn.open_table(META).unwrap();
+            meta.insert(FORMAT_KEY, b"id.events.store.v2".as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+        let err = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap_err();
+        assert!(
+            matches!(err, StoreError::NotAStore(_)),
+            "unexpected error: {err}"
+        );
+        // redb's own open may bump its header counter, so the bytes can change. The data must not:
+        // the format row still names the old format.
+        let db = Database::builder()
+            .open(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_read().unwrap();
+        let meta = txn.open_table(META).unwrap();
+        let found = meta.get(FORMAT_KEY).unwrap().unwrap();
+        assert_eq!(found.value(), b"id.events.store.v2".as_slice());
     }
 }
