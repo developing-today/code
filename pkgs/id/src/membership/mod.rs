@@ -17,6 +17,7 @@
 //! The layer takes events that the caller has already verified (signature, encoding, and
 //! `after` closure are the event store's job). It does not read the event store itself.
 
+pub mod body;
 pub mod frontier;
 pub mod gate;
 pub mod layer;
