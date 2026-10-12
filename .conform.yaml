@@ -11,9 +11,17 @@ policies:
           - nix
           - rust
           - id
+          - mcpx
           - nvim
           - vim
           - vi
+          - flake
+          - web
+          - e2e
+          - opencode
+          - openchamber
+          - collab
+          - inventory
         types:
           - build
           - chore
