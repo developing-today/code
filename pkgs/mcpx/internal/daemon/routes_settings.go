@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -212,14 +214,28 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 		persist = "runtime"
 	}
 
+	// The file and the runtime value change together or not at all. Holding the
+	// reload lock keeps the config watcher and any other reload from reading the
+	// file between this write and its rollback, which would apply a value this
+	// request is about to refuse.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
+	var file *fileState
 	if persist != "runtime" {
 		path, err := config.ResolveWritePath(config.WriteScope(persist), "")
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := config.SetKey(path, decl.Path, settings.TypedValue(*decl, req.Value)); err != nil {
+		prior, err := captureFile(path)
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		file = &prior
+		if err := config.SetKey(path, decl.Path, settings.TypedValue(*decl, req.Value)); err != nil {
+			s.refused(w, http.StatusInternalServerError, err, file)
 			return
 		}
 		out["written"] = path
@@ -232,12 +248,12 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 	case decl.Hot || decl.Scope == settings.ScopeCall:
 		prev, had := s.set.RuntimeOverride(decl.Path)
 		if err := s.set.SetRuntime(decl.Path, req.Value); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			s.refused(w, http.StatusBadRequest, err, file)
 			return
 		}
 		if err := s.applyPoolRuntime(decl.Path); err != nil {
 			s.restoreRuntime(decl.Path, prev, had)
-			writeErr(w, http.StatusInternalServerError, reloadFailed(decl.Path, err))
+			s.refused(w, http.StatusInternalServerError, reloadFailed(decl.Path, err), file)
 			return
 		}
 		out["applied"] = true
@@ -290,6 +306,97 @@ func (s *Server) restoreRuntime(path, prev string, had bool) {
 // reloadFailed is the error a caller sees when a runtime change was refused.
 func reloadFailed(path string, err error) error {
 	return fmt.Errorf("%s: the configuration could not be reloaded, so the runtime value was rolled back: %w", path, err)
+}
+
+// refused answers a change that was not applied. When the change was also
+// written to a file, that file goes back to what it held before, so the file
+// and the daemon agree again. A file holding a value the daemon refused is the
+// disagreement this exists to prevent: the next reload that read it would apply
+// the value.
+func (s *Server) refused(w http.ResponseWriter, status int, err error, file *fileState) {
+	if file != nil {
+		if rerr := file.restore(); rerr != nil {
+			s.logger.Printf("restoring %s after a refused change: %v", file.target, rerr)
+			writeErr(w, status, fmt.Errorf("%w; %s could not be restored and still holds the refused value: %v",
+				err, file.target, rerr))
+			return
+		}
+		err = fmt.Errorf("%w; %s was restored to its previous contents", err, file.target)
+	}
+	writeErr(w, status, err)
+}
+
+// fileState is a configuration file as it was before a write: its bytes and
+// mode, or that there was no file. A refused write is rolled back to it.
+type fileState struct {
+	target  string // the file written, with symlinks resolved
+	existed bool
+	data    []byte
+	mode    fs.FileMode
+}
+
+func captureFile(path string) (fileState, error) {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fileState{}, err
+	}
+	st, err := os.Stat(target)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileState{target: target}, nil
+	}
+	if err != nil {
+		return fileState{}, err
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return fileState{}, err
+	}
+	return fileState{target: target, existed: true, data: data, mode: st.Mode().Perm()}, nil
+}
+
+// restore puts the file back as it was captured: the same bytes and mode, or
+// no file at all. The bytes go to a temporary file beside the target and are
+// renamed over it, so a failure partway leaves the refused contents or the
+// captured ones, never a truncated file.
+func (f fileState) restore() error {
+	if !f.existed {
+		if err := os.Remove(f.target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(f.target), "."+filepath.Base(f.target)+".restore-*")
+	if err != nil {
+		return err
+	}
+	if err := writeTemp(tmp, f.data, f.mode); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), f.target); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// writeTemp writes and closes a file that restore is about to rename into place.
+func writeTemp(f *os.File, data []byte, mode fs.FileMode) error {
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func (s *Server) handleSettingsUnset(w http.ResponseWriter, r *http.Request) {

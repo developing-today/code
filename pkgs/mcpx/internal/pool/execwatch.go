@@ -169,7 +169,7 @@ func (p *Pool) retire(in *Instance, drain time.Duration, stopReason, callErr str
 	if !p.drain(in, drain) {
 		lifecycle("server.warning", map[string]any{
 			"server": p.cfg.Name, "instance": in.ID,
-			"reason": "calls still running at the drain timeout are cut off by the restart",
+			"reason": "calls still running at the drain timeout are cut off",
 		})
 	}
 	in.swapped.Store(&callErr)
