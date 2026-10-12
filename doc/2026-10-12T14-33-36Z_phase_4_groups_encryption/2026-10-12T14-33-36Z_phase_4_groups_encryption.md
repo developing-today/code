@@ -114,3 +114,12 @@ Commits on `p4-heads` (not pushed):
 
 - P4.8 to P4.11 done on `p4-warn`. Commits: 205a5483, 4b82eff2, a95c52ae, 2a3de9a9. Not pushed.
 - P4.7 done on `p4-heads`. Commits: 6001cfdd, e1fee2ce. Not pushed.
+
+## 2026-10-12 Suite: phase 4 full run
+
+- Merged tracks: `p4-scheme` (6b9235ab), `p4-history` (8dc0ca61), `p4-warn` (b05d0d4f), `p4-heads` (cd7b8636).
+- `cargo test --all-targets --no-fail-fast` on the merged tree: 1418 passed, 9 ignored, 1 failed.
+- The failure is `serve_tests::test_world_module_shared_over_iroh_and_web_presentations`: the server stalls after `world: records document ready` and never prints `node:`. It fails the same way on the phase-3 tip (3a51589d), so phase 4 did not cause it. Issue #190.
+- One earlier run failed `test_an_interrupted_session_restarts_without_duplicates` under load and passed alone three times. Issue #188.
+- Not run in this pass: `just crash-gate` and the nix checks.
+- Open from the tracks: the heads merge for groups above 32 heads (issue #189), the joiner that misses an update made without knowing a concurrent add (issue #189), the held-message cap (issue #186), and stalled delivery on missing pre-join controls (issue #187).
