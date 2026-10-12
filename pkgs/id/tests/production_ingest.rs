@@ -12,6 +12,7 @@ use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest, Refusal};
 use id::membership::AuthId;
 use id::membership::body::{CLAIM, encode_body};
+use id::rejection::Reason;
 use id::store_traits::SharedEventStore;
 use id::waiting::WaitingLimits;
 use p2panda_auth::Access;
@@ -165,6 +166,20 @@ fn test_an_unauthorised_group_operation_is_not_applied() {
     );
     assert!(!applied(&shared, &attempt.event.id));
     assert_eq!(roster_of(&shared, &create), members(&['A', 'B', 'C']));
+}
+
+#[test]
+fn test_a_voided_operation_gives_the_voided_reason() {
+    let (_dir, shared) = open();
+    let mut chains = Chains::default();
+    let create = chains.create();
+    create.ingest(&shared);
+    let group = create.event.id;
+    // D is not a member, so the operation is voided at its place.
+    let attempt = chains.op('D', group, &[group], &add('E', Access::manage()));
+    let result = attempt.ingest(&shared);
+    assert!(matches!(result, Ingest::Voided { .. }), "{result:?}");
+    assert_eq!(result.reason(), Some(Reason::Voided));
 }
 
 #[test]

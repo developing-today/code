@@ -25,6 +25,7 @@ use super::*;
 use crate::groups::{
     Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
 };
+use crate::rejection::Reason;
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -1186,6 +1187,65 @@ fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
         matches!(result, Err(SchemeError::StillInModel(_))),
         "a device the model still lists is not removed"
     );
+}
+
+/// The reason an adapter result gives, or `None` when it succeeded or gave none.
+fn reason_of<T>(result: Result<T, SchemeError>) -> Option<Reason> {
+    result.err().and_then(|err| err.reason())
+}
+
+#[test]
+fn test_an_operation_before_the_welcome_gives_the_waiting_reason() {
+    let mut cast = Cast::new(&[1, 2]);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .send(b"early", &rng);
+    assert_eq!(reason_of(result), Some(Reason::Waiting));
+}
+
+#[test]
+fn test_an_add_outside_the_model_gives_the_voided_reason() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+    let view = cast.view();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &cast.rng);
+    assert_eq!(reason_of(result), Some(Reason::Voided));
+}
+
+#[test]
+fn test_a_roster_the_crate_does_not_match_gives_the_frozen_reason_then_the_poisoned_session() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    cast.create(1, &[1, 2]);
+    // The view lists 3 and 4, but the crate adds only 3, so the rosters disagree and the session
+    // is poisoned.
+    let view = view_of(&[id(1), id(2), id(3), id(4)].into_iter().collect());
+    let rng = Rng::default();
+    let mismatch = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert_eq!(reason_of(mismatch), Some(Reason::Frozen));
+    let poisoned = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .send(b"after", &rng);
+    assert_eq!(reason_of(poisoned), Some(Reason::Frozen));
+}
+
+#[test]
+fn test_a_history_request_with_no_answer_gives_the_waiting_reason() {
+    let refused = SchemeError::from(HistoryError::Refused);
+    assert_eq!(refused.reason(), Some(Reason::Waiting));
 }
 
 #[test]

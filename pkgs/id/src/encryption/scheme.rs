@@ -49,6 +49,7 @@ use super::history::{HistoryAnswer, HistoryError, HistoryMode, HistoryRequest, a
 use super::ordering::{Envelope, MAX_PARENTS, Orderer};
 use super::roster::Roster;
 use crate::groups::{GroupView, Key, Policy};
+use crate::rejection::Reason;
 
 /// The name the group policy gives this scheme.
 pub const DATASCHEME: &str = "datascheme";
@@ -165,6 +166,27 @@ pub enum SchemeError {
         /// The version the message names.
         found: u32,
     },
+}
+
+impl SchemeError {
+    /// The reason this error gives, when it is a refusal of an operation or a message. A crate
+    /// failure, a bad key, and a policy or message that names a scheme this build does not
+    /// speak are errors, not judgements, so they give none.
+    pub const fn reason(&self) -> Option<Reason> {
+        match self {
+            Self::Poisoned | Self::RosterMismatch(_) => Some(Reason::Frozen),
+            Self::NotWelcomed | Self::History(_) => Some(Reason::Waiting),
+            Self::NotInModel(_)
+            | Self::StillInModel(_)
+            | Self::UnaskedSecret
+            | Self::SchemeMismatch { .. } => Some(Reason::Voided),
+            Self::NoScheme
+            | Self::UnsupportedScheme { .. }
+            | Self::Crate(_)
+            | Self::InvalidKey(_)
+            | Self::TooManyParents { .. } => None,
+        }
+    }
 }
 
 /// One device's encryption state for one group.
