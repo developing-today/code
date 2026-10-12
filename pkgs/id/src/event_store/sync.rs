@@ -15,6 +15,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -104,7 +105,8 @@ pub(crate) enum Cut {
 }
 
 /// Runs one range session over an open connection. The dialer opens the stream and passes
-/// `initiator = true`. `now_ms` is the clock the store's waiting rules use.
+/// `initiator = true`. `now_ms` is the clock the store's waiting rules use. `_deadline` bounds
+/// the whole session, from opening the stream to the last event.
 ///
 /// # Errors
 ///
@@ -117,6 +119,7 @@ pub async fn sync_over(
     initiator: bool,
     params: Params,
     now_ms: u64,
+    _deadline: Duration,
 ) -> Result<Outcome> {
     run(store, conn, initiator, params, now_ms, Cut::Never).await
 }
@@ -748,6 +751,39 @@ mod tests {
         );
         assert_eq!(second_b.duplicates + second_a.duplicates, 0, "no duplicate");
         assert_eq!(second_a.accepted, 0);
+    }
+
+    /// A peer that opens a connection and then says nothing holds a range session forever, unless
+    /// the session has a deadline of its own. The session must end at that deadline.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_a_silent_peer_ends_the_session_at_its_deadline() {
+        let (_dir, mut store) = open();
+        let server = endpoint(vec![ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let target = loopback_addr(&server);
+        // The peer accepts, then holds the connection open and never reads or writes.
+        let silent = tokio::spawn(async move {
+            let incoming = server.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            drop(conn);
+        });
+        let conn = client.connect(target, ALPN).await.unwrap();
+        let session = sync_over(
+            &mut store,
+            &conn,
+            true,
+            Params::default(),
+            NOW,
+            Duration::from_secs(2),
+        );
+        let outcome = tokio::time::timeout(Duration::from_secs(10), session)
+            .await
+            .expect("the session had no deadline of its own");
+        assert!(outcome.is_err(), "a silent peer gave a session: {outcome:?}");
+        conn.close(0u32.into(), b"done");
+        silent.abort();
+        client.close().await;
     }
 
     /// P3.1c on a real store: a store above the 524,288-event limit bootstraps into an empty one
