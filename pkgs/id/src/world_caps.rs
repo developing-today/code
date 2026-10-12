@@ -22,6 +22,11 @@
 //! This module holds the pure parts: the schema and its bounds, the catalog of
 //! capability names, and the grant policy with its usage accounting. The
 //! actor in [`crate::world`] executes providers because they need the world.
+//!
+//! **Local, not signed.** The granted set, the policy and the usage counts
+//! ([`CapUsage`]) belong to the hosting node and are journaled there. None of
+//! them is signed or replicated. A usage count reports what happened and bounds
+//! nothing, so two hosts of one world may keep different counts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
