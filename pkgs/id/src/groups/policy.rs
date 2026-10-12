@@ -57,6 +57,9 @@ pub enum History {
     /// The whole history.
     #[default]
     Full,
+    /// The last N epochs (P4.5). A joiner reads older messages only by asking a member (P4.6).
+    /// N is at least 1.
+    Recent(u32),
     /// Only what came after the join.
     FromJoin,
     /// Causal history (deferred).
