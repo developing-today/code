@@ -307,20 +307,22 @@ impl Engine {
             if self.void(by_id, &grant) || self.vetoed(grant.id, &past) {
                 continue;
             }
-            let removed: Vec<&Removal> = removals
+            // The removals of the grantor that come after the grant. A grant made after a re-add is
+            // not one of them: its grantor was valid where it was made.
+            let superseding: Vec<&Removal> = removals
                 .iter()
-                .filter(|removal| removal.member == grant.from)
+                .filter(|removal| {
+                    removal.member == grant.from
+                        && causal_past(by_id, &[removal.id]).contains(&grant.id)
+                })
                 .collect();
-            if mode == Delegation::Transfer && !removed.is_empty() {
+            if mode == Delegation::Transfer && !superseding.is_empty() {
                 // The removed grantor's own link is superseded. Each successor the removals name
                 // reissues it from the removal on, if it held the scope then and holds it here.
-                for removal in removed {
+                for removal in superseding {
                     let Some(successor) = removal.successor else {
                         continue;
                     };
-                    if !causal_past(by_id, &[removal.id]).contains(&grant.id) {
-                        continue;
-                    }
                     let holds_now = self.holds(group, successor, grant.scope, after)?;
                     if holds_now
                         && self.authorized(
