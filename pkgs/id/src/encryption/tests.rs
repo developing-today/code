@@ -5,9 +5,10 @@
 //! to the members who may read them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use p2panda_core::{SigningKey, VerifyingKey};
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
+use p2panda_core::{Hash, SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
 use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
 use p2panda_encryption::data_scheme::group_secret::GroupSecretId;
@@ -17,8 +18,12 @@ use p2panda_encryption::key_registry::KeyRegistryState;
 use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
+use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
+use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
 use super::*;
-use crate::groups::Key;
+use crate::groups::{
+    Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
+};
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -33,10 +38,37 @@ fn text(message: &str) -> Received {
     Received::Plaintext(message.as_bytes().to_vec())
 }
 
+/// A group policy that names the `datascheme` scheme at `version`.
+fn scheme_policy(version: u32) -> Policy {
+    Policy {
+        scheme: Some(Scheme {
+            name: DATASCHEME.to_owned(),
+            version,
+        }),
+        ..Policy::default()
+    }
+}
+
+/// A view that lists `members` as Admins. For the checks that run before any fold.
+fn view_of(members: &BTreeSet<Key>) -> GroupView {
+    GroupView {
+        policy: scheme_policy(SCHEME_V1),
+        members: members.iter().map(|key| (*key, Role::Admin)).collect(),
+        friendship: None,
+        present: BTreeSet::new(),
+        dissolved_by: None,
+    }
+}
+
 /// Every person's keys and one session per person, all sharing one registry of bundles.
 struct Cast {
     rng: Rng,
     sessions: BTreeMap<Key, Session>,
+    /// Each person's identity secret, to open the answers sealed to them.
+    identities: BTreeMap<Key, IdentitySecret>,
+    /// The group's signed events, in order. The first is the create, and the group model is their
+    /// fold.
+    events: Vec<Event>,
     /// The member set the group model holds after the last operation.
     model: BTreeSet<Key>,
     /// Each person's identity and keys, kept so a device can be rebuilt with the same keys.
@@ -49,24 +81,34 @@ impl Cast {
         let rng = Rng::default();
         let mut bundles = Vec::new();
         let mut keys: BTreeMap<Key, (VerifyingKey, KeyManagerState)> = BTreeMap::new();
+        let mut identities = BTreeMap::new();
         for seed in seeds {
             let (key, verifying) = person(*seed);
             let identity = IdentitySecret::from_rng(&rng).expect("identity");
             let state = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
             bundles.push((verifying, key_bundle(&state).expect("bundle")));
             keys.insert(key, (verifying, state));
+            identities.insert(key, identity);
         }
         let registry = registry(&bundles).expect("registry");
         let sessions = keys
             .iter()
             .map(|(key, (verifying, state))| {
-                let session = Session::init(*verifying, state.clone(), registry.clone());
+                let session = Session::init(
+                    *verifying,
+                    state.clone(),
+                    registry.clone(),
+                    &scheme_policy(SCHEME_V1),
+                )
+                .expect("session");
                 (*key, session)
             })
             .collect();
         Self {
             rng,
             sessions,
+            identities,
+            events: Vec::new(),
             model: BTreeSet::new(),
             keys,
             registry,
@@ -76,51 +118,138 @@ impl Cast {
     /// A fresh session for `who` with the keys it was created with. It holds no group secret.
     fn reinstall(&self, who: u8) -> Session {
         let (verifying, state) = self.keys.get(&id(who)).expect("keys");
-        Session::init(*verifying, state.clone(), self.registry.clone())
+        Session::init(
+            *verifying,
+            state.clone(),
+            self.registry.clone(),
+            &scheme_policy(SCHEME_V1),
+        )
+        .expect("session")
     }
 
     fn session(&self, who: u8) -> &Session {
         self.sessions.get(&id(who)).expect("session")
     }
 
+    fn session_mut(&mut self, who: u8) -> &mut Session {
+        self.sessions.get_mut(&id(who)).expect("session")
+    }
+
+    fn identity(&self, who: u8) -> &IdentitySecret {
+        self.identities.get(&id(who)).expect("identity")
+    }
+
+    /// The group's view as the fold gives it after the events so far.
+    fn view(&self) -> GroupView {
+        let create = self.events.first().expect("a create").id;
+        let projection = fold(&self.events).expect("fold");
+        projection.group(&create).expect("the group").clone()
+    }
+
+    /// Appends a membership event by `by` to the group's log, and returns the view after it.
+    fn log(&mut self, by: u8, body: Body) -> GroupView {
+        let group = self.events.first().map(|create| create.id);
+        let after = self.events.last().map(|last| last.id).into_iter().collect();
+        let name = format!("event {}", self.events.len());
+        self.events.push(Event {
+            id: Hash::digest(name.as_bytes()),
+            author: id(by),
+            after,
+            group,
+            body,
+        });
+        let view = self.view();
+        self.model = view.members.keys().copied().collect();
+        view
+    }
+
     fn create(&mut self, by: u8, members: &[u8]) -> Envelope {
-        self.model = members.iter().map(|seed| id(*seed)).collect();
-        let model = self.model.clone();
+        let others = members
+            .iter()
+            .filter(|seed| **seed != by)
+            .map(|seed| (id(*seed), Role::Admin))
+            .collect();
+        let create = Event {
+            id: Hash::digest(b"event 0"),
+            author: id(by),
+            after: Vec::new(),
+            group: None,
+            body: Body::Create(Create {
+                template: Template::Custom,
+                policy: scheme_policy(SCHEME_V1),
+                members: others,
+                admins_on_create: false,
+            }),
+        };
+        self.events = vec![create];
+        let view = self.view();
+        self.model = view.members.keys().copied().collect();
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .create(&model, &self.rng)
+            .create(&view, &self.rng)
             .expect("create")
     }
 
     fn add(&mut self, by: u8, who: u8) -> Envelope {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add(&model, id(who), &self.rng)
+            .add(&view, id(who), &self.rng)
             .expect("add")
     }
 
     fn remove(&mut self, by: u8, who: u8) -> Envelope {
-        self.model.remove(&id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Remove {
+                member: id(who),
+                successor: None,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .remove(&model, id(who), &self.rng)
+            .remove(&view, id(who), &self.rng)
             .expect("remove")
+    }
+
+    /// An add that welcomes the joiner with the secrets `mode` allows.
+    fn add_with_history(&mut self, by: u8, who: u8, mode: HistoryMode) -> Envelope {
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
+        self.sessions
+            .get_mut(&id(by))
+            .expect("session")
+            .add_with_history(&view, id(who), mode, &self.rng)
+            .expect("add_with_history")
     }
 
     /// A join through `add_from_join`: the add, then the immediate update.
     fn join(&mut self, by: u8, who: u8) -> Vec<Envelope> {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add_from_join(&model, id(who), &self.rng)
+            .add_from_join(&view, id(who), &self.rng)
             .expect("add_from_join")
     }
 
@@ -181,13 +310,13 @@ fn test_create_gives_every_member_the_model_roster() {
 #[test]
 fn test_create_rejects_a_device_outside_the_model() {
     let mut cast = Cast::new(&[1, 2]);
-    let model: BTreeSet<Key> = std::iter::once(id(2)).collect();
+    let view = view_of(&std::iter::once(id(2)).collect());
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .create(&model, &rng);
+        .create(&view, &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert!(
         !cast.session(1).is_welcomed(),
@@ -208,9 +337,9 @@ fn test_operations_before_create_are_rejected_without_poisoning() {
         session.update(&rng),
         Err(SchemeError::NotWelcomed)
     ));
-    let create_model: BTreeSet<Key> = [id(1), id(2)].into_iter().collect();
+    let view = view_of(&[id(1), id(2)].into_iter().collect());
     assert!(
-        session.create(&create_model, &rng).is_ok(),
+        session.create(&view, &rng).is_ok(),
         "the session still creates"
     );
 }
@@ -241,15 +370,471 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
     let create = cast.create(1, &[1, 2]);
     cast.deliver(&create, &[2]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add(&model, id(3), &rng);
+        .add(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
+}
+
+// --- history modes -------------------------------------------------------------------------------
+
+/// Every window size and epoch count: a `recent:N` welcome succeeds, the joiner holds the newest
+/// `min(N, K + 1)` epochs, and it reads a message sent after the join.
+#[test]
+fn test_recent_welcome_succeeds_for_every_window_and_epoch_count() {
+    for window in [1, 8, 32, 128, 512] {
+        for rotations in [0, 1, 5, 40] {
+            let mode = HistoryMode::Recent(window);
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let create = cast.create(1, &[1, 2, 3]);
+            cast.deliver(&create, &[2, 3, 4]);
+            for _ in 0..rotations {
+                let update = cast.update(1);
+                cast.deliver(&update, &[2, 3, 4]);
+            }
+
+            let add = cast.add_with_history(1, 4, mode);
+            cast.deliver(&add, &[2, 3, 4]);
+            let label = format!("{mode} after {rotations} rotations");
+            assert!(cast.session(4).is_welcomed(), "{label}: welcomed");
+            assert_eq!(cast.members_of(4), cast.model, "{label}: roster");
+            assert_eq!(cast.epoch(4), cast.epoch(1), "{label}: newest epoch");
+            let epochs = usize::try_from(window).expect("window").min(rotations + 1);
+            assert_eq!(cast.session(4).epoch_count(), epochs, "{label}: window");
+
+            let message = cast.send(2, "after the join");
+            assert_eq!(
+                cast.deliver(&message, &[1, 3, 4]),
+                vec![
+                    vec![text("after the join")],
+                    vec![text("after the join")],
+                    vec![text("after the join")]
+                ],
+                "{label}: the joiner reads after its join"
+            );
+        }
+    }
+}
+
+/// A full welcome carries every epoch, and the joiner holds all of them.
+#[test]
+fn test_full_welcome_carries_every_epoch() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    for _ in 0..5 {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3, 4]);
+    }
+
+    let add = cast.add_with_history(1, 4, HistoryMode::Full);
+    cast.deliver(&add, &[2, 3, 4]);
+    assert_eq!(
+        cast.session(4).epoch_count(),
+        6,
+        "every epoch the adder holds"
+    );
+}
+
+/// Builds `rotations` epochs for the group of 1, 2 and 3, and sends one message under each epoch.
+/// Members 2 and 3 take every message as it goes. Returns every group message in send order, and
+/// the application messages alone, oldest first.
+fn history(cast: &mut Cast, rotations: usize) -> (Vec<Envelope>, Vec<Envelope>) {
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let mut all = vec![create];
+    let mut apps = Vec::new();
+    for epoch in 0..=rotations {
+        let message = cast.send(1, &format!("epoch {epoch}"));
+        cast.deliver(&message, &[2, 3]);
+        all.push(message.clone());
+        apps.push(message);
+        if epoch < rotations {
+            let update = cast.update(1);
+            cast.deliver(&update, &[2, 3]);
+            all.push(update);
+        }
+    }
+    (all, apps)
+}
+
+/// The crate's refusal, reproduced. A joiner handed its pre-welcome history with no secret check
+/// (the crate receives every message) fails its welcome whenever the window leaves an epoch out:
+/// `recent:N` with N no larger than the rotations. Round 2 saw this in 80 of 120 runs, and never
+/// in a run where the window held every epoch (P4.5, round 2 `welcome-recent` §E6).
+#[test]
+fn test_crate_refuses_the_welcome_when_pre_welcome_history_names_an_unknown_secret() {
+    let windows = [Some(1), Some(8), Some(32), Some(128), Some(512), None];
+    let mut runs = 0;
+    let mut refused = 0;
+    for rotations in [4, 20, 40] {
+        for window in windows {
+            let mode = window.map_or(HistoryMode::Full, HistoryMode::Recent);
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let (all, _) = history(&mut cast, rotations);
+            for message in &all {
+                cast.sessions
+                    .get_mut(&id(4))
+                    .expect("session")
+                    .process_unchecked(message)
+                    .expect("pre-welcome message");
+            }
+            let add = cast.add_with_history(1, 4, mode);
+            let welcome = cast
+                .sessions
+                .get_mut(&id(4))
+                .expect("session")
+                .process_unchecked(&add);
+
+            runs += 1;
+            let label = format!("{mode} after {rotations} rotations");
+            let expect_refused =
+                window.is_some_and(|n| usize::try_from(n).expect("window") <= rotations);
+            assert_eq!(welcome.is_err(), expect_refused, "{label}");
+            if let Err(err) = welcome {
+                refused += 1;
+                assert!(
+                    matches!(&err, SchemeError::Crate(text) if text.contains("unknown group secret")),
+                    "{label}: {err}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        (refused, runs),
+        (6, 18),
+        "refused welcomes out of runs, by the pattern above"
+    );
+}
+
+/// A recent joiner reads the window of history it was handed before its welcome, in the order it
+/// arrived, and refuses the older messages. The welcome releases the window (P4.5). Every window
+/// and epoch count is tried.
+#[test]
+fn test_recent_joiner_reads_its_window_of_history_handed_over_before_the_welcome() {
+    for window in [1, 8, 32, 128, 512] {
+        for rotations in [0, 1, 5, 40] {
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let (all, apps) = history(&mut cast, rotations);
+            for message in &all {
+                cast.deliver(message, &[4]);
+            }
+
+            let add = cast.add_with_history(1, 4, HistoryMode::Recent(window));
+            let read = cast
+                .sessions
+                .get_mut(&id(4))
+                .expect("session")
+                .process(&add)
+                .expect("welcome");
+
+            let epochs = usize::try_from(window).expect("window").min(rotations + 1);
+            let label = format!("recent:{window} after {rotations} rotations");
+            let expected: Vec<Received> = (rotations + 1 - epochs..=rotations)
+                .map(|epoch| text(&format!("epoch {epoch}")))
+                .collect();
+            assert_eq!(read, expected, "{label}: the window is released");
+            if epochs <= rotations {
+                assert_eq!(
+                    cast.deliver(&apps[0], &[4]),
+                    vec![vec![Received::Withheld(apps[0].id())]],
+                    "{label}: the oldest epoch stays refused"
+                );
+            }
+        }
+    }
+}
+
+// --- lazy history ---------------------------------------------------------------------------------
+
+/// A joiner with a `recent:N` welcome asks a member for the older epochs it was handed and cannot
+/// read. The member answers, and the joiner reads them. A key sealed to someone else does not open.
+#[test]
+fn test_joiner_gets_its_older_epochs_from_a_member() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let (all, _) = history(&mut cast, 10);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(4));
+    cast.deliver(&add, &[4]);
+    assert_eq!(cast.session(4).epoch_count(), 4, "the window");
+
+    let request = cast.session(4).request_history().expect("older epochs");
+    assert_eq!(request.wanted.len(), 7, "epochs 0 to 6, outside the window");
+
+    let answer = cast
+        .session(1)
+        .answer_history(&request)
+        .expect("answer")
+        .expect("a member answers");
+    let outsider = cast.identity(5).clone();
+    assert!(
+        cast.session_mut(4)
+            .open_history(&request, &answer, &outsider)
+            .is_err(),
+        "an answer does not open with another identity"
+    );
+
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    let expected: Vec<Received> = (0..=6)
+        .map(|epoch| text(&format!("epoch {epoch}")))
+        .collect();
+    assert_eq!(read, expected, "the older messages, in send order");
+    assert_eq!(cast.session(4).epoch_count(), 11, "every epoch now");
+    assert!(
+        cast.session(4).request_history().is_none(),
+        "nothing left to ask for"
+    );
+}
+
+/// Only a member answers, and only a member may ask. A device outside the group gets nothing, and a
+/// member refuses a request from outside its roster.
+#[test]
+fn test_a_non_member_gets_no_history_and_a_non_member_answers_nothing() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let (all, _) = history(&mut cast, 6);
+    for message in &all {
+        cast.deliver(message, &[4, 5]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(2));
+    cast.deliver(&add, &[4]);
+
+    let outsider_request = cast
+        .session(5)
+        .request_history()
+        .expect("5 holds messages it cannot read");
+    assert!(
+        cast.session(1)
+            .answer_history(&outsider_request)
+            .expect("answer")
+            .is_none(),
+        "a member refuses a request from outside its roster"
+    );
+
+    let joiner_request = cast.session(4).request_history().expect("4 asks");
+    assert!(
+        cast.session(5)
+            .answer_history(&joiner_request)
+            .expect("answer")
+            .is_none(),
+        "a device outside the group answers nothing"
+    );
+}
+
+/// The answer comes back through the transport, within the wait.
+#[tokio::test]
+async fn test_a_member_answers_through_the_transport() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (all, _) = history(&mut cast, 3);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(1));
+    cast.deliver(&add, &[4]);
+    let request = cast.session(4).request_history().expect("older epochs");
+
+    let member = cast.session(1);
+    let answer = ask_member(
+        request.clone(),
+        |asked| std::future::ready(member.answer_history(&asked).expect("answer")),
+        HISTORY_WAIT,
+    )
+    .await
+    .expect("answered");
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    assert_eq!(read.len(), 3, "the three older epochs");
+}
+
+/// A member that is offline never answers, and the wait ends in a timeout rather than a hang.
+#[tokio::test]
+async fn test_a_request_with_no_answer_times_out_cleanly() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (all, _) = history(&mut cast, 2);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let request = cast.session(4).request_history().expect("older epochs");
+
+    let outcome = ask_member(
+        request,
+        |_| std::future::pending::<Option<HistoryAnswer>>(),
+        Duration::from_millis(20),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        Err(HistoryError::Timeout(Duration::from_millis(20)))
+    );
+}
+
+// --- welcome chunks -------------------------------------------------------------------------------
+
+/// A frame small enough that a welcome of a few epochs needs several chunks. A chunk is then
+/// `FRAME - CHUNK_HEADER_BYTES` bytes of payload.
+const SMALL_FRAME: usize = 512;
+
+/// The group of 1, 2 and 3 after `rotations` updates, with 4 holding every control message. Returns
+/// the full welcome for 4, and the update that was sent last.
+fn full_welcome(cast: &mut Cast, rotations: usize) -> (Envelope, Envelope) {
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    let mut last = create;
+    for _ in 0..rotations {
+        last = cast.update(1);
+        cast.deliver(&last, &[2, 3, 4]);
+    }
+    (cast.add(1, 4), last)
+}
+
+/// A full welcome above the frame cap is split into checked chunks, reassembled, and processed.
+#[test]
+fn test_a_full_welcome_above_the_cap_is_split_and_reassembled() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+
+    let chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(chunks.len() > 1, "a full welcome above the cap is split");
+    for chunk in &chunks {
+        let encoded = encode_cbor(chunk).expect("encode").len();
+        assert!(
+            encoded <= SMALL_FRAME,
+            "chunk {} fits the frame",
+            chunk.index
+        );
+        assert!(
+            encoded - chunk.bytes.len() <= CHUNK_HEADER_BYTES,
+            "the header of chunk {} is within its budget",
+            chunk.index
+        );
+    }
+
+    let mut joiner = Reassembly::default();
+    let mut whole = None;
+    for chunk in chunks {
+        if let Some(envelope) = joiner.push(&chunk).expect("in order and intact") {
+            whole = Some(envelope);
+        }
+    }
+    let whole = whole.expect("the last chunk completes the welcome");
+    joiner.finish().expect("complete");
+
+    assert_eq!(
+        cast.sessions
+            .get_mut(&id(4))
+            .expect("session")
+            .process(&whole)
+            .expect("welcome"),
+        Vec::new()
+    );
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the reassembled welcome welcomes"
+    );
+    assert_eq!(cast.session(4).epoch_count(), 21, "every epoch");
+}
+
+/// A welcome that fits one frame is one chunk, so every welcome takes the same path.
+#[test]
+fn test_a_welcome_within_one_frame_is_one_chunk() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 2);
+    let chunks = split(&add, crate::world_session::MAX_FRAME_BYTES).expect("split");
+    assert_eq!(chunks.len(), 1);
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks[0]).expect("one chunk").is_some());
+}
+
+/// A chunk whose bytes were altered in transit is refused as it arrives.
+#[test]
+fn test_a_corrupted_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    chunks[1].bytes[0] ^= 0x01;
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    assert_eq!(
+        joiner.push(&chunks.remove(0)).err(),
+        Some(WelcomeError::AlteredChunk { index: 1 })
+    );
+}
+
+/// A missing chunk is refused: the next one that arrives is out of sequence, and a reassembly that
+/// ends early is incomplete.
+#[test]
+fn test_a_missing_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(chunks.len() >= 3, "the test needs a middle chunk");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    let skipped = chunks.remove(0);
+    assert_eq!(skipped.index, 1);
+    assert_eq!(
+        joiner.push(&chunks.remove(0)).err(),
+        Some(WelcomeError::OutOfSequence {
+            expected: 1,
+            got: 2
+        })
+    );
+    assert!(matches!(
+        joiner.finish(),
+        Err(WelcomeError::Incomplete { received: 1, .. })
+    ));
+}
+
+/// A chunk that checks and keeps its own digest, but carries altered bytes, passes each check and
+/// fails the whole. The welcome is refused before it is decoded.
+#[test]
+fn test_an_altered_welcome_with_consistent_checks_is_refused_before_decoding() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let last = chunks.len() - 1;
+    chunks[last].bytes[0] ^= 0x01;
+    chunks[last].check = Hash::digest(&chunks[last].bytes);
+
+    let mut joiner = Reassembly::default();
+    let mut outcome = Ok(None);
+    for chunk in chunks {
+        outcome = joiner.push(&chunk);
+    }
+    assert_eq!(outcome.err(), Some(WelcomeError::AlteredWelcome));
+}
+
+/// A chunk of another welcome does not join this one.
+#[test]
+fn test_a_chunk_of_another_welcome_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, update) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let other = split(&update, SMALL_FRAME).expect("split");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    assert_eq!(
+        joiner
+            .push(&other.into_iter().nth(1).expect("chunk 1 of the other"))
+            .err(),
+        Some(WelcomeError::OtherWelcome)
+    );
 }
 
 // --- update ---------------------------------------------------------------------------------------
@@ -318,17 +903,15 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .remove(&model, id(3), &rng);
+        .remove(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::StillInModel(_))));
 }
-
-// --- integration: three members -------------------------------------------------------------------
 
 // --- rotation (P4.8) ------------------------------------------------------------------------------
 
@@ -390,9 +973,22 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
 
     // The attacker's copy of device 3 holds the state it had before the compromise was found.
     let mut compromised = cast.sessions.remove(&id(3)).expect("session");
-    let without: BTreeSet<Key> = [id(1), id(2)].into();
-    let with = cast.model.clone();
     let before = cast.epoch(1);
+    // The fold's views after the removal and after the re-add, in that order.
+    let without = cast.log(
+        1,
+        Body::Member(MemberOp::Remove {
+            member: id(3),
+            successor: None,
+        }),
+    );
+    let with = cast.log(
+        1,
+        Body::Member(MemberOp::Add {
+            member: id(3),
+            role: Role::Admin,
+        }),
+    );
 
     let recovery = cast
         .sessions
@@ -410,7 +1006,6 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
     // The device comes back as a new session with its own keys and no group secret.
     let fresh = cast.reinstall(3);
     cast.sessions.insert(id(3), fresh);
-    cast.model = with;
     cast.deliver(&create, &[3]);
     cast.deliver(&recovery.removal, &[2, 3]);
     cast.deliver(&recovery.readd[0], &[2, 3]);
@@ -448,17 +1043,19 @@ fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let result =
         cast.sessions
             .get_mut(&id(1))
             .expect("session")
-            .recover(&model, &model, id(3), &cast.rng);
+            .recover(&view, &view, id(3), &cast.rng);
     assert!(
         matches!(result, Err(SchemeError::StillInModel(_))),
         "a device the model still lists is not removed"
     );
 }
+
+// --- integration: three members -------------------------------------------------------------------
 
 #[test]
 fn test_three_members_create_send_update_and_remove_in_step() {
@@ -581,13 +1178,13 @@ fn test_from_join_rejects_a_key_the_model_does_not_list() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3, 4]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add_from_join(&model, id(4), &rng);
+        .add_from_join(&view, id(4), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -652,6 +1249,289 @@ fn test_joiner_cannot_read_a_message_from_before_its_join_and_reads_one_after() 
         vec![vec![Received::Withheld(before.id())]],
         "the joiner does not read a message sent before its join"
     );
+}
+
+// --- wire (P4.4) ----------------------------------------------------------------------------------
+
+/// The CBOR length of the add that welcomes a fourth member after `rotations` updates. Each update
+/// adds one secret, and the welcome carries every secret the group holds.
+fn add_welcome_len(rotations: usize) -> usize {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    for _ in 0..rotations {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3]);
+    }
+    let add = cast.add(1, 4);
+    encode_cbor(&add).expect("encode the add").len()
+}
+
+#[test]
+fn test_each_epoch_adds_about_forty_bytes_to_the_welcome() {
+    // S12: serde_bytes on the two byte fields costs 40.0 bytes per epoch. The stock integer arrays
+    // cost 146.5.
+    let grown = add_welcome_len(110) - add_welcome_len(10);
+    assert!(
+        (3950..=4050).contains(&grown),
+        "100 epochs grew the welcome by {grown} bytes, expected about 4000"
+    );
+}
+
+#[test]
+fn test_v1_bytes_decode_and_the_joiner_reads_them() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let add = cast.add(1, 4);
+    let bytes = encode_cbor(&add).expect("encode the add");
+    let received: Envelope = decode_cbor(bytes.as_slice()).expect("decode the add");
+    cast.deliver(&received, &[4]);
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the decoded welcome welcomes"
+    );
+
+    let message = cast.send(2, "over the wire");
+    let bytes = encode_cbor(&message).expect("encode the message");
+    let received: Envelope = decode_cbor(bytes.as_slice()).expect("decode the message");
+    assert_eq!(
+        cast.deliver(&received, &[4]),
+        vec![vec![text("over the wire")]]
+    );
+}
+
+#[test]
+fn test_an_envelope_re_encodes_to_the_same_bytes() {
+    // The bundle is sorted inside the welcome, so a decoded envelope is encoded again unchanged.
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    for _ in 0..3 {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3]);
+    }
+    let add = cast.add(1, 4);
+    let first = encode_cbor(&add).expect("encode the add");
+    let decoded: Envelope = decode_cbor(first.as_slice()).expect("decode the add");
+    assert_eq!(encode_cbor(&decoded).expect("encode again"), first);
+}
+
+#[test]
+fn test_a_welcome_with_a_v0_copy_is_refused() {
+    // A relay that rewrites the welcome's copy to the stock version. The header still names v1.
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let forged = cast.add(1, 4).with_scheme(SCHEME_V1, 0);
+
+    let result = cast
+        .sessions
+        .get_mut(&id(4))
+        .expect("session")
+        .process(&forged);
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::SchemeMismatch {
+                expected: SCHEME_V1,
+                found: 0
+            })
+        ),
+        "the welcome's copy is checked against the signed policy: {result:?}"
+    );
+    assert!(
+        !cast.session(4).is_welcomed(),
+        "the refused welcome leaves the joiner unwelcomed"
+    );
+}
+
+#[test]
+fn test_a_header_that_disagrees_with_the_policy_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let message = cast.send(1, "downgraded");
+    let forged = message.with_scheme(0, 0);
+
+    let result = cast
+        .sessions
+        .get_mut(&id(2))
+        .expect("session")
+        .process(&forged);
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::SchemeMismatch {
+                expected: SCHEME_V1,
+                found: 0
+            })
+        ),
+        "the header is checked against the signed policy: {result:?}"
+    );
+}
+
+#[test]
+fn test_the_policy_names_the_scheme_this_build_speaks() {
+    assert!(matches!(
+        negotiate(&scheme_policy(SCHEME_V1)),
+        Ok(SCHEME_V1)
+    ));
+    assert!(matches!(
+        negotiate(&Policy::default()),
+        Err(SchemeError::NoScheme)
+    ));
+    assert!(matches!(
+        negotiate(&scheme_policy(0)),
+        Err(SchemeError::UnsupportedScheme { version: 0, .. })
+    ));
+    assert!(matches!(
+        negotiate(&scheme_policy(2)),
+        Err(SchemeError::UnsupportedScheme { version: 2, .. })
+    ));
+    let other = Policy {
+        scheme: Some(Scheme {
+            name: "other".to_owned(),
+            version: SCHEME_V1,
+        }),
+        ..Policy::default()
+    };
+    assert!(matches!(
+        negotiate(&other),
+        Err(SchemeError::UnsupportedScheme { .. })
+    ));
+}
+
+#[test]
+fn test_a_stock_group_is_refused_not_migrated() {
+    // The stock layout (v0) is not shipped, so a group that names it is refused when a device
+    // starts its session. Nothing is migrated (scheme-serde RESULTS, the recommendation).
+    let (_, verifying) = person(1);
+    let rng = Rng::default();
+    let identity = IdentitySecret::from_rng(&rng).expect("identity");
+    let keys = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
+    let registry = registry(&[]).expect("registry");
+    let result = Session::init(verifying, keys, registry, &scheme_policy(0));
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::UnsupportedScheme { version: 0, .. })
+        ),
+        "a stock group is refused when the session starts"
+    );
+}
+
+// --- the roster follows the fold (P4.13) ----------------------------------------------------------
+
+#[test]
+fn test_a_membership_change_through_the_group_path_updates_the_roster() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+    assert_eq!(cast.members_of(1), [id(1), id(2)].into_iter().collect());
+
+    cast.add(1, 3);
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(2), id(3)].into_iter().collect(),
+        "an add through the fold reaches the roster"
+    );
+
+    cast.remove(1, 2);
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(3)].into_iter().collect(),
+        "a removal through the fold reaches the roster"
+    );
+}
+
+#[test]
+fn test_a_view_that_disagrees_with_the_roster_is_refused_and_poisons_the_session() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+
+    // The fold lists 4 as well, but the crate is only asked to add 3.
+    let mut view = cast.view();
+    view.members.insert(id(3), Role::Admin);
+    view.members.insert(id(4), Role::Admin);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert!(
+        matches!(result, Err(SchemeError::RosterMismatch(_))),
+        "a mismatch is refused: {result:?}"
+    );
+    assert!(
+        matches!(cast.session(1).members(), Err(SchemeError::Poisoned)),
+        "the session does not keep a roster the fold disagrees with"
+    );
+    assert!(matches!(
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .send(b"after", &rng),
+        Err(SchemeError::Poisoned)
+    ));
+}
+
+#[test]
+fn test_a_view_whose_policy_names_no_scheme_is_refused_without_poisoning() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+
+    let mut view = cast.view();
+    view.policy = Policy::default();
+    view.members.insert(id(3), Role::Admin);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(2)].into_iter().collect(),
+        "the refused change left the roster as it was"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Random adds, joins and removes through the group path. After each one, the creator's roster
+    /// is the set of members the fold gives.
+    #[test]
+    fn test_roster_follows_the_fold_through_random_changes(
+        ops in proptest::collection::vec((0u8..3, 2u8..6), 1..24),
+    ) {
+        let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+        let create = cast.create(1, &[1, 2]);
+        cast.deliver(&create, &[2]);
+        for (kind, who) in ops {
+            let present = cast.model.contains(&id(who));
+            match kind {
+                0 if !present => {
+                    cast.add(1, who);
+                }
+                1 if !present => {
+                    cast.join(1, who);
+                }
+                2 if present => {
+                    cast.remove(1, who);
+                }
+                _ => continue,
+            }
+            let folded: BTreeSet<Key> = cast.view().members.keys().copied().collect();
+            prop_assert_eq!(cast.members_of(1), folded, "after {} of {}", kind, who);
+        }
+    }
 }
 
 // --- property -------------------------------------------------------------------------------------
@@ -800,10 +1680,16 @@ fn measure_update_cost(members: usize, updates: usize) -> UpdateCost {
         }
     }
     let (me, keys) = committer.expect("a committer");
-    let mut session = Session::init(me, keys, registry(&bundles).expect("registry"));
+    let mut session = Session::init(
+        me,
+        keys,
+        registry(&bundles).expect("registry"),
+        &scheme_policy(SCHEME_V1),
+    )
+    .expect("session");
 
     let started = Instant::now();
-    let create = session.create(&model, &rng).expect("create");
+    let create = session.create(&view_of(&model), &rng).expect("create");
     let create_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let create_bytes = wire_bytes(&create);
 
