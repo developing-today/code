@@ -30,9 +30,10 @@ jobs:
           if [[ "$base_sha" =~ ^0+$ ]]; then
             base_sha="$(git rev-parse HEAD^)"
           fi
-          mapfile -d '' changed_files < <(
-            git diff --name-only --diff-filter=ACMR -z "$base_sha...$GITHUB_SHA"
-          )
+          changed_files_file="$(mktemp)"
+          trap 'rm -f "$changed_files_file"' EXIT
+          git diff --name-only --diff-filter=ACMR -z "$base_sha...$GITHUB_SHA" > "$changed_files_file"
+          mapfile -d '' changed_files < "$changed_files_file"
           if ((${#changed_files[@]} == 0)); then
             echo "No changed files to format-check."
             exit 0

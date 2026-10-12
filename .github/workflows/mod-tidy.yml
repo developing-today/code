@@ -34,12 +34,17 @@ jobs:
 
       - name: Verify tidy changes are committed
         if: github.event_name == 'pull_request'
-        run: git diff --exit-code -- pkgs/graph/go.mod pkgs/graph/go.sum
+        run: |
+          if [[ -n "$(git status --short --untracked-files=all -- pkgs/graph/go.mod pkgs/graph/go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git status --short --untracked-files=all -- pkgs/graph/go.mod pkgs/graph/go.sum
+            exit 1
+          fi
 
       - name: Commit tidy changes on main
         if: github.event_name == 'push'
         run: |
-          if git diff --quiet -- pkgs/graph/go.mod pkgs/graph/go.sum; then
+          if [[ -z "$(git status --short --untracked-files=all -- pkgs/graph/go.mod pkgs/graph/go.sum)" ]]; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
