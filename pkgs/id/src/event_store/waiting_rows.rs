@@ -19,7 +19,7 @@
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
-use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, seq_num};
+use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
 use crate::chain::Event;
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 
@@ -216,13 +216,17 @@ impl Mirror<'_> {
         deps.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         deps.dedup();
         let stored_deps = if parked { Vec::new() } else { deps.clone() };
-        // The ingest call has already expired what is due at `now`, so the pool expires nothing
-        // here, and the event it holds is not due until a later call.
-        let result = if parked {
-            self.pool.park(author, id, event, now)
-        } else {
-            self.pool.insert(author, id, deps, event, now)
+        // An event that waits again keeps its first arrival time, so the age cap counts all of its
+        // waiting. A released event keeps its row until the caller decides it, and the row holds
+        // that time. An event the store has not held before arrived now.
+        let arrived_at = match get(self.txn, &id)? {
+            Some(row) => row.arrived_at,
+            None => now,
         };
+        // The ingest call has already expired what is due at `now`, and the dependencies are not
+        // present, so the pool holds the event as given: it expires nothing and releases nothing.
+        let missing = if parked { Vec::new() } else { deps };
+        let result = self.pool.restore(author, id, missing, event, arrived_at);
         match result {
             Ok(()) if self.pool.contains(&id) => {
                 let arrival = *self.arrivals;
@@ -231,7 +235,7 @@ impl Mirror<'_> {
                     id,
                     author,
                     seq,
-                    arrived_at: now,
+                    arrived_at,
                     arrival,
                     deps: stored_deps,
                     bytes,
@@ -257,13 +261,57 @@ impl Mirror<'_> {
     pub fn release(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
         let released = self.pool.arrived(*id, now);
         delete(self.txn, id)?;
+        self.drop_dep(id)?;
+        Ok(released)
+    }
+
+    /// Makes `id`, a fork proof header, present. Its waiters are released as [`release`](Self::release)
+    /// releases them. A held copy of `id` is held for good, not dropped: a proof header never
+    /// applies, so it waits for nothing, as a parked event does. The proof keeps its conflicts
+    /// seen. Returns the released events in arrival order.
+    pub fn present_proof(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
+        let held = get(self.txn, id)?;
+        let released = self.pool.arrived(*id, now);
+        self.drop_dep(id)?;
+        if let Some(row) = held {
+            self.park(row)?;
+        }
+        Ok(released)
+    }
+
+    /// Holds the proof header `id` for good again. The pool released it, and its row is still
+    /// there. A header can be released by another header's arrival, and then it is decided
+    /// before its own arrival parks it. Nothing is held for an ID without a row.
+    pub fn park_proof(&mut self, id: &Hash) -> Result<(), StoreError> {
+        match get(self.txn, id)? {
+            Some(row) => self.park(row),
+            None => Ok(()),
+        }
+    }
+
+    /// Holds `row` parked: it waits for nothing, so no arrival releases it, and only the age cap
+    /// drops it. It keeps its first arrival time and its arrival number.
+    fn park(&mut self, row: Row) -> Result<(), StoreError> {
+        let event = row_event(&row)?;
+        let parked = Row {
+            deps: Vec::new(),
+            ..row
+        };
+        self.pool
+            .restore(parked.author, parked.id, [], event, parked.arrived_at)
+            .map_err(|_refused| corrupt("a held proof header cannot be held for good"))?;
+        put(self.txn, &parked)
+    }
+
+    /// Removes `id` from the dependencies of every row that waits for it.
+    fn drop_dep(&self, id: &Hash) -> Result<(), StoreError> {
         for waiter in waiters_of(self.txn, id)? {
             let mut row = get(self.txn, &waiter)?
                 .ok_or_else(|| corrupt("a dependency is indexed to a waiting event with no row"))?;
             row.deps.retain(|dep| dep != id);
             put(self.txn, &row)?;
         }
-        Ok(released)
+        Ok(())
     }
 
     /// Removes the row of an event the pool has released, once it is decided for good.

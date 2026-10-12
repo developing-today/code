@@ -130,7 +130,8 @@ pub struct WaitingPool<K, E> {
     /// The sequence numbers of each author's held events. An author with none has no
     /// entry.
     held: HashMap<AuthorKey, BTreeSet<u64>>,
-    /// Keys that have arrived. A dependency in this set is already satisfied.
+    /// Keys that have arrived, and stay arrived. A dependency in this set is already satisfied.
+    /// The store calls this present: it is applied, voided by a fork, or a fork proof header.
     arrived: HashSet<K>,
     /// Events whose dependencies had all arrived when they were inserted.
     ready: Vec<E>,
@@ -241,11 +242,13 @@ where
         self.by_key.contains_key(key)
     }
 
-    /// Holds an event that arrived at `arrived_at`, as a store restores its rows on open.
+    /// Holds an event that arrived at `arrived_at`. The store uses it for every hold: when it
+    /// restores its rows on open, and when it holds an event it has decided, which keeps the
+    /// event's first arrival time.
     ///
     /// Unlike [`insert`](Self::insert) and [`park`](Self::park), nothing expires first, and an
     /// empty `missing` does not release the event: it is held for good, as a parked event is.
-    /// The caller restores the events in the order they arrived, so they are released in that
+    /// The caller holds the events in the order they arrived, so they are released in that
     /// order. An event whose key is already held is ignored.
     ///
     /// # Errors
@@ -339,13 +342,6 @@ where
         }
         self.arrived.insert(key);
         released
-    }
-
-    /// Forget that `key` arrived, for a key that has stopped counting as applied.
-    /// Events that wait on it from now on wait again. Events already released by it
-    /// are not affected.
-    pub fn forget(&mut self, key: &K) {
-        self.arrived.remove(key);
     }
 
     /// Drop every held event that has waited `max_age_ms` by `now_ms`, and return
@@ -599,19 +595,6 @@ mod tests {
         assert!(pool.arrived(1, 0).is_empty());
         assert_eq!(pool.waiting_count(author(1)), 0);
         assert!(pool.arrived(10, 0).is_empty());
-    }
-
-    #[test]
-    fn test_a_forgotten_key_holds_its_dependents_again() {
-        let mut pool = pool();
-        pool.arrived(10, 0);
-        pool.forget(&10);
-        pool.insert(author(1), 1, [10], "held", 0).unwrap();
-        assert!(
-            pool.take_ready().is_empty(),
-            "the key no longer counts as arrived"
-        );
-        assert_eq!(pool.arrived(10, 0), vec!["held"]);
     }
 
     #[test]

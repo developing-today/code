@@ -527,6 +527,8 @@ fn acknowledged_survive(disk: &Disk, acked: &[(Vec<u8>, Ingest)]) -> Result<(), 
                 }
             }
             Ingest::Waiting { id } => held_ids.push(*id),
+            // Stored and not applied: it is neither applied nor held, so it is not checked here.
+            Ingest::Voided { released, .. } => applied_ids.extend(released),
             Ingest::Refused(_) => {}
         }
     }

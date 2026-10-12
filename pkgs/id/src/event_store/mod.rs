@@ -12,8 +12,8 @@
 //! - `forks`: an author to the fork proof, the two headers that conflict at the
 //!   lowest sequence number where the author has forked.
 //! - `groups`: a group hash to the positions of the events in that group.
-//! - `dependents`: an event's ID to the positions of the stored events that name it in
-//!   their `after` hashes. A fork uses it to find what rests on the events it voids.
+//! - `proof_ids`: the ID of each fork proof header to its author. A proof header is present
+//!   although it is never applied, so an `after` hash that names it is satisfied.
 //! - `waiting` and `waiting_by_dep`: the events held waiting or parked, and an index from each
 //!   dependency to the rows that wait for it. The `waiting_rows` module describes them, and
 //!   the waiting pool in memory mirrors them.
@@ -57,11 +57,12 @@ use redb::{
 use crate::chain::{self, Event};
 
 mod ingest;
+mod resolve;
 mod waiting_rows;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use ingest::{Ingest, Refusal};
-use ingest::{applied_in, is_applied};
+use ingest::{is_present, present_in};
 use waiting_rows::{Mirror, Row};
 
 /// The store's file name in its directory.
@@ -72,7 +73,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v3";
+const FORMAT: &[u8] = b"id.events.store.v5";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -84,13 +85,20 @@ const CHAINS: TableDefinition<'static, &'static [u8], &'static [u8]> =
 const FORKS: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("forks");
 const GROUPS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("groups");
-const DEPENDENTS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
-    MultimapTableDefinition::new("dependents");
+const PROOF_IDS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("proof_ids");
 const WAITING: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("waiting");
 const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("waiting_by_dep");
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
+/// Each group operation's encoded action, by event ID. Written when the event arrives, held or
+/// stored, so a release reads it back without the caller. The resolution reads it again.
+const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("actions");
+/// The IDs of the applied events, with an empty value. Written by the resolution.
+const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("applied");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -397,6 +405,36 @@ impl EventStore {
         row.map(|row| Chain::decode(row.value())).transpose()
     }
 
+    /// Whether the event with this ID applies, in the resolved state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails.
+    pub fn event_applied(&self, id: &Hash) -> Result<bool, StoreError> {
+        let txn = self.db.begin_read()?;
+        let applied = txn.open_table(APPLIED)?;
+        let found = applied.get(id.as_bytes().as_slice())?.is_some();
+        Ok(found)
+    }
+
+    /// The keys that are members of `group` in the resolved state, sorted. A member with access
+    /// at the end of the causal history is listed, and a removed member is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn roster(&self, group: &Hash) -> Result<Vec<AuthorKey>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let (stored, forks, headers) = {
+            let events = txn.open_table(EVENTS)?;
+            let actions = txn.open_table(ACTIONS)?;
+            let forks = txn.open_table(FORKS)?;
+            resolve::load(&events, &actions, &forks)?
+        };
+        let resolved = resolve::resolve(&stored, &forks, &headers)?;
+        Ok(resolve::roster_of(&resolved, group))
+    }
+
     /// The stored event at `(author, seq)`, applied or not.
     ///
     /// # Errors
@@ -468,7 +506,7 @@ impl EventStore {
         let chains = txn.open_table(CHAINS)?;
         let forks = txn.open_table(FORKS)?;
         let groups = txn.open_multimap_table(GROUPS)?;
-        let dependents = txn.open_multimap_table(DEPENDENTS)?;
+        let proof_ids = txn.open_table(PROOF_IDS)?;
 
         for row in events.iter()? {
             let (position, bytes) = row?;
@@ -488,15 +526,6 @@ impl EventStore {
                 }
                 if !found {
                     return Err(corrupt("an event is missing from its group index"));
-                }
-            }
-            for dep in &event.header.extensions.after {
-                let mut found = false;
-                for indexed in dependents.get(dep.as_bytes().as_slice())? {
-                    found |= indexed?.value() == position.value();
-                }
-                if !found {
-                    return Err(corrupt("an event is missing from the dependents index"));
                 }
             }
         }
@@ -528,19 +557,9 @@ impl EventStore {
                     .get(position_key(&author, seq).as_slice())?
                     .ok_or_else(|| corrupt(format!("applied sequence {seq} is not stored")))?;
                 for dep in decode_stored(stored.value())?.header.extensions.after {
-                    let applied = match hashes.get(dep.as_bytes().as_slice())? {
-                        Some(position) => {
-                            let (dep_author, dep_seq) = split_position(position.value())?;
-                            match chains.get(dep_author.as_slice())? {
-                                Some(row) => Chain::decode(row.value())?.next_seq > dep_seq,
-                                None => false,
-                            }
-                        }
-                        None => false,
-                    };
-                    if !applied {
+                    if !present_in(&hashes, &proof_ids, &dep)? {
                         return Err(corrupt(
-                            "an applied event rests on an event that is not applied",
+                            "an applied event rests on an event that is not present",
                         ));
                     }
                 }
@@ -569,29 +588,8 @@ impl EventStore {
             }
         }
 
-        for row in dependents.iter()? {
-            let (dep, positions) = row?;
-            for position in positions {
-                let position = position?;
-                let stored = events
-                    .get(position.value())?
-                    .ok_or_else(|| corrupt("a dependents entry points at no stored event"))?;
-                let rests_on_dep = decode_stored(stored.value())?
-                    .header
-                    .extensions
-                    .after
-                    .iter()
-                    .any(|hash| hash.as_bytes().as_slice() == dep.value());
-                if !rests_on_dep {
-                    return Err(corrupt(
-                        "a dependents entry names an event that does not rest on it",
-                    ));
-                }
-            }
-        }
-
         for row in forks.iter()? {
-            let (author_bytes, _) = row?;
+            let (author_bytes, proof_bytes) = row?;
             let chain = chains
                 .get(author_bytes.value())?
                 .map(|row| Chain::decode(row.value()))
@@ -601,20 +599,27 @@ impl EventStore {
                     "a fork proof belongs to a chain that is not frozen",
                 ));
             }
+            let proof = decode_proof(proof_bytes.value())?;
+            for header in [&proof.first, &proof.second] {
+                let indexed = proof_ids.get(header.id.as_bytes().as_slice())?;
+                if indexed.map(|row| row.value().to_vec()) != Some(author_bytes.value().to_vec()) {
+                    return Err(corrupt("a fork proof header is not indexed as present"));
+                }
+            }
         }
         self.check_waiting()
     }
 
     /// Checks the waiting rows against the pool and the applied state. Each row decodes and names
     /// its event, is held by the pool, and is not stored. Each dependency it waits for is not
-    /// applied, and the dependency index lists exactly those. The pool's counts match the rows,
+    /// present, and the dependency index lists exactly those. The pool's counts match the rows,
     /// and no author is over the cap.
     fn check_waiting(&self) -> Result<(), StoreError> {
         let txn = self.db.begin_read()?;
         let rows = txn.open_table(WAITING)?;
         let by_dep = txn.open_multimap_table(WAITING_BY_DEP)?;
         let hashes = txn.open_table(HASHES)?;
-        let chains = txn.open_table(CHAINS)?;
+        let proof_ids = txn.open_table(PROOF_IDS)?;
         let mut per_author: BTreeMap<AuthorKey, usize> = BTreeMap::new();
         let mut total = 0;
         for entry in rows.iter()? {
@@ -628,9 +633,9 @@ impl EventStore {
                 return Err(corrupt("a waiting row is not held by the pool"));
             }
             for dep in &row.deps {
-                if applied_in(&hashes, &chains, dep)? {
+                if present_in(&hashes, &proof_ids, dep)? {
                     return Err(corrupt(
-                        "a waiting event waits for a dependency that is applied",
+                        "a waiting event waits for a dependency that is present",
                     ));
                 }
                 let mut indexed = false;
@@ -738,8 +743,8 @@ impl EventStore {
 
     /// Rebuilds the waiting pool from the rows, in arrival order. A row due at `now_ms` is
     /// dropped, and so is a row past its author's cap. The drops commit with the rebuild. A row
-    /// that waits for an applied event means the rows and the applied state disagree, so the
-    /// rebuild fails as corruption and the pool is left as it was.
+    /// that waits for a present event means the rows and the store disagree, so the rebuild
+    /// fails as corruption and the pool is left as it was.
     fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
         let mut pool = WaitingPool::new(self.limits);
@@ -753,9 +758,9 @@ impl EventStore {
                 continue;
             }
             for dep in &row.deps {
-                if is_applied(&txn, dep)? {
+                if is_present(&txn, dep)? {
                     return Err(corrupt(
-                        "a waiting event waits for a dependency that is applied",
+                        "a waiting event waits for a dependency that is present",
                     ));
                 }
             }
@@ -809,9 +814,11 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(CHAINS)?;
     txn.open_table(FORKS)?;
     txn.open_multimap_table(GROUPS)?;
-    txn.open_multimap_table(DEPENDENTS)?;
+    txn.open_table(PROOF_IDS)?;
     txn.open_table(WAITING)?;
     txn.open_multimap_table(WAITING_BY_DEP)?;
+    txn.open_table(ACTIONS)?;
+    txn.open_table(APPLIED)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     drop(meta);
@@ -828,9 +835,11 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_table(CHAINS).map_err(missing)?;
     txn.open_table(FORKS).map_err(missing)?;
     txn.open_multimap_table(GROUPS).map_err(missing)?;
-    txn.open_multimap_table(DEPENDENTS).map_err(missing)?;
+    txn.open_table(PROOF_IDS).map_err(missing)?;
     txn.open_table(WAITING).map_err(missing)?;
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
+    txn.open_table(ACTIONS).map_err(missing)?;
+    txn.open_table(APPLIED).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -983,7 +992,8 @@ pub(crate) fn store_chain(
     Ok(())
 }
 
-/// Writes an author's fork proof, replacing any earlier one.
+/// Writes an author's fork proof, replacing any earlier one. Both headers become present, and
+/// stay present: an earlier proof's headers are not removed from the index.
 pub(crate) fn store_fork(
     txn: &WriteTransaction,
     author: &AuthorKey,
@@ -994,6 +1004,11 @@ pub(crate) fn store_fork(
     let proof = encode_proof(seq, a, b)?;
     let mut forks = txn.open_table(FORKS)?;
     forks.insert(author.as_slice(), proof.as_slice())?;
+    drop(forks);
+    let mut proof_ids = txn.open_table(PROOF_IDS)?;
+    for header in [a, b] {
+        proof_ids.insert(header.id.as_bytes().as_slice(), author.as_slice())?;
+    }
     Ok(())
 }
 
@@ -1014,27 +1029,30 @@ impl EventStore {
         limit: usize,
     ) -> Result<Vec<Event>, StoreError> {
         let txn = self.db.begin_read()?;
-        let chains = txn.open_table(CHAINS)?;
-        let Some(chain_row) = chains.get(author.as_slice())? else {
-            return Ok(Vec::new());
-        };
-        let Some(last) = Chain::decode(chain_row.value())?.next_seq.checked_sub(1) else {
-            return Ok(Vec::new());
-        };
-        let last = until.map_or(last, |until| until.min(last));
         let first = match after {
             Some(after) => after.checked_add(1),
             None => Some(0),
         };
-        let Some(first) = first.filter(|first| *first <= last) else {
+        let Some(first) = first else {
             return Ok(Vec::new());
         };
+        let last = until.unwrap_or(SeqNum::MAX);
+        if first > last {
+            return Ok(Vec::new());
+        }
+        let applied = txn.open_table(APPLIED)?;
         let events = txn.open_table(EVENTS)?;
         let (start, end) = (position_key(author, first), position_key(author, last));
         let mut found = Vec::new();
-        for row in events.range(start.as_slice()..=end.as_slice())?.take(limit) {
+        for row in events.range(start.as_slice()..=end.as_slice())? {
+            if found.len() >= limit {
+                break;
+            }
             let (_position, bytes) = row?;
-            found.push(decode_stored(bytes.value())?);
+            let event = decode_stored(bytes.value())?;
+            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
+                found.push(event);
+            }
         }
         Ok(found)
     }
@@ -1311,7 +1329,10 @@ mod tests {
         txn.open_table(CHAINS).unwrap();
         txn.open_table(FORKS).unwrap();
         txn.open_multimap_table(GROUPS).unwrap();
-        txn.open_multimap_table(DEPENDENTS).unwrap();
+        // The v2 format indexed each event's dependents in its own multimap table.
+        let dependents: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
+            MultimapTableDefinition::new("dependents");
+        txn.open_multimap_table(dependents).unwrap();
         {
             let mut meta = txn.open_table(META).unwrap();
             meta.insert(FORMAT_KEY, b"id.events.store.v2".as_slice())

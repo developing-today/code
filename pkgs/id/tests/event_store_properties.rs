@@ -8,8 +8,9 @@
 //! Every store must reach the applied state that [`model`] computes from the set of events
 //! alone, so the answer cannot depend on the order. The model is the specification. An event
 //! is applied when it sits below its author's fork point, its backlink is the applied event
-//! before it, and every `after` hash is applied. The fork point is the lowest sequence number
-//! where the author has two distinct events, and the proof holds the two lowest IDs there.
+//! before it, and every `after` hash is present: applied, or a fork proof header. The fork
+//! point is the lowest sequence number where the author has two distinct events, and the proof
+//! holds the two lowest IDs there.
 //!
 //! Failures are not written to `proptest-regressions/`. The minimal input goes into
 //! `tests/regressions/ingest.txt` instead (see `tests/regressions/README.md`).
@@ -139,6 +140,28 @@ fn signed(
     sign(key, seq, backlink, None, ext).unwrap()
 }
 
+/// Where each author forks, if it does: the sequence number of the fork point, and how many
+/// rivals sit there beside the original (one or two).
+type ForkPlan = BTreeMap<AuthorKey, (SeqNum, usize)>;
+
+/// The events a later event may name: those that are present in every delivery order. An
+/// author with a fork is referable up to its fork point. At the fork point it is referable only
+/// when there are two events there, which the fork proof holds. Above the fork point, an event
+/// is refused as frozen in some orders and kept in others, so no event names it.
+fn referable(events: &[Event], plan: &ForkPlan) -> Vec<Event> {
+    events
+        .iter()
+        .filter(|event| {
+            let seq = event.header.seq_num;
+            match plan.get(&author_of(event)) {
+                None => true,
+                Some(&(fork, rivals)) => seq < fork || (seq == fork && rivals == 1),
+            }
+        })
+        .cloned()
+        .collect()
+}
+
 fn scenario(seed: u64) -> Scenario {
     let mut rng = Rng(seed);
     let count = 2 + rng.below(2) as usize;
@@ -148,6 +171,19 @@ fn scenario(seed: u64) -> Scenario {
     let lengths: Vec<SeqNum> = (0..count)
         .map(|_| 1 + SeqNum::try_from(rng.below(4)).unwrap())
         .collect();
+    let publics: Vec<AuthorKey> = keys
+        .iter()
+        .map(|key| *key.verifying_key().as_bytes())
+        .collect();
+    // Each author forks at most once, below the end of its chain. Deciding this up front is what
+    // lets `referable` know which events are stable while the scenario is still being built.
+    let mut plan: ForkPlan = BTreeMap::new();
+    for (public, len) in publics.iter().zip(&lengths) {
+        if rng.chance(2) {
+            let fork = SeqNum::try_from(rng.below(u64::from(*len))).unwrap();
+            plan.insert(*public, (fork, 1 + rng.below(2) as usize));
+        }
+    }
 
     let mut events: Vec<Event> = Vec::new();
     let mut originals: Vec<Vec<Event>> = vec![Vec::new(); count];
@@ -160,31 +196,132 @@ fn scenario(seed: u64) -> Scenario {
         }
         progress[author] += 1;
         let backlink = originals[author].last().map(|event| event.id);
-        let original = signed(&mut rng, &keys[author], seq, backlink, &events, "message");
+        let known = referable(&events, &plan);
+        let original = signed(&mut rng, &keys[author], seq, backlink, &known, "message");
         originals[author].push(original.clone());
         events.push(original);
-        // A fork at this sequence number: one or two rivals, each with its own backlink.
-        if rng.chance(3) {
-            for _ in 0..=rng.below(2) {
+        // The fork point: the rivals, each with its own backlink.
+        if let Some(&(_, rivals)) = plan.get(&publics[author]).filter(|(fork, _)| *fork == seq) {
+            for n in 0..rivals {
                 let link = rival_backlink(&mut rng, seq, backlink, &events);
-                let rival = signed(&mut rng, &keys[author], seq, link, &events, "rival");
-                if events.iter().all(|event| event.id != rival.id) {
-                    events.push(rival);
-                }
+                let known = referable(&events, &plan);
+                let rival = signed(
+                    &mut rng,
+                    &keys[author],
+                    seq,
+                    link,
+                    &known,
+                    &format!("rival {n}"),
+                );
+                events.push(rival);
             }
         }
     }
 
-    let authors: Vec<AuthorKey> = keys
+    let expected = model(&events, &publics);
+    Scenario {
+        events,
+        authors: publics,
+        expected,
+    }
+}
+
+/// A scenario in which some authors fork once and the rest never fork. Every `after` hash names an
+/// honest event, or a forked author's event at or below its fork point, so each one is present in
+/// every delivery order and nothing stalls except what a fork voids. Returns the honest authors too.
+fn honest_scenario(seed: u64) -> (Scenario, Vec<AuthorKey>) {
+    let mut rng = Rng(seed);
+    let count = 2 + rng.below(3) as usize;
+    let keys: Vec<SigningKey> = (0..count)
+        .map(|_| SigningKey::from_bytes(&std::array::from_fn(|_| rng.next_u64() as u8)))
+        .collect();
+    let lengths: Vec<SeqNum> = (0..count)
+        .map(|_| 1 + SeqNum::try_from(rng.below(4)).unwrap())
+        .collect();
+    // The first `forkers` authors fork and the rest are honest, so at least one is honest.
+    let forkers = rng.below(count as u64) as usize;
+    let forks: Vec<Option<SeqNum>> = (0..count)
+        .map(|author| {
+            (author < forkers)
+                .then(|| SeqNum::try_from(rng.below(u64::from(lengths[author]))).unwrap())
+        })
+        .collect();
+    let publics: Vec<AuthorKey> = keys
         .iter()
         .map(|key| *key.verifying_key().as_bytes())
         .collect();
-    let expected = model(&events, &authors);
-    Scenario {
-        events,
-        authors,
-        expected,
+
+    let mut events: Vec<Event> = Vec::new();
+    let mut good: Vec<Event> = Vec::new();
+    let mut originals: Vec<Vec<Event>> = vec![Vec::new(); count];
+    let mut progress: Vec<SeqNum> = vec![0; count];
+    while progress.iter().zip(&lengths).any(|(done, len)| done < len) {
+        let author = rng.below(count as u64) as usize;
+        let seq = progress[author];
+        if seq >= lengths[author] {
+            continue;
+        }
+        progress[author] += 1;
+        let backlink = originals[author].last().map(|event| event.id);
+        let original = present_event(&mut rng, &keys[author], seq, backlink, &good, "message");
+        originals[author].push(original.clone());
+        if forks[author].is_none_or(|fork| seq <= fork) {
+            good.push(original.clone());
+        }
+        events.push(original);
+        if forks[author] == Some(seq) {
+            let rival = present_event(&mut rng, &keys[author], seq, backlink, &good, "rival");
+            good.push(rival.clone());
+            events.push(rival);
+        }
     }
+
+    let honest = publics
+        .iter()
+        .zip(&forks)
+        .filter(|(_, fork)| fork.is_none())
+        .map(|(public, _)| *public)
+        .collect();
+    let expected = model(&events, &publics);
+    let scenario = Scenario {
+        events,
+        authors: publics,
+        expected,
+    };
+    (scenario, honest)
+}
+
+/// Up to three `after` hashes, each one of `good`. Unlike [`pick_after`], it never names a hash that
+/// is never delivered.
+fn pick_present(rng: &mut Rng, good: &[Event]) -> Vec<Hash> {
+    let mut picked = Vec::new();
+    if good.is_empty() {
+        return picked;
+    }
+    for _ in 0..rng.below(4) {
+        let hash = good[rng.below(good.len() as u64) as usize].id;
+        if !picked.contains(&hash) {
+            picked.push(hash);
+        }
+    }
+    picked
+}
+
+/// Signs an event whose `after` hashes are drawn from `good` by [`pick_present`].
+fn present_event(
+    rng: &mut Rng,
+    key: &SigningKey,
+    seq: SeqNum,
+    backlink: Option<Hash>,
+    good: &[Event],
+    kind: &str,
+) -> Event {
+    let ext = ChainExt {
+        kind: kind.to_owned(),
+        group: None,
+        after: pick_present(rng, good),
+    };
+    sign(key, seq, backlink, None, ext).unwrap()
 }
 
 /// The applied state that a set of events determines, whatever order they arrive in. Every
@@ -205,6 +342,15 @@ fn model(events: &[Event], authors: &[AuthorKey]) -> Canonical {
         }
     }
 
+    // The two lowest IDs at each fork point. A fork keeps its proof headers, so they are present
+    // even though neither is applied.
+    let mut proof_ids: BTreeSet<Hash> = BTreeSet::new();
+    for (&author, &point) in &fork_point {
+        let mut ids = at.get(&(author, point)).cloned().unwrap_or_default();
+        ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        proof_ids.extend(ids.into_iter().take(2));
+    }
+
     let mut applied_at: BTreeMap<(AuthorKey, SeqNum), Hash> = BTreeMap::new();
     let mut applied: BTreeSet<Hash> = BTreeSet::new();
     for event in events {
@@ -215,13 +361,14 @@ fn model(events: &[Event], authors: &[AuthorKey]) -> Canonical {
             None => true,
             Some(before) => applied_at.get(&(author, before)) == event.header.backlink.as_ref(),
         };
-        let deps_applied = event
+        // An `after` hash is present when it is applied, or when it is a proof header.
+        let deps_present = event
             .header
             .extensions
             .after
             .iter()
-            .all(|dep| applied.contains(dep));
-        if below_fork && linked && deps_applied {
+            .all(|dep| applied.contains(dep) || proof_ids.contains(dep));
+        if below_fork && linked && deps_present {
             applied_at.insert((author, seq), event.id);
             applied.insert(event.id);
         }
@@ -308,6 +455,26 @@ proptest! {
         }
     }
 
+    /// Honest authors never stall. Some authors fork, at random depths, and every `after` hash names
+    /// an event that is present in every order. In every order, each honest author's chain applies
+    /// in full, and the state matches the model. This is the liveness rule until P2.3 replaces
+    /// fork voiding with authority-based voiding.
+    #[test]
+    fn test_a_fork_stalls_no_honest_chain_in_any_order_until_p2_3(seed in any::<u64>()) {
+        let (scenario, honest) = honest_scenario(seed);
+        for author in &honest {
+            let applied = scenario.expected.chains.get(author).map(|chain| chain.next_seq);
+            let written = scenario.events.iter().filter(|event| author_of(event) == *author).count();
+            prop_assert_eq!(applied, Some(SeqNum::try_from(written).unwrap()));
+        }
+        let mut rng = Rng(seed ^ 0x2545_F491_4F6C_DD1D);
+        for order in orders(&scenario.events, &mut rng) {
+            let state = deliver_within(order, scenario.authors.clone(), DELIVERY_LIMIT)
+                .map_err(TestCaseError::fail)?;
+            prop_assert_eq!(&state, &scenario.expected);
+        }
+    }
+
     /// A restart changes nothing. One delivery order, run with the store closed and reopened at
     /// random points, gives every delivery the same outcome, and leaves the same applied state and
     /// held events, as the same order run without restarts. The caps are small and the clock runs
@@ -386,6 +553,102 @@ fn deliver_with_restarts(
     Ok((outcomes, state, held))
 }
 
+/// Delivers `order` to one store, which is closed and reopened before each delivery in `restarts`,
+/// and checks the waiting states after each step. Delivery `i` runs at clock `times[i]`.
+///
+/// An event that is due at a step's clock expires during that step, so it is taken out of the
+/// pending set first. The store drops it, or holds it again if it is delivered again.
+fn check_each_step(
+    order: &[Vec<u8>],
+    times: &[u64],
+    restarts: &[usize],
+    limits: WaitingLimits,
+    events: &BTreeMap<Hash, Event>,
+) -> Result<(), TestCaseError> {
+    let storage = MemStorage::default();
+    let open = |at: u64| {
+        EventStore::open_with(&storage, limits, at)
+            .map_err(|err| TestCaseError::fail(err.to_string()))
+    };
+    let mut store = open(times.first().copied().unwrap_or(0))?;
+    // Each waiting event the store acknowledged, with the clock it arrived at. Its age counts from
+    // there.
+    let mut pending: BTreeMap<Hash, (u64, Event)> = BTreeMap::new();
+    for (i, bytes) in order.iter().enumerate() {
+        let now = times[i];
+        pending.retain(|_, (arrived_at, _)| !limits.is_due(*arrived_at, now));
+        if restarts.contains(&i) {
+            drop(store);
+            store = open(now)?;
+            settle_pending(&store, &mut pending)?;
+        }
+        let outcome = store
+            .ingest(bytes, now)
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        if let Ingest::Waiting { id } = outcome
+            && let Some(event) = events.get(&id)
+        {
+            pending.entry(id).or_insert_with(|| (now, event.clone()));
+        }
+        store
+            .check_invariants()
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        settle_pending(&store, &mut pending)?;
+    }
+    Ok(())
+}
+
+/// Checks each pending waiting event. An event that is held is in one state. One that is stored
+/// has applied or been voided. One that a fork froze at or below its sequence number is refused,
+/// and leaves no row: its chain can never apply it. A fork proof header never applies, so it must
+/// stay held. Any other event that is neither held nor stored is lost, and fails the test.
+/// Settled events leave the pending set.
+fn settle_pending(
+    store: &EventStore,
+    pending: &mut BTreeMap<Hash, (u64, Event)>,
+) -> Result<(), TestCaseError> {
+    let mut settled = Vec::new();
+    for (id, (arrived_at, event)) in pending.iter() {
+        if store.is_waiting(id) {
+            continue;
+        }
+        if store
+            .event_by_id(id)
+            .map_err(|err| TestCaseError::fail(err.to_string()))?
+            .is_some()
+        {
+            settled.push(*id);
+            continue;
+        }
+        let seq = event.header.seq_num;
+        let proof = store
+            .fork_proof(&author_of(event))
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        let header = proof
+            .as_ref()
+            .is_some_and(|proof| proof.first.id == *id || proof.second.id == *id);
+        let frozen = proof
+            .as_ref()
+            .is_some_and(|proof| proof.seq <= seq && !header);
+        if frozen {
+            settled.push(*id);
+            continue;
+        }
+        return Err(TestCaseError::fail(format!(
+            "an acknowledged waiting event at sequence {seq} (arrived at {arrived_at}) is neither held nor stored{}",
+            if header {
+                ", and it is a fork proof header"
+            } else {
+                ""
+            }
+        )));
+    }
+    for id in settled {
+        pending.remove(&id);
+    }
+    Ok(())
+}
+
 /// Runs `run` on a helper thread. Fails if it has not returned within [`DELIVERY_LIMIT`], so a
 /// store that spins fails the test instead of hanging it.
 fn within_limit<T: Send + 'static>(
@@ -406,6 +669,39 @@ fn within_limit<T: Send + 'static>(
 
 proptest! {
     #![proptest_config(config())]
+
+    /// After every delivery and every reopen, each waiting event the store acknowledged is in one
+    /// state: held, or stored (applied or voided), or refused because a fork froze its chain at or
+    /// below it, or dropped by the age cap. Random orders, repeats, forks at any depth, small caps,
+    /// and restarts all vary the path there.
+    #[test]
+    fn test_every_step_keeps_each_acknowledged_waiting_event_in_one_state(seed in any::<u64>()) {
+        let scenario = scenario(seed);
+        let events: BTreeMap<Hash, Event> = scenario
+            .events
+            .iter()
+            .map(|event| (event.id, event.clone()))
+            .collect();
+        let mut rng = Rng(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let max_age_ms = [1_500, 6_000, u64::MAX / 2][index(&mut rng, 3)];
+        let per_author = [1, 2, 3, 256][index(&mut rng, 4)];
+        let limits = WaitingLimits::new(per_author, max_age_ms);
+        for order in orders(&scenario.events, &mut rng) {
+            let mut clock = 0_u64;
+            let times: Vec<u64> = order
+                .iter()
+                .map(|_| {
+                    clock += rng.below(1_000);
+                    clock
+                })
+                .collect();
+            let every_delivery = rng.chance(2);
+            let restarts: Vec<usize> = (0..order.len())
+                .filter(|_| every_delivery || rng.chance(3))
+                .collect();
+            check_each_step(&order, &times, &restarts, limits, &events)?;
+        }
+    }
 
     /// At ingest, a header that breaks the sequence and backlink rule is refused as malformed,
     /// whatever its sequence number. It is not parked or held, so it takes no waiting slot and
