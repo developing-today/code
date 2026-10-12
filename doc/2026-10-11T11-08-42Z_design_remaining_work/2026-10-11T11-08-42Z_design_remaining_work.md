@@ -192,3 +192,17 @@ The plan lists the preferred answer for each in its section 4. Short form:
 - If the friends are Admin, either one can change the other's role afterwards.
 - Changing a group's size later is a policy change by an Admin (member_cap is a policy field).
 - Friendship is therefore built on the group model, not as a standalone pair module. The earlier friendship module (P2.4, per-account cap 100) is superseded.
+
+## Owner decisions on group creation, provisioning, and names (2026-10-12)
+
+- Anyone may create a group by default. A server config can restrict creation to listed users, to members of listed groups, and optionally to a minimum role level.
+- A server config can create users, create groups, and add members and roles by user ID.
+- Server config keys name users and groups locally. The server translates each key to its user or group ID at load time. An unknown key fails startup.
+- Groups have an automatic ID (BLAKE3 of the create event) and an official name (a field an Admin changes). Aliases are tag claims: any number per group, each attributed to the key that added it.
+- Users and groups are taggable with the same tag mechanism used for documents and bytes. A group's subject is its create event ID. A user's subject needs a decision (see below).
+
+Open for the owner:
+
+1. User subject for tags: the user's first identity event ID, or the account key itself?
+2. Two groups claim the same alias: show both as contested, never pick one silently (recommended). Does a server config key always win locally?
+3. Official names unique per server, or not (recommended: not; aliases and config keys disambiguate)?
