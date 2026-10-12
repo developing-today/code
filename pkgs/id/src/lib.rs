@@ -188,6 +188,7 @@ pub mod repl;
 pub mod sandbox;
 pub mod store;
 pub mod store_traits;
+pub mod sync_method;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
