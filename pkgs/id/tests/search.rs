@@ -287,27 +287,29 @@ fn test_a_bare_tag_matches_only_the_bare_search_and_an_empty_value_only_itself()
     let empty_hits = search_store(&store, "flag", ValueMatch::Exact("")).unwrap();
     assert_eq!(shape(&empty_hits), vec![(t, vec![empty.id])]);
     let any = search_store(&store, "flag", ValueMatch::Any).unwrap();
+    let mut both = vec![(s, vec![bare.id]), (t, vec![empty.id])];
+    both.sort_by_key(|(subject, _)| *subject.as_bytes());
     assert_eq!(
         shape(&any),
-        vec![(s, vec![bare.id]), (t, vec![empty.id])],
+        both,
         "any value returns both subjects, in subject order"
     );
 }
 
 #[test]
 fn test_a_value_and_a_name_match_as_whole_fields_so_a_does_not_match_a_nul_b() {
-    let (s, t, u, v) = (
+    let (one, two, three, four) = (
         Hash::digest(b"s"),
         Hash::digest(b"t"),
         Hash::digest(b"u"),
         Hash::digest(b"v"),
     );
     let mut a = Writer::new(1);
-    let short = a.set(s, "city", Some("a"), vec![]);
-    let nul = a.set(t, "city", Some("a\0b"), vec![short.id]);
-    let longer = a.set(u, "city", Some("ab"), vec![nul.id]);
-    let short_name = a.set(v, "a", None, vec![longer.id]);
-    let nul_name = a.set(v, "a\0b", None, vec![short_name.id]);
+    let short = a.set(one, "city", Some("a"), vec![]);
+    let nul = a.set(two, "city", Some("a\0b"), vec![short.id]);
+    let longer = a.set(three, "city", Some("ab"), vec![nul.id]);
+    let short_name = a.set(four, "a", None, vec![longer.id]);
+    let nul_name = a.set(four, "a\0b", None, vec![short_name.id]);
 
     let (_dir, mut store) = open();
     for event in [&short, &nul, &longer, &short_name, &nul_name] {
@@ -315,13 +317,13 @@ fn test_a_value_and_a_name_match_as_whole_fields_so_a_does_not_match_a_nul_b() {
     }
 
     let value_a = search_store(&store, "city", ValueMatch::Exact("a")).unwrap();
-    assert_eq!(shape(&value_a), vec![(s, vec![short.id])]);
+    assert_eq!(shape(&value_a), vec![(one, vec![short.id])]);
     let value_nul = search_store(&store, "city", ValueMatch::Exact("a\0b")).unwrap();
-    assert_eq!(shape(&value_nul), vec![(t, vec![nul.id])]);
+    assert_eq!(shape(&value_nul), vec![(two, vec![nul.id])]);
     let name_a = search_store(&store, "a", ValueMatch::Any).unwrap();
-    assert_eq!(shape(&name_a), vec![(v, vec![short_name.id])]);
+    assert_eq!(shape(&name_a), vec![(four, vec![short_name.id])]);
     let name_nul = search_store(&store, "a\0b", ValueMatch::Any).unwrap();
-    assert_eq!(shape(&name_nul), vec![(v, vec![nul_name.id])]);
+    assert_eq!(shape(&name_nul), vec![(four, vec![nul_name.id])]);
 }
 
 #[test]
@@ -352,10 +354,14 @@ fn test_hits_are_ordered_by_subject_then_claim_and_do_not_depend_on_delivery_ord
     );
     let order: Vec<Hash> = got.iter().map(|(subject, _)| *subject).collect();
     assert_eq!(order, sorted_by_subject(subjects.clone()));
-    let first = &got[0].1;
-    assert_eq!(first.len(), 2, "both claims on the first subject");
+    let on_first = got
+        .iter()
+        .find(|(subject, _)| *subject == subjects[0])
+        .unwrap();
+    assert_eq!(on_first.1.len(), 2, "both claims on the first subject");
     assert!(
-        first
+        on_first
+            .1
             .windows(2)
             .all(|pair| pair[0].as_bytes() < pair[1].as_bytes())
     );
@@ -406,7 +412,9 @@ fn step_strategy() -> impl Strategy<Value = Step> {
 /// names an event the store holds.
 fn build(steps: &[Step]) -> (tempfile::TempDir, EventStore) {
     let (dir, mut store) = open();
-    let mut writers: Vec<Writer> = (0..WRITERS).map(|n| Writer::new(n as u8 + 1)).collect();
+    let mut writers: Vec<Writer> = (0..WRITERS)
+        .map(|n| Writer::new(u8::try_from(n).unwrap() + 1))
+        .collect();
     let mut events: Vec<Hash> = Vec::new();
     let mut claims: Vec<Hash> = Vec::new();
     for &(clear, writer, subject, name, value, reach) in steps {
@@ -414,7 +422,7 @@ fn build(steps: &[Step]) -> (tempfile::TempDir, EventStore) {
         let event = if clear && !claims.is_empty() {
             writers[writer].clear(&[claims[value % claims.len()]], after)
         } else {
-            let subject = Hash::digest([subject as u8]);
+            let subject = Hash::digest([u8::try_from(subject).unwrap()]);
             let set = writers[writer].set(subject, NAMES[name], CLAIM_VALUES[value], after);
             claims.push(set.id);
             set

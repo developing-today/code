@@ -191,6 +191,7 @@ pub mod protocol;
 pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+pub mod search;
 #[cfg(feature = "world")]
 pub mod server_config;
 pub mod store;

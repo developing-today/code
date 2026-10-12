@@ -99,6 +99,17 @@ impl TagIndex {
         scan(&self.alpha, &prefix.build())
     }
 
+    /// Every claim named `name`, on any subject, with any value. The name is not a leading field of
+    /// either key, so this is a scan of the whole Ω index.
+    #[must_use]
+    pub fn named(&self, name: &str) -> Vec<Entry> {
+        self.omega
+            .values()
+            .filter(|entry| entry.name == name)
+            .cloned()
+            .collect()
+    }
+
     /// Every claim with `value`, whatever its name and subject. `None` is the bare tag.
     #[must_use]
     pub fn value(&self, value: Option<&str>) -> Vec<Entry> {
@@ -164,4 +175,41 @@ fn scan(index: &BTreeMap<Vec<u8>, Entry>, prefix: &[u8]) -> Vec<Entry> {
         .take_while(|(key, _)| key.starts_with(prefix))
         .map(|(_, entry)| entry.clone())
         .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn claim(n: u8, subject: u8, name: &str, value: Option<&str>) -> Claim {
+        Claim {
+            id: Hash::from_bytes([n; 32]),
+            author: [n; 32],
+            subject: Hash::from_bytes([subject; 32]),
+            name: name.to_owned(),
+            value: value.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn test_named_returns_the_claims_with_that_name_on_every_subject() {
+        let claims = [
+            claim(1, 9, "city", Some("Seattle")),
+            claim(2, 8, "city", None),
+            claim(3, 9, "name", None),
+            claim(4, 7, "cityx", None),
+            claim(5, 7, "a\0b", None),
+        ];
+        let index = TagIndex::new(&claims);
+        let mut got: Vec<[u8; 32]> = index
+            .named("city")
+            .iter()
+            .map(|entry| *entry.claim.as_bytes())
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![[1; 32], [2; 32]]);
+        assert!(index.named("a").is_empty(), "a is not a\\0b");
+        assert!(index.named("missing").is_empty());
+    }
 }
