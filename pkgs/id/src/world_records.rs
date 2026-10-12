@@ -204,7 +204,7 @@ pub async fn replicate(
     let (doc, mut events) = docs.import_and_subscribe(ticket).await?;
     tokio::time::timeout(timeout, async {
         while let Some(event) = events.next().await {
-            if let LiveEvent::PendingContentReady = event? {
+            if event? == LiveEvent::PendingContentReady {
                 return Ok(());
             }
         }

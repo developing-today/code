@@ -215,7 +215,7 @@ enum ClientFrame {
     InstallBegin {
         admin_token: String,
         total_bytes: usize,
-        /// Expected BLAKE3 hash. Optional for browser uploads, whose WebCrypto
+        /// Expected BLAKE3 hash. Optional for browser uploads, whose `WebCrypto`
         /// API does not provide BLAKE3; the host still computes and returns it.
         module_hash: Option<String>,
         seed: u64,
@@ -432,7 +432,7 @@ impl std::fmt::Debug for WorldService {
 impl WorldService {
     /// Accept native (ELF) module installs. Wasm stays the default tier.
     #[must_use]
-    pub fn with_native_enabled(mut self) -> Self {
+    pub const fn with_native_enabled(mut self) -> Self {
         self.native = true;
         self
     }
@@ -538,7 +538,10 @@ impl WorldService {
 
     /// Bound the programs this world runs by the admin's limits.
     #[must_use]
-    pub fn with_runtime_limits(mut self, runtime: crate::world_limits::RuntimeLimits) -> Self {
+    pub const fn with_runtime_limits(
+        mut self,
+        runtime: crate::world_limits::RuntimeLimits,
+    ) -> Self {
         self.runtime = runtime;
         self
     }
@@ -606,7 +609,7 @@ impl WorldService {
 
     /// The world's records document, if it has one.
     #[must_use]
-    pub fn records_store(&self) -> Option<&Arc<crate::world_records::RecordsStore>> {
+    pub const fn records_store(&self) -> Option<&Arc<crate::world_records::RecordsStore>> {
         self.records.as_ref()
     }
 
@@ -1366,13 +1369,14 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
         let frame = match next.take() {
             Some(frame) => frame,
             None => match io.recv().await {
-                Inbound::Text(text) => match serde_json::from_str::<ClientFrame>(&text) {
-                    Ok(frame) => frame,
-                    Err(_) => {
+                Inbound::Text(text) => {
+                    if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) {
+                        frame
+                    } else {
                         let _ = send_error(io, "invalid world frame").await;
                         return;
                     }
-                },
+                }
                 Inbound::Oversized => {
                     let _ = send_error(io, "world frame is too large").await;
                     return;
@@ -1395,25 +1399,22 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             }
             ClientFrame::Info { capability } => {
                 let token = JoinCapability::from_wire(capability);
-                match service.world().snapshot(token).await {
-                    Ok(snapshot) => {
-                        if !send_json(
-                            io,
-                            &ServerFrame::ModuleInfo {
-                                world_id: snapshot.world_id,
-                                active_module_hash: snapshot.active_module_hash,
-                                current_sequence: snapshot.current_sequence,
-                            },
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        let _ = send_error(io, "join denied").await;
+                if let Ok(snapshot) = service.world().snapshot(token).await {
+                    if !send_json(
+                        io,
+                        &ServerFrame::ModuleInfo {
+                            world_id: snapshot.world_id,
+                            active_module_hash: snapshot.active_module_hash,
+                            current_sequence: snapshot.current_sequence,
+                        },
+                    )
+                    .await
+                    {
                         return;
                     }
+                } else {
+                    let _ = send_error(io, "join denied").await;
+                    return;
                 }
             }
             ClientFrame::Records {

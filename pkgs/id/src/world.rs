@@ -536,9 +536,7 @@ pub fn parse_records(text: &str) -> Result<Records> {
             !key.chars().any(char::is_control),
             "record key {key:?} contains a control character"
         );
-        let size = serde_json::to_vec(value)
-            .map(|v| v.len())
-            .unwrap_or(usize::MAX);
+        let size = serde_json::to_vec(value).map_or(usize::MAX, |v| v.len());
         ensure!(
             size <= MAX_RECORD_VALUE_BYTES,
             "record {key:?} is {size} bytes; the limit is {MAX_RECORD_VALUE_BYTES}"
@@ -944,7 +942,7 @@ impl WorldCore {
     }
 
     /// Whether enough events piled up behind the last checkpoint to trim.
-    fn checkpoint_due(&self) -> bool {
+    const fn checkpoint_due(&self) -> bool {
         self.limits.checkpoint_every > 0
             && self.active_module_hash.is_some()
             && self.since_checkpoint >= self.limits.checkpoint_every
@@ -1742,7 +1740,7 @@ impl WorldActor {
                     Some(command) => command,
                     None => break,
                 },
-                _ = Self::sleep_until(deadline) => {
+                () = Self::sleep_until(deadline) => {
                     self.fire_ticks().await;
                     self.after_change().await;
                     continue;
@@ -1763,7 +1761,7 @@ impl WorldActor {
     async fn sleep_until(deadline: Option<std::time::Instant>) {
         match deadline {
             Some(deadline) => {
-                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
             }
             None => std::future::pending().await,
         }
@@ -1843,12 +1841,7 @@ impl WorldActor {
                 return;
             }
         }
-        if self
-            .persist(JournalEntry::System {
-                event: event.clone(),
-            })
-            .is_ok()
-        {
+        if self.persist(JournalEntry::System { event }).is_ok() {
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
         let _ = self.view_changed.send(self.core.sequence);
@@ -2061,7 +2054,7 @@ impl WorldActor {
         if *count == 0 {
             self.presence.remove(&participant);
         }
-        if now_present && !was_present && !self.ticks.is_empty() == false {
+        if now_present && !was_present && self.ticks.is_empty() {
             let intervals: Vec<u64> = self
                 .active_subs
                 .iter()

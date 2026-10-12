@@ -42,7 +42,7 @@ let
       #   in merge "" a b;
 
     in
-    array |> flattenDeep |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { };
+    builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { } (flattenDeep array);
 
   matrix =
     spec: f:
@@ -333,12 +333,9 @@ let
       };
       modules = ensure-list config.host.init ++ [
         # keep pkgs.path / <nixpkgs> pointing at the patched tree
-        (
-          { ... }:
-          {
-            config.nixpkgs.flake.source = src.outPath;
-          }
-        )
+        (_: {
+          config.nixpkgs.flake.source = src.outPath;
+        })
       ];
     };
 
@@ -349,7 +346,7 @@ let
   make-vim =
     let
       enablePkgs =
-        { ... }@args:
+        args:
         builtins.mapAttrs (
           n: v:
           merge [
@@ -446,7 +443,7 @@ let
         module = import (from-root "pkgs/vim/config") { inherit enableModules pkgs; };
         neovim = inputs.nixvim.legacyPackages.${system}.makeNixvimWithModule {
           inherit pkgs;
-          module = module;
+          inherit module;
         };
         nixosModules = inputs.nixvim.nixosModules.nixvim;
         homeManagerModules = inputs.nixvim.homeManagerModules.nixvim;
@@ -455,14 +452,14 @@ let
         packages = {
           default = neovim;
         };
-        nixosModules = nixosModules; # unsure how to overlay nightly here.
-        homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
-        vimOverlay = final: prev: { neovim = neovim; };
-        enableModules = enableModules;
-        enableColorschemes = enableColorschemes;
-        enableLspServers = enableLspServers;
-        enablePkgs = enablePkgs;
-        enablePlugins = enablePlugins;
+        inherit nixosModules; # unsure how to overlay nightly here.
+        inherit homeManagerModules; # unsure how to overlay nightly here.
+        vimOverlay = final: prev: { inherit neovim; };
+        inherit enableModules;
+        inherit enableColorschemes;
+        inherit enableLspServers;
+        inherit enablePkgs;
+        inherit enablePlugins;
       }
     );
 
@@ -470,7 +467,7 @@ let
     let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.clan {
-        self = inputs.self;
+        inherit (inputs) self;
         meta.name = "developing-today";
         # Prerequisite: boot into the installer.
         # See: https://docs.clan.lol/getting-started/installer

@@ -240,7 +240,7 @@ impl NativeProgram {
     /// Deliver an event as `participant`; host events arrive as 0.
     fn deliver(&mut self, participant: u64, bytes: &[u8]) -> Result<()> {
         let _ = std::str::from_utf8(bytes).context("native input must be UTF-8")?;
-        let participant = participant.min(u32::MAX as u64) as u32;
+        let participant = participant.min(u64::from(u32::MAX)) as u32;
         let mut payload = participant.to_be_bytes().to_vec();
         payload.extend_from_slice(bytes);
         self.call(OP_UPDATE, payload)?;
@@ -387,7 +387,7 @@ fn apply_native_sandbox(
         const LANDLOCK_CREATE_RULESET_VERSION: u64 = 1;
         let abi = libc::syscall(
             libc::SYS_landlock_create_ruleset,
-            0 as *const libc::c_void,
+            std::ptr::null::<libc::c_void>(),
             0 as libc::c_ulong,
             LANDLOCK_CREATE_RULESET_VERSION,
         );
@@ -418,7 +418,7 @@ fn apply_native_sandbox(
         };
         let ruleset = libc::syscall(
             libc::SYS_landlock_create_ruleset,
-            &ruleset_attr as *const LandlockRulesetAttr as *const libc::c_void,
+            (&raw const ruleset_attr).cast::<libc::c_void>(),
             size_of::<LandlockRulesetAttr>() as libc::c_ulong,
             0 as libc::c_uint,
         );
@@ -441,7 +441,7 @@ fn apply_native_sandbox(
             libc::SYS_landlock_add_rule,
             ruleset as libc::c_ulong,
             1 as libc::c_uint, // LANDLOCK_RULE_PATH_BENEATH
-            &rule as *const LandlockPathBeneathAttr as *const libc::c_void,
+            (&raw const rule).cast::<libc::c_void>(),
             0 as libc::c_uint,
         ) != 0
         {
@@ -465,7 +465,7 @@ fn apply_native_sandbox(
         // Safety: between fork and exec; `setrlimit` is async-signal-safe.
         #[allow(unsafe_code)]
         unsafe {
-            if libc::setrlimit(resource, &limits) != 0 {
+            if libc::setrlimit(resource, &raw const limits) != 0 {
                 return Err(std::io::Error::from_raw_os_error(1003 + resource as i32));
             }
         }
@@ -496,8 +496,8 @@ fn apply_native_sandbox(
         let rc = libc::syscall(
             libc::SYS_prctl,
             libc::PR_SET_SECCOMP as libc::c_ulong,
-            libc::SECCOMP_MODE_FILTER as libc::c_ulong,
-            &filter as *const libc::sock_fprog as *const libc::c_void,
+            libc::c_ulong::from(libc::SECCOMP_MODE_FILTER),
+            (&raw const filter).cast::<libc::c_void>(),
             0 as libc::c_ulong,
             0 as libc::c_ulong,
         );
@@ -527,7 +527,7 @@ mod filter {
     /// `SECCOMP_RET_KILL_PROCESS`.
     pub const KILL: u32 = 0x8000_0000;
 
-    /// Syscall numbers on x86_64.
+    /// Syscall numbers on `x86_64`.
     pub mod nr {
         pub const READ: u32 = 0;
         pub const WRITE: u32 = 1;

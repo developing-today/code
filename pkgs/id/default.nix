@@ -30,13 +30,16 @@ in
     inherit pname version;
     src = ./.;
 
-    buildFeatures = [ "sandbox" "world" ];
+    buildFeatures = [
+      "sandbox"
+      "world"
+    ];
 
     cargoLock = {
       lockFile = ./Cargo.lock;
-      # All dependencies come from crates.io (distributed-topic-tracker is no
-      # longer a git dependency). If a git dependency is ever added, pin its
-      # hash here via `outputHashes`.
+      outputHashes = {
+        "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
+      };
     };
 
     nativeBuildInputs = with pkgs; [
