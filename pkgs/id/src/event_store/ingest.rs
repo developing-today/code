@@ -1431,6 +1431,44 @@ mod tests {
         assert_eq!(store.waiting_len(), 1, "only the rival is held");
     }
 
+    #[test]
+    fn test_a_released_event_that_waits_again_keeps_its_first_arrival_time() {
+        let (_dir, mut store) = open();
+        let signer = key(49);
+        let events = chain_of(&signer, 3);
+        // Ahead of its chain, and its backlink is the second event. It waits for that event.
+        let stray = event(&signer, 5, Some(events[1].id), Vec::new(), "stray");
+        assert_eq!(
+            store.ingest(&stray.bytes, 0).unwrap(),
+            Ingest::Waiting { id: stray.id }
+        );
+        assert_eq!(
+            store.ingest(&events[0].bytes, 1).unwrap(),
+            Ingest::Accepted {
+                id: events[0].id,
+                released: vec![],
+            }
+        );
+        // The second event releases the stray. Its backlink is applied at an earlier position, so
+        // it can never apply, and it is parked again: held for good, and waiting again.
+        assert_eq!(
+            store.ingest(&events[1].bytes, 2).unwrap(),
+            Ingest::Accepted {
+                id: events[1].id,
+                released: vec![],
+            }
+        );
+        assert!(
+            store.is_waiting(&stray.id),
+            "the released event waits again"
+        );
+        // It arrived at 0, so it is due at WEEK_MS. Counting from its second wait it would be due
+        // at 2 + WEEK_MS.
+        assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 1);
+        assert_eq!(store.waiting_len(), 0);
+        store.check_invariants().unwrap();
+    }
+
     /// Opens the store in `dir` again, with `limits`, at clock `now`.
     fn reopen(dir: &tempfile::TempDir, limits: WaitingLimits, now: u64) -> EventStore {
         EventStore::open(dir.path(), limits, now).unwrap()
