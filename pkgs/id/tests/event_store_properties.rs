@@ -201,21 +201,19 @@ fn scenario(seed: u64) -> Scenario {
         originals[author].push(original.clone());
         events.push(original);
         // The fork point: the rivals, each with its own backlink.
-        if let Some(&(fork, rivals)) = plan.get(&publics[author]) {
-            if fork == seq {
-                for n in 0..rivals {
-                    let link = rival_backlink(&mut rng, seq, backlink, &events);
-                    let known = referable(&events, &plan);
-                    let rival = signed(
-                        &mut rng,
-                        &keys[author],
-                        seq,
-                        link,
-                        &known,
-                        &format!("rival {n}"),
-                    );
-                    events.push(rival);
-                }
+        if let Some(&(_, rivals)) = plan.get(&publics[author]).filter(|(fork, _)| *fork == seq) {
+            for n in 0..rivals {
+                let link = rival_backlink(&mut rng, seq, backlink, &events);
+                let known = referable(&events, &plan);
+                let rival = signed(
+                    &mut rng,
+                    &keys[author],
+                    seq,
+                    link,
+                    &known,
+                    &format!("rival {n}"),
+                );
+                events.push(rival);
             }
         }
     }

@@ -12,13 +12,13 @@
 //! 4. **Fork.** If the author has another event at the same sequence number, stored or
 //!    held, the two are a fork, whatever their backlinks and dependencies. The fork point
 //!    moves down to that sequence number, and the proof holds the two lowest IDs there.
-//!    The applied events from that point on are unapplied, and so is every applied event
-//!    that rests on one of them.
+//!    The applied events from that point on are voided, and no others. The proof headers
+//!    become present, which releases the events that waited for them.
 //! 5. **Accept.** The next sequence number, whose backlink is the applied head, is applied
-//!    once every `after` hash is applied.
+//!    once every `after` hash is present.
 //! 6. **Wait or park.** An event ahead of its chain, or with an `after` hash that is not
 //!    applied yet, is held in the waiting pool and its row, under the caps, and decided again
-//!    when its dependencies are applied. An event whose backlink can never be the applied head
+//!    when its dependencies are present. An event whose backlink can never be the applied head
 //!    is parked: held for good, so that a conflict with it is still seen.
 //!
 //! Each call runs in one redb write transaction. It holds every decision the call causes: the
@@ -29,15 +29,21 @@
 //!
 //! The applied state depends on the set of events a store has received, not on their
 //! arrival order. An event is applied when it sits below its author's fork point, its
-//! backlink is the applied event before it, and every `after` hash is applied. The fork
+//! backlink is the applied event before it, and every `after` hash is present. The fork
 //! point is the lowest sequence number where the author has two distinct events, and the
 //! proof holds the two lowest IDs there.
 //!
 //! An event that is stored but not applied is voided. A fork voids the author's events
-//! from its fork point on, and every event that rests on a voided one. A voided event is
-//! kept, because it still counts as the author's event at its sequence number, so a later
-//! conflict with it is still a fork. The applied prefix of a chain is the events below its
-//! next sequence number, so the chain row is what marks the voids.
+//! from its fork point on, and nothing else. A voided event is kept, because it still counts
+//! as the author's event at its sequence number, so a later conflict with it is still a fork.
+//! The applied prefix of a chain is the events below its next sequence number, so the chain
+//! row is what marks the voids.
+//!
+//! An `after` hash is present when the store holds the event it names, applied or voided, or
+//! when it is one of a fork's proof headers. A held event waits for each `after` hash that is
+//! not present, so an event of another author that names a voided event still applies. This is
+//! the Phase 1 rule. It has no membership or authority model to void by, so authority-based
+//! voiding (decision 1) replaces it in Phase 2 (P2.3).
 //!
 //! Held events count too. Two held events at one sequence number are a fork, though
 //! neither is applied. Held events are rows on disk, so a restart keeps them, and a conflict
@@ -51,17 +57,23 @@
 //! the refused rival is sent again, while the other event is still held. The behaviour is
 //! pinned by `test_a_rival_refused_by_the_cap_is_seen_only_when_sent_again`.
 //!
+//! # Known limit: a rival refused as frozen
+//!
+//! An event above its author's fork point is refused as frozen when it arrives after the fork.
+//! When it arrives before, it is kept as voided. So an `after` hash that names such an event is
+//! present in some arrival orders and not in others. The property tests never name one.
+//!
 //! The property tests in `tests/event_store_properties.rs` check the applied state against
 //! this definition, for every arrival order.
 
 use std::collections::VecDeque;
 
 use p2panda_core::{Hash, SeqNum};
-use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
+use redb::{ReadableTable, WriteTransaction};
 
 use super::waiting_rows::{Hold, Mirror};
 use super::{
-    CHAINS, Chain, DEPENDENTS, EVENTS, EventStore, FORKS, ForkProof, HASHES, StoreError, corrupt,
+    CHAINS, Chain, EVENTS, EventStore, FORKS, ForkProof, HASHES, PROOF_IDS, StoreError, corrupt,
     decode_proof, decode_stored, position_key, split_position, store_chain, store_event,
     store_fork,
 };
@@ -124,9 +136,9 @@ enum Decision {
     Accept,
     /// Already stored, or a proof header. Nothing written.
     Duplicate,
-    /// A conflict. The proof is written, and the fork point is `seq`. `unapplied` are
-    /// the events that left the applied prefix, which the waiting pool forgets.
-    Fork { seq: SeqNum, unapplied: Vec<Hash> },
+    /// A conflict. The proof is written, and the fork point is `seq`. Its two headers are
+    /// present now, so the events that waited for them are released.
+    Fork { seq: SeqNum, proof: [Hash; 2] },
     /// Waits for these dependencies, none of which is applied. The caller holds the event.
     Wait(Vec<Hash>),
     /// Can never apply, but is held so that a conflict with it is seen. The caller holds it.
@@ -196,8 +208,8 @@ fn ingest_in(m: &mut Mirror<'_>, event: Event, now: u64) -> Result<(Ingest, bool
             released: drain(m, released.into(), now)?,
         },
         Settled::Duplicate => Ingest::Duplicate { id },
-        Settled::Fork { seq, unapplied } => {
-            forget(m.pool, &unapplied);
+        Settled::Fork { seq, released } => {
+            drain(m, released.into(), now)?;
             Ingest::Fork { author, seq }
         }
         Settled::Held | Settled::Skipped => {
@@ -216,8 +228,9 @@ enum Settled {
     Accepted { released: Vec<Event> },
     /// Already stored, or a fork proof header. Nothing changed.
     Duplicate,
-    /// A conflict at `seq`. `unapplied` left the applied prefix.
-    Fork { seq: SeqNum, unapplied: Vec<Hash> },
+    /// A conflict at `seq`. The proof headers are present now, and `released` are the events
+    /// that waited only for them, each due a decision.
+    Fork { seq: SeqNum, released: Vec<Event> },
     /// Held, waiting or parked.
     Held,
     /// The pool did not keep the event. See [`Hold::Skipped`].
@@ -246,9 +259,13 @@ fn settle(
             drop_released(m, &id, from_pool)?;
             Settled::Duplicate
         }
-        Decision::Fork { seq, unapplied } => {
+        Decision::Fork { seq, proof } => {
             drop_released(m, &id, from_pool)?;
-            Settled::Fork { seq, unapplied }
+            let mut released = Vec::new();
+            for header in proof {
+                released.extend(m.release(&header, now)?);
+            }
+            Settled::Fork { seq, released }
         }
         Decision::Refuse(refusal) => {
             drop_released(m, &id, from_pool)?;
@@ -292,7 +309,7 @@ fn drain(
                 applied.push(id);
                 queue.extend(released);
             }
-            Settled::Fork { unapplied, .. } => forget(m.pool, &unapplied),
+            Settled::Fork { released, .. } => queue.extend(released),
             Settled::Duplicate | Settled::Held | Settled::Skipped | Settled::Refused(_) => {}
         }
         queue.extend(m.pool.take_ready());
@@ -308,14 +325,6 @@ fn held_rivals(pool: &WaitingPool<Hash, Event>, event: &Event) -> Vec<Event> {
         .filter(|held| held.header.seq_num == seq && held.id != event.id)
         .cloned()
         .collect()
-}
-
-/// Tells the pool that these events are no longer applied, so the events that wait on them wait
-/// again.
-fn forget(pool: &mut WaitingPool<Hash, Event>, unapplied: &[Hash]) {
-    for id in unapplied {
-        pool.forget(id);
-    }
 }
 
 /// Decides `event` inside `txn`, and writes what the decision needs. `rivals` are the
@@ -349,7 +358,7 @@ fn decide_in(
             store_fork(txn, &author, seq, &first, &second)?;
             return Ok(Decision::Fork {
                 seq,
-                unapplied: Vec::new(),
+                proof: [first.id, second.id],
             });
         }
     }
@@ -358,8 +367,11 @@ fn decide_in(
         conflicts.push(event.clone());
         let (first, second) = two_lowest(conflicts)?;
         store_fork(txn, &author, seq, &first, &second)?;
-        let unapplied = freeze_and_unapply(txn, &author, seq)?;
-        return Ok(Decision::Fork { seq, unapplied });
+        freeze_and_void(txn, &author, seq)?;
+        return Ok(Decision::Fork {
+            seq,
+            proof: [first.id, second.id],
+        });
     }
 
     let chain = read_chain(txn, &author)?;
@@ -367,7 +379,7 @@ fn decide_in(
         // The applied event at this sequence number is stored, so it would be a conflict.
         return Err(corrupt("an applied sequence number has no stored event"));
     }
-    let deps = unapplied_deps(txn, &event.header.extensions.after)?;
+    let deps = missing_deps(txn, &event.header.extensions.after)?;
     if seq == chain.next_seq {
         if seq > 0 && event.header.backlink != chain.head {
             return Ok(Decision::Park);
@@ -397,7 +409,6 @@ fn accept(txn: &WriteTransaction, event: &Event, chain: Chain) -> Result<Decisio
     let author = author_of(event);
     let seq = event.header.seq_num;
     store_event(txn, event)?;
-    index_dependents(txn, event)?;
     let next_seq = seq
         .checked_add(1)
         .ok_or_else(|| corrupt("a sequence number overflows"))?;
@@ -413,54 +424,19 @@ fn accept(txn: &WriteTransaction, event: &Event, chain: Chain) -> Result<Decisio
     Ok(Decision::Accept)
 }
 
-/// Records, for each `after` hash of `event`, that the event rests on it.
-fn index_dependents(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> {
-    let position = position_key(&author_of(event), event.header.seq_num);
-    let mut dependents = txn.open_multimap_table(DEPENDENTS)?;
-    for dep in &event.header.extensions.after {
-        dependents.insert(dep.as_bytes().as_slice(), position.as_slice())?;
-    }
-    Ok(())
-}
-
-/// Freezes `author` at `seq`. The applied prefix ends there, and every applied event
-/// from `seq` up is unapplied, with whatever rests on those. Returns the events that
-/// left the applied prefix.
-fn freeze_and_unapply(
+/// Freezes `author` at `seq`: the applied prefix ends there, and the author's applied events from
+/// `seq` up are voided. Nothing else is voided. An event of another author that names a voided
+/// event stays applied, because the voided event is still present.
+///
+/// This is the Phase 1 rule. With no membership or authority model, a fork cannot void by
+/// authority. Authority-based voiding (decision 1) replaces this rule in Phase 2 (P2.3).
+fn freeze_and_void(
     txn: &WriteTransaction,
     author: &AuthorKey,
     seq: SeqNum,
-) -> Result<Vec<Hash>, StoreError> {
+) -> Result<(), StoreError> {
     let chain = read_chain(txn, author)?;
-    set_prefix(txn, author, chain.next_seq, true)?;
-    unapply_from(txn, *author, seq)
-}
-
-/// Unapplies `author`'s applied events from `seq` up, and every applied event that rests
-/// on one of them. Each chain it touches is rewritten to its new applied prefix, with its
-/// frozen flag kept. Returns the events that left the applied prefix.
-fn unapply_from(
-    txn: &WriteTransaction,
-    author: AuthorKey,
-    seq: SeqNum,
-) -> Result<Vec<Hash>, StoreError> {
-    let mut unapplied = Vec::new();
-    let mut pending = vec![(author, seq)];
-    while let Some((who, from)) = pending.pop() {
-        let chain = read_chain(txn, &who)?;
-        if from >= chain.next_seq {
-            continue;
-        }
-        for position in from..chain.next_seq {
-            let event = stored_event(txn, &who, position)?;
-            for dependent in dependents_of(txn, &event.id)? {
-                pending.push(split_position(&dependent)?);
-            }
-            unapplied.push(event.id);
-        }
-        set_prefix(txn, &who, from, chain.frozen)?;
-    }
-    Ok(unapplied)
+    set_prefix(txn, author, chain.next_seq.min(seq), true)
 }
 
 /// Writes `author`'s chain row for an applied prefix of `next_seq` events. A chain with
@@ -558,21 +534,11 @@ fn stored_event(
         .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
 }
 
-/// The positions of the stored events that name `id` in their `after` hashes.
-fn dependents_of(txn: &WriteTransaction, id: &Hash) -> Result<Vec<Vec<u8>>, StoreError> {
-    let dependents = txn.open_multimap_table(DEPENDENTS)?;
-    let mut positions = Vec::new();
-    for position in dependents.get(id.as_bytes().as_slice())? {
-        positions.push(position?.value().to_vec());
-    }
-    Ok(positions)
-}
-
-/// The `after` hashes that are not applied yet.
-fn unapplied_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, StoreError> {
+/// The `after` hashes that are not present yet.
+fn missing_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, StoreError> {
     let mut missing = Vec::new();
     for hash in after {
-        if !is_applied(txn, hash)? {
+        if !is_present(txn, hash)? {
             missing.push(*hash);
         }
     }
@@ -583,6 +549,25 @@ fn unapplied_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, S
 /// author's applied prefix.
 pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
     applied_in(&txn.open_table(HASHES)?, &txn.open_table(CHAINS)?, hash)
+}
+
+/// Whether an `after` hash is present: the store holds the event it names, applied or voided, or
+/// the event is one of a fork's proof headers. Presence never goes away, so an event that waited
+/// for a present hash is never made to wait again.
+pub(super) fn is_present(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
+    present_in(&txn.open_table(HASHES)?, &txn.open_table(PROOF_IDS)?, hash)
+}
+
+/// [`is_present`] over the `hashes` and `proof_ids` tables, whether they are read or written.
+pub(super) fn present_in(
+    hashes: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    proof_ids: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    hash: &Hash,
+) -> Result<bool, StoreError> {
+    if hashes.get(hash.as_bytes().as_slice())?.is_some() {
+        return Ok(true);
+    }
+    Ok(proof_ids.get(hash.as_bytes().as_slice())?.is_some())
 }
 
 /// [`is_applied`] over the `hashes` and `chains` tables, whether they are read or written.
@@ -1705,7 +1690,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invariants_refuse_a_waiting_event_whose_dependency_is_applied() {
+    fn test_invariants_refuse_a_waiting_event_whose_dependency_is_present() {
         let (_dir, mut store) = open();
         let (x, y) = (key(42), key(43));
         let x0 = event(&x, 0, None, Vec::new(), "message");
@@ -1727,6 +1712,6 @@ mod tests {
             .unwrap();
         store.write(|txn| waiting_rows::put(txn, &row)).unwrap();
         let err = store.check_invariants().unwrap_err();
-        assert!(err.to_string().contains("applied"), "{err}");
+        assert!(err.to_string().contains("present"), "{err}");
     }
 }
