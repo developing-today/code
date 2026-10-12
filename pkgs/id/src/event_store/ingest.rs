@@ -97,6 +97,7 @@ use super::{
     store_event, store_fork,
 };
 use crate::chain::{self, Event};
+use crate::documents::is_document_kind;
 use crate::membership::AuthId;
 use crate::membership::body::decode_body;
 use crate::tag_claims::is_tag_kind;
@@ -206,6 +207,8 @@ impl EventStore {
     /// - A tag event (kind `tag.set` or `tag.clear`) takes no body. Its operation is in its
     ///   header (#182), so a payload on a tag event is refused. Its tag takes no membership
     ///   action, and the fold reads it from the stored header (see `claims`).
+    /// - A document event (kind `document.put`) takes no body either. Its content is a blob that
+    ///   the header names by hash, so a payload beside it is refused (P5.4).
     ///
     /// # Errors
     ///
@@ -220,10 +223,12 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        let action = if is_tag_kind(&event.header.extensions.kind) {
+        let kind = &event.header.extensions.kind;
+        let action = if is_tag_kind(kind) || is_document_kind(kind) {
             if body.is_some() {
                 return Ok(Ingest::Refused(Refusal::Malformed(
-                    "a tag event carries its operation in its header, not in a body".to_owned(),
+                    "a tag or document event carries its content in its header, not in a body"
+                        .to_owned(),
                 )));
             }
             None
@@ -1061,6 +1066,7 @@ mod tests {
             group: None,
             after,
             tag: None,
+            document: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1579,6 +1585,7 @@ mod tests {
                 group: Some(group),
                 after: Vec::new(),
                 tag: None,
+                document: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };

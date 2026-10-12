@@ -553,6 +553,7 @@ mod tests {
             group,
             after: Vec::new(),
             tag: None,
+            document: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

@@ -94,6 +94,7 @@ impl Builder {
             },
             after: after.iter().map(|n| self.ids[n]).collect(),
             tag: None,
+            document: None,
         };
         let body = action.as_ref().map(|action| encode_body(action).unwrap());
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();

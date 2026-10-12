@@ -22,6 +22,7 @@ use p2panda_core::{AnyHeader, Hash, Header, HeaderError, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
+use crate::documents::{DocumentRef, is_document_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
 
 /// The domain tag every `ChainExt` carries, so this header type cannot be
@@ -108,11 +109,14 @@ pub struct ChainExt {
     /// kind. It is the tag's body (#182): it is signed with the header, so an event
     /// carries its tag, and sync needs no separate body.
     pub tag: Option<TagOp>,
+    /// The document of a `document.put`, and `None` for every other kind. It names the content by
+    /// hash and size, and the bytes are a blob (P5.4). It is signed with the header.
+    pub document: Option<DocumentRef>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
-/// this form does not name are refused. `tag` is left out when it is `None`, so
-/// events of other kinds keep their encoding.
+/// this form does not name are refused. `tag` and `document` are left out when
+/// they are `None`, so events of other kinds keep their encoding.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wire {
@@ -122,6 +126,8 @@ struct Wire {
     after: Vec<Hash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tag: Option<TagOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    document: Option<DocumentRef>,
 }
 
 impl From<ChainExt> for Wire {
@@ -132,6 +138,7 @@ impl From<ChainExt> for Wire {
             group: ext.group,
             after: ext.after,
             tag: ext.tag,
+            document: ext.document,
         }
     }
 }
@@ -148,6 +155,7 @@ impl TryFrom<Wire> for ChainExt {
             group: wire.group,
             after: wire.after,
             tag: wire.tag,
+            document: wire.document,
         };
         ext.validate()?;
         Ok(ext)
@@ -163,7 +171,9 @@ impl ChainExt {
     /// Refuses more than [`MAX_AFTER`] `after` hashes, a hash repeated in
     /// `after`, a `kind` that is empty or longer than [`MAX_KIND_BYTES`], and a
     /// `kind` that is not NFC. A tag kind must carry a tag operation that fits
-    /// its kind, and any other kind must carry none.
+    /// its kind, and any other kind must carry none. A document kind must carry
+    /// a document that passes [`DocumentRef::check`], and any other kind must
+    /// carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -195,6 +205,26 @@ impl ChainExt {
             }
             (true, Some(op)) => {
                 check_op(&self.kind, op).map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_document_kind(&self.kind), &self.document) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a document",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its document",
+                    self.kind
+                )));
+            }
+            (true, Some(document)) => {
+                document
+                    .check()
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
         Ok(())
@@ -347,6 +377,7 @@ mod tests {
             group,
             after,
             tag: None,
+            document: None,
         }
     }
 
@@ -822,6 +853,7 @@ mod golden {
                 group: None,
                 after: vec![Hash::digest(b"a"), Hash::digest(b"b")],
                 tag: None,
+                document: None,
             },
         )
         .unwrap();
@@ -836,6 +868,7 @@ mod golden {
                 group: Some(Hash::digest(b"g")),
                 after: vec![first.id],
                 tag: None,
+                document: None,
             },
         )
         .unwrap();

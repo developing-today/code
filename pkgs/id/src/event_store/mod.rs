@@ -60,6 +60,7 @@ use redb::{
 use crate::chain::{self, Event};
 
 mod claims;
+mod documents;
 mod ingest;
 pub mod range;
 mod resolve;
@@ -1118,6 +1119,7 @@ mod tests {
             group,
             after: Vec::new(),
             tag: None,
+            document: None,
         }
     }
 
