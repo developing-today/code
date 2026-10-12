@@ -518,8 +518,10 @@ fn decide_in(
     }
 
     // The backlink must be the stored event before this one. Voided events are stored, so a
-    // backlink does not need to be applied. A backlink that is stored at another position, or
-    // that is missing where there is no backlink, can never link, so the event is parked.
+    // backlink does not need to be applied. A backlink that is present at another position, or
+    // that is missing where there is no backlink, can never link, so the event is parked. A fork
+    // proof header is present but never stored, so it is parked too: waiting for it would wait on
+    // a dependency that is already present.
     let mut waits = missing_deps(txn, &event.header.extensions.after)?;
     if seq > 0 {
         let linked = match event.header.backlink {
@@ -530,7 +532,7 @@ fn decide_in(
         };
         if !linked {
             match event.header.backlink {
-                Some(backlink) if !is_stored(txn, &backlink)? => waits.push(backlink),
+                Some(backlink) if !is_present(txn, &backlink)? => waits.push(backlink),
                 _ => return Ok(Decision::Park),
             }
         }
@@ -1087,6 +1089,36 @@ mod tests {
         );
         assert_eq!(store.chain(&who).unwrap().unwrap().next_seq, 1);
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_released_event_whose_backlink_is_a_fork_proof_header_is_parked() {
+        // R, by another author, names H2 as its backlink and waits for it. H2 is a rival of the
+        // applied H1 by the first author, so its arrival forks that chain, and H2 becomes a proof
+        // header: present, but never stored. R is released by that. It cannot link to H2, so it
+        // must park. Holding it to wait for H2 would wait on a dependency that is already present.
+        // R is not the forking author's event: an event above the fork point is refused as frozen
+        // before the backlink is read, so only another author's backlink reaches this path.
+        let (_dir, mut store) = open();
+        let forker = key(15);
+        let other = key(16);
+        let applied = event(&forker, 0, None, Vec::new(), "first");
+        let rival = event(&forker, 0, None, Vec::new(), "rival");
+        let after = event(&other, 1, Some(rival.id), Vec::new(), "after");
+        assert!(matches!(
+            ingest(&mut store, &applied),
+            Ingest::Accepted { .. }
+        ));
+        assert_eq!(ingest(&mut store, &after), Ingest::Waiting { id: after.id });
+        assert!(matches!(
+            ingest(&mut store, &rival),
+            Ingest::Fork { seq: 0, .. }
+        ));
+        store.check_invariants().unwrap();
+        assert!(
+            store.event(&author(&other), 1).unwrap().is_none(),
+            "a parked event is not stored"
+        );
     }
 
     #[test]
