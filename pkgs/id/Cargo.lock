@@ -2906,6 +2906,7 @@ dependencies = [
  "iroh-tickets",
  "libc",
  "mime_guess",
+ "n0-mainline",
  "p2panda-auth",
  "p2panda-core",
  "p2panda-encryption",
