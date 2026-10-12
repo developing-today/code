@@ -44,6 +44,7 @@ libc = "0.2"
 distributed-topic-tracker = "0.3"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 futures-lite = "2"
+futures-util = { version = "0.3", features = ["sink"] }
 iroh = "1"
 iroh-mdns-address-lookup = "0.6"
 iroh-base = "1"
@@ -54,6 +55,8 @@ iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+# LogSync. A vendored copy whose store dependency has no SQLite default (vendor/README.md).
+p2panda-sync = { path = "vendor/p2panda-sync" }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 redb = "=4.3.0"
