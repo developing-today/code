@@ -22,7 +22,7 @@
 //! (`vendor/`) whose store dependency has no SQLite default, so the build has no SQLite.
 //! `test_the_lock_has_no_sqlite_with_logsync_wired` fails if SQLite returns.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::future::{Future, ready};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -37,7 +37,9 @@ use p2panda_store::topics::TopicStore;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Event;
+use crate::event_store::range::{Id, Key};
 use crate::event_store::{EventStore, Ingest, StoreError};
+use crate::sync_method::{Estimate, PeerHistory};
 use crate::waiting::AuthorKey;
 
 /// Entries read per page. A page takes the read lock once, so a stream never holds the lock
@@ -115,6 +117,70 @@ impl SharedEventStore {
     /// Returns [`TraitStoreError::Store`] for the first mismatch, or a redb error.
     pub fn check_invariants(&self) -> Result<(), TraitStoreError> {
         self.read(|store| Ok(store.check_invariants()?))
+    }
+
+    /// Verifies and applies decoded events, in order, in one write transaction. See
+    /// [`EventStore::ingest_events`]. Range sync (P3.1) writes its batches through this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn ingest_events(
+        &self,
+        events: Vec<Event>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, TraitStoreError> {
+        let mut store = self
+            .inner
+            .write()
+            .map_err(|_err| TraitStoreError::Poisoned)?;
+        Ok(store.ingest_events(events, now_ms)?)
+    }
+
+    /// The range sync set of `topic`: the sorted keys of the stored events and fork proof headers
+    /// of the authors LogSync resolves for the topic (see [`TopicStore::resolve`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`TraitStoreError::Store`].
+    pub(crate) fn range_entries(&self, topic: &Hash) -> Result<Vec<(Key, Id)>, TraitStoreError> {
+        let authors: HashSet<AuthorKey> = self
+            .authors_in(topic)?
+            .keys()
+            .map(|author| *author.as_bytes())
+            .collect();
+        self.read(|store| {
+            Ok(store
+                .sync_entries()?
+                .into_iter()
+                .filter(|(key, _)| {
+                    key[..32]
+                        .try_into()
+                        .is_ok_and(|author: AuthorKey| authors.contains(&author))
+                })
+                .collect())
+        })
+    }
+
+    /// The estimate that [`choose`] needs for a session on `topic`. The chain count is the
+    /// number of authors LogSync resolves for the topic, read from the store. The difference and
+    /// the last completed sync come from `history`, which the caller keeps.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`TraitStoreError::Store`].
+    pub fn estimate(
+        &self,
+        topic: &Hash,
+        history: &PeerHistory,
+    ) -> Result<Estimate, TraitStoreError> {
+        let chains = u64::try_from(self.authors_in(topic)?.len()).unwrap_or(u64::MAX);
+        Ok(Estimate {
+            chains,
+            difference: history.changed_since_sync,
+            last_completed_sync_ms: history.last_completed_sync_ms,
+        })
     }
 
     /// Runs `op` under the read lock.

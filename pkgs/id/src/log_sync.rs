@@ -43,6 +43,8 @@ use tokio::time::timeout;
 use crate::chain::ChainExt;
 use crate::connectivity::connect;
 use crate::event_store::Ingest;
+use crate::event_store::range::Params;
+use crate::event_store::sync::{Cut, run_range};
 use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
 use crate::world::unix_ms;
@@ -94,6 +96,9 @@ pub enum SyncError {
     /// `LogSync` failed.
     #[error("LogSync: {0}")]
     LogSync(String),
+    /// Range sync failed.
+    #[error("range sync: {0}")]
+    Range(String),
 }
 
 /// What one side did with the events it received in a session.
@@ -131,8 +136,9 @@ pub struct Outcome {
     pub method: SyncMethod,
     /// What this side stored.
     pub received: Tally,
-    /// `LogSync`'s counts for the session. `sent_operations` is what this side sent.
-    pub metrics: LogSyncMetrics,
+    /// `LogSync`'s counts for the session. `sent_operations` is what this side sent. `None` for
+    /// range sync, which has its own counts in [`crate::event_store::sync::Outcome`].
+    pub metrics: Option<LogSyncMetrics>,
 }
 
 /// Serves sync sessions on [`SYNC_ALPN`]. Register it with
@@ -209,7 +215,7 @@ pub async fn sync_with(
             }
             Answer::Refuse => return Err(SyncError::Refused(method)),
         }
-        let outcome = run_agreed(store, topic, method, &mut frames).await?;
+        let outcome = run_agreed(store, topic, method, &mut frames, true).await?;
         frames.finish().await;
         conn.close(0_u32.into(), b"done");
         Ok(outcome)
@@ -243,7 +249,7 @@ pub async fn answer(
             return Err(SyncError::Refused(request.method));
         }
         frames.send_message(&Answer::Agree(request.method)).await?;
-        let outcome = run_agreed(store, request.topic, request.method, &mut frames).await?;
+        let outcome = run_agreed(store, request.topic, request.method, &mut frames, false).await?;
         frames.finish().await;
         Ok(outcome)
     };
@@ -253,17 +259,52 @@ pub async fn answer(
     }
 }
 
-/// Runs the method both sides agreed to.
+/// Runs the method both sides agreed to. `initiator` is true on the dialing side, which sends the
+/// first message of a range session.
 async fn run_agreed(
     store: &SharedEventStore,
     topic: Hash,
     method: SyncMethod,
     frames: &mut Frames,
+    initiator: bool,
 ) -> Result<Outcome, SyncError> {
     match method {
         SyncMethod::Log => run_log_sync(store, topic, frames).await,
-        SyncMethod::Range => Err(SyncError::NotWired(method)),
+        SyncMethod::Range => run_range_session(store, topic, initiator, frames).await,
     }
+}
+
+/// Runs range sync (P3.1) on the agreed stream, with the local defaults for K, T, and the budget.
+async fn run_range_session(
+    store: &SharedEventStore,
+    topic: Hash,
+    initiator: bool,
+    frames: &mut Frames,
+) -> Result<Outcome, SyncError> {
+    let outcome = run_range(
+        store,
+        topic,
+        Params::default(),
+        unix_ms(),
+        initiator,
+        &mut frames.send,
+        &mut frames.inbound,
+        Cut::Never,
+    )
+    .await
+    .map_err(|error| SyncError::Range(format!("{error:#}")))?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(Outcome {
+        method: SyncMethod::Range,
+        received: Tally {
+            accepted: count(outcome.accepted),
+            duplicates: count(outcome.duplicates),
+            held: count(outcome.waiting),
+            refused: count(outcome.refused),
+            forks: count(outcome.forks),
+        },
+        metrics: None,
+    })
 }
 
 /// Runs `p2panda-sync`'s `LogSync` for the logs of `topic`, on `frames`.
@@ -328,20 +369,20 @@ async fn run_log_sync(
     Ok(Outcome {
         method: SyncMethod::Log,
         received: tally,
-        metrics,
+        metrics: Some(metrics),
     })
 }
 
 /// One stream pair. A task of its own reads the receive half and forwards whole frames over a
 /// channel, so a read is never cancelled midway, whatever the caller selects over.
-struct Frames {
-    send: SendStream,
-    inbound: mpsc::Receiver<Result<Vec<u8>, String>>,
+pub(crate) struct Frames {
+    pub(crate) send: SendStream,
+    pub(crate) inbound: mpsc::Receiver<Result<Vec<u8>, String>>,
     reader: JoinHandle<()>,
 }
 
 impl Frames {
-    fn new(send: SendStream, mut recv: RecvStream) -> Self {
+    pub(crate) fn new(send: SendStream, mut recv: RecvStream) -> Self {
         let (tx, inbound) = mpsc::channel(8);
         let reader = tokio::spawn(async move {
             loop {
@@ -388,7 +429,7 @@ impl Frames {
     /// connection. This runs after `LogSync` has finished on both sides, so everything each side needs
     /// has already arrived. A read error here is the peer closing the connection, which is not a
     /// failure of the session.
-    async fn finish(mut self) {
+    pub(crate) async fn finish(mut self) {
         let _ = self.send.finish();
         while let Some(frame) = self.inbound.recv().await {
             if frame.is_err() {
@@ -416,7 +457,7 @@ mod tests {
     use super::*;
     use crate::chain::{Event, sign};
     use crate::event_store::EventStore;
-    use crate::sync_method::{Estimate, LogSyncOnly};
+    use crate::sync_method::{Estimate, LogAndRange, LogSyncOnly, PeerHistory};
     use crate::waiting::WaitingLimits;
 
     const DEADLINE: Duration = Duration::from_secs(30);
@@ -589,7 +630,11 @@ mod tests {
             "no event is inserted twice"
         );
         assert_eq!(outcome.received.refused + answered.received.refused, 0);
-        assert_eq!(outcome.metrics.sent_operations, 5, "B sent carol 0 to 4");
+        assert_eq!(
+            outcome.metrics.clone().unwrap_or_default().sent_operations,
+            5,
+            "B sent carol 0 to 4"
+        );
 
         let all = [&alice, &bob, &carol];
         let (a_state, b_state) = (applied(&store_a, &all, 4), applied(&store_b, &all, 4));
@@ -617,7 +662,7 @@ mod tests {
         let again_answered = results.recv().await.unwrap().unwrap();
         assert_eq!(again.received, Tally::default());
         assert_eq!(again_answered.received, Tally::default());
-        assert_eq!(again.metrics.sent_operations, 0);
+        assert_eq!(again.metrics.clone().unwrap_or_default().sent_operations, 0);
     }
 
     #[tokio::test]
@@ -777,7 +822,10 @@ mod tests {
         assert_eq!(answered.received.duplicates, 1, "seq 1 is a proof header");
         assert_eq!(answered.received.refused, 1, "seq 2 is past the fork point");
         assert_eq!(answered.received.accepted, 5, "every event of y arrives");
-        assert_eq!(outcome.metrics.sent_operations, 7);
+        assert_eq!(
+            outcome.metrics.clone().unwrap_or_default().sent_operations,
+            7
+        );
         let refs = [&y];
         assert_eq!(applied(&store_a, &refs, 4), applied(&store_b, &refs, 4));
         assert!(
@@ -916,5 +964,199 @@ mod tests {
             "the responder refused the same method, got {answered:?}"
         );
         assert_eq!(applied(&store_b, &[&alice], 2), before, "nothing moved");
+    }
+
+    /// The responder for both methods: the production [`answer`], with each session's result sent
+    /// to the test.
+    #[derive(Debug)]
+    struct CaptureAll {
+        store: SharedEventStore,
+        results: mpsc::UnboundedSender<Result<Outcome, SyncError>>,
+    }
+
+    impl ProtocolHandler for CaptureAll {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            while let Ok((send, recv)) = conn.accept_bi().await {
+                let result = answer(&self.store, &LogAndRange, send, recv, DEADLINE).await;
+                let _ = self.results.send(result);
+            }
+            Ok(())
+        }
+    }
+
+    /// Serves `store` for both methods on loopback.
+    async fn responder_for_both(
+        store: &SharedEventStore,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        let ep = endpoint().await;
+        let (results, rx) = mpsc::unbounded_channel();
+        let handler = CaptureAll {
+            store: store.clone(),
+            results,
+        };
+        let router = Router::builder(ep.clone())
+            .accept(SYNC_ALPN, handler)
+            .spawn();
+        (ep, router, rx)
+    }
+
+    /// Thirty authors with three events each, all in `topic`. `a` has all of them. `b` has all
+    /// but the last event of author 7, so the two stores differ by one event.
+    fn thirty_authors(a: &SharedEventStore, b: &SharedEventStore, topic: Hash) {
+        for n in 1..=30u8 {
+            let events = chain_of(&key(n), 3, topic);
+            ingest_all(a, &events);
+            if n == 7 {
+                ingest_all(b, &events[..2]);
+            } else {
+                ingest_all(b, &events);
+            }
+        }
+    }
+
+    /// The estimate for a peer that synced one event ago, with `difference` events apart.
+    fn synced_once(difference: u64) -> PeerHistory {
+        PeerHistory {
+            last_completed_sync_ms: Some(1),
+            changed_since_sync: difference,
+        }
+    }
+
+    /// Thirty chains and one difference is range by the rule, so the choice is range. Two stores
+    /// run range over the wire and converge, and each side answers with the method it was asked.
+    #[tokio::test]
+    async fn test_two_stores_choose_range_and_converge() {
+        let topic = group(1);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        thirty_authors(&store_a, &store_b, topic);
+
+        let estimate = store_b.estimate(&topic, &synced_once(1)).unwrap();
+        assert_eq!(choose(&estimate), SyncMethod::Range);
+        let (server, _router, mut results) = responder_for_both(&store_a).await;
+        let client = endpoint().await;
+        let outcome = tokio::time::timeout(
+            DEADLINE,
+            sync_with(
+                &client,
+                loopback(&server),
+                &store_b,
+                topic,
+                &estimate,
+                DEADLINE,
+            ),
+        )
+        .await
+        .expect("the session has a deadline")
+        .unwrap();
+        let answered = results.recv().await.unwrap().unwrap();
+
+        assert_eq!(outcome.method, SyncMethod::Range);
+        assert_eq!(
+            answered.method,
+            SyncMethod::Range,
+            "both sides ran range sync"
+        );
+        assert_eq!(
+            outcome.received.accepted, 1,
+            "B lacked author 7's last event"
+        );
+        assert_eq!(answered.received.accepted, 0, "A lacked nothing");
+        assert_eq!(
+            outcome.received.duplicates + answered.received.duplicates,
+            0
+        );
+        assert_eq!(outcome.received.refused + answered.received.refused, 0);
+        assert_eq!(
+            store_a.range_entries(&topic).unwrap(),
+            store_b.range_entries(&topic).unwrap(),
+            "both stores hold the same events"
+        );
+    }
+
+    /// A peer never synced with is LogSync by the rule, so this session runs LogSync and converges
+    /// the same stores.
+    #[tokio::test]
+    async fn test_two_stores_choose_log_and_converge() {
+        let topic = group(1);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        thirty_authors(&store_a, &store_b, topic);
+
+        let estimate = store_b.estimate(&topic, &PeerHistory::default()).unwrap();
+        assert_eq!(choose(&estimate), SyncMethod::Log);
+        let (server, _router, mut results) = responder_for_both(&store_a).await;
+        let client = endpoint().await;
+        let outcome = tokio::time::timeout(
+            DEADLINE,
+            sync_with(
+                &client,
+                loopback(&server),
+                &store_b,
+                topic,
+                &estimate,
+                DEADLINE,
+            ),
+        )
+        .await
+        .expect("the session has a deadline")
+        .unwrap();
+        let answered = results.recv().await.unwrap().unwrap();
+
+        assert_eq!(outcome.method, SyncMethod::Log);
+        assert_eq!(answered.method, SyncMethod::Log, "both sides ran LogSync");
+        assert_eq!(outcome.received.accepted, 1);
+        assert_eq!(outcome.received.duplicates, 0);
+        assert_eq!(
+            store_a.range_entries(&topic).unwrap(),
+            store_b.range_entries(&topic).unwrap(),
+            "both stores hold the same events"
+        );
+    }
+
+    /// The selector reads the estimate, not a fixed rule: the same store chooses range for one
+    /// difference and LogSync for two, and the chain count comes from the store.
+    #[test]
+    fn test_the_store_estimate_drives_the_choice() {
+        let topic = group(1);
+        let (_d, store) = open();
+        for n in 1..=30u8 {
+            ingest_all(&store, &chain_of(&key(n), 1, topic));
+        }
+        assert_eq!(
+            store
+                .estimate(&topic, &synced_once(1))
+                .unwrap()
+                .chain_count(),
+            30
+        );
+        assert_eq!(
+            choose(&store.estimate(&topic, &synced_once(1)).unwrap()),
+            SyncMethod::Range,
+            "one difference over thirty chains is range"
+        );
+        assert_eq!(
+            choose(&store.estimate(&topic, &synced_once(2)).unwrap()),
+            SyncMethod::Log,
+            "two differences is above 0.035 of thirty chains"
+        );
+        assert_eq!(
+            choose(&store.estimate(&topic, &PeerHistory::default()).unwrap()),
+            SyncMethod::Log,
+            "a peer never synced with is LogSync"
+        );
+    }
+
+    /// The range sync frame cap matches the stream's: a range frame is never refused by the reader.
+    #[test]
+    fn test_the_range_frame_cap_is_the_sync_streams_cap() {
+        assert_eq!(
+            crate::event_store::range::FRAME_CAP,
+            crate::world_session::MAX_FRAME_BYTES
+        );
     }
 }

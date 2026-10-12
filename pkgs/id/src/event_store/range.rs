@@ -40,10 +40,12 @@ pub type Id = [u8; 32];
 pub const DEFAULT_K: usize = 16;
 /// The default leaf threshold.
 pub const DEFAULT_T: usize = 16;
-/// The largest frame the transport accepts, in bytes.
-pub const FRAME_CAP: usize = 16 << 20;
-/// The default byte budget for one frame: a quarter of the cap, so one frame is never near it.
-pub const DEFAULT_FRAME_BUDGET: usize = 4 << 20;
+/// The largest frame the sync stream carries. The stream is the world transport's, which caps a
+/// frame at `MAX_FRAME_BYTES` (1 MiB). `log_sync`'s test checks that the two agree. The S7 harness
+/// ran with 16 MiB, and chunking is the same at either size.
+pub const FRAME_CAP: usize = 1 << 20;
+/// The default byte budget for one frame: half the cap, so a frame is never near it.
+pub const DEFAULT_FRAME_BUDGET: usize = FRAME_CAP / 2;
 /// The smallest budget that fits an entry.
 const MIN_FRAME_BUDGET: usize = 256;
 /// Bytes reserved in a frame for its `more` flag and its entry count.
@@ -683,9 +685,9 @@ mod tests {
     }
 
     #[test]
-    fn test_params_default_is_k16_t16_with_the_four_mib_budget() {
+    fn test_params_default_is_k16_t16_with_half_the_frame_cap() {
         let p = Params::default();
-        assert_eq!((p.k(), p.t(), p.frame_budget()), (16, 16, 4 << 20));
+        assert_eq!((p.k(), p.t(), p.frame_budget()), (16, 16, FRAME_CAP / 2));
     }
 
     #[test]

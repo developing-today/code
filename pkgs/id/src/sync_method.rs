@@ -13,9 +13,9 @@
 //! The initiator chooses, and sends its choice in a [`Request`]. The responder answers with an
 //! [`Answer`]: it agrees to run that method, or refuses it. It never chooses for the session.
 //!
-//! The rule is written against [`SyncStats`], so range sync's index can supply the numbers when
-//! it merges. [`SyncSupport`] is the same kind of seam for the answer: range sync adds itself when
-//! it merges, and until then a responder refuses range requests.
+//! The rule reads [`SyncStats`]. [`Estimate`] is its plain form, and `SharedEventStore::estimate`
+//! fills it from the store. [`SyncSupport`] is the seam for the answer: a node that serves range
+//! registers [`LogAndRange`], and a responder with [`LogSyncOnly`] refuses range requests.
 
 use std::fmt::Debug;
 
@@ -97,7 +97,7 @@ pub trait SyncSupport: Debug + Send + Sync {
     fn supports(&self, method: SyncMethod) -> bool;
 }
 
-/// Runs `LogSync` only. Range sync (P3.1) adds itself here when it merges.
+/// Runs `LogSync` only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogSyncOnly;
 
@@ -105,6 +105,28 @@ impl SyncSupport for LogSyncOnly {
     fn supports(&self, method: SyncMethod) -> bool {
         method == SyncMethod::Log
     }
+}
+
+/// Runs both methods: `LogSync`, and range sync (P3.1). This is the support a node registers
+/// when it serves sync.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogAndRange;
+
+impl SyncSupport for LogAndRange {
+    fn supports(&self, method: SyncMethod) -> bool {
+        matches!(method, SyncMethod::Log | SyncMethod::Range)
+    }
+}
+
+/// What this node remembers about one peer: the inputs to the estimate besides the chain count.
+/// The caller keeps it. Nothing stores it yet, so it lasts as long as the caller does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PeerHistory {
+    /// When the last sync with the peer completed, in Unix milliseconds. `None` before the first.
+    pub last_completed_sync_ms: Option<u64>,
+    /// Events this node created, or received from the peer, since that sync. A lower bound of the
+    /// difference, because the peer's new events are unknown before the exchange.
+    pub changed_since_sync: u64,
 }
 
 /// The initiator's first frame: the topic it syncs, and the method it chose.
