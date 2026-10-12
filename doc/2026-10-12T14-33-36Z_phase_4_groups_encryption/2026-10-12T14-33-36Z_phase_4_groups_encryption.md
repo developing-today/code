@@ -7,21 +7,21 @@
 
 ## Steps
 
-| Step                                  | Track   | Status | Commits            | Tests                                 | Notes                                    |
-| ------------------------------------- | ------- | ------ | ------------------ | ------------------------------------- | ---------------------------------------- |
-| P4.1 DataScheme adapter               | adapter | done   | a630a440           |                                       | blocks the rest                          |
-| P4.2 Our DGM and the from_join fork   | adapter | done   | e57c1223           |                                       |                                          |
-| P4.3 from_join withholding rule       | adapter | done   | daa4f200           |                                       |                                          |
-| P4.4 Scheme v1                        | scheme  | done   | d22f6987, 3b671bb4 |                                       |                                          |
-| P4.5 recent:N and full                | history | done   | 6b2a9005, 67207add |                                       |                                          |
-| P4.6 Lazy full history                | history | done   | 25d7d814           |                                       |                                          |
-| P4.7 Heads rule                       | heads   | todo   |                    |                                       |                                          |
-| P4.8 Rotation policy and PCS recovery | warn    | done   | 205a5483           | 4 rotation and recovery tests         | `Session::recover`; no CLI command yet   |
-| P4.9 Warnings                         | warn    | done   | 4b82eff2           | 11 warning tests (9 unit, 2 property) | pure evaluator; not yet wired into serve |
-| P4.10 scheme none notice              | warn    | done   | a95c52ae           | 4 notice tests                        | function only; no UI yet                 |
-| P4.11 DataScheme cost measurement     | warn    | done   | 2a3de9a9           | 1 smoke test; benchmark ignored       | numbers below                            |
-| P4.12 Welcome chunking                | history | done   | c38e6a39           |                                       |                                          |
-| P4.13 Roster follows the group fold   | scheme  | done   | a39cc834           | 11 scheme tests (incl. fold property) | mismatch poisons the session             |
+| Step                                  | Track   | Status | Commits            | Tests                                 | Notes                                     |
+| ------------------------------------- | ------- | ------ | ------------------ | ------------------------------------- | ----------------------------------------- |
+| P4.1 DataScheme adapter               | adapter | done   | a630a440           |                                       | blocks the rest                           |
+| P4.2 Our DGM and the from_join fork   | adapter | done   | e57c1223           |                                       |                                           |
+| P4.3 from_join withholding rule       | adapter | done   | daa4f200           |                                       |                                           |
+| P4.4 Scheme v1                        | scheme  | done   | d22f6987, 3b671bb4 |                                       |                                           |
+| P4.5 recent:N and full                | history | done   | 6b2a9005, 67207add |                                       |                                           |
+| P4.6 Lazy full history                | history | done   | 25d7d814           |                                       |                                           |
+| P4.7 Heads rule                       | heads   | done   | 6001cfdd, e1fee2ce | 8 new (4 heads, 4 concurrency)        | cap 32, refusal not merge; open epoch gap |
+| P4.8 Rotation policy and PCS recovery | warn    | done   | 205a5483           | 4 rotation and recovery tests         | `Session::recover`; no CLI command yet    |
+| P4.9 Warnings                         | warn    | done   | 4b82eff2           | 11 warning tests (9 unit, 2 property) | pure evaluator; not yet wired into serve  |
+| P4.10 scheme none notice              | warn    | done   | a95c52ae           | 4 notice tests                        | function only; no UI yet                  |
+| P4.11 DataScheme cost measurement     | warn    | done   | 2a3de9a9           | 1 smoke test; benchmark ignored       | numbers below                             |
+| P4.12 Welcome chunking                | history | done   | c38e6a39           |                                       |                                           |
+| P4.13 Roster follows the group fold   | scheme  | done   | a39cc834           | 11 scheme tests (incl. fold property) | mismatch poisons the session              |
 
 ## Decisions
 
@@ -75,6 +75,42 @@ Reading: DataScheme's update cost is linear in the members, at about 309 bytes a
 - The recovery tests are `test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read` and `test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model`. The compromised copy is the removed device's session, which holds the state from before the removal. It is withheld from every message under the new epoch.
 - The warning tests cover each threshold (95, 96, 127, 128, 999, 1000), flapping on size and churn, the non-client-made case, and two properties: the warning count follows the largest size, and it is monotone in size.
 
+## P4.7: heads and concurrency
+
+Commits on `p4-heads` (not pushed):
+
+- `6001cfdd` test(rust): concurrent membership changes converge [P4.7]. The concurrency tests and the welcome-first fix.
+- `e1fee2ce` feat(rust): heads rule with a cap of 32 parents [P4.7]. The heads rule, the cap, and the head tests.
+
+### The rule as built
+
+- A control message names the heads: the delivered or published control messages that no delivered or published control message names. It also names its author's own latest control message, even when a later message covers it. Application messages name the same list.
+- At most 32 parents, own latest included. A publish that would name more is refused with `SchemeError::TooManyParents { count, cap }`. The check runs before the crate call, for update, send, add, remove and recovery. A refusal leaves the epoch and the roster as they were, and nothing is dropped from the parents.
+- The merge in the plan (P4.7: merge when the heads would exceed the cap) is not built. A group with more than 32 heads cannot publish until a member sees fewer of them. This is open.
+- The rule it replaces named the latest control message of each author. That list grew with the number of authors. At 33 authors it went past 32 with no check, and it named messages that a later head already covered.
+
+### Findings
+
+- The red test (`test_two_concurrent_adds_converge_for_a_third_member`) had two admins add members 4 and 5 from the same view, and member 1 ordered the two adds in either order. It failed before the fix. A joiner that received the other admin's add before its own welcome applied that add to an empty roster, and its roster lacked a member. The orderer now delivers the welcome after its own past and before any other pending message. A welcome that is not yet ready holds delivery.
+- Open: an update made without knowing a concurrent add never reaches the joiner. The joiner then holds one epoch fewer than the members, and messages under that epoch are withheld from it. `test_open_a_joiner_misses_an_update_made_without_knowing_it` pins this. The heads rule does not fix it, since the update names nothing about the add. The options are a refusal, or a fetch of the missing secret through lazy history (P4.6). This needs a decision.
+- In the two-add case, every member agrees on the latest epoch and on the epoch set.
+
+### Properties and tests
+
+- `test_concurrent_updates_and_sends_converge` and `test_a_concurrent_add_and_sends_converge`, 16 cases each. Two or three admins each make one change from the group as it was: an update, a send, or the add of member 4. Each member then hears the changes it did not make, one at a time, in its own shuffled order, with the members taking turns. At the end every member has the same roster and the same epoch set, and reads every send by another member. A local run at 128 cases passed.
+- A property that mixed updates, sends and an add found the open gap above. The add and the updates are therefore in separate properties.
+- Heads: `test_a_message_names_the_heads_and_not_every_authors_latest` (red before the change), `test_an_author_names_its_own_latest_even_when_a_later_message_covers_it`, `test_a_message_may_name_32_parents`, and `test_a_message_naming_33_parents_is_refused_and_the_state_is_kept` (red before the change). The last one checks that an update and a send are both refused at 33 parents, and that the epoch and the roster are unchanged.
+- Results: the encryption module has 73 passed and 1 ignored (the P4.11 benchmark). The full `cargo test --lib` has 1172 passed, 0 failed and 4 ignored. Clippy reports nothing in `src/encryption`.
+
+### Open
+
+- The merge rule for more than 32 heads (above).
+- The open epoch gap for a concurrent update and add (above).
+- The S10 scenarios at 40 members are not reproduced. Concurrency is tested with 2 or 3 admins, and 33 members only for the cap. Storms and partitions at scale are open.
+- Concurrent removals, and a removal concurrent with an update, are not in the properties.
+- Message loss and long delays are not tested. Only reorderings are.
+
 ## End
 
 - P4.8 to P4.11 done on `p4-warn`. Commits: 205a5483, 4b82eff2, a95c52ae, 2a3de9a9. Not pushed.
+- P4.7 done on `p4-heads`. Commits: 6001cfdd, e1fee2ce. Not pushed.
