@@ -191,7 +191,7 @@ impl Party {
     ///
     /// Refuses two entries with one key.
     pub fn new(mut entries: Vec<(Key, Id)>) -> Result<Self> {
-        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_unstable_by_key(|e| e.0);
         ensure!(
             entries.windows(2).all(|w| w[0].0 != w[1].0),
             "sync keys are not distinct"
@@ -641,7 +641,7 @@ mod tests {
     /// `count` distinct entries from `seed`, with `zero_heavy` keys if asked.
     fn set(seed: u64, count: u64, zero_heavy: bool) -> Vec<(Key, Id)> {
         let mut entries: Vec<(Key, Id)> = (0..count).map(|n| entry(seed, n, zero_heavy)).collect();
-        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_unstable_by_key(|e| e.0);
         entries.dedup_by(|a, b| a.0 == b.0);
         entries
     }
@@ -776,7 +776,7 @@ mod tests {
                 for &kb in &ks {
                     for &tb in &ts {
                         run += 1;
-                        let universe = set(100 + run, 260, run % 2 == 0);
+                        let universe = set(100 + run, 260, run.is_multiple_of(2));
                         let a = party(subset(&universe, run, 200));
                         let b = party(subset(&universe, run ^ 0x55, 200));
                         let (pa, pb) = (Params::new(ka, ta).unwrap(), Params::new(kb, tb).unwrap());
@@ -799,6 +799,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The leaf threshold and the fan-out decide the shape of an answer to a mismatched range of
+    /// 40 keys: at most T keys are sent as IDs, and more than T split into min(K, n) children.
+    #[test]
+    fn test_the_leaf_threshold_and_the_fan_out_shape_the_answer() {
+        let responder = party(set(31, 40, false));
+        let root = party(Vec::new()).full_range();
+        let mut learned = Vec::new();
+
+        let leaf = responder.respond(&[root.clone()], Params::new(2, 40).unwrap(), &mut learned);
+        assert!(
+            leaf.iter()
+                .all(|e| matches!(e.mode, Mode::Ids { reply: true, .. })),
+            "n = T sends IDs"
+        );
+
+        let split = responder.respond(&[root.clone()], Params::new(4, 39).unwrap(), &mut learned);
+        assert_eq!(split.len(), 4, "n > T splits into K children");
+        assert!(split.iter().all(|e| matches!(e.mode, Mode::Fp { .. })));
+
+        let narrow = responder.respond(&[root.clone()], Params::new(2, 1).unwrap(), &mut learned);
+        assert_eq!(narrow.len(), 2, "K = 2 gives two children");
+
+        let small = party(set(32, 3, false));
+        let answer = small.respond(&[root], Params::new(16, 1).unwrap(), &mut learned);
+        assert_eq!(
+            answer.len(),
+            3,
+            "with fewer keys than K, each key is its own child"
+        );
     }
 
     #[test]

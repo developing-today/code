@@ -14,12 +14,10 @@
 //! K and T are local. The frame budget is local too: it only has to stay under the frame cap.
 
 use std::collections::HashSet;
-use std::net::Ipv4Addr;
 use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
-use iroh::{EndpointAddr, RelayMode, TransportAddr};
+use iroh::endpoint::{Connection, RecvStream, SendStream};
 use redb::{ReadableDatabase, ReadableTable};
 
 use super::range::{
@@ -148,7 +146,7 @@ impl EventStore {
                 entries.push((sync_key(&position, &id)?, id));
             }
         }
-        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_unstable_by_key(|e| e.0);
         entries.dedup_by(|a, b| a.0 == b.0);
         Ok(entries)
     }
@@ -421,31 +419,6 @@ fn flush(
     apply_batch(&mut guard, events, now_ms, tally)
 }
 
-/// An endpoint on localhost, with no relay and no address lookup. Dialed by address only.
-async fn endpoint(alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
-    Ok(Endpoint::builder(presets::Minimal)
-        .alpns(alpns)
-        .relay_mode(RelayMode::Disabled)
-        .bind()
-        .await?)
-}
-
-/// The address of `ep` on localhost: every bound socket, with an unspecified IP replaced by
-/// the loopback address.
-fn loopback_addr(ep: &Endpoint) -> EndpointAddr {
-    EndpointAddr::from_parts(
-        ep.id(),
-        ep.bound_sockets().iter().map(|addr| {
-            let ip = if addr.ip().is_unspecified() {
-                Ipv4Addr::LOCALHOST.into()
-            } else {
-                addr.ip()
-            };
-            TransportAddr::Ip(std::net::SocketAddr::new(ip, addr.port()))
-        }),
-    )
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -456,7 +429,35 @@ mod tests {
     use crate::waiting::WaitingLimits;
     use p2panda_core::{Hash, SigningKey};
 
+    use iroh::endpoint::{Endpoint, presets};
+    use iroh::{EndpointAddr, RelayMode, TransportAddr};
+    use std::net::Ipv4Addr;
+
     const NOW: u64 = 1_000_000_000;
+    /// An endpoint on localhost, with no relay and no address lookup. Dialed by address only.
+    async fn endpoint(alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
+        Ok(Endpoint::builder(presets::Minimal)
+            .alpns(alpns)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?)
+    }
+
+    /// The address of `ep` on localhost: every bound socket, with an unspecified IP replaced by
+    /// the loopback address.
+    fn loopback_addr(ep: &Endpoint) -> EndpointAddr {
+        EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|addr| {
+                let ip = if addr.ip().is_unspecified() {
+                    Ipv4Addr::LOCALHOST.into()
+                } else {
+                    addr.ip()
+                };
+                TransportAddr::Ip(std::net::SocketAddr::new(ip, addr.port()))
+            }),
+        )
+    }
 
     fn open() -> (tempfile::TempDir, EventStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -537,11 +538,11 @@ mod tests {
             let out = run(a, &conn, true, pa, NOW, cut).await;
             anyhow::Ok((out, conn))
         };
-        let (dialed, accepted) = tokio::time::timeout(Duration::from_secs(60), async {
+        let (dialed, accepted) = tokio::time::timeout(Duration::from_secs(300), async {
             tokio::join!(dialing, accepting)
         })
         .await
-        .context("loopback sync timed out after 60 s")?;
+        .context("loopback sync timed out after 300 s")?;
         let (dialer_out, dial_conn) = dialed?;
         let (acceptor_out, accept_conn) = accepted?;
         dial_conn.close(0u32.into(), b"done");
@@ -762,6 +763,46 @@ mod tests {
         );
         assert_eq!(second_b.duplicates + second_a.duplicates, 0, "no duplicate");
         assert_eq!(second_a.accepted, 0);
+    }
+
+    /// P3.1c on a real store: a store above the 524,288-event limit bootstraps into an empty one
+    /// in both directions. The ID reply alone is 17.6 MB, over the 16 MiB frame cap, so it has to
+    /// be chunked. Signing 550,000 events is slow in debug builds, so run it on demand:
+    /// `cargo test --release -- --ignored test_bootstrap_above_the_frame_limit`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "signs 550,000 events; run with --release --ignored"]
+    async fn test_bootstrap_above_the_frame_limit_on_a_real_store() {
+        let chains: Vec<(u64, u32)> = (1..=1100).map(|c| (c, 500)).collect();
+        for full_dials in [true, false] {
+            let (_df, mut full) = open();
+            let (_de, mut empty) = open();
+            populate(&mut full, &chains);
+            let total = ids(&full);
+            assert_eq!(total.len(), 550_000);
+            let params = Params::default();
+            let (dialer, acceptor) = if full_dials {
+                loopback(&mut full, &mut empty, params, params, Cut::Never)
+                    .await
+                    .unwrap()
+            } else {
+                loopback(&mut empty, &mut full, params, params, Cut::Never)
+                    .await
+                    .unwrap()
+            };
+            let (dialer, acceptor) = (dialer.unwrap(), acceptor.unwrap());
+            let label = if full_dials {
+                "full dials empty"
+            } else {
+                "empty dials full"
+            };
+            assert_eq!(ids(&empty), total, "{label}");
+            assert_eq!(ids(&full), total, "{label}");
+            assert!(
+                dialer.control_bytes + acceptor.control_bytes > range::FRAME_CAP,
+                "{label}: the reply is above one frame"
+            );
+            assert_eq!(dialer.duplicates + acceptor.duplicates, 0, "{label}");
+        }
     }
 
     /// Bootstrap of a store whose sync set needs many frames: a 4 KiB budget splits every ID
