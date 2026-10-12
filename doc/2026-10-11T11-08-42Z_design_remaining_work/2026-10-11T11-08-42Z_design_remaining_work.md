@@ -225,3 +225,10 @@ Open for the owner:
 2. Server alias fallback: confirm that it shows only until the server sets its primary alias.
 3. Show the user alias by default, or only the name?
 4. Prefix or suffix for disambiguation: prefix (recommended), since prefixes sort and match like git short IDs.
+
+## Owner answers on aliases (2026-10-12)
+
+- User tag subject: the user's first identity event ID (decided).
+- Server alias: a server alias wins for a single displayed value, unless a user sets their own alias (a pet name). Larger views show the winning primary, plus the server's alias and other aliases sorted or selected, for example the user's or group's chosen alias, or the earliest alias.
+- User alias: shown by default, with the name. In many views include the shortest unique prefix of the object's ID, to identify it on that server.
+- Disambiguation: prefix, like git short IDs (decided).
