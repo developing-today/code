@@ -1,9 +1,11 @@
 //! The `DataScheme` orderer and the envelope it delivers.
 //!
 //! The crate's orderer (`MessageOrderer`) is test-only, so the adapter brings its own with the same
-//! rules. A message names the last control message the sender had delivered from each author, and
-//! it is delivered once every message it names is delivered. Nothing is delivered before the device
-//! is welcomed: a create or a welcome opens delivery, and earlier messages wait in the queue.
+//! rules. A message names the heads it can see: the latest control messages of the concurrent
+//! branches. It always names its author's own latest control message, and it names at most
+//! [`MAX_PARENTS`]. A publish that would name more is refused (P4.7). A message is delivered once
+//! every message it names is delivered. Nothing is delivered before the device is welcomed: a create
+//! or a welcome opens delivery, and earlier messages wait in the queue.
 //!
 //! Application messages are never named by other messages, so the adapter may leave one out
 //! without stalling anything. [`super::scheme`] does that for messages whose group secret the
@@ -22,6 +24,10 @@ use thiserror::Error;
 
 use super::roster::Roster;
 
+/// The most parents a message may name (P4.7, N22). A publish that would name more is refused, and
+/// nothing is dropped from the list.
+pub const MAX_PARENTS: usize = 32;
+
 /// One published group message: a control message with its direct messages, or an application
 /// message.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -31,7 +37,8 @@ pub struct Envelope {
     sender: VerifyingKey,
     /// The scheme version the message was encoded under: a copy of the group's signed policy (P4.4).
     scheme: u32,
-    /// The last control message seen from each author when this was published.
+    /// The heads when this was published, and the author's own latest control message. At most
+    /// [`MAX_PARENTS`] of them.
     previous: Vec<Hash>,
     content: Content,
 }
@@ -77,6 +84,11 @@ impl Envelope {
     /// The scheme version in the header.
     pub const fn scheme(&self) -> u32 {
         self.scheme
+    }
+
+    /// The control messages this one names, in the order it names them.
+    pub fn parents(&self) -> &[Hash] {
+        &self.previous
     }
 
     /// The scheme version copied into each direct message, in order. Empty for an application
@@ -140,6 +152,15 @@ pub enum OrdererError {
     /// The message could not be encoded to compute its hash.
     #[error("cannot encode the message: {0}")]
     Encode(String),
+    /// The message would name more parents than [`MAX_PARENTS`]. The session checks this before the
+    /// crate call, so this is reached only if that check is skipped.
+    #[error("the message would name {count} parents, more than the cap of {cap}")]
+    TooManyParents {
+        /// The parents the message would name.
+        count: usize,
+        /// The most parents a message may name.
+        cap: usize,
+    },
 }
 
 /// The orderer. Its state is [`OrdererState`].
@@ -153,12 +174,14 @@ impl Orderer {
             my_id,
             scheme,
             next_seq: 0,
-            previous: BTreeMap::new(),
+            heads: BTreeSet::new(),
+            own: None,
             messages: BTreeMap::new(),
             ready: BTreeSet::new(),
             waiting: BTreeMap::new(),
             deliverable: VecDeque::new(),
             welcomed: false,
+            welcome: None,
         }
     }
 }
@@ -171,8 +194,10 @@ pub struct OrdererState {
     /// The scheme version of every message this device publishes.
     scheme: u32,
     next_seq: u64,
-    /// The last control message delivered from each author, including our own.
-    previous: BTreeMap<VerifyingKey, Hash>,
+    /// The control messages that no delivered or published control message names yet: the heads.
+    heads: BTreeSet<Hash>,
+    /// Our own latest control message. Every message names it, even when a later message covers it.
+    own: Option<Hash>,
     /// Every message received, by ID.
     messages: BTreeMap<Hash, Envelope>,
     /// Messages that are ready: every message they name is ready. Our own published messages are
@@ -184,15 +209,68 @@ pub struct OrdererState {
     deliverable: VecDeque<Hash>,
     /// Set by a create or a welcome. Nothing is delivered before it.
     welcomed: bool,
+    /// The create or welcome that opened delivery. It is delivered before any pending message that
+    /// is not in its own past (P4.7).
+    welcome: Option<Hash>,
 }
 
 impl OrdererState {
-    /// Publishes our own message. It names the control messages we have seen, and it is ready.
+    /// The parents a message published now names: our own latest control message, then the heads.
+    pub fn parent_list(&self) -> Vec<Hash> {
+        let mut parents: Vec<Hash> = self.own.into_iter().collect();
+        parents.extend(
+            self.heads
+                .iter()
+                .copied()
+                .filter(|head| Some(*head) != self.own),
+        );
+        parents
+    }
+
+    /// How many parents a message published now would name.
+    pub fn parent_count(&self) -> usize {
+        self.parent_list().len()
+    }
+
+    /// A control message is a head from the time it is delivered or published, until a control
+    /// message names it. The messages it names stop being heads.
+    fn observe(&mut self, envelope: &Envelope) {
+        for named in &envelope.previous {
+            self.heads.remove(named);
+        }
+        self.heads.insert(envelope.id);
+    }
+
+    /// The messages `id` names, directly or through the messages they name.
+    fn past_of(&self, id: Hash) -> BTreeSet<Hash> {
+        let mut past = BTreeSet::new();
+        let mut pending = vec![id];
+        while let Some(next) = pending.pop() {
+            let Some(envelope) = self.messages.get(&next) else {
+                continue;
+            };
+            for named in &envelope.previous {
+                if past.insert(*named) {
+                    pending.push(*named);
+                }
+            }
+        }
+        past
+    }
+
+    /// Publishes our own message. It names the parents, and it is ready. A message whose parents
+    /// would be more than [`MAX_PARENTS`] is refused, and no sequence number is used.
     fn publish(&mut self, content: Content) -> Result<Envelope, OrdererError> {
+        let parents = self.parent_list();
+        if parents.len() > MAX_PARENTS {
+            return Err(OrdererError::TooManyParents {
+                count: parents.len(),
+                cap: MAX_PARENTS,
+            });
+        }
         let seq = self.next_seq;
         self.next_seq += 1;
-        let previous = self.previous.values().copied().collect();
-        let envelope = Envelope::new(seq, self.my_id, self.scheme, previous, content)?;
+        let envelope = Envelope::new(seq, self.my_id, self.scheme, parents, content)?;
         self.ready.insert(envelope.id);
         Ok(envelope)
     }
@@ -235,7 +313,8 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
             direct,
         };
         let envelope = y.publish(content)?;
-        y.previous.insert(y.my_id, envelope.id);
+        y.observe(&envelope);
+        y.own = Some(envelope.id);
         Ok((y, envelope))
     }
 
@@ -276,9 +355,10 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
 
     fn set_welcome(
         mut y: Self::State,
-        _message: &Self::Message,
+        message: &Self::Message,
     ) -> Result<Self::State, Self::Error> {
         y.welcomed = true;
+        y.welcome = Some(message.id);
         Ok(y)
     }
 
@@ -288,14 +368,33 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
         if !y.welcomed {
             return Ok((y, None));
         }
-        let Some(id) = y.deliverable.pop_front() else {
+        // The welcome comes after its own past and before anything else. A control message that is
+        // concurrent with the join would otherwise reach the crate before the joiner is welcomed,
+        // and the crate would apply it to a roster that is still empty (P4.7).
+        let next = match y.welcome {
+            Some(welcome) if !y.ready.contains(&welcome) => return Ok((y, None)),
+            Some(welcome) if y.deliverable.contains(&welcome) => {
+                let past = y.past_of(welcome);
+                let index = y
+                    .deliverable
+                    .iter()
+                    .position(|id| past.contains(id))
+                    .or_else(|| y.deliverable.iter().position(|id| *id == welcome));
+                let Some(index) = index else {
+                    return Ok((y, None));
+                };
+                y.deliverable.remove(index)
+            }
+            _ => y.deliverable.pop_front(),
+        };
+        let Some(id) = next else {
             return Ok((y, None));
         };
         let Some(envelope) = y.messages.get(&id).cloned() else {
             return Ok((y, None));
         };
         if let Content::Control { .. } = envelope.content {
-            y.previous.insert(envelope.sender, id);
+            y.observe(&envelope);
         }
         Ok((y, Some(envelope)))
     }

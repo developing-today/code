@@ -4,7 +4,7 @@
 //! cast, since a joiner needs the control history to take the welcome. Application messages go only
 //! to the members who may read them.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
@@ -17,6 +17,7 @@ use p2panda_encryption::key_manager::KeyManagerState;
 use p2panda_encryption::key_registry::KeyRegistryState;
 use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
+use proptest::test_runner::TestCaseResult;
 
 use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
 use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
@@ -288,6 +289,10 @@ impl Cast {
 
     fn epoch(&self, who: u8) -> Option<GroupSecretId> {
         self.session(who).epoch()
+    }
+
+    fn epoch_set(&self, who: u8) -> BTreeSet<GroupSecretId> {
+        self.session(who).epoch_set()
     }
 }
 
@@ -1622,6 +1627,349 @@ proptest! {
             prop_assert_eq!(read, vec![vec![Received::Withheld(last.id())]], "removed member {}", gone);
         }
     }
+}
+
+// --- concurrency (P4.7) ---------------------------------------------------------------------------
+
+/// `by` adds `who` from the group as `members` lists it, with nothing else delivered. The add is
+/// concurrent with any other change made the same way.
+fn concurrent_add(cast: &mut Cast, by: u8, who: u8, members: &[u8]) -> Envelope {
+    let members: BTreeSet<Key> = members.iter().map(|seed| id(*seed)).collect();
+    let rng = Rng::default();
+    cast.session_mut(by)
+        .add(&view_of(&members), id(who), &rng)
+        .expect("concurrent add")
+}
+
+#[test]
+fn test_two_concurrent_adds_converge_for_a_third_member() {
+    let everyone: BTreeSet<Key> = [1, 2, 3, 4, 5].into_iter().map(id).collect();
+    for order in [[0, 1], [1, 0]] {
+        let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+        let create = cast.create(1, &[1, 2, 3]);
+        cast.deliver(&create, &[2, 3, 4, 5]);
+
+        // Admins 2 and 3 each add a member from the same view, so neither add names the other.
+        let adds = [
+            concurrent_add(&mut cast, 2, 4, &[1, 2, 3, 4]),
+            concurrent_add(&mut cast, 3, 5, &[1, 2, 3, 5]),
+        ];
+        let authors = [2, 3];
+
+        // Member 1 is the third member and orders the two adds in `order`. The others hear them in
+        // the other order, so no two members see the same arrival order.
+        for member in [1, 2, 3, 4, 5] {
+            let turn = if member == 2 || member == 5 {
+                [order[1], order[0]]
+            } else {
+                order
+            };
+            for index in turn {
+                if authors[index] != member {
+                    cast.deliver(&adds[index], &[member]);
+                }
+            }
+        }
+
+        for who in [1, 2, 3, 4, 5] {
+            assert_eq!(
+                cast.members_of(who),
+                everyone,
+                "member {who} roster, order {order:?}"
+            );
+            assert_eq!(
+                cast.epoch_set(who),
+                cast.epoch_set(1),
+                "member {who} epochs, order {order:?}"
+            );
+        }
+
+        let message = cast.send(4, "after both adds");
+        for read in cast.deliver(&message, &[1, 2, 3, 5]) {
+            assert_eq!(read, vec![text("after both adds")]);
+        }
+    }
+}
+
+// --- heads (P4.7) ---------------------------------------------------------------------------------
+
+#[test]
+fn test_a_message_names_the_heads_and_not_every_authors_latest() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    // Member 2's update covers the create. Member 3 has heard it, so the only head it can see is
+    // member 2's update: it names that, and not the create.
+    let first = cast.update(2);
+    cast.deliver(&first, &[1, 3]);
+    let second = cast.update(3);
+    assert_eq!(
+        second.parents(),
+        [first.id()],
+        "the head, and not the create that the first update covers"
+    );
+    assert!(!second.parents().contains(&create.id()));
+}
+
+#[test]
+fn test_an_author_names_its_own_latest_even_when_a_later_message_covers_it() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    // Member 2's update covers member 1's own create. Member 1 still names the create.
+    let first = cast.update(2);
+    cast.deliver(&first, &[1, 3]);
+    let third = cast.update(1);
+    let parents: BTreeSet<Hash> = third.parents().iter().copied().collect();
+    assert_eq!(
+        parents,
+        [create.id(), first.id()]
+            .into_iter()
+            .collect::<BTreeSet<Hash>>()
+    );
+}
+
+/// A group of 33 members. Members 2 to 33 each update from the create, so no update names another.
+/// Member 1 has heard the first `heard` of them. Returns the group and the create.
+fn concurrent_updates(heard: usize) -> (Cast, Envelope) {
+    let seeds: Vec<u8> = (1..=33).collect();
+    let mut cast = Cast::new(&seeds);
+    let create = cast.create(1, &seeds);
+    let others: Vec<u8> = (2..=33).collect();
+    cast.deliver(&create, &others);
+    let updates: Vec<Envelope> = others.iter().map(|who| cast.update(*who)).collect();
+    for update in updates.iter().take(heard) {
+        cast.deliver(update, &[1]);
+    }
+    (cast, create)
+}
+
+#[test]
+fn test_a_message_may_name_32_parents() {
+    let (mut cast, create) = concurrent_updates(31);
+    // The 31 updates member 1 has heard are its heads, and its own create is named too.
+    let message = cast.update(1);
+    assert_eq!(message.parents().len(), 32, "the cap is 32, and it is met");
+    assert!(
+        message.parents().contains(&create.id()),
+        "the own latest is named"
+    );
+}
+
+#[test]
+fn test_a_message_naming_33_parents_is_refused_and_the_state_is_kept() {
+    let (mut cast, _) = concurrent_updates(32);
+    let epoch = cast.epoch(1);
+    let members = cast.members_of(1);
+    let rng = Rng::default();
+
+    let update = cast.session_mut(1).update(&rng);
+    assert!(
+        matches!(
+            update,
+            Err(SchemeError::TooManyParents { count: 33, cap: 32 })
+        ),
+        "{update:?}"
+    );
+    let send = cast.session_mut(1).send(b"refused", &rng);
+    assert!(
+        matches!(
+            send,
+            Err(SchemeError::TooManyParents { count: 33, cap: 32 })
+        ),
+        "{send:?}"
+    );
+    assert_eq!(
+        cast.epoch(1),
+        epoch,
+        "the refused change left the epoch as it was"
+    );
+    assert_eq!(cast.members_of(1), members, "and the roster");
+}
+
+/// A seeded shuffle, so a proptest case replays one delivery order.
+fn shuffled<T>(items: Vec<T>, seed: u64) -> Vec<T> {
+    let mut keyed: Vec<(u64, T)> = items
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| (splitmix(seed ^ (index as u64)), item))
+        .collect();
+    keyed.sort_by_key(|(key, _)| *key);
+    keyed.into_iter().map(|(_, item)| item).collect()
+}
+
+fn splitmix(seed: u64) -> u64 {
+    let x = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// One change an admin makes in a round of concurrent changes.
+#[derive(Clone, Copy, Debug)]
+enum Change {
+    Update,
+    Send,
+    /// The add of member 4. A round has at most one.
+    Add,
+}
+
+/// Admins 1 to `admins` each make one change from the group as it was, before any of them hears
+/// from another. Then each member hears the changes it did not make, one at a time, in its own
+/// shuffled order, with the members taking turns. Afterwards every member must have the same roster
+/// and epoch set, and read every send by another member. A refused message fails the round.
+fn check_concurrent_round(changes: &[Change], shuffles: &[u64]) -> TestCaseResult {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let mut made: Vec<(u8, Envelope)> = Vec::new();
+    let mut sends: Vec<(u8, Vec<u8>)> = Vec::new();
+    let mut joined = false;
+    for (author, change) in [1_u8, 2, 3].into_iter().zip(changes) {
+        let envelope = match change {
+            Change::Add if !joined => {
+                joined = true;
+                concurrent_add(&mut cast, author, 4, &[1, 2, 3, 4])
+            }
+            Change::Add | Change::Send => {
+                let text = format!("from {author}");
+                sends.push((author, text.as_bytes().to_vec()));
+                cast.send(author, &text)
+            }
+            Change::Update => cast.update(author),
+        };
+        made.push((author, envelope));
+    }
+
+    let audience: Vec<u8> = if joined {
+        vec![1, 2, 3, 4]
+    } else {
+        vec![1, 2, 3]
+    };
+    let mut queues: Vec<(u8, VecDeque<Envelope>)> = audience
+        .iter()
+        .map(|&member| {
+            let theirs: Vec<Envelope> = made
+                .iter()
+                .filter(|(author, _)| *author != member)
+                .map(|(_, envelope)| envelope.clone())
+                .collect();
+            let seed = shuffles[usize::from(member - 1)];
+            (member, shuffled(theirs, seed).into())
+        })
+        .collect();
+
+    let mut reads: BTreeMap<u8, Vec<Vec<u8>>> = BTreeMap::new();
+    while queues.iter().any(|(_, queue)| !queue.is_empty()) {
+        for (member, queue) in &mut queues {
+            let Some(message) = queue.pop_front() else {
+                continue;
+            };
+            let outputs = cast
+                .session_mut(*member)
+                .process(&message)
+                .map_err(|err| TestCaseError::fail(format!("member {member}: {err}")))?;
+            for output in outputs {
+                if let Received::Plaintext(bytes) = output {
+                    reads.entry(*member).or_default().push(bytes);
+                }
+            }
+        }
+    }
+
+    let expected: BTreeSet<Key> = audience.iter().map(|seed| id(*seed)).collect();
+    let mut every_send: Vec<Vec<u8>> = sends.iter().map(|(_, bytes)| bytes.clone()).collect();
+    every_send.sort();
+    for member in &audience {
+        prop_assert_eq!(
+            cast.members_of(*member),
+            expected.clone(),
+            "member {} roster",
+            member
+        );
+        prop_assert_eq!(
+            cast.epoch_set(*member),
+            cast.epoch_set(audience[0]),
+            "member {} epoch set",
+            member
+        );
+        let mut heard = reads.remove(member).unwrap_or_default();
+        heard.extend(
+            sends
+                .iter()
+                .filter(|(author, _)| author == member)
+                .map(|(_, bytes)| bytes.clone()),
+        );
+        heard.sort();
+        prop_assert_eq!(heard, every_send.clone(), "member {} reads", member);
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// Two or three admins make concurrent updates and sends (P4.7).
+    #[test]
+    fn test_concurrent_updates_and_sends_converge(
+        admins in 2usize..=3,
+        kinds in proptest::collection::vec(any::<bool>(), 3),
+        shuffles in proptest::collection::vec(any::<u64>(), 4),
+    ) {
+        let changes: Vec<Change> = kinds
+            .iter()
+            .map(|send| if *send { Change::Send } else { Change::Update })
+            .take(admins)
+            .collect();
+        check_concurrent_round(&changes, &shuffles)?;
+    }
+
+    /// Two or three admins make concurrent sends, and one of them adds member 4 (P4.7).
+    #[test]
+    fn test_a_concurrent_add_and_sends_converge(
+        admins in 2usize..=3,
+        adder in 0usize..3,
+        shuffles in proptest::collection::vec(any::<u64>(), 4),
+    ) {
+        let changes: Vec<Change> = (0..admins)
+            .map(|index| if index == adder { Change::Add } else { Change::Send })
+            .collect();
+        check_concurrent_round(&changes, &shuffles)?;
+    }
+}
+
+/// Open (P4.7). An update made without knowing a concurrent add never reaches the joiner: the
+/// joiner's welcome carries the secrets of the adder's view, and the update's secret is not sent to
+/// it. The joiner then holds one epoch fewer than the members, and messages under that epoch are
+/// withheld from it. This pins the gap as it is. A refusal, or a fetch of the missing secret through
+/// lazy history (P4.6), would change this test.
+#[test]
+fn test_open_a_joiner_misses_an_update_made_without_knowing_it() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let add = concurrent_add(&mut cast, 2, 4, &[1, 2, 3, 4]);
+    let update = cast.update(1);
+    cast.deliver(&add, &[1, 3, 4]);
+    cast.deliver(&update, &[2, 3, 4]);
+
+    assert!(
+        cast.epoch_set(4).is_subset(&cast.epoch_set(1)),
+        "the joiner holds only epochs the members hold"
+    );
+    assert!(
+        cast.epoch_set(4).len() < cast.epoch_set(1).len(),
+        "the joiner misses the update's epoch"
+    );
+    let message = cast.send(1, "under the update's epoch");
+    assert_eq!(
+        cast.deliver(&message, &[4]),
+        vec![vec![Received::Withheld(message.id())]]
+    );
 }
 
 // --- cost (P4.11) ---------------------------------------------------------------------------------
