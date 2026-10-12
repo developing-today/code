@@ -176,7 +176,7 @@ pub mod envelope_net;
 pub mod envelope_outbox;
 pub mod event_store;
 pub mod fileops;
-pub mod friendship;
+pub mod groups;
 pub mod helpers;
 pub mod invite;
 pub mod local;

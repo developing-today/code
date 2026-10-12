@@ -1,0 +1,224 @@
+//! Group policy records and templates (design §5.1 and §5.3).
+//!
+//! A policy record is written in full into the group's create event, and it changes only through
+//! a `group.policy` event by an Admin. A template is a named preset that a create event names, and
+//! the record must be one that template admits.
+
+use super::Role;
+
+/// Who may join a group, and how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Join {
+    /// A manager adds members.
+    ManagerAdd,
+    /// An invite event admits the joiner (design §10).
+    Invite,
+    /// One side asks and the other accepts. Friendship uses this.
+    MutualRequest,
+    /// Anyone may join.
+    Open,
+}
+
+/// What a removal does to the group as a whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnMemberRemoved {
+    /// The group goes on without the removed member.
+    Continue,
+    /// Removing either side ends the group. Friendship uses this.
+    Dissolve,
+}
+
+/// How a removal takes effect (design §6). Strong is the default. The rules belong to the voiding
+/// track; this module only records the setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Removal {
+    /// Strong remove, the default.
+    #[default]
+    Strong,
+    /// Weak remove.
+    Weak,
+}
+
+/// What happens to a removed member's delegations (design §7.3). Unset means the default is still
+/// open; see [`Policy::delegation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delegation {
+    /// Delegations made before the removal stand.
+    KeepPrior,
+    /// Delegations made by the removed member end with it.
+    Cascade,
+    /// Delegations pass to the members who remain.
+    Transfer,
+}
+
+/// What a joiner may see of earlier history (design §8.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum History {
+    /// The whole history.
+    #[default]
+    Full,
+    /// Only what came after the join.
+    FromJoin,
+    /// Causal history (deferred).
+    Causal,
+}
+
+/// A key-agreement scheme and its version (design §8.7). A policy with no scheme has `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scheme {
+    /// The scheme's name.
+    pub name: String,
+    /// The scheme's version.
+    pub version: u32,
+}
+
+/// Which role may change roles and the policy record. Only Admin may, so the field is a rule and
+/// not a choice: [`Policy::is_valid`] refuses any other value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoleRules {
+    /// The least role that may change roles and policy.
+    pub change: Role,
+}
+
+/// A group's policy record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Policy {
+    /// The most members the group may have. `None` means no cap. Only an Admin may change it.
+    pub member_cap: Option<usize>,
+    /// How a joiner gets in.
+    pub join: Join,
+    /// What removing a member does to the group.
+    pub on_member_removed: OnMemberRemoved,
+    /// How removals take effect.
+    pub removal: Removal,
+    /// The fate of a removed member's delegations. `None` is the open default (design §7.3).
+    pub delegation: Option<Delegation>,
+    /// What a joiner may see of earlier history.
+    pub history: History,
+    /// The key-agreement scheme. `None` means no scheme.
+    pub scheme: Option<Scheme>,
+    /// Which role may change roles and policy.
+    pub roles: RoleRules,
+}
+
+impl Default for Policy {
+    /// A normal group: no cap, managers add members, removal continues the group, strong remove,
+    /// full history, no scheme, and Admin changes roles and policy.
+    fn default() -> Self {
+        Self {
+            member_cap: None,
+            join: Join::ManagerAdd,
+            on_member_removed: OnMemberRemoved::Continue,
+            removal: Removal::Strong,
+            delegation: None,
+            history: History::Full,
+            scheme: None,
+            roles: RoleRules {
+                change: Role::Admin,
+            },
+        }
+    }
+}
+
+impl Policy {
+    /// The friendship template (design §5.3): two members, mutual request, dissolve on removal,
+    /// strong remove, cascade delegation, and full history.
+    pub const fn friendship() -> Self {
+        Self {
+            member_cap: Some(2),
+            join: Join::MutualRequest,
+            on_member_removed: OnMemberRemoved::Dissolve,
+            removal: Removal::Strong,
+            delegation: Some(Delegation::Cascade),
+            history: History::Full,
+            scheme: None,
+            roles: RoleRules {
+                change: Role::Admin,
+            },
+        }
+    }
+
+    /// Whether the record is usable. Only Admin may change roles and policy, and a cap must allow
+    /// at least one member.
+    pub fn is_valid(&self) -> bool {
+        self.roles.change == Role::Admin && self.member_cap.is_none_or(|cap| cap >= 1)
+    }
+}
+
+/// A named preset that a create event names. The create's policy record is written in full, and
+/// [`Template::admits`] checks it against the preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Template {
+    /// Two members who ask and accept each other (design §5.4).
+    Friendship,
+    /// Many readers, some writers, few managers. No cap. Joins by manager add, invite, or open.
+    Channel,
+    /// Joins by invite only.
+    Private,
+    /// Any combination of fields.
+    Custom,
+}
+
+impl Template {
+    /// Whether this template admits `policy`.
+    pub fn admits(self, policy: &Policy) -> bool {
+        match self {
+            Self::Friendship => *policy == Policy::friendship(),
+            Self::Channel => {
+                policy.member_cap.is_none()
+                    && policy.scheme.is_none()
+                    && matches!(policy.join, Join::ManagerAdd | Join::Invite | Join::Open)
+            }
+            Self::Private => policy.join == Join::Invite,
+            Self::Custom => true,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_the_friendship_template_admits_only_the_friendship_policy() {
+        assert!(Template::Friendship.admits(&Policy::friendship()));
+        let wider = Policy {
+            member_cap: Some(3),
+            ..Policy::friendship()
+        };
+        assert!(!Template::Friendship.admits(&wider));
+    }
+
+    #[test]
+    fn test_a_channel_has_no_cap_and_a_private_group_joins_by_invite() {
+        let capped = Policy {
+            member_cap: Some(2),
+            ..Policy::default()
+        };
+        assert!(!Template::Channel.admits(&capped));
+        let private = Policy {
+            join: Join::Invite,
+            ..Policy::default()
+        };
+        assert!(Template::Private.admits(&private));
+        assert!(!Template::Private.admits(&Policy::default()));
+    }
+
+    #[test]
+    fn test_only_an_admin_rule_and_a_positive_cap_are_valid() {
+        assert!(Policy::default().is_valid());
+        let manager_rule = Policy {
+            roles: RoleRules {
+                change: Role::Manage,
+            },
+            ..Policy::default()
+        };
+        assert!(!manager_rule.is_valid());
+        let no_members = Policy {
+            member_cap: Some(0),
+            ..Policy::default()
+        };
+        assert!(!no_members.is_valid());
+    }
+}

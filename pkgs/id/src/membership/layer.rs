@@ -40,8 +40,9 @@ pub struct CausalEvent {
 pub enum Role {
     /// Any event other than a membership operation. It has a causal position and nothing else.
     Other,
-    /// A membership operation by `author`. `group` is the group named in the event; it is `None`
-    /// for a create, whose group is the event's own ID.
+    /// A membership operation by `author`. `group` is the group named in the event. A create may
+    /// leave it `None`, and its group is then the event's own ID. A friendship's create names its
+    /// derived group (design §5.4).
     Auth {
         /// The key that signed the event.
         author: [u8; 32],
@@ -174,7 +175,11 @@ impl Membership {
             self.index.insert(id, after, None)?;
             return Ok(Outcome::Applied);
         };
-        let group = if action.is_create() { Some(id) } else { group };
+        let group = if action.is_create() {
+            group.or(Some(id))
+        } else {
+            group
+        };
         let Some(group) = group else {
             self.index.insert(id, after, None)?;
             return Ok(Outcome::Refused {
@@ -562,6 +567,39 @@ mod tests {
             }
         );
         assert_eq!(member_keys(&layer, 10), vec![AuthId::Key(key(1))]);
+    }
+
+    #[test]
+    fn test_a_create_may_name_its_group_so_a_friendship_has_a_derived_id() {
+        // A friendship's group is derived from its pair and counter (design §5.4), not from the
+        // create's own event ID. The create names that group.
+        let mut layer = Membership::new();
+        let friendship = id(30);
+        let initial_members = [1, 2]
+            .iter()
+            .map(|n| {
+                (
+                    GroupMember::Individual(AuthId::Key(key(*n))),
+                    Access::manage(),
+                )
+            })
+            .collect();
+        let create = CausalEvent {
+            id: id(10),
+            after: vec![],
+            role: Role::Auth {
+                author: key(1),
+                group: Some(friendship),
+                action: GroupAction::Create { initial_members },
+            },
+        };
+        let outcomes = layer.receive(create).unwrap();
+        assert_eq!(outcomes, vec![(id(10), Outcome::Applied)]);
+        assert_eq!(
+            member_keys(&layer, 30),
+            vec![AuthId::Key(key(1)), AuthId::Key(key(2))]
+        );
+        assert!(layer.members(id(10)).is_empty());
     }
 
     #[test]

@@ -1,0 +1,822 @@
+//! Behaviour of groups and friendship. Each rule has a test. The property tests check that the
+//! final state does not depend on the order the events arrive in.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use p2panda_core::Hash;
+use proptest::prelude::*;
+
+use super::policy::{Join, OnMemberRemoved, Policy, RoleRules, Template};
+use super::{
+    Body, Create, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role, fold,
+    friendship_id,
+};
+
+fn key(n: u8) -> Key {
+    [n; 32]
+}
+
+fn id(name: &str) -> Hash {
+    Hash::digest(name.as_bytes())
+}
+
+fn after(names: &[&str]) -> Vec<Hash> {
+    names.iter().map(|name| id(name)).collect()
+}
+
+fn event(name: &str, author: u8, after_names: &[&str], group: Option<Hash>, body: Body) -> Event {
+    Event {
+        id: id(name),
+        author: key(author),
+        after: after(after_names),
+        group,
+        body,
+    }
+}
+
+/// The friendship group of `a` and `b` at `counter`.
+fn pair_group(a: u8, b: u8, counter: u32) -> Hash {
+    friendship_id(&Pair::of(key(a), key(b)).unwrap(), counter)
+}
+
+/// A group created from `template` by `author`, with `members` besides the author.
+fn create(
+    name: &str,
+    author: u8,
+    after_names: &[&str],
+    template: Template,
+    policy: Policy,
+    members: &[(u8, Role)],
+    admins_on_create: bool,
+) -> Event {
+    let members = members.iter().map(|(n, role)| (key(*n), *role)).collect();
+    let body = Body::Create(Create {
+        template,
+        policy,
+        members,
+        admins_on_create,
+    });
+    event(name, author, after_names, None, body)
+}
+
+/// A normal group of a custom policy, created by `author`.
+fn custom(name: &str, author: u8, members: &[(u8, Role)], policy: Policy) -> Event {
+    create(name, author, &[], Template::Custom, policy, members, false)
+}
+
+/// A friendship request from `from` to `to`, naming the friendship at `counter`.
+fn request(
+    name: &str,
+    from: u8,
+    to: u8,
+    counter: u32,
+    after_names: &[&str],
+    admins: bool,
+) -> Event {
+    let pair = Pair::of(key(from), key(to));
+    let group = pair.map(|pair| friendship_id(&pair, counter));
+    let body = Body::Create(Create {
+        template: Template::Friendship,
+        policy: Policy::friendship(),
+        members: vec![(key(to), Role::Manage)],
+        admins_on_create: admins,
+    });
+    event(name, from, after_names, group, body)
+}
+
+fn join(name: &str, by: u8, group: Hash, after_names: &[&str]) -> Event {
+    event(name, by, after_names, Some(group), Body::Join)
+}
+
+fn policy(name: &str, by: u8, group: Hash, record: Policy, after_names: &[&str]) -> Event {
+    event(name, by, after_names, Some(group), Body::Policy(record))
+}
+
+fn member(name: &str, by: u8, group: Hash, op: MemberOp, after_names: &[&str]) -> Event {
+    event(name, by, after_names, Some(group), Body::Member(op))
+}
+
+fn add(name: &str, by: u8, group: Hash, who: u8, role: Role, after_names: &[&str]) -> Event {
+    member(
+        name,
+        by,
+        group,
+        MemberOp::Add {
+            member: key(who),
+            role,
+        },
+        after_names,
+    )
+}
+
+fn remove(name: &str, by: u8, group: Hash, who: u8, after_names: &[&str]) -> Event {
+    member(
+        name,
+        by,
+        group,
+        MemberOp::Remove { member: key(who) },
+        after_names,
+    )
+}
+
+fn set_role(name: &str, by: u8, group: Hash, who: u8, role: Role, after_names: &[&str]) -> Event {
+    member(
+        name,
+        by,
+        group,
+        MemberOp::SetRole {
+            member: key(who),
+            role,
+        },
+        after_names,
+    )
+}
+
+fn project(events: &[Event]) -> Projection {
+    fold(events).unwrap()
+}
+
+fn outcome(p: &Projection, name: &str) -> Outcome {
+    p.outcome(&id(name)).cloned().unwrap()
+}
+
+fn role_of(p: &Projection, group: Hash, n: u8) -> Option<Role> {
+    p.group(&group)?.members.get(&key(n)).copied()
+}
+
+/// A deterministic shuffle, so a failing case can be replayed from its seed.
+fn shuffled<T: Clone>(items: &[T], mut seed: u64) -> Vec<T> {
+    let mut out = items.to_vec();
+    for i in (1..out.len()).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let j = usize::try_from(seed % (i as u64 + 1)).unwrap();
+        out.swap(i, j);
+    }
+    out
+}
+
+// ----- Creation and roles -----
+
+#[test]
+fn test_anyone_may_create_a_normal_group_and_the_creator_is_its_admin() {
+    let events = [custom("g", 3, &[(1, Role::Read)], Policy::default())];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "g"), Outcome::Applied);
+    assert_eq!(role_of(&p, id("g"), 3), Some(Role::Admin));
+    assert_eq!(role_of(&p, id("g"), 1), Some(Role::Read));
+}
+
+#[test]
+fn test_a_friendship_has_no_admin_by_default() {
+    let g = pair_group(1, 2, 0);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, g, &["r0"]),
+    ]);
+    assert_eq!(role_of(&p, g, 1), Some(Role::Manage));
+    assert_eq!(role_of(&p, g, 2), Some(Role::Manage));
+    assert!(p.friends(&key(1), &key(2)));
+}
+
+#[test]
+fn test_admins_on_create_makes_both_friends_admin() {
+    let g = pair_group(1, 2, 0);
+    let p = project(&[request("r0", 1, 2, 0, &[], true), join("a0", 2, g, &["r0"])]);
+    assert_eq!(role_of(&p, g, 1), Some(Role::Admin));
+    assert_eq!(role_of(&p, g, 2), Some(Role::Admin));
+}
+
+#[test]
+fn test_either_admin_friend_may_change_the_other_friends_role() {
+    let g = pair_group(1, 2, 0);
+    let base = [request("r0", 1, 2, 0, &[], true), join("a0", 2, g, &["r0"])];
+    let mut ann_demotes_bo = base.to_vec();
+    ann_demotes_bo.push(set_role("s1", 1, g, 2, Role::Read, &["a0"]));
+    let p = project(&ann_demotes_bo);
+    assert_eq!(outcome(&p, "s1"), Outcome::Applied);
+    assert_eq!(role_of(&p, g, 2), Some(Role::Read));
+
+    let mut bo_demotes_ann = base.to_vec();
+    bo_demotes_ann.push(set_role("s2", 2, g, 1, Role::Manage, &["a0"]));
+    let p = project(&bo_demotes_ann);
+    assert_eq!(outcome(&p, "s2"), Outcome::Applied);
+    assert_eq!(role_of(&p, g, 1), Some(Role::Manage));
+}
+
+#[test]
+fn test_a_non_admin_may_not_change_a_role() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Manage), (3, Role::Read)],
+            Policy::default(),
+        ),
+        set_role("s0", 2, g, 3, Role::Write, &["g"]),
+    ]);
+    assert_eq!(outcome(&p, "s0"), Outcome::Refused(Refusal::NotAdmin));
+    assert_eq!(role_of(&p, g, 3), Some(Role::Read));
+}
+
+#[test]
+fn test_a_rule_other_than_admin_for_roles_is_refused() {
+    let manager_rule = Policy {
+        roles: RoleRules {
+            change: Role::Manage,
+        },
+        ..Policy::default()
+    };
+    let p = project(&[custom("g", 1, &[], manager_rule)]);
+    assert_eq!(outcome(&p, "g"), Outcome::Refused(Refusal::BadPolicy));
+}
+
+// ----- Policy -----
+
+#[test]
+fn test_a_non_admin_may_not_change_the_policy_of_a_normal_group_or_a_friendship() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Manage)], Policy::default()),
+        policy("p0", 2, g, Policy::default(), &["g"]),
+    ]);
+    assert_eq!(outcome(&p, "p0"), Outcome::Refused(Refusal::NotAdmin));
+
+    let f = pair_group(1, 2, 0);
+    let capped = Policy {
+        member_cap: Some(3),
+        ..Policy::friendship()
+    };
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, f, &["r0"]),
+        policy("p0", 1, f, capped, &["a0"]),
+    ]);
+    assert_eq!(outcome(&p, "p0"), Outcome::Refused(Refusal::NotAdmin));
+    assert_eq!(p.group(&f).unwrap().policy, Policy::friendship());
+}
+
+#[test]
+fn test_an_admin_changes_the_member_cap_and_not_below_the_members() {
+    let g = id("g");
+    let raise = Policy {
+        member_cap: Some(3),
+        ..Policy::default()
+    };
+    let lower = Policy {
+        member_cap: Some(1),
+        ..Policy::default()
+    };
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        policy("p0", 1, g, raise, &["g"]),
+        policy("p1", 1, g, lower, &["p0"]),
+    ]);
+    assert_eq!(outcome(&p, "p0"), Outcome::Applied);
+    assert_eq!(p.group(&g).unwrap().policy.member_cap, Some(3));
+    assert_eq!(
+        outcome(&p, "p1"),
+        Outcome::Refused(Refusal::OverCap { cap: 1 })
+    );
+}
+
+// ----- Member cap -----
+
+#[test]
+fn test_the_member_cap_refuses_the_add_past_it() {
+    let g = id("g");
+    let capped = Policy {
+        member_cap: Some(2),
+        ..Policy::default()
+    };
+    let p = project(&[
+        custom("g", 1, &[], capped),
+        add("a1", 1, g, 2, Role::Read, &["g"]),
+        add("a2", 1, g, 3, Role::Read, &["a1"]),
+    ]);
+    assert_eq!(outcome(&p, "a1"), Outcome::Applied);
+    assert_eq!(
+        outcome(&p, "a2"),
+        Outcome::Refused(Refusal::OverCap { cap: 2 })
+    );
+    assert_eq!(p.group(&g).unwrap().members.len(), 2);
+}
+
+#[test]
+fn test_concurrent_adds_past_the_cap_keep_the_lowest_event_ids() {
+    // F2 (S2 friendship). Two concurrent adds and one free place: the add with the lower event ID
+    // wins, in every order.
+    let g = id("g");
+    let capped = Policy {
+        member_cap: Some(3),
+        ..Policy::default()
+    };
+    let events = [
+        custom("g", 1, &[(2, Role::Read)], capped),
+        add("a1", 1, g, 3, Role::Read, &["g"]),
+        add("a2", 1, g, 4, Role::Read, &["g"]),
+    ];
+    let (low, high, low_key) = if id("a1") < id("a2") {
+        ("a1", "a2", 3)
+    } else {
+        ("a2", "a1", 4)
+    };
+    let p = project(&events);
+    assert_eq!(outcome(&p, low), Outcome::Applied);
+    assert_eq!(
+        outcome(&p, high),
+        Outcome::Refused(Refusal::OverCap { cap: 3 })
+    );
+    let members: Vec<Key> = p.group(&g).unwrap().members.keys().copied().collect();
+    assert_eq!(members, vec![key(1), key(2), key(low_key)]);
+
+    let mut reversed = events.to_vec();
+    reversed.reverse();
+    assert_eq!(project(&reversed), p);
+}
+
+// ----- Templates -----
+
+#[test]
+fn test_a_template_admits_only_the_policy_it_names() {
+    let capped = Policy {
+        member_cap: Some(2),
+        ..Policy::default()
+    };
+    let p = project(&[
+        create("c1", 1, &[], Template::Channel, capped, &[], false),
+        create(
+            "c2",
+            1,
+            &[],
+            Template::Private,
+            Policy::default(),
+            &[],
+            false,
+        ),
+        create(
+            "c3",
+            1,
+            &[],
+            Template::Friendship,
+            Policy {
+                member_cap: Some(3),
+                ..Policy::friendship()
+            },
+            &[(2, Role::Manage)],
+            false,
+        ),
+        create(
+            "c4",
+            1,
+            &[],
+            Template::Private,
+            Policy {
+                join: Join::Invite,
+                ..Policy::default()
+            },
+            &[(2, Role::Read)],
+            false,
+        ),
+    ]);
+    assert_eq!(
+        outcome(&p, "c1"),
+        Outcome::Refused(Refusal::BadTemplate(Template::Channel))
+    );
+    assert_eq!(
+        outcome(&p, "c2"),
+        Outcome::Refused(Refusal::BadTemplate(Template::Private))
+    );
+    assert_eq!(
+        outcome(&p, "c3"),
+        Outcome::Refused(Refusal::BadTemplate(Template::Friendship))
+    );
+    assert_eq!(outcome(&p, "c4"), Outcome::Applied);
+}
+
+#[test]
+fn test_admins_on_create_is_for_friendships_only() {
+    let p = project(&[create(
+        "g",
+        1,
+        &[],
+        Template::Channel,
+        Policy::default(),
+        &[(2, Role::Read)],
+        true,
+    )]);
+    assert_eq!(
+        outcome(&p, "g"),
+        Outcome::Refused(Refusal::BadTemplate(Template::Channel))
+    );
+}
+
+#[test]
+fn test_a_join_is_for_a_friendship_and_a_normal_group_refuses_it() {
+    let g = id("g");
+    let mutual = Policy {
+        join: Join::MutualRequest,
+        ..Policy::default()
+    };
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Read)], mutual),
+        join("j0", 2, g, &["g"]),
+    ]);
+    assert_eq!(
+        outcome(&p, "j0"),
+        Outcome::Refused(Refusal::JoinNotSupported)
+    );
+}
+
+#[test]
+fn test_a_removal_on_a_policy_that_continues_does_not_dissolve() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        remove("x0", 1, g, 2, &["g"]),
+    ]);
+    assert_eq!(outcome(&p, "x0"), Outcome::Applied);
+    assert_eq!(p.group(&g).unwrap().dissolved_by, None);
+    assert_eq!(
+        Policy::default().on_member_removed,
+        OnMemberRemoved::Continue
+    );
+}
+
+// ----- Membership rules -----
+
+#[test]
+fn test_a_non_member_may_not_add_and_a_pending_friend_may_not_act() {
+    let g = id("g");
+    let f = pair_group(1, 2, 0);
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 3, g, 4, Role::Read, &["g"]),
+        request("r0", 1, 2, 0, &[], false),
+        add("a1", 2, f, 3, Role::Read, &["r0"]),
+    ]);
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotActive));
+    assert_eq!(outcome(&p, "a1"), Outcome::Refused(Refusal::NotActive));
+}
+
+#[test]
+fn test_a_non_manager_may_not_add_or_remove_a_member() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write), (3, Role::Read)],
+            Policy::default(),
+        ),
+        add("a0", 2, g, 4, Role::Read, &["g"]),
+        remove("x0", 2, g, 3, &["g"]),
+    ]);
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NotManager));
+}
+
+#[test]
+fn test_only_an_invitee_may_accept_a_friendship_request() {
+    let g = pair_group(1, 2, 0);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("j0", 3, g, &["r0"]),
+    ]);
+    assert_eq!(outcome(&p, "j0"), Outcome::Refused(Refusal::NotInvited));
+    assert!(!p.friends(&key(1), &key(2)));
+}
+
+#[test]
+fn test_a_friendship_request_must_name_its_pair_and_counter() {
+    let wrong_group = Event {
+        id: id("r0"),
+        author: key(1),
+        after: vec![],
+        group: Some(id("not a friendship")),
+        body: Body::Create(Create {
+            template: Template::Friendship,
+            policy: Policy::friendship(),
+            members: vec![(key(2), Role::Manage)],
+            admins_on_create: false,
+        }),
+    };
+    let p = project(&[wrong_group]);
+    assert_eq!(
+        outcome(&p, "r0"),
+        Outcome::Refused(Refusal::WrongFriendshipId)
+    );
+
+    // A request for counter 1 that does not see a dissolve is refused.
+    let g = pair_group(1, 2, 0);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, g, &["r0"]),
+        request("r9", 1, 2, 1, &["a0"], false),
+    ]);
+    assert_eq!(
+        outcome(&p, "r9"),
+        Outcome::Refused(Refusal::WrongFriendshipId)
+    );
+}
+
+// ----- Friendship -----
+
+#[test]
+fn test_a_removal_by_either_side_dissolves_the_friendship() {
+    let g = pair_group(1, 2, 0);
+    for (by, other) in [(1u8, 2u8), (2, 1)] {
+        let p = project(&[
+            request("r0", 1, 2, 0, &[], false),
+            join("a0", 2, g, &["r0"]),
+            remove("x", by, g, other, &["a0"]),
+        ]);
+        assert_eq!(outcome(&p, "x"), Outcome::Applied);
+        assert!(!p.friends(&key(1), &key(2)));
+        assert_eq!(p.group(&g).unwrap().dissolved_by, Some(id("x")));
+    }
+}
+
+#[test]
+fn test_a_removal_concurrent_with_the_accept_dissolves_it_in_every_order() {
+    // F3 (S2 friendship). The removal and the accept are concurrent. In every order the
+    // friendship ends.
+    let g = pair_group(1, 2, 0);
+    let events = [
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, g, &["r0"]),
+        remove("x", 1, g, 2, &["r0"]),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "x"), Outcome::Applied);
+    assert!(!p.friends(&key(1), &key(2)));
+    assert!(p.group(&g).unwrap().dissolved_by.is_some());
+
+    let mut reversed = events.to_vec();
+    reversed.reverse();
+    assert_eq!(project(&reversed), p);
+}
+
+#[test]
+fn test_mutual_removal_dissolves_the_friendship_once() {
+    // F4 (S2 friendship). Both sides remove. One removal dissolves the friendship, and the other
+    // finds it already dissolved.
+    let g = pair_group(1, 2, 0);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, g, &["r0"]),
+        remove("x", 1, g, 2, &["a0"]),
+        remove("y", 2, g, 1, &["a0"]),
+    ]);
+    // Which removal comes first is decided by event ID. The other is refused as dissolved.
+    let applied = ["x", "y"]
+        .iter()
+        .filter(|name| outcome(&p, name) == Outcome::Applied)
+        .count();
+    assert_eq!(applied, 1);
+    for name in ["x", "y"] {
+        let result = outcome(&p, name);
+        assert!(
+            result == Outcome::Applied || result == Outcome::Refused(Refusal::Dissolved),
+            "{name} was {result:?}"
+        );
+    }
+    assert!(!p.friends(&key(1), &key(2)));
+}
+
+#[test]
+fn test_a_dissolved_friendship_is_not_revived_by_its_own_accept_in_any_order() {
+    // F5 (S2 friendship). The accept is concurrent with the removal that dissolves the friendship.
+    // Whichever comes first, the friendship ends. The accept's outcome is decided by the order
+    // (removal and voiding are the voiding track's rules).
+    let g = pair_group(1, 2, 0);
+    let events = [
+        request("r0", 1, 2, 0, &[], false),
+        remove("x", 1, g, 2, &["r0"]),
+        join("a0", 2, g, &["r0"]),
+    ];
+    let p = project(&events);
+    assert!(!p.friends(&key(1), &key(2)));
+    assert!(p.group(&g).unwrap().dissolved_by.is_some());
+    let mut reversed = events.to_vec();
+    reversed.reverse();
+    assert_eq!(project(&reversed), p);
+}
+
+#[test]
+fn test_re_friending_creates_a_new_group_with_the_counter_incremented() {
+    // F5, the other half (S2 friendship). After a dissolve, a new request is open, and accepting
+    // it makes a new friendship in a new group.
+    let f0 = pair_group(1, 2, 0);
+    let f1 = pair_group(1, 2, 1);
+    assert_ne!(f0, f1);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, f0, &["r0"]),
+        remove("x", 1, f0, 2, &["a0"]),
+        request("r2", 1, 2, 1, &["x"], false),
+        join("a3", 2, f1, &["r2"]),
+    ]);
+    assert_eq!(outcome(&p, "r2"), Outcome::Applied);
+    assert_eq!(outcome(&p, "a3"), Outcome::Applied);
+    assert!(p.friends(&key(1), &key(2)));
+    assert_eq!(p.group(&f0).unwrap().dissolved_by, Some(id("x")));
+}
+
+#[test]
+fn test_concurrent_requests_for_one_pair_collapse_into_one_friendship() {
+    // The design's collapse (§5.4): a request in each direction is one friendship.
+    let g = pair_group(1, 2, 0);
+    let events = [
+        request("r0", 1, 2, 0, &[], false),
+        request("r1", 2, 1, 0, &[], false),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "r0"), Outcome::Applied);
+    assert_eq!(outcome(&p, "r1"), Outcome::Applied);
+    let friendships = p
+        .groups()
+        .filter(|(_, view)| view.friendship == Pair::of(key(1), key(2)))
+        .count();
+    assert_eq!(friendships, 1);
+    assert!(p.friends(&key(1), &key(2)));
+    assert_eq!(p.group(&g).unwrap().present.len(), 2);
+
+    let mut reversed = events.to_vec();
+    reversed.reverse();
+    assert_eq!(project(&reversed), p);
+}
+
+#[test]
+fn test_a_friendship_has_no_cap_beyond_its_two_and_no_third_member() {
+    let g = pair_group(1, 2, 0);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, g, &["r0"]),
+        add("a1", 1, g, 3, Role::Read, &["a0"]),
+    ]);
+    assert_eq!(
+        outcome(&p, "a1"),
+        Outcome::Refused(Refusal::OverCap { cap: 2 })
+    );
+}
+
+// ----- Properties over arrival order -----
+
+/// A random set of group events. Each step picks a kind, the actors, a group among those
+/// already named, and an `after` set drawn from the earlier events.
+fn script() -> impl Strategy<Value = Vec<(u8, u8, u8, u8, u8, u8)>> {
+    prop::collection::vec(
+        (0u8..7, 1u8..=4, 1u8..=4, 0u8..5, 0u8..4, any::<u8>()),
+        1..16,
+    )
+}
+
+fn build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
+    const ROLES: [Role; 5] = [
+        Role::Pull,
+        Role::Read,
+        Role::Write,
+        Role::Manage,
+        Role::Admin,
+    ];
+    let mut events: Vec<Event> = Vec::new();
+    // The groups named so far, so that most events name a group that exists.
+    let mut groups: Vec<Hash> = Vec::new();
+    for (i, &(kind, author, target, role, pick, mask)) in script.iter().enumerate() {
+        let name = format!("e{i}");
+        let after_hashes: Vec<Hash> = events
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| (mask >> (j % 8)) & 1 == 1)
+            .map(|(_, earlier)| earlier.id)
+            .rev()
+            .take(3)
+            .collect();
+        let group = groups
+            .get(usize::from(pick) % groups.len().max(1))
+            .copied()
+            .unwrap_or_else(|| id("none"));
+        let role = ROLES[usize::from(role)];
+        let body_and_group = match kind {
+            0 => {
+                let cap = if target % 2 == 0 {
+                    None
+                } else {
+                    Some(usize::from(target))
+                };
+                let policy = Policy {
+                    member_cap: cap,
+                    ..Policy::default()
+                };
+                let members = if target == author {
+                    vec![]
+                } else {
+                    vec![(key(target), role)]
+                };
+                let body = Body::Create(Create {
+                    template: Template::Custom,
+                    policy,
+                    members,
+                    admins_on_create: false,
+                });
+                (None, body)
+            }
+            1 => {
+                let counter = u32::from(pick % 4 == 0);
+                let group =
+                    Pair::of(key(author), key(target)).map(|pair| friendship_id(&pair, counter));
+                let body = Body::Create(Create {
+                    template: Template::Friendship,
+                    policy: Policy::friendship(),
+                    members: vec![(key(target), Role::Manage)],
+                    admins_on_create: mask % 2 == 1,
+                });
+                (group, body)
+            }
+            2 => (Some(group), Body::Join),
+            3 => {
+                let policy = Policy {
+                    member_cap: if target % 2 == 0 {
+                        None
+                    } else {
+                        Some(usize::from(target))
+                    },
+                    ..Policy::default()
+                };
+                (Some(group), Body::Policy(policy))
+            }
+            4 => (
+                Some(group),
+                Body::Member(MemberOp::Add {
+                    member: key(target),
+                    role,
+                }),
+            ),
+            5 => (
+                Some(group),
+                Body::Member(MemberOp::Remove {
+                    member: key(target),
+                }),
+            ),
+            _ => (
+                Some(group),
+                Body::Member(MemberOp::SetRole {
+                    member: key(target),
+                    role,
+                }),
+            ),
+        };
+        let (group, body) = body_and_group;
+        let created = Event {
+            id: id(&name),
+            author: key(author),
+            after: after_hashes,
+            group,
+            body,
+        };
+        if matches!(created.body, Body::Create(_)) {
+            groups.push(created.group.unwrap_or(created.id));
+        }
+        events.push(created);
+    }
+    events
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn prop_the_final_state_does_not_depend_on_the_order_the_events_arrive_in(
+        script in script(),
+        seed in any::<u64>(),
+    ) {
+        let events = build(&script);
+        let expected = project(&events);
+        let shuffle = shuffled(&events, seed.max(1));
+        let shuffled_state = fold(&shuffle).unwrap();
+        prop_assert_eq!(&shuffled_state, &expected);
+        let mut reversed = events;
+        reversed.reverse();
+        prop_assert_eq!(fold(&reversed).unwrap(), expected);
+    }
+
+    #[test]
+    fn prop_no_group_is_ever_over_its_cap_and_a_friendship_is_active_only_when_both_are_present(
+        script in script(),
+    ) {
+        let p = project(&build(&script));
+        for (_, view) in p.groups() {
+            if let Some(cap) = view.policy.member_cap {
+                prop_assert!(view.members.len() <= cap);
+            }
+            if view.is_active()
+                && let Some(pair) = view.friendship
+            {
+                prop_assert!(pair.members().iter().all(|k| view.present.contains(k)));
+            }
+        }
+    }
+}
