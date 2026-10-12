@@ -7,15 +7,15 @@
 
 ## Steps
 
-| Step                         | Track   | Status | Commits | Tests | Notes                  |
-| ---------------------------- | ------- | ------ | ------- | ----- | ---------------------- |
-| P5.1 Observed-remove tags    | tags    | todo   |         |       | S8 model               |
-| P5.2 Tag index on tuple keys | tags    | todo   |         |       |                        |
-| P5.3 Compaction              | compact | todo   |         |       |                        |
-| P5.4 Documents               | docs    | todo   |         |       |                        |
-| P5.5 Search                  | search  | todo   |         |       |                        |
-| P5.6 Content on removal      | docs    | todo   |         |       | decision 4             |
-| P5.7 Aliases as tags         | alias   | todo   |         |       | owner answers recorded |
+| Step                         | Track   | Status | Commits                | Tests                 | Notes                             |
+| ---------------------------- | ------- | ------ | ---------------------- | --------------------- | --------------------------------- |
+| P5.1 Observed-remove tags    | tags    | todo   |                        |                       | S8 model                          |
+| P5.2 Tag index on tuple keys | tags    | todo   |                        |                       |                                   |
+| P5.3 Compaction              | compact | todo   |                        |                       |                                   |
+| P5.4 Documents               | docs    | todo   |                        |                       |                                   |
+| P5.5 Search                  | search  | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9) | over `tag_claims()` and the index |
+| P5.6 Content on removal      | docs    | todo   |                        |                       | decision 4                        |
+| P5.7 Aliases as tags         | alias   | todo   |                        |                       | owner answers recorded            |
 
 ## Decisions
 
@@ -164,3 +164,50 @@ Both properties failed at `37a8344b`, and the cause was in the oracle side, not 
 - The regression file keeps `cc 0759f56f…`. It replays under both properties. `test_the_regression_histories_reach_the_oracle_through_every_path` runs the two histories from the task in every test run. `test_each_event_names_every_event_its_author_had_seen` checks each event's causal past against its author's record.
 - `PROPTEST_RNG_SEED` selects the runner's RNG, not the input. The `(seed, steps, writers)` triples in the task are the inputs to `history()`, and the named tests use them directly.
 - Suites after the fix: `cargo test --lib tag` 115 passed, `--test tag_claims` 12 passed (the 10 existing plus 2), `--test tag_index` 4 passed, `cargo test --lib` 1104 passed, 3 ignored. The 256-case runs of both properties pass, using a scratch copy with the case count set to 256, since the explicit `cases` in the config overrides `PROPTEST_CASES`.
+
+## 2026-10-12T20-18-28Z Progress: search (P5.5)
+
+Base: `f42c549c` (phase-5). Track: `p5-search`. Commits, in order:
+
+- `7563e10d` `test(rust): search by tag name and value over live claims [P5.5]`
+- `edcdaf7a` `feat(rust): search over the tag index [P5.5]`
+- This record: `docs(id): phase 5 search [phase 5]`
+
+### Steps
+
+| Step        | Status | Commits                | Tests                                                                           |
+| ----------- | ------ | ---------------------- | ------------------------------------------------------------------------------- |
+| P5.5 Search | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9, one a 16-case property), unit test `tag_index::tests` (1) |
+
+### Red, then green
+
+- Red. `tests/search.rs` was written first. Its build failed with `unresolved import id::search`.
+- Green. `src/search.rs` and `TagIndex::named` went in. Two of the nine failed on the first run, both from errors in the test expectations, not in the search. A bare tag's subject order is by digest bytes, not by the letters I used. The first hit is the lowest subject, which is not the subject I had picked. Both expectations were corrected in `edcdaf7a`, and the search code did not change.
+- Planted bug. `TagIndex::named` was changed to `starts_with`, so the name `a` matches `a\0b`. The whole-field test and the property both failed. The change was reverted.
+
+### Decisions
+
+- **A search is a query over the live set.** `search` takes the claims from `tag_claims()`, builds the `TagIndex` over them, and reads it. `search_store` does the same from an `EventStore`. The index is rebuilt on each call (#183). Nothing is persisted.
+- **"Prefix" is a tuple field prefix, matched as whole fields.** The design's prefix scans are over the leading fields of a key. Each field ends with `00 00`, so the value `a` does not match `a\0b`, and the name `a` does not match `a\0b`. A string prefix such as `ci` for `city` is not offered. Under the terminator rule, `a` would match `a\0b` as a string prefix, which the requirement forbids. **Open** for the owner, if a string prefix is wanted.
+- **Matching.** `ValueMatch::Any` matches any value and the bare tag. `Bare` matches only the bare tag. `Exact(v)` matches only `v`. Multi-term AND is not built. The search takes one name.
+- **Results.** Each `Hit` is a subject with the live claims that matched on it, so a contested tag returns both values. Hits are ordered by subject ID bytes, and each hit's claims by claim ID bytes. The subject can be an identity event or a document's `document.put` event ID.
+- **Full-text search is out of scope.** Task 06 says so, and the plan does not schedule it. Nothing was added.
+
+### Test results
+
+- `cargo test --test search`: 9 passed, including `test_the_search_equals_a_filter_over_the_live_set` (16 cases).
+- `cargo test --lib tag_index`: 1 passed (the new unit test). `cargo test --test tag_index`: 4 passed.
+- `cargo test --lib`: 1109 passed, 0 failed, 3 ignored. The P5.4 record has 1108, so this step adds the one unit test.
+- Clippy (`--lib --test search --test tag_index`): no warnings in `src/search.rs`, `src/tag_index.rs`, or `tests/search.rs`. The lib still reports its existing pedantic warnings, which were not counted against the base.
+
+### Open
+
+- Search by author and by kind (design §9.4) is not built. The index has no author key.
+- Multi-term AND (task 06, item 3) is not built.
+- The CLI `tag search` is not wired to `search`.
+- The index is still rebuilt on each call (#183).
+- Pre-existing, not from this step: `Staged::keeps` has no call sites (a dead-code warning).
+
+### Next
+
+P5.5 is complete, so P5.7 can use `search` for aliases. P5.6 content on removal is not started.
