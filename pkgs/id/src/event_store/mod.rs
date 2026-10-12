@@ -9,11 +9,14 @@
 //! - `hashes`: an event's ID to its position.
 //! - `chains`: an author to the applied prefix of their chain: the next sequence
 //!   number, the hash of the last applied event, and the frozen flag.
-//! - `forks`: an author to the fork proof, the two headers that conflict at the
-//!   lowest sequence number where the author has forked.
+//! - `forks`: a fork proof, keyed by its fork point's position: the two headers that conflict at
+//!   that sequence number. An author has a proof at each point it has forked at, and the lowest one
+//!   freezes the chain. A later fork below a point adds its proof and keeps the one above.
 //! - `groups`: a group hash to the positions of the events in that group.
 //! - `proof_ids`: the ID of each fork proof header to its author. A proof header is present
 //!   although it is never applied, so an `after` hash that names it is satisfied.
+//! - `proof_headers`: the ID of each fork proof header to its bytes. A header stays here once a
+//!   proof names it, so a later proof that replaces it does not drop it from the resolution.
 //! - `waiting` and `waiting_by_dep`: the events held waiting or parked, and an index from each
 //!   dependency to the rows that wait for it. The `waiting_rows` module describes them, and
 //!   the waiting pool in memory mirrors them.
@@ -75,7 +78,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v5";
+const FORMAT: &[u8] = b"id.events.store.v6";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -89,6 +92,10 @@ const GROUPS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("groups");
 const PROOF_IDS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("proof_ids");
+/// The bytes of each fork proof header, by ID. Kept once a proof names the header, so a header
+/// that a later proof at the same point drops still resolves, and still counts as present.
+const PROOF_HEADERS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("proof_headers");
 const WAITING: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("waiting");
 const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -431,7 +438,8 @@ impl EventStore {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
             let forks = txn.open_table(FORKS)?;
-            resolve::load(&events, &actions, &forks)?
+            let proof_headers = txn.open_table(PROOF_HEADERS)?;
+            resolve::load(&events, &actions, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         Ok(resolve::roster_of(&resolved, group))
@@ -465,7 +473,9 @@ impl EventStore {
         stored.map(|bytes| decode_stored(bytes.value())).transpose()
     }
 
-    /// The fork proof for `author`, if the author has forked.
+    /// The fork proof that freezes `author`'s chain: the one at the author's lowest fork point, if
+    /// the author has forked. Proofs at higher points are kept as well, and this does not return
+    /// them.
     ///
     /// # Errors
     ///
@@ -473,8 +483,7 @@ impl EventStore {
     pub fn fork_proof(&self, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
         let txn = self.db.begin_read()?;
         let forks = txn.open_table(FORKS)?;
-        let row = forks.get(author.as_slice())?;
-        row.map(|row| decode_proof(row.value())).transpose()
+        lowest_proof(&forks, author)
     }
 
     /// The positions, as `(author, seq)`, of the stored events in `group`.
@@ -509,6 +518,7 @@ impl EventStore {
         let forks = txn.open_table(FORKS)?;
         let groups = txn.open_multimap_table(GROUPS)?;
         let proof_ids = txn.open_table(PROOF_IDS)?;
+        let proof_headers = txn.open_table(PROOF_HEADERS)?;
 
         for row in events.iter()? {
             let (position, bytes) = row?;
@@ -575,10 +585,7 @@ impl EventStore {
                     return Err(corrupt("the head of a chain does not match its event"));
                 }
             }
-            let proof = forks
-                .get(author_bytes.value())?
-                .map(|row| decode_proof(row.value()))
-                .transpose()?;
+            let proof = lowest_proof(&forks, &author)?;
             match (chain.frozen, proof) {
                 (false, None) => {}
                 (true, Some(proof)) if proof.seq >= chain.next_seq => {}
@@ -591,9 +598,10 @@ impl EventStore {
         }
 
         for row in forks.iter()? {
-            let (author_bytes, proof_bytes) = row?;
+            let (point, proof_bytes) = row?;
+            let (author, seq) = split_position(point.value())?;
             let chain = chains
-                .get(author_bytes.value())?
+                .get(author.as_slice())?
                 .map(|row| Chain::decode(row.value()))
                 .transpose()?;
             if !chain.is_some_and(|chain| chain.frozen) {
@@ -602,10 +610,17 @@ impl EventStore {
                 ));
             }
             let proof = decode_proof(proof_bytes.value())?;
+            if proof.seq != seq {
+                return Err(corrupt("a fork proof is stored at another fork point"));
+            }
             for header in [&proof.first, &proof.second] {
                 let indexed = proof_ids.get(header.id.as_bytes().as_slice())?;
-                if indexed.map(|row| row.value().to_vec()) != Some(author_bytes.value().to_vec()) {
+                if indexed.map(|row| row.value().to_vec()) != Some(author.to_vec()) {
                     return Err(corrupt("a fork proof header is not indexed as present"));
+                }
+                let kept = proof_headers.get(header.id.as_bytes().as_slice())?;
+                if kept.map(|row| row.value().to_vec()) != Some(header.bytes.clone()) {
+                    return Err(corrupt("a fork proof header is not kept with its bytes"));
                 }
             }
         }
@@ -817,6 +832,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(FORKS)?;
     txn.open_multimap_table(GROUPS)?;
     txn.open_table(PROOF_IDS)?;
+    txn.open_table(PROOF_HEADERS)?;
     txn.open_table(WAITING)?;
     txn.open_multimap_table(WAITING_BY_DEP)?;
     txn.open_table(ACTIONS)?;
@@ -838,6 +854,7 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_table(FORKS).map_err(missing)?;
     txn.open_multimap_table(GROUPS).map_err(missing)?;
     txn.open_table(PROOF_IDS).map_err(missing)?;
+    txn.open_table(PROOF_HEADERS).map_err(missing)?;
     txn.open_table(WAITING).map_err(missing)?;
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     txn.open_table(ACTIONS).map_err(missing)?;
@@ -994,8 +1011,8 @@ pub(crate) fn store_chain(
     Ok(())
 }
 
-/// Writes an author's fork proof, replacing any earlier one. Both headers become present, and
-/// stay present: an earlier proof's headers are not removed from the index.
+/// Writes the fork proof at `seq`, replacing the proof at that point only. Both headers become
+/// present, and their bytes are kept. A proof at a lower point later does not remove them.
 pub(crate) fn store_fork(
     txn: &WriteTransaction,
     author: &AuthorKey,
@@ -1005,13 +1022,32 @@ pub(crate) fn store_fork(
 ) -> Result<(), StoreError> {
     let proof = encode_proof(seq, a, b)?;
     let mut forks = txn.open_table(FORKS)?;
-    forks.insert(author.as_slice(), proof.as_slice())?;
+    forks.insert(position_key(author, seq).as_slice(), proof.as_slice())?;
     drop(forks);
     let mut proof_ids = txn.open_table(PROOF_IDS)?;
+    let mut headers = txn.open_table(PROOF_HEADERS)?;
     for header in [a, b] {
         proof_ids.insert(header.id.as_bytes().as_slice(), author.as_slice())?;
+        headers.insert(header.id.as_bytes().as_slice(), header.bytes.as_slice())?;
     }
     Ok(())
+}
+
+/// The fork proof at `author`'s lowest fork point, if the author has forked. That point freezes
+/// the chain. The rows are keyed by position, so the first row of the author's range is the lowest.
+pub(super) fn lowest_proof(
+    forks: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    author: &AuthorKey,
+) -> Result<Option<ForkProof>, StoreError> {
+    let start = position_key(author, 0);
+    let end = position_key(author, SeqNum::MAX);
+    match forks.range(start.as_slice()..=end.as_slice())?.next() {
+        Some(row) => {
+            let (_, proof) = row?;
+            Ok(Some(decode_proof(proof.value())?))
+        }
+        None => Ok(None),
+    }
 }
 
 impl EventStore {

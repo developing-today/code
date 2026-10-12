@@ -10,9 +10,9 @@
 //! 3. **Frozen.** An event above its author's fork point is refused as
 //!    [`Refusal::Frozen`].
 //! 4. **Fork.** If the author has another event at the same sequence number, stored or
-//!    held, the two are a fork, whatever their backlinks and dependencies. The fork point
-//!    moves down to that sequence number, and the proof holds the two lowest IDs there.
-//!    The applied events from that point on are voided, and no others. The proof headers
+//!    held, the two are a fork, whatever their backlinks and dependencies. The proof for that
+//!    sequence number holds the two lowest IDs there, and the proofs at higher points stay. The
+//!    applied events from the lowest point on are voided, and no others. The proof headers
 //!    become present, which releases the events that waited for them.
 //! 5. **Accept.** The next sequence number, whose backlink is the applied head, is applied
 //!    once every `after` hash is present.
@@ -40,6 +40,20 @@
 //! The applied prefix of a chain is the events below its next sequence number, so the chain
 //! row is what marks the voids.
 //!
+//! # Fork proofs are evidence
+//!
+//! A fork proof is kept. An author has one proof at each sequence number where it has forked,
+//! and these rules hold for all of them:
+//!
+//! - A proof header is present and held for good. It is never applied, and an `after` hash that
+//!   names it is satisfied, so an event that names a header is valid.
+//! - A fork at a lower sequence number adds its own proof and does not remove the proofs above
+//!   it. The lowest point is the fork point: it freezes the chain and voids the author's events
+//!   from there on.
+//! - A proof is replaced only by a conflict at its own sequence number. The replacement keeps
+//!   the two lowest IDs there, and a header it drops stays present and held. It is still a node of
+//!   the resolution, so an event that names it stays valid.
+//!
 //! An `after` hash is present when the store holds the event it names, applied or voided, or
 //! when it is one of a fork's proof headers. A held event waits for each `after` hash that is
 //! not present, so an event of another author that names a voided event still applies. This is
@@ -63,7 +77,8 @@
 //!
 //! An event above its author's fork point is refused as frozen when it arrives after the fork.
 //! When it arrives before, it is kept as voided. So an `after` hash that names such an event is
-//! present in some arrival orders and not in others. The property tests never name one.
+//! present in some arrival orders and not in others. The batch property names rivals, but it
+//! compares the batch path with per-event ingest in one arrival order, so it holds either way.
 //!
 //! The property tests in `tests/event_store_properties.rs` check the applied state against
 //! this definition, for every arrival order.
@@ -77,9 +92,9 @@ use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 use super::resolve::{self, decode_action, encode_action};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
-    ACTIONS, APPLIED, CHAINS, Chain, EVENTS, EventStore, FORKS, ForkProof, HASHES, PROOF_IDS,
-    StoreError, corrupt, decode_proof, decode_stored, position_key, store_chain, store_event,
-    store_fork,
+    ACTIONS, APPLIED, CHAINS, Chain, EVENTS, EventStore, FORKS, ForkProof, HASHES, PROOF_HEADERS,
+    PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key, store_chain,
+    store_event, store_fork,
 };
 use crate::chain::{self, Event};
 use crate::membership::AuthId;
@@ -810,7 +825,8 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
         let events = txn.open_table(EVENTS)?;
         let actions = txn.open_table(ACTIONS)?;
         let forks = txn.open_table(FORKS)?;
-        resolve::load(&events, &actions, &forks)?
+        let proof_headers = txn.open_table(PROOF_HEADERS)?;
+        resolve::load(&events, &actions, &forks, &proof_headers)?
     };
     let resolved = resolve::resolve(&stored, &forks, &headers)?;
 
@@ -904,19 +920,21 @@ fn is_stored(txn: &WriteTransaction, id: &Hash) -> Result<bool, StoreError> {
     Ok(found)
 }
 
+/// Whether `id` is a fork proof header of `author`. A header stays one after a later proof drops
+/// it, so the check reads the presence index, not the current proof.
 fn is_proof_header(
     txn: &WriteTransaction,
     author: &AuthorKey,
     id: &Hash,
 ) -> Result<bool, StoreError> {
-    let proof = read_proof(txn, author)?;
-    Ok(proof.is_some_and(|proof| proof.first.id == *id || proof.second.id == *id))
+    let proof_ids = txn.open_table(PROOF_IDS)?;
+    let indexed = proof_ids.get(id.as_bytes().as_slice())?;
+    Ok(indexed.is_some_and(|row| row.value() == author.as_slice()))
 }
 
+/// The proof at `author`'s lowest fork point, which freezes the chain.
 fn read_proof(txn: &WriteTransaction, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
-    let forks = txn.open_table(FORKS)?;
-    let row = forks.get(author.as_slice())?;
-    row.map(|row| decode_proof(row.value())).transpose()
+    lowest_proof(&txn.open_table(FORKS)?, author)
 }
 
 /// The stored event at `author`'s `seq`, applied or voided, if there is one.
@@ -2304,14 +2322,12 @@ mod tests {
         assert!(store.is_waiting(&a1.id));
     }
 
-    /// KNOWN DEFECT, not yet fixed. A fork at a lower sequence number supersedes the fork proof
-    /// header that a stored event names. The header stays present, so the event is accepted. But
-    /// the header is no longer a node of the resolution, so `resolve` fails with `Corrupt` on the
-    /// fork that moves the fork point. The fork should be recorded as a fork.
+    /// A fork at a lower sequence number adds its own proof and keeps the one above. The header
+    /// that a stored event names stays present, so the event stays valid, and the lower proof
+    /// freezes the chain.
     #[test]
-    #[ignore = "known defect: a fork that supersedes a proof header named by a stored event fails with Corrupt"]
-    fn test_a_superseded_proof_header_named_by_an_event_is_a_known_defect() {
-        let (_dir, mut store) = open();
+    fn test_a_lower_fork_keeps_the_proof_header_an_event_names() {
+        let (dir, mut store) = open();
         let (a, c) = (key(20), key(22));
         let a0 = event(&a, 0, None, Vec::new(), "message");
         let a1 = event(&a, 1, Some(a0.id), Vec::new(), "message");
@@ -2321,10 +2337,70 @@ mod tests {
         for e in [&names_a1, &a1, &a1_rival, &a0] {
             ingest(&mut store, e);
         }
-        assert!(matches!(
-            store.ingest(&a0_rival.bytes, 0),
-            Ok(Ingest::Fork { seq: 0, .. })
-        ));
+        assert_eq!(
+            ingest(&mut store, &a0_rival),
+            Ingest::Fork {
+                author: author(&a),
+                seq: 0
+            }
+        );
+        let proof = store.fork_proof(&author(&a)).unwrap().unwrap();
+        assert_eq!(proof.seq, 0);
+        assert!(applied_ids(&store, &author(&c)).contains(&names_a1.id));
+        assert_eq!(ingest(&mut store, &a1), Ingest::Duplicate { id: a1.id });
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        store.check_invariants().unwrap();
+        assert_eq!(store.fork_proof(&author(&a)).unwrap().unwrap().seq, 0);
+        assert!(applied_ids(&store, &author(&c)).contains(&names_a1.id));
+    }
+
+    /// A fork at a point replaces that point's proof, and the header the new proof drops stays
+    /// present and in the resolution. An event that names the dropped header stays valid.
+    #[test]
+    fn test_a_header_dropped_from_its_point_stays_present_and_named() {
+        let (dir, mut store) = open();
+        let (a, c) = (key(20), key(22));
+        let a0 = event(&a, 0, None, Vec::new(), "message");
+        let a1 = event(&a, 1, Some(a0.id), Vec::new(), "message");
+        let a1_rival = event(&a, 1, Some(a0.id), Vec::new(), "rival");
+        // The proof keeps the two lowest IDs at sequence 1. The higher of the first two is the
+        // header a lower-ID third event drops, so that is the one an event names.
+        let dropped = if a1.id < a1_rival.id {
+            a1_rival.clone()
+        } else {
+            a1.clone()
+        };
+        let third = (0..4096)
+            .map(|i| event(&a, 1, Some(a0.id), Vec::new(), &format!("third {i}")))
+            .find(|e| e.id < dropped.id)
+            .expect("a third event with a lower ID");
+        let names = event(&c, 0, None, vec![dropped.id], "message");
+        // The fork proof is held while `a0` is absent, so no header is stored.
+        for e in [&a1, &a1_rival, &names] {
+            ingest(&mut store, e);
+        }
+        assert_eq!(
+            ingest(&mut store, &third),
+            Ingest::Fork {
+                author: author(&a),
+                seq: 1
+            }
+        );
+        let proof = store.fork_proof(&author(&a)).unwrap().unwrap();
+        assert!(![proof.first.id, proof.second.id].contains(&dropped.id));
+        assert_eq!(
+            ingest(&mut store, &dropped),
+            Ingest::Duplicate { id: dropped.id }
+        );
+        ingest(&mut store, &a0);
+        assert!(applied_ids(&store, &author(&c)).contains(&names.id));
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        store.check_invariants().unwrap();
+        assert!(applied_ids(&store, &author(&c)).contains(&names.id));
     }
 
     /// `SplitMix64`, as the property tests under `tests/` use it. A scenario is a function of its
@@ -2343,9 +2419,8 @@ mod tests {
 
     /// Three authors' chains with forks at random positions, duplicates, and an arrival order
     /// shuffled from `seed`. Their `after` hashes name the anchor chain, of `key(23)`, which has no
-    /// fork. An `after` hash that names a fork proof header is not generated: a fork that later
-    /// supersedes such a header makes the per-event path fail, which is a known defect and is
-    /// pinned by `test_a_superseded_proof_header_named_by_an_event_is_a_known_defect`.
+    /// fork. A fourth author's events name any event generated before them, rivals included, so an
+    /// `after` hash can name a fork proof header, and a later fork at a lower point can supersede it.
     fn scenario(seed: u64) -> Vec<Event> {
         let mut rng = Rng(seed);
         let mut all: Vec<Event> = Vec::new();
@@ -2381,6 +2456,15 @@ mod tests {
             let backlink = seq.checked_sub(1).map(|prev| chain[prev as usize].id);
             let rival = event(&key(20 + who as u8), seq, backlink, Vec::new(), "rival");
             all.push(rival);
+        }
+        let fourth = key(24);
+        let mut fourth_events: Vec<Event> = Vec::new();
+        for seq in 0..=(rng.below(3) as SeqNum) {
+            let backlink = fourth_events.last().map(|event| event.id);
+            let target = rng.below(all.len() as u64) as usize;
+            let signed = event(&fourth, seq, backlink, vec![all[target].id], "message");
+            all.push(signed.clone());
+            fourth_events.push(signed);
         }
         for _ in 0..rng.below(3) {
             let copy = all[rng.below(all.len() as u64) as usize].clone();
@@ -2420,7 +2504,7 @@ mod tests {
             pages in proptest::prelude::any::<u64>(),
         ) {
             let arrivals = scenario(seed);
-            let authors = [key(20), key(21), key(22), key(23)].map(|k| author(&k));
+            let authors = [key(20), key(21), key(22), key(23), key(24)].map(|k| author(&k));
             let (_da, mut one) = open();
             let per_event: Vec<Ingest> = arrivals.iter().map(|e| ingest(&mut one, e)).collect();
 

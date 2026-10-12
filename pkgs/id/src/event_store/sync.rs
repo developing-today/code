@@ -24,11 +24,10 @@ use super::range::{
     self, Entry, Id, Key, Params, Party, all_skip, check_bounds, decode_frame, frames,
 };
 use super::{
-    EVENTS, EventStore, FORKS, HASHES, Ingest, PROOF_IDS, StoreError, corrupt, decode_proof,
+    EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, decode_stored,
     position_key,
 };
 use crate::chain::{self, Event};
-use crate::waiting::AuthorKey;
 
 /// The protocol ID. The wire version only; K and T are not in it.
 pub const ALPN: &[u8] = b"/id-sync/1";
@@ -131,22 +130,20 @@ impl EventStore {
     pub(crate) fn sync_entries(&self) -> Result<Vec<(Key, Id)>, StoreError> {
         let txn = self.db.begin_read()?;
         let hashes = txn.open_table(HASHES)?;
-        let forks = txn.open_table(FORKS)?;
+        let headers = txn.open_table(PROOF_HEADERS)?;
         let mut entries: Vec<(Key, Id)> = Vec::new();
         for row in hashes.iter()? {
             let (id, position) = row?;
             let id = id_of(id.value())?;
             entries.push((sync_key(position.value(), &id)?, id));
         }
-        for row in forks.iter()? {
-            let (_author, proof) = row?;
-            let proof = decode_proof(proof.value())?;
-            for header in [&proof.first, &proof.second] {
-                let author = *header.header.verifying_key.as_bytes();
-                let position = position_key(&author, header.header.seq_num);
-                let id = *header.id.as_bytes();
-                entries.push((sync_key(&position, &id)?, id));
-            }
+        for row in headers.iter()? {
+            let (_id, bytes) = row?;
+            let header = decode_stored(bytes.value())?;
+            let author = *header.header.verifying_key.as_bytes();
+            let position = position_key(&author, header.header.seq_num);
+            let id = *header.id.as_bytes();
+            entries.push((sync_key(&position, &id)?, id));
         }
         entries.sort_unstable_by_key(|e| e.0);
         entries.dedup_by(|a, b| a.0 == b.0);
@@ -154,7 +151,7 @@ impl EventStore {
     }
 
     /// The encoded bytes of the event with this ID, if the store holds it as a stored event or as
-    /// a current fork proof header.
+    /// a fork proof header, whichever proof names it now.
     ///
     /// # Errors
     ///
@@ -167,23 +164,9 @@ impl EventStore {
             let stored = events.get(position.value())?;
             return Ok(stored.map(|bytes| bytes.value().to_vec()));
         }
-        let proof_ids = txn.open_table(PROOF_IDS)?;
-        let Some(author) = proof_ids.get(id.as_slice())? else {
-            return Ok(None);
-        };
-        let author: AuthorKey = author
-            .value()
-            .try_into()
-            .map_err(|_err| corrupt("a proof ID names no author"))?;
-        let forks = txn.open_table(FORKS)?;
-        let Some(row) = forks.get(author.as_slice())? else {
-            return Ok(None);
-        };
-        let proof = decode_proof(row.value())?;
-        Ok([proof.first, proof.second]
-            .into_iter()
-            .find(|header| header.id.as_bytes() == id)
-            .map(|header| header.bytes))
+        let headers = txn.open_table(PROOF_HEADERS)?;
+        let kept = headers.get(id.as_slice())?;
+        Ok(kept.map(|bytes| bytes.value().to_vec()))
     }
 }
 
