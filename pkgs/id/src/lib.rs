@@ -189,6 +189,7 @@ pub mod meta_client;
 #[cfg(feature = "world")]
 pub mod petname;
 pub mod protocol;
+pub mod pull_policy;
 pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
