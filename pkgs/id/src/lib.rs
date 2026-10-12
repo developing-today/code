@@ -153,6 +153,7 @@
 //! ```
 
 pub mod access;
+pub mod aliases;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod blob_gate;
@@ -171,6 +172,7 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub mod discovery;
+pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
 pub mod envelope_net;
@@ -191,11 +193,14 @@ pub mod protocol;
 pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+pub mod search;
 #[cfg(feature = "world")]
 pub mod server_config;
 pub mod store;
 pub mod store_traits;
 pub mod sync_method;
+pub mod tag_claims;
+pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;

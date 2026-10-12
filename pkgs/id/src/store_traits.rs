@@ -552,6 +552,9 @@ mod tests {
             kind: kind.to_owned(),
             group,
             after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

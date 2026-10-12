@@ -143,6 +143,9 @@ fn scenario(seed: u64) -> Vec<Step> {
             .to_owned(),
             group: if index == 0 { None } else { group },
             after,
+            tag: None,
+            document: None,
+            removes: None,
         };
         let body = action.as_ref().map(|action| encode_body(action).unwrap());
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();

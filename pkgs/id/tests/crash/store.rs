@@ -431,6 +431,9 @@ fn workload() -> Vec<Vec<u8>> {
         kind: kind.to_owned(),
         group: None,
         after,
+        tag: None,
+        document: None,
+        removes: None,
     };
     let a0 = sign(&author, 0, None, None, ext("message", Vec::new())).unwrap();
     let a1 = sign(&author, 1, Some(a0.id), None, ext("message", Vec::new())).unwrap();
