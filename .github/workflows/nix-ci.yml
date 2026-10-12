@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -14,21 +17,37 @@ jobs:
     name: treefmt check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Run treefmt
-        run: nix fmt -- --fail-on-change
+      - name: Check formatting for changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          base_sha="$BASE_SHA"
+          if [[ "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$(git rev-parse HEAD^)"
+          fi
+          changed_files_file="$(mktemp)"
+          trap 'rm -f "$changed_files_file"' EXIT
+          git diff --name-only --diff-filter=ACMR -z "$base_sha...$GITHUB_SHA" > "$changed_files_file"
+          mapfile -d '' changed_files < "$changed_files_file"
+          if ((${#changed_files[@]} == 0)); then
+            echo "No changed files to format-check."
+            exit 0
+          fi
+          nix run .#format-check -- "${changed_files[@]}"
 
   flake-check:
-    name: nix flake check
+    name: Nix flake evaluation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Check root flake devShells and packages
+      - name: Evaluate root flake outputs
         run: |
           nix eval .#devShells.x86_64-linux.default.drvPath
           nix eval .#packages.x86_64-linux.mcpx.drvPath
-          nix eval .#checks.x86_64-linux.treefmt-check.drvPath
+          nix eval .#apps.x86_64-linux.format-check.program

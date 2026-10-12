@@ -37,6 +37,12 @@ fn get_binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_id"))
 }
 
+fn examples_dir() -> PathBuf {
+    std::env::var_os("ID_TEST_EXAMPLES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
+}
+
 /// How long one CLI invocation may run before its test fails. A client stuck
 /// on a silent server must not block the suite.
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
@@ -1653,8 +1659,7 @@ mod serve_tests {
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/counter.wasm");
+        let module = examples_dir().join("roc-counter/counter.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
             &[
@@ -1798,8 +1803,7 @@ mod serve_tests {
     fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/tic-tac-toe/tic-tac-toe.wasm");
+        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
             &["--world", "--world-admin-token", "adm"],
@@ -1897,8 +1901,7 @@ mod serve_tests {
     fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/tic-tac-toe/tic-tac-toe.wasm");
+        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -2002,7 +2005,7 @@ mod serve_tests {
     fn test_one_server_hosts_many_worlds_ad_hoc() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let examples = examples_dir();
         let counter = examples.join("roc-counter/counter.wasm");
         let counter = counter.to_str().unwrap();
         let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
@@ -2201,7 +2204,7 @@ mod serve_tests {
             eprintln!("skipping: no roc binary available");
             return;
         };
-        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
+        let platform = examples_dir().join("roc-world");
         if !platform.join("targets/wasm32/host.wasm").is_file() {
             eprintln!(
                 "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
@@ -2210,8 +2213,7 @@ mod serve_tests {
         }
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let source =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/main.roc");
+        let source = examples_dir().join("roc-counter/main.roc");
         let serve_args = [
             "--world",
             "--world-admin-token",
@@ -2325,15 +2327,14 @@ mod serve_tests {
             eprintln!("skipping: no roc binary available");
             return;
         };
-        let platform = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-world");
+        let platform = examples_dir().join("roc-world");
         if !platform.join("targets/x64musl/libhost.a").is_file() {
             eprintln!("skipping: the platform has no native targets");
             return;
         }
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let source =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/main.roc");
+        let source = examples_dir().join("roc-counter/main.roc");
         let serve_args = [
             "--world",
             "--world-native",
@@ -2419,8 +2420,7 @@ mod serve_tests {
     fn test_native_worlds_install_play_and_survive_a_restart() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/counter-native");
+        let module = examples_dir().join("roc-counter/counter-native");
         let module = module.to_str().unwrap();
         let serve_args = ["--world", "--world-admin-token", "adm", "--world-native"];
         let world = |addr: &str, args: &[&str]| {
@@ -2537,7 +2537,7 @@ mod serve_tests {
     fn test_a_lounge_world_asks_for_capabilities() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/lounge/lounge.wasm");
+        let module = examples_dir().join("lounge/lounge.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -2760,8 +2760,7 @@ mod serve_tests {
     fn test_world_state_survives_a_serve_restart() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/roc-counter/counter.wasm");
+        let module = examples_dir().join("roc-counter/counter.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",

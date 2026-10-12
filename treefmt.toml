@@ -42,7 +42,7 @@ options = ["format", "--write"]
 
 [formatter.prettier]
 command = "prettier"
-includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml"]
+includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml", "*.yml"]
 options = ["--write"]
 
 [formatter.shfmt]

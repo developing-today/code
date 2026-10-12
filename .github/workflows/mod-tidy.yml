@@ -1,94 +1,54 @@
-name: Go Mod Tidy and Commit
+name: Go Mod Tidy
 
 on:
   push:
     branches: [main]
     paths:
-      - "src/graph/**"
       - "pkgs/graph/**"
       - ".github/workflows/mod-tidy.yml"
   pull_request:
     paths:
-      - "src/graph/**"
       - "pkgs/graph/**"
       - ".github/workflows/mod-tidy.yml"
 
+permissions:
+  contents: write
+
 jobs:
-  dump_contexts_to_log:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dump GitHub context
-        env:
-          GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: echo "$GITHUB_CONTEXT"
-      - name: Dump job context
-        env:
-          JOB_CONTEXT: ${{ toJson(job) }}
-        run: echo "$JOB_CONTEXT"
-      - name: Dump steps context
-        env:
-          STEPS_CONTEXT: ${{ toJson(steps) }}
-        run: echo "$STEPS_CONTEXT"
-      - name: Dump runner context
-        env:
-          RUNNER_CONTEXT: ${{ toJson(runner) }}
-        run: echo "$RUNNER_CONTEXT"
-      - name: Dump strategy context
-        env:
-          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
-        run: echo "$STRATEGY_CONTEXT"
-      - name: Dump matrix context
-        env:
-          MATRIX_CONTEXT: ${{ toJson(matrix) }}
-        run: echo "$MATRIX_CONTEXT"
   tidy:
-    name: ${{ matrix.working-directory }} tidy
-    strategy:
-      matrix:
-        include: [{ working-directory: "." }]
+    name: Go module tidy
     runs-on: ubuntu-latest
     steps:
-      - name: Dump job context
-        env:
-          JOB_CONTEXT: ${{ toJson(job) }}
-        run: echo "$JOB_CONTEXT"
-      - name: Dump strategy context
-        env:
-          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
-        run: echo "$STRATEGY_CONTEXT"
-      - name: Dump matrix context
-        env:
-          MATRIX_CONTEXT: ${{ toJson(matrix) }}
-        run: echo "$MATRIX_CONTEXT"
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v7
+
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v7
         with:
-          go-version-file: "${{ matrix.working-directory }}/go.work"
-          check-latest: true
-          cache-dependency-path: "${{ matrix.working-directory }}/go.work.sum"
+          go-version-file: pkgs/graph/go.mod
+          cache-dependency-path: pkgs/graph/go.sum
 
-      - name: Tidy Go modules in multiple directories
+      - name: Tidy Go module
+        working-directory: pkgs/graph
+        run: go mod tidy -compat=1.17
+
+      - name: Verify tidy changes are committed
+        if: github.event_name == 'pull_request'
         run: |
-          set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
+          if [[ -n "$(git status --short --untracked-files=all -- pkgs/graph/go.mod pkgs/graph/go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git status --short --untracked-files=all -- pkgs/graph/go.mod pkgs/graph/go.sum
+            exit 1
+          fi
 
-          dirs=("src/graph")
-
-          for dir in "${dirs[@]}"; do
-            if [[ -d "$dir" && -f "$dir/go.mod" ]]; then
-              echo "Running go mod tidy && go generate in $dir"
-              (cd "$dir" && go mod tidy -compat=1.17 && go generate ./...)
-            else
-              echo "Skipping $dir as it does not contain a go.mod file."
-              exit 1
-            fi
-          done
-
-      - name: Auto commit changes
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          commit_message: "Maintain: Update go.mod and generated files"
-          branch: ${{ github.head_ref }}
+      - name: Commit tidy changes on main
+        if: github.event_name == 'push'
+        run: |
+          if [[ -z "$(git status --short --untracked-files=all -- pkgs/graph/go.mod pkgs/graph/go.sum)" ]]; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pkgs/graph/go.mod pkgs/graph/go.sum
+          git commit -m "chore(graph): tidy Go module"
+          git push origin "HEAD:${GITHUB_REF}"
