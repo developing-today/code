@@ -686,6 +686,132 @@ async fn test_a_request_with_no_answer_times_out_cleanly() {
     );
 }
 
+/// Runs `fetch_history` for `joiner`, with `member` as the transport. The joiner is taken out of the
+/// cast for the call, since the transport reads the member's session from the cast.
+async fn fetch(
+    cast: &mut Cast,
+    joiner: u8,
+    member: u8,
+    wait: Duration,
+) -> Result<Vec<Received>, SchemeError> {
+    let identity = cast.identity(joiner).clone();
+    let mut session = cast.sessions.remove(&id(joiner)).expect("session");
+    let outcome = session
+        .fetch_history(
+            &identity,
+            |asked| {
+                std::future::ready(cast.session(member).answer_history(&asked).expect("answer"))
+            },
+            wait,
+        )
+        .await;
+    cast.sessions.insert(id(joiner), session);
+    outcome
+}
+
+/// The joiner's missed message is released by one fetch through a member, and nothing is asked once
+/// nothing is held (P4.6).
+#[tokio::test]
+async fn test_a_joiner_fetches_the_epoch_it_missed_and_reads_its_message() {
+    let mut cast = missed_update();
+    let message = cast.send(1, "under the update's epoch");
+    cast.deliver(&message, &[4]);
+
+    let read = fetch(&mut cast, 4, 2, HISTORY_WAIT).await.expect("fetched");
+    assert_eq!(read, vec![text("under the update's epoch")]);
+    assert_eq!(cast.epoch_set(4), cast.epoch_set(1));
+
+    let again = fetch(&mut cast, 4, 2, HISTORY_WAIT)
+        .await
+        .expect("nothing to fetch");
+    assert!(again.is_empty(), "nothing held waits on a secret");
+}
+
+/// A non-member holds the message it cannot read, and a member refuses to answer it. The fetch ends
+/// refused, and the message stays held.
+#[tokio::test]
+async fn test_a_non_member_gets_nothing_from_a_fetch() {
+    let mut cast = missed_update();
+    let message = cast.send(1, "under the update's epoch");
+    cast.deliver(&message, &[5]);
+
+    let outcome = fetch(&mut cast, 5, 2, HISTORY_WAIT).await;
+    assert!(
+        matches!(outcome, Err(SchemeError::History(HistoryError::Refused))),
+        "{outcome:?}"
+    );
+    assert!(
+        cast.session(5).request_history().is_some(),
+        "the message stays held"
+    );
+}
+
+/// A member that is offline never answers. The fetch times out, and the joiner's message is still
+/// held, so a later answer releases it (P4.6).
+#[tokio::test]
+async fn test_a_fetch_with_no_answer_times_out_and_leaves_the_message_held() {
+    let mut cast = missed_update();
+    let message = cast.send(1, "under the update's epoch");
+    cast.deliver(&message, &[4]);
+
+    let identity = cast.identity(4).clone();
+    let mut session = cast.sessions.remove(&id(4)).expect("session");
+    let outcome = session
+        .fetch_history(
+            &identity,
+            |_| std::future::pending::<Option<HistoryAnswer>>(),
+            Duration::from_millis(20),
+        )
+        .await;
+    cast.sessions.insert(id(4), session);
+    assert!(
+        matches!(outcome, Err(SchemeError::History(HistoryError::Timeout(_)))),
+        "{outcome:?}"
+    );
+    assert!(
+        cast.session(4).request_history().is_some(),
+        "the message is still held after the timeout"
+    );
+
+    let read = fetch(&mut cast, 4, 2, HISTORY_WAIT)
+        .await
+        .expect("fetched after the timeout");
+    assert_eq!(read, vec![text("under the update's epoch")]);
+}
+
+/// A member refuses an epoch it does not hold. Member 5 joins after the update, so it holds the join's
+/// epoch and not the update's. Member 2 holds the update's epoch and answers.
+#[test]
+fn test_a_member_refuses_an_epoch_it_does_not_hold() {
+    let mut cast = missed_update();
+    let message = cast.send(1, "under the update's epoch");
+    cast.deliver(&message, &[4]);
+    let join = cast.join(1, 5);
+    for envelope in &join {
+        cast.deliver(envelope, &[2, 3, 4, 5]);
+    }
+    assert!(cast.members_of(2).contains(&id(5)), "5 is a member");
+
+    let request = cast
+        .session(4)
+        .request_history()
+        .expect("the missing epoch");
+    assert!(
+        cast.session(5)
+            .answer_history(&request)
+            .expect("answer")
+            .is_none(),
+        "a member refuses an epoch it does not hold"
+    );
+    assert!(
+        cast.session(2)
+            .answer_history(&request)
+            .expect("answer")
+            .is_some(),
+        "a member that holds the epoch answers"
+    );
+}
+
 // --- welcome chunks -------------------------------------------------------------------------------
 
 /// A frame small enough that a welcome of a few epochs needs several chunks. A chunk is then
@@ -1941,14 +2067,11 @@ proptest! {
     }
 }
 
-/// Open (P4.7). An update made without knowing a concurrent add never reaches the joiner: the
-/// joiner's welcome carries the secrets of the adder's view, and the update's secret is not sent to
-/// it. The joiner then holds one epoch fewer than the members, and messages under that epoch are
-/// withheld from it. This pins the gap as it is. A refusal, or a fetch of the missing secret through
-/// lazy history (P4.6), would change this test.
-#[test]
-fn test_open_a_joiner_misses_an_update_made_without_knowing_it() {
-    let mut cast = Cast::new(&[1, 2, 3, 4]);
+/// The open case (P4.7). Member 1 makes an update without knowing that member 2 is adding 4, so the
+/// update's secret never reaches 4 through the welcome. Returns the cast once the add and the update
+/// are delivered to everyone who saw them. Member 5 is seeded but not added.
+fn missed_update() -> Cast {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3, 4]);
 
@@ -1956,6 +2079,25 @@ fn test_open_a_joiner_misses_an_update_made_without_knowing_it() {
     let update = cast.update(1);
     cast.deliver(&add, &[1, 3, 4]);
     cast.deliver(&update, &[2, 3, 4]);
+    // The add is also logged, so the group model lists 4 as the crate's roster does.
+    cast.log(
+        2,
+        Body::Member(MemberOp::Add {
+            member: id(4),
+            role: Role::Admin,
+        }),
+    );
+    cast
+}
+
+/// Open (P4.7), closed by lazy history (P4.6). An update made without knowing a concurrent add never
+/// reaches the joiner through the welcome: the update's secret is not sent to it, so the joiner
+/// holds one epoch fewer than the members, and a message under that epoch is withheld. The joiner
+/// asks a member for the missing secret, the member seals its answer to the joiner's identity key,
+/// and the joiner reads the held message.
+#[test]
+fn test_open_a_joiner_misses_an_update_made_without_knowing_it() {
+    let mut cast = missed_update();
 
     assert!(
         cast.epoch_set(4).is_subset(&cast.epoch_set(1)),
@@ -1969,6 +2111,27 @@ fn test_open_a_joiner_misses_an_update_made_without_knowing_it() {
     assert_eq!(
         cast.deliver(&message, &[4]),
         vec![vec![Received::Withheld(message.id())]]
+    );
+
+    let request = cast
+        .session(4)
+        .request_history()
+        .expect("the missing epoch");
+    let answer = cast
+        .session(2)
+        .answer_history(&request)
+        .expect("answer")
+        .expect("a member answers");
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    assert_eq!(read, vec![text("under the update's epoch")]);
+    assert_eq!(
+        cast.epoch_set(4),
+        cast.epoch_set(1),
+        "the joiner holds every epoch the members hold"
     );
 }
 
