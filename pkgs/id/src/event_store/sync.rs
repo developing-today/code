@@ -14,6 +14,9 @@
 //! K, T, the frame budget and the session budget are local. The frame budget only has to stay
 //! under the frame cap. A session reads at most its session budget in reconciliation, and ends
 //! with [`BudgetExceeded`] past it, before the store is written.
+//!
+//! Before it writes, each side checks the peer against its own [`PullGate`]. A refused peer gets no
+//! event: the connection closes with an application code, and the peer's next read fails.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard};
@@ -31,7 +34,7 @@ use super::{
     position_key,
 };
 use crate::chain::{self, Event};
-use crate::pull_policy::PullGate;
+use crate::pull_policy::{PullGate, PullRefused};
 
 /// The protocol ID. The wire version only; K and T are not in it.
 pub const ALPN: &[u8] = b"/id-sync/1";
@@ -44,6 +47,9 @@ const BATCH_EVENTS: usize = 256;
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
+
+/// The application close code when the pull policy refuses the peer. [`Cut`] closes with 1.
+const CLOSE_PULL_REFUSED: u32 = 2;
 
 /// A range session read past its session budget during reconciliation.
 ///
@@ -128,7 +134,7 @@ pub(crate) enum Cut {
 ///
 /// Returns an error if the peer breaks the protocol, a frame is malformed or too large, an
 /// event fails verification, the session does not end within the flight limit or within
-/// `deadline`, or the connection fails.
+/// `deadline`, the connection fails, or `gate` refuses the peer, with [`PullRefused`].
 pub async fn sync_over(
     store: &mut EventStore,
     conn: &Connection,
@@ -344,13 +350,18 @@ async fn run(
     params: Params,
     now_ms: u64,
     cut: Cut,
-    _gate: &PullGate,
+    gate: &PullGate,
 ) -> Result<Outcome> {
     let (mut send, mut recv) = if initiator {
         conn.open_bi().await?
     } else {
         conn.accept_bi().await?
     };
+    // The pull policy decides before a byte is written, so a refused peer gets no event.
+    if !gate.admits(&conn.remote_id()) {
+        conn.close(CLOSE_PULL_REFUSED.into(), b"pull refused");
+        return Err(PullRefused(gate.world().to_owned()).into());
+    }
     let mut out = Outcome::default();
     let party = Party::new(store.sync_entries()?)?;
     let mut budget = ReadBudget {

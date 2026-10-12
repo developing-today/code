@@ -254,16 +254,18 @@ pub async fn sync_with(
 
 /// Answers one session on `send` and `recv`: reads the request, agrees or refuses, and runs the
 /// agreed method. The responder does not choose the method. It runs the one the initiator asked for.
+/// `gate` decides whether `peer` may pull, and is checked before the method is agreed.
 ///
 /// # Errors
 ///
 /// Returns [`SyncError::Timeout`] past `deadline`, [`SyncError::Refused`] when `support` does not
-/// allow the method, and an error for a failed step.
+/// allow the method, [`SyncError::PullRefused`] when `gate` refuses `peer`, and an error for a
+/// failed step.
 pub async fn answer(
     store: &SharedEventStore,
     support: &dyn SyncSupport,
-    _gate: &PullGate,
-    _peer: EndpointId,
+    gate: &PullGate,
+    peer: EndpointId,
     send: SendStream,
     recv: RecvStream,
     deadline: Duration,
@@ -271,6 +273,12 @@ pub async fn answer(
     let mut frames = Frames::new(send, recv);
     let session = async {
         let request: Request = frames.next_message().await?;
+        // The pull policy decides before the method is agreed, so a refused peer gets no event.
+        if !gate.admits(&peer) {
+            frames.send_message(&Answer::Refuse).await?;
+            frames.finish().await;
+            return Err(SyncError::PullRefused);
+        }
         if !support.supports(request.method) {
             frames.send_message(&Answer::Refuse).await?;
             frames.finish().await;
