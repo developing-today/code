@@ -7,16 +7,17 @@
 
 ## Steps
 
-| Step                              | Track      | Status | Commits  | Tests added                      | Notes                                                                  |
-| --------------------------------- | ---------- | ------ | -------- | -------------------------------- | ---------------------------------------------------------------------- |
-| P2.1 Auth-frontier mapping        | auth       | done   | 862401c9 | 13 unit, 2 property, 16 scenario | `membership::frontier`; S2 cases and failure modes as regressions      |
-| P2.2 Admission gate               | auth       | done   | 236dcbc7 | 14 unit, 1 property              | `membership::{gate, layer}`; placeholders; regression for group absent |
-| P2.3 Authority-based voiding      | voiding    | todo   |          |                                  | replaces the Phase 1 rule                                              |
-| P2.4 Friendship cap and dissolve  | friend     | todo   |          |                                  |                                                                        |
-| P2.5 Delegation modes             | delegation | todo   |          |                                  |                                                                        |
-| P2.6 World capabilities           | caps       | todo   |          |                                  | use-count bounds dropped (decision 3)                                  |
-| P2.7 Cross-world reconciliation   | later      | todo   |          |                                  |                                                                        |
-| P2.8 Property and mutation checks | later      | todo   |          |                                  |                                                                        |
+| Step                               | Status | Commits                                                                                  | Tests added                                                                    | Notes                                                                              |
+| ---------------------------------- | ------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| P2.1 Auth-frontier mapping         | done   | 862401c9                                                                                 | 25 unit, 16 scenario (S2 in every order), 3 property                           | p2panda-auth 0.7.1 at rev 3e84cac, no test_utils                                   |
+| P2.2 Admission gate                | done   | 236dcbc7                                                                                 | gate outcomes, group-absent regression                                         |                                                                                    |
+| P2.3 Authority-based voiding       | done   | 88574505, 21d00659, 16cddd77, 24038780, 4e308e8a, d5ec3828, e1b9571b, df4e8413, 4da53d46 | 12 scenarios, property over arrival orders, production-path tests, codec tests | group actions reach production ingest; create takeover refused; late body attaches |
+| P2.4 Groups, templates, friendship | done   | 7d5b84bd, 3e0d4bb3, b3315bfa (superseded pair model), 6503f94b (config)                  | groups 34 to 50 tests, friendship template, property at 256 cases              | pair module replaced by the group template (owner decision)                        |
+| P2.5 Delegation modes              | done   | 0970ee94, 6ed7ddb3                                                                       | 17 mode tests, attenuation, chain search, veto, S2 table                       | managers are roots at their position (design 7.2)                                  |
+| P2.6 World capabilities            | done   | 965b749b, 4b5787a0, 3974cb29, 6cd014e5                                                   | no-count delegation, host limits, partition counts, content kept               | uses refused explicitly; wire target (chain checks) is Phase 3 in the design       |
+| P2.7 Cross-world reconciliation    | done   | 24984c96, 23445bff                                                                       | 9 tests, 256-case property                                                     | crossings carry Write at most; isolation markers apply to crossings out            |
+| P2.8 Property and mutation checks  | done   | c5f197d1 to 5d6b578a (review)                                                            | five planted bugs, all caught                                                  |                                                                                    |
+| P2.9 Server config                 | done   | 6503f94b, 10385cc4                                                                       | 34 config tests                                                                | creation limits, provisioning by key, config keys, primary alias stored            |
 
 ## Decisions
 
@@ -35,7 +36,9 @@
 
 ## Changes to the plan
 
-- None yet.
+- P2.4 re-scoped to the group model (owner, 2026-10-12): the friendship pair module is superseded.
+- P2.9 added (server config and aliases as tags).
+- P2.5 and P2.6 run in parallel with P2.3 where they did not share files; P2.6 wire target is Phase 3 in the design.
 
 ## Review notes and regression tests
 
@@ -45,4 +48,5 @@
 
 ## End
 
-- End commit and full test result: pending.
+- Full test result on the head: `cargo test --all-features --no-fail-fast` exit 0 (lib 1257, cli, production and voiding suites).
+- Not verified: the Nix build (vendored p2panda-sync, p2panda git dependency) is not run.
