@@ -7,17 +7,17 @@
 
 ## Steps
 
-| Step                         | Track   | Status | Commits                | Tests                 | Notes                             |
-| ---------------------------- | ------- | ------ | ---------------------- | --------------------- | --------------------------------- |
-| P5.1 Observed-remove tags    | tags    | todo   |                        |                       | S8 model                          |
-| P5.2 Tag index on tuple keys | tags    | todo   |                        |                       |                                   |
-| P5.3 Compaction              | compact | todo   |                        |                       |                                   |
-| P5.4 Documents               | docs    | todo   |                        |                       |                                   |
-| P5.5 Search                  | search  | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9) | over `tag_claims()` and the index |
-| P5.6 Content on removal      | docs    | todo   |                        |                       | decision 4                        |
-| P5.7 Aliases as tags         | alias   | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7), `src/aliases.rs` (3) | #185, #160 open |
-| Step                         | Track   | Status | Commits                | Tests                                        | Notes           |
-| ---------------------------- | ------- | ------ | ---------------------- | -------------------------------------------- | --------------- |
+| Step                         | Track   | Status | Commits                | Tests                                        | Notes                             |
+| ---------------------------- | ------- | ------ | ---------------------- | -------------------------------------------- | --------------------------------- |
+| P5.1 Observed-remove tags    | tags    | done   | `c999190e`, `79efff10` | `tests/tag_claims.rs` (12)                   | S8 model; fixed by `0f3b7eaa`     |
+| P5.2 Tag index on tuple keys | tags    | done   | `9a91339b`             | `tests/tag_index.rs` (4)                     |                                   |
+| P5.3 Compaction              | compact | done   | `79efff10`             | `tests/tag_claims.rs` (16-case property)     | in memory; closes #184            |
+| P5.4 Documents               | docs    | done   | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5)                     | live editing not built            |
+| P5.5 Search                  | search  | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9)                        | over `tag_claims()` and the index |
+| P5.6 Content on removal      | docs    | todo   |                        |                                              | decision 4                        |
+| P5.7 Aliases as tags         | alias   | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7), `src/aliases.rs` (3) | #185, #160 open                   |
+| Step                         | Track   | Status | Commits                | Tests                                        | Notes                             |
+| ---------------------------- | ------- | ------ | ---------------------- | -------------------------------------------- | ---------------                   |
 
 ## Decisions
 
@@ -51,16 +51,16 @@ Base: `b6f1a1d5` (phase-5). Track: `p5-bodies`. Commits, in order:
 
 ### Steps
 
-| Step                      | Status          | Commits    | Tests                                                                            |
-| ------------------------- | --------------- | ---------- | -------------------------------------------------------------------------------- |
-| P5.1 Observed-remove tags | done            | `c999190e` | S8 tests in `tests/tag_claims.rs`                                                |
-| P5.2 Tag index            | done            | `9a91339b` | `tests/tag_index.rs`                                                             |
-| #182 Body in the event    | done            | `2250f804` | `test_two_replicas_that_exchange_only_events_converge_on_the_tag_set`            |
-| P5.3 Compaction (#184)    | done, in memory | `79efff10` | `test_the_compacted_fold_agrees_with_the_causal_walk` (16 cases, 2 to 3 writers) |
-| P5.4 Documents            | todo            |            |                                                                                  |
-| P5.5 Search               | todo            |            |                                                                                  |
-| P5.6 Content on removal   | todo            |            |                                                                                  |
-| P5.7 Aliases as tags      | todo            |            |                                                                                  |
+| Step                      | Status          | Commits                | Tests                                                                            |
+| ------------------------- | --------------- | ---------------------- | -------------------------------------------------------------------------------- |
+| P5.1 Observed-remove tags | done            | `c999190e`             | S8 tests in `tests/tag_claims.rs`                                                |
+| P5.2 Tag index            | done            | `9a91339b`             | `tests/tag_index.rs`                                                             |
+| #182 Body in the event    | done            | `2250f804`             | `test_two_replicas_that_exchange_only_events_converge_on_the_tag_set`            |
+| P5.3 Compaction (#184)    | done, in memory | `79efff10`             | `test_the_compacted_fold_agrees_with_the_causal_walk` (16 cases, 2 to 3 writers) |
+| P5.4 Documents            | done            | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5)                                                         |
+| P5.5 Search               | done            | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9)                                                            |
+| P5.6 Content on removal   | todo            |                        |                                                                                  |
+| P5.7 Aliases as tags      | done            | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7)                                                           |
 
 ### Red, then green
 
@@ -109,9 +109,9 @@ Base: `37a8344b` (phase-5). Track: `p5-docs`. Commits, in order:
 
 ### Steps
 
-| Step           | Status                                                          | Commits                | Tests                                                          |
-| -------------- | --------------------------------------------------------------- | ---------------------- | -------------------------------------------------------------- |
-| P5.4 Documents | done for the event and the blob path. Live editing is not built | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5), unit tests in `src/documents.rs` (4) |
+| Step           | Status | Commits                | Tests                    |
+| -------------- | ------ | ---------------------- | ------------------------ |
+| P5.4 Documents | done   | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5) |
 
 ### Red, then green
 
@@ -169,8 +169,8 @@ Both properties failed at `37a8344b`, and the cause was in the oracle side, not 
 
 ## 2026-10-12T20-18-28Z Progress: search (P5.5)
 
-| P5.5 Search | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9, one a 16-case property), unit test `tag_index::tests` (1) |
-| P5.7 Aliases as tags | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7 integration), `src/aliases.rs` unit tests (3) |
+| P5.5 Search | done | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9) |
+| P5.7 Aliases as tags | done | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7) |
 Base: `f42c549c` (phase-5). Track: `p5-search`. Commits, in order:
 
 - `7563e10d` `test(rust): search by tag name and value over live claims [P5.5]`
@@ -179,8 +179,8 @@ Base: `f42c549c` (phase-5). Track: `p5-search`. Commits, in order:
 
 ### Steps
 
-| Step        | Status | Commits                | Tests                                                                           |
-| ----------- | ------ | ---------------------- | ------------------------------------------------------------------------------- |
+| Step | Status | Commits | Tests |
+| ---- | ------ | ------- | ----- |
 
 ### Red, then green
 
@@ -214,13 +214,16 @@ Base: `f42c549c` (phase-5). Track: `p5-search`. Commits, in order:
 ### Next
 
 P5.5 is complete, so P5.7 can use `search` for aliases. P5.6 content on removal is not started.
+
 ## 2026-10-12T20-18-39Z Progress: aliases as tags (P5.7)
+
 Base: `f42c549c` (phase-5). Track: `p5-alias`. Commits, in order:
+
 - `e92c72de` `test(rust): aliases as tag claims, contested and prefix-shown [P5.7]`
 - `c2af7b90` `feat(rust): alias display over tag claims and the server primary alias [P5.7]`
 - this record: `docs(id): phase 5 aliases [phase 5]`
-| Step                 | Status | Commits                | Tests                                                               |
-| -------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
+  | Step | Status | Commits | Tests |
+  | -------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
 - Red: `tests/aliases.rs` was committed with `src/aliases.rs` stubbed to the final API (no aliases, no rows). All 7 tests failed on their assertions (for example `left: 0`, `right: 1`).
 - Green: `tests/aliases.rs` 7 of 7 passed. `cargo test --lib`: 1111 passed, 0 failed, 3 ignored (1108 before, plus the 3 unit tests).
 - **An alias is a `tag.set` named `alias`, whose value is its text.** It is attributed to the signing key. Its subject is the object's ID.
@@ -230,11 +233,15 @@ Base: `f42c549c` (phase-5). Track: `p5-alias`. Commits, in order:
 - **Nothing is unique.** Two objects may claim one alias, and both are returned.
 - **Prefix:** the shortest prefix of the hex ID that no other row in the view starts with, at least 7 digits, as git shows short IDs. The full ID is shown when no prefix is unique. The 7-digit minimum is my choice, not from the decisions. Owner to confirm.
 - **Server alias fallback** is read as the stored primary, which sits below the pet name. When there is no primary, the claims are shown contested. The design's separate idea, that the server shows its own alias as a fallback, is "meaning to confirm" and is not built.
+
 ### Not built (open)
+
 - **#185, who may clear an alias claim.** Untouched. An alias is cleared by the existing observed-remove rule.
 - **#160, the user subject.** No identity event exists, so a user's subject is not defined. A user's primary alias is keyed by account key in the config and is not looked up. Only groups get a primary.
 - **Creation date.** The design shows each alias's date. The signed header has no time field (p2panda-core 0.7.1), so the date is not shown. Adding one changes the signed format, so it needs an owner decision.
 - **Where pet names are stored.** Not decided. This module takes them as input.
+
 ### Changes to the plan
+
 - None to the phase. No store format change and no dependency change.
 - #185 and #160 wait on the owner. The creation-date question is new and needs a decision.
