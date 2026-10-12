@@ -557,6 +557,9 @@ mod tests {
                 kind: "message".to_owned(),
                 group: Some(group),
                 after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -814,6 +817,9 @@ mod tests {
             kind: "rival".to_owned(),
             group: Some(group(9)),
             after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(

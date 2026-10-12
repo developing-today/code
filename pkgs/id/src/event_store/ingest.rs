@@ -97,9 +97,11 @@ use super::{
     store_event, store_fork,
 };
 use crate::chain::{self, Event};
+use crate::documents::{is_document_kind, is_removal_kind};
 use crate::membership::AuthId;
 use crate::membership::body::decode_body;
 use crate::rejection::Reason;
+use crate::tag_claims::is_tag_kind;
 use crate::waiting::{AuthorKey, WaitingPool};
 
 /// Why an event was refused. A refused event changes nothing.
@@ -228,6 +230,13 @@ impl EventStore {
     /// - A body that is not a group operation, or no body at all, makes the event content.
     /// - A body that claims to be a group operation decodes to its action, or it is refused.
     /// - A body that is not the one the header commits to, by BLAKE3 hash and size, is refused.
+    /// - A tag event (kind `tag.set` or `tag.clear`) takes no body. Its operation is in its
+    ///   header (#182), so a payload on a tag event is refused. Its tag takes no membership
+    ///   action, and the fold reads it from the stored header (see `claims`).
+    /// - A document event (kind `document.put`) takes no body either. Its content is a blob that
+    ///   the header names by hash, so a payload beside it is refused (P5.4).
+    /// - A removal event (kind `document.remove`) takes no body. It names its document in its
+    ///   header, so a payload beside it is refused (P5.6).
     ///
     /// # Errors
     ///
@@ -242,9 +251,20 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        let action = match body_action(&event, body) {
-            Ok(action) => action,
-            Err(refusal) => return Ok(Ingest::Refused(refusal)),
+        let kind = &event.header.extensions.kind;
+        let action = if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
+            if body.is_some() {
+                return Ok(Ingest::Refused(Refusal::Malformed(
+                    "a tag, document or removal event carries its content in its header, not in a body"
+                        .to_owned(),
+                )));
+            }
+            None
+        } else {
+            match body_action(&event, body) {
+                Ok(action) => action,
+                Err(refusal) => return Ok(Ingest::Refused(refusal)),
+            }
         };
         self.ingest_event(event, action.as_ref(), now_ms)
     }
@@ -406,14 +426,21 @@ fn body_action(
     let Some(body) = body else {
         return Ok(None);
     };
+    committed(event, body)?;
+    decode_body(body).map_err(|err| Refusal::Malformed(err.to_string()))
+}
+
+/// Refuses a body that is not the one the header commits to, by BLAKE3 hash and size.
+fn committed(event: &Event, body: &[u8]) -> Result<(), Refusal> {
     let committed = event.header.payload_hash == Some(Hash::digest(body))
         && u32::try_from(body.len()).is_ok_and(|len| len == event.header.payload_size);
-    if !committed {
-        return Err(Refusal::Malformed(
+    if committed {
+        Ok(())
+    } else {
+        Err(Refusal::Malformed(
             "the body is not the one the header commits to, by hash and size".to_owned(),
-        ));
+        ))
     }
-    decode_body(body).map_err(|err| Refusal::Malformed(err.to_string()))
 }
 
 /// How a call labels the events it stores: applied, or voided. The label is the resolution's answer
@@ -437,6 +464,20 @@ enum Staged {
 }
 
 impl Staged {
+    /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+    fn keeps(&self) -> bool {
+        matches!(
+            self,
+            Self::Stored { .. }
+                | Self::Ready(
+                    Ingest::Accepted { .. }
+                        | Ingest::Voided { .. }
+                        | Ingest::Duplicate { .. }
+                        | Ingest::Waiting { .. },
+                )
+        )
+    }
+
     /// The outcome, with its labels read from the store as it is now.
     fn finish(self, txn: &WriteTransaction) -> Result<Ingest, StoreError> {
         match self {
@@ -1053,6 +1094,9 @@ mod tests {
             kind: kind.to_owned(),
             group: None,
             after,
+            tag: None,
+            document: None,
+            removes: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1612,6 +1656,9 @@ mod tests {
                 kind: "message".to_owned(),
                 group: Some(group),
                 after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };

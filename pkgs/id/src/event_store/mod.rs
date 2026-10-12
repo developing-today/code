@@ -59,6 +59,8 @@ use redb::{
 
 use crate::chain::{self, Event};
 
+mod claims;
+mod documents;
 mod ingest;
 pub mod range;
 mod resolve;
@@ -78,7 +80,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v6";
+const FORMAT: &[u8] = b"id.events.store.v8";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -1116,6 +1118,9 @@ mod tests {
             kind: kind.to_owned(),
             group,
             after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
         }
     }
 
