@@ -59,6 +59,7 @@ impl Writer {
                 value: value.map(str::to_owned),
             }),
             document: None,
+            removes: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
