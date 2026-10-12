@@ -31,6 +31,7 @@ use futures_util::sink;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
+use iroh_base::EndpointId;
 use p2panda_core::Hash;
 use p2panda_store::topics::TopicStore;
 use p2panda_sync::protocols::{LogSync, LogSyncEvent, LogSyncMessage, LogSyncMetrics};
@@ -44,6 +45,7 @@ use tokio::time::timeout;
 use crate::chain::ChainExt;
 use crate::connectivity::connect;
 use crate::event_store::Ingest;
+use crate::pull_policy::PullGate;
 use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
 use crate::world::unix_ms;
@@ -84,6 +86,9 @@ pub enum SyncError {
     /// The responder refused the method.
     #[error("the peer refused {0:?}")]
     Refused(SyncMethod),
+    /// The pull policy refuses this peer. The responder answers `Refuse`, and no event is sent.
+    #[error("the pull policy refuses this peer")]
+    PullRefused,
     /// The responder answered a different method from the one requested.
     #[error("the peer answered {answered:?} to a request for {requested:?}")]
     Mismatch {
@@ -147,20 +152,26 @@ pub struct Outcome {
 }
 
 /// Serves sync sessions on [`SYNC_ALPN`]. Register it with
-/// `Router::builder(..).accept(SYNC_ALPN, SyncProtocol::new(store, support))`.
+/// `Router::builder(..).accept(SYNC_ALPN, SyncProtocol::new(store, support, gate))`.
 #[derive(Clone, Debug)]
 pub struct SyncProtocol {
     store: SharedEventStore,
     support: Arc<dyn SyncSupport>,
+    gate: PullGate,
 }
 
 impl SyncProtocol {
-    /// Serves `store`, running the methods that `support` allows.
+    /// Serves `store`, running the methods that `support` allows, to the peers `gate` admits.
     #[must_use]
-    pub fn new(store: SharedEventStore, support: impl SyncSupport + 'static) -> Self {
+    pub fn new(
+        store: SharedEventStore,
+        support: impl SyncSupport + 'static,
+        gate: PullGate,
+    ) -> Self {
         Self {
             store,
             support: Arc::new(support),
+            gate,
         }
     }
 }
@@ -168,12 +179,22 @@ impl SyncProtocol {
 impl ProtocolHandler for SyncProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let mut sessions = JoinSet::new();
+        let peer = conn.remote_id();
         while let Ok((send, recv)) = conn.accept_bi().await {
             let store = self.store.clone();
             let support = Arc::clone(&self.support);
+            let gate = self.gate.clone();
             sessions.spawn(async move {
-                if let Err(error) =
-                    answer(&store, support.as_ref(), send, recv, SESSION_DEADLINE).await
+                if let Err(error) = answer(
+                    &store,
+                    support.as_ref(),
+                    &gate,
+                    peer,
+                    send,
+                    recv,
+                    SESSION_DEADLINE,
+                )
+                .await
                 {
                     tracing::debug!("sync: session ended: {error}");
                 }
@@ -232,15 +253,21 @@ pub async fn sync_with(
 }
 
 /// Answers one session on `send` and `recv`: reads the request, agrees or refuses, and runs the
-/// agreed method. The responder does not choose the method. It runs the one the initiator asked for.
+/// agreed method.
+///
+/// The responder does not choose the method. It runs the one the initiator asked for. `gate`
+/// decides whether `peer` may pull, and is checked before the method is agreed.
 ///
 /// # Errors
 ///
 /// Returns [`SyncError::Timeout`] past `deadline`, [`SyncError::Refused`] when `support` does not
-/// allow the method, and an error for a failed step.
+/// allow the method, [`SyncError::PullRefused`] when `gate` refuses `peer`, and an error for a
+/// failed step.
 pub async fn answer(
     store: &SharedEventStore,
     support: &dyn SyncSupport,
+    gate: &PullGate,
+    peer: EndpointId,
     send: SendStream,
     recv: RecvStream,
     deadline: Duration,
@@ -248,6 +275,12 @@ pub async fn answer(
     let mut frames = Frames::new(send, recv);
     let session = async {
         let request: Request = frames.next_message().await?;
+        // The pull policy decides before the method is agreed, so a refused peer gets no event.
+        if !gate.admits(&peer) {
+            frames.send_message(&Answer::Refuse).await?;
+            frames.finish().await;
+            return Err(SyncError::PullRefused);
+        }
         if !support.supports(request.method) {
             frames.send_message(&Answer::Refuse).await?;
             frames.finish().await;
@@ -491,8 +524,10 @@ mod tests {
     use super::*;
     use crate::chain::{Event, sign};
     use crate::event_store::EventStore;
+    use crate::pull_policy::{PullGate, PullPolicy, testing};
     use crate::sync_method::{Estimate, LogSyncOnly};
     use crate::waiting::WaitingLimits;
+    use iroh_base::SecretKey;
 
     const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -575,6 +610,16 @@ mod tests {
             .unwrap()
     }
 
+    /// As [`endpoint`], under `key`, so a test knows the identity before it dials.
+    async fn endpoint_as(key: SecretKey) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(key)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
     /// `ep`'s address on its loopback sockets, so a peer dials it without a relay or discovery.
     fn loopback(ep: &Endpoint) -> EndpointAddr {
         EndpointAddr::from_parts(
@@ -594,22 +639,45 @@ mod tests {
     #[derive(Debug)]
     struct Capture {
         store: SharedEventStore,
+        gate: PullGate,
         results: mpsc::UnboundedSender<Result<Outcome, SyncError>>,
     }
 
     impl ProtocolHandler for Capture {
         async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
             while let Ok((send, recv)) = conn.accept_bi().await {
-                let result = answer(&self.store, &LogSyncOnly, send, recv, DEADLINE).await;
+                let result = answer(
+                    &self.store,
+                    &LogSyncOnly,
+                    &self.gate,
+                    conn.remote_id(),
+                    send,
+                    recv,
+                    DEADLINE,
+                )
+                .await;
                 let _ = self.results.send(result);
             }
             Ok(())
         }
     }
 
-    /// Serves `store` on loopback. The receiver gets the responder's result for each session.
+    /// Serves `store` on loopback, to every peer. The receiver gets the responder's result for
+    /// each session.
     async fn responder(
         store: &SharedEventStore,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        responder_gated(store, testing::open_gate()).await
+    }
+
+    /// Serves `store` on loopback under `gate`.
+    async fn responder_gated(
+        store: &SharedEventStore,
+        gate: PullGate,
     ) -> (
         Endpoint,
         Router,
@@ -619,6 +687,7 @@ mod tests {
         let (results, rx) = mpsc::unbounded_channel();
         let handler = Capture {
             store: store.clone(),
+            gate,
             results,
         };
         let router = Router::builder(ep.clone())
@@ -997,5 +1066,184 @@ mod tests {
             "the responder refused the same method, got {answered:?}"
         );
         assert_eq!(applied(&store_b, &[&alice], 2), before, "nothing moved");
+    }
+
+    /// P6.5: open pull is today's behaviour. A stranger pulls every event of the topic.
+    #[tokio::test]
+    async fn test_pull_policy_open_log_session_serves_a_non_member() {
+        let topic = group(10);
+        let alice = key(20);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let (server, _router, mut results) = responder(&store_a).await;
+        let client = endpoint_as(testing::key(0xd9)).await;
+        let outcome = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        results.recv().await.unwrap().unwrap();
+
+        assert_eq!(
+            outcome.received.accepted, 4,
+            "a stranger pulled every event"
+        );
+        assert_eq!(
+            applied(&store_a, &[&alice], 3),
+            applied(&store_b, &[&alice], 3)
+        );
+    }
+
+    /// P6.5: the members option refuses a stranger before any event is sent. The stranger gets
+    /// `Refuse`, the responder reports the refusal, and the stranger's store does not change.
+    #[tokio::test]
+    async fn test_pull_policy_members_log_refuses_a_non_member_and_sends_no_event() {
+        let topic = group(11);
+        let alice = key(22);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        // The founder is the only member. The dialer is a stranger.
+        let world = testing::docs_world(
+            testing::key(0xd0).public(),
+            testing::key(0xd2).public(),
+            false,
+        );
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, testing::live(world));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd1)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed to the stranger"
+        );
+    }
+
+    /// P6.5: a member gets every event under the members option.
+    #[tokio::test]
+    async fn test_pull_policy_members_log_serves_a_member_everything() {
+        let topic = group(12);
+        let alice = key(23);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let world = testing::docs_world(
+            testing::key(0xd0).public(),
+            testing::key(0xd3).public(),
+            false,
+        );
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, testing::live(world));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd3)).await;
+        let outcome = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        results.recv().await.unwrap().unwrap();
+
+        assert_eq!(
+            outcome.received.accepted, 4,
+            "the member pulled every event"
+        );
+        assert_eq!(
+            applied(&store_a, &[&alice], 3),
+            applied(&store_b, &[&alice], 3)
+        );
+    }
+
+    /// P6.5: membership is read when each session starts. A member removed from the fold is refused
+    /// on its next session, and the events it pulled before stay. Nothing new crosses.
+    #[tokio::test]
+    async fn test_pull_policy_members_log_refuses_a_removed_member_on_the_next_session() {
+        let topic = group(13);
+        let (founder, member) = (testing::key(0xd0).public(), testing::key(0xd4).public());
+        let access = testing::live(testing::docs_world(founder, member, false));
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, Arc::clone(&access));
+        let alice = key(24);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 2, topic));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd4)).await;
+        sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        results.recv().await.unwrap().unwrap();
+        assert_eq!(
+            applied(&store_a, &[&alice], 1),
+            applied(&store_b, &[&alice], 1),
+            "the member pulled while it was a member"
+        );
+
+        // The removal lands, and the server gets new events for the topic.
+        access.set(testing::docs_world(founder, member, true));
+        let late = key(25);
+        ingest_all(&store_a, &chain_of(&late, 2, topic));
+        let before = applied(&store_b, &[&late], 1);
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&late], 1),
+            before,
+            "the refused pull sent nothing"
+        );
     }
 }

@@ -13,6 +13,7 @@ use super::{
     Body, Create, Delegate, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role, fold,
     friendship_id,
 };
+use crate::rejection::Reason;
 
 fn key(n: u8) -> Key {
     [n; 32]
@@ -448,6 +449,51 @@ fn test_a_removal_on_a_policy_that_continues_does_not_dissolve() {
         Policy::default().on_member_removed,
         OnMemberRemoved::Continue
     );
+}
+
+// ----- Rejection reasons -----
+
+#[test]
+fn test_a_rule_refusal_gives_the_voided_reason() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write), (3, Role::Read)],
+            Policy::default(),
+        ),
+        add("a0", 2, g, 4, Role::Read, &["g"]),
+    ]);
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "a0").reason(), Some(Reason::Voided));
+}
+
+#[test]
+fn test_a_pending_friend_refusal_gives_the_waiting_reason() {
+    let g = id("g");
+    let f = pair_group(1, 2, 0);
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 3, g, 4, Role::Read, &["g"]),
+        request("r0", 1, 2, 0, &[], false),
+        add("a1", 2, f, 3, Role::Read, &["r0"]),
+    ]);
+    assert_eq!(outcome(&p, "a1"), Outcome::Refused(Refusal::NotActive));
+    assert_eq!(outcome(&p, "a1").reason(), Some(Reason::Waiting));
+}
+
+#[test]
+fn test_a_refusal_in_a_dissolved_group_gives_the_frozen_reason() {
+    let g = pair_group(1, 2, 0);
+    let p = project(&[
+        request("r0", 1, 2, 0, &[], false),
+        join("a0", 2, g, &["r0"]),
+        remove("x", 1, g, 2, &["a0"]),
+        remove("y", 2, g, 1, &["x"]),
+    ]);
+    assert_eq!(outcome(&p, "y"), Outcome::Refused(Refusal::Dissolved));
+    assert_eq!(outcome(&p, "y").reason(), Some(Reason::Frozen));
 }
 
 // ----- Membership rules -----

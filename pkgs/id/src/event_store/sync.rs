@@ -14,6 +14,9 @@
 //! K, T, the frame budget and the session budget are local. The frame budget only has to stay
 //! under the frame cap. A session reads at most its session budget in reconciliation, and ends
 //! with [`BudgetExceeded`] past it, before the store is written.
+//!
+//! Before it writes, each side checks the peer against its own [`PullGate`]. A refused peer gets no
+//! event: the connection closes with an application code, and the peer's next read fails.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard};
@@ -31,6 +34,7 @@ use super::{
     position_key,
 };
 use crate::chain::{self, Event};
+use crate::pull_policy::{PullGate, PullRefused};
 
 /// The protocol ID. The wire version only; K and T are not in it.
 pub const ALPN: &[u8] = b"/id-sync/1";
@@ -43,6 +47,9 @@ const BATCH_EVENTS: usize = 256;
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
+
+/// The application close code when the pull policy refuses the peer. [`Cut`] closes with 1.
+const CLOSE_PULL_REFUSED: u32 = 2;
 
 /// A range session read past its session budget during reconciliation.
 ///
@@ -127,7 +134,7 @@ pub(crate) enum Cut {
 ///
 /// Returns an error if the peer breaks the protocol, a frame is malformed or too large, an
 /// event fails verification, the session does not end within the flight limit or within
-/// `deadline`, or the connection fails.
+/// `deadline`, the connection fails, or `gate` refuses the peer, with [`PullRefused`].
 pub async fn sync_over(
     store: &mut EventStore,
     conn: &Connection,
@@ -135,10 +142,11 @@ pub async fn sync_over(
     params: Params,
     now_ms: u64,
     deadline: Duration,
+    gate: &PullGate,
 ) -> Result<Outcome> {
     match tokio::time::timeout(
         deadline,
-        run(store, conn, initiator, params, now_ms, Cut::Never),
+        run(store, conn, initiator, params, now_ms, Cut::Never, gate),
     )
     .await
     {
@@ -342,12 +350,18 @@ async fn run(
     params: Params,
     now_ms: u64,
     cut: Cut,
+    gate: &PullGate,
 ) -> Result<Outcome> {
     let (mut send, mut recv) = if initiator {
         conn.open_bi().await?
     } else {
         conn.accept_bi().await?
     };
+    // The pull policy decides before a byte is written, so a refused peer gets no event.
+    if !gate.admits(&conn.remote_id()) {
+        conn.close(CLOSE_PULL_REFUSED.into(), b"pull refused");
+        return Err(PullRefused(gate.world().to_owned()).into());
+    }
     let mut out = Outcome::default();
     let party = Party::new(store.sync_entries()?)?;
     let mut budget = ReadBudget {
@@ -483,17 +497,30 @@ mod tests {
 
     use super::*;
     use crate::chain::ChainExt;
+    use crate::pull_policy::{PullPolicy, PullRefused, testing};
     use crate::waiting::WaitingLimits;
     use p2panda_core::{Hash, SigningKey};
+    use std::sync::Arc;
 
     use iroh::endpoint::{Endpoint, presets};
     use iroh::{EndpointAddr, RelayMode, TransportAddr};
+    use iroh_base::SecretKey;
     use std::net::Ipv4Addr;
 
     const NOW: u64 = 1_000_000_000;
     /// An endpoint on localhost, with no relay and no address lookup. Dialed by address only.
     async fn endpoint(alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
         Ok(Endpoint::builder(presets::Minimal)
+            .alpns(alpns)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?)
+    }
+
+    /// As [`endpoint`], under `key`, so a test knows the identity before it dials.
+    async fn endpoint_as(key: SecretKey, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
+        Ok(Endpoint::builder(presets::Minimal)
+            .secret_key(key)
             .alpns(alpns)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -581,8 +608,23 @@ mod tests {
         pb: Params,
         cut: Cut,
     ) -> Result<(Result<Outcome>, Result<Outcome>)> {
+        loopback_gated(a, b, pa, pb, cut, &testing::open_gate(), testing::key(0xd9)).await
+    }
+
+    /// [`loopback`] with the acceptor's pull gate, and the dialer under `dialer`, so a test can name
+    /// the dialer's identity in the world. The dialer's own gate is open.
+    async fn loopback_gated(
+        a: &mut EventStore,
+        b: &mut EventStore,
+        pa: Params,
+        pb: Params,
+        cut: Cut,
+        gate: &PullGate,
+        dialer: SecretKey,
+    ) -> Result<(Result<Outcome>, Result<Outcome>)> {
+        let open = testing::open_gate();
         let server = endpoint(vec![ALPN.to_vec()]).await?;
-        let client = endpoint(vec![]).await?;
+        let client = endpoint_as(dialer, vec![]).await?;
         let target = loopback_addr(&server);
         let accepting = async {
             let incoming = server
@@ -590,12 +632,12 @@ mod tests {
                 .await
                 .context("endpoint closed before a connection")?;
             let conn = incoming.await?;
-            let out = run(b, &conn, false, pb, NOW, Cut::Never).await;
+            let out = run(b, &conn, false, pb, NOW, Cut::Never, gate).await;
             anyhow::Ok((out, conn))
         };
         let dialing = async {
             let conn = client.connect(target, ALPN).await?;
-            let out = run(a, &conn, true, pa, NOW, cut).await;
+            let out = run(a, &conn, true, pa, NOW, cut, &open).await;
             anyhow::Ok((out, conn))
         };
         let (dialed, accepted) = tokio::time::timeout(Duration::from_secs(300), async {
@@ -866,7 +908,16 @@ mod tests {
         });
         let conn = client.connect(target, ALPN).await.unwrap();
         let params = Params::default().with_session_budget(BUDGET).unwrap();
-        let outcome = sync_over(&mut store, &conn, true, params, NOW, Duration::from_secs(5)).await;
+        let outcome = sync_over(
+            &mut store,
+            &conn,
+            true,
+            params,
+            NOW,
+            Duration::from_secs(5),
+            &testing::open_gate(),
+        )
+        .await;
         conn.close(0u32.into(), b"done");
         peer.abort();
         client.close().await;
@@ -928,6 +979,7 @@ mod tests {
             drop(conn);
         });
         let conn = client.connect(target, ALPN).await.unwrap();
+        let gate = testing::open_gate();
         let session = sync_over(
             &mut store,
             &conn,
@@ -935,6 +987,7 @@ mod tests {
             Params::default(),
             NOW,
             Duration::from_secs(2),
+            &gate,
         );
         let outcome = tokio::time::timeout(Duration::from_secs(10), session)
             .await
@@ -1042,5 +1095,142 @@ mod tests {
         let budget = Params::default().with_frame_budget(1024).unwrap();
         let chains: Vec<(u64, u32)> = (1..=2).map(|c| (c, 30)).collect();
         bootstrap_both_ways(budget, &chains, 2 * 1024).await;
+    }
+
+    /// P6.5: open pull is today's behaviour. A peer outside the world still pulls every event.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pull_policy_open_range_session_serves_a_non_member() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 4), (2, 3)]);
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &testing::open_gate(),
+            testing::key(0xd9),
+        )
+        .await
+        .unwrap();
+        dialer.unwrap();
+        acceptor.unwrap();
+        assert_eq!(ids(&b), ids(&a), "a stranger pulled every event");
+    }
+
+    /// P6.5: the members option refuses a stranger before any event is sent. Both sides end with
+    /// an error, and neither store changes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pull_policy_members_range_refuses_a_non_member_and_sends_no_event() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 4)]);
+        let (before_a, before_b) = (ids(&a), ids(&b));
+        // The founder is the only member. The dialer is a stranger.
+        let world = testing::docs_world(
+            testing::key(0xd0).public(),
+            testing::key(0xd2).public(),
+            false,
+        );
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, testing::live(world));
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        let refused = acceptor.expect_err("a stranger was served events");
+        assert!(
+            refused.downcast_ref::<PullRefused>().is_some(),
+            "{refused:#}"
+        );
+        assert!(
+            dialer.is_err(),
+            "the dialer's session ends with the refusal"
+        );
+        assert_eq!(ids(&b), before_b, "no event crossed to the stranger");
+        assert_eq!(ids(&a), before_a, "the server's store is unchanged");
+    }
+
+    /// P6.5: a member gets every event under the members option.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pull_policy_members_range_serves_a_member_everything() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 4), (2, 3)]);
+        let world = testing::docs_world(
+            testing::key(0xd0).public(),
+            testing::key(0xd1).public(),
+            false,
+        );
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, testing::live(world));
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        dialer.unwrap();
+        acceptor.unwrap();
+        assert_eq!(ids(&b), ids(&a), "the member pulled every event");
+    }
+
+    /// P6.5: membership is read when each session starts. A member removed from the fold is refused
+    /// on the next pull, and the events it pulled before stay.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pull_policy_members_range_refuses_a_removed_member_on_the_next_pull() {
+        let (founder, member) = (testing::key(0xd0).public(), testing::key(0xd1).public());
+        let access = testing::live(testing::docs_world(founder, member, false));
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, Arc::clone(&access));
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 3)]);
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        dialer.unwrap();
+        acceptor.unwrap();
+        assert_eq!(ids(&b), ids(&a), "the member pulled while it was a member");
+
+        // The removal lands, and the server has new events for the member to pull.
+        access.set(testing::docs_world(founder, member, true));
+        populate(&mut a, &[(2, 3)]);
+        let before = ids(&b);
+        let (_dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        let refused = acceptor.expect_err("the removed member was served again");
+        assert!(
+            refused.downcast_ref::<PullRefused>().is_some(),
+            "{refused:#}"
+        );
+        assert_eq!(ids(&b), before, "the refused pull sent nothing");
     }
 }

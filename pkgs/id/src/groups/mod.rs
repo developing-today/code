@@ -13,8 +13,10 @@
 //! Authority and the cap are checked against the events that come before each event in the
 //! canonical order. See [`fold`].
 
+pub mod actions;
 pub mod fold;
 pub mod friendship;
+pub mod log;
 pub mod policy;
 pub mod worlds;
 
@@ -23,7 +25,9 @@ mod delegation;
 #[cfg(test)]
 mod tests;
 
+use clap::ValueEnum;
 use p2panda_core::Hash;
+use serde::{Deserialize, Serialize};
 
 pub use delegation::Grant;
 pub use fold::{FoldError, GroupView, Outcome, Projection, Refusal, fold};
@@ -33,9 +37,10 @@ pub use policy::{
 };
 
 /// A grant of a scope from the event's author to another account (design §7.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delegate {
     /// The account granted the scope.
+    #[serde(with = "log::wire::key")]
     pub grantee: Key,
     /// The access the grantee may exercise. Admin is a policy right and is not delegable.
     pub scope: Role,
@@ -48,7 +53,7 @@ pub type Key = [u8; 32];
 
 /// What a member may do, from least to most. `Admin` is a manager that may also change roles and
 /// the policy record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Serialize, Deserialize)]
 pub enum Role {
     /// Replicates ciphertext without keys.
     Pull,
@@ -63,23 +68,27 @@ pub enum Role {
 }
 
 /// One signed group event, as the group layer sees it. The caller has verified it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// The event's ID.
+    #[serde(with = "log::wire::hash")]
     pub id: Hash,
     /// The account that signed it.
+    #[serde(with = "log::wire::key")]
     pub author: Key,
     /// The `after` hashes, as signed.
+    #[serde(with = "log::wire::hashes")]
     pub after: Vec<Hash>,
     /// The group it names. A normal group's create names none. A friendship's create names the
     /// friendship's derived group.
+    #[serde(with = "log::wire::opt_hash")]
     pub group: Option<Hash>,
     /// What it does.
     pub body: Body,
 }
 
 /// What a group event does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Body {
     /// Creates a group. Anyone may create one.
     Create(Create),
@@ -104,29 +113,32 @@ pub enum Body {
     /// From this event's causal position on, the grant and what depends on it fail.
     Veto {
         /// The grant's event ID.
+        #[serde(with = "log::wire::hash")]
         grant: Hash,
     },
 }
 
 /// A group's creation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Create {
     /// The template the group is created from.
     pub template: Template,
     /// The policy record, written out in full.
     pub policy: Policy,
     /// The members besides the author, with their roles. A friendship lists exactly one.
+    #[serde(with = "log::wire::members")]
     pub members: Vec<(Key, Role)>,
     /// Whether both friends start as Admin. Only a friendship may set it.
     pub admins_on_create: bool,
 }
 
 /// A change to one member.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberOp {
     /// Adds a member with a role.
     Add {
         /// The member added.
+        #[serde(with = "log::wire::key")]
         member: Key,
         /// Its role.
         role: Role,
@@ -134,14 +146,17 @@ pub enum MemberOp {
     /// Removes a member. The author may remove itself, which is leaving.
     Remove {
         /// The member removed.
+        #[serde(with = "log::wire::key")]
         member: Key,
         /// Under the `transfer` delegation mode, the account that takes over the member's grants
         /// (design §7.3). Ignored by the other modes.
+        #[serde(with = "log::wire::opt_key")]
         successor: Option<Key>,
     },
     /// Sets a member's role. Admin only.
     SetRole {
         /// The member whose role changes.
+        #[serde(with = "log::wire::key")]
         member: Key,
         /// Its new role.
         role: Role,

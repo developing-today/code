@@ -416,6 +416,27 @@ impl EventStore {
         row.map(|row| Chain::decode(row.value())).transpose()
     }
 
+    /// The applied state of every author's chain, in author order. An author with no applied event
+    /// has no row, so it is not listed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn chains(&self) -> Result<Vec<(AuthorKey, Chain)>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let chains = txn.open_table(CHAINS)?;
+        let mut found = Vec::new();
+        for row in chains.iter()? {
+            let (author, state) = row?;
+            let author: AuthorKey = author
+                .value()
+                .try_into()
+                .map_err(|_err| corrupt("a chain row has the wrong author length"))?;
+            found.push((author, Chain::decode(state.value())?));
+        }
+        Ok(found)
+    }
+
     /// Whether the event with this ID applies, in the resolved state.
     ///
     /// # Errors

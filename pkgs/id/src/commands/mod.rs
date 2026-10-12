@@ -55,9 +55,12 @@
 //! cmd_get_local("my-data", "./output.txt").await?;
 //! ```
 
+pub mod claim;
 pub mod client;
+pub mod doc;
 pub mod find;
 pub mod get;
+pub mod group;
 pub mod id;
 pub mod list;
 pub mod peers;
@@ -68,11 +71,14 @@ pub mod tag;
 #[cfg(feature = "world")]
 pub mod world;
 
+pub use claim::cmd_claim;
 pub use client::create_local_client_endpoint;
+pub use doc::cmd_doc;
 pub use find::{
     PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,
 };
 pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
+pub use group::{cmd_delegate, cmd_group, cmd_revoke};
 pub use id::cmd_id;
 pub use list::{cmd_list, cmd_list_remote};
 pub use peers::{PeersOptions, cmd_peers};

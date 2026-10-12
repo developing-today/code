@@ -100,6 +100,7 @@ use crate::chain::{self, Event};
 use crate::documents::{is_document_kind, is_removal_kind};
 use crate::membership::AuthId;
 use crate::membership::body::decode_body;
+use crate::rejection::Reason;
 use crate::tag_claims::is_tag_kind;
 use crate::waiting::{AuthorKey, WaitingPool};
 
@@ -113,6 +114,18 @@ pub enum Refusal {
     Frozen,
     /// The author already holds as many waiting events as the caps allow.
     WaitingFull,
+}
+
+impl Refusal {
+    /// The reason this refusal gives. A malformed event has none: its bytes do not verify, so it is
+    /// not an event the store judged.
+    pub const fn reason(&self) -> Option<Reason> {
+        match self {
+            Self::Malformed(_) => None,
+            Self::Frozen => Some(Reason::Frozen),
+            Self::WaitingFull => Some(Reason::Waiting),
+        }
+    }
 }
 
 /// What [`EventStore::ingest`] did with one event.
@@ -162,6 +175,19 @@ pub enum Ingest {
         /// The IDs of the waiting events it released that applied, in application order.
         released: Vec<Hash>,
     },
+}
+
+impl Ingest {
+    /// The reason this result gives, when it is a refusal or a hold. A stored, applied, or duplicate
+    /// event, and a fork that proves a conflict, give none.
+    pub const fn reason(&self) -> Option<Reason> {
+        match self {
+            Self::Refused(refusal) => refusal.reason(),
+            Self::Waiting { .. } => Some(Reason::Waiting),
+            Self::Voided { .. } => Some(Reason::Voided),
+            Self::Accepted { .. } | Self::Duplicate { .. } | Self::Fork { .. } => None,
+        }
+    }
 }
 
 /// What the store decides for one event, before the waiting pool sees it.
@@ -1041,6 +1067,7 @@ mod tests {
     use super::*;
     use crate::chain::{ChainExt, sign};
     use crate::event_store::waiting_rows::{self, Row};
+    use crate::rejection::Reason;
     use crate::waiting::WaitingLimits;
     use p2panda_core::SigningKey;
     use redb::ReadableDatabase;
@@ -1534,6 +1561,48 @@ mod tests {
         );
         assert!(store.chain(&author(&signer)).unwrap().is_none());
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_frozen_refusal_gives_the_frozen_reason() {
+        let (_dir, mut store) = open();
+        let signer = key(4);
+        let events = chain_of(&signer, 3);
+        ingest_all(&mut store, &events[..2]);
+        let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
+        assert!(matches!(
+            ingest(&mut store, &rival),
+            Ingest::Fork { seq: 1, .. }
+        ));
+        let result = ingest(&mut store, &events[2]);
+        assert_eq!(result, Ingest::Refused(Refusal::Frozen));
+        assert_eq!(result.reason(), Some(Reason::Frozen));
+    }
+
+    #[test]
+    fn test_a_held_event_and_a_capped_one_give_the_waiting_reason() {
+        let (_dir, mut store) = open_with(WaitingLimits::new(2, WEEK_MS));
+        let signer = key(15);
+        let events = chain_of(&signer, 5);
+        let held = ingest(&mut store, &events[2]);
+        assert_eq!(held, Ingest::Waiting { id: events[2].id });
+        assert_eq!(held.reason(), Some(Reason::Waiting));
+        ingest(&mut store, &events[3]);
+        let capped = ingest(&mut store, &events[4]);
+        assert_eq!(capped, Ingest::Refused(Refusal::WaitingFull));
+        assert_eq!(capped.reason(), Some(Reason::Waiting));
+    }
+
+    #[test]
+    fn test_a_malformed_event_gives_no_reason() {
+        let (_dir, mut store) = open();
+        let result = store.ingest(&[0xff, 0x00], 0).unwrap();
+        assert!(matches!(result, Ingest::Refused(Refusal::Malformed(_))));
+        assert_eq!(
+            result.reason(),
+            None,
+            "bytes that do not verify are not an event"
+        );
     }
 
     #[test]
