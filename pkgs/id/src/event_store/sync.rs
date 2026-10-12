@@ -269,22 +269,17 @@ fn lock<'a, 'b>(
         .map_err(|_err| anyhow!("the event store lock is poisoned"))
 }
 
-/// Decides one batch, and tallies each outcome. A fork ends the batch, as it did in S7's
-/// harness, so the events after it in the batch are not decided.
+/// Decides one batch in one write transaction, and tallies each outcome. A fork is an outcome
+/// like any other: it is recorded, and the events after it in the batch are still decided. Only
+/// an error from the store ends the batch, and then nothing in it commits.
 fn apply_batch(
     store: &mut EventStore,
     events: Vec<Event>,
     now_ms: u64,
     tally: &mut Tally,
 ) -> Result<()> {
-    for event in events {
-        let outcome = store.ingest_events(vec![event], now_ms)?;
-        for outcome in &outcome {
-            if let Ingest::Fork { .. } = outcome {
-                bail!("a fork ended the batch");
-            }
-            tally.add(outcome);
-        }
+    for outcome in store.ingest_events(events, now_ms)? {
+        tally.add(&outcome);
     }
     Ok(())
 }
@@ -622,6 +617,40 @@ mod tests {
             events[2].bytes
         );
         assert!(store.sync_bytes(&[9; 32]).unwrap().is_none());
+    }
+
+    /// P3.1a: a fork in a batch does not end the batch. The 20 unrelated events after it are
+    /// decided, and the fork is recorded.
+    #[test]
+    fn test_a_fork_in_a_batch_is_isolated() {
+        let (_d, mut store) = open();
+        let original = chain_of(1, 1, b"x");
+        fill(&mut store, &original);
+        let rival = chain::sign(
+            &signer(1),
+            0,
+            None,
+            Some(b"rival"),
+            ChainExt {
+                kind: "message".to_owned(),
+                group: None,
+                after: Vec::new(),
+            },
+        )
+        .unwrap();
+        let mut batch = vec![rival];
+        for n in 2..22 {
+            batch.extend(chain_of(n, 1, b"unrelated"));
+        }
+        let mut tally = Tally::default();
+        apply_batch(&mut store, batch, NOW, &mut tally).unwrap();
+        assert_eq!(tally.forks, 1);
+        assert_eq!(
+            tally.accepted, 20,
+            "the 20 unrelated events survive the fork"
+        );
+        // The original, the rival that proves the fork, and the 20 unrelated events.
+        assert_eq!(store.sync_entries().unwrap().len(), 22);
     }
 
     /// Prefix lengths of two sides' chains, so each side holds some events the other lacks.
