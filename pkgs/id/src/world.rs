@@ -4072,6 +4072,68 @@ mod tests {
     }
 
     #[test]
+    fn content_before_a_removal_is_kept_and_content_after_it_is_refused() {
+        let mut core = world(8);
+        let (ada, ada_token) = join(&mut core, "Ada");
+        let (_, bo_token) = join(&mut core, "Bo");
+        core.chat(&ada_token, "before").unwrap();
+        assert_eq!(core.revoke_tree(ada.id), vec![ada.id]);
+        assert!(core.chat(&ada_token, "after").is_err());
+        assert!(core.input(&ada_token, b"move").is_err());
+        assert_eq!(
+            core.current_sequence(),
+            1,
+            "a refused action commits nothing"
+        );
+        let kept: Vec<String> = core
+            .snapshot(&bo_token)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                WorldEventKind::Chat(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kept, vec!["before"]);
+        assert_eq!(core.events_after(&bo_token, 0).unwrap().events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_removal_racing_chat_keeps_every_accepted_line() {
+        let handle = WorldHandle::spawn(WorldCore::new("w", WorldLimits::default()).unwrap());
+        let (ada, ada_token) = handle.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let (_, bo_token) = handle.issue("Bo", WorldScopes::GUEST).await.unwrap();
+        let chatter = {
+            let handle = handle.clone();
+            let token = ada_token.clone();
+            tokio::spawn(async move {
+                let mut accepted = 0;
+                for i in 0..200 {
+                    if handle.chat(token.clone(), format!("m{i}")).await.is_ok() {
+                        accepted += 1;
+                    }
+                }
+                accepted
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(handle.revoke(ada.id).await.unwrap());
+        let accepted = chatter.await.unwrap();
+        assert!(handle.chat(ada_token, "late").await.is_err());
+        let snapshot = handle.snapshot(bo_token).await.unwrap();
+        let from_ada = snapshot
+            .events
+            .iter()
+            .filter(|event| event.participant_id == ada.id)
+            .count();
+        assert_eq!(
+            from_ada, accepted,
+            "every line accepted before the removal is kept, and none after it"
+        );
+    }
+
+    #[test]
     fn attenuation_only_narrows_and_needs_delegate() {
         let join = WorldScopes::JOIN;
         let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
