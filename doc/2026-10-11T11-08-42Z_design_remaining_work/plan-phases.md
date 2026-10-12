@@ -34,17 +34,17 @@ These rules govern how each phase runs. They are repeated in every phase documen
 
 ## 3. Phase overview
 
-| Phase | Purpose | Parallel tracks | Blocked by | Owner-blocked |
-| --- | --- | --- | --- | --- |
-| 0 | Baseline, toolchain, dependencies, small fixes, test harness | 5 | owner approval | none |
-| 1 | Events, storage, crash safety, identity store | 4 | Phase 0 | none |
-| 2 | Membership, auth frontier, delegation | 3 | P1.2, P1.3 | none |
-| 3 | Sync, blobs, relays | 3 | P1.3, P1.6 | real-network tests (P3.7) |
-| 4 | Groups, encryption, history | 4 | Phases 1 and 2 | none |
-| 5 | Tags, documents, search | 3 | Phases 1 and 2 | none |
-| 6 | Invites, pull, CLI | 4 | Phases 2, 3 and 4 | none |
-| 7 | Connectivity for later servers | 2 | Phase 3 | deployment, accounts, networks |
-| 8 | Later items | several | the phases above | none |
+| Phase | Purpose                                                      | Parallel tracks | Blocked by        | Owner-blocked                  |
+| ----- | ------------------------------------------------------------ | --------------- | ----------------- | ------------------------------ |
+| 0     | Baseline, toolchain, dependencies, small fixes, test harness | 5               | owner approval    | none                           |
+| 1     | Events, storage, crash safety, identity store                | 4               | Phase 0           | none                           |
+| 2     | Membership, auth frontier, delegation                        | 3               | P1.2, P1.3        | none                           |
+| 3     | Sync, blobs, relays                                          | 3               | P1.3, P1.6        | real-network tests (P3.7)      |
+| 4     | Groups, encryption, history                                  | 4               | Phases 1 and 2    | none                           |
+| 5     | Tags, documents, search                                      | 3               | Phases 1 and 2    | none                           |
+| 6     | Invites, pull, CLI                                           | 4               | Phases 2, 3 and 4 | none                           |
+| 7     | Connectivity for later servers                               | 2               | Phase 3           | deployment, accounts, networks |
+| 8     | Later items                                                  | several         | the phases above  | none                           |
 
 ## 4. Owner questions to answer before Phase 0 starts
 
@@ -63,20 +63,20 @@ These do not block the first steps, but each answer changes a step. The preferre
 
 Goal: a green baseline on the newest toolchain, with current dependencies and the small known fixes done.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P0.1 | Baseline: record the current result. Fix or quarantine the three known failures (`world_compile` needs `host.wasm`; the Roc test fails; a world-module test hangs). Every network or process test gets a timeout, so no hang can block the suite | owner approval | P0.4, P0.6, P0.7, P0.8, P0.9, P0.10, P0.12 | unit; each fix gets a test |
-| P0.2 | Toolchain 1.99.0 in `rust-toolchain.toml`. No lock update is needed, since the locked overlays contain it | P0.1 | P0.4, P0.6 to P0.10, P0.12 | build, clippy and rustfmt on 1.99.0 |
-| P0.3 | Dependencies, one group per commit: iroh stack; redb 4.3.0; cbor-core 0.10.1; ed25519-dalek 3.0.0 with the shim and `verify_strict`; p2panda stays on git rev `3e84cac` (decided). Serialized, because every group touches `Cargo.lock` | P0.2 | none within the track | full test run after each group; the report to the owner lists each change |
-| P0.4 | Pull pages capped by bytes, not item count (task 01) | none | everything | unit; property over page sizes |
-| P0.5 | `rust-version` set to 1.96, the true minimum for the p2panda rev, and the clippy MSRV matched | P0.2 | P0.3 | build on 1.96 |
-| P0.6 | Dial deadlines in the remaining modules (`artifact.rs` pull) | none | everything | integration with a dead peer; the deadline is enforced |
-| P0.7 | mDNS on `serve`, on by default with `--no-mdns` to turn it off (decided). The library default is off. The connectivity design is corrected | none | everything | e2e: `serve` defaults; `--no-mdns` disables it; the library default is off |
-| P0.8 | `src/store.rs` says FsStore is SQLite. It is redb (N17) | none | everything | grep check in the test run |
-| P0.9 | Tuple encoding: property tests over random values for order and the prefix rule; a fuzz target; the regression list | none | everything | property with many cases; fuzz smoke; regression replay |
-| P0.10 | Test harness: the regression-list runner; a multi-node loopback helper for integration tests; the full test run script (section 13); naming rules | none | everything | the harness has its own tests |
-| P0.11 | `verify_strict` regressions: a non-canonical signature and a small-order key are rejected at every call site | P0.3 | P0.4, P0.6 | regression per call site; property over signature mutations |
-| P0.12 | Nix check uses the pinned toolchain. `pkgs/id/default.nix` currently runs `rustup default 1.89.0`, so the Nix check ignores the pin. The version is read from `rust-toolchain.toml` | none | everything | a test that the Nix and rustup versions agree |
+| Step  | What                                                                                                                                                                                                                                             | Blocked by     | Parallel with                              | Tests                                                                      |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- | ------------------------------------------ | -------------------------------------------------------------------------- |
+| P0.1  | Baseline: record the current result. Fix or quarantine the three known failures (`world_compile` needs `host.wasm`; the Roc test fails; a world-module test hangs). Every network or process test gets a timeout, so no hang can block the suite | owner approval | P0.4, P0.6, P0.7, P0.8, P0.9, P0.10, P0.12 | unit; each fix gets a test                                                 |
+| P0.2  | Toolchain 1.99.0 in `rust-toolchain.toml`. No lock update is needed, since the locked overlays contain it                                                                                                                                        | P0.1           | P0.4, P0.6 to P0.10, P0.12                 | build, clippy and rustfmt on 1.99.0                                        |
+| P0.3  | Dependencies, one group per commit: iroh stack; redb 4.3.0; cbor-core 0.10.1; ed25519-dalek 3.0.0 with the shim and `verify_strict`; p2panda stays on git rev `3e84cac` (decided). Serialized, because every group touches `Cargo.lock`          | P0.2           | none within the track                      | full test run after each group; the report to the owner lists each change  |
+| P0.4  | Pull pages capped by bytes, not item count (task 01)                                                                                                                                                                                             | none           | everything                                 | unit; property over page sizes                                             |
+| P0.5  | `rust-version` set to 1.96, the true minimum for the p2panda rev, and the clippy MSRV matched                                                                                                                                                    | P0.2           | P0.3                                       | build on 1.96                                                              |
+| P0.6  | Dial deadlines in the remaining modules (`artifact.rs` pull)                                                                                                                                                                                     | none           | everything                                 | integration with a dead peer; the deadline is enforced                     |
+| P0.7  | mDNS on `serve`, on by default with `--no-mdns` to turn it off (decided). The library default is off. The connectivity design is corrected                                                                                                       | none           | everything                                 | e2e: `serve` defaults; `--no-mdns` disables it; the library default is off |
+| P0.8  | `src/store.rs` says FsStore is SQLite. It is redb (N17)                                                                                                                                                                                          | none           | everything                                 | grep check in the test run                                                 |
+| P0.9  | Tuple encoding: property tests over random values for order and the prefix rule; a fuzz target; the regression list                                                                                                                              | none           | everything                                 | property with many cases; fuzz smoke; regression replay                    |
+| P0.10 | Test harness: the regression-list runner; a multi-node loopback helper for integration tests; the full test run script (section 13); naming rules                                                                                                | none           | everything                                 | the harness has its own tests                                              |
+| P0.11 | `verify_strict` regressions: a non-canonical signature and a small-order key are rejected at every call site                                                                                                                                     | P0.3           | P0.4, P0.6                                 | regression per call site; property over signature mutations                |
+| P0.12 | Nix check uses the pinned toolchain. `pkgs/id/default.nix` currently runs `rustup default 1.89.0`, so the Nix check ignores the pin. The version is read from `rust-toolchain.toml`                                                              | none           | everything                                 | a test that the Nix and rustup versions agree                              |
 
 Phase 0 review focus: the toolchain change touches every test, so the full test run happens at the end of the phase, not only at the end of each step.
 
@@ -84,114 +84,116 @@ Phase 0 review focus: the toolchain change touches every test, so the full test 
 
 Goal: an event store on redb, with ChainExt, fork freezing, waiting caps, crash safety tested, and the web identity moved off libsql.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P1.1 | Storage decision record: redb everywhere, Turso rejected by the round 2 spike, libsql replaced (decided) | Phase 0 baseline | P1.2, P1.4, P1.7 | the record links the spike |
-| P1.2 | ChainExt: struct; validation (at most 32 `after`, no duplicates, canonical CBOR, domain tag); builder and reader | Phase 0 baseline | P1.4, P1.7 | unit; property; canonical vectors; fuzz of the decoder with a regression list |
-| P1.3 | Event store on redb: events, chains, heads, subject and name/value indexes (tuple keys), unique (author, seq), fork freeze and proofs. Creation uses a temporary file, a first commit, then a rename with a directory fsync | P1.1, P1.2 | P1.5 | unit; integration (ingest, freeze, proof); property (random orders give the same state); the first-creation crash test |
-| P1.4 | Crash-safety gate: the in-process fault model for redb, run in release mode as a CI gate; a corpus TSV with expected classes; the lying-sync control. LazyFS as an optional Linux job | Phase 0 baseline; uses redb directly | P1.2, P1.7 | the sweep (about 40 s release): zero failures; the control produces failures; corpus replay |
-| P1.5 | Waiting caps: 256 per author, 7 days, with the drop behaviour | P1.3 for storage; the policy code can start now | P1.3 (policy part) | unit with a fake clock; property over arrival orders |
-| P1.6 | Store traits over redb: the three LogStore methods, TopicStore::resolve, and the rest we need. Auth state in our own table, since the `groups` feature implies SQLite | P1.3 | P1.5 | trait contract tests; LogSync smoke test on the redb store; a check that sqlx is absent with the chosen features |
-| P1.7 | Canonical CBOR: the S5 golden vectors as tests, cross-checked with dcbor (dev only) | Phase 0 baseline | P1.2, P1.4 | golden vectors; interop |
-| P1.8 | Ingest pipeline: verify signatures with `AnyHeader::decode`, never the typed `verify`; reject and freeze forks | P1.2, P1.3 | P1.5 | unit; integration; regression test for the verify trap |
-| P1.9 | Identity store moves from libsql to redb. Values are encrypted with AES-256-GCM (already in the lock). Data may be discarded | P1.1 | P1.3 to P1.8 | unit; a round trip with a wrong key fails; the 17 call sites are covered |
-| P1.10 | Crash gate for the identity store | P1.9, P1.4 | P1.3 | the same sweep shape as P1.4 |
+| Step  | What                                                                                                                                                                                                                        | Blocked by                                      | Parallel with      | Tests                                                                                                                  |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| P1.1  | Storage decision record: redb everywhere, Turso rejected by the round 2 spike, libsql replaced (decided)                                                                                                                    | Phase 0 baseline                                | P1.2, P1.4, P1.7   | the record links the spike                                                                                             |
+| P1.2  | ChainExt: struct; validation (at most 32 `after`, no duplicates, canonical CBOR, domain tag); builder and reader                                                                                                            | Phase 0 baseline                                | P1.4, P1.7         | unit; property; canonical vectors; fuzz of the decoder with a regression list                                          |
+| P1.3  | Event store on redb: events, chains, heads, subject and name/value indexes (tuple keys), unique (author, seq), fork freeze and proofs. Creation uses a temporary file, a first commit, then a rename with a directory fsync | P1.1, P1.2                                      | P1.5               | unit; integration (ingest, freeze, proof); property (random orders give the same state); the first-creation crash test |
+| P1.4  | Crash-safety gate: the in-process fault model for redb, run in release mode as a CI gate; a corpus TSV with expected classes; the lying-sync control. LazyFS as an optional Linux job                                       | Phase 0 baseline; uses redb directly            | P1.2, P1.7         | the sweep (about 40 s release): zero failures; the control produces failures; corpus replay                            |
+| P1.5  | Waiting caps: 256 per author, 7 days, with the drop behaviour                                                                                                                                                               | P1.3 for storage; the policy code can start now | P1.3 (policy part) | unit with a fake clock; property over arrival orders                                                                   |
+| P1.6  | Store traits over redb: the three LogStore methods, TopicStore::resolve, and the rest we need. Auth state in our own table, since the `groups` feature implies SQLite                                                       | P1.3                                            | P1.5               | trait contract tests; LogSync smoke test on the redb store; a check that sqlx is absent with the chosen features       |
+| P1.7  | Canonical CBOR: the S5 golden vectors as tests, cross-checked with dcbor (dev only)                                                                                                                                         | Phase 0 baseline                                | P1.2, P1.4         | golden vectors; interop                                                                                                |
+| P1.8  | Ingest pipeline: verify signatures with `AnyHeader::decode`, never the typed `verify`; reject and freeze forks                                                                                                              | P1.2, P1.3                                      | P1.5               | unit; integration; regression test for the verify trap                                                                 |
+| P1.9  | Identity store moves from libsql to redb. Values are encrypted with AES-256-GCM (already in the lock). Data may be discarded                                                                                                | P1.1                                            | P1.3 to P1.8       | unit; a round trip with a wrong key fails; the 17 call sites are covered                                               |
+| P1.10 | Crash gate for the identity store                                                                                                                                                                                           | P1.9, P1.4                                      | P1.3               | the same sweep shape as P1.4                                                                                           |
 
 ## 7. Phase 2: membership, auth frontier, delegation
 
 Goal: the membership rules from S2 as code, with the admission gate and authority-based voiding.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P2.1 | Auth-frontier mapping: `after` to auth dependencies, walking through non-auth events | P1.2, P1.3 | none within the phase | unit; the S2 cases; property |
-| P2.2 | Admission gate: hold, reject when the group is absent at its dependencies, placeholders for refused events | P2.1 | P2.3, P2.4 | unit; regression for the panic at `group/crdt/mod.rs:822` |
-| P2.3 | Voiding: authority-based dependents (decision 1); StrongRemove semantics | P2.1 | P2.2, P2.4 | S2 scenarios; a planted bug must fail |
-| P2.4 | Friendship with its cap, and the dissolve projection | P2.1 | P2.2, P2.3 | unit; integration |
-| P2.5 | Delegation: edges, attenuation, chain search, veto, the modes cascade, keep_prior, and transfer derived from the signed removal (decision 2) | P2.3 | P2.6 | unit; property over delegation chains |
-| P2.6 | World capabilities without use-count bounds (decision 3). Content on removal is kept (decision 4) | P2.3 | P2.5 | unit |
-| P2.7 | Cross-world reconciliation (task 03, item 7) | P2.5, P2.6 | none | integration across two worlds |
-| P2.8 | Property tests over random operation orders, and planted-bug checks | P2.3 | P2.4 to P2.7 | many cases; mutation checks on demand |
+| Step | What                                                                                                                                         | Blocked by | Parallel with         | Tests                                                                                                                                                       |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P2.1 | Auth-frontier mapping: `after` to auth dependencies, walking through non-auth events                                                         | P1.2, P1.3 | none within the phase | unit; the S2 cases; property                                                                                                                                |
+| P2.2 | Admission gate: hold, reject when the group is absent at its dependencies, placeholders for refused events                                   | P2.1       | P2.3, P2.4            | unit; regression for the panic at `group/crdt/mod.rs:822`                                                                                                   |
+| P2.3 | Voiding: authority-based dependents (decision 1); StrongRemove semantics                                                                     | P2.1       | P2.2, P2.4            | S2 scenarios; a planted bug must fail                                                                                                                       |
+| P2.4 | Friendship with its cap, and the dissolve projection                                                                                         | P2.1       | P2.2, P2.3            | unit; integration                                                                                                                                           |
+| P2.5 | Delegation: edges, attenuation, chain search, veto, the modes cascade, keep_prior, and transfer derived from the signed removal (decision 2) | P2.3       | P2.6                  | unit; property over delegation chains                                                                                                                       |
+| P2.6 | World capabilities without use-count bounds (decision 3). Content on removal is kept (decision 4)                                            | P2.3       | P2.5                  | unit                                                                                                                                                        |
+| P2.7 | Cross-world reconciliation (task 03, item 7)                                                                                                 | P2.5, P2.6 | none                  | integration across two worlds                                                                                                                               |
+| P2.8 | Property tests over random operation orders, and planted-bug checks                                                                          | P2.3       | P2.4 to P2.7          | many cases; mutation checks on demand                                                                                                                       |
+| P2.9 | Server config: creation limits, provisioning by key, config keys, aliases as tags (decisions in the index, 2026-10-12)                       | P2.4       | P2.5, P2.8            | config parse tests; unknown key fails startup; creation limits by user, group and role; provisioning round trip; alias contest shown, never picked silently |
 
 ## 8. Phase 3: sync, blobs, and relays
 
 Goal: range sync and LogSync on the store, blob gating, and relay defaults that work.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P3.1 | Range sync on the redb store, from S7. K=16 and T=16 by default. K and T are local, validated (K at least 2, T at least 1). Protocol ID `/id-sync/1` | P1.3 | P3.2, P3.4, P3.5 | unit; property over random sets; integration over loopback; interrupted-session test; regression tests for the three findings below |
-| P3.1a | Fork in a batch: a fork aborts the whole batch in the harness, losing 20 unrelated events. The fix isolates the fork and continues | P3.1 | P3.2 | red test first, then the fix |
-| P3.1b | T=0 never terminates on one mismatched key. Validation rejects it | P3.1 | P3.1a | regression test |
-| P3.1c | Flights are chunked to a budget under the frame cap. A single flight above about 524,000 IDs exceeds 16 MiB | P3.1 | P3.1a | bootstrap test of a store above the limit |
-| P3.2 | LogSync through p2panda-sync, on our traits. Its SQLite default is removed by a fork of the one dependency line (section 14 of the explainers) | P1.6 | P3.1, P3.4, P3.5 | integration over loopback; a check that sqlx is absent |
-| P3.3 | Method selection: LogSync when the estimated difference exceeds 0.035 times the chains or when bootstrapping, otherwise range (decided) | P3.1, P3.2 | none | unit (the rule); integration: both sides agree on the method |
-| P3.4 | Blob gating and `observe`: each request gated by the world's fetch rules; observe off by default (decision 5) | the membership check interface, stubbed first | P3.1, P3.2 | unit; e2e: a non-member can neither observe nor fetch |
-| P3.5 | Relay defaults: n0 now (decided); startup waits only for the home relay, with a deadline (N32) | none | everything | integration with a dead entry; the deadline holds |
-| P3.6 | Relay map order: QAD-capable relays come first, because iroh probes only the first five | none | P3.5 | a six-relay map with the QAD relay last is rejected or reordered |
-| P3.7 | Real-network holepunch and n0 QAD tests on two networks (N29) | owner provides networks | everything | the C2 matrix on real networks (owner-blocked) |
-| P3.8 | Relay operations: the systemd unit (already fixed: SIGINT, config required), metrics on loopback | none | P3.5 | a test parses the unit file |
+| Step  | What                                                                                                                                                 | Blocked by                                    | Parallel with    | Tests                                                                                                                               |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| P3.1  | Range sync on the redb store, from S7. K=16 and T=16 by default. K and T are local, validated (K at least 2, T at least 1). Protocol ID `/id-sync/1` | P1.3                                          | P3.2, P3.4, P3.5 | unit; property over random sets; integration over loopback; interrupted-session test; regression tests for the three findings below |
+| P3.1a | Fork in a batch: a fork aborts the whole batch in the harness, losing 20 unrelated events. The fix isolates the fork and continues                   | P3.1                                          | P3.2             | red test first, then the fix                                                                                                        |
+| P3.1b | T=0 never terminates on one mismatched key. Validation rejects it                                                                                    | P3.1                                          | P3.1a            | regression test                                                                                                                     |
+| P3.1c | Flights are chunked to a budget under the frame cap. A single flight above about 524,000 IDs exceeds 16 MiB                                          | P3.1                                          | P3.1a            | bootstrap test of a store above the limit                                                                                           |
+| P3.2  | LogSync through p2panda-sync, on our traits. Its SQLite default is removed by a fork of the one dependency line (section 14 of the explainers)       | P1.6                                          | P3.1, P3.4, P3.5 | integration over loopback; a check that sqlx is absent                                                                              |
+| P3.3  | Method selection: LogSync when the estimated difference exceeds 0.035 times the chains or when bootstrapping, otherwise range (decided)              | P3.1, P3.2                                    | none             | unit (the rule); integration: both sides agree on the method                                                                        |
+| P3.4  | Blob gating and `observe`: each request gated by the world's fetch rules; observe off by default (decision 5)                                        | the membership check interface, stubbed first | P3.1, P3.2       | unit; e2e: a non-member can neither observe nor fetch                                                                               |
+| P3.5  | Relay defaults: n0 now (decided); startup waits only for the home relay, with a deadline (N32)                                                       | none                                          | everything       | integration with a dead entry; the deadline holds                                                                                   |
+| P3.6  | Relay map order: QAD-capable relays come first, because iroh probes only the first five                                                              | none                                          | P3.5             | a six-relay map with the QAD relay last is rejected or reordered                                                                    |
+| P3.7  | Real-network holepunch and n0 QAD tests on two networks (N29)                                                                                        | owner provides networks                       | everything       | the C2 matrix on real networks (owner-blocked)                                                                                      |
+| P3.8  | Relay operations: the systemd unit (already fixed: SIGINT, config required), metrics on loopback                                                     | none                                          | P3.5             | a test parses the unit file                                                                                                         |
 
 ## 9. Phase 4: groups, encryption, and history
 
 Goal: group encryption on DataScheme, with the history modes, the heads rule, warnings, and the scheme v1.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P4.1 | DataScheme adapter around the crate: create, add, remove, update, process | Phase 1, P2.1 | P4.4, P4.8, P4.10 | unit; multi-member integration |
-| P4.2 | Our DGM and the from_join membership fix, in our fork (decision 18) | P4.1 | P4.4 | regression: a joiner reads messages after joining; the fork's patch has its own test |
-| P4.3 | from_join: immediate update, and the withholding rule for pre-join application messages | P4.1, P4.2 | P4.4, P4.5 | integration: a joiner cannot read pre-join messages but reads post-join ones |
-| P4.4 | Scheme v1: `serde_bytes` on the two fields, the version bound to the signed policy and copied in the header and welcome envelope, and welcomes sorted before signing (owner question 2) | P4.1 | P4.3, P4.5 | interop: v0 and v1 do not decode each other (verified); size tests (40.0 B per epoch); determinism test: sorted bytes are stable |
-| P4.5 | `recent:N` and `full`: the adapter checks the group secret ID before `receive`, and keeps pre-welcome history outside the crate. The reproduction of the 80-of-120 failure comes first, as a red test | P4.1, P3.1 (transport) | P4.3, P4.4 | integration: a `recent:N` joiner reads the last N epochs, is refused older ones, and the welcome succeeds for every N and K combination |
-| P4.6 | Lazy full history: a joiner asks a member for older epoch secrets, sent encrypted to the joiner | P4.5 | P4.7 | integration: the request returns the older keys; a non-member gets nothing |
-| P4.7 | Heads rule: cap 32, the author's latest event always named, merge when the heads would exceed the cap | P4.1, P1.3 | P4.8 | the S10 scenarios as tests; adversarial order tests |
-| P4.8 | Rotation policy (no periodic rotation, N7). PCS recovery is a CLI procedure: remove and re-add (N8) | P4.1, P6.7 (CLI) | P4.7 | integration: a compromised member is replaced and cannot read new epochs |
-| P4.9 | Warnings: 96, 128 and 1,000 members (N11); churn warnings (N34); local emission from the server; surfaces in logs and CLI status | P4.1 (counts) | P4.7, P4.8, P4.10 | unit: thresholds; e2e: the server warns at a threshold |
-| P4.10 | "scheme: none" notice in the UI and in group metadata (decision 8) | P4.1 | P4.9 | e2e |
-| P4.11 | Measure DataScheme update cost at 100, 1,000 and 5,000 members with our adapter, for the BeeKEM comparison | P4.1 | P4.4 to P4.10 | recorded in the phase document; no pass or fail |
-| P4.12 | Welcome size budget: chunking above the frame cap (owner question 4) | P4.5 | P4.6 | a `full` welcome above the cap is chunked and reassembled |
+| Step  | What                                                                                                                                                                                                  | Blocked by             | Parallel with     | Tests                                                                                                                                   |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| P4.1  | DataScheme adapter around the crate: create, add, remove, update, process                                                                                                                             | Phase 1, P2.1          | P4.4, P4.8, P4.10 | unit; multi-member integration                                                                                                          |
+| P4.2  | Our DGM and the from_join membership fix, in our fork (decision 18)                                                                                                                                   | P4.1                   | P4.4              | regression: a joiner reads messages after joining; the fork's patch has its own test                                                    |
+| P4.3  | from_join: immediate update, and the withholding rule for pre-join application messages                                                                                                               | P4.1, P4.2             | P4.4, P4.5        | integration: a joiner cannot read pre-join messages but reads post-join ones                                                            |
+| P4.4  | Scheme v1: `serde_bytes` on the two fields, the version bound to the signed policy and copied in the header and welcome envelope, and welcomes sorted before signing (owner question 2)               | P4.1                   | P4.3, P4.5        | interop: v0 and v1 do not decode each other (verified); size tests (40.0 B per epoch); determinism test: sorted bytes are stable        |
+| P4.5  | `recent:N` and `full`: the adapter checks the group secret ID before `receive`, and keeps pre-welcome history outside the crate. The reproduction of the 80-of-120 failure comes first, as a red test | P4.1, P3.1 (transport) | P4.3, P4.4        | integration: a `recent:N` joiner reads the last N epochs, is refused older ones, and the welcome succeeds for every N and K combination |
+| P4.6  | Lazy full history: a joiner asks a member for older epoch secrets, sent encrypted to the joiner                                                                                                       | P4.5                   | P4.7              | integration: the request returns the older keys; a non-member gets nothing                                                              |
+| P4.7  | Heads rule: cap 32, the author's latest event always named, merge when the heads would exceed the cap                                                                                                 | P4.1, P1.3             | P4.8              | the S10 scenarios as tests; adversarial order tests                                                                                     |
+| P4.8  | Rotation policy (no periodic rotation, N7). PCS recovery is a CLI procedure: remove and re-add (N8)                                                                                                   | P4.1, P6.7 (CLI)       | P4.7              | integration: a compromised member is replaced and cannot read new epochs                                                                |
+| P4.9  | Warnings: 96, 128 and 1,000 members (N11); churn warnings (N34); local emission from the server; surfaces in logs and CLI status                                                                      | P4.1 (counts)          | P4.7, P4.8, P4.10 | unit: thresholds; e2e: the server warns at a threshold                                                                                  |
+| P4.10 | "scheme: none" notice in the UI and in group metadata (decision 8)                                                                                                                                    | P4.1                   | P4.9              | e2e                                                                                                                                     |
+| P4.11 | Measure DataScheme update cost at 100, 1,000 and 5,000 members with our adapter, for the BeeKEM comparison                                                                                            | P4.1                   | P4.4 to P4.10     | recorded in the phase document; no pass or fail                                                                                         |
+| P4.12 | Welcome size budget: chunking above the frame cap (owner question 4)                                                                                                                                  | P4.5                   | P4.6              | a `full` welcome above the cap is chunked and reassembled                                                                               |
 
 ## 10. Phase 5: tags, documents, search
 
 Goal: observed-remove tags, the tag index, compaction, documents, and search.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P5.1 | Observed-remove tags (the S8 model) in the store. The clock covers the whole causal past | P1.3, P2.1 | P5.4 | the S8 properties; planted-bug checks |
-| P5.2 | Tag index on the fixed tuple encoding: subject, name and value prefixes | P5.1, P0.9 | P5.4 | property over random tags; the `"a"` versus `"a\0b"` regression |
-| P5.3 | Compaction: snapshot at a causal cut, then the tail (N33) | P5.1 | P5.2, P5.4 | the S8 counterexample as a regression test; a new device's state is preserved |
-| P5.4 | Documents: content events; snapshots from the collab server; save on explicit save and on idle close (task 10, item 6) | P5.1 | P5.2, P5.3 | integration; e2e: edit, save, reload |
-| P5.5 | Search over the tag index | P5.2 | P5.3, P5.4 | unit; e2e |
-| P5.6 | Content on removal, kept (decision 4) | P2.6 | P5.3, P5.4 | integration |
+| Step | What                                                                                                                   | Blocked by | Parallel with | Tests                                                                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- | ----------------------------------------------------------------------------- |
+| P5.1 | Observed-remove tags (the S8 model) in the store. The clock covers the whole causal past                               | P1.3, P2.1 | P5.4          | the S8 properties; planted-bug checks                                         |
+| P5.2 | Tag index on the fixed tuple encoding: subject, name and value prefixes                                                | P5.1, P0.9 | P5.4          | property over random tags; the `"a"` versus `"a\0b"` regression               |
+| P5.3 | Compaction: snapshot at a causal cut, then the tail (N33)                                                              | P5.1       | P5.2, P5.4    | the S8 counterexample as a regression test; a new device's state is preserved |
+| P5.4 | Documents: content events; snapshots from the collab server; save on explicit save and on idle close (task 10, item 6) | P5.1       | P5.2, P5.3    | integration; e2e: edit, save, reload                                          |
+| P5.5 | Search over the tag index                                                                                              | P5.2       | P5.3, P5.4    | unit; e2e                                                                     |
+| P5.6 | Content on removal, kept (decision 4)                                                                                  | P2.6       | P5.3, P5.4    | integration                                                                   |
 
 ## 11. Phase 6: invites, pull, and the CLI
 
 Goal: invites and links that work, pull, fork recovery, and the CLI that exposes all of it.
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P6.1 | Seitan V2 from the S9 code: tokens, derivations, proofs, and the admin path. Before shipping, verify the accept-message bytes and the Keybase admin handler | Phases 1 and 2 | P6.2, P6.3 | the S9 vectors; admin-path tests; e2e: invite and accept |
-| P6.2 | Freshness window per server, world or inviter, default 5 minutes (N23) | P6.1 | P6.3 | unit; boundary tests at the window edges |
-| P6.3 | Tickets, option E: the pasted string is a standard ticket. The link carries `by=<inviter key>`. The signed invite event is checked when present, before the accept is sent (N24). Pasted text is trimmed | round 2 result (done); owner question 3 | P6.1, P6.2 | round trips through the iroh-tickets parser; a standard client accepts the paste; a paste with whitespace works |
-| P6.4 | Invite events and links; address exposure documented (N30) | P6.1, P6.3 | P6.5 | e2e |
-| P6.5 | Pull policy: open pull, with an authorized option (decision 11) | Phase 3 | P6.4, P6.6 | integration |
-| P6.6 | Fork recovery: remove and re-enrol under a new device key (decision 17). Quarantine with approval is recorded as a later option | Phases 1 and 2 | P6.5 | integration: after a fork the old chain is frozen and the new device reaches the same state |
-| P6.7a | CLI: groups (create, policy, join, add, remove, role, list) | Phases 2 and 4 | P6.7b, P6.7c | e2e per command |
-| P6.7b | CLI: delegation (delegate, revoke) | P2.5 | P6.7a, P6.7c | e2e |
-| P6.7c | CLI: documents and tags (publish, events, frontier, history) | Phase 5 | P6.7a, P6.7b | e2e |
-| P6.8 | Rejection reasons everywhere: voided, waiting, frozen | P1.5, P2.3 | P6.7a | e2e: each reason appears |
+| Step  | What                                                                                                                                                                                                     | Blocked by                              | Parallel with | Tests                                                                                                           |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------- |
+| P6.1  | Seitan V2 from the S9 code: tokens, derivations, proofs, and the admin path. Before shipping, verify the accept-message bytes and the Keybase admin handler                                              | Phases 1 and 2                          | P6.2, P6.3    | the S9 vectors; admin-path tests; e2e: invite and accept                                                        |
+| P6.2  | Freshness window per server, world or inviter, default 5 minutes (N23)                                                                                                                                   | P6.1                                    | P6.3          | unit; boundary tests at the window edges                                                                        |
+| P6.3  | Tickets, option E: the pasted string is a standard ticket. The link carries `by=<inviter key>`. The signed invite event is checked when present, before the accept is sent (N24). Pasted text is trimmed | round 2 result (done); owner question 3 | P6.1, P6.2    | round trips through the iroh-tickets parser; a standard client accepts the paste; a paste with whitespace works |
+| P6.4  | Invite events and links; address exposure documented (N30)                                                                                                                                               | P6.1, P6.3                              | P6.5          | e2e                                                                                                             |
+| P6.5  | Pull policy: open pull, with an authorized option (decision 11)                                                                                                                                          | Phase 3                                 | P6.4, P6.6    | integration                                                                                                     |
+| P6.6  | Fork recovery: remove and re-enrol under a new device key (decision 17). Quarantine with approval is recorded as a later option                                                                          | Phases 1 and 2                          | P6.5          | integration: after a fork the old chain is frozen and the new device reaches the same state                     |
+| P6.7a | CLI: groups (create, policy, join, add, remove, role, list)                                                                                                                                              | Phases 2 and 4                          | P6.7b, P6.7c  | e2e per command                                                                                                 |
+| P6.7b | CLI: delegation (delegate, revoke)                                                                                                                                                                       | P2.5                                    | P6.7a, P6.7c  | e2e                                                                                                             |
+| P6.7c | CLI: documents and tags (publish, events, frontier, history)                                                                                                                                             | Phase 5                                 | P6.7a, P6.7b  | e2e                                                                                                             |
+| P6.8  | Rejection reasons everywhere: voided, waiting, frozen                                                                                                                                                    | P1.5, P2.3                              | P6.7a         | e2e: each reason appears                                                                                        |
 
 ## 12. Phases 7 and 8: connectivity for later servers, and later items
 
 **Phase 7** (nothing here is needed for a first working system):
 
-| Step | What | Blocked by | Parallel with | Tests |
-| --- | --- | --- | --- | --- |
-| P7.1 | Relay kit for a server behind a Cloudflare Tunnel, and for VPS testing. Updated for the S11 findings | none | P7.2 | the unit file test (P3.8) |
-| P7.2 | Cloudflare Workers pkarr option: HTTP PUT and GET and DNS over HTTPS only (round 2). Design only | owner's go | P7.1 | none yet |
-| P7.3 | DHT opt-in per world (decision 15) | Phase 3 | P7.1 | integration over a test DHT |
-| P7.4 | Access control (decision 13): none now; revisit at implementation | none | everything | none now |
-| P7.5 | Deployments and real-network tests (owner-blocked) | owner accounts and networks | none | the C2 matrix; N29 on real networks |
+| Step | What                                                                                                 | Blocked by                  | Parallel with | Tests                               |
+| ---- | ---------------------------------------------------------------------------------------------------- | --------------------------- | ------------- | ----------------------------------- |
+| P7.1 | Relay kit for a server behind a Cloudflare Tunnel, and for VPS testing. Updated for the S11 findings | none                        | P7.2          | the unit file test (P3.8)           |
+| P7.2 | Cloudflare Workers pkarr option: HTTP PUT and GET and DNS over HTTPS only (round 2). Design only     | owner's go                  | P7.1          | none yet                            |
+| P7.3 | DHT opt-in per world (decision 15)                                                                   | Phase 3                     | P7.1          | integration over a test DHT         |
+| P7.4 | Access control (decision 13): none now; revisit at implementation                                    | none                        | everything    | none now                            |
+| P7.5 | Deployments and real-network tests (owner-blocked)                                                   | owner accounts and networks | none          | the C2 matrix; N29 on real networks |
 
 **Phase 8** (each becomes a phase document when it starts):
+
 - P8.1 Time and witnesses (task 09, deferred).
 - P8.2 Retention and pruning (task 10, item 1). Needed before large groups run for a long time.
 - P8.3 Multi-device (task 10, item 2).
@@ -205,20 +207,20 @@ Goal: invites and links that work, pull, fork recovery, and the CLI that exposes
 
 **Layers.** These follow the repo's six layers, and add the layers this work needs.
 
-| Layer | What | When it runs | Used by |
-| --- | --- | --- | --- |
-| 1. Rust unit | `#[cfg(test)] mod tests` | every run | every step |
-| 2. Rust integration | `tests/`, several nodes in one process over loopback | every run | sync, groups, invites, pull |
-| 3. Property | proptest, many cases, fixed seeds in CI | every run | ChainExt, tuple, tags, membership, sync sets, caps |
-| 4. Crash gate | in-process fault model for redb, release mode | every run (about 40 s) | storage, identity store |
-| 5. Regression replay | `tests/regressions/*.txt`, every entry replayed | every run | every area |
-| 6. Fuzz smoke | a bounded run of each fuzz target; long runs on demand | every run; long runs on demand | decoders, tuple, tickets |
-| 7. End-to-end, CLI | the binaries as separate processes, with timeouts | every run | CLI, `serve`, invites |
-| 8. NixOS VM | two or more VMs on the network | the nix check | relays, the systemd unit, real-looking topologies |
-| 9. Playwright E2E | the web UI | `just test-e2e` when web code changes | web |
-| 10. Live network | n0, real networks | on demand, marked ignored | connectivity |
-| 11. Mutation checks | planted bugs must fail | on demand at phase end | membership, tags |
-| 12. Interop and golden vectors | CBOR, Seitan, scheme versions | every run | encodings |
+| Layer                          | What                                                   | When it runs                          | Used by                                            |
+| ------------------------------ | ------------------------------------------------------ | ------------------------------------- | -------------------------------------------------- |
+| 1. Rust unit                   | `#[cfg(test)] mod tests`                               | every run                             | every step                                         |
+| 2. Rust integration            | `tests/`, several nodes in one process over loopback   | every run                             | sync, groups, invites, pull                        |
+| 3. Property                    | proptest, many cases, fixed seeds in CI                | every run                             | ChainExt, tuple, tags, membership, sync sets, caps |
+| 4. Crash gate                  | in-process fault model for redb, release mode          | every run (about 40 s)                | storage, identity store                            |
+| 5. Regression replay           | `tests/regressions/*.txt`, every entry replayed        | every run                             | every area                                         |
+| 6. Fuzz smoke                  | a bounded run of each fuzz target; long runs on demand | every run; long runs on demand        | decoders, tuple, tickets                           |
+| 7. End-to-end, CLI             | the binaries as separate processes, with timeouts      | every run                             | CLI, `serve`, invites                              |
+| 8. NixOS VM                    | two or more VMs on the network                         | the nix check                         | relays, the systemd unit, real-looking topologies  |
+| 9. Playwright E2E              | the web UI                                             | `just test-e2e` when web code changes | web                                                |
+| 10. Live network               | n0, real networks                                      | on demand, marked ignored             | connectivity                                       |
+| 11. Mutation checks            | planted bugs must fail                                 | on demand at phase end                | membership, tags                                   |
+| 12. Interop and golden vectors | CBOR, Seitan, scheme versions                          | every run                             | encodings                                          |
 
 **The full test run** is one script, with these parts: `just check` (the primary check in `AGENTS.md`), `just test` (fast Rust and TypeScript), the crate's full test set with the three known failures handled (P0.1), the regression replay, the property tests with the CI seed set, the crash gate, the fuzz smoke runs, and `doc` tests. At phase end, add `just test-nix` (27 checks, heavy) and `just test-e2e` when web code changed. The script reports what it skipped and why.
 
@@ -238,6 +240,7 @@ Each phase document lives in `doc/<datetime>_phase_<n>_<name>/`, created at the 
 ## 15. Decisions this plan depends on
 
 Recorded in the index, and accepted in this session:
+
 - Joiner history `full` by default. `recent:N` per world, with presets 32 and 128 (decision 7).
 - mDNS on for `serve`, off in the library (decision 14).
 - Fork recovery by removal and re-enrolment (decision 17). Quarantine with approval is a later option.
