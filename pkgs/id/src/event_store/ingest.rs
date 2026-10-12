@@ -367,7 +367,7 @@ fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::chain::{ChainExt, sign};
+    use crate::chain::{sign, ChainExt};
     use crate::waiting::WaitingLimits;
     use p2panda_core::SigningKey;
 
@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_backlink_that_is_not_the_applied_head_is_refused() {
+    fn test_a_backlink_that_is_not_the_applied_head_is_parked_and_not_stored() {
         let (_dir, mut store) = open();
         let signer = key(13);
         let who = author(&signer);
@@ -698,11 +698,11 @@ mod tests {
             Vec::new(),
             "stray",
         );
-        assert_eq!(
-            ingest(&mut store, &stray),
-            Ingest::Refused(Refusal::BacklinkMismatch)
+        assert_eq!(ingest(&mut store, &stray), Ingest::Waiting { id: stray.id });
+        assert!(
+            store.event(&who, 1).unwrap().is_none(),
+            "a parked event is not stored"
         );
-        assert!(store.event(&who, 1).unwrap().is_none());
         assert_eq!(store.chain(&who).unwrap().unwrap().next_seq, 1);
         store.check_invariants().unwrap();
     }
@@ -819,5 +819,282 @@ mod tests {
         );
         assert!(store.fork_proof(&who).unwrap().is_some());
         store.check_invariants().unwrap();
+    }
+
+    /// The IDs of `who`'s applied events, in sequence order.
+    fn applied_ids(store: &EventStore, who: &AuthorKey) -> Vec<Hash> {
+        let next = store.chain(who).unwrap().map_or(0, |chain| chain.next_seq);
+        (0..next)
+            .map(|seq| {
+                store
+                    .event(who, seq)
+                    .unwrap()
+                    .expect("an applied event is stored")
+                    .id
+            })
+            .collect()
+    }
+
+    /// What a store reports for `who`: the chain row and the fork proof.
+    fn state_of(
+        store: &EventStore,
+        who: &AuthorKey,
+    ) -> (Option<Chain>, Option<crate::event_store::ForkProof>) {
+        (store.chain(who).unwrap(), store.fork_proof(who).unwrap())
+    }
+
+    #[test]
+    fn test_a_fork_at_sequence_zero_unapplies_an_event_applied_on_top_of_it() {
+        let (_dir, mut store) = open();
+        let (x, y) = (key(20), key(21));
+        let x0 = event(&x, 0, None, Vec::new(), "message");
+        let y0 = event(&y, 0, None, vec![x0.id], "message");
+        let rival = event(&x, 0, None, Vec::new(), "rival");
+        ingest_all(&mut store, &[x0, y0.clone()]);
+        assert_eq!(applied_ids(&store, &author(&y)), vec![y0.id]);
+        assert_eq!(
+            ingest(&mut store, &rival),
+            Ingest::Fork {
+                author: author(&x),
+                seq: 0
+            }
+        );
+        assert!(
+            applied_ids(&store, &author(&y)).is_empty(),
+            "y0 rests on x0, which the fork voided"
+        );
+        assert_eq!(
+            store.event(&author(&y), 0).unwrap(),
+            Some(y0),
+            "y0 stays stored"
+        );
+        assert_eq!(store.chain(&author(&y)).unwrap(), None);
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_fork_unapplies_every_event_that_rests_on_the_voided_ones() {
+        let (_dir, mut store) = open();
+        let (x, y, z) = (key(22), key(23), key(24));
+        let x0 = event(&x, 0, None, Vec::new(), "message");
+        let x1 = event(&x, 1, Some(x0.id), Vec::new(), "message");
+        let y0 = event(&y, 0, None, vec![x1.id], "message");
+        let y1 = event(&y, 1, Some(y0.id), Vec::new(), "message");
+        let z0 = event(&z, 0, None, vec![y0.id], "message");
+        ingest_all(&mut store, &[x0.clone(), x1, y0, y1, z0]);
+        let rival = event(&x, 1, Some(x0.id), Vec::new(), "rival");
+        assert_eq!(
+            ingest(&mut store, &rival),
+            Ingest::Fork {
+                author: author(&x),
+                seq: 1
+            }
+        );
+        assert_eq!(applied_ids(&store, &author(&x)), vec![x0.id]);
+        assert!(
+            applied_ids(&store, &author(&y)).is_empty(),
+            "y0 rests on x1, and y1 on y0"
+        );
+        assert!(
+            applied_ids(&store, &author(&z)).is_empty(),
+            "z0 rests on y0"
+        );
+        assert_eq!(store.chain(&author(&z)).unwrap(), None);
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_conflict_with_an_unmatched_backlink_is_detected_in_either_order() {
+        let signer = key(25);
+        let who = author(&signer);
+        let x0 = event(&signer, 0, None, Vec::new(), "message");
+        let x1 = event(&signer, 1, Some(x0.id), Vec::new(), "message");
+        let stray = event(
+            &signer,
+            1,
+            Some(Hash::digest(b"not the head")),
+            Vec::new(),
+            "stray",
+        );
+
+        let (_first_dir, mut first) = open();
+        ingest_all(&mut first, &[x0.clone(), x1.clone()]);
+        assert_eq!(
+            ingest(&mut first, &stray),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+
+        let (_second_dir, mut second) = open();
+        ingest_all(&mut second, std::slice::from_ref(&x0));
+        ingest(&mut second, &stray);
+        assert_eq!(
+            ingest(&mut second, &x1),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+
+        assert_eq!(state_of(&second, &who), state_of(&first, &who));
+        first.check_invariants().unwrap();
+        second.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_conflict_held_on_a_missing_dependency_is_detected_in_either_order() {
+        let signer = key(26);
+        let who = author(&signer);
+        let x0 = event(&signer, 0, None, Vec::new(), "message");
+        let missing = Hash::digest(b"an event that is never delivered");
+        let held = event(&signer, 1, Some(x0.id), vec![missing], "message");
+        let rival = event(&signer, 1, Some(x0.id), Vec::new(), "rival");
+
+        let (_first_dir, mut first) = open();
+        ingest_all(&mut first, std::slice::from_ref(&x0));
+        assert_eq!(ingest(&mut first, &held), Ingest::Waiting { id: held.id });
+        assert_eq!(
+            ingest(&mut first, &rival),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+
+        let (_second_dir, mut second) = open();
+        ingest_all(&mut second, &[x0.clone(), rival.clone()]);
+        assert_eq!(
+            ingest(&mut second, &held),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+
+        assert_eq!(state_of(&second, &who), state_of(&first, &who));
+        first.check_invariants().unwrap();
+        second.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_two_events_ahead_of_the_chain_at_one_position_are_a_fork_in_either_order() {
+        let signer = key(27);
+        let who = author(&signer);
+        let x0 = event(&signer, 0, None, Vec::new(), "message");
+        let x1 = event(&signer, 1, Some(x0.id), Vec::new(), "message");
+        let x2 = event(&signer, 2, Some(x1.id), Vec::new(), "message");
+        let stray = event(
+            &signer,
+            2,
+            Some(Hash::digest(b"never delivered")),
+            Vec::new(),
+            "stray",
+        );
+
+        let (_first_dir, mut first) = open();
+        assert_eq!(ingest(&mut first, &x2), Ingest::Waiting { id: x2.id });
+        assert_eq!(
+            ingest(&mut first, &stray),
+            Ingest::Fork {
+                author: who,
+                seq: 2
+            }
+        );
+        ingest_all(&mut first, &[x0.clone(), x1.clone()]);
+
+        let (_second_dir, mut second) = open();
+        ingest_all(&mut second, &[x0.clone(), x1.clone(), x2.clone()]);
+        assert_eq!(
+            ingest(&mut second, &stray),
+            Ingest::Fork {
+                author: who,
+                seq: 2
+            }
+        );
+
+        assert_eq!(state_of(&second, &who), state_of(&first, &who));
+        assert_eq!(applied_ids(&first, &who), vec![x0.id, x1.id]);
+        first.check_invariants().unwrap();
+        second.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_an_event_ahead_of_its_chain_whose_backlink_is_applied_elsewhere_is_held() {
+        let (signer, other) = (key(28), key(29));
+        let other0 = event(&other, 0, None, Vec::new(), "message");
+        let stray = event(&signer, 2, Some(other0.id), Vec::new(), "message");
+        let (other0_bytes, stray_bytes) = (other0.bytes.clone(), stray.bytes.clone());
+        let who = author(&signer);
+        let (sent, received) = std::sync::mpsc::channel();
+        // The ingest runs on its own thread, so a store that spins fails the test
+        // instead of hanging it.
+        std::thread::spawn(move || {
+            let (_dir, mut store) = open();
+            let first = store.ingest(&other0_bytes, 0).unwrap();
+            let second = store.ingest(&stray_bytes, 0).unwrap();
+            let stored = store.event(&who, 2).unwrap().is_some();
+            let _ = sent.send((first, second, stored));
+        });
+        let (first, second, stored) = received
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("ingest did not return: the event made the store spin");
+        assert_eq!(
+            first,
+            Ingest::Accepted {
+                id: other0.id,
+                released: vec![],
+            }
+        );
+        assert_eq!(second, Ingest::Waiting { id: stray.id });
+        assert!(!stored, "a held event is not stored");
+    }
+
+    #[test]
+    fn test_the_fork_proof_holds_the_two_lowest_ids_whatever_the_order() {
+        let signer = key(30);
+        let who = author(&signer);
+        let x0 = event(&signer, 0, None, Vec::new(), "message");
+        let x1 = event(&signer, 1, Some(x0.id), Vec::new(), "message");
+        // Two rivals below the original's ID, so the proof must leave the original out.
+        let below: Vec<Event> = (0..16)
+            .map(|n| event(&signer, 1, Some(x0.id), Vec::new(), &format!("rival {n}")))
+            .filter(|rival| rival.id.as_bytes() < x1.id.as_bytes())
+            .collect();
+        assert!(
+            below.len() >= 2,
+            "the fixture needs two rivals below the original"
+        );
+        let (rival_a, rival_b) = (below[0].clone(), below[1].clone());
+        let lowest_two = sorted(&rival_a.id, &rival_b.id);
+
+        let orders = [
+            vec![x0.clone(), x1.clone(), rival_a.clone(), rival_b.clone()],
+            vec![x0.clone(), rival_a.clone(), rival_b.clone(), x1.clone()],
+            vec![x0, rival_b, x1, rival_a],
+        ];
+        let mut states = Vec::new();
+        for order in &orders {
+            let (_dir, mut store) = open();
+            for event in order {
+                store.ingest(&event.bytes, 0).unwrap();
+            }
+            let proof = store
+                .fork_proof(&who)
+                .unwrap()
+                .expect("a fork proof is stored");
+            assert_eq!(
+                [proof.first.id, proof.second.id],
+                lowest_two,
+                "the proof holds the two lowest IDs at the fork point"
+            );
+            store.check_invariants().unwrap();
+            states.push(state_of(&store, &who));
+        }
+        assert!(
+            states.windows(2).all(|pair| pair[0] == pair[1]),
+            "the orders reach different states: {states:?}"
+        );
     }
 }

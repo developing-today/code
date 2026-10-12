@@ -2,9 +2,12 @@
 //! same events, in any order and with any repeats, give a store the same applied state.
 //! The checks take bytes, so a case found by a property run can be replayed unchanged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use id::chain::decode;
 use id::event_store::{Chain, EventStore, Storage};
@@ -16,11 +19,17 @@ use redb::{Database, DatabaseError, StorageBackend, StorageError};
 /// The applied state of a set of authors, as a store reports it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Canonical {
-    /// Each author's applied chain.
+    /// Each author's applied chain. An author with no applied event and no fork has no row.
     pub chains: BTreeMap<AuthorKey, Chain>,
     /// Each author's fork proof: the fork point, and the two IDs in order.
     pub proofs: BTreeMap<AuthorKey, (SeqNum, Hash, Hash)>,
+    /// The IDs of every applied event, across all authors.
+    pub applied: BTreeSet<Hash>,
 }
+
+/// How long one delivery may take before it counts as a hang. A store that spins on an
+/// event fails the check, instead of hanging the whole test run.
+pub const DELIVERY_LIMIT: Duration = Duration::from_secs(20);
 
 /// Reads the applied state of `authors` from `store`.
 ///
@@ -31,6 +40,11 @@ pub fn canonical(store: &EventStore, authors: &[AuthorKey]) -> Result<Canonical,
     let mut state = Canonical::default();
     for author in authors {
         if let Some(chain) = store.chain(author).map_err(|err| err.to_string())? {
+            for seq in 0..chain.next_seq {
+                let event = store.event(author, seq).map_err(|err| err.to_string())?;
+                let event = event.ok_or_else(|| format!("applied sequence {seq} is not stored"))?;
+                state.applied.insert(event.id);
+            }
             state.chains.insert(*author, chain);
         }
         if let Some(proof) = store.fork_proof(author).map_err(|err| err.to_string())? {
@@ -160,6 +174,30 @@ pub fn deliver(order: &[Vec<u8>], authors: &[AuthorKey]) -> Result<Canonical, St
     canonical(&store, authors)
 }
 
+/// [`deliver`] on a helper thread. Fails if the delivery has not returned within `limit`.
+///
+/// # Errors
+///
+/// Returns the delivery's error, or a message when it did not finish in time or panicked.
+pub fn deliver_within(
+    order: Vec<Vec<u8>>,
+    authors: Vec<AuthorKey>,
+    limit: Duration,
+) -> Result<Canonical, String> {
+    let (sent, received) = mpsc::channel();
+    thread::spawn(move || {
+        // The receiver is gone only once the wait below has given up.
+        let _ = sent.send(deliver(&order, &authors));
+    });
+    match received.recv_timeout(limit) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(format!(
+            "the delivery did not finish within {limit:?}: an event made the store spin"
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err("the delivery panicked".to_owned()),
+    }
+}
+
 /// Checks that delivery order and repeats do not change the applied state. Each
 /// event is delivered twice in a row, once in the given order, once reversed, and
 /// once rotated by half the length.
@@ -183,9 +221,9 @@ pub fn check_order_independence(events: &[Vec<u8>]) -> Result<(), String> {
         rotated.rotate_left(half);
     }
     let authors = authors_of(events);
-    let first = deliver(&twice(&forward), &authors)?;
+    let first = deliver_within(twice(&forward), authors.clone(), DELIVERY_LIMIT)?;
     for (name, order) in [("reversed", &reversed), ("rotated", &rotated)] {
-        let other = deliver(&twice(order), &authors)?;
+        let other = deliver_within(twice(order), authors.clone(), DELIVERY_LIMIT)?;
         if other != first {
             return Err(format!(
                 "the {name} order reaches {other:?}, but the given order reaches {first:?}"

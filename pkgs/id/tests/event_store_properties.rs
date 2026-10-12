@@ -1,15 +1,15 @@
-//! Property tests for ingest in `src/event_store.rs` (plan P1.8).
+//! Property tests for ingest in `src/event_store/ingest.rs` (plan P1.8).
 //!
-//! A scenario is a set of valid chains, with forks injected. Each fork is a second
-//! event at a sequence number, signed with the same backlink as the original. The
-//! scenario is delivered in three orders, with repeats, to fresh stores. Every store
-//! must reach the applied state that the chains determine: the chain up to each
-//! author's fork point, frozen if there is one, and the fork proof at the lowest fork.
+//! A scenario is a set of signed events: valid chains, forks at any depth, and rivals whose
+//! backlink is anything: the original's, an earlier event's, or a hash that is never
+//! delivered. An `after` hash names any earlier event, or one that is never delivered. The
+//! scenario is delivered in four orders, with repeats, to fresh stores.
 //!
-//! The `after` hashes are drawn from events that a fork can never take out of the
-//! applied prefix. A fork can unapply events at and above its own sequence number, and
-//! an event that names one of those would make the expected state depend on the order
-//! of arrival. The regression list covers the orders the generator does not reach.
+//! Every store must reach the applied state that [`model`] computes from the set of events
+//! alone, so the answer cannot depend on the order. The model is the specification. An event
+//! is applied when it sits below its author's fork point, its backlink is the applied event
+//! before it, and every `after` hash is applied. The fork point is the lowest sequence number
+//! where the author has two distinct events, and the proof holds the two lowest IDs there.
 //!
 //! Failures are not written to `proptest-regressions/`. The minimal input goes into
 //! `tests/regressions/ingest.txt` instead (see `tests/regressions/README.md`).
@@ -18,8 +18,10 @@
 
 mod common;
 
-use common::ingest::{Canonical, deliver};
-use id::chain::{ChainExt, Event, sign};
+use std::collections::{BTreeMap, BTreeSet};
+
+use common::ingest::{deliver_within, Canonical, DELIVERY_LIMIT};
+use id::chain::{sign, ChainExt, Event};
 use id::event_store::Chain;
 use id::waiting::AuthorKey;
 use p2panda_core::{Hash, SeqNum, SigningKey};
@@ -63,24 +65,35 @@ fn config() -> ProptestConfig {
     }
 }
 
-/// A scenario: every signed event, and the applied state every delivery must reach.
+/// A scenario: every distinct signed event, and the applied state they determine.
 struct Scenario {
-    /// Every signed event, originals and forks, in creation order.
+    /// Every signed event, originals and rivals, in creation order. Each one names only
+    /// events created before it.
     events: Vec<Event>,
     /// The authors' public keys.
     authors: Vec<AuthorKey>,
-    /// The applied state of every author.
+    /// The applied state that [`model`] determines from `events`.
     expected: Canonical,
 }
 
-/// Up to three `after` hashes, drawn from the stable events created so far.
-fn pick_after(rng: &mut Rng, stable: &[Hash]) -> Vec<Hash> {
+fn author_of(event: &Event) -> AuthorKey {
+    *event.header.verifying_key.as_bytes()
+}
+
+/// A hash that no event in the scenario has: a dependency that is never delivered.
+fn undelivered(rng: &mut Rng) -> Hash {
+    Hash::digest(rng.next_u64().to_be_bytes())
+}
+
+/// Up to three `after` hashes: earlier events, or hashes that are never delivered.
+fn pick_after(rng: &mut Rng, known: &[Event]) -> Vec<Hash> {
     let mut picked = Vec::new();
-    if stable.is_empty() {
-        return picked;
-    }
     for _ in 0..rng.below(4) {
-        let hash = stable[rng.below(stable.len() as u64) as usize];
+        let hash = if known.is_empty() || rng.chance(5) {
+            undelivered(rng)
+        } else {
+            known[rng.below(known.len() as u64) as usize].id
+        };
         if !picked.contains(&hash) {
             picked.push(hash);
         }
@@ -88,13 +101,31 @@ fn pick_after(rng: &mut Rng, stable: &[Hash]) -> Vec<Hash> {
     picked
 }
 
-/// Signs an event with a random group and frontier, and the given kind.
+/// The backlink of a rival at `seq`. It is the original's own backlink, or the ID of an
+/// earlier event (of this author or another, applied or not), or a hash never delivered.
+fn rival_backlink(
+    rng: &mut Rng,
+    seq: SeqNum,
+    original: Option<Hash>,
+    known: &[Event],
+) -> Option<Hash> {
+    if seq == 0 {
+        return None;
+    }
+    match rng.below(4) {
+        0 | 1 => original,
+        2 if !known.is_empty() => Some(known[rng.below(known.len() as u64) as usize].id),
+        _ => Some(undelivered(rng)),
+    }
+}
+
+/// Signs an event with a random group and `after` hashes, drawn from `known`.
 fn signed(
     rng: &mut Rng,
     key: &SigningKey,
     seq: SeqNum,
     backlink: Option<Hash>,
-    stable: &[Hash],
+    known: &[Event],
     kind: &str,
 ) -> Event {
     let group = rng
@@ -103,18 +134,9 @@ fn signed(
     let ext = ChainExt {
         kind: kind.to_owned(),
         group,
-        after: pick_after(rng, stable),
+        after: pick_after(rng, known),
     };
     sign(key, seq, backlink, None, ext).unwrap()
-}
-
-/// Orders two IDs as the fork proof does: lower ID first.
-fn ordered(a: Hash, b: Hash) -> (Hash, Hash) {
-    if a.as_bytes() <= b.as_bytes() {
-        (a, b)
-    } else {
-        (b, a)
-    }
 }
 
 fn scenario(seed: u64) -> Scenario {
@@ -126,26 +148,9 @@ fn scenario(seed: u64) -> Scenario {
     let lengths: Vec<SeqNum> = (0..count)
         .map(|_| 1 + SeqNum::try_from(rng.below(4)).unwrap())
         .collect();
-    // The forks are chosen first: at most one per sequence number. The lowest one is
-    // the author's fork point.
-    let forked: Vec<Vec<bool>> = lengths
-        .iter()
-        .map(|&len| (0..len).map(|_| rng.chance(4)).collect())
-        .collect();
-    let fork_point: Vec<Option<SeqNum>> = forked
-        .iter()
-        .map(|row| {
-            row.iter()
-                .position(|&is_forked| is_forked)
-                .map(|at| SeqNum::try_from(at).unwrap())
-        })
-        .collect();
 
     let mut events: Vec<Event> = Vec::new();
-    let mut chains: Vec<Vec<Event>> = vec![Vec::new(); count];
-    let mut rivals: Vec<Option<Event>> = vec![None; count];
-    // The IDs that can be named by `after`: events below their author's fork point.
-    let mut stable: Vec<Hash> = Vec::new();
+    let mut originals: Vec<Vec<Event>> = vec![Vec::new(); count];
     let mut progress: Vec<SeqNum> = vec![0; count];
     while progress.iter().zip(&lengths).any(|(done, len)| done < len) {
         let author = rng.below(count as u64) as usize;
@@ -154,64 +159,104 @@ fn scenario(seed: u64) -> Scenario {
             continue;
         }
         progress[author] += 1;
-        let backlink = chains[author].last().map(|event| event.id);
-        let original = signed(&mut rng, &keys[author], seq, backlink, &stable, "message");
-        if fork_point[author].is_none_or(|point| seq < point) {
-            stable.push(original.id);
-        }
-        chains[author].push(original.clone());
+        let backlink = originals[author].last().map(|event| event.id);
+        let original = signed(&mut rng, &keys[author], seq, backlink, &events, "message");
+        originals[author].push(original.clone());
         events.push(original);
-        if forked[author][seq as usize] {
-            let rival = signed(&mut rng, &keys[author], seq, backlink, &stable, "rival");
-            events.push(rival.clone());
-            if fork_point[author] == Some(seq) {
-                rivals[author] = Some(rival);
+        // A fork at this sequence number: one or two rivals, each with its own backlink.
+        if rng.chance(3) {
+            for _ in 0..=rng.below(2) {
+                let link = rival_backlink(&mut rng, seq, backlink, &events);
+                let rival = signed(&mut rng, &keys[author], seq, link, &events, "rival");
+                if events.iter().all(|event| event.id != rival.id) {
+                    events.push(rival);
+                }
             }
         }
     }
 
-    let mut expected = Canonical::default();
-    for author in 0..count {
-        let who: AuthorKey = *keys[author].verifying_key().as_bytes();
-        match fork_point[author] {
-            None => {
-                expected.chains.insert(
-                    who,
-                    Chain {
-                        next_seq: lengths[author],
-                        head: chains[author].last().map(|event| event.id),
-                        frozen: false,
-                    },
-                );
-            }
-            Some(point) => {
-                let head = point
-                    .checked_sub(1)
-                    .map(|before| chains[author][before as usize].id);
-                expected.chains.insert(
-                    who,
-                    Chain {
-                        next_seq: point,
-                        head,
-                        frozen: true,
-                    },
-                );
-                let original = chains[author][point as usize].id;
-                let rival = rivals[author].as_ref().unwrap().id;
-                let (first, second) = ordered(original, rival);
-                expected.proofs.insert(who, (point, first, second));
-            }
-        }
-    }
-    let authors = keys
+    let authors: Vec<AuthorKey> = keys
         .iter()
         .map(|key| *key.verifying_key().as_bytes())
         .collect();
+    let expected = model(&events, &authors);
     Scenario {
         events,
         authors,
         expected,
     }
+}
+
+/// The applied state that a set of events determines, whatever order they arrive in. Every
+/// event names only earlier events, so one pass in creation order settles each event.
+fn model(events: &[Event], authors: &[AuthorKey]) -> Canonical {
+    let mut at: BTreeMap<(AuthorKey, SeqNum), Vec<Hash>> = BTreeMap::new();
+    for event in events {
+        at.entry((author_of(event), event.header.seq_num))
+            .or_default()
+            .push(event.id);
+    }
+    // The lowest sequence number with two distinct events. Keys are sorted by sequence
+    // number within an author, so the first conflict seen is the lowest.
+    let mut fork_point: BTreeMap<AuthorKey, SeqNum> = BTreeMap::new();
+    for (&(author, seq), ids) in &at {
+        if ids.len() >= 2 {
+            fork_point.entry(author).or_insert(seq);
+        }
+    }
+
+    let mut applied_at: BTreeMap<(AuthorKey, SeqNum), Hash> = BTreeMap::new();
+    let mut applied: BTreeSet<Hash> = BTreeSet::new();
+    for event in events {
+        let author = author_of(event);
+        let seq = event.header.seq_num;
+        let below_fork = fork_point.get(&author).is_none_or(|point| seq < *point);
+        let linked = match seq.checked_sub(1) {
+            None => true,
+            Some(before) => applied_at.get(&(author, before)) == event.header.backlink.as_ref(),
+        };
+        let deps_applied = event
+            .header
+            .extensions
+            .after
+            .iter()
+            .all(|dep| applied.contains(dep));
+        if below_fork && linked && deps_applied {
+            applied_at.insert((author, seq), event.id);
+            applied.insert(event.id);
+        }
+    }
+
+    let mut expected = Canonical {
+        applied,
+        ..Canonical::default()
+    };
+    for author in authors {
+        let mut next: SeqNum = 0;
+        while applied_at.contains_key(&(*author, next)) {
+            next += 1;
+        }
+        let fork = fork_point.get(author).copied();
+        if next > 0 || fork.is_some() {
+            let head = next
+                .checked_sub(1)
+                .and_then(|before| applied_at.get(&(*author, before)).copied());
+            expected.chains.insert(
+                *author,
+                Chain {
+                    next_seq: next,
+                    head,
+                    frozen: fork.is_some(),
+                },
+            );
+        }
+        if let Some(point) = fork {
+            let mut ids = at.get(&(*author, point)).cloned().unwrap_or_default();
+            ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            expected.proofs.insert(*author, (point, ids[0], ids[1]));
+        }
+    }
+    expected
 }
 
 fn shuffle<T>(items: &mut [T], rng: &mut Rng) {
@@ -221,8 +266,8 @@ fn shuffle<T>(items: &mut [T], rng: &mut Rng) {
     }
 }
 
-/// Three delivery orders of the scenario's events, each with some events repeated:
-/// the creation order, the reverse, and a shuffle.
+/// Four delivery orders of the scenario's events, each with some events repeated: the
+/// creation order, its reverse, and two shuffles.
 fn orders(events: &[Event], rng: &mut Rng) -> Vec<Vec<Vec<u8>>> {
     let mut repeated: Vec<Vec<u8>> = Vec::new();
     for event in events {
@@ -234,22 +279,26 @@ fn orders(events: &[Event], rng: &mut Rng) -> Vec<Vec<Vec<u8>>> {
     let forward = repeated.clone();
     let mut reversed = repeated.clone();
     reversed.reverse();
-    let mut shuffled = repeated;
-    shuffle(&mut shuffled, rng);
-    vec![forward, reversed, shuffled]
+    let mut first_shuffle = repeated.clone();
+    shuffle(&mut first_shuffle, rng);
+    let mut second_shuffle = repeated;
+    shuffle(&mut second_shuffle, rng);
+    vec![forward, reversed, first_shuffle, second_shuffle]
 }
 
 proptest! {
     #![proptest_config(config())]
 
-    /// Random valid chains with forks, delivered in three orders with repeats, reach
-    /// the applied state that the chains determine.
+    /// Random chains with forks at any depth, rivals with any backlink, and `after` hashes on
+    /// any event, delivered in four orders with repeats: every order reaches the applied state
+    /// that the model determines from the events.
     #[test]
     fn test_random_orders_reach_the_state_the_chains_determine(seed in any::<u64>()) {
         let scenario = scenario(seed);
         let mut rng = Rng(seed ^ 0xD1B5_4A32_D192_ED03);
         for order in orders(&scenario.events, &mut rng) {
-            let state = deliver(&order, &scenario.authors).map_err(TestCaseError::fail)?;
+            let state = deliver_within(order, scenario.authors.clone(), DELIVERY_LIMIT)
+                .map_err(TestCaseError::fail)?;
             prop_assert_eq!(&state, &scenario.expected);
         }
     }
@@ -262,8 +311,8 @@ fn escape(bytes: &[u8]) -> String {
 
 /// Prints the seed lines for `tests/regressions/ingest.txt`. The seeds sit on the ingest
 /// boundaries: a fork at each position, an event ahead of its chain, an `after` hash on an
-/// event the fork unapplied, a repeat, and bytes that fail verification.
-/// Run by hand with `-- --ignored --nocapture`.
+/// event a fork unapplied, a repeat, bytes that fail verification, and the conflicts that
+/// arrive in one order but not another. Run by hand with `-- --ignored --nocapture`.
 #[test]
 #[ignore = "prints the seed lines for tests/regressions/ingest.txt"]
 fn print_ingest_seeds() {
@@ -284,8 +333,25 @@ fn print_ingest_seeds() {
     let a0_rival = sign_event(&a, 0, None, Vec::new(), "rival");
     let a1_rival = sign_event(&a, 1, Some(a0.id), Vec::new(), "rival");
     let a2_rival = sign_event(&a, 2, Some(a1.id), Vec::new(), "rival");
+    let b0 = sign_event(&b, 0, None, Vec::new(), "message");
     let b0_after_a0 = sign_event(&b, 0, None, vec![a0.id], "message");
     let b0_after_a1 = sign_event(&b, 0, None, vec![a1.id], "message");
+    let missing = Hash::digest(b"an event that is never delivered");
+    let a1_stray = sign_event(
+        &a,
+        1,
+        Some(Hash::digest(b"not the head")),
+        Vec::new(),
+        "stray",
+    );
+    let a1_held = sign_event(&a, 1, Some(a0.id), vec![missing], "message");
+    let a2_stray = sign_event(&a, 2, Some(missing), Vec::new(), "stray");
+    let a2_on_b0 = sign_event(&a, 2, Some(b0.id), Vec::new(), "message");
+    // Two rivals at sequence 1 whose IDs are below a1's, so that a1 is the highest of the three.
+    let low_rivals: Vec<Event> = (0..16)
+        .map(|n| sign_event(&a, 1, Some(a0.id), Vec::new(), &format!("rival {n}")))
+        .filter(|rival| rival.id.as_bytes() < a1.id.as_bytes())
+        .collect();
     let mut tampered = a0.bytes.clone();
     tampered[48] ^= 0x01;
     let seeds: Vec<(&str, Vec<Vec<u8>>)> = vec![
@@ -340,6 +406,48 @@ fn print_ingest_seeds() {
         (
             "bytes that are not CBOR",
             vec![b"\xff\x00 not an event".to_vec(), a0.bytes.clone()],
+        ),
+        (
+            "a fork at sequence zero unapplies an event after it",
+            vec![
+                a0.bytes.clone(),
+                b0_after_a0.bytes.clone(),
+                a0_rival.bytes.clone(),
+            ],
+        ),
+        (
+            "a conflict with an unmatched backlink, after the event it conflicts with",
+            vec![a0.bytes.clone(), a1.bytes.clone(), a1_stray.bytes.clone()],
+        ),
+        (
+            "a conflict held on a missing dependency, after its rival applies",
+            vec![
+                a0.bytes.clone(),
+                a1_rival.bytes.clone(),
+                a1_held.bytes.clone(),
+            ],
+        ),
+        (
+            "two events ahead of the chain at one position",
+            vec![
+                a0.bytes.clone(),
+                a1.bytes.clone(),
+                a2.bytes.clone(),
+                a2_stray.bytes.clone(),
+            ],
+        ),
+        (
+            "an event ahead of its chain whose backlink is applied elsewhere",
+            vec![b0.bytes.clone(), a2_on_b0.bytes.clone()],
+        ),
+        (
+            "three rivals at one position",
+            vec![
+                a0.bytes.clone(),
+                a1.bytes.clone(),
+                low_rivals[0].bytes.clone(),
+                low_rivals[1].bytes.clone(),
+            ],
         ),
     ];
     for (name, events) in seeds {
