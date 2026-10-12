@@ -807,16 +807,14 @@ mod tests {
         }
     }
 
-    /// Bootstrap of a store whose sync set needs many frames: a 4 KiB budget splits every ID
-    /// reply, and each direction converges.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_bootstrap_over_many_frames_in_both_directions_on_real_stores() {
-        let budget = Params::default().with_frame_budget(4096).unwrap();
-        let chains: Vec<(u64, u32)> = (1..=30).map(|c| (c, 40)).collect();
+    /// Bootstraps an empty store from a full one, and the other way round, under `budget`. Each
+    /// direction must converge, and the ID replies must be split into more than `frames` bytes of
+    /// frames, so the chunking is exercised.
+    async fn bootstrap_both_ways(budget: Params, chains: &[(u64, u32)], split_above: usize) {
         for full_dials in [true, false] {
             let (_df, mut full) = open();
             let (_de, mut empty) = open();
-            populate(&mut full, &chains);
+            populate(&mut full, chains);
             let total = ids(&full);
             let (dialer, acceptor) = if full_dials {
                 loopback(&mut full, &mut empty, budget, budget, Cut::Never)
@@ -835,13 +833,33 @@ mod tests {
             };
             assert_eq!(ids(&empty), total, "{label}");
             assert_eq!(ids(&full), total, "{label}");
-            // Chunking adds frames, not messages, so the control bytes show the split: 1,200 IDs
-            // are 38 KB, which is many 4 KiB frames.
+            // Chunking adds frames, not messages, so the control bytes show the split.
             assert!(
-                dialer.control_bytes + acceptor.control_bytes > 4 * 4096,
+                dialer.control_bytes + acceptor.control_bytes > split_above,
                 "{label}: the ID replies were split into frames"
             );
             assert_eq!(dialer.duplicates + acceptor.duplicates, 0, "{label}");
         }
+    }
+
+    /// Bootstrap of a store whose sync set needs many frames: 1,200 events under a 4 KiB budget. The
+    /// ID replies are 38 KB, which is many 4 KiB frames. This takes about 100 s in a debug build,
+    /// so it runs on demand. `test_bootstrap_over_many_frames_on_small_stores` is the always-on
+    /// version of the same check.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "1,200 events take about 100 s in debug; run with: cargo test --release --lib -- --ignored test_bootstrap_over_many_frames_in_both_directions_on_real_stores"]
+    async fn test_bootstrap_over_many_frames_in_both_directions_on_real_stores() {
+        let budget = Params::default().with_frame_budget(4096).unwrap();
+        let chains: Vec<(u64, u32)> = (1..=30).map(|c| (c, 40)).collect();
+        bootstrap_both_ways(budget, &chains, 4 * 4096).await;
+    }
+
+    /// The always-on version of the test above: 60 events under a 1 KiB budget. Each ID reply is
+    /// still several frames, and the run takes a few seconds in a debug build.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_bootstrap_over_many_frames_on_small_stores() {
+        let budget = Params::default().with_frame_budget(1024).unwrap();
+        let chains: Vec<(u64, u32)> = (1..=2).map(|c| (c, 30)).collect();
+        bootstrap_both_ways(budget, &chains, 2 * 1024).await;
     }
 }
