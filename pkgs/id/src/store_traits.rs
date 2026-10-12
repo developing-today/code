@@ -115,6 +115,26 @@ impl SharedEventStore {
         Ok(store.ingest_with_body(bytes, body, now_ms)?)
     }
 
+    /// Verifies and applies a batch of received events, in order, in one write transaction. The
+    /// outcomes are those of [`SharedEventStore::ingest`] on each entry with no body. See
+    /// [`EventStore::ingest_batch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub fn ingest_batch(
+        &self,
+        batch: &[Vec<u8>],
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, TraitStoreError> {
+        let mut store = self
+            .inner
+            .write()
+            .map_err(|_err| TraitStoreError::Poisoned)?;
+        Ok(store.ingest_batch(batch, now_ms)?)
+    }
+
     /// Checks the store's own rows. See [`EventStore::check_invariants`].
     ///
     /// # Errors
