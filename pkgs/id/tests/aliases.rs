@@ -91,17 +91,13 @@ fn named(subject: Hash, name: &str) -> Named {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// A config with one user, `ann`, and a group `team` that she creates. The group's primary alias
 /// is `team`. The group's ID is the subject its alias claims name.
 fn team_config(ann: AuthorKey) -> ServerConfig {
     let text = format!(
         "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[groups]]\nkey = \"team\"\nname = \"Team\"\n\
          creator = \"ann\"\nalias = \"team\"\n",
-        hex(&ann)
+        Hash::from_bytes(ann).to_hex()
     );
     ServerConfig::parse(&text).unwrap()
 }
