@@ -11,9 +11,15 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: 'Auto-assign issue'
-        uses: pozil/auto-assign-issue@v1
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          assignees: dezren39
-          numOfAssignee: 1
+      - name: Assign to maintainer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          if [[ "$GH_EVENT_NAME" == "pull_request" ]]; then
+            gh pr edit "$GH_ISSUE_NUMBER" --add-assignee dezren39 --repo "$GH_REPO"
+          else
+            gh issue edit "$GH_ISSUE_NUMBER" --add-assignee dezren39 --repo "$GH_REPO"
+          fi
