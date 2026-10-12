@@ -55,6 +55,9 @@ pub enum ParamsError {
     /// K below 2 makes a split that never shrinks the range.
     #[error("K must be at least 2, or a split makes no progress (got {0})")]
     FanOut(usize),
+    /// T of 0 never ends on one mismatched key: a single child is the same range again.
+    #[error("T must be at least 1, or one mismatched key never ends the sync (got {0})")]
+    LeafThreshold(usize),
     /// A budget too small for an entry, or above the frame cap.
     #[error(
         "the frame budget must be from {MIN_FRAME_BUDGET} bytes to the {FRAME_CAP}-byte frame cap (got {0})"
@@ -76,10 +79,13 @@ impl Params {
     ///
     /// # Errors
     ///
-    /// Refuses `k` below 2.
+    /// Refuses `k` below 2, and `t` below 1.
     pub fn new(k: usize, t: usize) -> Result<Self, ParamsError> {
         if k < 2 {
             return Err(ParamsError::FanOut(k));
+        }
+        if t < 1 {
+            return Err(ParamsError::LeafThreshold(t));
         }
         Ok(Self {
             k,
@@ -666,6 +672,14 @@ mod tests {
         assert_eq!(Params::new(1, 16), Err(ParamsError::FanOut(1)));
         assert_eq!(Params::new(0, 16), Err(ParamsError::FanOut(0)));
         assert!(Params::new(2, 16).is_ok());
+    }
+
+    /// P3.1b: T=0 never ends on one mismatched key, so it is refused before any session runs.
+    #[test]
+    fn test_params_refuse_t_zero() {
+        assert_eq!(Params::new(16, 0), Err(ParamsError::LeafThreshold(0)));
+        assert_eq!(Params::new(2, 0), Err(ParamsError::LeafThreshold(0)));
+        assert!(Params::new(16, 1).is_ok());
     }
 
     #[test]
