@@ -1,12 +1,16 @@
-//! Shared tuple checker for the property tests and the regression replay.
+//! Shared checkers for the property tests and the regression replay.
 //!
-//! A tuple element is either a byte string (`bytes` tag) or a UTF-8 string
-//! (`string` tag). [`check_pair`] holds the properties the encoding must keep
-//! for any two elements: decoding gives back the original values, encoded order
-//! follows value order, and a complete field is a prefix of another encoding
-//! only when the values are equal.
+//! The tuple checker: a tuple element is either a byte string (`bytes` tag) or a
+//! UTF-8 string (`string` tag). [`check_pair`] holds the properties the encoding
+//! must keep for any two elements: decoding gives back the original values,
+//! encoded order follows value order, and a complete field is a prefix of
+//! another encoding only when the values are equal. The event checker lives in
+//! [`chain`].
 
 #![allow(dead_code)] // each test crate uses a different part of this module
+
+pub mod chain;
+pub mod ingest;
 
 use std::cmp::Ordering;
 

@@ -75,6 +75,8 @@ use crate::tags::TagStore;
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use identity::IdentityStore;
+#[doc(hidden)]
+pub use identity::crash_gate;
 pub use routes::create_router;
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
@@ -174,8 +176,8 @@ impl std::fmt::Debug for AppState {
 impl AppState {
     /// Create a new application state with persistent identity storage.
     ///
-    /// Opens an encrypted `SQLite` database for identity persistence using
-    /// a key derived from the node's iroh secret key.
+    /// Opens the encrypted identity store (a redb file) for identity persistence
+    /// using a key derived from the node's iroh secret key.
     pub async fn new(
         store: Store,
         peers: Option<PeerDiscovery>,

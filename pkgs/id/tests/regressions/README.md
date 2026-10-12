@@ -17,7 +17,10 @@ area<TAB>input<TAB>expected
 - `area` must match the file name: `tuple.txt` holds `tuple` cases.
 - `input` uses the area's syntax. For `tuple` it is two elements separated by one
   space. Each element is `s:<escaped>` (a UTF-8 string) or `b:<escaped>` (a byte
-  string).
+  string). For `chainext` it is one `b:<escaped>` element: the bytes given to the
+  event decoder in `src/chain.rs`. For `ingest` it is one or more `b:<escaped>`
+  elements separated by spaces: the events of one delivery. The check delivers them
+  in three orders, with repeats, and requires the same applied state in each.
 - `expected` is `ok`: the property must hold for that input.
 - Blank lines and lines starting with `#` are skipped.
 

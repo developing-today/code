@@ -1030,7 +1030,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Start web server now that the lock file is written
     #[cfg(feature = "web")]
     let _web_handle = if let Some(listener) = web_listener {
-        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.db");
+        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
         let web_router = crate::web::web_router(
             store_handle.clone(),
             Some(peer_discovery.clone()),

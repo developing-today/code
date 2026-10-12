@@ -28,18 +28,31 @@
 //! it to sign/verify tokens. Tokens are base64url-encoded for safe use
 //! in query parameters and `localStorage`.
 //!
+//! # Persistence
+//!
+//! With a database path, records live in a redb file with one table, keyed by
+//! client ID. Each value is `nonce (12 bytes) || AES-256-GCM ciphertext` of the
+//! JSON record. The client ID is the associated data, so a value moved under
+//! another key fails to authenticate. The AES key is derived from the server's
+//! secret key with HKDF-SHA256.
+//!
 //! # Thread Safety
 //!
 //! The [`IdentityStore`] is designed for concurrent access using `Arc<RwLock<>>`
 //! internally. Clone it freely across handlers.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit};
+use anyhow::Context as _;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
+use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::sync::RwLock;
@@ -73,10 +86,10 @@ struct TokenPayload {
     created_at: u64,
 }
 
-/// In-memory store for client identities, optionally backed by encrypted `SQLite`.
+/// In-memory store for client identities, optionally backed by an encrypted redb file.
 ///
 /// Keyed by `client_id` (a hex string). Thread-safe via `Arc<RwLock<>>`.
-/// When backed by a database, mutations are written through to `SQLite` for
+/// When backed by a database, mutations are written through to the redb file for
 /// persistence across server restarts.
 #[derive(Clone)]
 pub struct IdentityStore {
@@ -89,8 +102,8 @@ pub struct IdentityStore {
     signing_key: Arc<SigningKey>,
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
     verifying_key: VerifyingKey,
-    /// `SQLite` database for persistent storage (`None` for ephemeral/test mode).
-    db: Option<Arc<libsql::Database>>,
+    /// Encrypted redb file for persistent storage (`None` for ephemeral/test mode).
+    db: Option<Arc<IdentityDb>>,
 }
 
 impl std::fmt::Debug for IdentityStore {
@@ -104,89 +117,33 @@ impl std::fmt::Debug for IdentityStore {
 }
 
 impl IdentityStore {
-    /// Create a new identity store backed by an encrypted `SQLite` database.
+    /// Create a new identity store backed by an encrypted redb file.
     ///
-    /// Derives a signing key and DB encryption key from the given secret key
-    /// bytes using HKDF-SHA256. The DB file is encrypted at rest using AES-256-GCM.
-    /// All existing identities are loaded into memory on startup.
+    /// Derives a signing key and an encryption key from the given secret key
+    /// bytes using HKDF-SHA256. Record values are encrypted with AES-256-GCM.
+    /// All existing identities are authenticated and loaded into memory on
+    /// startup. A record that fails authentication fails the open.
     ///
     /// # Arguments
     ///
     /// * `secret_key` - 32-byte secret key (from iroh `SecretKey::to_bytes()`)
-    /// * `db_path` - Path for the `SQLite` database file (e.g., `.identity.db`)
+    /// * `db_path` - Path for the redb file (e.g., `.identity.redb`)
     pub async fn new(secret_key: [u8; 32], db_path: PathBuf) -> anyhow::Result<Self> {
-        // Derive signing key via HKDF-SHA256
-        let hk = Hkdf::<Sha256>::new(None, &secret_key);
-        let mut signing_bytes = [0u8; 32];
-        hk.expand(b"id-identity-signing", &mut signing_bytes)
-            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
-        let signing_key = SigningKey::from_bytes(&signing_bytes);
+        let (signing_key, enc_bytes) = derive_keys(&secret_key)?;
         let verifying_key = signing_key.verifying_key();
 
-        // Derive DB encryption key via HKDF-SHA256
-        let mut enc_bytes = [0u8; 32];
-        hk.expand(b"id-identity-encryption", &mut enc_bytes)
-            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
-        let hex_key = hex_encode(&enc_bytes);
+        // Open the file and load every record. redb is synchronous, so this runs
+        // on the blocking pool.
+        let (db, identities) = run_blocking(move || IdentityDb::open(&db_path, &enc_bytes)).await?;
 
-        // Open encrypted SQLite database
-        let db_path_str = db_path.display().to_string();
-        let uri = format!("file:{db_path_str}?cipher=aes256gcm&hexkey={hex_key}");
-        let db = libsql::Builder::new_local(uri)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to open identity database: {e}"))?;
-        let conn = db
-            .connect()
-            .map_err(|e| anyhow::anyhow!("Failed to connect to identity database: {e}"))?;
-
-        // Create table if it doesn't exist
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS identities (
-                client_id TEXT PRIMARY KEY,
-                name TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )",
-            (),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create identities table: {e}"))?;
-
-        // Load existing identities into memory
-        let mut clients = HashMap::new();
-        let mut name_watchers_map = HashMap::new();
-        let mut rows = conn
-            .query(
-                "SELECT client_id, name, created_at, updated_at FROM identities",
-                (),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to query identities: {e}"))?;
-
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read identity row: {e}"))?
-        {
-            let client_id = db_text(&row, 0)?;
-            let name = db_opt_text(&row, 1)?;
-            let created_at = db_u64(&row, 2)?;
-            let updated_at = db_u64(&row, 3)?;
-
-            let identity = ClientIdentity {
-                client_id: client_id.clone(),
-                name: name.clone(),
-                created_at,
-                updated_at,
-            };
-
-            let (tx, _rx) = watch::channel(name);
-            name_watchers_map.insert(client_id.clone(), tx);
-            clients.insert(client_id, identity);
+        let count = identities.len();
+        let mut clients = HashMap::with_capacity(count);
+        let mut name_watchers_map = HashMap::with_capacity(count);
+        for identity in identities {
+            let (tx, _rx) = watch::channel(identity.name.clone());
+            name_watchers_map.insert(identity.client_id.clone(), tx);
+            clients.insert(identity.client_id.clone(), identity);
         }
-
-        let count = clients.len();
         if count > 0 {
             tracing::info!("[identity] Loaded {count} identities from database");
         }
@@ -234,15 +191,9 @@ impl IdentityStore {
 
         // Persist to database first (if available)
         if let Some(db) = &self.db {
-            let conn = db
-                .connect()
-                .map_err(|e| anyhow::anyhow!("DB connect: {e}"))?;
-            conn.execute(
-                "INSERT INTO identities (client_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                db_identity_params(&client_id, name.as_ref(), now, now),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("DB insert: {e}"))?;
+            let db = Arc::clone(db);
+            let record = identity.clone();
+            run_blocking(move || db.create(&record)).await?;
         }
 
         // Store the identity in memory
@@ -309,28 +260,17 @@ impl IdentityStore {
         identity.name.clone_from(&name);
         identity.updated_at = unix_timestamp();
         let result = identity.clone();
-        drop(clients);
 
-        // Persist to database (best-effort — in-memory is authoritative during session)
-        if let Some(db) = &self.db
-            && let Ok(conn) = db.connect()
-        {
-            let params = vec![
-                name.as_ref()
-                    .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
-                libsql::Value::Integer(i64::try_from(result.updated_at).unwrap_or(0)),
-                libsql::Value::Text(client_id.to_owned()),
-            ];
-            if let Err(e) = conn
-                .execute(
-                    "UPDATE identities SET name = ?1, updated_at = ?2 WHERE client_id = ?3",
-                    params,
-                )
-                .await
-            {
+        // Persist to database (best-effort: in-memory is authoritative during session).
+        // The write runs under the lock, so the file ends in the same order as memory.
+        if let Some(db) = &self.db {
+            let db = Arc::clone(db);
+            let record = result.clone();
+            if let Err(e) = run_blocking(move || db.update(&record)).await {
                 tracing::warn!("[identity] Failed to persist name update: {e}");
             }
         }
+        drop(clients);
 
         // Notify any subscribed WS handlers of the name change
         {
@@ -500,56 +440,295 @@ fn unix_timestamp() -> u64 {
 }
 
 // =============================================================================
-// Database Helpers
+// Encrypted Store (redb)
 // =============================================================================
 
-/// Extract a TEXT value from a database row.
-fn db_text(row: &libsql::Row, idx: i32) -> anyhow::Result<String> {
-    match row
-        .get_value(idx)
-        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
-    {
-        libsql::Value::Text(s) => Ok(s),
-        other => anyhow::bail!("Expected text at column {idx}, got {other:?}"),
+/// The one table: client ID to sealed record.
+const IDENTITIES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("identities");
+
+/// AES-256-GCM nonce length. Every stored value starts with its own nonce.
+const NONCE_LEN: usize = 12;
+
+/// Run a redb call on tokio's blocking pool. Commits fsync, which must not stall
+/// an async worker thread.
+async fn run_blocking<T, F>(task: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|e| anyhow::anyhow!("identity store task failed: {e}"))?
+}
+
+/// The redb file behind an [`IdentityStore`].
+///
+/// Each value is `nonce || ciphertext`: a fresh random 12-byte nonce, then the
+/// AES-256-GCM ciphertext and tag of the JSON record. The client ID is the
+/// associated data, so a value moved under another key fails to authenticate.
+/// Client IDs stay in plaintext as keys; the record, names included, does not.
+struct IdentityDb {
+    db: Database,
+    cipher: Aes256Gcm,
+}
+
+impl IdentityDb {
+    /// Open the file at `path`, or create it if it does not exist, then [`load`](Self::load) it.
+    ///
+    /// A new file is built under a temporary name, so `path` only ever names a file that redb can
+    /// open. The first commit makes the file a valid, empty store. It is then renamed into place,
+    /// and the directory is synced before the store is returned, so no acknowledged write can
+    /// depend on a rename that has not reached the disk. A crash during creation leaves at most a
+    /// stale temporary file, which the next creation overwrites.
+    fn open(path: &Path, key: &[u8; 32]) -> anyhow::Result<(Self, Vec<ClientIdentity>)> {
+        if path.exists() {
+            let db = Database::create(path).map_err(|e| store_error(path, e))?;
+            return Self::load(db, key);
+        }
+        let temp = creating_path(path);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .with_context(|| format!("failed to create identity store {}", temp.display()))?;
+        let db = Database::builder()
+            .create_file(file)
+            .map_err(|e| store_error(&temp, e))?;
+        let created = Self::load(db, key)?;
+        std::fs::rename(&temp, path).with_context(|| {
+            format!(
+                "failed to move identity store {} into place",
+                temp.display()
+            )
+        })?;
+        sync_dir(parent_dir(path))
+            .with_context(|| format!("failed to sync the directory of {}", path.display()))?;
+        Ok(created)
+    }
+
+    /// Create the table if the file is new, then authenticate every record.
+    ///
+    /// A record that fails authentication stops the load: a wrong key or an
+    /// altered file must not start a store that silently drops identities. On an
+    /// empty file a wrong key cannot be seen until the first record exists.
+    fn load(db: Database, key: &[u8; 32]) -> anyhow::Result<(Self, Vec<ClientIdentity>)> {
+        let store = Self {
+            db,
+            cipher: Aes256Gcm::new(&(*key).into()),
+        };
+        let txn = store.db.begin_write()?;
+        txn.open_table(IDENTITIES)?;
+        txn.commit()?;
+        let records = store.read_all()?;
+        Ok((store, records))
+    }
+
+    /// Decrypt every record, in no particular order.
+    fn read_all(&self) -> anyhow::Result<Vec<ClientIdentity>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(IDENTITIES)?;
+        let mut records = Vec::new();
+        for entry in table.iter()? {
+            let (client_id, value) = entry?;
+            records.push(self.unseal(client_id.value(), value.value())?);
+        }
+        Ok(records)
+    }
+
+    /// Insert a record. A client ID that is already stored is an error (INSERT).
+    fn create(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+        let value = self.seal(identity)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(IDENTITIES)?;
+            if table.get(identity.client_id.as_str())?.is_some() {
+                anyhow::bail!("identity {} already exists", short_id(&identity.client_id));
+            }
+            table.insert(identity.client_id.as_str(), value.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Overwrite the record stored under its client ID (UPDATE by key).
+    fn update(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+        let value = self.seal(identity)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(IDENTITIES)?;
+            table.insert(identity.client_id.as_str(), value.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Encrypt a record under a fresh random nonce, as `nonce || ciphertext`.
+    ///
+    /// Nonces are random, not counters, so the store needs no persisted nonce
+    /// state. At 96 bits, a collision under one key is negligible for any write
+    /// volume an identity store sees.
+    fn seal(&self, identity: &ClientIdentity) -> anyhow::Result<Vec<u8>> {
+        let plaintext = serde_json::to_vec(identity)?;
+        let mut nonce = [0u8; NONCE_LEN];
+        rand::fill(&mut nonce);
+        let ciphertext = self
+            .cipher
+            .encrypt(
+                &nonce.into(),
+                Payload {
+                    msg: &plaintext,
+                    aad: identity.client_id.as_bytes(),
+                },
+            )
+            .map_err(|_e| {
+                anyhow::anyhow!(
+                    "failed to encrypt identity {}",
+                    short_id(&identity.client_id)
+                )
+            })?;
+        let mut value = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+        value.extend_from_slice(&nonce);
+        value.extend_from_slice(&ciphertext);
+        Ok(value)
+    }
+
+    /// Split and decrypt one stored value. `client_id` is its table key.
+    fn unseal(&self, client_id: &str, value: &[u8]) -> anyhow::Result<ClientIdentity> {
+        let Some((nonce, ciphertext)) = value.split_at_checked(NONCE_LEN) else {
+            anyhow::bail!("identity {} is truncated", short_id(client_id));
+        };
+        let nonce: [u8; NONCE_LEN] = nonce.try_into()?;
+        let plaintext = self
+            .cipher
+            .decrypt(
+                &nonce.into(),
+                Payload {
+                    msg: ciphertext,
+                    aad: client_id.as_bytes(),
+                },
+            )
+            .map_err(|_e| {
+                anyhow::anyhow!(
+                    "identity {} failed authentication: the key is wrong or the file was altered",
+                    short_id(client_id)
+                )
+            })?;
+        Ok(serde_json::from_slice(&plaintext)?)
     }
 }
 
-/// Extract an optional TEXT value from a database row.
-fn db_opt_text(row: &libsql::Row, idx: i32) -> anyhow::Result<Option<String>> {
-    match row
-        .get_value(idx)
-        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
-    {
-        libsql::Value::Text(s) if !s.is_empty() => Ok(Some(s)),
-        libsql::Value::Text(_) | libsql::Value::Null => Ok(None),
-        other => anyhow::bail!("Expected text or null at column {idx}, got {other:?}"),
+/// The signing key for tokens, and the AES-256-GCM key for records, both derived from the secret
+/// key with HKDF-SHA256.
+fn derive_keys(secret_key: &[u8; 32]) -> anyhow::Result<(SigningKey, [u8; 32])> {
+    let hk = Hkdf::<Sha256>::new(None, secret_key);
+    let mut signing_bytes = [0u8; 32];
+    hk.expand(b"id-identity-signing", &mut signing_bytes)
+        .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
+    let mut enc_bytes = [0u8; 32];
+    hk.expand(b"id-identity-encryption", &mut enc_bytes)
+        .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
+    Ok((SigningKey::from_bytes(&signing_bytes), enc_bytes))
+}
+
+/// The name a new store file is built under: the store's file name with `.creating` appended.
+fn creating_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map_or_else(OsString::new, OsStr::to_os_string);
+    name.push(".creating");
+    path.with_file_name(name)
+}
+
+/// The directory that holds `path`. A bare file name lives in the current directory.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
     }
 }
 
-/// Extract a u64 value from a database INTEGER column.
-fn db_u64(row: &libsql::Row, idx: i32) -> anyhow::Result<u64> {
-    match row
-        .get_value(idx)
-        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
-    {
-        libsql::Value::Integer(n) => Ok(u64::try_from(n).unwrap_or(0)),
-        other => anyhow::bail!("Expected integer at column {idx}, got {other:?}"),
+/// Makes the renames in `dir` durable. Only Unix can open a directory to sync it, so elsewhere
+/// this does nothing.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn store_error(path: &Path, error: DatabaseError) -> anyhow::Error {
+    match error {
+        DatabaseError::DatabaseAlreadyOpen => anyhow::anyhow!(
+            "identity store {} is already open in another process or handle",
+            path.display()
+        ),
+        other => anyhow::anyhow!("failed to open identity store {}: {other}", path.display()),
     }
 }
 
-/// Convert identity fields to database parameter values for INSERT.
-fn db_identity_params(
-    client_id: &str,
-    name: Option<&String>,
-    created_at: u64,
-    updated_at: u64,
-) -> Vec<libsql::Value> {
-    vec![
-        libsql::Value::Text(client_id.to_owned()),
-        name.map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
-        libsql::Value::Integer(i64::try_from(created_at).unwrap_or(0)),
-        libsql::Value::Integer(i64::try_from(updated_at).unwrap_or(0)),
-    ]
+/// The crash gate's view of the store (`tests/crash/identity.rs`). Not part of the public API.
+///
+/// The gate runs the store's own redb operations over a database it opened on its fault model, so
+/// a power cut can land inside them. It reopens each disk image through [`open_path`], the file
+/// path that [`IdentityStore::new`](super::IdentityStore::new) takes.
+#[doc(hidden)]
+pub mod crash_gate {
+    pub use super::ClientIdentity;
+    use super::{IdentityDb, derive_keys};
+    use redb::Database;
+    use std::path::{Path, PathBuf};
+
+    /// A store opened by the gate.
+    pub struct Store(IdentityDb);
+
+    impl std::fmt::Debug for Store {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Store").finish_non_exhaustive()
+        }
+    }
+
+    impl Store {
+        /// Inserts an identity. A client ID that is already stored is an error.
+        pub fn create(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+            self.0.create(identity)
+        }
+
+        /// Overwrites the identity stored under its client ID.
+        pub fn update(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+            self.0.update(identity)
+        }
+
+        /// Every stored identity, decrypted and authenticated.
+        pub fn records(&self) -> anyhow::Result<Vec<ClientIdentity>> {
+            self.0.read_all()
+        }
+    }
+
+    /// Loads a store from `db`, which the caller opened. A new file gets its table in the first
+    /// commit, which this makes.
+    pub fn open_database(db: Database, secret_key: &[u8; 32]) -> anyhow::Result<Store> {
+        let (_, enc_key) = derive_keys(secret_key)?;
+        let (store, _) = IdentityDb::load(db, &enc_key)?;
+        Ok(Store(store))
+    }
+
+    /// Opens the store file at `path`, or creates it, as
+    /// [`IdentityStore::new`](super::IdentityStore::new) does.
+    pub fn open_path(path: &Path, secret_key: &[u8; 32]) -> anyhow::Result<Store> {
+        let (_, enc_key) = derive_keys(secret_key)?;
+        let (store, _) = IdentityDb::open(path, &enc_key)?;
+        Ok(Store(store))
+    }
+
+    /// The name that a new store file is built under.
+    pub fn creating_path(path: &Path) -> PathBuf {
+        super::creating_path(path)
+    }
 }
 
 /// Base64url encode without padding (RFC 4648 section 5).
@@ -649,6 +828,8 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use proptest::prelude::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_generate_client_id() {
@@ -922,5 +1103,326 @@ mod tests {
         .unwrap();
         let token = token_of(&payload, &identity_forgery());
         assert!(store.decode_token(&token).is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Encrypted redb store
+    // -------------------------------------------------------------------------
+
+    /// Key for the in-memory table tests.
+    const TABLE_KEY: [u8; 32] = [3u8; 32];
+
+    /// Secret key for the store tests, which open real files.
+    const STORE_SECRET: [u8; 32] = [7u8; 32];
+
+    /// Set only in the child process of `test_second_process_cannot_open_store`.
+    const PROBE_PATH_ENV: &str = "ID_IDENTITY_PROBE_PATH";
+
+    fn identity_record(client_id: &str, name: Option<&str>) -> ClientIdentity {
+        ClientIdentity {
+            client_id: client_id.to_owned(),
+            name: name.map(str::to_owned),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        }
+    }
+
+    /// An empty redb file in memory, so the sealing tests never fsync.
+    fn in_memory_file() -> Database {
+        Database::builder()
+            .create_with_backend(redb::backends::InMemoryBackend::new())
+            .unwrap()
+    }
+
+    fn in_memory_store() -> IdentityDb {
+        IdentityDb::load(in_memory_file(), &TABLE_KEY).unwrap().0
+    }
+
+    /// The value stored under `client_id`, exactly as the file holds it.
+    fn raw_value(store: &IdentityDb, client_id: &str) -> Vec<u8> {
+        let txn = store.db.begin_read().unwrap();
+        let table = txn.open_table(IDENTITIES).unwrap();
+        table.get(client_id).unwrap().unwrap().value().to_vec()
+    }
+
+    /// The nonce at the front of the value stored under `client_id`.
+    fn raw_nonce(store: &IdentityDb, client_id: &str) -> [u8; NONCE_LEN] {
+        raw_value(store, client_id)[..NONCE_LEN].try_into().unwrap()
+    }
+
+    #[test]
+    fn test_record_round_trips_through_the_table() {
+        let (_, empty) = IdentityDb::load(in_memory_file(), &TABLE_KEY).unwrap();
+        assert!(empty.is_empty());
+
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        store.create(&identity_record("bb22", None)).unwrap();
+
+        let mut records = store.read_all().unwrap();
+        records.sort_by(|a, b| a.client_id.cmp(&b.client_id));
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].client_id, "aa11");
+        assert_eq!(records[0].name.as_deref(), Some("Alice"));
+        assert_eq!(records[0].created_at, 1_700_000_000);
+        assert_eq!(records[1].name, None);
+    }
+
+    #[test]
+    fn test_stored_value_hides_the_name() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice Wonderland")))
+            .unwrap();
+        let value = raw_value(&store, "aa11");
+        assert!(value.len() > NONCE_LEN + 16, "nonce, record and tag");
+        assert!(
+            !value.windows(5).any(|w| w == b"Alice"),
+            "the name must be encrypted"
+        );
+    }
+
+    #[test]
+    fn test_create_refuses_a_stored_client_id() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        let err = store
+            .create(&identity_record("aa11", Some("Mallory")))
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(store.read_all().unwrap()[0].name.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_update_overwrites_the_record() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        store.update(&identity_record("aa11", Some("Bob"))).unwrap();
+        let records = store.read_all().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn test_wrong_key_refuses_records_it_did_not_seal() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        let IdentityDb { db, .. } = store;
+        let err = IdentityDb::load(db, &[4u8; 32]).err().unwrap();
+        assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[test]
+    fn test_altered_value_is_refused() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        let value = raw_value(&store, "aa11");
+        let opened = store.unseal("aa11", &value).unwrap();
+        assert_eq!(opened.name.as_deref(), Some("Alice"));
+
+        // Flipping any single bit of the nonce, ciphertext or tag must fail.
+        for byte in 0..value.len() {
+            for bit in 0..8u8 {
+                let mut altered = value.clone();
+                altered[byte] ^= 1u8 << bit;
+                assert!(
+                    store.unseal("aa11", &altered).is_err(),
+                    "byte {byte} bit {bit} was accepted"
+                );
+            }
+        }
+        // The same bytes under another client ID: the ID is the associated data.
+        assert!(store.unseal("bb22", &value).is_err());
+        // Truncated: inside the nonce, and a whole nonce with no tag.
+        assert!(store.unseal("aa11", &value[..5]).is_err());
+        assert!(store.unseal("aa11", &value[..NONCE_LEN + 15]).is_err());
+    }
+
+    #[test]
+    fn test_nonces_never_repeat_across_random_writes() {
+        proptest!(ProptestConfig::with_cases(64), |(
+            writes in prop::collection::vec((0usize..4, prop::option::of("[a-z]{0,12}")), 1..200),
+        )| {
+            let store = in_memory_store();
+            let ids: Vec<String> = (0..4).map(|i| format!("{i:032x}")).collect();
+            let mut seen = HashSet::new();
+            for id in &ids {
+                store.create(&identity_record(id, None)).unwrap();
+                prop_assert!(seen.insert(raw_nonce(&store, id)), "nonce reused by create of {id}");
+            }
+            for (index, name) in &writes {
+                let id = &ids[*index];
+                store.update(&identity_record(id, name.as_deref())).unwrap();
+                prop_assert!(seen.insert(raw_nonce(&store, id)), "nonce reused by update of {id}");
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn test_records_survive_close_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let (token, client_id) = {
+            let store = IdentityStore::new(STORE_SECRET, path.clone())
+                .await
+                .unwrap();
+            let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+            store
+                .update_name(&identity.client_id, Some("Bob".to_owned()))
+                .await
+                .unwrap();
+            (token, identity.client_id)
+        };
+
+        let store = IdentityStore::new(STORE_SECRET, path).await.unwrap();
+        let reopened = store.verify_token(&token).await.unwrap();
+        assert_eq!(reopened.client_id, client_id);
+        assert_eq!(reopened.name.as_deref(), Some("Bob"));
+        assert_eq!(store.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_wrong_key_refuses_to_open_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        {
+            let store = IdentityStore::new(STORE_SECRET, path.clone())
+                .await
+                .unwrap();
+            store.register(Some("Alice".to_owned())).await.unwrap();
+        }
+        let err = IdentityStore::new([8u8; 32], path).await.unwrap_err();
+        assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_creation_leaves_only_the_store_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let store = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        assert!(path.exists());
+        assert!(!creating_path(&path).exists());
+        drop(store);
+    }
+
+    #[tokio::test]
+    async fn test_stale_creating_file_is_replaced() {
+        // What an interrupted creation leaves: bytes under the temporary name, no valid header.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        std::fs::write(creating_path(&path), [0xAB; 4096]).unwrap();
+
+        let store = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        assert_eq!(store.len().await, 0);
+        assert!(!creating_path(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn test_torn_store_file_is_refused() {
+        // Creation never leaves a file at the store's name, so a torn one is not a state the store
+        // makes. It is refused with an error, not replaced.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        std::fs::write(&path, [0xAB; 4096]).unwrap();
+
+        let err = IdentityStore::new(STORE_SECRET, path).await.unwrap_err();
+        assert!(
+            err.to_string().contains("failed to open identity store"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tampered_file_refuses_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let client_id = {
+            let store = IdentityStore::new(STORE_SECRET, path.clone())
+                .await
+                .unwrap();
+            let (_, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+            identity.client_id
+        };
+
+        // Flip the last bit of the stored tag, straight through redb.
+        let file = Database::create(&path).unwrap();
+        let txn = file.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(IDENTITIES).unwrap();
+            let mut value = table
+                .get(client_id.as_str())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            let last = value.len() - 1;
+            value[last] ^= 1;
+            table.insert(client_id.as_str(), value.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+        drop(file);
+
+        let err = IdentityStore::new(STORE_SECRET, path).await.unwrap_err();
+        assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_second_process_cannot_open_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let held = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        held.register(Some("Alice".to_owned())).await.unwrap();
+
+        // Run the probe test in a child process, which finds the path in its environment.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "web::identity::tests::test_second_open_probe",
+                "--nocapture",
+            ])
+            .env(PROBE_PATH_ENV, &path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "probe failed:\n{stdout}");
+        assert!(
+            stdout.contains("PROBE: identity store")
+                && stdout.contains("already open in another process"),
+            "the child should be refused with a clear error:\n{stdout}"
+        );
+
+        // The refused open leaves the file intact for the process that holds it.
+        drop(held);
+        let reopened = IdentityStore::new(STORE_SECRET, path).await.unwrap();
+        assert_eq!(reopened.len().await, 1);
+    }
+
+    /// The child half of [`test_second_process_cannot_open_store`]. It does nothing
+    /// unless the probe path is set, so an ordinary test run passes it with no effect.
+    #[tokio::test]
+    async fn test_second_open_probe() {
+        let Some(path) = std::env::var_os(PROBE_PATH_ENV) else {
+            return;
+        };
+        match IdentityStore::new(STORE_SECRET, PathBuf::from(path)).await {
+            Ok(_) => println!("PROBE: opened"),
+            Err(e) => println!("PROBE: {e}"),
+        }
     }
 }

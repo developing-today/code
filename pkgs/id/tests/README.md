@@ -14,8 +14,18 @@ in the
   authorization.
 - `tuple_properties.rs`: property tests for the tuple encoding in `src/tuple.rs`,
   and a fixed-seed fuzz run.
+- `chain_properties.rs`: property tests for the event header in `src/chain.rs`:
+  round trips, canonical re-encoding, the `after` limit, and a decoder that never
+  panics.
 - `regression_replay.rs`: replays every case in `regressions/`.
+- `crash/`: the crash-safety gate for redb (plan P1.4). A fault model behind
+  `redb::StorageBackend` cuts the power at a storage call of a 50-transaction
+  workload, and the oracle checks the reopened state. `corpus.tsv` is the static
+  replay list. See `crash/main.rs`. `crash/store.rs` is the event store's first
+  creation (plan P1.3): a simulated directory with its directory steps as crash
+  points, and the in-place control that must fail.
 - `common/mod.rs`: the tuple checker shared by the property tests and the replay.
+- `common/chain.rs`: the event decoder's contract, shared the same way.
 - `regressions/`: checked-in failing cases. See its [README](regressions/README.md).
 
 ## Running
@@ -26,6 +36,8 @@ in the
   `PROPTEST_CASES` raises the proptest case count, and `ID_TUPLE_FUZZ_CASES`
   raises the fixed-seed run.
 - `cargo test --test regression_replay`: the replay alone.
+- `cargo test --test crash`: the sampled crash sweep, the lying-sync control, and the corpus replay.
+- `just crash-gate`: every crash point of the redb crash model, and the full control, in release.
 - `cargo test --all-features -- --ignored`: tests quarantined with
   `#[ignore = "<reason>"]`.
 

@@ -155,6 +155,7 @@
 pub mod access;
 #[cfg(feature = "world")]
 pub mod artifact;
+pub mod chain;
 pub mod cli;
 pub mod commands;
 pub mod connectivity;
@@ -173,6 +174,7 @@ pub mod discovery;
 pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
+pub mod event_store;
 pub mod fileops;
 pub mod helpers;
 pub mod invite;
@@ -185,10 +187,12 @@ pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 pub mod store;
+pub mod store_traits;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
 pub mod tuple;
+pub mod waiting;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]

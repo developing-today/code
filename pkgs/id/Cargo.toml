@@ -29,7 +29,7 @@ web = [
   "dep:rmp-serde",
   "dep:comrak",
   "dep:urlencoding",
-  "dep:libsql",
+  "dep:aes-gcm",
   "dep:base64",
   "dep:hkdf",
   "dep:sha2",
@@ -38,6 +38,7 @@ web = [
 
 [dependencies]
 anyhow = "1"
+cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 distributed-topic-tracker = "0.3"
@@ -50,8 +51,12 @@ iroh-tickets = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+# Store traits only. The default features would pull in SQLite (explainers section 14).
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
+redb = "=4.3.0"
 rustyline = "18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -60,6 +65,7 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"
 
 # Web feature dependencies (optional)
 axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
@@ -75,7 +81,7 @@ futures = { version = "0.3.32", optional = true }
 rmp-serde = { version = "1", optional = true }
 comrak = { version = "0.56", default-features = false, optional = true }
 urlencoding = { version = "2", optional = true }
-libsql = { version = "0.9", features = ["encryption"], optional = true }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"], optional = true }
 base64 = { version = "0.22", optional = true }
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
@@ -90,6 +96,8 @@ tokio-tungstenite = "0.29"
 vt100 = "=0.16.2"
 rqrr = { version = "0.11.0", default-features = false }
 proptest = "1.12"
+# Interop vectors for the canonical CBOR of event headers. Dev only.
+dcbor = "=0.25.2"
 
 # =============================================================================
 # Lints Configuration

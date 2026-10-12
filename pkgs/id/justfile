@@ -230,6 +230,12 @@ test-full:
     PROPTEST_CASES="${PROPTEST_CASES:-4096}" ID_TUPLE_FUZZ_CASES="${ID_TUPLE_FUZZ_CASES:-20000}" cargo test --all-features --test tuple_properties
     @echo "✓ Full Rust test run passed"
 
+# Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release
+[group('test')]
+crash-gate:
+    cargo test --release --features web --test crash -- --skip write_corpus --include-ignored
+    @echo "✓ Crash gate passed"
+
 # Run unit tests only (fast)
 [group('test')]
 test-unit:
