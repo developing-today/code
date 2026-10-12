@@ -1,0 +1,311 @@
+//! `id group` (P6.7a): parse the arguments, act on the group log, and print.
+//!
+//! The rules are the fold's, and the actions are the library's ([`crate::groups::actions`]). This
+//! module only turns arguments into calls and results into lines or JSON. A refused action is an
+//! error, so the exit status says so. Its event stays in the log, as the author's record.
+//!
+//! # Output
+//!
+//! Each action prints one line, `<command> key=value ...`, with `group`, the action's fields,
+//! `outcome=applied` and `event=<ID>`. With `--json` it prints one object with the same keys and a
+//! `command` key. `list` prints one line (or one array element) per group, with no command word.
+
+use std::path::PathBuf;
+
+use anyhow::{Result, anyhow, bail};
+use clap::ValueEnum;
+use p2panda_core::Hash;
+use serde_json::{Map, Value, json};
+
+use crate::cli::{GroupCommand, GroupTemplate};
+use crate::groups::actions::{Action, NewGroup};
+use crate::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
+use crate::groups::policy::{History, Join, OnMemberRemoved, Removal};
+use crate::groups::{GroupView, Key, Outcome};
+use crate::invites::Invitation;
+use crate::{KEY_FILE, load_or_create_keypair};
+
+/// The log a command reads and appends to: `--groups-log`, or the default file in the data directory.
+fn log_path(path: Option<PathBuf>) -> PathBuf {
+    path.unwrap_or_else(|| PathBuf::from(FILE_NAME))
+}
+
+/// The account this node acts as: its node key, which `id id` prints.
+async fn author() -> Result<Key> {
+    let key = load_or_create_keypair(KEY_FILE).await?;
+    Ok(*key.public().as_bytes())
+}
+
+/// An account or ID as its 64 hex characters.
+fn hex(bytes: &Key) -> String {
+    Hash::from_bytes(*bytes).to_hex()
+}
+
+/// A value-enum's name, as the CLI spells it.
+fn name_of<T: ValueEnum>(value: &T) -> String {
+    value
+        .to_possible_value()
+        .map(|possible| possible.get_name().to_owned())
+        .unwrap_or_default()
+}
+
+/// A field's value as text: strings without quotes, anything else as JSON.
+fn text(value: &Value) -> String {
+    match value {
+        Value::String(string) => string.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The fields as `key=value` tokens.
+fn tokens(fields: &[(&str, Value)]) -> String {
+    fields
+        .iter()
+        .map(|(key, value)| format!("{key}={}", text(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The fields as one JSON object.
+fn object(fields: &[(&str, Value)]) -> Value {
+    let map: Map<String, Value> = fields
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), value.clone()))
+        .collect();
+    Value::Object(map)
+}
+
+/// Prints one applied action. A refused action is an error, which names the reason and the event.
+fn print_action(
+    json: bool,
+    command: &str,
+    fields: Vec<(&str, Value)>,
+    action: &Action,
+) -> Result<()> {
+    if let Outcome::Refused(refusal) = &action.outcome {
+        let reason = action
+            .outcome
+            .reason()
+            .map(|reason| reason.to_string())
+            .unwrap_or_default();
+        bail!(
+            "refused: {command} group={} event={} reason={reason} ({refusal:?})",
+            action.group.to_hex(),
+            action.event.to_hex()
+        );
+    }
+    let mut all = vec![("group", json!(action.group.to_hex()))];
+    all.extend(fields);
+    all.push(("outcome", json!("applied")));
+    all.push(("event", json!(action.event.to_hex())));
+    if json {
+        let mut with_command = vec![("command", json!(command))];
+        with_command.extend(all);
+        println!("{}", object(&with_command));
+    } else {
+        println!("{command} {}", tokens(&all));
+    }
+    Ok(())
+}
+
+const fn join_name(join: Join) -> &'static str {
+    match join {
+        Join::ManagerAdd => "manager_add",
+        Join::Invite => "invite",
+        Join::MutualRequest => "mutual_request",
+        Join::Open => "open",
+    }
+}
+
+const fn removed_name(on: OnMemberRemoved) -> &'static str {
+    match on {
+        OnMemberRemoved::Continue => "continue",
+        OnMemberRemoved::Dissolve => "dissolve",
+    }
+}
+
+const fn removal_name(removal: Removal) -> &'static str {
+    match removal {
+        Removal::Strong => "strong",
+        Removal::Weak => "weak",
+    }
+}
+
+fn history_name(history: History) -> String {
+    match history {
+        History::Full => "full".to_owned(),
+        History::Recent(epochs) => format!("recent:{epochs}"),
+        History::FromJoin => "from_join".to_owned(),
+        History::Causal => "causal".to_owned(),
+    }
+}
+
+/// The fields of a group's policy, as `policy` shows them.
+fn policy_fields(view: &GroupView) -> Vec<(&'static str, Value)> {
+    let policy = &view.policy;
+    vec![
+        (
+            "cap",
+            json!(
+                policy
+                    .member_cap
+                    .map_or_else(|| "none".to_owned(), |cap| cap.to_string())
+            ),
+        ),
+        ("join", json!(join_name(policy.join))),
+        ("on_removed", json!(removed_name(policy.on_member_removed))),
+        ("removal", json!(removal_name(policy.removal))),
+        ("delegation", json!(name_of(&policy.delegation_mode()))),
+        ("history", json!(history_name(policy.history))),
+    ]
+}
+
+/// Runs an `id group` command.
+///
+/// # Errors
+///
+/// Fails if an argument is malformed, the log cannot be read or written, or the action is refused.
+pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand) -> Result<()> {
+    let mut log = GroupLog::open(&log_path(path))?;
+    match command {
+        GroupCommand::Create {
+            template,
+            with,
+            max,
+            admins_on_create,
+        } => {
+            let (new, fields) = match template {
+                GroupTemplate::Normal => {
+                    if with.is_some() {
+                        bail!(
+                            "--with names the other side of a friendship: add --template friendship"
+                        );
+                    }
+                    let fields = vec![
+                        ("template", json!("normal")),
+                        (
+                            "max",
+                            json!(max.map_or_else(|| "none".to_owned(), |n| n.to_string())),
+                        ),
+                    ];
+                    (
+                        NewGroup::Normal {
+                            max,
+                            admins_on_create,
+                        },
+                        fields,
+                    )
+                }
+                GroupTemplate::Friendship => {
+                    if max.is_some() {
+                        bail!("a friendship has two members, so it takes no --max");
+                    }
+                    let with =
+                        with.ok_or_else(|| anyhow!("--template friendship needs --with ACCOUNT"))?;
+                    let with = key_from_hex(&with)?;
+                    let fields = vec![
+                        ("template", json!("friendship")),
+                        ("with", json!(hex(&with))),
+                    ];
+                    (
+                        NewGroup::Friendship {
+                            with,
+                            admins_on_create,
+                        },
+                        fields,
+                    )
+                }
+            };
+            let action = log.create(author().await?, new)?;
+            print_action(json, "create", fields, &action)
+        }
+        GroupCommand::Policy { group } => {
+            let group = hash_from_hex(&group)?;
+            let view = log.view(group)?;
+            let mut fields = vec![("group", json!(group.to_hex()))];
+            fields.extend(policy_fields(&view));
+            if json {
+                let mut with_command = vec![("command", json!("policy"))];
+                with_command.extend(fields);
+                println!("{}", object(&with_command));
+            } else {
+                println!("policy {}", tokens(&fields));
+            }
+            Ok(())
+        }
+        GroupCommand::Add {
+            group,
+            member,
+            role,
+        } => {
+            let group = hash_from_hex(&group)?;
+            let member = key_from_hex(&member)?;
+            let action = log.add(author().await?, group, member, role)?;
+            let fields = vec![
+                ("member", json!(hex(&member))),
+                ("role", json!(name_of(&role))),
+            ];
+            print_action(json, "add", fields, &action)
+        }
+        GroupCommand::Remove {
+            group,
+            member,
+            successor,
+        } => {
+            let group = hash_from_hex(&group)?;
+            let member = key_from_hex(&member)?;
+            let successor = successor.as_deref().map(key_from_hex).transpose()?;
+            let action = log.remove(author().await?, group, member, successor)?;
+            let mut fields = vec![("member", json!(hex(&member)))];
+            if let Some(successor) = successor {
+                fields.push(("successor", json!(hex(&successor))));
+            }
+            print_action(json, "remove", fields, &action)
+        }
+        GroupCommand::SetRole {
+            group,
+            member,
+            role,
+        } => {
+            let group = hash_from_hex(&group)?;
+            let member = key_from_hex(&member)?;
+            let action = log.set_role(author().await?, group, member, role)?;
+            let fields = vec![
+                ("member", json!(hex(&member))),
+                ("role", json!(name_of(&role))),
+            ];
+            print_action(json, "role", fields, &action)
+        }
+        GroupCommand::List => {
+            let projection = log.projection()?;
+            let rows: Vec<Vec<(&str, Value)>> = projection
+                .groups()
+                .map(|(id, view)| {
+                    vec![
+                        ("group", json!(id.to_hex())),
+                        ("active", json!(view.is_active())),
+                        ("members", json!(view.members.len())),
+                    ]
+                })
+                .collect();
+            if json {
+                let array: Vec<Value> = rows.iter().map(|row| object(row)).collect();
+                println!("{}", Value::Array(array));
+            } else {
+                for row in &rows {
+                    println!("{}", tokens(row));
+                }
+            }
+            Ok(())
+        }
+        GroupCommand::Join { invite } => {
+            Invitation::parse(&invite)?;
+            bail!(
+                "join is not wired yet: the paste parsed, but nothing was recorded. The fold has no \
+                 event that admits an invited joiner (its join is a friendship's accept), and the \
+                 accept goes over the network to the inviter, which the pull and sync work (P6.5, P3) \
+                 provides"
+            )
+        }
+    }
+}

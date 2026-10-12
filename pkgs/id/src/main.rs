@@ -264,6 +264,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::List { node, no_relay }) => cmd_list(node, no_relay).await,
         Some(Command::Tag(tag_cmd)) => cmd_tag(tag_cmd).await,
+        Some(Command::Group { json, command }) => {
+            id::commands::cmd_group(cli.groups_log, json, command).await
+        }
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(world_cmd).await,
         #[cfg(not(feature = "world"))]

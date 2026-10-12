@@ -85,7 +85,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+use crate::groups::Role;
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -166,6 +168,13 @@ pub struct Cli {
     /// ```
     #[arg(long, global = true, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with = "data_dir")]
     pub new: Option<String>,
+
+    /// The group log that `group`, `delegate` and `revoke` read and append to.
+    ///
+    /// Defaults to `groups.jsonl` in the data directory. A relative path is relative to the data
+    /// directory, so a log shared by several nodes is best given as an absolute path.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub groups_log: Option<PathBuf>,
 
     /// The subcommand to execute.
     ///
@@ -1003,6 +1012,26 @@ pub enum Command {
     /// ```
     #[command(subcommand)]
     World(WorldCommand),
+    /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
+    ///
+    /// Each action records one event in the group log and prints one line, or one JSON object with
+    /// `--json`. A refused action exits non-zero, and its event stays in the log.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id group create --max 8
+    /// id group add GROUP ACCOUNT --role write
+    /// id group list --json
+    /// ```
+    Group {
+        /// Print JSON instead of a line (one array for `list`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The group action to run.
+        #[command(subcommand)]
+        command: GroupCommand,
+    },
     /// Migrate existing files to have name/file auto-tags.
     ///
     /// Scans all blob tags in the store and adds `name` and `file`
@@ -1171,6 +1200,80 @@ pub struct WorldRuntimeArgs {
     /// Wall-clock budget for one native worker call, in milliseconds.
     #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
     pub world_native_deadline_ms: u64,
+}
+
+/// Subcommands for `id group`. Accounts and groups are 64 hex characters.
+#[derive(Subcommand, Debug)]
+pub enum GroupCommand {
+    /// Create a group. A normal group makes its creator Admin. A friendship names its other side
+    /// with `--with`, has no Admin unless `--admins-on-create`, and is active once the other side
+    /// accepts.
+    Create {
+        /// The kind of group to create.
+        #[arg(long, value_enum, default_value = "normal")]
+        template: GroupTemplate,
+        /// The other side of a friendship (required for `--template friendship`).
+        #[arg(long, value_name = "ACCOUNT")]
+        with: Option<String>,
+        /// The most members the group may have, counting the creator (normal groups).
+        #[arg(long, value_name = "N")]
+        max: Option<usize>,
+        /// Make both friends Admin (friendships).
+        #[arg(long)]
+        admins_on_create: bool,
+    },
+    /// Show a group's policy record.
+    Policy {
+        /// The group.
+        group: String,
+    },
+    /// Add a member with a role. The author must be a manager of the group.
+    Add {
+        /// The group.
+        group: String,
+        /// The account to add.
+        member: String,
+        /// The member's role.
+        #[arg(long, value_enum, default_value = "read")]
+        role: Role,
+    },
+    /// Remove a member. Removing yourself is leaving.
+    Remove {
+        /// The group.
+        group: String,
+        /// The account to remove.
+        member: String,
+        /// Under the `transfer` mode, the account that takes over the member's grants.
+        #[arg(long, value_name = "ACCOUNT")]
+        successor: Option<String>,
+    },
+    /// Set a member's role. Only an Admin may.
+    #[command(name = "role")]
+    SetRole {
+        /// The group.
+        group: String,
+        /// The member whose role changes.
+        member: String,
+        /// Its new role.
+        #[arg(value_enum)]
+        role: Role,
+    },
+    /// List the groups in the log, one line each.
+    List,
+    /// Join a group with an invitation: a pasted ticket, or an `id:join?` link. Not wired yet.
+    Join {
+        /// The pasted ticket or link.
+        invite: String,
+    },
+}
+
+/// The kinds of group `id group create` makes.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupTemplate {
+    /// A group whose creator is Admin. Members are added by a manager, and a cap may be set.
+    Normal,
+    /// Two members who ask and accept each other.
+    Friendship,
 }
 
 /// Subcommands for `id world`.
