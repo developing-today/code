@@ -242,11 +242,13 @@ where
         self.by_key.contains_key(key)
     }
 
-    /// Holds an event that arrived at `arrived_at`, as a store restores its rows on open.
+    /// Holds an event that arrived at `arrived_at`. The store uses it for every hold: when it
+    /// restores its rows on open, and when it holds an event it has decided, which keeps the
+    /// event's first arrival time.
     ///
     /// Unlike [`insert`](Self::insert) and [`park`](Self::park), nothing expires first, and an
     /// empty `missing` does not release the event: it is held for good, as a parked event is.
-    /// The caller restores the events in the order they arrived, so they are released in that
+    /// The caller holds the events in the order they arrived, so they are released in that
     /// order. An event whose key is already held is ignored.
     ///
     /// # Errors
